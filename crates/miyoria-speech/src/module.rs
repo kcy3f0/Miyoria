@@ -10,7 +10,7 @@ use miyoria_kernel::{Module, ModuleContext, ModuleManifest};
 use serde::Deserialize;
 
 use crate::asr::{HttpWorkerAsrFactory, OpenAiAsrFactory};
-use crate::tts::{GptSovitsFactory, HttpWorkerTtsFactory, OpenAiTtsFactory};
+use crate::tts::{GptSovitsFactory, HttpWorkerTtsFactory, OpenAiTtsFactory, VllmOmniTtsFactory};
 use crate::{AsrFactory, ProviderConfig, SpeechService, TtsFactory};
 
 /// Top-level `[speech]` config section (not under `[modules.*]`; the app
@@ -64,6 +64,7 @@ pub fn default_tts_factories() -> Vec<Box<dyn TtsFactory>> {
     vec![
         Box::new(HttpWorkerTtsFactory),
         Box::new(OpenAiTtsFactory),
+        Box::new(VllmOmniTtsFactory),
         Box::new(GptSovitsFactory),
     ]
 }

@@ -1,10 +1,16 @@
 # TTS worker (Qwen3-TTS). FlashAttention 2 needs nvcc: use a -devel base and --build-arg FLASH_ATTN=1
 #   docker build --build-arg BASE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 --build-arg FLASH_ATTN=1 -t miyoria-tts .
 # Without it the worker falls back to PyTorch SDPA (a bit more VRAM / slower, otherwise identical).
+#
+# Backend = which requirements file gets installed (the two packages conflict, so one image has one):
+#   docker build -t miyoria-tts .                                                          # qwen-tts, sentence-level streaming
+#   docker build --build-arg REQUIREMENTS=requirements-faster.txt -t miyoria-tts-faster .  # faster-qwen3-tts, true streaming
+# The worker picks the backend by what is importable (TTS_BACKEND=faster|qwen-tts overrides).
 ARG BASE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 FROM ${BASE}
 
 ARG FLASH_ATTN=0
+ARG REQUIREMENTS=requirements.txt
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cu128
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -19,11 +25,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && python3 -m venv /opt/venv
 
 WORKDIR /app
-COPY requirements.txt ./
-RUN pip install torch --index-url "$TORCH_INDEX" && pip install -r requirements.txt \
+COPY requirements.txt requirements-faster.txt ./
+RUN pip install torch --index-url "$TORCH_INDEX" && pip install -r "$REQUIREMENTS" \
     && if [ "$FLASH_ATTN" = "1" ]; then pip install flash-attn --no-build-isolation; fi
 
-RUN useradd --create-home --uid 10001 worker && mkdir -p /voices /home/worker/.cache/huggingface \n    && chown -R worker /voices /home/worker/.cache
+RUN useradd --create-home --uid 10001 worker && mkdir -p /voices /home/worker/.cache/huggingface \
+    && chown -R worker /voices /home/worker/.cache
 USER worker
 ENV HF_HOME=/home/worker/.cache/huggingface \
     VOICES_DIR=/voices PROFILES_DIR=/profiles \

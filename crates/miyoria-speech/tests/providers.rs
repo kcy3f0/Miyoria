@@ -563,3 +563,60 @@ fn wav_is_reexported_and_resample_available() {
     assert_eq!(wav::decode(&wav::encode(&a)).unwrap(), a);
     assert_eq!(miyoria_speech::resample(&a, 8_000).samples.len(), 160);
 }
+
+#[tokio::test]
+async fn tts_vllm_omni_streams_raw_pcm() {
+    let seen = Shared::default();
+    let pcm = pcm_bytes(&speech_samples());
+    let app = Router::new()
+        .route(
+            "/v1/audio/speech",
+            post(move |s: State<Shared>, h: HeaderMap, b: Bytes| {
+                let pcm = pcm.clone();
+                async move {
+                    record(s, h, b).await;
+                    chunked(
+                        pcm,
+                        &[3, 641, 1500],
+                        &[("x-audio-sample-rate", "24000"), ("x-audio-channels", "1")],
+                    )
+                }
+            }),
+        )
+        .with_state(seen.clone());
+    let url = serve(app).await;
+
+    let svc = SpeechModule::with_default_factories(
+        serde_json::from_value(json!({
+            "tts": {"qwen": {
+                "kind": "vllm-omni", "base_url": format!("{url}/v1"), "voice": "deepseek-chan",
+                "language": "Chinese", "instructions": true, "initial_codec_chunk_frames": 4,
+                "extra": {"seed": 7}
+            }}
+        }))
+        .unwrap(),
+    )
+    .build_service()
+    .unwrap();
+    let (_, stream) = svc
+        .synthesize(TtsRequest {
+            text: "哼,才不是在等你呢。".into(),
+            instruct: Some("不耐煩".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let chunks = collect(stream).await;
+    assert!(chunks.iter().all(|c| c.sample_rate == 24_000));
+    assert_eq!(flatten(&chunks), speech_samples());
+
+    let body: Value = serde_json::from_slice(&seen.lock().unwrap().body).unwrap();
+    assert_eq!(
+        body,
+        json!({
+            "input": "哼,才不是在等你呢。", "response_format": "pcm", "stream": true,
+            "stream_format": "audio", "language": "Chinese", "voice": "deepseek-chan",
+            "instructions": "不耐煩", "initial_codec_chunk_frames": 4, "seed": 7
+        })
+    );
+}

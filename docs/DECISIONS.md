@@ -44,6 +44,11 @@ Phase 0 用你朋友在 Discord 的真實錄音測(台灣腔中文、夾日英�
 - **VoiceDesign → Clone** 流程:先用文字描述設計出 Miyoria 的聲音,再拿那段音當複製的參考音。沒有參考音檔的話很適合,也不會有拿真人聲優聲音的授權問題。
 - 要 PyTorch + FlashAttention 2,在 Windows 原生安裝很麻煩,建議 worker 跑在 WSL2 / Docker。
 - 97ms 是官方宣稱的數字,要在 4070S 上跟遊戲同時跑實測。
+- **串流**:官方 `qwen-tts` Python 套件沒有串流 API。兩條真串流路線:
+  - **原生 Windows(預設)**:`workers/tts` 用社群套件 [faster-qwen3-tts](https://pypi.org/project/faster-qwen3-tts/)(CUDA Graph + 串流,官方有 Windows 安裝腳本;作者在 RTX 4060 Windows 上量到 1.7B 首包約 460 ms、RTF 1.83)。
+  - **WSL2 / Docker**:vLLM-Omni(`kind = "vllm-omni"`;vLLM 團隊在 H20 上量到首包約 70 ms)。
+  - `qwen-tts` 的逐句合成留作最後的備案。
+- 之後可以再接 vLLM-Omni 的 `/v1/audio/speech/stream` WebSocket,把 LLM 生成的文字一邊產生一邊送進去,連「等一句講完」都省掉。
 
 ## 2. 重要架構決策(ADR 摘要)
 

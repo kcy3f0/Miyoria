@@ -24,6 +24,14 @@ chat = ["deepseek:deepseek-chat"]
 kind = "http-worker"
 url = "${ASR_URL:-http://127.0.0.1:8001}"
 
+# workers/tts 預設用 faster-qwen3-tts(原生 Windows、真串流)
+# 另一個選項:WSL2 / Docker 上的 vLLM-Omni(見 workers/README.md 第 3 節)
+# [speech.tts.qwen]
+# kind = "vllm-omni"
+# base_url = "http://127.0.0.1:8091/v1"
+# voice = "deepseek-chan"
+# language = "Chinese"
+
 [speech.tts.local]
 kind = "http-worker"
 url = "${TTS_URL:-http://127.0.0.1:8002}"

@@ -1,0 +1,16 @@
+# Qwen3-TTS worker, faster-qwen3-tts backend (true streaming, CUDA graphs). Works on native Windows.
+#
+# Use a SEPARATE venv. faster-qwen3-tts depends on `qwen-tts-hf`, which ships the same `qwen_tts`
+# module as upstream `qwen-tts` -> never install requirements.txt (qwen-tts) into the same environment.
+#
+# Install the CUDA build of torch FIRST, otherwise pip on Windows pulls the CPU-only wheel
+# (pick the index matching your driver: cu124 / cu126 / cu128 ...):
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+#   pip install -r requirements-faster.txt
+# flash-attn is not needed (the default attention implementation is SDPA).
+fastapi>=0.115
+uvicorn[standard]>=0.30
+numpy>=1.26
+soundfile>=0.12           # also a faster-qwen3-tts dependency; design_voice.py writes WAVs
+scipy>=1.11               # only used if the model's sample rate ever differs mid-stream
+faster-qwen3-tts>=0.5,<0.6

@@ -1,5 +1,6 @@
 //! TTS providers: the Miyoria inference-worker protocol, OpenAI-compatible
-//! `/audio/speech` and GPT-SoVITS (api_v2).
+//! `/audio/speech`, vLLM-Omni (true streaming for Qwen3-TTS) and GPT-SoVITS
+//! (api_v2).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -226,6 +227,157 @@ impl TtsFactory for OpenAiTtsFactory {
     fn build(&self, name: &str, config: &ProviderConfig) -> anyhow::Result<Arc<dyn TtsProvider>> {
         let cfg: OpenAiTtsConfig = parse_settings(config)?;
         Ok(Arc::new(OpenAiTts::new(name, cfg)?))
+    }
+}
+
+// ------------------------------------------------------------------ vllm-omni
+
+/// Native rate of Qwen3-TTS, used when the server sends no rate header.
+const VLLM_OMNI_DEFAULT_RATE: u32 = 24_000;
+
+/// Settings for [`VllmOmniTts`] (`kind = "vllm-omni"`).
+///
+/// vLLM-Omni serves Qwen3-TTS (and CosyVoice3, Fish Speech, ...) with real
+/// streaming: audio arrives per decoded codec chunk instead of per sentence.
+///
+/// ```toml
+/// [speech.tts.qwen]
+/// kind = "vllm-omni"
+/// base_url = "http://127.0.0.1:8091/v1"
+/// voice = "deepseek-chan"        # uploaded with POST /v1/audio/voices
+/// language = "Chinese"           # default "Auto"
+/// # instructions = true          # send emotion instructions (CustomVoice / VoiceDesign only)
+/// # initial_codec_chunk_frames = 4
+/// # extra = { seed = 7 }         # extra request fields, merged last
+/// ```
+#[derive(Clone, Debug, Deserialize)]
+pub struct VllmOmniTtsConfig {
+    pub base_url: String,
+    pub api_key: Option<String>,
+    /// Must match the served model when set; omitted otherwise.
+    pub model: Option<String>,
+    /// Used when the request names no voice.
+    pub voice: Option<String>,
+    #[serde(default = "default_vllm_language")]
+    pub language: String,
+    /// `CustomVoice` / `VoiceDesign` / `Base`; inferred by the server when unset.
+    pub task_type: Option<String>,
+    /// Forward `TtsRequest::instruct` as `instructions`. Qwen3-TTS only honours
+    /// them for CustomVoice / VoiceDesign, not for cloned (Base) voices.
+    #[serde(default)]
+    pub instructions: bool,
+    /// Smaller first chunk = earlier first audio.
+    pub initial_codec_chunk_frames: Option<u32>,
+    #[serde(default)]
+    pub extra: Map<String, Value>,
+    #[serde(default = "default_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_vllm_language() -> String {
+    "Auto".to_owned()
+}
+
+/// Client for vLLM-Omni `POST {base_url}/audio/speech` with
+/// `stream_format = "audio"` (raw PCM bytes as they are decoded).
+pub struct VllmOmniTts {
+    name: String,
+    url: String,
+    config: VllmOmniTtsConfig,
+    client: reqwest::Client,
+}
+
+impl VllmOmniTts {
+    pub fn new(name: impl Into<String>, config: VllmOmniTtsConfig) -> anyhow::Result<Self> {
+        Ok(Self {
+            name: name.into(),
+            url: join_url(&config.base_url, "audio/speech"),
+            client: stream_client(
+                config.timeout_secs,
+                bearer_headers(config.api_key.as_deref())?,
+            )?,
+            config,
+        })
+    }
+
+    fn body(&self, request: &TtsRequest) -> Value {
+        let c = &self.config;
+        let mut body = Map::new();
+        body.insert("input".into(), json!(request.text));
+        body.insert("response_format".into(), json!("pcm"));
+        body.insert("stream".into(), json!(true));
+        body.insert("stream_format".into(), json!("audio"));
+        body.insert(
+            "language".into(),
+            json!(request.language.as_deref().unwrap_or(&c.language)),
+        );
+        if let Some(voice) = request.voice.as_deref().or(c.voice.as_deref()) {
+            body.insert("voice".into(), json!(voice));
+        }
+        if let Some(model) = &c.model {
+            body.insert("model".into(), json!(model));
+        }
+        if let Some(task) = &c.task_type {
+            body.insert("task_type".into(), json!(task));
+        }
+        if c.instructions
+            && let Some(instruct) = request.instruct.as_deref().filter(|s| !s.trim().is_empty())
+        {
+            body.insert("instructions".into(), json!(instruct));
+        }
+        if let Some(frames) = c.initial_codec_chunk_frames {
+            body.insert("initial_codec_chunk_frames".into(), json!(frames));
+        }
+        body.extend(c.extra.clone());
+        Value::Object(body)
+    }
+}
+
+#[async_trait]
+impl TtsProvider for VllmOmniTts {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn synthesize(&self, request: TtsRequest) -> anyhow::Result<AudioStream> {
+        let resp = self
+            .client
+            .post(&self.url)
+            .json(&self.body(&request))
+            .send()
+            .await?;
+        let resp = ensure_ok(resp).await?;
+        let rate = resp
+            .headers()
+            .get("x-audio-sample-rate")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(VLLM_OMNI_DEFAULT_RATE);
+        let channels = resp
+            .headers()
+            .get("x-audio-channels")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(1);
+        if channels != 1 {
+            anyhow::bail!("vLLM-Omni returned {channels}-channel audio; only mono is supported");
+        }
+        Ok(pcm_stream(resp.bytes_stream(), rate))
+    }
+}
+
+/// [`TtsFactory`] for `vllm-omni`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VllmOmniTtsFactory;
+
+impl TtsFactory for VllmOmniTtsFactory {
+    fn kinds(&self) -> &[&'static str] {
+        &["vllm-omni"]
+    }
+
+    fn build(&self, name: &str, config: &ProviderConfig) -> anyhow::Result<Arc<dyn TtsProvider>> {
+        let cfg: VllmOmniTtsConfig = parse_settings(config)?;
+        Ok(Arc::new(VllmOmniTts::new(name, cfg)?))
     }
 }
 

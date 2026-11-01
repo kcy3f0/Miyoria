@@ -1,0 +1,63 @@
+# ASR + TTS on a Linux GPU server, next to Core.
+#
+#   cd deploy/speech
+#   docker compose up -d
+#
+# Both services bind to 127.0.0.1: only Core (on the same server) talks to
+# them. The streaming PC reaches Core through the voice link (see README.md).
+#
+# Requires the NVIDIA Container Toolkit. Check the vLLM-Omni tag against the
+# current release before use.
+
+services:
+  tts:
+    image: vllm/vllm-omni:${VLLM_OMNI_TAG:-v0.24.0}
+    command: >
+      vllm serve ${TTS_MODEL:-Qwen/Qwen3-TTS-12Hz-1.7B-Base}
+      --omni --port 8091 --trust-remote-code
+      ${TTS_EXTRA_ARGS:-}
+    ports:
+      - "127.0.0.1:8091:8091"
+    ipc: host
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  asr:
+    build:
+      context: ../../workers/asr
+      args:
+        BACKEND: ${ASR_BACKEND:-qwen3}
+        FLASH_ATTN: ${ASR_FLASH_ATTN:-1}
+    image: miyoria-asr:${ASR_BACKEND:-qwen3}
+    ports:
+      - "127.0.0.1:8001:8001"
+    environment:
+      ASR_BACKEND: ${ASR_BACKEND:-qwen3}
+      ASR_MODEL: ${ASR_MODEL:-/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17}
+      ASR_QWEN_SIZE: ${ASR_QWEN_SIZE:-0.6B}
+      ASR_QWEN_BACKEND: ${ASR_QWEN_BACKEND:-transformers}
+    volumes:
+      - ./models:/models:ro
+      - asr-cache:/home/worker/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  hf-cache:
+  asr-cache:

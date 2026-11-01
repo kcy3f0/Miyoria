@@ -69,6 +69,7 @@ flowchart LR
 
 - **all-in-one**:全部跑在直播機,開發用。
 - **split**(目標):Core + Postgres(含 bot 帳號連線)在 server;Stage + Workers + self voice node 在直播機。Discord 語音音訊在直播機上直接進 ASR、TTS 直接出,不必繞 server 一圈;Go Live 的畫面也直接從本機 OBS 推出去。
+- **split + 語音在 server**:server 有 GPU 時,ASR / TTS(Linux 上可用 vLLM-Omni)跟 Core 放同一台,直播機只跑 Stage 和 voice node,VRAM 留給遊戲。見 [deploy/speech](../deploy/speech/README.md)。跨網路的 voice link 要走 Tailscale / WireGuard 或 wss 反向代理。
 - **cloud-voice**:Core 在 server,ASR/TTS 用雲端服務,直播機只跑 Stage。
 
 ### 1.2 節點間通訊

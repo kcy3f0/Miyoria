@@ -29,7 +29,8 @@ pub use asr::{
 pub use module::{SpeechConfig, SpeechModule, default_asr_factories, default_tts_factories};
 pub use tts::{
     GptSovitsConfig, GptSovitsFactory, GptSovitsTts, HttpWorkerTts, HttpWorkerTtsConfig,
-    HttpWorkerTtsFactory, OpenAiTts, OpenAiTtsConfig, OpenAiTtsFactory,
+    HttpWorkerTtsFactory, OpenAiTts, OpenAiTtsConfig, OpenAiTtsFactory, VllmOmniTts,
+    VllmOmniTtsConfig, VllmOmniTtsFactory,
 };
 pub use wav::resample;
 
