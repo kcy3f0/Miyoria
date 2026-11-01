@@ -36,10 +36,9 @@ import {
   PlatformSinks,
   PlatformSinksKey,
   type ProfileId,
+  ProfileIdKey,
   PromptContributors,
   PromptContributorsKey,
-  type ServiceKey,
-  serviceKey,
 } from "@miyoria/types";
 import { CliPlatform, type CliPlatformOptions } from "./cli-platform.js";
 import { NEEDS_TOKEN } from "./module-ids.js";
@@ -47,17 +46,6 @@ import { RecorderModule } from "./recorder.js";
 import { databaseUrl, loadProfile, resolveDatabaseUrl } from "./settings.js";
 
 const log = getLogger("core.boot");
-
-// The active profile id (legacy `Arc<ProfileId>` service; used by `mcp` and `ext-host`). It has
-// no key in `@miyoria/types` yet, so the packages share one key object through a global slot
-// (keys are matched by identity), the same one `@miyoria/ext-host` and `@miyoria/mcp` use.
-// TODO(integration): move to `@miyoria/types`.
-const PROFILE_ID_SLOT = Symbol.for("miyoria.service-key.ProfileId");
-const slots = globalThis as { [PROFILE_ID_SLOT]?: ServiceKey<ProfileId> };
-if (!slots[PROFILE_ID_SLOT]) slots[PROFILE_ID_SLOT] = serviceKey<ProfileId>("ProfileId");
-
-/** Service: the active profile id. */
-export const ProfileIdKey: ServiceKey<ProfileId> = slots[PROFILE_ID_SLOT];
 
 /** What the module factories get. */
 export interface ModuleDeps {
@@ -159,6 +147,8 @@ export class Core {
 }
 
 /** Builds the core with the given module catalog (see `buildCore` for the real one). */
+export { ProfileIdKey };
+
 export async function buildCoreWith(
   catalog: ModuleCatalog,
   config: Config,
@@ -278,17 +268,26 @@ async function persistModuleState(bus: EventBus, store: Store, signal: AbortSign
   }
 }
 
-/** Resolves on SIGINT (Ctrl+C) or SIGTERM (e.g. `docker stop`), or when `signal` aborts. */
+// SIGBREAK is Ctrl+Break and SIGHUP is closing the console window on Windows (Node emulates
+// both there; Windows kills the process about 10 s after SIGHUP).
+const SHUTDOWN_SIGNALS: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"];
+
+/** How long `runUntilSignal` waits for modules to stop before forcing the exit. */
+const STOP_TIMEOUT_MS = 15_000;
+
+/**
+ * Resolves on SIGINT (Ctrl+C), SIGTERM (e.g. `docker stop`), SIGBREAK / SIGHUP (Windows), or
+ * when `signal` aborts. The handlers are removed once it resolves, so a second Ctrl+C falls
+ * back to Node's default and exits at once.
+ */
 export function shutdownSignal(signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const done = () => {
-      process.off("SIGINT", done);
-      process.off("SIGTERM", done);
+      for (const s of SHUTDOWN_SIGNALS) process.off(s, done);
       signal?.removeEventListener("abort", done);
       resolve();
     };
-    process.once("SIGINT", done);
-    process.once("SIGTERM", done);
+    for (const s of SHUTDOWN_SIGNALS) process.once(s, done);
     if (signal?.aborted) done();
     else signal?.addEventListener("abort", done, { once: true });
   });
@@ -299,6 +298,16 @@ export async function runUntilSignal(core: Core, signal?: AbortSignal): Promise<
   const stop = shutdownSignal(signal);
   await core.start();
   await stop;
-  log.info("shutting down");
-  await core.stop();
+  log.info("shutting down (Ctrl+C again to force)");
+  const force = setTimeout(() => {
+    log.error({ timeout_ms: STOP_TIMEOUT_MS }, "modules did not stop in time; exiting");
+    process.exit(1);
+  }, STOP_TIMEOUT_MS);
+  force.unref();
+  try {
+    await core.stop();
+    log.info("core stopped");
+  } finally {
+    clearTimeout(force);
+  }
 }
