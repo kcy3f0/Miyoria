@@ -9,6 +9,7 @@ pub mod auth;
 pub mod event;
 pub mod ids;
 pub mod platform;
+pub mod voice;
 
 pub use action::{Action, ActionPayload, ActionSink, LaneKey, Priority};
 pub use auth::Authorizer;
@@ -18,3 +19,4 @@ pub use platform::{
     AccountRef, Attachment, Author, ContextKey, ContextKind, IncomingMessage, MessageRef,
     OutgoingMessage, PlatformId, PlatformSink, PlatformSinks,
 };
+pub use voice::{PlaybackState, SpeakOutcome, VoiceParticipant, VoiceSink, VoiceUtterance};

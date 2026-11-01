@@ -18,6 +18,17 @@ api_key = "${LLM_API_KEY:-}"
 [llm.purposes]
 chat = ["deepseek:deepseek-chat"]
 
+# ---- 語音辨識 / 合成 -------------------------------------------------------
+# 本機 worker 見 workers/README.md;也可以換成雲端(kind = "openai")
+[speech.asr.local]
+kind = "http-worker"
+url = "${ASR_URL:-http://127.0.0.1:8001}"
+
+[speech.tts.local]
+kind = "http-worker"
+url = "${TTS_URL:-http://127.0.0.1:8002}"
+voice = "deepseek-chan"
+
 # ---- 子系統 --------------------------------------------------------------
 # 每個 [modules.<id>] 都可以加 enabled = false 關掉
 
@@ -34,7 +45,23 @@ command_guilds = []
 bind = "127.0.0.1:7878"
 token = "${MIYORIA_API_TOKEN:-}"
 
+# Self 帳號語音節點(apps/voice-node)連進來的位址;token 由 `miyoria init` 產生
+[modules."voice.link"]
+bind = "127.0.0.1:7879"
+token = "${VOICE_LINK_TOKEN:-}"
+
+[modules.voice]
+consent = "opt-out"        # opt-out:預設收音,可用 /voice consent off 退出;opt-in:同意後才收
+barge_in = "stop"          # 有人插話時停止說話:stop | ignore
+
 [modules.agent]
 # 頻道模式:off | mention-only | ambient | always。也可以在 Discord 用 /mode 即時切換
 # default_mode = "ambient"
 # channels = { "<channel id>" = "always", "discord:<guild id>" = "mention-only" }
+
+# 語音聊天:比文字更保守,偶爾才插話。也可以用 /voice mode 即時切換
+[modules.agent.voice]
+default_mode = "ambient"
+ambient_factor = 0.5       # 主動插話機率的倍率
+cooldown_ms = 20000        # 她講完後至少隔多久才會再主動開口
+debounce_ms = 700          # 對方講完後等多久(看他是不是還要繼續講)

@@ -1,0 +1,220 @@
+// Voice Link v1 (node side). See docs/protocols/voice-link.md.
+//
+// Text frames are JSON objects with a `type`; binary frames are audio:
+//   0x01 [stream: u32 LE] [PCM s16le mono 16 kHz ...]   node -> Core (capture)
+//   0x02 [play:   u32 LE] [PCM s16le mono ...]          Core -> node (playback)
+
+export const PROTOCOL_VERSION = 1;
+export const CAPTURE_SAMPLE_RATE = 16_000;
+
+export const FRAME_CAPTURE = 0x01;
+export const FRAME_PLAYBACK = 0x02;
+
+/** WebSocket close codes the protocol assigns meaning to. */
+export const CLOSE_VERSION_MISMATCH = 4400;
+export const CLOSE_BAD_TOKEN = 4401;
+export const CLOSE_REPLACED = 4409;
+
+export const U32_MAX = 0xffff_ffff;
+
+// ── Core -> node ────────────────────────────────────────────────────────────
+
+export type CoreMessage =
+  | { type: "welcome"; session: string }
+  | { type: "join"; guild: string; channel?: string; user_id?: string }
+  | { type: "leave"; guild: string }
+  | { type: "play_start"; play: number; guild: string; sample_rate: number }
+  | { type: "play_end"; play: number }
+  | { type: "play_stop"; play: number; fade_ms: number }
+  | { type: "ping" };
+
+export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string; ignorable: boolean };
+
+const MIN_PLAY_RATE = 8_000;
+const MAX_PLAY_RATE = 192_000;
+export const MAX_FADE_MS = 10_000;
+
+function fail<T>(error: string, ignorable = false): ParseResult<T> {
+  return { ok: false, error, ignorable };
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function reqId(o: Record<string, unknown>, key: string): string | undefined {
+  const v = o[key];
+  return typeof v === "string" && v.length > 0 && v.length <= 64 ? v : undefined;
+}
+
+function optId(o: Record<string, unknown>, key: string): { ok: true; v: string | undefined } | { ok: false } {
+  const v = o[key];
+  if (v === undefined || v === null) return { ok: true, v: undefined };
+  return typeof v === "string" && v.length > 0 && v.length <= 64 ? { ok: true, v } : { ok: false };
+}
+
+export function isU32(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= U32_MAX;
+}
+
+/** Parses and validates one text frame from Core. Unknown `type`s are reported as ignorable. */
+export function parseCoreMessage(text: string): ParseResult<CoreMessage> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return fail("invalid JSON");
+  }
+  if (!isRecord(raw)) return fail("message is not a JSON object");
+  const type = raw["type"];
+  if (typeof type !== "string") return fail("missing string field `type`");
+
+  switch (type) {
+    case "welcome": {
+      const session = raw["session"];
+      if (typeof session !== "string" || session.length === 0) return fail("welcome: `session` must be a string");
+      return { ok: true, value: { type, session } };
+    }
+    case "ping":
+      return { ok: true, value: { type } };
+    case "join": {
+      const guild = reqId(raw, "guild");
+      if (!guild) return fail("join: `guild` must be a non-empty string");
+      const channel = optId(raw, "channel");
+      const userId = optId(raw, "user_id");
+      if (!channel.ok) return fail("join: `channel` must be a string");
+      if (!userId.ok) return fail("join: `user_id` must be a string");
+      if (channel.v === undefined && userId.v === undefined) {
+        return fail("join: need `channel` or `user_id`");
+      }
+      const value: CoreMessage = { type, guild };
+      if (channel.v !== undefined) value.channel = channel.v;
+      if (userId.v !== undefined) value.user_id = userId.v;
+      return { ok: true, value };
+    }
+    case "leave": {
+      const guild = reqId(raw, "guild");
+      if (!guild) return fail("leave: `guild` must be a non-empty string");
+      return { ok: true, value: { type, guild } };
+    }
+    case "play_start": {
+      const play = raw["play"];
+      const guild = reqId(raw, "guild");
+      const rate = raw["sample_rate"];
+      if (!isU32(play)) return fail("play_start: `play` must be a u32");
+      if (!guild) return fail("play_start: `guild` must be a non-empty string");
+      if (
+        typeof rate !== "number" ||
+        !Number.isInteger(rate) ||
+        rate < MIN_PLAY_RATE ||
+        rate > MAX_PLAY_RATE
+      ) {
+        return fail(`play_start: \`sample_rate\` must be an integer in ${MIN_PLAY_RATE}..${MAX_PLAY_RATE}`);
+      }
+      return { ok: true, value: { type, play, guild, sample_rate: rate } };
+    }
+    case "play_end": {
+      const play = raw["play"];
+      if (!isU32(play)) return fail("play_end: `play` must be a u32");
+      return { ok: true, value: { type, play } };
+    }
+    case "play_stop": {
+      const play = raw["play"];
+      if (!isU32(play)) return fail("play_stop: `play` must be a u32");
+      const fade = raw["fade_ms"];
+      let fadeMs = 0;
+      if (fade !== undefined && fade !== null) {
+        if (typeof fade !== "number" || !Number.isFinite(fade) || fade < 0) {
+          return fail("play_stop: `fade_ms` must be a non-negative number");
+        }
+        fadeMs = Math.min(Math.round(fade), MAX_FADE_MS);
+      }
+      return { ok: true, value: { type, play, fade_ms: fadeMs } };
+    }
+    default:
+      return fail(`unknown message type \`${type}\``, true);
+  }
+}
+
+// ── node -> Core ────────────────────────────────────────────────────────────
+
+export interface Participant {
+  user_id: string;
+  display_name: string;
+  is_self: boolean;
+  muted: boolean;
+  deafened: boolean;
+}
+
+export type PlaybackState = "started" | "finished" | "interrupted" | "failed";
+
+export type NodeMessage =
+  | {
+      type: "hello";
+      version: number;
+      token: string;
+      node: string;
+      self_account: { platform: "discord"; id: string };
+    }
+  | { type: "joined"; guild: string; channel: string }
+  | { type: "left"; guild: string; reason?: string }
+  | { type: "voice_state"; guild: string; channel: string; participants: Participant[] }
+  | { type: "speaking"; guild: string; user_id: string; speaking: boolean }
+  | {
+      type: "stream_open";
+      stream: number;
+      guild: string;
+      channel: string;
+      user_id: string;
+      display_name: string;
+      sample_rate: number;
+    }
+  | { type: "stream_close"; stream: number }
+  | { type: "playback"; play: number; state: PlaybackState; error?: string }
+  | { type: "error"; message: string }
+  | { type: "pong" };
+
+export function encodeNodeMessage(msg: NodeMessage): string {
+  return JSON.stringify(msg);
+}
+
+// ── binary frames ───────────────────────────────────────────────────────────
+
+/** Builds a `0x01` capture frame. `pcm` is s16le mono 16 kHz. */
+export function encodeCaptureFrame(stream: number, pcm: Uint8Array): Buffer {
+  if (!isU32(stream)) throw new RangeError(`stream id out of u32 range: ${stream}`);
+  const out = Buffer.allocUnsafe(5 + pcm.byteLength);
+  out[0] = FRAME_CAPTURE;
+  out.writeUInt32LE(stream, 1);
+  out.set(pcm, 5);
+  return out;
+}
+
+/** Builds a `0x02` playback frame (what Core sends). Used by tests and tooling. */
+export function encodePlaybackFrame(play: number, pcm: Uint8Array): Buffer {
+  if (!isU32(play)) throw new RangeError(`play id out of u32 range: ${play}`);
+  const out = Buffer.allocUnsafe(5 + pcm.byteLength);
+  out[0] = FRAME_PLAYBACK;
+  out.writeUInt32LE(play, 1);
+  out.set(pcm, 5);
+  return out;
+}
+
+export interface BinaryFrame {
+  kind: typeof FRAME_CAPTURE | typeof FRAME_PLAYBACK;
+  /** stream id (0x01) or play id (0x02) */
+  id: number;
+  /** A view into the input buffer (no copy). */
+  pcm: Buffer;
+}
+
+/** Decodes a binary frame. Returns an error string for malformed / unknown frames. */
+export function decodeBinaryFrame(buf: Uint8Array): ParseResult<BinaryFrame> {
+  if (buf.byteLength < 5) return fail("binary frame shorter than its 5-byte header");
+  const b = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
+  const kind = b[0];
+  if (kind !== FRAME_CAPTURE && kind !== FRAME_PLAYBACK) {
+    return fail(`unknown binary frame kind 0x${(kind ?? 0).toString(16).padStart(2, "0")}`, true);
+  }
+  return { ok: true, value: { kind, id: b.readUInt32LE(1), pcm: b.subarray(5) } };
+}

@@ -1,0 +1,36 @@
+# TTS worker (Qwen3-TTS). FlashAttention 2 needs nvcc: use a -devel base and --build-arg FLASH_ATTN=1
+#   docker build --build-arg BASE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 --build-arg FLASH_ATTN=1 -t miyoria-tts .
+# Without it the worker falls back to PyTorch SDPA (a bit more VRAM / slower, otherwise identical).
+ARG BASE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+FROM ${BASE}
+
+ARG FLASH_ATTN=0
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cu128
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PATH=/opt/venv/bin:$PATH
+
+# sox: qwen-tts warns/fails in its audio helpers when SoX is missing; libsndfile1 for soundfile
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-venv python3-dev build-essential libsndfile1 sox ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/venv
+
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install torch --index-url "$TORCH_INDEX" && pip install -r requirements.txt \
+    && if [ "$FLASH_ATTN" = "1" ]; then pip install flash-attn --no-build-isolation; fi
+
+RUN useradd --create-home --uid 10001 worker && mkdir -p /voices /home/worker/.cache/huggingface \n    && chown -R worker /voices /home/worker/.cache
+USER worker
+ENV HF_HOME=/home/worker/.cache/huggingface \
+    VOICES_DIR=/voices PROFILES_DIR=/profiles \
+    HOST=0.0.0.0 PORT=8002
+
+COPY --chown=worker server.py text_split.py design_voice.py ./
+EXPOSE 8002
+HEALTHCHECK --interval=30s --timeout=5s --start-period=240s --retries=3 \
+    CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=4).status == 200 else 1)"
+CMD ["python3", "server.py"]

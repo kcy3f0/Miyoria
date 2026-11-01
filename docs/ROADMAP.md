@@ -39,17 +39,21 @@
 
 ## Phase 2:語音
 
-- [ ] `apps/voice-node`(TS):self 帳號登入、進出語音、每人 PCM 串流、播放音訊;先用簡單的 WebSocket 接 Core,Phase 6 換成 Node Link
-- [ ] 雙帳號整合:`self_identities`、lane 路由(`voice:*` → self)、`/join` 由 bot 收指令、self 執行;self 掉線時降級
-- [ ] `miyoria-speech`:ASR / TTS trait + Phase 0 選出的實作 + 雲端備援
-- [ ] `miyoria worker` 或第三方 worker 的接入方式(先用 HTTP)
-- [ ] `miyoria-voice`:每人 VAD、ASR 串流、utterance 聚合、換人說話偵測、Voice Room Context
-- [ ] 語音版 Attention(更保守)+ 斷句 + TTS 串流 + `voice` lane + barge-in
-- [ ] 語音同意流程(`/voice consent`、進頻道公告)
-- [ ] `/join`、`/leave`、`/voice mode`
-- [ ] 延遲量測(每個階段)
+- [x] `apps/voice-node`(TS):self 帳號登入、進出語音、每人 PCM 串流、播放音訊;用 [Voice Link 協定](protocols/voice-link.md)(WebSocket)接 Core,Phase 6 換成 Node Link
+- [x] 雙帳號整合:bot 收 `/join`、self 帳號執行;`voice:*` lane 經 `VoiceSink` 播放;self 掉線時語音降級、文字照常
+- [x] `miyoria-speech`:ASR / TTS trait、fallback chain;provider:`http-worker`、OpenAI 相容(雲端備援)、GPT-SoVITS
+- [x] `workers/`:ASR(SenseVoice / Qwen3-ASR)與 TTS(Qwen3-TTS,逐句串流)的 FastAPI worker、Docker、聲音設計工具、假 worker
+- [x] `miyoria-voice`:每人能量 VAD + 斷句、ASR、轉繁體、幻聽過濾、Voice Room 成員
+- [x] 語音版 Attention(更保守)+ 逐句送 TTS + `voice` lane + barge-in(被打斷就丟掉那一輪剩下的句子)
+- [x] 語音同意流程(`/voice consent`、進頻道公告;預設 opt-out)
+- [x] `/join`、`/leave`、`/voice mode`、`/voice consent`
+- [x] 延遲事件(`voice.latency`,可用 `miyoria events 'voice.*'` 看)
+- [x] 端到端測試(假語音節點 + 假 worker + 假 LLM):講完到開口約 0.74 秒
+- [ ] **實測**:真的 Discord(self 帳號 + DAVE)、真的 ASR / TTS 模型、真的 DeepSeek
+- [ ] Silero VAD(目前是能量 VAD,吵雜環境可能需要)
+- [ ] ASR 部分結果(partial)— 目前是整段辨識
 
-**完成條件**:她在語音頻道聽得懂大家在講什麼,偶爾自然地插話;延遲中位數 ≤ 2.5 秒。
+**完成條件**:她在語音頻道聽得懂大家在講什麼,偶爾自然地插話;延遲中位數 ≤ 2.5 秒。(待實測)
 
 ## Phase 3:記憶、社交、權限
 

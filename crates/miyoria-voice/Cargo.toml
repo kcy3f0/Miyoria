@@ -1,0 +1,36 @@
+[package]
+name = "miyoria-voice"
+description = "Voice pipeline: the voice-node link (module `voice.link`) and listening / speaking (module `voice`)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+miyoria-commands.workspace = true
+miyoria-kernel.workspace = true
+miyoria-speech.workspace = true
+miyoria-store.workspace = true
+miyoria-types.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+toml.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+axum = { version = "0.8", features = ["ws"] }
+# OpenCC tables only (Apache-2.0); the default MediaWiki tables are GPL.
+zhconv = { version = "0.4", default-features = false, features = ["opencc-tw", "opencc-twp"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tokio-tungstenite = "0.29"
+
+[lints]
+workspace = true

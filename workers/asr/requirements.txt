@@ -1,0 +1,8 @@
+# Common to both ASR backends. Backend-specific packages are in requirements-sensevoice.txt /
+# requirements-qwen3.txt.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9   # multipart/form-data parsing for POST /asr
+numpy>=1.26
+soundfile>=0.12           # WAV decode (any sample rate / channels / bit depth)
+scipy>=1.11               # resample_poly -> 16 kHz

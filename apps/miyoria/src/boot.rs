@@ -17,10 +17,12 @@ use miyoria_llm::{LlmConfig, LlmModule, ModelRef};
 use miyoria_llm_openai::OpenAiFactory;
 use miyoria_profile::Profile;
 use miyoria_scheduler::SchedulerModule;
+use miyoria_speech::{SpeechConfig, SpeechModule};
 use miyoria_store::{
     DecisionLog, DecisionRecord, LogEntry, PersonaOverrideStore, SettingsStore, Store,
 };
 use miyoria_types::{AccountRef, Event, ModuleId, ModuleStateKind, PlatformSinks, ProfileId};
+use miyoria_voice::{VoiceLinkModule, VoiceModule};
 use tracing::{info, warn};
 
 use crate::cli_platform::CliPlatform;
@@ -30,6 +32,9 @@ const KERNEL: &str = "kernel";
 /// Every module the core knows about, for `miyoria module list`.
 const MODULES: &[&str] = &[
     LlmModule::ID,
+    SpeechModule::ID,
+    VoiceLinkModule::ID,
+    VoiceModule::ID,
     "scheduler",
     "agent",
     CommandsModule::ID,
@@ -145,11 +150,17 @@ pub async fn build(config: &Config, options: Options) -> anyhow::Result<Boot> {
         profile.set_section(&key, body);
     }
     let profile_display_name = profile.display_name().to_owned();
+    let profile_voice = profile.voice.clone();
     let profile_id = profile.id.clone();
     services.provide(&kernel, Arc::new(profile_id.clone()));
 
     let mut modules: Vec<Arc<dyn Module>> = vec![
         Arc::new(llm_module(config, &profile)?),
+        Arc::new(SpeechModule::with_default_factories(
+            config.get::<SpeechConfig>("speech")?,
+        )),
+        Arc::new(VoiceLinkModule::new()),
+        Arc::new(VoiceModule::new(profile_id.clone(), profile_voice)),
         Arc::new(SchedulerModule::new()),
         Arc::new(AgentModule::new(profile)),
         Arc::new(CommandsModule::new()),
@@ -176,7 +187,8 @@ pub async fn build(config: &Config, options: Options) -> anyhow::Result<Boot> {
             .get("token")
             .and_then(|t| t.as_str())
             .is_none_or(str::is_empty);
-        if token_missing && (id.as_str() == DiscordBotModule::ID || id.as_str() == ApiModule::ID) {
+        let needs_token = [DiscordBotModule::ID, ApiModule::ID, VoiceLinkModule::ID];
+        if token_missing && needs_token.contains(&id.as_str()) {
             warn!(module = %id, "token is empty; module disabled");
             enabled = false;
         }

@@ -324,3 +324,75 @@ async fn stops_cleanly_with_work_in_flight() {
     assert_eq!(ops(&h), ["typing"]);
     assert!(h.module.scheduler().is_none());
 }
+
+/// Interrupts the first utterance (after `gate` is notified), completes the rest.
+#[derive(Default)]
+struct FakeVoice {
+    spoken: Mutex<Vec<String>>,
+    gate: Notify,
+}
+
+#[async_trait]
+impl miyoria_types::VoiceSink for FakeVoice {
+    async fn speak(
+        &self,
+        _context: &ContextKey,
+        text: &str,
+        _emotion: Option<&str>,
+        _turn: Option<TurnId>,
+    ) -> anyhow::Result<miyoria_types::SpeakOutcome> {
+        let first = {
+            let mut spoken = self.spoken.lock();
+            spoken.push(text.to_owned());
+            spoken.len() == 1
+        };
+        if first {
+            self.gate.notified().await;
+            Ok(miyoria_types::SpeakOutcome::Interrupted)
+        } else {
+            Ok(miyoria_types::SpeakOutcome::Completed)
+        }
+    }
+}
+
+#[tokio::test]
+async fn interrupted_speech_drops_rest_of_turn() {
+    let mut h = harness(serde_json::Value::Null).await;
+    let voice = Arc::new(FakeVoice::default());
+    h.sup
+        .services()
+        .provide::<dyn miyoria_types::VoiceSink>(&ModuleId::from("app"), voice.clone());
+    let ctx = ContextKey {
+        kind: ContextKind::Voice,
+        ..context("fake")
+    };
+    let lane = LaneKey::voice("fake", "g");
+    let speak = |text: &str, turn: TurnId| {
+        Action::new(
+            lane.clone(),
+            Priority::Direct,
+            ActionPayload::Speak {
+                context: ctx.clone(),
+                text: text.into(),
+                emotion: None,
+            },
+        )
+        .with_turn(turn)
+    };
+    let (t1, t2) = (TurnId::new(), TurnId::new());
+    // "a1" holds the lane until notified, so the rest are queued behind it.
+    for action in [
+        speak("a1", t1),
+        speak("a2", t1),
+        speak("a3", t1),
+        speak("b1", t2),
+    ] {
+        h.actions.submit(action).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    voice.gate.notify_one();
+    for _ in 0..4 {
+        next_done(&mut h.completed).await;
+    }
+    assert_eq!(*voice.spoken.lock(), vec!["a1".to_owned(), "b1".to_owned()]);
+}

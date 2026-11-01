@@ -21,6 +21,8 @@ miyoria-commands = { path = "crates/miyoria-commands" }
 miyoria-store = { path = "crates/miyoria-store" }
 miyoria-discord = { path = "crates/miyoria-discord" }
 miyoria-api = { path = "crates/miyoria-api" }
+miyoria-speech = { path = "crates/miyoria-speech" }
+miyoria-voice = { path = "crates/miyoria-voice" }
 
 # external
 anyhow = "1"

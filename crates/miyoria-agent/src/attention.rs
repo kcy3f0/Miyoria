@@ -3,6 +3,10 @@
 //! Layer 1 are hard rules (channel mode, direct address, anti-spam share,
 //! cooldown), layer 2 a cheap salience score. Layer 3, the optional `fast`
 //! LLM check for ambient gray-zone turns, runs in the turn itself.
+//!
+//! Voice turns add [`VoiceAttention`]: a question right after she spoke
+//! addresses her, she never joins in while someone is speaking and ambient
+//! probabilities are scaled down.
 
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -68,6 +72,17 @@ pub struct Assessment {
     pub reasons: Vec<String>,
 }
 
+/// Extra rules for voice contexts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceAttention {
+    /// Someone other than her is speaking right now.
+    pub someone_speaking: bool,
+    /// Multiplies the ambient reply probability.
+    pub ambient_factor: f32,
+    /// A question this soon (ms) after she spoke addresses her.
+    pub question_window_ms: i64,
+}
+
 pub struct AttentionInput<'a> {
     pub config: &'a AttentionConfig,
     pub mode: ChannelMode,
@@ -81,6 +96,16 @@ pub struct AttentionInput<'a> {
     /// The messages that make up this turn (already in the session history).
     pub inputs: &'a [IncomingMessage],
     pub now: DateTime<Utc>,
+    /// Set for voice contexts.
+    pub voice: Option<VoiceAttention>,
+}
+
+impl AttentionInput<'_> {
+    /// Ambient probability after activeness (and the voice factor).
+    pub fn ambient_probability(&self, p: f32) -> f32 {
+        let factor = self.voice.map_or(1.0, |v| v.ambient_factor);
+        self.activeness.scale(p * factor)
+    }
 }
 
 /// Why a message addresses her directly, if it does.
@@ -94,11 +119,40 @@ pub fn direct_reason(msg: &IncomingMessage, names: &[String]) -> Option<String> 
     if msg.reply_to_self {
         return Some("reply".into());
     }
-    let lower = msg.text.to_lowercase();
+    // Transcripts space and punctuate names arbitrarily ("deep seek chan"),
+    // so voice compares letters and digits only.
+    let voice = msg.context().kind == ContextKind::Voice;
+    let normalize = |s: &str| {
+        let lower = s.to_lowercase();
+        if voice {
+            lower.chars().filter(|c| c.is_alphanumeric()).collect()
+        } else {
+            lower
+        }
+    };
+    let text = normalize(&msg.text);
     names
         .iter()
-        .find(|n| !n.is_empty() && lower.contains(&n.to_lowercase()))
+        .find(|n| {
+            let n = normalize(n);
+            !n.is_empty() && text.contains(&n)
+        })
         .map(|n| format!("name `{n}`"))
+}
+
+/// A question asked within the voice question window after she spoke.
+fn question_after_her(input: &AttentionInput<'_>) -> Option<String> {
+    let voice = input.voice?;
+    let last = input.session.last_self_at()?;
+    input
+        .inputs
+        .iter()
+        .filter(|m| is_question(&m.text.to_lowercase()))
+        .any(|m| {
+            let gap = m.ts.signed_duration_since(last).num_milliseconds();
+            gap >= -voice.question_window_ms && gap <= voice.question_window_ms
+        })
+        .then(|| "question right after she spoke".to_owned())
 }
 
 pub fn assess(input: &AttentionInput<'_>) -> Assessment {
@@ -107,7 +161,8 @@ pub fn assess(input: &AttentionInput<'_>) -> Assessment {
     let direct = input
         .inputs
         .iter()
-        .find_map(|m| direct_reason(m, input.names));
+        .find_map(|m| direct_reason(m, input.names))
+        .or_else(|| question_after_her(input));
     if let Some(why) = &direct {
         reasons.push(format!("direct: {why}"));
     }
@@ -133,6 +188,10 @@ pub fn assess(input: &AttentionInput<'_>) -> Assessment {
         ChannelMode::Ambient => {}
     }
 
+    if input.voice.is_some_and(|v| v.someone_speaking) {
+        reasons.push("someone is speaking".into());
+        return done(Gate::Ignore, reasons);
+    }
     let activeness = input.activeness;
     if activeness != Activeness::Medium {
         reasons.push(format!("activeness {activeness}"));
@@ -160,12 +219,12 @@ pub fn assess(input: &AttentionInput<'_>) -> Assessment {
         reasons.push(format!("score {score:.2} < {:.2}", cfg.gray_low));
         done(Gate::Ignore, reasons)
     } else if score >= cfg.gray_high {
-        done(Gate::Sample(activeness.scale(score)), reasons)
+        done(Gate::Sample(input.ambient_probability(score)), reasons)
     } else if cfg.llm_check {
         reasons.push("gray zone: asking fast model".into());
         done(Gate::AskLlm, reasons)
     } else {
-        done(Gate::Sample(activeness.scale(score)), reasons)
+        done(Gate::Sample(input.ambient_probability(score)), reasons)
     }
 }
 
@@ -345,6 +404,7 @@ mod tests {
             session,
             inputs,
             now: Utc::now(),
+            voice: None,
         })
     }
 
@@ -544,6 +604,73 @@ mod tests {
         let a = run_with(&cfg, ChannelMode::Ambient, Activeness::High, &[], &s, &q);
         assert!(!a.reasons.iter().any(|r| r.starts_with("cooldown")));
         assert!(matches!(a.gate, Gate::Sample(_)), "{a:?}");
+    }
+
+    fn voice_run(
+        cfg: &AttentionConfig,
+        session: &Session,
+        inputs: &[IncomingMessage],
+        someone_speaking: bool,
+    ) -> Assessment {
+        let names = vec!["DeepSeek-chan".to_owned(), "小鯨魚".to_owned()];
+        assess(&AttentionInput {
+            config: cfg,
+            mode: ChannelMode::Ambient,
+            activeness: Activeness::Medium,
+            names: &names,
+            interests: &[],
+            max_share: 0.3,
+            session,
+            inputs,
+            now: Utc::now(),
+            voice: Some(VoiceAttention {
+                someone_speaking,
+                ambient_factor: 0.5,
+                question_window_ms: 8000,
+            }),
+        })
+    }
+
+    #[test]
+    fn voice_rules() {
+        let cfg = AttentionConfig {
+            llm_check: false,
+            cooldown_ms: 0,
+            ..Default::default()
+        };
+        let q = vec![msg(ContextKind::Voice, "a", "你們看過鯨魚嗎?")];
+        let s = session_with(&q);
+        let text = run(&cfg, ChannelMode::Ambient, &s, &q);
+        let voice = voice_run(&cfg, &s, &q, false);
+        match (text.gate, voice.gate) {
+            (Gate::Sample(t), Gate::Sample(v)) => assert!((v - t * 0.5).abs() < 1e-6),
+            other => panic!("{other:?}"),
+        }
+        // Never joins in while someone speaks, but direct address still counts.
+        let a = voice_run(&cfg, &s, &q, true);
+        assert_eq!(a.gate, Gate::Ignore);
+        assert!(a.reasons.iter().any(|r| r == "someone is speaking"));
+        let named = vec![msg(ContextKind::Voice, "a", "deep seek chan 妳覺得呢")];
+        let a = voice_run(&cfg, &s, &named, true);
+        assert!(a.direct, "{:?}", a.reasons);
+        assert_eq!(a.gate, Gate::Sample(1.0));
+
+        // A question right after she spoke addresses her.
+        let mut s = session_with(&[]);
+        let me = AccountRef {
+            platform: PlatformId::new("t"),
+            id: "her".into(),
+        };
+        s.record_speech("Her", me, "我最喜歡深海了。", None, Utc::now());
+        let follow = vec![msg(ContextKind::Voice, "a", "為什麼?")];
+        s.record_utterance(&follow[0]);
+        let a = voice_run(&cfg, &s, &follow, false);
+        assert!(a.direct, "{:?}", a.reasons);
+        // In text, the same question is not direct.
+        assert!(!run(&cfg, ChannelMode::Ambient, &s, &follow).direct);
+        let mut late = follow[0].clone();
+        late.ts = Utc::now() + chrono::Duration::seconds(30);
+        assert!(!voice_run(&cfg, &s, &[late], false).direct);
     }
 
     #[test]

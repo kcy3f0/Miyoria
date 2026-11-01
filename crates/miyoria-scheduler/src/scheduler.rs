@@ -7,7 +7,7 @@ use chrono::Utc;
 use miyoria_kernel::ModuleContext;
 use miyoria_types::{
     Action, ActionPayload, ActionSink, Event, LaneKey, MessageRef, PlatformSink, PlatformSinks,
-    TurnId,
+    SpeakOutcome, TurnId, VoiceSink,
 };
 use parking_lot::Mutex;
 use tokio::sync::Notify;
@@ -193,22 +193,29 @@ impl Inner {
             self.complete(&action, Err("expired".to_owned()));
             return;
         }
-        let platform = action.payload.platform();
-        let sink = self
-            .ctx
-            .services()
-            .get::<PlatformSinks>()
-            .and_then(|sinks| sinks.get(platform));
-        let Some(sink) = sink else {
-            let error = format!("no sink for platform {platform}");
-            self.complete(&action, Err(error));
-            return;
+        let target = match self.target_for(&action.payload) {
+            Ok(target) => target,
+            Err(error) => {
+                self.complete(&action, Err(error));
+                return;
+            }
+        };
+        // Speech runs as long as playback lasts; give it more room.
+        let timeout = match target {
+            Target::Voice(_) => self.config.speak_timeout(),
+            Target::Platform(_) => self.config.execute_timeout(),
         };
         let cancel = self.ctx.cancellation();
         let result = tokio::select! {
-            r = tokio::time::timeout(self.config.execute_timeout(), run(&*sink, &action.payload)) => {
+            r = tokio::time::timeout(timeout, run(&target, &action)) => {
                 match r {
-                    Ok(Ok(message)) => Ok(message),
+                    Ok(Ok(Outcome { message, interrupted })) => {
+                        if interrupted && let Some(turn) = action.turn {
+                            // The rest of an interrupted turn must not be spoken.
+                            self.drop_queued_turn(&action.lane, turn);
+                        }
+                        Ok(message)
+                    }
                     Ok(Err(e)) => Err(format!("{e:#}")),
                     Err(_) => Err("timed out".to_owned()),
                 }
@@ -216,6 +223,40 @@ impl Inner {
             () = cancel.cancelled() => Err("cancelled".to_owned()),
         };
         self.complete(&action, result);
+    }
+
+    fn drop_queued_turn(&self, lane: &LaneKey, turn: TurnId) {
+        let dropped: Vec<Action> = {
+            let mut lanes = self.lanes.lock();
+            let Some(l) = lanes.get_mut(lane) else {
+                return;
+            };
+            let (drop, keep): (Vec<_>, Vec<_>) =
+                l.queue.drain(..).partition(|q| q.action.turn == Some(turn));
+            l.queue = keep;
+            drop.into_iter().map(|q| q.action).collect()
+        };
+        for action in &dropped {
+            self.complete(action, Err("cancelled".to_owned()));
+        }
+    }
+
+    fn target_for(&self, payload: &ActionPayload) -> Result<Target, String> {
+        if matches!(payload, ActionPayload::Speak { .. }) {
+            return self
+                .ctx
+                .services()
+                .get::<dyn VoiceSink>()
+                .map(Target::Voice)
+                .ok_or_else(|| "no voice sink".to_owned());
+        }
+        let platform = payload.platform();
+        self.ctx
+            .services()
+            .get::<PlatformSinks>()
+            .and_then(|sinks| sinks.get(platform))
+            .map(Target::Platform)
+            .ok_or_else(|| format!("no sink for platform {platform}"))
     }
 
     fn complete(&self, action: &Action, result: Result<Option<MessageRef>, String>) {
@@ -242,15 +283,47 @@ impl Inner {
     }
 }
 
-async fn run(
-    sink: &dyn PlatformSink,
-    payload: &ActionPayload,
-) -> anyhow::Result<Option<MessageRef>> {
-    match payload {
-        ActionPayload::SendMessage { context, message } => {
-            sink.send(context, message.clone()).await.map(Some)
+enum Target {
+    Platform(Arc<dyn PlatformSink>),
+    Voice(Arc<dyn VoiceSink>),
+}
+
+#[derive(Default)]
+struct Outcome {
+    message: Option<MessageRef>,
+    interrupted: bool,
+}
+
+async fn run(target: &Target, action: &Action) -> anyhow::Result<Outcome> {
+    let sent = |message| Outcome {
+        message,
+        interrupted: false,
+    };
+    match (target, &action.payload) {
+        (Target::Platform(sink), ActionPayload::SendMessage { context, message }) => sink
+            .send(context, message.clone())
+            .await
+            .map(|m| sent(Some(m))),
+        (Target::Platform(sink), ActionPayload::React { message, emoji }) => {
+            sink.react(message, emoji).await.map(|()| sent(None))
         }
-        ActionPayload::React { message, emoji } => sink.react(message, emoji).await.map(|()| None),
-        ActionPayload::Typing { context } => sink.typing(context).await.map(|()| None),
+        (Target::Platform(sink), ActionPayload::Typing { context }) => {
+            sink.typing(context).await.map(|()| sent(None))
+        }
+        (
+            Target::Voice(voice),
+            ActionPayload::Speak {
+                context,
+                text,
+                emotion,
+            },
+        ) => voice
+            .speak(context, text, emotion.as_deref(), action.turn)
+            .await
+            .map(|outcome| Outcome {
+                message: None,
+                interrupted: outcome == SpeakOutcome::Interrupted,
+            }),
+        _ => anyhow::bail!("action payload does not match its target"),
     }
 }

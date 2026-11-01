@@ -3,7 +3,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
-use miyoria_types::ContextKey;
+use miyoria_types::{ContextKey, ContextKind};
 use serde::{Deserialize, Serialize};
 
 /// How willing she is to talk in a channel.
@@ -152,6 +152,7 @@ pub struct AgentConfig {
     /// Seed for the decision sampler; random when unset.
     pub seed: Option<u64>,
     pub attention: AttentionConfig,
+    pub voice: VoiceConfig,
 }
 
 impl Default for AgentConfig {
@@ -180,6 +181,7 @@ impl Default for AgentConfig {
             session_idle_ms: 6 * 3600 * 1000,
             seed: None,
             attention: AttentionConfig::default(),
+            voice: VoiceConfig::default(),
         }
     }
 }
@@ -214,10 +216,13 @@ impl AgentConfig {
     }
 
     /// Mode for `context`, falling back to `default_mode`, then `profile_default`.
+    /// Voice contexts fall back to `voice.default_mode` instead.
     pub fn mode_for(&self, context: &ContextKey, profile_default: ChannelMode) -> ChannelMode {
-        lookup(&self.channels, context)
-            .or(self.default_mode)
-            .unwrap_or(profile_default)
+        let configured = lookup(&self.channels, context);
+        if context.kind == ContextKind::Voice {
+            return configured.unwrap_or(self.voice.default_mode);
+        }
+        configured.or(self.default_mode).unwrap_or(profile_default)
     }
 
     /// Activeness for `context`, falling back to `default_activeness`, then
@@ -286,9 +291,67 @@ impl Default for AttentionConfig {
     }
 }
 
+/// `[modules.agent.voice]`: conversation in voice channels. Voice attention is
+/// more conservative than text: she mostly listens and only sometimes chimes in.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct VoiceConfig {
+    /// Quiet time after an utterance before her turn starts (the speaker may
+    /// continue).
+    pub debounce_ms: u64,
+    /// Upper bound on the debounce of one turn. While someone is speaking the
+    /// debounce is extended up to this.
+    pub max_debounce_ms: u64,
+    /// Mode of voice contexts without a `channels` entry or runtime override.
+    pub default_mode: ChannelMode,
+    /// Multiplies the reply probability of ambient voice turns.
+    pub ambient_factor: f32,
+    /// Minimum time between her replies to voice turns that did not address
+    /// her, counted from when she last spoke.
+    pub cooldown_ms: u64,
+    /// Her maximum share of recent voice history for ambient turns.
+    pub max_share_of_recent: f32,
+    /// A question this soon after she spoke counts as addressed to her.
+    pub question_window_ms: u64,
+    /// Ask the `fast` model about gray-zone ambient voice turns (adds latency).
+    pub llm_check: bool,
+    /// Sentences that have not started playing within this time are dropped.
+    pub speak_ttl_ms: u64,
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            debounce_ms: 700,
+            max_debounce_ms: 2500,
+            default_mode: ChannelMode::Ambient,
+            ambient_factor: 0.5,
+            cooldown_ms: 20_000,
+            max_share_of_recent: 0.2,
+            question_window_ms: 8000,
+            llm_check: false,
+            speak_ttl_ms: 30_000,
+        }
+    }
+}
+
+impl VoiceConfig {
+    pub fn debounce(&self) -> Duration {
+        Duration::from_millis(self.debounce_ms)
+    }
+
+    pub fn max_debounce(&self) -> Duration {
+        Duration::from_millis(self.max_debounce_ms.max(self.debounce_ms))
+    }
+
+    pub fn speak_ttl(&self) -> Duration {
+        Duration::from_millis(self.speak_ttl_ms)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use miyoria_types::{ContextKind, PlatformId};
+    use miyoria_types::PlatformId;
 
     use super::*;
 
@@ -320,6 +383,36 @@ mod tests {
         cfg.channels
             .insert("discord:g1:c1".into(), ChannelMode::Ambient);
         assert_eq!(cfg.mode_for(&ctx, ChannelMode::Off), ChannelMode::Ambient);
+    }
+
+    #[test]
+    fn voice_contexts_have_their_own_default_mode() {
+        let voice = ContextKey {
+            platform: PlatformId::new("discord"),
+            scope: Some("g1".into()),
+            channel: "v1".into(),
+            kind: ContextKind::Voice,
+        };
+        let mut cfg = AgentConfig {
+            default_mode: Some(ChannelMode::Always),
+            ..Default::default()
+        };
+        assert_eq!(cfg.mode_for(&voice, ChannelMode::Off), ChannelMode::Ambient);
+        cfg.voice.default_mode = ChannelMode::MentionOnly;
+        assert_eq!(
+            cfg.mode_for(&voice, ChannelMode::Off),
+            ChannelMode::MentionOnly
+        );
+        cfg.channels.insert("v1".into(), ChannelMode::Off);
+        assert_eq!(cfg.mode_for(&voice, ChannelMode::Always), ChannelMode::Off);
+
+        let parsed: AgentConfig = serde_json::from_value(serde_json::json!({
+            "voice": { "debounce_ms": 500, "default_mode": "mention-only" }
+        }))
+        .unwrap();
+        assert_eq!(parsed.voice.debounce_ms, 500);
+        assert_eq!(parsed.voice.max_debounce_ms, 2500);
+        assert_eq!(parsed.voice.default_mode, ChannelMode::MentionOnly);
     }
 
     #[test]

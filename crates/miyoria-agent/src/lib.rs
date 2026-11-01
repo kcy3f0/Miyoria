@@ -1,11 +1,14 @@
 //! Cognition core (module `agent`).
 //!
-//! Turns `platform.*` events into replies: each conversation context keeps a
+//! Turns `platform.*` and `voice.*` events into replies: each conversation
+//! context (text channel, DM or voice channel) keeps a
 //! [`Session`](session::Session), a coordinator debounces messages into turns,
 //! [attention](attention) decides whether to respond, and the reply is
 //! generated through the `chat` LLM purpose (with an optional
 //! [tool loop](tools)), parsed by the [expression parser](expression) and
-//! submitted to the scheduler.
+//! submitted to the scheduler. In voice channels the reply is cut into
+//! [sentences](speech) that are spoken (`Speak` actions) while the model is
+//! still generating.
 
 pub mod attention;
 pub mod config;
@@ -14,6 +17,7 @@ pub mod handle;
 pub mod persona;
 pub mod prompt;
 pub mod session;
+pub mod speech;
 pub mod tools;
 
 mod commands;
@@ -35,14 +39,14 @@ use parking_lot::RwLock;
 use tracing::{info, warn};
 
 pub use attention::{RandomSource, SeededRandom};
-pub use config::{Activeness, AgentConfig, AttentionConfig, ChannelMode};
+pub use config::{Activeness, AgentConfig, AttentionConfig, ChannelMode, VoiceConfig};
 pub use expression::{Expression, ExpressionParser, Segment};
 pub use handle::AgentHandle;
 pub use persona::PersonaHandle;
 pub use tools::{Tool, ToolContext, ToolRegistry};
 
 use commands::AgentCommands;
-use handle::Overrides;
+use handle::{Overrides, VoiceRooms};
 use runtime::Agent;
 use tools::ReactTool;
 
@@ -61,6 +65,7 @@ pub struct AgentModule {
     random: Option<Arc<dyn RandomSource>>,
     tools: Arc<ToolRegistry>,
     overrides: Arc<RwLock<Overrides>>,
+    voice_rooms: Arc<VoiceRooms>,
     commands: Arc<AgentCommands>,
 }
 
@@ -78,6 +83,7 @@ impl AgentModule {
             random: None,
             tools: Arc::new(ToolRegistry::new()),
             overrides: Arc::default(),
+            voice_rooms: Arc::default(),
             commands: Arc::default(),
         }
     }
@@ -117,6 +123,7 @@ impl Module for AgentModule {
             config.clone(),
             self.persona.clone(),
             self.overrides.clone(),
+            self.voice_rooms.clone(),
             store,
         ));
         match tokio::time::timeout(SETTINGS_LOAD_TIMEOUT, handle.load()).await {

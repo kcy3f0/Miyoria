@@ -23,6 +23,27 @@ const SITUATION: &str = "# 目前情境
 const ADDRESSED: &str = "有人直接叫你、回覆你或私訊你,請回應對方。";
 const AMBIENT: &str = "沒有人直接叫你。只有在你真的想插話時才開口,否則只輸出 <silence/>。";
 
+const VOICE_SITUATION: &str = "# 目前情境
+- 現在時間:{time}
+- 地點:{platform} 的語音頻道 {channel},大家正在即時語音聊天
+- 語音頻道裡的人:{present}
+- {addressing}
+
+# 規則
+- 你說的話會直接用語音念出來。只說一到兩句簡短、口語的句子。
+- 不要用 emoji、顏文字、markdown、列點或網址,只寫念得出來的文字。
+- 對話紀錄裡別人說的話格式是「名字(語音): 內容」,是語音辨識的結果,可能有錯字;你自己的話直接寫內容,不要加名字前綴。
+- 標著「(被打斷)」的是你講到一半被打斷的話。
+- 可以用 <emo:名稱> 標記情緒變化。
+- 不需要或不想開口的時候,只輸出 <silence/>。";
+
+const VOICE_ADDRESSED: &str = "有人在叫你或問你問題,請用說的回應對方。";
+const VOICE_AMBIENT: &str =
+    "沒有人直接叫你,大家在聊天。只有在你真的想插一句話時才開口,否則只輸出 <silence/>。";
+
+/// Appended to her speech that was cut off.
+const INTERRUPTED: &str = "(被打斷)";
+
 const CHECK_SYSTEM: &str = "你負責判斷聊天室裡的角色「{name}」現在要不要開口。\
 她不是每句都回;只有在話題跟她有關、有人似乎在等她回應、或她插話會自然有趣時才回。\
 只回傳 JSON:{\"respond\": true 或 false, \"reason\": \"簡短理由\"}";
@@ -33,7 +54,8 @@ const WEEKDAYS: [&str; 7] = ["一", "二", "三", "四", "五", "六", "日"];
 
 pub struct Situation<'a> {
     pub context: &'a ContextKey,
-    /// Display names of people recently active, most recent first.
+    /// Display names of people recently active, most recent first (in a
+    /// voice channel: the people in it).
     pub present: &'a [String],
     pub direct: bool,
 }
@@ -55,6 +77,21 @@ where
     } else {
         s.present.join("、")
     };
+    if s.context.kind == ContextKind::Voice {
+        return VOICE_SITUATION
+            .replace("{time}", &time)
+            .replace("{platform}", s.context.platform.as_str())
+            .replace("{channel}", &s.context.channel)
+            .replace("{present}", &present)
+            .replace(
+                "{addressing}",
+                if s.direct {
+                    VOICE_ADDRESSED
+                } else {
+                    VOICE_AMBIENT
+                },
+            );
+    }
     SITUATION
         .replace("{time}", &time)
         .replace("{platform}", s.context.platform.as_str())
@@ -64,8 +101,8 @@ where
 }
 
 /// `[persona, history..., situation]`. Her messages become `assistant`,
-/// everyone else's `user` as `"{name}: {text}"`; consecutive messages of the
-/// same role are merged.
+/// everyone else's `user` as `"{name}: {text}"` (`"{name}(語音): {text}"` when
+/// spoken); consecutive messages of the same role are merged.
 pub fn build_messages<'a>(
     persona: &str,
     situation: &str,
@@ -75,9 +112,9 @@ pub fn build_messages<'a>(
     let mut tail: Vec<ChatMessage> = Vec::new();
     for entry in history {
         let (role, line) = if entry.is_self {
-            (ChatRole::Assistant, entry.text.clone())
+            (ChatRole::Assistant, own_line(entry))
         } else {
-            (ChatRole::User, format!("{}: {}", entry.author, entry.text))
+            (ChatRole::User, other_line(entry))
         };
         match tail.last_mut() {
             Some(last) if last.role == role => {
@@ -104,9 +141,9 @@ pub fn check_messages<'a>(
         .into_iter()
         .map(|e| {
             if e.is_self {
-                format!("{name}(她自己): {}", e.text)
+                format!("{name}(她自己): {}", own_line(e))
             } else {
-                format!("{}: {}", e.author, e.text)
+                other_line(e)
             }
         })
         .collect();
@@ -118,6 +155,22 @@ pub fn check_messages<'a>(
                 .replace("{name}", name),
         ),
     ]
+}
+
+fn own_line(entry: &HistoryEntry) -> String {
+    if entry.interrupted {
+        format!("{}{INTERRUPTED}", entry.text)
+    } else {
+        entry.text.clone()
+    }
+}
+
+fn other_line(entry: &HistoryEntry) -> String {
+    if entry.spoken {
+        format!("{}(語音): {}", entry.author, entry.text)
+    } else {
+        format!("{}: {}", entry.author, entry.text)
+    }
 }
 
 /// Removes a leading `"{her name}:"` the model may copy from the history format.
@@ -200,6 +253,9 @@ mod tests {
             ts: Utc::now(),
             is_self,
             pending: None,
+            spoken: false,
+            interrupted: false,
+            turn: None,
         }
     }
 
@@ -243,6 +299,56 @@ mod tests {
         assert!(s.contains("Owen、阿明"));
         assert!(s.contains(AMBIENT));
         assert!(s.contains("<silence/>"));
+    }
+
+    #[test]
+    fn marks_spoken_and_interrupted_lines() {
+        let history = [
+            HistoryEntry {
+                spoken: true,
+                ..entry("Owen", "妳在嗎", false)
+            },
+            HistoryEntry {
+                spoken: true,
+                interrupted: true,
+                ..entry("DS", "在啊,幹嘛", true)
+            },
+            entry("阿明", "打字的", false),
+        ];
+        let msgs = build_messages("P", "S", &history);
+        assert_eq!(msgs[1], ChatMessage::user("Owen(語音): 妳在嗎"));
+        assert_eq!(msgs[2], ChatMessage::assistant("在啊,幹嘛(被打斷)"));
+        assert_eq!(msgs[3], ChatMessage::user("阿明: 打字的"));
+        let check = check_messages("DS", &history);
+        assert!(check[1].content.contains("DS(她自己): 在啊,幹嘛(被打斷)"));
+        assert!(check[1].content.contains("Owen(語音): 妳在嗎"));
+    }
+
+    #[test]
+    fn voice_situation_has_speech_rules() {
+        let ctx = ContextKey {
+            platform: PlatformId::new("discord"),
+            scope: Some("g".into()),
+            channel: "lounge".into(),
+            kind: ContextKind::Voice,
+        };
+        let present = vec!["Owen".to_owned(), "阿明".to_owned()];
+        let now = Utc.with_ymd_and_hms(2026, 11, 1, 22, 0, 0).unwrap();
+        let s = situation_prompt(
+            &Situation {
+                context: &ctx,
+                present: &present,
+                direct: true,
+            },
+            now,
+        );
+        assert!(s.contains("語音頻道 lounge"), "{s}");
+        assert!(s.contains("語音頻道裡的人:Owen、阿明"), "{s}");
+        assert!(s.contains("一到兩句"));
+        assert!(s.contains("emoji"));
+        assert!(s.contains("<emo:名稱>"));
+        assert!(s.contains(VOICE_ADDRESSED));
+        assert!(!s.contains(ADDRESSED));
     }
 
     #[test]

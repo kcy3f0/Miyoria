@@ -1,10 +1,11 @@
-//! Runtime control of the agent: per-context channel mode and activeness.
+//! Runtime control of the agent: per-context channel mode and activeness, and
+//! which voice channel she is in.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use miyoria_store::SettingsStore;
-use miyoria_types::{ContextKey, ProfileId};
+use miyoria_types::{ContextKey, PlatformId, ProfileId};
 use parking_lot::RwLock;
 use tracing::warn;
 
@@ -22,6 +23,20 @@ pub(crate) struct Overrides {
     activeness: HashMap<String, Activeness>,
 }
 
+/// The voice context she is in, keyed by [`voice_scope`].
+pub(crate) type VoiceRooms = RwLock<HashMap<(PlatformId, String), ContextKey>>;
+
+/// `(platform, guild)` of a voice context (the channel for calls outside a guild).
+pub(crate) fn voice_scope(context: &ContextKey) -> (PlatformId, String) {
+    (
+        context.platform.clone(),
+        context
+            .scope
+            .clone()
+            .unwrap_or_else(|| context.channel.clone()),
+    )
+}
+
 /// Provided as the service `Arc<AgentHandle>` by the agent module.
 ///
 /// Runtime overrides take precedence over `[modules.agent]` config, which
@@ -32,6 +47,7 @@ pub struct AgentHandle {
     config: AgentConfig,
     persona: PersonaHandle,
     overrides: Arc<RwLock<Overrides>>,
+    voice_rooms: Arc<VoiceRooms>,
     store: Option<Arc<dyn SettingsStore>>,
 }
 
@@ -40,13 +56,35 @@ impl AgentHandle {
         config: AgentConfig,
         persona: PersonaHandle,
         overrides: Arc<RwLock<Overrides>>,
+        voice_rooms: Arc<VoiceRooms>,
         store: Option<Arc<dyn SettingsStore>>,
     ) -> Self {
         Self {
             config,
             persona,
             overrides,
+            voice_rooms,
             store,
+        }
+    }
+
+    /// The voice channel she is currently in on `platform` in guild `scope`
+    /// (as a `ContextKind::Voice` context), if any.
+    pub fn voice_context(&self, platform: &PlatformId, scope: &str) -> Option<ContextKey> {
+        self.voice_rooms
+            .read()
+            .get(&(platform.clone(), scope.to_owned()))
+            .cloned()
+    }
+
+    /// Records that she is (`true`) or no longer is in the voice `context`.
+    pub(crate) fn set_voice_room(&self, context: &ContextKey, joined: bool) {
+        let key = voice_scope(context);
+        let mut rooms = self.voice_rooms.write();
+        if joined {
+            rooms.insert(key, context.clone());
+        } else if rooms.get(&key) == Some(context) {
+            rooms.remove(&key);
         }
     }
 

@@ -1,5 +1,8 @@
-//! Agent commands (`mode`, `activeness`, `persona show`), registered in the
-//! `commands` module's registry when it is available.
+//! Agent commands (`mode`, `activeness`, `persona show`, `voice mode`),
+//! registered in the `commands` module's registry when it is available.
+//!
+//! The voice module registers the other `voice` commands (`join`, `leave`,
+//! `voice consent`).
 
 use std::sync::Arc;
 
@@ -12,8 +15,9 @@ use crate::config::{Activeness, ChannelMode};
 use crate::handle::AgentHandle;
 use crate::persona::PersonaHandle;
 
-pub(crate) const PATHS: [&str; 3] = ["mode", "activeness", "persona show"];
+pub(crate) const PATHS: [&str; 4] = ["mode", "activeness", "persona show", "voice mode"];
 const NOT_SAVED: &str = "\n(不過沒存起來……重開之後我就會忘記喔。)";
+const NOT_IN_VOICE: &str = "我現在又沒有在這個伺服器的語音頻道裡……先叫我進語音啦。";
 
 /// Remembers which registry the commands went into, so they can be removed
 /// on stop and re-registered when the `commands` module restarts.
@@ -44,8 +48,15 @@ impl AgentCommands {
         if let Some(old) = installed.take() {
             unregister(&old);
         }
-        match register(&registry, handle, persona) {
-            Ok(()) => *installed = Some(registry),
+        match register(&registry, handle.clone(), persona) {
+            Ok(()) => {
+                // Shares the `voice` group with the voice module; a conflict
+                // there must not cost the other commands.
+                if let Err(e) = register_voice(&registry, handle) {
+                    warn!(error = %format!("{e:#}"), "could not register `voice mode`");
+                }
+                *installed = Some(registry);
+            }
             Err(e) => {
                 warn!(error = %format!("{e:#}"), "could not register agent commands");
                 unregister(&registry);
@@ -126,6 +137,34 @@ fn register(
     Ok(())
 }
 
+fn register_voice(registry: &CommandRegistry, handle: Arc<AgentHandle>) -> anyhow::Result<()> {
+    if registry.group_description(&["voice".to_owned()]).is_none() {
+        registry.set_group_description("voice", "語音");
+    }
+    registry.register(
+        CommandSpec::new("voice mode", "查看或設定我在這個伺服器語音頻道裡的聊天模式")
+            .arg(
+                ArgSpec::new(
+                    "mode",
+                    "off / mention-only / ambient / always / reset(恢復預設)",
+                    ArgKind::Choice(choices(&[
+                        "off",
+                        "mention-only",
+                        "ambient",
+                        "always",
+                        "reset",
+                    ])),
+                )
+                .optional(),
+            )
+            .permission("admin.voice.mode"),
+        move |inv: Invocation| {
+            let h = handle.clone();
+            async move { Ok(voice_mode(&h, &inv).await) }
+        },
+    )
+}
+
 fn choices(values: &[&str]) -> Vec<String> {
     values.iter().map(|v| (*v).to_owned()).collect()
 }
@@ -174,6 +213,60 @@ async fn mode(handle: &AgentHandle, inv: &Invocation) -> CommandReply {
                     ChannelMode::Off => "……好啦,我在這裡閉嘴就是了。哼。".to_owned(),
                     _ => format!(
                         "知道了,這裡改成 `{mode}`({})。才不是因為你叫我才改的喔。",
+                        mode_label(mode)
+                    ),
+                };
+                with_save_note(line, saved)
+            }
+            Err(_) => format!("`{value}` 是什麼模式啦?"),
+        },
+    };
+    CommandReply::public(reply)
+}
+
+/// `voice mode`: the mode of the voice channel she is in, in the guild the
+/// command was sent from.
+async fn voice_mode(handle: &AgentHandle, inv: &Invocation) -> CommandReply {
+    let Some(ctx) = inv
+        .context
+        .scope
+        .as_deref()
+        .and_then(|guild| handle.voice_context(&inv.context.platform, guild))
+    else {
+        return CommandReply::ephemeral(NOT_IN_VOICE);
+    };
+    let ctx = &ctx;
+    let reply = match inv.str("mode") {
+        None => {
+            let current = handle.channel_mode(ctx);
+            let source = if handle.channel_mode_override(ctx).is_some() {
+                "有人特別設定的"
+            } else {
+                "預設"
+            };
+            format!(
+                "我在語音裡現在是 `{current}`({}),{source}。",
+                mode_label(current)
+            )
+        }
+        Some("reset") => {
+            let saved = handle.set_channel_mode(ctx, None).await;
+            let current = handle.channel_mode(ctx);
+            with_save_note(
+                format!(
+                    "好啦,語音恢復成預設的 `{current}`({})了。",
+                    mode_label(current)
+                ),
+                saved,
+            )
+        }
+        Some(value) => match value.parse::<ChannelMode>() {
+            Ok(mode) => {
+                let saved = handle.set_channel_mode(ctx, Some(mode)).await;
+                let line = match mode {
+                    ChannelMode::Off => "……好啦,我在語音裡只聽不說就是了。哼。".to_owned(),
+                    _ => format!(
+                        "知道了,語音裡改成 `{mode}`({})。才不是因為你叫我才改的喔。",
                         mode_label(mode)
                     ),
                 };

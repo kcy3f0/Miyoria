@@ -56,9 +56,16 @@ pub struct ContextKey {
 
 impl fmt::Display for ContextKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Voice contexts get their own key: on Discord a voice channel's text
+        // chat has the same channel id as the voice channel itself.
+        let voice = if self.kind == ContextKind::Voice {
+            "voice:"
+        } else {
+            ""
+        };
         match &self.scope {
-            Some(scope) => write!(f, "{}:{}:{}", self.platform, scope, self.channel),
-            None => write!(f, "{}:dm:{}", self.platform, self.channel),
+            Some(scope) => write!(f, "{}:{}:{voice}{}", self.platform, scope, self.channel),
+            None => write!(f, "{}:dm:{voice}{}", self.platform, self.channel),
         }
     }
 }

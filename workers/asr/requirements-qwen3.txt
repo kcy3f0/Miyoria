@@ -1,0 +1,8 @@
+# Qwen3-ASR via the `qwen-asr` package. Install the CUDA build of torch FIRST, otherwise pip
+# on Windows pulls the CPU-only wheel:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+# Optional (Linux / WSL2 / Docker only):
+#   pip install -U "qwen-asr[vllm]"                    # ASR_QWEN_BACKEND=vllm
+#   pip install -U flash-attn --no-build-isolation     # ASR_ATTN=flash_attention_2
+-r requirements.txt
+qwen-asr

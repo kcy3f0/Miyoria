@@ -30,6 +30,8 @@ pub struct SchedulerConfig {
     pub lane_idle_ms: u64,
     /// A single action that takes longer than this fails with `timed out`.
     pub execute_timeout_ms: u64,
+    /// Timeout for `Speak` actions, which last as long as the playback.
+    pub speak_timeout_ms: u64,
 }
 
 impl Default for SchedulerConfig {
@@ -37,6 +39,7 @@ impl Default for SchedulerConfig {
         Self {
             lane_idle_ms: 60_000,
             execute_timeout_ms: 30_000,
+            speak_timeout_ms: 120_000,
         }
     }
 }
@@ -48,6 +51,10 @@ impl SchedulerConfig {
 
     pub fn execute_timeout(&self) -> Duration {
         Duration::from_millis(self.execute_timeout_ms)
+    }
+
+    pub fn speak_timeout(&self) -> Duration {
+        Duration::from_millis(self.speak_timeout_ms)
     }
 }
 

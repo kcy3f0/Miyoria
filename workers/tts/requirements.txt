@@ -1,0 +1,11 @@
+# Qwen3-TTS worker. Install the CUDA build of torch FIRST, otherwise pip on Windows pulls the
+# CPU-only wheel:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+# Optional (Linux / WSL2 / Docker only):
+#   pip install -U flash-attn --no-build-isolation
+fastapi>=0.115
+uvicorn[standard]>=0.30
+numpy>=1.26
+soundfile>=0.12           # design_voice.py writes WAVs
+scipy>=1.11               # only used if the model's sample rate ever differs from the header
+qwen-tts

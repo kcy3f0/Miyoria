@@ -77,15 +77,12 @@ pub fn run(config_path: &Path) -> anyhow::Result<()> {
             env = upsert_env(&env, key, value);
         }
     }
-    if !env.contains("MIYORIA_API_TOKEN=")
-        || env.contains(
-            "MIYORIA_API_TOKEN=
-",
-        )
-    {
-        // Two ULIDs = 160 random bits; only used to authenticate the local CLI / panel.
-        let token = format!("{}{}", ulid::Ulid::new(), ulid::Ulid::new()).to_lowercase();
-        env = upsert_env(&env, "MIYORIA_API_TOKEN", &token);
+    for key in ["MIYORIA_API_TOKEN", "VOICE_LINK_TOKEN"] {
+        if env_value(&env, key).is_none_or(str::is_empty) {
+            // Two ULIDs = 160 random bits; only authenticates local nodes / CLI.
+            let token = format!("{}{}", ulid::Ulid::new(), ulid::Ulid::new()).to_lowercase();
+            env = upsert_env(&env, key, &token);
+        }
     }
     fs::write(&env_path, env).with_context(|| format!("writing {}", env_path.display()))?;
     println!("✓ 已寫入 {}(不會進 git)", env_path.display());
@@ -111,6 +108,14 @@ fn secret(prompt: &str) -> anyhow::Result<String> {
         .without_confirmation()
         .with_display_mode(PasswordDisplayMode::Masked)
         .prompt()?)
+}
+
+/// Value of `key` in dotenv text, if the key is present.
+fn env_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    let prefix = format!("{key}=");
+    text.lines()
+        .find_map(|line| line.trim_start().strip_prefix(&prefix))
+        .map(str::trim)
 }
 
 /// Sets `key=value` in dotenv text, replacing an existing line.

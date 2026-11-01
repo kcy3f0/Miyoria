@@ -1,13 +1,14 @@
 //! One turn: attention decision, prompt assembly, generation (with the tool
-//! loop) and output.
+//! loop) and output. Text replies are sent once complete; voice replies are
+//! spoken sentence by sentence while the model is still generating.
 
+use std::borrow::Cow;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use chrono::{Local, Utc};
 use futures::StreamExt;
-use miyoria_llm::{ChatMessage, ChatRequest, LlmRouter, StreamEvent, ToolCall};
+use miyoria_llm::{ChatMessage, ChatRequest, LlmRouter, StreamEvent, ToolCall, ToolSpec};
 use miyoria_types::{
     AccountRef, Action, ActionPayload, ActionSink, Authorizer, ContextKey, ContextKind,
     DecisionTrace, Event, IncomingMessage, LaneKey, OutgoingMessage, Priority, TurnId,
@@ -16,12 +17,16 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
-use crate::attention::{self, AttentionInput, Gate};
+use crate::attention::{self, AttentionInput, Gate, VoiceAttention};
+use crate::config::AttentionConfig;
+use crate::coordinator::TurnFlags;
 use crate::expression::{Expression, ExpressionParser, Segment};
+use crate::handle::voice_scope;
 use crate::prompt::{self, Situation};
 use crate::runtime::Agent;
 use crate::session::Session;
-use crate::tools::ToolContext;
+use crate::speech::{self, SentenceSplitter};
+use crate::tools::{ReactTool, Tool, ToolContext};
 
 const TYPING_TTL: Duration = Duration::from_secs(10);
 /// History lines shown to the `fast` model.
@@ -33,7 +38,7 @@ pub(crate) async fn run(
     session: Arc<Mutex<Session>>,
     turn: TurnId,
     inputs: Vec<IncomingMessage>,
-    submitted: Arc<AtomicBool>,
+    flags: Arc<TurnFlags>,
 ) {
     let t = Turn {
         agent: &agent,
@@ -41,8 +46,9 @@ pub(crate) async fn run(
         session: &session,
         turn,
         inputs: &inputs,
+        voice: key.kind == ContextKind::Voice,
     };
-    let text = match t.respond(&submitted).await {
+    let text = match t.respond(&flags).await {
         Ok(text) => text,
         Err(e) => {
             warn!(%turn, context = %key, error = %format!("{e:#}"), "turn failed");
@@ -65,6 +71,8 @@ struct Turn<'a> {
     session: &'a Arc<Mutex<Session>>,
     turn: TurnId,
     inputs: &'a [IncomingMessage],
+    /// A voice channel: the reply is spoken.
+    voice: bool,
 }
 
 /// One model response of the generation loop.
@@ -75,6 +83,84 @@ struct Step {
     calls: Vec<ToolCall>,
 }
 
+/// Streams a voice reply: every completed sentence is submitted as a `Speak`
+/// action right away, so the first one plays while the rest is generated.
+struct Speech<'a> {
+    sink: &'a dyn ActionSink,
+    flags: &'a TurnFlags,
+    names: &'a [String],
+    context: &'a ContextKey,
+    turn: TurnId,
+    lane: LaneKey,
+    priority: Priority,
+    ttl: Duration,
+    splitter: SentenceSplitter,
+    /// Latest `<emo:...>`; sent with each sentence.
+    emotion: Option<String>,
+    /// Everything submitted so far.
+    spoken: String,
+}
+
+impl Speech<'_> {
+    /// Her speech was interrupted: nothing more is said.
+    fn stopped(&self) -> bool {
+        TurnFlags::get(&self.flags.interrupted)
+    }
+
+    async fn text(&mut self, text: &str) -> anyhow::Result<()> {
+        for sentence in self.splitter.push(text) {
+            self.say(&sentence).await?;
+        }
+        Ok(())
+    }
+
+    /// A new emotion applies from the next sentence on: a finished sentence
+    /// that was still held is said with the previous one first.
+    async fn emotion(&mut self, emotion: &str) -> anyhow::Result<()> {
+        if let Some(done) = self.splitter.flush_complete() {
+            self.say(&done).await?;
+        }
+        self.emotion = Some(emotion.to_owned());
+        Ok(())
+    }
+
+    /// Says the unfinished rest (end of a response, or a pause).
+    async fn flush(&mut self) -> anyhow::Result<()> {
+        match self.splitter.flush() {
+            Some(rest) => self.say(&rest).await,
+            None => Ok(()),
+        }
+    }
+
+    async fn say(&mut self, sentence: &str) -> anyhow::Result<()> {
+        if self.stopped() {
+            return Ok(());
+        }
+        let text = prompt::clean_reply(sentence, self.names);
+        if !speech::is_speakable(&text) {
+            return Ok(());
+        }
+        let action = Action::new(
+            self.lane.clone(),
+            self.priority,
+            ActionPayload::Speak {
+                context: self.context.clone(),
+                text: text.clone(),
+                emotion: self.emotion.clone(),
+            },
+        )
+        .with_ttl(self.ttl)
+        .with_turn(self.turn);
+        self.sink
+            .submit(action)
+            .await
+            .map_err(|e| e.context("submitting speech"))?;
+        TurnFlags::set(&self.flags.queued);
+        self.spoken.push_str(&text);
+        Ok(())
+    }
+}
+
 #[derive(Deserialize)]
 struct CheckReply {
     respond: bool,
@@ -83,13 +169,22 @@ struct CheckReply {
 }
 
 impl Turn<'_> {
-    /// Returns the text she sent (empty if she stayed quiet).
-    async fn respond(&self, submitted: &AtomicBool) -> anyhow::Result<String> {
+    /// Returns the text she sent or said (empty if she stayed quiet).
+    async fn respond(&self, flags: &TurnFlags) -> anyhow::Result<String> {
         let names = self.agent.persona.names();
         let Some(direct) = self.decide(&names).await else {
             return Ok(String::new());
         };
-        self.generate(direct, &names, submitted).await
+        self.generate(direct, &names, flags).await
+    }
+
+    /// Multiplier for ambient reply probabilities.
+    fn ambient_factor(&self) -> f32 {
+        if self.voice {
+            self.agent.config.voice.ambient_factor
+        } else {
+            1.0
+        }
     }
 
     /// Runs attention; `Some(direct)` if she should respond.
@@ -103,28 +198,48 @@ impl Turn<'_> {
         });
         let mode = self.agent.handle.channel_mode(self.key);
         let activeness = self.agent.handle.activeness(self.key);
+        let voice = &cfg.voice;
+        let (attention_cfg, max_share) = if self.voice {
+            let cfg = AttentionConfig {
+                cooldown_ms: voice.cooldown_ms,
+                llm_check: voice.llm_check,
+                ..cfg.attention.clone()
+            };
+            (Cow::Owned(cfg), voice.max_share_of_recent)
+        } else {
+            (
+                Cow::Borrowed(&cfg.attention),
+                cfg.attention.max_share_of_recent.unwrap_or(profile_share),
+            )
+        };
         let assessment = {
             let session = self.session.lock();
             attention::assess(&AttentionInput {
-                config: &cfg.attention,
+                config: &attention_cfg,
                 mode,
                 activeness,
                 names,
                 interests: &interests,
-                max_share: cfg.attention.max_share_of_recent.unwrap_or(profile_share),
+                max_share,
                 session: &session,
                 inputs: self.inputs,
                 now: Utc::now(),
+                voice: self.voice.then(|| VoiceAttention {
+                    someone_speaking: session.someone_speaking(),
+                    ambient_factor: voice.ambient_factor,
+                    question_window_ms: i64::try_from(voice.question_window_ms).unwrap_or(i64::MAX),
+                }),
             })
         };
         let mut reasons = assessment.reasons;
+        let ambient = |p: f32| activeness.scale(p * self.ambient_factor());
         let probability = match assessment.gate {
             Gate::Ignore => 0.0,
             Gate::Sample(p) => p,
             Gate::AskLlm => match self.llm_check().await {
                 Ok(reply) if reply.respond => {
                     reasons.push(format!("fast model: respond ({})", reply.reason));
-                    activeness.scale(cfg.attention.llm_yes_probability)
+                    ambient(cfg.attention.llm_yes_probability)
                 }
                 Ok(reply) => {
                     reasons.push(format!("fast model: stay quiet ({})", reply.reason));
@@ -132,7 +247,7 @@ impl Turn<'_> {
                 }
                 Err(e) => {
                     reasons.push(format!("fast model check failed: {e:#}"));
-                    activeness.scale(assessment.score)
+                    ambient(assessment.score)
                 }
             },
         };
@@ -179,7 +294,7 @@ impl Turn<'_> {
         &self,
         direct: bool,
         names: &[String],
-        submitted: &AtomicBool,
+        flags: &TurnFlags,
     ) -> anyhow::Result<String> {
         let cfg = &self.agent.config;
         let services = self.agent.ctx.services();
@@ -189,12 +304,17 @@ impl Turn<'_> {
         let persona = self.agent.persona.persona_prompt();
         let messages = {
             let session = self.session.lock();
-            let present: Vec<String> = session
-                .participants()
-                .iter()
-                .take(10)
-                .map(|p| p.display_name.clone())
-                .collect();
+            let members = session.voice_members();
+            let present: Vec<String> = if self.voice && !members.is_empty() {
+                members.iter().map(|m| m.display_name.clone()).collect()
+            } else {
+                session
+                    .participants()
+                    .iter()
+                    .take(10)
+                    .map(|p| p.display_name.clone())
+                    .collect()
+            };
             let situation = prompt::situation_prompt(
                 &Situation {
                     context: self.key,
@@ -211,13 +331,38 @@ impl Turn<'_> {
         } else {
             Priority::Initiative
         };
+        if self.voice {
+            let (platform, scope) = voice_scope(self.key);
+            let mut speech = Some(Speech {
+                sink: &*sink,
+                flags,
+                names,
+                context: self.key,
+                turn: self.turn,
+                lane: LaneKey::voice(platform.as_str(), &scope),
+                priority,
+                ttl: cfg.voice.speak_ttl(),
+                splitter: SentenceSplitter::new(),
+                emotion: None,
+                spoken: String::new(),
+            });
+            self.produce(&router, messages, priority, &mut speech)
+                .await?;
+            let spoken = speech.map(|s| s.spoken).unwrap_or_default();
+            if spoken.is_empty() {
+                debug!(turn = %self.turn, "she stayed quiet");
+            }
+            return Ok(spoken);
+        }
+
         let lane = LaneKey::text(self.key);
+        let mut no_speech = None;
         // Typing is refreshed until the reply is ready; dropping the turn
         // (cancellation) stops it too.
         let expression = tokio::select! {
             biased;
             () = self.keep_typing(&*sink, &lane, priority) => unreachable!("typing never ends"),
-            expression = self.produce(&router, messages, priority) => expression?,
+            expression = self.produce(&router, messages, priority, &mut no_speech) => expression?,
         };
         if expression.is_silent() {
             debug!(turn = %self.turn, "she chose silence");
@@ -233,7 +378,7 @@ impl Turn<'_> {
             .flatten();
         let display_name = self.agent.persona.display_name();
         let me = self.agent.self_account(&self.key.platform);
-        submitted.store(true, Ordering::SeqCst);
+        TurnFlags::set(&flags.committed);
         for (i, chunk) in prompt::split_message(&text, cfg.max_message_chars)
             .into_iter()
             .enumerate()
@@ -291,19 +436,21 @@ impl Turn<'_> {
     ///
     /// Text written alongside tool calls is kept in the conversation sent back
     /// to the model but only used as the reply if the final response has none,
-    /// so it is never sent twice.
+    /// so it is never sent twice. With `speech` (voice), all text is spoken as
+    /// it streams in, including text written alongside tool calls.
     async fn produce(
         &self,
         router: &LlmRouter,
         mut messages: Vec<ChatMessage>,
         priority: Priority,
+        speech: &mut Option<Speech<'_>>,
     ) -> anyhow::Result<Expression> {
         let cfg = &self.agent.config;
         let tools_enabled = cfg.tools_enabled && !self.inputs.is_empty();
         let mut earlier: Option<Expression> = None;
         for step in 0..=cfg.max_tool_steps {
             let tools = if tools_enabled {
-                self.agent.tools.specs()
+                self.tool_specs()
             } else {
                 Vec::new()
             };
@@ -319,7 +466,11 @@ impl Turn<'_> {
                 expression,
                 raw,
                 calls,
-            } = self.stream_step(router, request).await?;
+            } = self.stream_step(router, request, speech).await?;
+            if speech.as_ref().is_some_and(Speech::stopped) {
+                debug!(turn = %self.turn, "speech interrupted, generation stopped");
+                return Ok(expression);
+            }
             if calls.is_empty() || !offered || step == cfg.max_tool_steps {
                 if !calls.is_empty() {
                     warn!(turn = %self.turn, offered, "ignoring tool calls (disabled or step limit reached)");
@@ -344,8 +495,14 @@ impl Turn<'_> {
         Ok(earlier.unwrap_or_default())
     }
 
-    /// Streams one model response, publishing emotions as they arrive.
-    async fn stream_step(&self, router: &LlmRouter, request: ChatRequest) -> anyhow::Result<Step> {
+    /// Streams one model response, publishing emotions as they arrive (and
+    /// speaking its sentences, with `speech`).
+    async fn stream_step(
+        &self,
+        router: &LlmRouter,
+        request: ChatRequest,
+        speech: &mut Option<Speech<'_>>,
+    ) -> anyhow::Result<Step> {
         let offered_tools = !request.tools.is_empty();
         let mut stream = router.stream("chat", request).await?;
         let mut parser = ExpressionParser::new();
@@ -357,10 +514,13 @@ impl Turn<'_> {
                 StreamEvent::TextDelta(text) => {
                     raw.push_str(&text);
                     for segment in parser.push(&text) {
-                        self.apply(&mut expression, segment);
+                        self.take(&mut expression, segment, speech).await?;
                     }
                     // With tools on offer, calls may still follow the silence.
                     if expression.silence && !offered_tools {
+                        break;
+                    }
+                    if speech.as_ref().is_some_and(Speech::stopped) {
                         break;
                     }
                 }
@@ -395,7 +555,10 @@ impl Turn<'_> {
         }
         drop(stream);
         for segment in parser.finish() {
-            self.apply(&mut expression, segment);
+            self.take(&mut expression, segment, speech).await?;
+        }
+        if let Some(speech) = speech {
+            speech.flush().await?;
         }
         calls.retain(|c| !c.name.is_empty());
         for (i, call) in calls.iter_mut().enumerate() {
@@ -443,8 +606,25 @@ impl Turn<'_> {
         result
     }
 
+    /// The tools offered in this context (`react` makes no sense in voice).
+    fn offers(&self, name: &str) -> bool {
+        !(self.voice && name == ReactTool::NAME)
+    }
+
+    fn tool_specs(&self) -> Vec<ToolSpec> {
+        let mut specs = self.agent.tools.specs();
+        specs.retain(|t| self.offers(&t.name));
+        specs
+    }
+
+    fn tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.offers(name)
+            .then(|| self.agent.tools.get(name))
+            .flatten()
+    }
+
     async fn try_tool(&self, call: &ToolCall, priority: Priority) -> (bool, String) {
-        let Some(tool) = self.agent.tools.get(&call.name) else {
+        let Some(tool) = self.tool(&call.name) else {
             return (false, format!("error: unknown tool `{}`", call.name));
         };
         if let Some(node) = tool.permission() {
@@ -481,6 +661,34 @@ impl Turn<'_> {
             Ok(Err(e)) => (false, format!("error: {e:#}")),
             Err(_) => (false, "error: timed out".into()),
         }
+    }
+
+    /// Folds a segment into `expression`; with `speech`, also speaks text and
+    /// tracks the emotion for the next sentence (nothing after a silence).
+    async fn take(
+        &self,
+        expression: &mut Expression,
+        segment: Segment,
+        speech: &mut Option<Speech<'_>>,
+    ) -> anyhow::Result<()> {
+        let silent = expression.silence;
+        let out = speech.as_mut().filter(|_| !silent);
+        let Some(out) = out else {
+            self.apply(expression, segment);
+            return Ok(());
+        };
+        match &segment {
+            Segment::Text(text) => {
+                let text = text.clone();
+                self.apply(expression, segment);
+                return out.text(&text).await;
+            }
+            Segment::Emotion(emotion) => out.emotion(emotion).await?,
+            Segment::Pause(_) => out.flush().await?,
+            Segment::Silence => {}
+        }
+        self.apply(expression, segment);
+        Ok(())
     }
 
     fn apply(&self, expression: &mut Expression, segment: Segment) {

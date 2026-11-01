@@ -22,4 +22,11 @@ cargo run -- chat      # 在終端機跟她聊天
 cargo run -- core      # 啟動 Discord bot
 ```
 
-> 目前狀態:Phase 1(文字聊天 MVP)進行中。
+### 語音(Phase 2)
+
+1. 啟動 ASR / TTS worker:見 [workers/README.md](workers/README.md)(沒有 GPU 可以先用 `workers/fake`)
+2. `cargo run -- core`
+3. 在直播機啟動 self 帳號語音節點:見 [apps/voice-node/README.md](apps/voice-node/README.md)(`VOICE_LINK_TOKEN` 要跟 core 的 `.env` 一樣)
+4. 在 Discord 打 `/join`
+
+> 目前狀態:Phase 1(文字)、Phase 2(語音)已完成,尚未用真的 Discord 與模型實測。

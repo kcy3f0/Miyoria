@@ -30,6 +30,8 @@ use crate::{
     ToolContext, ToolRegistry,
 };
 
+mod voice;
+
 #[derive(Default)]
 struct FakeSink {
     actions: Mutex<Vec<Action>>,

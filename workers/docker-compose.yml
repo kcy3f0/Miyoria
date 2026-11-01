@@ -1,0 +1,62 @@
+# Miyoria inference workers.   cd workers && docker compose up --build
+#   asr -> http://127.0.0.1:8001   tts -> http://127.0.0.1:8002   (loopback only)
+# Needs Docker Desktop (WSL2 backend) + NVIDIA driver; GPU is shared by both services.
+#
+# Choose the ASR backend with env (or a .env file next to this file):
+#   ASR_BACKEND=sensevoice (default)  model dir under ./models  (see README)
+#   ASR_BACKEND=qwen3                 downloads Qwen/Qwen3-ASR-<ASR_QWEN_SIZE> into the hf-cache volume
+name: miyoria-workers
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["0"]
+            capabilities: [gpu]
+
+services:
+  asr:
+    <<: *gpu
+    build:
+      context: ./asr
+      args:
+        BACKEND: ${ASR_BACKEND:-sensevoice}
+        FLASH_ATTN: ${ASR_FLASH_ATTN:-0}
+    image: miyoria-asr:${ASR_BACKEND:-sensevoice}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8001"
+    environment:
+      ASR_BACKEND: ${ASR_BACKEND:-sensevoice}
+      ASR_MODEL: ${ASR_MODEL:-/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17}
+      ASR_QWEN_SIZE: ${ASR_QWEN_SIZE:-0.6B}
+      ASR_QWEN_BACKEND: ${ASR_QWEN_BACKEND:-transformers}
+      ASR_THREADS: ${ASR_THREADS:-4}
+    volumes:
+      - ./models:/models:ro
+      - hf-cache:/home/worker/.cache/huggingface
+
+  tts:
+    <<: *gpu
+    build:
+      context: ./tts
+      args:
+        FLASH_ATTN: ${TTS_FLASH_ATTN:-0}
+        BASE: ${TTS_BASE_IMAGE:-nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04}
+    image: miyoria-tts
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8002:8002"
+    environment:
+      TTS_MODEL: ${TTS_MODEL:-Qwen/Qwen3-TTS-12Hz-1.7B-Base}
+      TTS_DEFAULT_VOICE: ${TTS_DEFAULT_VOICE:-deepseek-chan}
+      VOICES_DIR: /voices
+    volumes:
+      - ./voices:/voices            # <name>/ref.wav + ref.txt; design_voice.py also writes <id>-candidates/ here
+      - ../profiles:/profiles:ro    # design_voice.py reads profiles/<id>/voice.toml
+      - hf-cache:/home/worker/.cache/huggingface
+
+volumes:
+  hf-cache:

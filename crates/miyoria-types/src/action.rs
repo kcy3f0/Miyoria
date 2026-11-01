@@ -67,14 +67,21 @@ pub enum ActionPayload {
     Typing {
         context: ContextKey,
     },
+    /// Say `text` in a voice channel (executed through `VoiceSink`). Use a
+    /// `LaneKey::voice` lane so her speech is serialized.
+    Speak {
+        context: ContextKey,
+        text: String,
+        emotion: Option<String>,
+    },
 }
 
 impl ActionPayload {
     pub fn platform(&self) -> &str {
         match self {
-            Self::SendMessage { context, .. } | Self::Typing { context } => {
-                context.platform.as_str()
-            }
+            Self::SendMessage { context, .. }
+            | Self::Typing { context }
+            | Self::Speak { context, .. } => context.platform.as_str(),
             Self::React { message, .. } => message.context.platform.as_str(),
         }
     }

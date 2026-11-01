@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{ActionId, EventId, ModuleId, TurnId};
 use crate::platform::{AccountRef, ContextKey, IncomingMessage, MessageRef, PlatformId};
+use crate::voice::{PlaybackState, VoiceParticipant, VoiceUtterance};
 
 /// Every event on the bus is wrapped in an envelope.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -90,6 +91,34 @@ pub enum Event {
         #[serde(default)]
         message: Option<MessageRef>,
     },
+    /// She joined a voice channel (`context.kind == Voice`).
+    VoiceJoined {
+        context: ContextKey,
+        participants: Vec<VoiceParticipant>,
+    },
+    VoiceLeft {
+        context: ContextKey,
+        reason: Option<String>,
+    },
+    /// Who is in the voice channel changed.
+    VoiceParticipants {
+        context: ContextKey,
+        participants: Vec<VoiceParticipant>,
+    },
+    /// Someone started or stopped speaking (raw signal, before ASR).
+    VoiceSpeaking {
+        context: ContextKey,
+        account: AccountRef,
+        speaking: bool,
+    },
+    VoiceUtterance(VoiceUtterance),
+    /// Her own speech playback.
+    VoicePlayback {
+        context: ContextKey,
+        turn: Option<TurnId>,
+        state: PlaybackState,
+        text: String,
+    },
     ModuleStateChanged {
         module: ModuleId,
         state: ModuleStateKind,
@@ -113,6 +142,12 @@ impl Event {
             Self::AgentDecision(_) => "agent.decision",
             Self::AgentTurnCompleted { .. } => "agent.turn.completed",
             Self::ActionCompleted { .. } => "action.completed",
+            Self::VoiceJoined { .. } => "voice.joined",
+            Self::VoiceLeft { .. } => "voice.left",
+            Self::VoiceParticipants { .. } => "voice.participants",
+            Self::VoiceSpeaking { .. } => "voice.speaking",
+            Self::VoiceUtterance(_) => "voice.utterance",
+            Self::VoicePlayback { .. } => "voice.playback",
             Self::ModuleStateChanged { .. } => "system.module.state",
             Self::Custom { topic, .. } => topic,
         }

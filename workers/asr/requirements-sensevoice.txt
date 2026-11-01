@@ -1,0 +1,3 @@
+# SenseVoice-Small via sherpa-onnx (CPU, ONNX Runtime). No PyTorch needed.
+-r requirements.txt
+sherpa-onnx>=1.12
