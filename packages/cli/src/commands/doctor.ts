@@ -2,8 +2,7 @@
 
 import { dirname } from "node:path";
 import { databaseUrl, loadProfile, resolveDatabaseUrl } from "@miyoria/core/light";
-import { Config, errorMessage } from "@miyoria/kernel";
-
+import { Config, configureLogging, errorMessage } from "@miyoria/kernel";
 import { green, println, red } from "../ui.js";
 
 /** Discord application flags for the message content intent. */
@@ -15,6 +14,8 @@ export class DoctorError extends Error {
 }
 
 export async function run(configPath: string): Promise<void> {
+  // The checks print their own lines; module logs would only interleave with them.
+  if (!process.env.MIYORIA_LOG_LEVEL) configureLogging({ level: "warn" });
   let failures = 0;
   const report = (ok: boolean, what: string, detail: string) => {
     if (!ok) failures++;
