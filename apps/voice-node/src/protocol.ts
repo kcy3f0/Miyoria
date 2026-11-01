@@ -26,7 +26,29 @@ export type CoreMessage =
   | { type: "play_start"; play: number; guild: string; sample_rate: number }
   | { type: "play_end"; play: number }
   | { type: "play_stop"; play: number; fade_ms: number }
+  | GoLiveStartMessage
+  | { type: "golive_stop"; guild: string }
   | { type: "ping" };
+
+export type GoLiveEncoderChoice = "auto" | "nvenc" | "software";
+
+export interface GoLiveStartMessage {
+  type: "golive_start";
+  guild: string;
+  channel?: string;
+  source: string;
+  width?: number;
+  height?: number;
+  fps?: number;
+  bitrate_kbps?: number;
+  encoder?: GoLiveEncoderChoice;
+  /** Send the source's audio track (default true). */
+  audio?: boolean;
+  /** Have the node's ffmpeg wait for the source to connect (default: true for rtmp://, SRT without `mode=`). */
+  listen?: boolean;
+}
+
+export type GoLiveWireState = "starting" | "live" | "stopped" | "failed";
 
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string; ignorable: boolean };
 
@@ -131,9 +153,61 @@ export function parseCoreMessage(text: string): ParseResult<CoreMessage> {
       }
       return { ok: true, value: { type, play, fade_ms: fadeMs } };
     }
+    case "golive_start":
+      return parseGoLiveStart(raw);
+    case "golive_stop": {
+      const guild = reqId(raw, "guild");
+      if (!guild) return fail("golive_stop: `guild` must be a non-empty string");
+      return { ok: true, value: { type, guild } };
+    }
     default:
       return fail(`unknown message type \`${type}\``, true);
   }
+}
+
+export const MAX_SOURCE_LEN = 2048;
+
+function optInt(o: Record<string, unknown>, key: string): { ok: true; v: number | undefined } | { ok: false } {
+  const v = o[key];
+  if (v === undefined || v === null) return { ok: true, v: undefined };
+  return typeof v === "number" && Number.isInteger(v) && v > 0 && v <= U32_MAX ? { ok: true, v } : { ok: false };
+}
+
+function optBool(o: Record<string, unknown>, key: string): { ok: true; v: boolean | undefined } | { ok: false } {
+  const v = o[key];
+  if (v === undefined || v === null) return { ok: true, v: undefined };
+  return typeof v === "boolean" ? { ok: true, v } : { ok: false };
+}
+
+function parseGoLiveStart(raw: Record<string, unknown>): ParseResult<CoreMessage> {
+  const guild = reqId(raw, "guild");
+  if (!guild) return fail("golive_start: `guild` must be a non-empty string");
+  const source = raw["source"];
+  if (typeof source !== "string" || source.trim().length === 0 || source.length > MAX_SOURCE_LEN) {
+    return fail(`golive_start: \`source\` must be a non-empty string (max ${MAX_SOURCE_LEN} chars)`);
+  }
+  const channel = optId(raw, "channel");
+  if (!channel.ok) return fail("golive_start: `channel` must be a string");
+  const value: GoLiveStartMessage = { type: "golive_start", guild, source };
+  if (channel.v !== undefined) value.channel = channel.v;
+  for (const key of ["width", "height", "fps", "bitrate_kbps"] as const) {
+    const n = optInt(raw, key);
+    if (!n.ok) return fail(`golive_start: \`${key}\` must be a positive integer`);
+    if (n.v !== undefined) value[key] = n.v;
+  }
+  const encoder = raw["encoder"];
+  if (encoder !== undefined && encoder !== null) {
+    if (encoder !== "auto" && encoder !== "nvenc" && encoder !== "software") {
+      return fail("golive_start: `encoder` must be auto, nvenc or software");
+    }
+    value.encoder = encoder;
+  }
+  for (const key of ["audio", "listen"] as const) {
+    const b = optBool(raw, key);
+    if (!b.ok) return fail(`golive_start: \`${key}\` must be a boolean`);
+    if (b.v !== undefined) value[key] = b.v;
+  }
+  return { ok: true, value };
 }
 
 // ── node -> Core ────────────────────────────────────────────────────────────
@@ -171,6 +245,7 @@ export type NodeMessage =
     }
   | { type: "stream_close"; stream: number }
   | { type: "playback"; play: number; state: PlaybackState; error?: string }
+  | { type: "golive"; guild: string; state: GoLiveWireState; error?: string; reason?: string }
   | { type: "error"; message: string }
   | { type: "pong" };
 

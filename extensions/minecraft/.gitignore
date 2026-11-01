@@ -1,0 +1,18 @@
+# Gradle / Loom build outputs
+mod/build/
+mod/.gradle/
+mod/run/
+mod/logs/
+mod/out/
+mod/bin/
+
+# Local Baritone API jar (LGPL; fetched by `gradlew downloadBaritone`)
+mod/libs/*.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/

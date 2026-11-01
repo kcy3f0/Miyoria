@@ -175,6 +175,11 @@ pub struct Store {
     pub people: Arc<dyn PeopleStore>,
     pub decisions: Arc<dyn DecisionLog>,
     pub settings: Arc<dyn SettingsStore>,
+    pub memories: Arc<dyn MemoryRecordStore>,
+    pub relationships: Arc<dyn RelationshipStore>,
+    pub identity: Arc<dyn IdentityStore>,
+    pub auth: Arc<dyn AuthStore>,
+    pub audit: Arc<dyn AuditLog>,
 }
 
 impl Store {
@@ -207,6 +212,11 @@ impl Store {
             + PeopleStore
             + DecisionLog
             + SettingsStore
+            + MemoryRecordStore
+            + RelationshipStore
+            + IdentityStore
+            + AuthStore
+            + AuditLog
             + 'static,
     {
         Self {
@@ -215,7 +225,12 @@ impl Store {
             persona_overrides: backend.clone(),
             people: backend.clone(),
             decisions: backend.clone(),
-            settings: backend,
+            settings: backend.clone(),
+            memories: backend.clone(),
+            relationships: backend.clone(),
+            identity: backend.clone(),
+            auth: backend.clone(),
+            audit: backend,
         }
     }
 }
@@ -236,6 +251,35 @@ pub(crate) fn kind_to_str(kind: ContextKind) -> String {
 pub(crate) fn kind_from_str(s: &str) -> anyhow::Result<ContextKind> {
     serde_json::from_value(serde_json::Value::String(s.to_owned()))
         .map_err(|e| anyhow::anyhow!("unknown context kind `{s}`: {e}"))
+}
+
+/// Compact JSON of a value, used as a canonical lookup key (scopes). Struct
+/// fields serialize in declaration order, so equal values give equal keys.
+pub(crate) fn json_key<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value).expect("value serializes to JSON")
+}
+
+/// The snake_case name of a unit-variant enum (e.g. `MemoryKind::SelfNote`).
+pub(crate) fn enum_to_str<T: Serialize>(value: &T) -> String {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(s)) => s,
+        _ => unreachable!("unit enum serializes to a string"),
+    }
+}
+
+pub(crate) fn enum_from_str<T: serde::de::DeserializeOwned>(s: &str) -> anyhow::Result<T> {
+    serde_json::from_value(serde_json::Value::String(s.to_owned()))
+        .map_err(|e| anyhow::anyhow!("unknown value `{s}`: {e}"))
+}
+
+/// Validates an embedding for storage or search: empty means "none", and
+/// every component must be finite.
+pub(crate) fn clean_embedding(embedding: Option<&[f32]>) -> anyhow::Result<Option<Vec<f32>>> {
+    match embedding {
+        None | Some([]) => Ok(None),
+        Some(v) if v.iter().all(|x| x.is_finite()) => Ok(Some(v.to_vec())),
+        Some(_) => anyhow::bail!("embedding contains a non-finite value"),
+    }
 }
 
 /// Timestamps are stored with microsecond precision, like PostgreSQL.

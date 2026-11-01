@@ -1,5 +1,6 @@
-//! Phase-1 permissions: three fixed roles derived from the permission node
-//! prefix. Replaced by `miyoria-auth` RBAC later.
+//! Fallback permissions: three fixed roles derived from the permission node
+//! prefix. Used when no `dyn Authorizer` service (the `auth` module's RBAC)
+//! is available.
 
 use std::collections::HashSet;
 
@@ -53,6 +54,11 @@ impl Permissions {
 
     pub fn is_owner(&self, account: &AccountRef) -> bool {
         self.owners.contains(account)
+    }
+
+    /// The configured owners.
+    pub fn owners(&self) -> impl Iterator<Item = &AccountRef> {
+        self.owners.iter()
     }
 
     pub fn role_of(&self, invocation: &Invocation) -> Role {
@@ -118,6 +124,8 @@ mod tests {
                 kind: ContextKind::Channel,
             },
             invoker_is_guild_admin: guild_admin,
+            platform_roles: Vec::new(),
+            resolved_users: BTreeMap::new(),
         }
     }
 

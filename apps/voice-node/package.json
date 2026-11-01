@@ -17,6 +17,7 @@
     "report": "node -e \"import('@discordjs/voice').then(v=>console.log(v.generateDependencyReport()))\""
   },
   "dependencies": {
+    "@dank074/discord-video-stream": "7.0.0",
     "@discordjs/voice": "0.19.2",
     "@lng2004/discord.js-selfbot-v13": "3.7.2",
     "dotenv": "^18.0.9",

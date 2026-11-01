@@ -433,3 +433,150 @@ async fn ping_from_node_gets_pong() {
     assert_eq!(node.recv_json().await, json!({ "type": "pong" }));
     h.sup.stop_all().await;
 }
+
+#[tokio::test]
+async fn golive_start_stop_and_state_events() {
+    use miyoria_voice::{GOLIVE_TOPIC, GoLiveRequest, GoLiveState};
+
+    let h = Harness::start(json!({}), vec![]).await;
+    let mut node = h.node(SELF_ID).await;
+    let link = h.link();
+    let mut events = h.subscribe(&[GOLIVE_TOPIC]);
+
+    // Bad requests never reach the node.
+    for bad in [
+        GoLiveRequest {
+            guild: "g1".into(),
+            source: "  ".into(),
+            ..Default::default()
+        },
+        GoLiveRequest {
+            guild: "g1".into(),
+            source: "srt://127.0.0.1:9999".into(),
+            encoder: Some("quicksync".into()),
+            ..Default::default()
+        },
+        GoLiveRequest {
+            guild: "g1".into(),
+            source: "srt://127.0.0.1:9999".into(),
+            fps: Some(0),
+            ..Default::default()
+        },
+    ] {
+        assert!(link.golive_start(bad).await.is_err());
+    }
+
+    link.golive_start(GoLiveRequest {
+        guild: "g1".into(),
+        channel: Some("vc1".into()),
+        source: "srt://127.0.0.1:9999".into(),
+        height: Some(1080),
+        fps: Some(60),
+        bitrate_kbps: Some(6000),
+        encoder: Some("nvenc".into()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        node.recv_json().await,
+        json!({
+            "type": "golive_start", "guild": "g1", "channel": "vc1",
+            "source": "srt://127.0.0.1:9999", "height": 1080, "fps": 60,
+            "bitrate_kbps": 6000, "encoder": "nvenc"
+        })
+    );
+    assert!(link.golive("g1").is_none());
+
+    node.send_json(json!({ "type": "golive", "guild": "g1", "state": "starting" }))
+        .await;
+    let ev = next_event(&mut events).await;
+    match &ev.event {
+        Event::Custom { topic, payload } => {
+            assert_eq!(topic, GOLIVE_TOPIC);
+            assert_eq!(payload["platform"], "discord");
+            assert_eq!(payload["guild"], "g1");
+            assert_eq!(payload["state"], "starting");
+            assert!(payload["error"].is_null());
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(link.is_streaming("g1"));
+
+    node.send_json(json!({ "type": "golive", "guild": "g1", "state": "live" }))
+        .await;
+    next_event(&mut events).await;
+    assert_eq!(link.golive("g1").unwrap().state, GoLiveState::Live);
+
+    link.golive_stop("g1").await.unwrap();
+    assert_eq!(
+        node.recv_json().await,
+        json!({ "type": "golive_stop", "guild": "g1" })
+    );
+    node.send_json(
+        json!({ "type": "golive", "guild": "g1", "state": "stopped", "reason": "stop requested" }),
+    )
+    .await;
+    match &next_event(&mut events).await.event {
+        Event::Custom { payload, .. } => {
+            assert_eq!(payload["state"], "stopped");
+            assert_eq!(payload["reason"], "stop requested");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    let status = link.golive("g1").unwrap();
+    assert_eq!(status.state, GoLiveState::Stopped);
+    assert_eq!(status.reason.as_deref(), Some("stop requested"));
+    assert!(!link.is_streaming("g1"));
+
+    node.send_json(
+        json!({ "type": "golive", "guild": "g1", "state": "failed", "error": "ffmpeg not found" }),
+    )
+    .await;
+    match &next_event(&mut events).await.event {
+        Event::Custom { payload, .. } => {
+            assert_eq!(payload["state"], "failed");
+            assert_eq!(payload["error"], "ffmpeg not found");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert_eq!(
+        link.golive("g1").unwrap().error.as_deref(),
+        Some("ffmpeg not found")
+    );
+    h.sup.stop_all().await;
+}
+
+#[tokio::test]
+async fn golive_without_a_node_fails_and_disconnect_stops_it() {
+    use miyoria_voice::{GOLIVE_TOPIC, GoLiveRequest};
+
+    let h = Harness::start(json!({}), vec![]).await;
+    let link = h.link();
+    let req = GoLiveRequest {
+        guild: "g1".into(),
+        source: "rtmp://127.0.0.1/live/x".into(),
+        ..Default::default()
+    };
+    let err = link.golive_start(req).await.unwrap_err();
+    assert!(err.to_string().contains("no voice node"), "{err}");
+    assert!(link.golive_stop("g1").await.is_err());
+
+    let mut node = h.node(SELF_ID).await;
+    let mut events = h.subscribe(&[GOLIVE_TOPIC]);
+    node.send_json(json!({ "type": "golive", "guild": "g1", "state": "live" }))
+        .await;
+    next_event(&mut events).await;
+    assert!(link.is_streaming("g1"));
+    drop(node);
+    match &next_event(&mut events).await.event {
+        Event::Custom { payload, .. } => {
+            assert_eq!(payload["state"], "stopped");
+            assert_eq!(payload["reason"], "voice node disconnected");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    wait_until(|| !link.is_connected()).await;
+    assert!(link.golive("g1").is_none());
+    h.sup.stop_all().await;
+}

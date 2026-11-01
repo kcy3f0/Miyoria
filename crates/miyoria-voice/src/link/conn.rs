@@ -17,7 +17,9 @@ use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use super::{AudioEvent, Conn, ConnState, StreamInfo, VoiceLink, voice_context};
+use super::{
+    AudioEvent, Conn, ConnState, GoLiveState, GoLiveStatus, StreamInfo, VoiceLink, voice_context,
+};
 use crate::protocol::{
     CoreMessage, NodeMessage, TAG_CAPTURE, VERSION, WireParticipant, WirePlaybackState, close,
     decode_audio,
@@ -410,6 +412,24 @@ impl VoiceLink {
                     let _ = tx.send(Some(state));
                 }
             }
+            NodeMessage::Golive {
+                guild,
+                state,
+                error,
+                reason,
+            } => {
+                let status = GoLiveStatus {
+                    state: state.into(),
+                    error,
+                    reason,
+                };
+                conn.state
+                    .lock()
+                    .golive
+                    .insert(guild.clone(), status.clone());
+                info!(%guild, state = ?status.state, error = ?status.error, "go live state");
+                self.publish_golive(platform, &guild, &status);
+            }
             NodeMessage::Error { message } => {
                 warn!(%message, "voice node error");
                 let pending = {
@@ -456,6 +476,20 @@ impl VoiceLink {
         }
         let replaced = conn.close_code() == Some(close::REPLACED);
         if !replaced {
+            // A Go Live stream belongs to the node; Core can no longer see it.
+            for (guild, status) in &state.golive {
+                if matches!(status.state, GoLiveState::Starting | GoLiveState::Live) {
+                    self.publish_golive(
+                        &conn.account.platform,
+                        guild,
+                        &GoLiveStatus {
+                            state: GoLiveState::Stopped,
+                            error: None,
+                            reason: Some("voice node disconnected".to_owned()),
+                        },
+                    );
+                }
+            }
             for (guild, g) in state.guilds {
                 self.publish(Event::VoiceLeft {
                     context: voice_context(&conn.account.platform, &guild, &g.channel),

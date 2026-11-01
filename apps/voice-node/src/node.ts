@@ -4,11 +4,25 @@ import type { Client, VoiceState } from "@lng2004/discord.js-selfbot-v13";
 import { StreamIdAllocator } from "./capture.js";
 import type { Config } from "./config.js";
 import { findUserVoiceChannel, resolveVoiceChannel } from "./discord.js";
+import { DvsEngine } from "./golive/dvs-engine.js";
+import { cachedProbe } from "./golive/encoder.js";
+import { type Attach, type GoLiveHost, GoLiveManager, type StreamEngine } from "./golive/manager.js";
+import type { GoLivePlan } from "./golive/plan.js";
 import { GuildVoice } from "./guild-voice.js";
+import type { LevelPublisher } from "./levels/publisher.js";
 import type { CoreLink } from "./link.js";
 import type { Logger } from "./log.js";
 import type { PlaybackEvent } from "./playback/queue.js";
 import type { CoreMessage, NodeMessage } from "./protocol.js";
+
+export interface VoiceNodeDeps {
+  /** Lip-sync level output (needs `STAGE_LEVELS_URL`). */
+  levels?: LevelPublisher;
+  /** Replaces the discord-video-stream engine (tests). */
+  goLiveEngine?: StreamEngine;
+  /** Replaces the NVENC probe (tests). */
+  probeNvenc?: () => Promise<boolean>;
+}
 
 export class VoiceNode {
   private readonly sessions = new Map<string, GuildVoice>();
@@ -17,6 +31,9 @@ export class VoiceNode {
   /** Per-guild promise chain so join / leave for one guild never interleave. */
   private readonly ops = new Map<string, Promise<void>>();
   private readonly ids = new StreamIdAllocator();
+  /** Exclusive Go Live: guild -> channel to rejoin once the stream is over. */
+  private readonly resumeAfterGoLive = new Map<string, string>();
+  private readonly goLive: GoLiveManager;
   private shuttingDown = false;
 
   constructor(
@@ -24,7 +41,22 @@ export class VoiceNode {
     private readonly link: CoreLink,
     private readonly cfg: Config,
     private readonly log: Logger,
-  ) {}
+    private readonly deps: VoiceNodeDeps = {},
+  ) {
+    this.goLive = new GoLiveManager({
+      engine: deps.goLiveEngine ?? new DvsEngine(client, log),
+      host: this.goLiveHost(),
+      config: cfg.golive,
+      probeNvenc: deps.probeNvenc ?? cachedProbe(),
+      emit: (ev) => {
+        const msg: Extract<NodeMessage, { type: "golive" }> = { type: "golive", guild: ev.guild, state: ev.state };
+        if (ev.error !== undefined) msg.error = ev.error;
+        if (ev.reason !== undefined) msg.reason = ev.reason;
+        this.link.send(msg);
+      },
+      log,
+    });
+  }
 
   start(): void {
     this.link.on("ready", () => this.onLinkReady());
@@ -37,6 +69,7 @@ export class VoiceNode {
   /** Leaves every channel, telling Core. Call before closing the link. */
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    await this.goLive.stopAll("shutdown");
     for (const session of [...this.sessions.values()]) this.dropSession(session, "shutdown");
     this.plays.clear();
     await Promise.allSettled([...this.ops.values()]);
@@ -50,6 +83,9 @@ export class VoiceNode {
       s.onLinkReset();
       s.announce();
     }
+    // Go Live keeps running without Core; tell the new Core what is going on.
+    const live = this.goLive.snapshot();
+    if (live) this.link.send({ type: "golive", guild: live.guild, state: live.state });
   }
 
   private onLinkDown(): void {
@@ -69,6 +105,12 @@ export class VoiceNode {
       case "play_start":
         this.doPlayStart(msg.play, msg.guild, msg.sample_rate);
         break;
+      case "golive_start":
+        this.goLive.start(msg);
+        break;
+      case "golive_stop":
+        this.goLive.stop(msg.guild);
+        break;
       case "play_end":
         this.sessionForPlay(msg.play)?.queue?.end(msg.play);
         break;
@@ -87,7 +129,8 @@ export class VoiceNode {
 
   // ── commands ─────────────────────────────────────────────────────────────
 
-  private enqueue(guildId: string, op: () => Promise<void>): void {
+  /** Runs `op` after the guild's earlier operations; resolves when it is done (never rejects). */
+  private enqueue(guildId: string, op: () => Promise<void>): Promise<void> {
     const prev = this.ops.get(guildId) ?? Promise.resolve();
     const next = prev
       .then(op)
@@ -99,6 +142,7 @@ export class VoiceNode {
         if (this.ops.get(guildId) === next) this.ops.delete(guildId);
       });
     this.ops.set(guildId, next);
+    return next;
   }
 
   private sendError(message: string): void {
@@ -147,6 +191,7 @@ export class VoiceNode {
         cfg: this.cfg,
         ids: this.ids,
         log: this.log,
+        ...(this.deps.levels ? { levels: this.deps.levels } : {}),
         onPlaybackEvent: (ev) => this.onPlaybackEvent(ev),
         onLost: (s, reason) => this.onSessionLost(s, reason),
       },
@@ -170,7 +215,14 @@ export class VoiceNode {
 
   private async doLeave(guildId: string): Promise<void> {
     const session = this.sessions.get(guildId);
+    const hadGoLive = this.goLive.isActive(guildId);
+    this.resumeAfterGoLive.delete(guildId); // an explicit leave also cancels the resume after an exclusive Go Live
+    if (hadGoLive) this.goLive.stop(guildId, "left voice");
     if (!session) {
+      if (hadGoLive) {
+        this.link.send({ type: "left", guild: guildId, reason: "leave" });
+        return;
+      }
       this.link.send({ type: "left", guild: guildId, reason: "not in a voice channel" });
       return;
     }
@@ -219,6 +271,10 @@ export class VoiceNode {
   /** Tears a session down and tells Core. */
   private dropSession(session: GuildVoice, reason: string): void {
     if (this.sessions.get(session.guildId) === session) this.sessions.delete(session.guildId);
+    // A hybrid Go Live rides on this voice session; without it the stream cannot go on.
+    if (reason !== "golive" && this.goLive.isActive(session.guildId)) {
+      this.goLive.stop(session.guildId, `voice session ended (${reason})`);
+    }
     // close() clears the playback queue; its events carry play ids, so forget them afterwards
     session.close();
     for (const [play, guild] of this.plays) if (guild === session.guildId) this.plays.delete(play);
@@ -228,6 +284,55 @@ export class VoiceNode {
 
   private onSessionLost(session: GuildVoice, reason: string): void {
     this.dropSession(session, reason);
+  }
+
+  // ── Go Live: the voice-channel side ──────────────────────────────────────
+
+  private goLiveHost(): GoLiveHost {
+    return {
+      attach: (plan, signal) => this.attachGoLive(plan, signal),
+      detach: (guild, attach) => this.detachGoLive(guild, attach),
+    };
+  }
+
+  /**
+   * hybrid:    make sure the voice session is in the right channel and lend its session id to the streamer.
+   * exclusive: leave the voice session (the library's own, self-deafened connection takes over the channel).
+   */
+  private async attachGoLive(plan: GoLivePlan, signal: AbortSignal): Promise<Attach> {
+    const guildId = plan.guild;
+    const channelId = plan.channel ?? this.sessions.get(guildId)?.channelId;
+    if (!channelId) throw new Error("not in a voice channel in this guild, and no `channel` was given");
+
+    if (this.cfg.golive.voiceMode === "exclusive") {
+      const session = this.sessions.get(guildId);
+      if (session) this.dropSession(session, "golive");
+      // Voice is gone for the duration; remember to come back (a Core `leave` cancels this).
+      this.resumeAfterGoLive.set(guildId, channelId);
+      return { kind: "exclusive", guildId, channelId };
+    }
+
+    let session = this.sessions.get(guildId);
+    if (!session || session.isClosed || session.channelId !== channelId) {
+      await this.enqueue(guildId, () => this.doJoin(guildId, channelId, undefined));
+      session = this.sessions.get(guildId);
+      if (!session || session.isClosed || session.channelId !== channelId) {
+        throw new Error(`could not join voice channel ${channelId} for the stream`);
+      }
+    }
+    if (signal.aborted) throw new Error("aborted");
+    const sessionId = session.voiceSessionId();
+    if (!sessionId) throw new Error("the voice connection is not ready yet");
+    return { kind: "hybrid", guildId, channelId, sessionId };
+  }
+
+  private async detachGoLive(guild: string, attach: Attach): Promise<void> {
+    if (attach.kind !== "exclusive") return;
+    const channel = this.resumeAfterGoLive.get(guild);
+    this.resumeAfterGoLive.delete(guild);
+    if (!channel || this.shuttingDown || this.sessions.has(guild)) return;
+    this.log.info(`Go Live over; rejoining voice channel ${channel} in guild ${guild}`);
+    await this.enqueue(guild, () => this.doJoin(guild, channel, undefined));
   }
 
   private onVoiceStateUpdate(oldState: VoiceState, newState: VoiceState): void {

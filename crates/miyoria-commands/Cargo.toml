@@ -8,15 +8,18 @@ publish.workspace = true
 
 [dependencies]
 miyoria-kernel.workspace = true
+miyoria-store.workspace = true
 miyoria-types.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+ulid.workspace = true
 
 [lints]
 workspace = true

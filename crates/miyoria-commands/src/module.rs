@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use miyoria_kernel::{Module, ModuleContext, ModuleManifest, ModuleStatus, SupervisorHandle};
+use miyoria_kernel::{
+    Module, ModuleContext, ModuleManifest, ModuleStatus, SupervisorHandle, TopicFilter,
+};
 use miyoria_types::{Authorizer, ModuleId, ModuleStateKind};
 use serde::Deserialize;
 
@@ -22,8 +24,12 @@ pub struct CommandsConfig {
     pub owners: Vec<String>,
 }
 
-/// Module `commands`: provides `Arc<CommandRegistry>` and `Arc<dyn Authorizer>`
-/// as services and registers the built-in commands (`ping`, `admin module ...`).
+/// Module `commands`: provides `Arc<CommandRegistry>` and registers the
+/// built-in commands (`ping`, `admin module ...`).
+///
+/// It also provides its [`Permissions`] as a fallback `Arc<dyn Authorizer>`
+/// whenever no other module (normally `auth`) provides one, and puts it back
+/// after that module stops.
 pub struct CommandsModule {
     manifest: ModuleManifest,
 }
@@ -54,11 +60,33 @@ impl Module for CommandsModule {
     async fn start(&self, ctx: ModuleContext) -> anyhow::Result<()> {
         let config: CommandsConfig = ctx.config()?;
         let perms = Permissions::from_strings(&config.owners)?;
-        let registry = Arc::new(CommandRegistry::new(perms.clone()));
+        let registry = Arc::new(CommandRegistry::new(perms.clone()).with_services(ctx.clone()));
         register_builtins(&registry, &ctx)?;
         ctx.provide(registry);
-        ctx.provide::<dyn Authorizer>(Arc::new(perms));
+        let fallback: Arc<dyn Authorizer> = Arc::new(perms);
+        provide_fallback(&ctx, &fallback);
+
+        let mut events = ctx.subscribe(TopicFilter::new(["system.module.state"]));
+        let cancel = ctx.cancellation().clone();
+        let c = ctx.clone();
+        ctx.spawn("authorizer-fallback", async move {
+            loop {
+                tokio::select! {
+                    () = cancel.cancelled() => return Ok(()),
+                    env = events.recv() => match env {
+                        Some(_) => provide_fallback(&c, &fallback),
+                        None => return Ok(()),
+                    },
+                }
+            }
+        });
         Ok(())
+    }
+}
+
+fn provide_fallback(ctx: &ModuleContext, fallback: &Arc<dyn Authorizer>) {
+    if ctx.services().get::<dyn Authorizer>().is_none() {
+        ctx.provide(fallback.clone());
     }
 }
 
@@ -276,6 +304,8 @@ mod tests {
                 kind: ContextKind::Channel,
             },
             invoker_is_guild_admin: false,
+            platform_roles: Vec::new(),
+            resolved_users: BTreeMap::new(),
         }
     }
 
@@ -381,6 +411,91 @@ mod tests {
         let fresh = sup.services().require::<CommandRegistry>().unwrap();
         assert!(!Arc::ptr_eq(&reg, &fresh));
         assert_eq!(fresh.specs().len(), 5);
+        sup.stop_all().await;
+    }
+
+    /// Allows only `ping` and `admin.module.list`, and only in guild `10`.
+    struct GuildOnly;
+
+    impl Authorizer for GuildOnly {
+        fn allows_subject(&self, subject: &miyoria_types::Subject, node: &str) -> bool {
+            let in_guild = subject
+                .context
+                .as_ref()
+                .is_some_and(|c| c.scope.as_deref() == Some("10"));
+            in_guild
+                && subject.platform_roles == ["r1"]
+                && matches!(node, "ping" | "admin.module.list")
+        }
+    }
+
+    #[derive(Default)]
+    struct Audit(parking_lot::Mutex<Vec<miyoria_store::AuditEntry>>);
+
+    #[async_trait]
+    impl miyoria_store::AuditLog for Audit {
+        async fn append(&self, entry: &miyoria_store::AuditEntry) -> anyhow::Result<()> {
+            self.0.lock().push(entry.clone());
+            Ok(())
+        }
+
+        async fn recent(
+            &self,
+            _limit: usize,
+            _actor: Option<&str>,
+        ) -> anyhow::Result<Vec<miyoria_store::AuditEntry>> {
+            Ok(self.0.lock().clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn uses_the_authorizer_service_and_audits() {
+        let services = Arc::new(ServiceRegistry::new());
+        let app = ModuleId::from("app");
+        let audit = Arc::new(Audit::default());
+        services.provide::<dyn Authorizer>(&app, Arc::new(GuildOnly));
+        services.provide::<dyn miyoria_store::AuditLog>(&app, audit.clone());
+        let sup = Supervisor::new(EventBus::default(), services.clone());
+        sup.register(
+            Arc::new(CommandsModule::new()),
+            serde_json::json!({ "owners": ["discord:1"] }),
+            true,
+        )
+        .await;
+        sup.start_all().await.unwrap();
+        let reg = services.require::<CommandRegistry>().unwrap();
+
+        // The owner is denied: the service decides, not the fallback.
+        let denied = reg
+            .dispatch(inv("admin module list", "1", None))
+            .await
+            .unwrap();
+        assert!(denied.text.contains("權限"), "{}", denied.text);
+        let mut with_role = inv("admin module list", "5", None);
+        with_role.platform_roles = vec!["r1".into()];
+        let listed = reg.dispatch(with_role).await.unwrap();
+        // Reached the handler (no supervisor in this test).
+        assert!(listed.text.contains("supervisor"), "{}", listed.text);
+        let mut ping = inv("ping", "5", None);
+        ping.platform_roles = vec!["r1".into()];
+        assert!(reg.dispatch(ping).await.unwrap().text.starts_with("pong"));
+
+        // Only admin nodes are audited, denials too.
+        let entries = audit.0.lock().clone();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].action, "admin module list");
+        assert_eq!(entries[0].actor, "discord:1");
+        assert!(!entries[0].ok);
+        assert_eq!(entries[0].detail["outcome"], "denied");
+        assert_eq!(entries[1].actor, "discord:5");
+        assert!(entries[1].ok);
+        // The app's authorizer was kept.
+        assert!(
+            !services
+                .require::<dyn Authorizer>()
+                .unwrap()
+                .allows(&parse_account("discord:1").unwrap(), "x")
+        );
         sup.stop_all().await;
     }
 

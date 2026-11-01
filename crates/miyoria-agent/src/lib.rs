@@ -9,6 +9,12 @@
 //! submitted to the scheduler. In voice channels the reply is cut into
 //! [sentences](speech) that are spoken (`Speak` actions) while the model is
 //! still generating.
+//!
+//! Other modules shape her turns through optional services: prompt
+//! contributors (`PromptContributors`) add per-turn context, `dyn
+//! SocialSignals` and `dyn MoodSignals` steer attention and tone, and
+//! `agent.initiative` events let her start conversations. `llm.budget` events
+//! make her save tokens (see [`BudgetState`]).
 
 pub mod attention;
 pub mod config;
@@ -17,10 +23,12 @@ pub mod handle;
 pub mod persona;
 pub mod prompt;
 pub mod session;
+pub mod signals;
 pub mod speech;
 pub mod tools;
 
 mod commands;
+mod contributors;
 mod coordinator;
 mod runtime;
 mod turn;
@@ -43,6 +51,7 @@ pub use config::{Activeness, AgentConfig, AttentionConfig, ChannelMode, VoiceCon
 pub use expression::{Expression, ExpressionParser, Segment};
 pub use handle::AgentHandle;
 pub use persona::PersonaHandle;
+pub use signals::BudgetState;
 pub use tools::{Tool, ToolContext, ToolRegistry};
 
 use commands::AgentCommands;
@@ -55,15 +64,24 @@ const SETTINGS_LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Module `agent`: requires `llm` and `scheduler`, optionally uses `commands`.
 ///
-/// Provides [`PersonaHandle`], [`AgentHandle`] and [`ToolRegistry`] (the
-/// latter keeps tools registered by other modules across agent restarts).
+/// Provides [`PersonaHandle`] and [`AgentHandle`]. Uses the `Arc<ToolRegistry>`
+/// service when the app provides one at start; otherwise it provides its own
+/// (which keeps tools registered by other modules across agent restarts).
+/// Either way the built-in `react` tool is registered while running.
+///
 /// Uses the optional services `dyn SettingsStore` (persisting runtime
-/// settings), `dyn Authorizer` (tool permissions) and `CommandRegistry`.
+/// settings), `dyn Authorizer` (tool permissions), `CommandRegistry`,
+/// `PromptContributors` (per-turn context), `dyn SocialSignals` and `dyn
+/// MoodSignals`; they are looked up per turn, so they may come and go.
 pub struct AgentModule {
     manifest: ModuleManifest,
     persona: PersonaHandle,
     random: Option<Arc<dyn RandomSource>>,
-    tools: Arc<ToolRegistry>,
+    /// Used when the app provides no registry.
+    own_tools: Arc<ToolRegistry>,
+    /// The registry in use.
+    tools: RwLock<Arc<ToolRegistry>>,
+    budget: Arc<RwLock<BudgetState>>,
     overrides: Arc<RwLock<Overrides>>,
     voice_rooms: Arc<VoiceRooms>,
     commands: Arc<AgentCommands>,
@@ -73,6 +91,7 @@ impl AgentModule {
     pub const ID: &'static str = "agent";
 
     pub fn new(profile: Profile) -> Self {
+        let own_tools = Arc::new(ToolRegistry::new());
         Self {
             manifest: ModuleManifest::new(Self::ID, "Agent")
                 .description("Attention, conversation and reply generation")
@@ -81,7 +100,9 @@ impl AgentModule {
                 .optional("commands"),
             persona: PersonaHandle::new(profile),
             random: None,
-            tools: Arc::new(ToolRegistry::new()),
+            tools: RwLock::new(own_tools.clone()),
+            own_tools,
+            budget: Arc::default(),
             overrides: Arc::default(),
             voice_rooms: Arc::default(),
             commands: Arc::default(),
@@ -98,9 +119,29 @@ impl AgentModule {
         self.persona.clone()
     }
 
-    /// The tool registry (also provided as a service while running).
+    /// The tool registry in use: the app's (once started, if it provides
+    /// one) or the module's own. Tools registered here before start are
+    /// carried over into an app-provided registry.
     pub fn tools(&self) -> Arc<ToolRegistry> {
-        self.tools.clone()
+        self.tools.read().clone()
+    }
+
+    /// The app's `Arc<ToolRegistry>` service if it provides one (pre-start
+    /// registrations are carried over), else the module's own.
+    fn resolve_tools(&self, ctx: &ModuleContext) -> anyhow::Result<(Arc<ToolRegistry>, bool)> {
+        match ctx.services().get::<ToolRegistry>() {
+            Some(app) if !Arc::ptr_eq(&app, &self.own_tools) => {
+                for name in self.own_tools.names() {
+                    if app.get(&name).is_none() {
+                        if let Some(tool) = self.own_tools.get(&name) {
+                            app.register(tool)?;
+                        }
+                    }
+                }
+                Ok((app, false))
+            }
+            _ => Ok((self.own_tools.clone(), true)),
+        }
     }
 }
 
@@ -124,6 +165,7 @@ impl Module for AgentModule {
             self.persona.clone(),
             self.overrides.clone(),
             self.voice_rooms.clone(),
+            self.budget.clone(),
             store,
         ));
         match tokio::time::timeout(SETTINGS_LOAD_TIMEOUT, handle.load()).await {
@@ -132,12 +174,19 @@ impl Module for AgentModule {
             Ok(Err(e)) => warn!(error = %format!("{e:#}"), "could not load runtime settings"),
             Err(_) => warn!("loading runtime settings timed out"),
         }
-        self.tools.register(Arc::new(ReactTool::new(ctx.clone())))?;
+        let (tools, own) = self.resolve_tools(&ctx)?;
+        if !own {
+            info!("using the app's tool registry");
+        }
+        *self.tools.write() = tools.clone();
+        tools.register(Arc::new(ReactTool::new(ctx.clone())))?;
 
         let events = ctx.subscribe(Agent::topics());
         ctx.provide(Arc::new(self.persona.clone()));
         ctx.provide(handle.clone());
-        ctx.provide(self.tools.clone());
+        if own {
+            ctx.provide(tools.clone());
+        }
         self.commands
             .install(ctx.services(), handle.clone(), self.persona.clone());
         let agent = Arc::new(Agent::new(
@@ -146,7 +195,7 @@ impl Module for AgentModule {
             self.persona.clone(),
             random,
             handle,
-            self.tools.clone(),
+            tools,
             self.commands.clone(),
         ));
         ctx.spawn("events", agent.run(events));
@@ -155,7 +204,7 @@ impl Module for AgentModule {
 
     async fn stop(&self) -> anyhow::Result<()> {
         self.commands.uninstall();
-        self.tools.unregister(ReactTool::NAME);
+        self.tools.read().unregister(ReactTool::NAME);
         Ok(())
     }
 }

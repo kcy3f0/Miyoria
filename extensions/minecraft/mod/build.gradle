@@ -1,0 +1,192 @@
+plugins {
+    id 'fabric-loom' version '1.11.8'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    mavenCentral()
+}
+
+// ---------------------------------------------------------------------------
+// Baritone API resolution
+//
+// cabaletta/baritone does not publish to a public Maven repository. The
+// official artifacts are GitHub release assets, so we compile against the
+// "baritone-api-fabric" jar kept in libs/ (fetched by `gradlew downloadBaritone`).
+// It is compileOnly: Baritone is a separate mod the player installs
+// (or that AltoClef bundles), it is NOT shipped inside miyoria-bridge.
+//
+// When the jar is missing:
+//   * compileJava / compileTestJava / test still work, against the clearly
+//     marked compile-only stub in src/baritoneStub/java (never packaged);
+//   * jar / remapJar / build / runClient FAIL with instructions.
+// ---------------------------------------------------------------------------
+def baritoneLibsDir = layout.projectDirectory.dir('libs').asFile
+def baritoneApiName = "baritone-api-fabric-${project.baritone_version}.jar"
+def baritoneStandaloneName = "baritone-standalone-fabric-${project.baritone_version}.jar"
+def baritoneApiJar = new File(baritoneLibsDir, baritoneApiName)
+def baritoneStandaloneJar = new File(baritoneLibsDir, baritoneStandaloneName)
+def baritoneUrl = { String name ->
+    "https://github.com/cabaletta/baritone/releases/download/v${project.baritone_version}/${name}"
+}
+def haveBaritoneApi = baritoneApiJar.isFile()
+
+loom {
+    runs {
+        client {
+            client()
+            ideConfigGenerated(true)
+            runDir 'run'
+        }
+    }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+    // WebSocket server: embedded in the jar (jar-in-jar). slf4j is provided by Minecraft.
+    implementation "org.java-websocket:Java-WebSocket:${project.java_websocket_version}"
+    include("org.java-websocket:Java-WebSocket:${project.java_websocket_version}") { transitive = false }
+
+    if (haveBaritoneApi) {
+        modCompileOnly files(baritoneApiJar)
+        if (baritoneStandaloneJar.isFile()) {
+            // Dev runtime only (./gradlew runClient). Not packaged.
+            modLocalRuntime files(baritoneStandaloneJar)
+        }
+    }
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// Compile-only stand-in for the handful of Baritone API types we use (src/baritoneStub/java).
+// Compiled and put on the compile classpath ONLY when libs/baritone-api-fabric-*.jar is absent;
+// never packaged. It is compiled against main's classpath (it needs Minecraft's BlockPos/Entity).
+def baritoneStubClasses = layout.buildDirectory.dir('baritone-stub-classes')
+def compileBaritoneStub = tasks.register('compileBaritoneStub', JavaCompile) {
+    enabled = !haveBaritoneApi
+    source = fileTree('src/baritoneStub/java')
+    classpath = sourceSets.main.compileClasspath
+    destinationDirectory = baritoneStubClasses
+    options.release = 21
+    options.encoding = 'UTF-8'
+}
+if (!haveBaritoneApi) {
+    tasks.named('compileJava') {
+        dependsOn compileBaritoneStub
+        classpath = classpath + files(baritoneStubClasses)
+    }
+    tasks.named('compileTestJava') {
+        dependsOn compileBaritoneStub
+        classpath = classpath + files(baritoneStubClasses)
+    }
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') {
+        expand 'version': project.version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+    options.encoding = 'UTF-8'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+    withSourcesJar()
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Baritone helper tasks
+// ---------------------------------------------------------------------------
+def downloadTo = { String url, File dest ->
+    dest.parentFile.mkdirs()
+    def tmp = new File(dest.parentFile, dest.name + '.part')
+    new URL(url).openConnection().with { c ->
+        c.setRequestProperty('User-Agent', 'miyoria-bridge-build')
+        c.connectTimeout = 15000
+        c.readTimeout = 60000
+        c.inputStream.withCloseable { ins -> tmp.withOutputStream { os -> os << ins } }
+    }
+    if (!tmp.renameTo(dest)) {
+        throw new GradleException("could not move ${tmp} to ${dest}")
+    }
+}
+
+tasks.register('downloadBaritone') {
+    group = 'miyoria'
+    description = "Downloads ${baritoneApiName} (compile-time Baritone API) from GitHub releases into libs/."
+    outputs.file(baritoneApiJar)
+    doLast {
+        if (baritoneApiJar.isFile()) {
+            println "Already present: ${baritoneApiJar}"
+        } else {
+            println "Downloading ${baritoneUrl(baritoneApiName)}"
+            downloadTo(baritoneUrl(baritoneApiName), baritoneApiJar)
+            println "Saved ${baritoneApiJar}. Re-run gradle (the dependency is decided at configuration time)."
+        }
+    }
+}
+
+tasks.register('downloadBaritoneStandalone') {
+    group = 'miyoria'
+    description = "Downloads ${baritoneStandaloneName} (full Baritone, used only by ./gradlew runClient)."
+    outputs.file(baritoneStandaloneJar)
+    doLast {
+        if (baritoneStandaloneJar.isFile()) {
+            println "Already present: ${baritoneStandaloneJar}"
+        } else {
+            println "Downloading ${baritoneUrl(baritoneStandaloneName)}"
+            downloadTo(baritoneUrl(baritoneStandaloneName), baritoneStandaloneJar)
+        }
+    }
+}
+
+tasks.register('requireBaritone') {
+    group = 'miyoria'
+    description = 'Fails with instructions when the Baritone API jar is missing from libs/.'
+    doLast {
+        if (!baritoneApiJar.isFile()) {
+            throw new GradleException("""
+Baritone API jar not found: ${baritoneApiJar}
+
+miyoria-bridge compiles against Baritone's official API jar, which is only published as a
+GitHub release asset (no Maven repository). Fix with ONE of:
+
+  1) ./gradlew downloadBaritone                 (downloads it into mod/libs/ for you)
+  2) Download manually and put it at ${baritoneApiJar}
+       ${baritoneUrl(baritoneApiName)}
+     (Fabric build for Minecraft 1.21 / 1.21.1; use the "baritone-api-fabric" jar, not "forge"/"neoforge".)
+
+Until then only the unit tests can run (against a compile-only stub); the jar will not be built.
+""")
+        }
+    }
+}
+
+// Everything that produces or runs the real mod needs the real Baritone API.
+tasks.named('jar') { dependsOn tasks.named('requireBaritone') }
+tasks.matching { it.name == 'runClient' }.configureEach { dependsOn tasks.named('requireBaritone') }

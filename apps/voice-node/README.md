@@ -55,6 +55,9 @@ pnpm start:dist                   # node dist/main.js
 | `PLAYBACK_MAX_BUFFER_S` | `60` | 單一播放最多緩衝幾秒音訊,超過回報 `failed`(避免 Core 一次灌太多吃光記憶體)。 |
 | `PLAYBACK_PREBUFFER_MS` | `60` | 開始播放前先累積多少 ms,避免一開始就斷斷續續。 |
 | `PLAYBACK_MAX_STARVE_MS` | `10000` | Core 太久沒送下一段音訊時,最多補多久靜音,超過回報 `failed`。 |
+| `STAGE_LEVELS_URL` | (空 = 不送) | Stage 的嘴型端點,例如 `ws://127.0.0.1:7883/levels`。見下面〈嘴型音量〉。 |
+| `STAGE_LEVELS_GAIN` | `1` | 送出的 RMS 乘上這個倍數(上限 1)。 |
+| `GOLIVE_*` | 見 `.env.example` | Go Live 預設值:`GOLIVE_VOICE_MODE`(`hybrid` / `exclusive`)、`GOLIVE_ENCODER`(`auto` / `nvenc` / `software`)、`GOLIVE_NVENC_PRESET`、`GOLIVE_CODEC`、`GOLIVE_HEIGHT`、`GOLIVE_FPS`、`GOLIVE_BITRATE_KBPS`、`GOLIVE_HWACCEL_DECODE`、`GOLIVE_NO_TRANSCODE`、`GOLIVE_START_TIMEOUT_S`。`golive_start` 內的欄位優先。 |
 
 ## 行為說明
 
@@ -82,6 +85,20 @@ pnpm start:dist                   # node dist/main.js
 - **同一個伺服器一次只播一段**,其他的排隊(最多 16 段)。排隊中的播放被 `play_stop` 會直接移除並回 `interrupted`。
 - Core 送音訊比即時慢時,節點會補靜音等資料(不會斷掉);等太久(`PLAYBACK_MAX_STARVE_MS`)才判定 `failed`。Core 送得比即時快沒問題,會緩衝(上限 `PLAYBACK_MAX_BUFFER_S`)。
 - 離開頻道、語音連線中斷時,所有進行中與排隊中的播放都回報 `interrupted`。
+
+**嘴型音量(給 Stage)**
+- 設了 `STAGE_LEVELS_URL` 就會連過去(WebSocket 客戶端,Stage 沒開時安靜地重連,只警告一次)。播放時,**Discord 播放器實際拉走的 PCM**(已重新取樣成 48 kHz 立體聲、補靜音也算)每 10 ms 算一次 RMS,送 `{"t":<自這段播放開始的 ms>,"rms":0..1}`。`t` 是視窗起點,跟音訊自己的時間軸走;每筆依牆上時鐘在 `起點 + t` 送出(播放器剛開始會一口氣多讀幾個 frame,所以不是看拉取當下),播放器停頓後會重新對時而不是一口氣補送。
+- 播放結束(播完、被打斷、連線中斷)送最後一筆 `rms: 0`。同時只有一段播放在驅動嘴型,後開始的取代先開始的。
+- RMS 是真正的相對滿刻度值(一般說話約 0.05~0.2);要更大的嘴型幅度可調 `STAGE_LEVELS_GAIN`,或讓 Stage 那邊自己做正規化。
+
+**Go Live(推流)**
+- Core 送 `golive_start { guild, source, channel?, width?, height?, fps?, bitrate_kbps?, encoder?, audio?, listen? }`,node 回報 `golive { guild, state: starting | live | stopped | failed, error?, reason? }`(完整欄位說明見 [`docs/protocols/voice-link.md`](../../docs/protocols/voice-link.md))。`source` 通常是 OBS 的輸出:`srt://127.0.0.1:9999`(node 的 ffmpeg 自動當 `mode=listener`,OBS 填 `?mode=caller`)或 `rtmp://127.0.0.1:1935/live/miyoria`(ffmpeg 當 RTMP 伺服器,`-listen 1`);也可以是已經在跑的本機伺服器(`listen: false`)、`udp://`、`http(s)://`、本機檔案。
+- 流程:ffmpeg 讀來源 → 轉碼(`auto`:先實際開一次 `h264_nvenc` 測試,能用就 NVENC、否則 x264;結果快取)→ NUT → `@dank074/discord-video-stream` 切 H.264/H.265 封包送 Go Live。NVENC 是獨立的硬體區塊,不太吃遊戲的 3D 效能;`GOLIVE_NO_TRANSCODE=true` 可以直接轉送 OBS 已編好的 H.264(OBS 要設 1 秒關鍵影格、0 B-frame)。
+- **跟語音同時進行**(`GOLIVE_VOICE_MODE=hybrid`,預設):語音連線(`@discordjs/voice`,不拒聽)維持不動、照常收音和播 TTS;Go Live 是 Discord 另開的 WebRTC 連線(`STREAM_CREATE`),只借用語音 session id。實驗性質:要動 discord-video-stream 的私有欄位 `_voiceConnection`,**還沒對真的 Discord 驗證**。我們已經在本機驗證到 Discord 之前的每一段:函式庫載得起來、NVENC 命令列、SRT listener 接 ffmpeg 推流、demux、送出 `STREAM_CREATE` / `STREAM_SET_PAUSED`、中止時送 `STREAM_DELETE`,而且 hybrid 全程**沒有**送 `VOICE_STATE_UPDATE`(不會動到語音連線)。
+- 備案 `GOLIVE_VOICE_MODE=exclusive`:推流期間 node 離開語音(送 `left`,reason `golive`),由套件自己的連線佔著頻道(固定自我拒聽 = 聽不到人、不能播 TTS);推流結束自動重新加入原頻道。如果實測發現 hybrid 不行就用這個。
+- 同一個帳號同時只有一個 Go Live。離開語音頻道(`leave`、被踢、換頻道)會先停掉 Go Live。來源斷線(OBS 停了)= `stopped` / `source ended`,不會自動重連。
+- 需要 `ffmpeg` 在 PATH(要有 `libopus`、`libzmq`;你現在的 gyan.dev build 兩個都有,也有 `h264_nvenc`)。`@dank074/discord-video-stream` 的原生依賴(node-av、zeromq、sharp、node-datachannel)是第一次 Go Live 才載入的,載入失敗只會變成一則 `failed`,不會影響語音。
+- 已知:該函式庫的 `minimizeLatency` 會傳 `-flags lowdelay`,新版 ffmpeg 會拒絕(`Error setting option flags to value lowdelay`),所以我們自己傳 `-fflags nobuffer -flags low_delay …`。
 
 ## Discord 端注意事項
 
@@ -123,16 +140,23 @@ src/
   guild-voice.ts      單一語音 session:@discordjs/voice 連線、AudioPlayer、收音
   capture.ts          收音管線:Opus → 16 kHz 單聲道 20 ms 訊框、stream_open/close
   discord.ts          selfbot 登入、顯示名稱、voice state / 成員查詢
+  golive/plan.ts      golive_start → 驗證過的計畫(來源網址白名單與 ffmpeg 輸入選項、規格範圍)
+  golive/encoder.ts   NVENC 實測探針與 auto / nvenc / software 選擇
+  golive/manager.ts   Go Live 狀態機(starting → live → stopped | failed),引擎與語音端都是注入的
+  golive/dvs-engine.ts  discord-video-stream 引擎:ffmpeg 轉碼 → Go Live;hybrid / exclusive 兩種語音共存方式
+  levels/rms.ts       10 ms 視窗 RMS(交錯立體聲 → 單聲道)
+  levels/publisher.ts 依牆上時鐘排程送出每個視窗,播放時間軸 t,多段播放交接
+  levels/client.ts    Stage levels 的 WebSocket 客戶端(安靜重連)
   audio/resampler.ts  串流式 windowed-sinc 重新取樣、單聲道 ⇄ 立體聲
   audio/fifo.ts       Int16 取樣 FIFO
   playback/source.ts  單一播放的緩衝來源:延遲重新取樣、淡出、補靜音、上限
   playback/queue.ts   每個伺服器的播放佇列狀態機(只依賴 PlayerPort 介面)
   playback/discord-port.ts  PlayerPort 的 @discordjs/voice 實作(自己編 Opus,低延遲)
-test/                 vitest:協定、重新取樣、播放佇列(含假 player)、收音、Core 連線、真 AudioPlayer 冒煙測試
+test/                 vitest:協定、重新取樣、播放佇列(含假 player)、收音、Core 連線、真 AudioPlayer 冒煙測試、嘴型 RMS 與排程、Go Live(計畫、狀態機、引擎載入錯誤)
 ```
 
 ## 已知限制 / 尚未實測
 
 - 沒有對真的 Discord 連線測過(測試環境無法):所有 Discord 相關程式是依 `node_modules` 裡 `@discordjs/voice` 0.19.2 與 `@lng2004/discord.js-selfbot-v13` 3.7.2 的型別與原始碼寫的,版本與 `spikes/voice-node` 相同。請先用 spike 驗證 DAVE 收音 / 送音可行,再用本節點。
 - 播放是節點自己把 PCM 編成 Opus(`StreamType.Opus`),不經過 prism-media 的編碼器;`prism-media` 的 peer 依賴會警告 `opusscript` 版本(`^0.0.8` vs `0.1.1`),與 spike 相同,不影響這條路徑。
-- Go Live(推流)不在本節點目前範圍,之後另外加。
+- Go Live 與語音同時進行(hybrid)尚未對真的 Discord 驗證(見上);Go Live 的 DAVE 加密由 discord-video-stream 處理(`@snazzah/davey`),同樣沒有實測。

@@ -3,6 +3,8 @@
 //   SELF_TOKEN / VOICE_LINK_URL / VOICE_LINK_TOKEN / LOG_LEVEL   (env or .env)
 import { ConfigError, loadConfig, type Config } from "./config.js";
 import { loginSelf } from "./discord.js";
+import { LevelsClient } from "./levels/client.js";
+import { LevelPublisher } from "./levels/publisher.js";
 import { CoreLink } from "./link.js";
 import { createLogger, setLogLevel } from "./log.js";
 import { VoiceNode } from "./node.js";
@@ -35,7 +37,13 @@ async function main(): Promise<void> {
     selfAccountId: client.user.id,
     log: createLogger("link"),
   });
-  const node = new VoiceNode(client, link, cfg, createLogger("node"));
+  let levelsClient: LevelsClient | undefined;
+  let levels: LevelPublisher | undefined;
+  if (cfg.stageLevelsUrl) {
+    levelsClient = new LevelsClient({ url: cfg.stageLevelsUrl, log: createLogger("levels") });
+    levels = new LevelPublisher({ sink: levelsClient, gain: cfg.stageLevelsGain });
+  }
+  const node = new VoiceNode(client, link, cfg, createLogger("node"), levels ? { levels } : {});
 
   let shuttingDown = false;
   const shutdown = async (code: number): Promise<void> => {
@@ -50,6 +58,7 @@ async function main(): Promise<void> {
     try {
       await node.shutdown(); // leave voice (and tell Core)
       await link.stop(); // close the socket
+      levelsClient?.stop();
       client.destroy();
     } catch (err) {
       log.warn("error during shutdown:", err);
@@ -80,6 +89,7 @@ async function main(): Promise<void> {
 
   node.start();
   link.start();
+  levelsClient?.start();
   log.info("voice node running; Ctrl+C to stop");
 }
 

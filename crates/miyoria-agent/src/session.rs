@@ -27,6 +27,7 @@ pub struct HistoryEntry {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Participant {
+    pub account: AccountRef,
     pub display_name: String,
     pub last_seen: DateTime<Utc>,
 }
@@ -86,6 +87,7 @@ impl Session {
             self.participants.insert(
                 msg.author.account.clone(),
                 Participant {
+                    account: msg.author.account.clone(),
                     display_name: msg.author.display_name.clone(),
                     last_seen: msg.ts,
                 },

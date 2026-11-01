@@ -19,7 +19,7 @@ use tracing::{debug, info, warn};
 use crate::config::DiscordConfig;
 use crate::mapping::{
     account, command_path, context_key, display_name, incoming_message, is_guild_admin, kind_of,
-    platform,
+    platform, resolved_users, role_ids,
 };
 use crate::sink::DiscordSink;
 use crate::slash::{build_tree, to_create_commands};
@@ -206,6 +206,12 @@ impl Handler {
             invoker_display_name: display_name(&cmd.user, nick),
             context: context_key(cmd.guild_id, cmd.channel_id.get(), kind),
             invoker_is_guild_admin: is_guild_admin(cmd.member.as_deref()),
+            platform_roles: cmd
+                .member
+                .as_ref()
+                .map(|m| role_ids(&m.roles))
+                .unwrap_or_default(),
+            resolved_users: resolved_users(&cmd.data.resolved),
         };
         let name = invocation.path.join(" ");
         let registry = self.shared.registry.clone();

@@ -1,10 +1,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use miyoria_kernel::{Module, ModuleContext, ModuleManifest};
+use miyoria_store::SettingsStore;
+use parking_lot::Mutex;
 use serde::Deserialize;
+use tracing::warn;
 
+use crate::cost::{BudgetConfig, Pricing};
 use crate::router::LlmRouter;
 use crate::types::{ChatProvider, ModelRef};
 
@@ -18,12 +24,23 @@ use crate::types::{ChatProvider, ModelRef};
 ///
 /// [llm.purposes]
 /// chat = ["deepseek:deepseek-chat"]
+///
+/// [llm.pricing."deepseek:deepseek-chat"]   # USD per million tokens
+/// input_per_mtok = 0.27
+/// cached_input_per_mtok = 0.07
+/// output_per_mtok = 1.10
+///
+/// [llm.budget]   # see [`BudgetConfig`]
+/// daily_usd = 2.0
 /// ```
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct LlmConfig {
     pub providers: HashMap<String, ProviderConfig>,
     pub purposes: HashMap<String, Vec<ModelRef>>,
+    /// Prices keyed by `provider:model`; unpriced models cost 0.
+    pub pricing: HashMap<String, Pricing>,
+    pub budget: BudgetConfig,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -50,7 +67,12 @@ pub struct LlmModule {
     factories: Vec<Box<dyn ProviderFactory>>,
     /// Purpose overrides from the active profile.
     overrides: HashMap<String, Vec<ModelRef>>,
+    /// Router of the running module, flushed on stop.
+    router: Mutex<Option<Arc<LlmRouter>>>,
 }
+
+/// How often unsaved usage totals are written to the store.
+const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
 impl LlmModule {
     pub const ID: &'static str = "llm";
@@ -62,6 +84,7 @@ impl LlmModule {
             config,
             factories,
             overrides: HashMap::new(),
+            router: Mutex::new(None),
         }
     }
 
@@ -80,7 +103,8 @@ impl LlmModule {
                 .ok_or_else(|| anyhow::anyhow!("provider `{name}`: unknown kind `{}`", cfg.kind))?;
             providers.insert(name.clone(), factory.build(name, cfg)?);
         }
-        let router = LlmRouter::new(providers, self.config.purposes.clone());
+        let router = LlmRouter::new(providers, self.config.purposes.clone())
+            .with_cost(self.config.pricing.clone(), self.config.budget.clone());
         router.set_purposes(self.overrides.clone());
         Ok(router)
     }
@@ -93,7 +117,43 @@ impl Module for LlmModule {
     }
 
     async fn start(&self, ctx: ModuleContext) -> anyhow::Result<()> {
-        ctx.provide(Arc::new(self.build_router()?));
+        let router = Arc::new(self.build_router()?);
+        {
+            let ctx = ctx.clone();
+            router.set_event_sink(Arc::new(move |event| ctx.publish(event)));
+        }
+        if let Some(store) = ctx.services().get::<dyn SettingsStore>() {
+            if let Err(e) = router.attach_store(store).await {
+                warn!(error = %e, "could not load persisted LLM usage, starting from zero");
+            }
+            let flusher = router.clone();
+            let cancel = ctx.cancellation().clone();
+            ctx.spawn("usage-flush", async move {
+                let mut tick = tokio::time::interval(FLUSH_INTERVAL);
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        _ = tick.tick() => {
+                            if let Err(e) = flusher.flush().await {
+                                warn!(error = %e, "could not persist LLM usage");
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            });
+        }
+        *self.router.lock() = Some(router.clone());
+        router.announce_budget();
+        ctx.provide(router);
+        Ok(())
+    }
+
+    async fn stop(&self) -> anyhow::Result<()> {
+        let router = self.router.lock().take();
+        if let Some(router) = router {
+            router.flush().await?;
+        }
         Ok(())
     }
 }

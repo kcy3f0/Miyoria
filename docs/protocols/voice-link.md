@@ -26,6 +26,8 @@ Self voice node(`apps/voice-node`,TS)和 Core 的 `voice.link` 模組之間的�
 | `play_start` | `play`(u32), `guild`, `sample_rate` | 開始一段播放;接著用二進位訊框送音訊 |
 | `play_end` | `play` | 這段音訊送完了。Node 播完緩衝裡的音訊後回 `playback` `finished` |
 | `play_stop` | `play`, `fade_ms` | 立刻停止(插話 / barge-in),淡出 `fade_ms` 毫秒 |
+| `golive_start` | `guild`, `source`, `channel?`, `width?`, `height?`, `fps?`, `bitrate_kbps?`, `encoder?`, `audio?`, `listen?` | 開始 Go Live,見下面〈Go Live〉 |
+| `golive_stop` | `guild` | 停止 Go Live |
 | `ping` | | |
 
 二進位 `0x02`(播放音訊):`[0x02][play: u32 LE][PCM s16le 單聲道 …]`。
@@ -41,6 +43,7 @@ Self voice node(`apps/voice-node`,TS)和 Core 的 `voice.link` 模組之間的�
 | `stream_open` | `stream`(u32), `guild`, `channel`, `user_id`, `display_name`, `sample_rate`(16000) | 某人開始說話,開一條音訊串流 |
 | `stream_close` | `stream` | 這個人停止說話(Discord 停止送封包);可以當作斷句的提示 |
 | `playback` | `play`, `state`(`started` / `finished` / `interrupted` / `failed`), `error?` | 播放狀態 |
+| `golive` | `guild`, `state`(`starting` / `live` / `stopped` / `failed`), `error?`, `reason?` | Go Live 狀態,見下面〈Go Live〉 |
 | `error` | `message` | 非致命錯誤(例如進頻道失敗) |
 | `pong` | | |
 
@@ -51,6 +54,46 @@ Self voice node(`apps/voice-node`,TS)和 Core 的 `voice.link` 模組之間的�
 - Node **不送自己帳號的音訊**,也不送 bot 帳號的音訊。
 - 沒同意被收音的使用者,由 Core 過濾(node 照送)。
 - Node 一次只播一段;新的 `play_start` 進來時,如果前一段還沒結束,就排在它後面。
+
+## Go Live
+
+Core 要 self 帳號把畫面(OBS 的輸出:VTuber + 遊戲)推進語音頻道當 Go Live 直播。node 用 ffmpeg 讀 `source`(NVENC 優先,沒有就 x264),經 `@dank074/discord-video-stream` 送到 Discord。
+
+**`golive_start`**
+
+| 欄位 | 說明 |
+|---|---|
+| `guild` | 必填。 |
+| `source` | 必填。`rtmp://` / `rtmps://`、`srt://`、`udp://`、`rtsp://`、`http(s)://`、`file://` 或本機檔案路徑。其他(`pipe:`、`concat:`、`-` 開頭…)一律拒絕。 |
+| `channel` | 在哪個語音頻道直播。省略 = 她目前在的頻道;她不在任何頻道又沒給 `channel` 就 `failed`。給了但她不在那個頻道,node 會先進去(hybrid 模式)。 |
+| `width` `height` `fps` `bitrate_kbps` | 輸出規格,省略時用 node 的設定(預設高 1080、60 fps、6000 kbps,寬度依來源比例)。超出範圍(寬/高 16~7680/4320、fps 1~120、碼率 100~100000)回 `failed`,不會默默夾住。只給 `width` 時高度依比例。 |
+| `encoder` | `auto`(預設:`h264_nvenc` 真的開得起來就用,否則 x264)/ `nvenc` / `software`。要求 `nvenc` 但開不起來時退回 x264(node 日誌會有警告)。 |
+| `audio` | 是否送來源的音軌。預設 `true`。如果 OBS 的來源本來就含她的 TTS(例如 VB-Cable),設 `false` 避免觀眾聽到兩次。 |
+| `listen` | 誰是伺服器。**預設讓 node 的 ffmpeg 當伺服器等 OBS 來推**:`rtmp://` 預設 `-listen 1`;`srt://` 沒寫 `mode=` 時補 `mode=listener`。來源是一台已經在跑的 RTMP/SRT 伺服器(node 去拉)時給 `listen: false`(SRT 補 `mode=caller`)。URL 裡明寫的 `mode=` 優先。 |
+
+OBS 端:RTMP 設定→串流→自訂,伺服器 `rtmp://127.0.0.1:1935/live`、金鑰 `miyoria`;SRT 伺服器填 `srt://127.0.0.1:9999?mode=caller`。輸出請用 NVENC H.264、關鍵影格間隔 1 秒、B-frames 0、CBR(要用 node 的 `GOLIVE_NO_TRANSCODE` 直通時必須如此)。
+
+**`golive` 狀態**
+
+| state | 意義 |
+|---|---|
+| `starting` | 收到請求,在等來源 / 連 Discord。來源是 listener 時會一直停在這裡直到 OBS 開始推(超過 `GOLIVE_START_TIMEOUT_S`,預設 120 秒,變成 `failed`)。 |
+| `live` | Go Live 連線已建立、畫面正在送出。 |
+| `stopped` | 結束了。`reason`:`stop requested`(Core 要求)、`source ended`(OBS 停了 / 檔案播完)、`left voice` / `voice session ended (…)`(離開語音頻道,hybrid 的 Go Live 依附在語音 session 上)、`shutdown`、`not streaming`(對沒在直播的伺服器送 `golive_stop`)。 |
+| `failed` | 沒起得來或中途死掉。`error` 是人看得懂的原因(來源網址不合法、ffmpeg 結束碼與最後幾行 stderr、找不到語音頻道、套件載入失敗…)。 |
+
+規則:
+
+- 每個 self 帳號**同一時間只有一個** Go Live(Discord 的限制)。已經在直播的伺服器再收到 `golive_start` 只會重送目前狀態;別的伺服器則回 `failed`("another Go Live is already running")。
+- node 不會自動重連來源:OBS 斷線就是 `stopped`("source ended"),由 Core 決定要不要再送 `golive_start`。
+- Core 的連線斷了不影響正在進行的 Go Live;重連後 node 會再報一次目前狀態。
+- 離開語音(`leave`、被踢、換頻道)會先停掉 Go Live。
+
+**和語音(收音 + TTS)同時進行**:`GOLIVE_VOICE_MODE=hybrid`(預設)時,語音連線維持不動(`selfDeaf: false`,照常收音、播放),Go Live 是 Discord 另開的第二條 WebRTC 連線(`STREAM_CREATE`),只借用語音 session id,所以兩者互不干擾。這靠的是動到 `@dank074/discord-video-stream` Streamer 的一個私有欄位(`_voiceConnection`),屬於實驗性質,還沒對真的 Discord 驗證(Phase 0 spike 的 `GOLIVE_VOICE=hybrid` 同一做法)。如果實測發現不行,改 `GOLIVE_VOICE_MODE=exclusive`:推流前 node 離開語音(送 `left`,`reason: "golive"`)、由套件自己的連線進頻道(固定自我拒聽,聽不到人、不能播 TTS);Go Live 結束後自動重新加入原頻道(送 `joined` + `voice_state`),Core 的 `leave` 會取消這個重新加入。
+
+## 嘴型音量(不在這個協定裡)
+
+voice node 另外把**實際送去 Discord 的 PCM**(重新取樣成 48 kHz 之後、跟播放對時)每 10 ms 算一次 RMS,推給 Stage 的 `STAGE_LEVELS_URL`(預設不啟用,例如 `ws://127.0.0.1:7883/levels`):`{"t":<播放開始起算的 ms>,"rms":0..1}`。`t` 是該 10 ms 視窗的起點、跟音訊自己的時間軸走(補靜音時照樣前進),每段播放從 0 開始;播放結束或被打斷送一筆 `rms: 0`。`rms` 是相對滿刻度的真正 RMS(一般說話約 0.05~0.2),`STAGE_LEVELS_GAIN` 可放大。Stage 沒開時安靜地重連,不影響語音。
 
 ---
 

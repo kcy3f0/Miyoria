@@ -1,0 +1,19 @@
+{
+  "name": "@miyoria/overlay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Miyoria stream overlay: OBS browser source showing subtitles, emotion, status and the request queue from the Stage feed",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vite": "^7.0.0",
+    "vitest": "^4.0.18"
+  }
+}

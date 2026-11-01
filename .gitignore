@@ -21,3 +21,6 @@ spikes/speech-bench/results/
 spikes/speech-bench/out/
 **/.venv/
 __pycache__/
+
+# 資料庫備份(scripts/backup.sh):只放本機 / 自己的備份位置
+/backups/

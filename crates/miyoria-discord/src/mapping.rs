@@ -2,14 +2,14 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use miyoria_commands::ArgValue;
+use miyoria_commands::{ArgValue, ResolvedUser};
 use miyoria_types::{
     AccountRef, Attachment, Author, ContextKey, ContextKind, IncomingMessage, MessageRef,
     PlatformId,
 };
 use serenity::all::{
-    ChannelType, CommandDataOption, CommandDataOptionValue, GuildId, Member, Message, Permissions,
-    User, UserId,
+    ChannelType, CommandDataOption, CommandDataOptionValue, CommandDataResolved, GuildId, Member,
+    Message, Permissions, RoleId, User, UserId,
 };
 
 pub const PLATFORM: &str = "discord";
@@ -99,9 +99,35 @@ pub fn incoming_message(
 
 /// Members with Administrator or Manage Server count as guild admins.
 pub fn is_guild_admin(member: Option<&Member>) -> bool {
-    member
-        .and_then(|m| m.permissions)
-        .is_some_and(|p| p.contains(Permissions::ADMINISTRATOR) || p.manage_guild())
+    member.and_then(|m| m.permissions).is_some_and(admin_perms)
+}
+
+fn admin_perms(p: Permissions) -> bool {
+    p.contains(Permissions::ADMINISTRATOR) || p.manage_guild()
+}
+
+/// Role ids of a guild member, as strings.
+pub fn role_ids(roles: &[RoleId]) -> Vec<String> {
+    roles.iter().map(|r| r.get().to_string()).collect()
+}
+
+/// Guild details of the users passed in user options, keyed by user id.
+/// Users without member data (e.g. in DMs) get no roles.
+pub fn resolved_users(resolved: &CommandDataResolved) -> BTreeMap<String, ResolvedUser> {
+    resolved
+        .users
+        .iter()
+        .map(|(id, user)| {
+            let member = resolved.members.get(id);
+            let nick = member.and_then(|m| m.nick.as_deref());
+            let info = ResolvedUser {
+                display_name: display_name(user, nick),
+                platform_roles: member.map(|m| role_ids(&m.roles)).unwrap_or_default(),
+                is_guild_admin: member.and_then(|m| m.permissions).is_some_and(admin_perms),
+            };
+            (id.get().to_string(), info)
+        })
+        .collect()
 }
 
 /// Flattens an interaction into a command path and argument values.
@@ -305,6 +331,33 @@ mod tests {
         assert!(is_guild_admin(Some(&member("32")))); // MANAGE_GUILD
         assert!(!is_guild_admin(Some(&member("2048")))); // SEND_MESSAGES
         assert!(!is_guild_admin(None));
+    }
+
+    #[test]
+    fn maps_resolved_users() {
+        let resolved: CommandDataResolved = serde_json::from_value(json!({
+            "users": {
+                "5": user(5, "eve", Some("Eve"), false),
+                "6": user(6, "dm_only", None, false),
+            },
+            "members": {
+                "5": { "nick": "Evie", "roles": ["70", "71"], "joined_at": null,
+                       "deaf": false, "mute": false, "flags": 0, "permissions": "8" },
+            },
+        }))
+        .unwrap();
+        let users = resolved_users(&resolved);
+        assert_eq!(
+            users["5"],
+            ResolvedUser {
+                display_name: "Evie".into(),
+                platform_roles: vec!["70".into(), "71".into()],
+                is_guild_admin: true,
+            }
+        );
+        assert_eq!(users["6"].display_name, "dm_only");
+        assert!(users["6"].platform_roles.is_empty() && !users["6"].is_guild_admin);
+        assert_eq!(role_ids(&[RoleId::new(3)]), ["3"]);
     }
 
     #[test]

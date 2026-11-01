@@ -29,6 +29,8 @@ enum Command {
     Doctor,
     /// Run the core node (Discord bot, agent, ...)
     Core,
+    /// Run the stage node on the streaming PC (VTube Studio, OBS, overlay)
+    Stage,
     /// Chat with her in the terminal (no Discord needed)
     Chat {
         /// Your display name in the conversation
@@ -62,6 +64,30 @@ enum Command {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// Extensions (offline tools, plus `dev` to run the core with hot reload)
+    Ext {
+        #[command(subcommand)]
+        command: ExtCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExtCommand {
+    /// Scaffold a TypeScript extension
+    New {
+        name: String,
+        /// Parent directory
+        #[arg(long, default_value = "extensions")]
+        dir: PathBuf,
+    },
+    /// List discovered extensions
+    List,
+    /// Install from a local path or a git URL
+    Install { source: String },
+    /// Check an extension's manifest
+    Validate { dir: PathBuf },
+    /// Run the core with extension hot reload
+    Dev,
 }
 
 #[derive(Subcommand)]
@@ -111,6 +137,17 @@ async fn main() -> anyhow::Result<()> {
             init_logging(&log_filter(&config), false);
             let boot = boot::build(&config, boot::Options::default()).await?;
             boot.run_until_ctrl_c().await
+        }
+        Command::Stage => {
+            let config = Config::load(&cli.config)?;
+            init_logging(&log_filter(&config), false);
+            let mut stage: miyoria_stage::StageConfig = config.get("stage")?;
+            let profile = boot::load_profile(&config)?;
+            let avatar = profile.dir.join("avatar.toml");
+            if avatar.exists() {
+                stage.avatar = miyoria_stage::AvatarProfile::load(&avatar)?;
+            }
+            miyoria_stage::run_stage(stage).await
         }
         Command::Chat { name, with_discord } => {
             let config = Config::load(&cli.config)?;
@@ -177,6 +214,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Command::Ext { command } => ext(&cli.config, command).await,
         Command::Profile {
             command: ProfileCommand::Validate,
         } => {
@@ -200,6 +238,83 @@ async fn main() -> anyhow::Result<()> {
                 },
             );
             Ok(())
+        }
+    }
+}
+
+async fn ext(config_path: &Path, command: ExtCommand) -> anyhow::Result<()> {
+    use miyoria_ext_host::cli;
+
+    let base = std::env::current_dir()?;
+    let load = || Config::load(config_path);
+    match command {
+        ExtCommand::New { name, dir } => {
+            // Inside the monorepo link the local SDK; elsewhere use the published one.
+            let sdk = if base.join("packages/sdk/package.json").exists() {
+                "workspace:*"
+            } else {
+                "^0.1.0"
+            };
+            let opts = cli::NewOptions {
+                sdk: sdk.to_owned(),
+                id: None,
+            };
+            let path = cli::new_extension(&dir, &name, &opts)?;
+            println!("✓ 已建立 {}", path.display());
+            Ok(())
+        }
+        ExtCommand::List => {
+            for e in cli::list(&load()?, &base)? {
+                let (id, version) = e
+                    .manifest
+                    .as_ref()
+                    .map(|m| (m.id.clone(), m.version.clone()))
+                    .unwrap_or_else(|| ("?".into(), "?".into()));
+                let mark = if !e.problems.is_empty() {
+                    "✗"
+                } else if e.enabled && e.runs_on_core {
+                    "●"
+                } else {
+                    "○"
+                };
+                println!("{mark} {id} {version}  {}", e.dir.display());
+                for p in &e.problems {
+                    println!("    {p}");
+                }
+            }
+            Ok(())
+        }
+        ExtCommand::Install { source } => {
+            let installed = cli::install(&load()?, &base, &source)?;
+            println!("✓ 已安裝 {} 到 {}", installed.id, installed.dir.display());
+            for w in installed.warnings {
+                println!("  ! {w}");
+            }
+            Ok(())
+        }
+        ExtCommand::Validate { dir } => {
+            let v = cli::validate(&dir);
+            for w in &v.warnings {
+                println!("! {w}");
+            }
+            for e in &v.errors {
+                println!("✗ {e}");
+            }
+            if v.is_ok() {
+                println!("✓ manifest 正常");
+                Ok(())
+            } else {
+                anyhow::bail!("{} 個錯誤", v.errors.len())
+            }
+        }
+        ExtCommand::Dev => {
+            let config = load()?;
+            let mut raw = config.raw().clone();
+            raw["modules"]["extensions"]["dev"] = serde_json::Value::Bool(true);
+            let config = Config::from_value(raw);
+            init_logging(&log_filter(&config), false);
+            let boot = boot::build(&config, boot::Options::default()).await?;
+            boot.run_until_ctrl_c().await
         }
     }
 }

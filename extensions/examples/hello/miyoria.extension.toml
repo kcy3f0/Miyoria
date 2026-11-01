@@ -1,0 +1,18 @@
+# 範例擴充:一個 `dice` 工具和一個 `/hello` 指令。
+# 建置:pnpm install && pnpm build(先建置 packages/sdk)
+id = "miyoria.hello"
+version = "0.1.0"
+name = "Hello"
+description = "SDK 範例:擲骰子工具與打招呼指令"
+kind = ["tools", "commands"]
+runtime = "node"
+entry = "dist/index.js"
+placement = "any"
+
+[permissions]
+events = ["agent.turn.completed"]
+tools = true
+commands = true
+
+[config]
+schema = "config.schema.json"

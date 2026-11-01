@@ -5,6 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+# A newer push to the same PR / branch makes the older run pointless.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   rust:
     runs-on: ubuntu-latest
@@ -17,3 +28,120 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  # TypeScript packages. Each one has its own lockfile and is installed on its own
+  # (--ignore-workspace), like on a developer machine. A package that does not exist yet is skipped.
+  node:
+    name: node (${{ matrix.dir }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [apps/voice-node, apps/panel, apps/overlay, packages/sdk]
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect package
+        id: detect
+        working-directory: .
+        run: |
+          if [ -n "${{ hashFiles(format('{0}/package.json', matrix.dir)) }}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.dir }} has no package.json yet, skipping"
+          fi
+
+      # Version comes from "packageManager" in the root package.json (pnpm@9.x).
+      - uses: pnpm/action-setup@v4
+        if: steps.detect.outputs.present == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.detect.outputs.present == 'true'
+        with:
+          node-version: 24
+
+      - name: Locate pnpm store
+        id: pnpm-store
+        if: steps.detect.outputs.present == 'true'
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        if: steps.detect.outputs.present == 'true'
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ matrix.dir }}-${{ hashFiles(format('{0}/pnpm-lock.yaml', matrix.dir)) }}
+          restore-keys: |
+            pnpm-${{ runner.os }}-${{ matrix.dir }}-
+
+      - name: Install
+        if: steps.detect.outputs.present == 'true'
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm install --ignore-workspace --frozen-lockfile
+          else
+            pnpm install --ignore-workspace
+          fi
+      # --if-present: a package only needs the scripts it actually defines.
+      - name: Typecheck
+        if: steps.detect.outputs.present == 'true'
+        run: pnpm run --if-present typecheck
+      - name: Test
+        if: steps.detect.outputs.present == 'true'
+        run: pnpm run --if-present test
+      - name: Build
+        if: steps.detect.outputs.present == 'true'
+        run: pnpm run --if-present build
+
+  # Light-weight worker tests: they run against the in-process fake worker, no GPU or model needed.
+  workers-python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: workers
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: workers/fake/requirements.txt
+      - name: Install light dependencies
+        # fake/requirements.txt already brings fastapi, httpx and pytest; numpy is used by the
+        # text-splitting / backend tests. torch, qwen-tts, sherpa-onnx etc. are NOT installed.
+        run: pip install -r fake/requirements.txt numpy
+      - run: python -m pytest
+
+  # Build the Core image to catch Dockerfile / dependency breakage. Nothing is pushed.
+  docker-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.core
+          push: false
+          tags: miyoria-core:ci
+          cache-from: type=gha,scope=core-image
+          cache-to: type=gha,scope=core-image,mode=max
+
+  # `docker compose config` validates the compose file (both with and without the core profile).
+  compose-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate deploy/docker-compose.yml
+        working-directory: deploy
+        env:
+          POSTGRES_PASSWORD: ci-only
+        run: |
+          docker compose config --quiet
+          touch ../.env
+          docker compose --profile core config --quiet

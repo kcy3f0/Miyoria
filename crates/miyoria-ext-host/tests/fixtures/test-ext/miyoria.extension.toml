@@ -1,0 +1,11 @@
+id = "test.fixture"
+version = "0.0.1"
+kind = ["tools", "commands", "events", "prompt"]
+runtime = "node"
+entry = "index.mjs"
+placement = "core"
+
+[permissions]
+events = ["custom.ok.*", "ext.other.*"]
+tools = true
+commands = true

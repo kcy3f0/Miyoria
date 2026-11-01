@@ -1,0 +1,91 @@
+/* Miyoria panel tokens. Dark only: the panel lives next to Discord and OBS on
+   a streaming desk at night. Neutrals lean toward the accent's blue (h 265). */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces, darkest to lightest */
+  --c-rail: oklch(0.145 0.011 265);
+  --c-bg: oklch(0.168 0.012 265);
+  --c-raised: oklch(0.198 0.013 265);
+  --c-hover: oklch(0.232 0.014 265);
+  --c-active: oklch(0.262 0.016 265);
+  --c-line: oklch(0.285 0.014 265);
+  --c-line-strong: oklch(0.37 0.016 265);
+
+  /* Text */
+  --c-text: oklch(0.945 0.006 265);
+  --c-text-2: oklch(0.79 0.012 265);
+  --c-text-3: oklch(0.665 0.014 265);
+  --c-text-on-accent: oklch(0.985 0.004 265);
+
+  /* Accent: DeepSeek blue, lifted for a dark ground */
+  --c-accent: oklch(0.72 0.145 268);
+  --c-accent-fill: oklch(0.52 0.19 268);
+  --c-accent-fill-hover: oklch(0.565 0.19 268);
+  --c-accent-soft: oklch(0.52 0.19 268 / 0.18);
+  --c-accent-line: oklch(0.6 0.17 268 / 0.55);
+
+  /* Semantic */
+  --c-ok: oklch(0.77 0.13 158);
+  --c-ok-soft: oklch(0.6 0.13 158 / 0.16);
+  --c-warn: oklch(0.82 0.12 80);
+  --c-warn-soft: oklch(0.7 0.13 80 / 0.16);
+  --c-danger: oklch(0.72 0.16 25);
+  --c-danger-soft: oklch(0.6 0.18 25 / 0.17);
+  --c-danger-fill: oklch(0.55 0.19 25);
+  --c-danger-fill-hover: oklch(0.6 0.19 25);
+  --c-muted-soft: oklch(0.5 0.01 265 / 0.2);
+
+  /* Diff */
+  --c-diff-add: oklch(0.6 0.13 158 / 0.14);
+  --c-diff-del: oklch(0.6 0.18 25 / 0.14);
+
+  /* Type */
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "PingFang TC",
+    "Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans TC", sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", ui-monospace, "SF Mono", Consolas, "Noto Sans Mono CJK TC",
+    monospace;
+
+  --fs-xs: 0.75rem; /* 12 */
+  --fs-sm: 0.8125rem; /* 13 */
+  --fs-md: 0.875rem; /* 14, body */
+  --fs-lg: 1rem; /* 16 */
+  --fs-xl: 1.1875rem; /* 19 */
+  --fs-2xl: 1.4375rem; /* 23, page title */
+  --lh-tight: 1.25;
+  --lh-body: 1.55;
+
+  /* Space (4 px grid) */
+  --s-1: 0.25rem;
+  --s-2: 0.5rem;
+  --s-3: 0.75rem;
+  --s-4: 1rem;
+  --s-5: 1.25rem;
+  --s-6: 1.5rem;
+  --s-8: 2rem;
+  --s-10: 2.5rem;
+  --s-12: 3rem;
+
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+
+  --shadow-pop: 0 12px 32px -8px oklch(0.05 0.01 265 / 0.7), 0 2px 6px oklch(0.05 0.01 265 / 0.4);
+
+  --rail-w: 15rem;
+  --topbar-h: 3.25rem;
+  --control-h: 2.125rem;
+  --control-h-sm: 1.75rem;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 0ms;
+    --dur-2: 0ms;
+  }
+}

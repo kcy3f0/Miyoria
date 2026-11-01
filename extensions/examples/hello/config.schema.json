@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "greeting": {
+      "type": "string",
+      "description": "打招呼用的開頭",
+      "default": "哈囉"
+    },
+    "max_dice": {
+      "type": "integer",
+      "description": "一次最多擲幾顆骰子",
+      "minimum": 1,
+      "default": 10
+    }
+  }
+}

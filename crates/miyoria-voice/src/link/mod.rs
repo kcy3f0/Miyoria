@@ -26,7 +26,10 @@ use tracing::warn;
 pub use module::VoiceLinkModule;
 pub use playback::{Playback, Stoppable};
 
-use crate::protocol::CoreMessage;
+use crate::protocol::{CoreMessage, WireGoLiveState};
+
+/// Topic of Go Live state changes (`Event::Custom`).
+pub const GOLIVE_TOPIC: &str = "voice.golive";
 
 /// `[modules."voice.link"]` config section.
 #[derive(Clone, Debug, Deserialize)]
@@ -89,6 +92,64 @@ pub enum AudioEvent {
     },
 }
 
+/// Go Live state, as reported by the voice node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoLiveState {
+    /// Waiting for the source, connecting to Discord.
+    Starting,
+    /// Frames are being sent to Discord.
+    Live,
+    /// Ended (stop request, source ended, left voice).
+    Stopped,
+    /// Could not start, or died; see [`GoLiveStatus::error`].
+    Failed,
+}
+
+impl From<WireGoLiveState> for GoLiveState {
+    fn from(s: WireGoLiveState) -> Self {
+        match s {
+            WireGoLiveState::Starting => Self::Starting,
+            WireGoLiveState::Live => Self::Live,
+            WireGoLiveState::Stopped => Self::Stopped,
+            WireGoLiveState::Failed => Self::Failed,
+        }
+    }
+}
+
+/// Last Go Live state of one guild.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GoLiveStatus {
+    pub state: GoLiveState,
+    /// Why it failed (`Failed`).
+    pub error: Option<String>,
+    /// Why it ended (`Stopped`), e.g. "source ended".
+    pub reason: Option<String>,
+}
+
+/// A request to start a Go Live stream. Only `guild` and `source` are
+/// required; the node applies its own defaults to the rest.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GoLiveRequest {
+    pub guild: String,
+    /// Voice channel to stream in. Default: the one she is in, else the node
+    /// joins it first.
+    pub channel: Option<String>,
+    /// `rtmp://`, `srt://`, `udp://`, `http(s)://` URL or a local file.
+    pub source: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub fps: Option<u32>,
+    pub bitrate_kbps: Option<u32>,
+    /// `auto` (default), `nvenc` or `software`.
+    pub encoder: Option<String>,
+    /// Send the source's audio track (default true).
+    pub audio: Option<bool>,
+    /// Make the node's ffmpeg wait for the source to connect (default: true
+    /// for `rtmp://`; SRT URLs without `mode=` become `mode=listener`).
+    pub listen: Option<bool>,
+}
+
 /// Builds the context of a voice channel.
 pub fn voice_context(platform: &PlatformId, guild: &str, channel: &str) -> ContextKey {
     ContextKey {
@@ -136,6 +197,8 @@ struct ConnState {
     plays: HashMap<u32, watch::Sender<Option<PlaybackState>>>,
     /// Node stream id → (link stream id, guild).
     streams: HashMap<u32, (u64, String)>,
+    /// Go Live state reported by the node, per guild.
+    golive: HashMap<String, GoLiveStatus>,
 }
 
 /// One authenticated node connection.
@@ -347,6 +410,88 @@ impl VoiceLink {
             return Err(e);
         }
         Ok(playback::spawn(conn, id, sample_rate, audio, node_rx))
+    }
+
+    /// Asks the node to start a Go Live stream. Returns once the request is
+    /// sent; progress arrives as `voice.golive` events (`starting`, `live`,
+    /// `stopped`, `failed`) and in [`VoiceLink::golive`].
+    pub async fn golive_start(&self, req: GoLiveRequest) -> anyhow::Result<()> {
+        if req.guild.trim().is_empty() {
+            anyhow::bail!("go live needs a guild");
+        }
+        if req.source.trim().is_empty() {
+            anyhow::bail!("go live needs a source");
+        }
+        if let Some(e) = req.encoder.as_deref()
+            && !matches!(e, "auto" | "nvenc" | "software")
+        {
+            anyhow::bail!("unknown encoder `{e}` (expected auto, nvenc or software)");
+        }
+        for (name, v) in [
+            ("width", req.width),
+            ("height", req.height),
+            ("fps", req.fps),
+            ("bitrate_kbps", req.bitrate_kbps),
+        ] {
+            if v == Some(0) {
+                anyhow::bail!("`{name}` must not be 0");
+            }
+        }
+        let conn = self
+            .conn_for(&req.guild)
+            .ok_or_else(|| anyhow::anyhow!("no voice node connected"))?;
+        conn.send_json(&CoreMessage::GoliveStart {
+            guild: req.guild,
+            channel: req.channel,
+            source: req.source.trim().to_owned(),
+            width: req.width,
+            height: req.height,
+            fps: req.fps,
+            bitrate_kbps: req.bitrate_kbps,
+            encoder: req.encoder,
+            audio: req.audio,
+            listen: req.listen,
+        })
+        .await
+    }
+
+    /// Asks the node to stop the Go Live stream in `guild`.
+    pub async fn golive_stop(&self, guild: &str) -> anyhow::Result<()> {
+        let conn = self
+            .conn_for(guild)
+            .ok_or_else(|| anyhow::anyhow!("no voice node connected"))?;
+        conn.send_json(&CoreMessage::GoliveStop {
+            guild: guild.to_owned(),
+        })
+        .await
+    }
+
+    /// The last Go Live state the node reported for `guild`.
+    pub fn golive(&self, guild: &str) -> Option<GoLiveStatus> {
+        self.conns
+            .lock()
+            .iter()
+            .rev()
+            .find_map(|c| c.state.lock().golive.get(guild).cloned())
+    }
+
+    /// Whether a Go Live stream is starting or live in `guild`.
+    pub fn is_streaming(&self, guild: &str) -> bool {
+        self.golive(guild)
+            .is_some_and(|s| matches!(s.state, GoLiveState::Starting | GoLiveState::Live))
+    }
+
+    fn publish_golive(&self, platform: &PlatformId, guild: &str, status: &GoLiveStatus) {
+        self.publish(Event::Custom {
+            topic: GOLIVE_TOPIC.to_owned(),
+            payload: serde_json::json!({
+                "platform": platform.as_str(),
+                "guild": guild,
+                "state": status.state,
+                "error": status.error,
+                "reason": status.reason,
+            }),
+        });
     }
 
     /// Receives every captured audio event from now on. The channel is

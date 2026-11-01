@@ -8,6 +8,10 @@
 //!
 //! In voice channels the debounce is shorter, but it is extended (up to
 //! `voice.max_debounce_ms`) while someone is speaking.
+//!
+//! An initiative request starts a turn without input, but only when the
+//! context is quiet: no turn in flight, no debounce pending, no speech of hers
+//! still queued and her last words older than the ambient cooldown.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,7 +25,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::debug;
 
-use crate::runtime::{Agent, Input};
+use crate::runtime::{Agent, Initiative, Input};
 use crate::session::Session;
 use crate::turn;
 
@@ -192,7 +196,38 @@ impl Coordinator {
                         }
                     }
                     window = None;
-                    running = Some(self.start(std::mem::take(&mut pending)));
+                    running = Some(self.start(std::mem::take(&mut pending), None));
+                }
+                Wake::Input(Input::Initiative(initiative)) => {
+                    let busy = if running.is_some() {
+                        Some("a turn is in flight")
+                    } else if !pending.is_empty() {
+                        Some("messages are waiting for a turn")
+                    } else if unplayed.is_some() {
+                        Some("her speech is still queued")
+                    } else {
+                        None
+                    };
+                    if let Some(why) = busy {
+                        self.agent
+                            .initiative_skipped(&self.key, &initiative.reason, why);
+                        continue;
+                    }
+                    let last = self.session.lock().last_self_at();
+                    let cooldown = self.agent.ambient_cooldown(&self.key);
+                    if let Some(last) = last {
+                        let since = chrono::Utc::now().signed_duration_since(last);
+                        if since < cooldown {
+                            let why = format!(
+                                "cooldown ({}ms since she spoke)",
+                                since.num_milliseconds()
+                            );
+                            self.agent
+                                .initiative_skipped(&self.key, &initiative.reason, &why);
+                            continue;
+                        }
+                    }
+                    running = Some(self.start(Vec::new(), Some(initiative)));
                 }
                 Wake::TurnDone => {
                     let r = running.take().expect("turn was running");
@@ -219,7 +254,7 @@ impl Coordinator {
         }
     }
 
-    fn start(&self, inputs: Vec<IncomingMessage>) -> Running {
+    fn start(&self, inputs: Vec<IncomingMessage>, initiative: Option<Initiative>) -> Running {
         let turn = TurnId::new();
         self.agent.ctx.publish_in_turn(
             Event::AgentTurnStarted {
@@ -235,6 +270,7 @@ impl Coordinator {
             self.session.clone(),
             turn,
             inputs.clone(),
+            initiative,
             flags.clone(),
         );
         Running {

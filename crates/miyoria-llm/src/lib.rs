@@ -6,11 +6,16 @@
 //! * [`LlmModule`] builds providers from `[llm]` config through registered
 //!   [`ProviderFactory`]s and provides the router as a service.
 
+mod cost;
 mod mock;
 mod module;
 mod router;
 mod types;
 
+pub use cost::{
+    BUDGET_TOPIC, BudgetConfig, BudgetState, CostReport, EventSink, ModelUsage, OnExhausted,
+    PeriodReport, Pricing, USAGE_KEY_PREFIX, USAGE_PROFILE,
+};
 pub use mock::MockProvider;
 pub use module::{LlmConfig, LlmModule, ProviderConfig, ProviderFactory};
 pub use router::{LlmRouter, UsageRecord};

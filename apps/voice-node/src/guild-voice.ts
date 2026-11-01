@@ -6,6 +6,7 @@ import {
   type DiscordGatewayAdapterCreator,
   entersState,
   joinVoiceChannel,
+  NetworkingStatusCode,
   VoiceConnectionDisconnectReason,
   type VoiceConnection,
   VoiceConnectionStatus,
@@ -16,6 +17,7 @@ import type { Config } from "./config.js";
 import { listParticipants, makeSpeakerResolver } from "./discord.js";
 import type { LinkSink } from "./link.js";
 import type { Logger } from "./log.js";
+import type { LevelPublisher } from "./levels/publisher.js";
 import { DiscordPlayerPort } from "./playback/discord-port.js";
 import { type PlaybackEvent, PlaybackQueue } from "./playback/queue.js";
 import { PlaybackSource } from "./playback/source.js";
@@ -27,6 +29,8 @@ export interface GuildVoiceDeps {
   cfg: Config;
   ids: StreamIdAllocator;
   log: Logger;
+  /** Lip-sync levels of what is played. */
+  levels?: LevelPublisher;
   onPlaybackEvent: (ev: PlaybackEvent) => void;
   /** The connection died on its own (kicked, channel deleted, network). The owner should drop the session. */
   onLost: (session: GuildVoice, reason: string) => void;
@@ -101,7 +105,7 @@ export class GuildVoice {
     player.on("debug", (m) => this.log.debug("player:", m));
 
     this.queue = new PlaybackQueue({
-      port: new DiscordPlayerPort(player, this.log),
+      port: new DiscordPlayerPort(player, this.log, this.d.levels),
       onEvent: this.d.onPlaybackEvent,
       createSource: (sampleRate) =>
         new PlaybackSource({
@@ -125,6 +129,17 @@ export class GuildVoice {
       log: this.log,
     });
     this.capture.start();
+  }
+
+  /**
+   * The gateway voice session id of the live voice connection, or undefined while it is not Ready.
+   * Go Live borrows it: the stream connection is created against the same voice state.
+   */
+  voiceSessionId(): string | undefined {
+    const state = this.connection?.state;
+    if (!state || state.status !== VoiceConnectionStatus.Ready) return undefined;
+    const net = state.networking.state;
+    return net.code === NetworkingStatusCode.Ready ? net.connectionOptions.sessionId : undefined;
   }
 
   /** Reports `joined` + `voice_state` to Core. */

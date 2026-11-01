@@ -1,0 +1,59 @@
+package dev.miyoria.bridge.model;
+
+import dev.miyoria.bridge.model.Models.BlockInfo;
+import dev.miyoria.bridge.model.Models.EntityInfo;
+import dev.miyoria.bridge.model.Models.StackInfo;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Unprocessed game state, filled in on the client thread by GameObserver and turned into the
+ * protocol snapshot by SnapshotSummarizer. Contains no Minecraft types so it is unit-testable.
+ */
+public final class RawObservation {
+    public float health;
+    public float maxHealth = 20f;
+    public float absorption;
+    public int food;
+    public float saturation;
+    public int air;
+
+    public double x, y, z;
+    public float yaw, pitch;
+    public String dimension = "overworld";
+    public String biome = "unknown";
+    public long timeOfDay;
+    public long worldTime;
+    public boolean raining;
+    public boolean thundering;
+
+    public int heldSlot;
+    /** Every non-empty slot in main inventory (hotbar + storage). */
+    public List<StackSlot> mainSlots = new ArrayList<>();
+    public int mainSlotCount = 36;
+    public StackInfo head, chest, legs, feet, offhand;
+
+    /** What the crosshair points at: null when nothing. */
+    public LookTarget lookingAt;
+
+    public List<EntityInfo> entities = new ArrayList<>();
+    public List<BlockInfo> notableBlocks = new ArrayList<>();
+
+    public BaritoneState baritone = BaritoneState.UNAVAILABLE;
+    public AltoState altoclef = AltoState.UNAVAILABLE;
+
+    public record StackSlot(int slot, StackInfo stack) {}
+
+    public record LookTarget(String kind, String id, String name, Integer x, Integer y, Integer z,
+                             String face, Double distance) {}
+
+    public record BaritoneState(boolean available, boolean busy, String process, String goal) {
+        public static final BaritoneState UNAVAILABLE = new BaritoneState(false, false, null, null);
+    }
+
+    /** {@code busy} may be null when it cannot be determined. */
+    public record AltoState(boolean available, Boolean busy) {
+        public static final AltoState UNAVAILABLE = new AltoState(false, null);
+    }
+}

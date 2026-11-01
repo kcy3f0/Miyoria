@@ -1,6 +1,12 @@
-//! One turn: attention decision, prompt assembly, generation (with the tool
-//! loop) and output. Text replies are sent once complete; voice replies are
-//! spoken sentence by sentence while the model is still generating.
+//! One turn: attention decision, prompt assembly (including the sections of
+//! prompt contributors), generation (with the tool loop) and output. Text
+//! replies are sent once complete; voice replies are spoken sentence by
+//! sentence while the model is still generating.
+//!
+//! An initiative turn has no input and skips attention (the coordinator
+//! already checked the context is quiet). While the LLM budget is exhausted
+//! nothing is generated: a turn she would have answered gets a canned line at
+//! most once per context per `budget_notice_interval_ms`.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -11,26 +17,34 @@ use futures::StreamExt;
 use miyoria_llm::{ChatMessage, ChatRequest, LlmRouter, StreamEvent, ToolCall, ToolSpec};
 use miyoria_types::{
     AccountRef, Action, ActionPayload, ActionSink, Authorizer, ContextKey, ContextKind,
-    DecisionTrace, Event, IncomingMessage, LaneKey, OutgoingMessage, Priority, TurnId,
+    DecisionTrace, Event, IncomingMessage, LaneKey, OutgoingMessage, Participant, Priority,
+    PromptContributors, PromptRequest, SocialSignals, TurnId,
 };
 use parking_lot::Mutex;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
 use crate::attention::{self, AttentionInput, Gate, VoiceAttention};
-use crate::config::AttentionConfig;
+use crate::config::{AttentionConfig, ChannelMode};
+use crate::contributors;
 use crate::coordinator::TurnFlags;
 use crate::expression::{Expression, ExpressionParser, Segment};
 use crate::handle::voice_scope;
 use crate::prompt::{self, Situation};
-use crate::runtime::Agent;
-use crate::session::Session;
+use crate::runtime::{Agent, Initiative};
+use crate::session::{HistoryEntry, Session};
+use crate::signals::{self, BudgetState, EXHAUSTED_LINE};
 use crate::speech::{self, SentenceSplitter};
 use crate::tools::{ReactTool, Tool, ToolContext};
 
 const TYPING_TTL: Duration = Duration::from_secs(10);
 /// History lines shown to the `fast` model.
 const CHECK_HISTORY: usize = 12;
+/// History lines before the input sent to prompt contributors.
+const CONTRIBUTOR_HISTORY: usize = 6;
+/// People in the prompt request (text contexts) and with attitude hints.
+const MAX_PEOPLE: usize = 10;
+const MAX_ATTITUDE_HINTS: usize = 5;
 
 pub(crate) async fn run(
     agent: Arc<Agent>,
@@ -38,6 +52,7 @@ pub(crate) async fn run(
     session: Arc<Mutex<Session>>,
     turn: TurnId,
     inputs: Vec<IncomingMessage>,
+    initiative: Option<Initiative>,
     flags: Arc<TurnFlags>,
 ) {
     let t = Turn {
@@ -46,7 +61,9 @@ pub(crate) async fn run(
         session: &session,
         turn,
         inputs: &inputs,
+        initiative: initiative.as_ref(),
         voice: key.kind == ContextKind::Voice,
+        social: agent.social(),
     };
     let text = match t.respond(&flags).await {
         Ok(text) => text,
@@ -71,8 +88,30 @@ struct Turn<'a> {
     session: &'a Arc<Mutex<Session>>,
     turn: TurnId,
     inputs: &'a [IncomingMessage],
+    /// She starts the conversation on her own (`inputs` is empty).
+    initiative: Option<&'a Initiative>,
     /// A voice channel: the reply is spoken.
     voice: bool,
+    social: Option<Arc<dyn SocialSignals>>,
+}
+
+/// What attention concluded (not yet published).
+struct Decision {
+    respond: bool,
+    direct: bool,
+    score: f32,
+    reasons: Vec<String>,
+}
+
+/// Per-turn additions to the situation message.
+#[derive(Default)]
+struct Extras {
+    /// Mood and attitude lines.
+    notes: Vec<String>,
+    /// Rendered contributor sections.
+    sections: Option<String>,
+    /// For the decision trace.
+    reasons: Vec<String>,
 }
 
 /// One model response of the generation loop.
@@ -172,23 +211,93 @@ impl Turn<'_> {
     /// Returns the text she sent or said (empty if she stayed quiet).
     async fn respond(&self, flags: &TurnFlags) -> anyhow::Result<String> {
         let names = self.agent.persona.names();
-        let Some(direct) = self.decide(&names).await else {
-            return Ok(String::new());
+        let budget = self.agent.handle.llm_budget();
+        let Decision {
+            respond,
+            direct,
+            score,
+            mut reasons,
+        } = match self.initiative {
+            Some(initiative) => {
+                let mut reasons = vec![format!("initiative:{}", initiative.reason)];
+                let respond = budget == BudgetState::Ok;
+                if !respond {
+                    reasons.push(format!("skipped: llm budget {budget}"));
+                }
+                Decision {
+                    respond,
+                    direct: false,
+                    score: 0.0,
+                    reasons,
+                }
+            }
+            None => self.decide(&names, budget).await,
         };
-        self.generate(direct, &names, flags).await
-    }
-
-    /// Multiplier for ambient reply probabilities.
-    fn ambient_factor(&self) -> f32 {
-        if self.voice {
-            self.agent.config.voice.ambient_factor
-        } else {
-            1.0
+        if !respond {
+            self.publish_decision(false, score, reasons);
+            return Ok(String::new());
         }
+        if budget == BudgetState::Exhausted {
+            let notice = self.agent.take_budget_notice(self.key);
+            reasons.push(if notice {
+                "llm budget exhausted: out-of-energy line".into()
+            } else {
+                "llm budget exhausted: already told them, staying quiet".into()
+            });
+            self.publish_decision(notice, score, reasons);
+            return if notice {
+                self.say_exhausted(direct, flags).await
+            } else {
+                Ok(String::new())
+            };
+        }
+        let extras = self.extras().await;
+        reasons.extend(extras.reasons.iter().cloned());
+        self.publish_decision(true, score, reasons);
+        self.generate(direct, &names, flags, &extras).await
     }
 
-    /// Runs attention; `Some(direct)` if she should respond.
-    async fn decide(&self, names: &[String]) -> Option<bool> {
+    fn publish_decision(&self, respond: bool, score: f32, reasons: Vec<String>) {
+        self.agent.ctx.publish_in_turn(
+            Event::AgentDecision(DecisionTrace {
+                turn: self.turn,
+                context: self.key.clone(),
+                respond,
+                score,
+                reasons,
+            }),
+            self.turn,
+        );
+    }
+
+    /// Someone she ignores entirely (only their old lines can still be in
+    /// history: new ones are not recorded).
+    fn hidden(&self, entry: &HistoryEntry) -> bool {
+        !entry.is_self
+            && self
+                .social
+                .as_ref()
+                .and_then(|s| s.attitude(&entry.account))
+                .is_some_and(|a| a.blocked)
+    }
+
+    /// Mean affinity of the turn's speakers (unknown people count as 0), if
+    /// social signals are available.
+    fn speaker_affinity(&self) -> Option<f32> {
+        let social = self.social.as_ref()?;
+        let authors = self.authors();
+        if authors.is_empty() {
+            return None;
+        }
+        let sum: f32 = authors
+            .iter()
+            .map(|a| social.attitude(a).map_or(0.0, |t| t.affinity))
+            .sum();
+        Some(sum / authors.len() as f32)
+    }
+
+    /// Runs attention.
+    async fn decide(&self, names: &[String], budget: BudgetState) -> Decision {
         let cfg = &self.agent.config;
         let (interests, profile_share) = self.agent.persona.read(|p| {
             (
@@ -196,8 +305,16 @@ impl Turn<'_> {
                 p.manifest.behavior.max_share_of_recent,
             )
         });
-        let mode = self.agent.handle.channel_mode(self.key);
+        let configured = self.agent.handle.channel_mode(self.key);
+        // Short on budget: no joining in, no fast-model checks.
+        let mode = if budget != BudgetState::Ok && configured == ChannelMode::Ambient {
+            ChannelMode::MentionOnly
+        } else {
+            configured
+        };
         let activeness = self.agent.handle.activeness(self.key);
+        let affinity = self.speaker_affinity();
+        let mood = self.agent.mood();
         let voice = &cfg.voice;
         let (attention_cfg, max_share) = if self.voice {
             let cfg = AttentionConfig {
@@ -229,10 +346,16 @@ impl Turn<'_> {
                     ambient_factor: voice.ambient_factor,
                     question_window_ms: i64::try_from(voice.question_window_ms).unwrap_or(i64::MAX),
                 }),
+                affinity,
+                mood,
             })
         };
         let mut reasons = assessment.reasons;
-        let ambient = |p: f32| activeness.scale(p * self.ambient_factor());
+        if mode != configured {
+            reasons.push(format!("llm budget {budget}: as mention-only"));
+        }
+        let scale = assessment.ambient_scale;
+        let ambient = |p: f32| (p * scale).clamp(0.0, 1.0);
         let probability = match assessment.gate {
             Gate::Ignore => 0.0,
             Gate::Sample(p) => p,
@@ -256,17 +379,12 @@ impl Turn<'_> {
             Some(roll) => reasons.push(format!("p {probability:.2}, roll {roll:.2}")),
             None => reasons.push(format!("p {probability:.2}")),
         }
-        self.agent.ctx.publish_in_turn(
-            Event::AgentDecision(DecisionTrace {
-                turn: self.turn,
-                context: self.key.clone(),
-                respond,
-                score: assessment.score,
-                reasons,
-            }),
-            self.turn,
-        );
-        respond.then_some(assessment.direct)
+        Decision {
+            respond,
+            direct: assessment.direct,
+            score: assessment.score,
+            reasons,
+        }
     }
 
     async fn llm_check(&self) -> anyhow::Result<CheckReply> {
@@ -274,7 +392,10 @@ impl Turn<'_> {
         let name = self.agent.persona.display_name();
         let messages = {
             let session = self.session.lock();
-            prompt::check_messages(&name, session.recent(CHECK_HISTORY))
+            prompt::check_messages(
+                &name,
+                session.recent(CHECK_HISTORY).filter(|e| !self.hidden(e)),
+            )
         };
         let request = ChatRequest {
             messages,
@@ -290,11 +411,168 @@ impl Turn<'_> {
         parse_check(&response.text)
     }
 
+    /// The name she knows `account` by in this turn.
+    fn name_of(&self, session: &Session, account: &AccountRef) -> Option<String> {
+        self.inputs
+            .iter()
+            .find(|m| &m.author.account == account)
+            .map(|m| m.author.display_name.clone())
+            .or_else(|| {
+                session
+                    .voice_members()
+                    .iter()
+                    .find(|m| &m.account == account)
+                    .map(|m| m.display_name.clone())
+            })
+            .or_else(|| {
+                session
+                    .participants()
+                    .into_iter()
+                    .find(|p| &p.account == account)
+                    .map(|p| p.display_name.clone())
+            })
+    }
+
+    /// The people this turn is about: its speakers, or for an initiative the
+    /// accounts its hint is about.
+    fn focus(&self) -> Vec<AccountRef> {
+        let mut out: Vec<AccountRef> = self.authors().into_iter().cloned().collect();
+        for account in self.initiative.iter().flat_map(|i| &i.about) {
+            if !out.contains(account) {
+                out.push(account.clone());
+            }
+        }
+        out
+    }
+
+    /// Mood and attitude lines, plus the sections of prompt contributors.
+    async fn extras(&self) -> Extras {
+        let mut extras = Extras::default();
+        if let Some(mood) = self.agent.mood() {
+            extras.notes.push(signals::mood_hint(&mood));
+        }
+        let focus = self.focus();
+        if let Some(social) = &self.social {
+            let session = self.session.lock();
+            let hints: Vec<String> = focus
+                .iter()
+                .filter_map(|account| {
+                    let attitude = social.attitude(account)?;
+                    let name = self.name_of(&session, account)?;
+                    Some(signals::attitude_hint(&name, &attitude))
+                })
+                .take(MAX_ATTITUDE_HINTS)
+                .collect();
+            extras.notes.extend(hints);
+        }
+        let Some(registry) = self.agent.ctx.services().get::<PromptContributors>() else {
+            return extras;
+        };
+        if registry.all().is_empty() {
+            return extras;
+        }
+        let request = self.prompt_request(focus);
+        let cfg = &self.agent.config;
+        let gathered = contributors::gather(&registry, &request, cfg.contributor_timeout()).await;
+        extras.reasons = gathered.reasons();
+        extras.sections = prompt::render_sections(gathered.sections, cfg.max_context_chars);
+        extras
+    }
+
+    /// What prompt contributors get to see of this turn.
+    fn prompt_request(&self, speakers: Vec<AccountRef>) -> PromptRequest {
+        let her = self.agent.persona.display_name();
+        let profile = self.agent.persona.read(|p| p.id.clone());
+        let person = |account: &AccountRef| {
+            self.social
+                .as_ref()
+                .and_then(|s| s.attitude(account))
+                .map(|a| a.person)
+        };
+        let session = self.session.lock();
+        let members = session.voice_members();
+        let mut participants: Vec<Participant> = if self.voice && !members.is_empty() {
+            members
+                .iter()
+                .map(|m| Participant {
+                    account: m.account.clone(),
+                    display_name: m.display_name.clone(),
+                    person: person(&m.account),
+                })
+                .collect()
+        } else {
+            session
+                .participants()
+                .into_iter()
+                .take(MAX_PEOPLE)
+                .map(|p| Participant {
+                    account: p.account.clone(),
+                    display_name: p.display_name.clone(),
+                    person: person(&p.account),
+                })
+                .collect()
+        };
+        // Speakers are always among the participants.
+        for account in &speakers {
+            if participants.iter().any(|p| &p.account == account) {
+                continue;
+            }
+            if let Some(name) = self.name_of(&session, account) {
+                participants.push(Participant {
+                    account: account.clone(),
+                    display_name: name,
+                    person: person(account),
+                });
+            }
+        }
+        let speakers: Vec<AccountRef> = speakers
+            .into_iter()
+            .filter(|a| participants.iter().any(|p| &p.account == a))
+            .collect();
+        let query = match self.initiative {
+            Some(initiative) => initiative.hint.trim().to_owned(),
+            None => self
+                .inputs
+                .iter()
+                .map(|m| {
+                    format!(
+                        "{}: {}",
+                        m.author.display_name,
+                        crate::session::message_text(m)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+        let first_input = self.inputs.iter().map(|m| m.ts).min();
+        let before: Vec<&HistoryEntry> = session
+            .history()
+            .iter()
+            .filter(|e| first_input.is_none_or(|t| e.ts < t) && !self.hidden(e))
+            .collect();
+        let recent = before[before.len().saturating_sub(CONTRIBUTOR_HISTORY)..]
+            .iter()
+            .map(|e| prompt::transcript_line(e, &her))
+            .collect();
+        PromptRequest {
+            profile,
+            turn: self.turn,
+            context: self.key.clone(),
+            participants,
+            speakers,
+            query,
+            recent,
+            voice: self.voice,
+            now: Utc::now(),
+        }
+    }
+
     async fn generate(
         &self,
         direct: bool,
         names: &[String],
         flags: &TurnFlags,
+        extras: &Extras,
     ) -> anyhow::Result<String> {
         let cfg = &self.agent.config;
         let services = self.agent.ctx.services();
@@ -311,19 +589,31 @@ impl Turn<'_> {
                 session
                     .participants()
                     .iter()
-                    .take(10)
+                    .take(MAX_PEOPLE)
                     .map(|p| p.display_name.clone())
                     .collect()
             };
-            let situation = prompt::situation_prompt(
+            let mut situation = prompt::situation_prompt(
                 &Situation {
                     context: self.key,
                     present: &present,
                     direct,
+                    initiative: self.initiative.map(|i| i.hint.as_str()),
+                    notes: &extras.notes,
                 },
                 Local::now(),
             );
-            prompt::build_messages(&persona, &situation, session.recent(cfg.prompt_history))
+            if let Some(sections) = &extras.sections {
+                situation.push_str("\n\n");
+                situation.push_str(sections);
+            }
+            prompt::build_messages(
+                &persona,
+                &situation,
+                session
+                    .recent(cfg.prompt_history)
+                    .filter(|e| !self.hidden(e)),
+            )
         };
 
         let priority = if direct {
@@ -372,7 +662,20 @@ impl Turn<'_> {
         if text.is_empty() {
             return Ok(String::new());
         }
+        self.send_text(&*sink, text, direct, priority, flags).await
+    }
 
+    /// Sends `text` (split into several messages if long) as her reply.
+    async fn send_text(
+        &self,
+        sink: &dyn ActionSink,
+        text: String,
+        direct: bool,
+        priority: Priority,
+        flags: &TurnFlags,
+    ) -> anyhow::Result<String> {
+        let cfg = &self.agent.config;
+        let lane = LaneKey::text(self.key);
         let reply_to = (cfg.reply_reference && direct && self.key.kind != ContextKind::Dm)
             .then(|| self.inputs.last().map(|m| m.id.clone()))
             .flatten();
@@ -408,6 +711,37 @@ impl Turn<'_> {
             }
         }
         Ok(text)
+    }
+
+    /// Budget exhausted: says (or writes) the constant out-of-energy line.
+    async fn say_exhausted(&self, direct: bool, flags: &TurnFlags) -> anyhow::Result<String> {
+        let sink = self.agent.ctx.services().require::<dyn ActionSink>()?;
+        let priority = if direct {
+            Priority::Direct
+        } else {
+            Priority::Initiative
+        };
+        if !self.voice {
+            return self
+                .send_text(&*sink, EXHAUSTED_LINE.to_owned(), direct, priority, flags)
+                .await;
+        }
+        let (platform, scope) = voice_scope(self.key);
+        let action = Action::new(
+            LaneKey::voice(platform.as_str(), &scope),
+            priority,
+            ActionPayload::Speak {
+                context: self.key.clone(),
+                text: EXHAUSTED_LINE.to_owned(),
+                emotion: Some("tired".into()),
+            },
+        )
+        .with_ttl(self.agent.config.voice.speak_ttl())
+        .with_turn(self.turn);
+        sink.submit(action)
+            .await
+            .map_err(|e| e.context("submitting speech"))?;
+        Ok(EXHAUSTED_LINE.to_owned())
     }
 
     /// Submits a typing indicator every `typing_refresh_ms`. Never returns.

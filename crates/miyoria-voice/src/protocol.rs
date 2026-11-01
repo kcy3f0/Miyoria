@@ -51,6 +51,16 @@ pub enum WirePlaybackState {
     Failed,
 }
 
+/// Go Live state reported by the node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireGoLiveState {
+    Starting,
+    Live,
+    Stopped,
+    Failed,
+}
+
 /// Text frames sent by the voice node.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -99,6 +109,14 @@ pub enum NodeMessage {
         #[serde(default)]
         error: Option<String>,
     },
+    Golive {
+        guild: String,
+        state: WireGoLiveState,
+        #[serde(default)]
+        error: Option<String>,
+        #[serde(default)]
+        reason: Option<String>,
+    },
     Error {
         message: String,
     },
@@ -134,6 +152,30 @@ pub enum CoreMessage {
     PlayStop {
         play: u32,
         fade_ms: u32,
+    },
+    /// Starts a Go Live stream of `source` (see `docs/protocols/voice-link.md`).
+    GoliveStart {
+        guild: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        channel: Option<String>,
+        source: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fps: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bitrate_kbps: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        encoder: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        audio: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        listen: Option<bool>,
+    },
+    GoliveStop {
+        guild: String,
     },
     Ping,
     Pong,
@@ -221,5 +263,52 @@ mod tests {
             .to_json(),
             r#"{"type":"play_stop","play":1,"fade_ms":80}"#
         );
+    }
+
+    #[test]
+    fn golive_messages_match_the_spec() {
+        let start = CoreMessage::GoliveStart {
+            guild: "g".into(),
+            channel: None,
+            source: "srt://127.0.0.1:9999".into(),
+            width: None,
+            height: Some(1080),
+            fps: Some(60),
+            bitrate_kbps: None,
+            encoder: Some("nvenc".into()),
+            audio: None,
+            listen: None,
+        };
+        assert_eq!(
+            start.to_json(),
+            r#"{"type":"golive_start","guild":"g","source":"srt://127.0.0.1:9999","height":1080,"fps":60,"encoder":"nvenc"}"#
+        );
+        assert_eq!(
+            CoreMessage::GoliveStop { guild: "g".into() }.to_json(),
+            r#"{"type":"golive_stop","guild":"g"}"#
+        );
+        let live: NodeMessage =
+            serde_json::from_str(r#"{"type":"golive","guild":"g","state":"live"}"#).unwrap();
+        assert_eq!(
+            live,
+            NodeMessage::Golive {
+                guild: "g".into(),
+                state: WireGoLiveState::Live,
+                error: None,
+                reason: None
+            }
+        );
+        let failed: NodeMessage = serde_json::from_str(
+            r#"{"type":"golive","guild":"g","state":"failed","error":"ffmpeg not found"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            failed,
+            NodeMessage::Golive {
+                state: WireGoLiveState::Failed,
+                error: Some(_),
+                ..
+            }
+        ));
     }
 }

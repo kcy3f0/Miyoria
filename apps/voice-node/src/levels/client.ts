@@ -1,0 +1,112 @@
+// WebSocket client for the Stage's levels endpoint (ws://127.0.0.1:7883/levels).
+// Sends `{"t": <ms>, "rms": 0..1}` text frames. The Stage being absent is normal: reconnect
+// quietly (one warning per outage) and drop points while disconnected.
+import WebSocket from "ws";
+import type { Logger } from "../log.js";
+import { noopLogger } from "../log.js";
+import type { LevelSink } from "./publisher.js";
+import type { LevelPoint } from "./rms.js";
+
+export interface LevelsClientOptions {
+  url: string;
+  log?: Logger;
+  backoffMinMs?: number;
+  backoffMaxMs?: number;
+  /** Drop points while this many bytes are waiting in the socket buffer. */
+  maxBufferedBytes?: number;
+}
+
+export function encodeLevel(p: LevelPoint): string {
+  // 4 decimals is far below what a mouth shape can show; keeps the frames small.
+  return `{"t":${Math.round(p.t)},"rms":${Math.round(p.rms * 10_000) / 10_000}}`;
+}
+
+export class LevelsClient implements LevelSink {
+  private readonly url: string;
+  private readonly log: Logger;
+  private readonly minMs: number;
+  private readonly maxMs: number;
+  private readonly maxBuffered: number;
+  private ws: WebSocket | undefined;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private attempt = 0;
+  private stopped = true;
+  private warned = false;
+
+  constructor(opts: LevelsClientOptions) {
+    this.url = opts.url;
+    this.log = opts.log ?? noopLogger;
+    this.minMs = opts.backoffMinMs ?? 500;
+    this.maxMs = opts.backoffMaxMs ?? 5000;
+    this.maxBuffered = opts.maxBufferedBytes ?? 64 * 1024;
+  }
+
+  get connected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  start(): void {
+    if (!this.stopped) return;
+    this.stopped = false;
+    this.connect();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    const ws = this.ws;
+    this.ws = undefined;
+    try {
+      ws?.terminate();
+    } catch {
+      // already closed
+    }
+  }
+
+  send(point: LevelPoint): void {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > this.maxBuffered) return;
+    try {
+      ws.send(encodeLevel(point));
+    } catch {
+      // closing; the close handler reconnects
+    }
+  }
+
+  private connect(): void {
+    if (this.stopped) return;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(this.url, { perMessageDeflate: false, handshakeTimeout: 3000 });
+    } catch (err) {
+      this.log.warn(`levels: bad STAGE_LEVELS_URL: ${err instanceof Error ? err.message : String(err)}`);
+      this.stopped = true;
+      return;
+    }
+    this.ws = ws;
+    ws.on("open", () => {
+      this.attempt = 0;
+      this.warned = false;
+      this.log.info(`levels: connected to ${this.url}`);
+    });
+    // 'close' always follows an error; nothing else to do here (and it must not throw).
+    ws.on("error", (err: Error) => this.log.debug(`levels: ${err.message}`));
+    ws.on("close", () => {
+      if (this.ws !== ws) return;
+      this.ws = undefined;
+      if (this.stopped) return;
+      if (!this.warned) {
+        this.warned = true;
+        this.log.warn(`levels: ${this.url} is not reachable; lip-sync is off until the Stage is up (retrying quietly)`);
+      }
+      const delay = Math.min(this.maxMs, this.minMs * 2 ** this.attempt);
+      this.attempt++;
+      this.timer = setTimeout(() => {
+        this.timer = undefined;
+        this.connect();
+      }, delay);
+      this.timer.unref?.();
+    });
+  }
+}

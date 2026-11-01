@@ -2,14 +2,27 @@ use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use chrono::Utc;
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use miyoria_kernel::ModuleContext;
+use miyoria_store::{AuditEntry, AuditLog};
+use miyoria_types::{Authorizer, Subject};
 use parking_lot::RwLock;
 use tokio::sync::watch;
 use tracing::warn;
+use ulid::Ulid;
 
 use crate::perms::{Permissions, Role};
 use crate::spec::{ArgKind, ArgValue, CommandReply, CommandSpec, Invocation};
+
+/// Optional service run before a permission check, so an [`Authorizer`]
+/// that loads data lazily (e.g. per-guild role mappings) can fetch it first.
+#[async_trait]
+pub trait AuthorizerPreload: Send + Sync {
+    async fn preload(&self, subject: &Subject);
+}
 
 /// Deepest supported command path (Discord: group / subcommand group / subcommand).
 pub const MAX_PATH_DEPTH: usize = 3;
@@ -28,6 +41,9 @@ struct Entry {
 /// platforms watch [`subscribe`](Self::subscribe) to re-sync.
 pub struct CommandRegistry {
     perms: Permissions,
+    /// Where `dyn Authorizer`, `dyn AuthorizerPreload` and `dyn AuditLog`
+    /// are looked up at dispatch time.
+    services: Option<ModuleContext>,
     entries: RwLock<BTreeMap<Vec<String>, Entry>>,
     groups: RwLock<BTreeMap<Vec<String>, String>>,
     version: watch::Sender<u64>,
@@ -37,10 +53,19 @@ impl CommandRegistry {
     pub fn new(perms: Permissions) -> Self {
         Self {
             perms,
+            services: None,
             entries: RwLock::new(BTreeMap::new()),
             groups: RwLock::new(BTreeMap::new()),
             version: watch::Sender::new(0),
         }
+    }
+
+    /// Looks up the `dyn Authorizer` (falling back to the own
+    /// [`Permissions`]), `dyn AuthorizerPreload` and `dyn AuditLog` services
+    /// through `ctx` whenever a command is dispatched.
+    pub fn with_services(mut self, ctx: ModuleContext) -> Self {
+        self.services = Some(ctx);
+        self
     }
 
     pub fn permissions(&self) -> &Permissions {
@@ -137,7 +162,13 @@ impl CommandRegistry {
                 invocation.path.join(" ")
             )));
         };
-        if !self.perms.allows(&invocation, &spec.permission) {
+        let audit = is_admin_node(&spec.permission)
+            .then(|| self.service::<dyn AuditLog>())
+            .flatten();
+        if !self.allows(&invocation, &spec.permission).await {
+            if let Some(audit) = &audit {
+                append_audit(audit.as_ref(), &invocation, false, Some("denied")).await;
+            }
             return Ok(CommandReply::ephemeral(denial(Role::required_for(
                 &spec.permission,
             ))));
@@ -150,11 +181,61 @@ impl CommandRegistry {
                 )));
             }
         }
-        handler(invocation).await
+        let Some(audit) = audit else {
+            return handler(invocation).await;
+        };
+        let record = invocation.clone();
+        let result = handler(invocation).await;
+        append_audit(audit.as_ref(), &record, result.is_ok(), None).await;
+        result
+    }
+
+    /// Checks `node` with the `dyn Authorizer` service if there is one,
+    /// otherwise with the own [`Permissions`].
+    async fn allows(&self, invocation: &Invocation, node: &str) -> bool {
+        let Some(authorizer) = self.service::<dyn Authorizer>() else {
+            return self.perms.allows(invocation, node);
+        };
+        let subject = invocation.subject();
+        if let Some(preload) = self.service::<dyn AuthorizerPreload>() {
+            preload.preload(&subject).await;
+        }
+        authorizer.allows_subject(&subject, node)
+    }
+
+    fn service<T: ?Sized + Send + Sync + 'static>(&self) -> Option<Arc<T>> {
+        self.services.as_ref()?.services().get::<T>()
     }
 
     fn bump(&self) {
         self.version.send_modify(|v| *v += 1);
+    }
+}
+
+/// `admin.*` and `owner.*` nodes are audited.
+fn is_admin_node(node: &str) -> bool {
+    matches!(node.split('.').next(), Some("admin" | "owner"))
+}
+
+async fn append_audit(log: &dyn AuditLog, inv: &Invocation, ok: bool, outcome: Option<&str>) {
+    let mut detail = serde_json::json!({
+        "args": inv.args,
+        "context": inv.context.to_string(),
+    });
+    if let Some(outcome) = outcome {
+        detail["outcome"] = outcome.into();
+    }
+    let entry = AuditEntry {
+        id: Ulid::new(),
+        at: Utc::now(),
+        actor: format!("{}:{}", inv.invoker.platform, inv.invoker.id),
+        action: inv.path.join(" "),
+        target: inv.context.to_string(),
+        detail,
+        ok,
+    };
+    if let Err(e) = log.append(&entry).await {
+        warn!(action = %entry.action, error = %format!("{e:#}"), "cannot write audit entry");
     }
 }
 
@@ -236,6 +317,14 @@ pub fn normalize_args(
                 "false" | "no" | "off" | "0" => ArgValue::Boolean(false),
                 _ => return Err(format!("「{}」要是 true 或 false", arg.name)),
             },
+            (ArgKind::User, ArgValue::String(s)) => match mention_id(&s, &["<@!", "<@"]) {
+                Some(id) => ArgValue::String(id),
+                None => return Err(format!("「{}」要是一個使用者", arg.name)),
+            },
+            (ArgKind::Role, ArgValue::String(s)) => match mention_id(&s, &["<@&"]) {
+                Some(id) => ArgValue::String(id),
+                None => return Err(format!("「{}」要是一個身分組", arg.name)),
+            },
             (ArgKind::Choice(choices), ArgValue::String(s)) => {
                 if choices.contains(&s) {
                     ArgValue::String(s)
@@ -255,6 +344,18 @@ pub fn normalize_args(
         out.insert(arg.name.clone(), value);
     }
     Ok(out)
+}
+
+/// `"<@123>"` (with one of `prefixes`) or a bare `"123"` / `"discord:123"`
+/// → the id part. Rejects empty values and whitespace.
+fn mention_id(raw: &str, prefixes: &[&str]) -> Option<String> {
+    let raw = raw.trim();
+    let id = prefixes
+        .iter()
+        .find_map(|p| raw.strip_prefix(p).and_then(|r| r.strip_suffix('>')))
+        .unwrap_or(raw);
+    (!id.is_empty() && !id.contains(char::is_whitespace) && !id.contains(['<', '>', '@', '&']))
+        .then(|| id.to_owned())
 }
 
 #[cfg(test)]
@@ -285,6 +386,8 @@ mod tests {
                 kind: ContextKind::Dm,
             },
             invoker_is_guild_admin: false,
+            platform_roles: Vec::new(),
+            resolved_users: BTreeMap::new(),
         }
     }
 
@@ -381,6 +484,66 @@ mod tests {
         assert_eq!(reg.dispatch(as_admin).await.unwrap().text, "ok");
         let as_owner = inv("admin secret", "1", &[]);
         assert_eq!(reg.dispatch(as_owner).await.unwrap().text, "ok");
+    }
+
+    #[test]
+    fn normalizes_user_and_role_args() {
+        let spec = CommandSpec::new("x", "x")
+            .arg(ArgSpec::new("user", "u", ArgKind::User))
+            .arg(ArgSpec::new("role", "r", ArgKind::Role).optional());
+        let args = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), ArgValue::String((*v).to_owned())))
+                .collect::<BTreeMap<_, _>>()
+        };
+        for (raw, id) in [
+            ("<@12>", "12"),
+            ("<@!12>", "12"),
+            (" 12 ", "12"),
+            ("twitch:ab", "twitch:ab"),
+        ] {
+            let out = normalize_args(&spec, args(&[("user", raw)])).unwrap();
+            assert_eq!(out["user"], ArgValue::String(id.into()), "{raw}");
+        }
+        let out = normalize_args(&spec, args(&[("user", "1"), ("role", "<@&34>")])).unwrap();
+        assert_eq!(out["role"], ArgValue::String("34".into()));
+        for bad in [
+            ("user", ""),
+            ("user", "a b"),
+            ("user", "<@&34>"),
+            ("role", "<@34>"),
+        ] {
+            let mut a = args(&[("user", "1")]);
+            a.insert(bad.0.into(), ArgValue::String(bad.1.into()));
+            assert!(normalize_args(&spec, a).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn invocation_helpers() {
+        let mut i = inv("x", "5", &[("user", ArgValue::String("7".into()))]);
+        i.platform_roles = vec!["r1".into()];
+        i.invoker_is_guild_admin = true;
+        let me = i.subject();
+        assert_eq!(me.platform_roles, ["r1"]);
+        assert!(me.is_guild_admin && me.context.is_some());
+        let target = i.account("user").unwrap();
+        assert_eq!(target, parse_account("discord:7").unwrap());
+        assert!(!i.subject_for(&target).is_guild_admin);
+        i.resolved_users.insert(
+            "7".into(),
+            crate::spec::ResolvedUser {
+                display_name: "seven".into(),
+                platform_roles: vec!["r2".into()],
+                is_guild_admin: true,
+            },
+        );
+        let other = i.subject_for(&target);
+        assert_eq!(other.platform_roles, ["r2"]);
+        assert!(other.is_guild_admin);
+        assert_eq!(i.subject_for(&i.invoker.clone()), me);
+        assert_eq!(i.account("missing"), None);
     }
 
     #[tokio::test]

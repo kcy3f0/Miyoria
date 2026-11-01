@@ -134,6 +134,8 @@ fn arg_options(args: &[ArgSpec]) -> Vec<CreateCommandOption> {
                 ArgKind::String | ArgKind::Choice(_) => CommandOptionType::String,
                 ArgKind::Integer => CommandOptionType::Integer,
                 ArgKind::Boolean => CommandOptionType::Boolean,
+                ArgKind::User => CommandOptionType::User,
+                ArgKind::Role => CommandOptionType::Role,
             };
             let description = if arg.description.trim().is_empty() {
                 arg.name.clone()
@@ -193,6 +195,9 @@ mod tests {
                     "Mode",
                     ArgKind::Choice(vec!["soft".into(), "hard".into()]),
                 )),
+            CommandSpec::new("admin role map", "Map a role")
+                .arg(ArgSpec::new("discord_role", "Discord role", ArgKind::Role))
+                .arg(ArgSpec::new("user", "Someone", ArgKind::User).optional()),
         ]
     }
 
@@ -244,6 +249,11 @@ mod tests {
         assert_eq!(block["options"][0]["choices"][1]["value"], "hard");
         assert_eq!(block["options"][1]["name"], "reason");
         assert_eq!(block["options"][1]["required"], false);
+
+        let map = &admin["options"][2]["options"][0];
+        assert_eq!(map["name"], "map");
+        assert_eq!(map["options"][0]["type"], 8); // ROLE
+        assert_eq!(map["options"][1]["type"], 6); // USER
     }
 
     #[test]

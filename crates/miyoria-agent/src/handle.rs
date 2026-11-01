@@ -1,5 +1,5 @@
 //! Runtime control of the agent: per-context channel mode and activeness, and
-//! which voice channel she is in.
+//! which voice channel she is in, and the LLM budget state.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,6 +11,7 @@ use tracing::warn;
 
 use crate::config::{Activeness, AgentConfig, ChannelMode};
 use crate::persona::PersonaHandle;
+use crate::signals::BudgetState;
 
 const MODE_PREFIX: &str = "channel_mode:";
 const ACTIVENESS_PREFIX: &str = "activeness:";
@@ -48,6 +49,7 @@ pub struct AgentHandle {
     persona: PersonaHandle,
     overrides: Arc<RwLock<Overrides>>,
     voice_rooms: Arc<VoiceRooms>,
+    budget: Arc<RwLock<BudgetState>>,
     store: Option<Arc<dyn SettingsStore>>,
 }
 
@@ -57,6 +59,7 @@ impl AgentHandle {
         persona: PersonaHandle,
         overrides: Arc<RwLock<Overrides>>,
         voice_rooms: Arc<VoiceRooms>,
+        budget: Arc<RwLock<BudgetState>>,
         store: Option<Arc<dyn SettingsStore>>,
     ) -> Self {
         Self {
@@ -64,8 +67,18 @@ impl AgentHandle {
             persona,
             overrides,
             voice_rooms,
+            budget,
             store,
         }
+    }
+
+    /// The LLM budget state last reported on `llm.budget` (`ok` until then).
+    pub fn llm_budget(&self) -> BudgetState {
+        *self.budget.read()
+    }
+
+    pub(crate) fn set_llm_budget(&self, state: BudgetState) -> BudgetState {
+        std::mem::replace(&mut *self.budget.write(), state)
     }
 
     /// The voice channel she is currently in on `platform` in guild `scope`

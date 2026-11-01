@@ -30,6 +30,7 @@ use crate::{
     ToolContext, ToolRegistry,
 };
 
+mod signals;
 mod voice;
 
 #[derive(Default)]
@@ -242,6 +243,10 @@ struct Setup {
     owners: Option<Vec<&'static str>>,
     store: Option<Arc<MemorySettings>>,
     tools: Vec<Arc<dyn Tool>>,
+    /// Provided by the "app" before the agent starts.
+    app_tools: Option<Arc<ToolRegistry>>,
+    /// Fixed decision roll (default 0.0: every positive probability passes).
+    roll: Option<f32>,
 }
 
 struct Fixed(f32);
@@ -305,6 +310,9 @@ impl Harness {
             sup.services()
                 .provide::<dyn SettingsStore>(&ModuleId::from("app"), store);
         }
+        if let Some(tools) = setup.app_tools {
+            sup.services().provide(&ModuleId::from("app"), tools);
+        }
         if let Some(owners) = setup.owners {
             sup.register(
                 Arc::new(CommandsModule::new()),
@@ -348,7 +356,8 @@ impl Harness {
         )
         .await;
 
-        let agent = AgentModule::new(profile(mode)).with_random(Arc::new(Fixed(0.0)));
+        let agent =
+            AgentModule::new(profile(mode)).with_random(Arc::new(Fixed(setup.roll.unwrap_or(0.0))));
         for tool in setup.tools {
             agent.tools().register(tool).unwrap();
         }
@@ -1329,15 +1338,12 @@ async fn overrides_survive_restarts_without_a_store() {
 
 fn command(path: &str, who: &str, args: &[(&str, &str)]) -> Invocation {
     Invocation {
-        path: path.split(' ').map(str::to_owned).collect(),
         args: args
             .iter()
             .map(|(k, v)| ((*k).to_owned(), ArgValue::String((*v).to_owned())))
             .collect(),
-        invoker: account(who),
         invoker_display_name: who.into(),
-        context: channel("c"),
-        invoker_is_guild_admin: false,
+        ..Invocation::new(path, account(who), channel("c"))
     }
 }
 

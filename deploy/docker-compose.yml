@@ -1,6 +1,16 @@
-# PostgreSQL 17 + pgvector for Miyoria.
-#   cp deploy/.env.example deploy/.env
-#   docker compose -f deploy/docker-compose.yml up -d
+# Miyoria 的 Docker 部署。兩種用法:
+#
+#   只要資料庫(本機開發,Core 用 cargo run 在宿主機跑):
+#     cp deploy/.env.example deploy/.env      # 改 POSTGRES_PASSWORD
+#     docker compose -f deploy/docker-compose.yml up -d postgres
+#
+#   Core 也放進 Docker(server 部署):
+#     cp deploy/.env.example deploy/.env      # 改 POSTGRES_PASSWORD
+#     miyoria init                            # 在專案根目錄產生 .env(LLM key、Discord token、各種 token)
+#     docker compose -f deploy/docker-compose.yml --profile core up -d --build
+#
+# `core` 服務掛在 compose profile `core` 後面,所以不加 --profile 時只會啟動 postgres。
+# 詳細步驟、升級、備份見 docs/OPERATIONS.md。
 name: miyoria
 
 services:
@@ -22,5 +32,50 @@ services:
       retries: 10
       start_period: 10s
 
+  core:
+    profiles: ["core"]
+    image: ${MIYORIA_IMAGE:-miyoria-core:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.core
+      args:
+        # 管理面板 build 好之後設成 apps/panel/dist,Core 之後會從 /opt/panel 提供
+        PANEL_DIST: ${PANEL_DIST:-deploy/panel-placeholder}
+    restart: unless-stopped
+    # 秘密(LLM key、Discord token、各種 link token)放專案根目錄的 .env,由 `miyoria init` 產生
+    env_file:
+      - ../.env
+    environment:
+      # 覆寫 .env 裡給宿主機用的 127.0.0.1 位址:容器內要用 compose 網路上的 postgres
+      DATABASE_URL: postgres://${POSTGRES_USER:-miyoria}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_DB:-miyoria}
+      # 取消註解可調整日誌層級,語法同 RUST_LOG(見 docs/OPERATIONS.md)
+      RUST_LOG: ${RUST_LOG:-info,miyoria=debug}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # 讓容器連得到宿主機上的 ASR / TTS worker(Linux 需要這行;Docker Desktop 本來就有)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # 一律只綁 127.0.0.1。要讓別台機器連,走 Tailscale / SSH tunnel / wss 反向代理,不要改成 0.0.0.0
+    ports:
+      - "127.0.0.1:${API_PORT:-7878}:7878"     # Admin API / 管理面板
+      - "127.0.0.1:${VOICE_LINK_PORT:-7879}:7879"  # voice link(self 帳號語音節點)
+      - "127.0.0.1:${STAGE_LINK_PORT:-7882}:7882"  # stage link(Stage 節點,之後的階段)
+    volumes:
+      - core-data:/data
+      - ../profiles:/profiles
+      - ${MIYORIA_CONFIG_FILE:-./miyoria.docker.toml}:/etc/miyoria/miyoria.toml:ro
+    # 容器內的 uid:gid;Linux 上若 profiles 目錄不是 10001 的,改成自己的 `id -u`:`id -g`
+    user: "${MIYORIA_UID:-10001}:${MIYORIA_GID:-10001}"
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
 volumes:
   pgdata:
+  core-data:

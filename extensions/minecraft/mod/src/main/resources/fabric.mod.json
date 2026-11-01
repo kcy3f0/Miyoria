@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "miyoria-bridge",
+  "version": "${version}",
+  "name": "Miyoria Bridge",
+  "description": "Local WebSocket bridge that lets the Miyoria framework observe and drive a real Minecraft client (Baritone / optional AltoClef).",
+  "authors": ["Miyoria"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["dev.miyoria.bridge.game.MiyoriaBridgeClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  },
+  "recommends": {
+    "baritone": "*"
+  },
+  "suggests": {
+    "altoclef": "*"
+  }
+}

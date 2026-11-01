@@ -13,6 +13,7 @@ import {
 } from "@discordjs/voice";
 import OpusScript from "opusscript";
 import { Readable } from "node:stream";
+import type { LevelPublisher, LevelTap } from "../levels/publisher.js";
 import type { Logger } from "../log.js";
 import { noopLogger } from "../log.js";
 import type { PlayerHooks, PlayerPort } from "./queue.js";
@@ -26,7 +27,11 @@ export class OpusFrameStream extends Readable {
   private readonly encoder: OpusScript;
   private deleted = false;
 
-  constructor(private readonly source: PlaybackSource) {
+  constructor(
+    private readonly source: PlaybackSource,
+    /** Receives every frame pulled (lip-sync levels). Optional. */
+    private readonly tap?: LevelTap,
+  ) {
     super({ objectMode: true, highWaterMark: 1 });
     this.encoder = new OpusScript(OUT_RATE, 2, OpusScript.Application.AUDIO);
     this.encoder.setBitrate(96_000);
@@ -36,11 +41,14 @@ export class OpusFrameStream extends Readable {
     try {
       const r = this.source.readFrame();
       if (r.kind === "audio") {
+        this.tap?.frame(r.pcm);
         // Buffer.from copies out of the WASM heap before the next encode reuses it.
         this.push(Buffer.from(this.encoder.encode(r.pcm, FRAME_SAMPLES)));
       } else if (r.kind === "silence") {
+        this.tap?.silence(FRAME_SAMPLES);
         this.push(OPUS_SILENCE);
       } else {
+        this.tap?.end();
         this.push(null);
       }
     } catch (err) {
@@ -49,6 +57,7 @@ export class OpusFrameStream extends Readable {
   }
 
   override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
+    this.tap?.cancel();
     if (!this.deleted) {
       this.deleted = true;
       try {
@@ -74,6 +83,7 @@ export class DiscordPlayerPort implements PlayerPort {
   constructor(
     private readonly player: AudioPlayer,
     private readonly log: Logger = noopLogger,
+    private readonly levels?: LevelPublisher,
   ) {
     player.on("stateChange", (oldState, newState) => {
       const cur = this.current;
@@ -100,7 +110,7 @@ export class DiscordPlayerPort implements PlayerPort {
   }
 
   play(source: PlaybackSource, hooks: PlayerHooks): void {
-    const stream = new OpusFrameStream(source);
+    const stream = new OpusFrameStream(source, this.levels?.begin());
     const resource = createAudioResource(stream, {
       inputType: StreamType.Opus,
       silencePaddingFrames: 5,

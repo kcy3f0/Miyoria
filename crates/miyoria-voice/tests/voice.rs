@@ -247,6 +247,8 @@ impl Env {
                 kind: ContextKind::Channel,
             },
             invoker_is_guild_admin: false,
+            platform_roles: Vec::new(),
+            resolved_users: Default::default(),
         };
         self.registry().dispatch(inv).await.unwrap().text
     }
@@ -508,6 +510,8 @@ async fn join_and_leave_commands() {
                     kind: ContextKind::Channel,
                 },
                 invoker_is_guild_admin: false,
+                platform_roles: Vec::new(),
+                resolved_users: Default::default(),
             };
             registry.dispatch(inv).await.unwrap()
         })

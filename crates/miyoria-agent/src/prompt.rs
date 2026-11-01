@@ -1,10 +1,11 @@
 //! Prompt assembly, ordered for provider prefix caching: the stable persona
 //! prompt first, then the conversation history (which only grows at the end),
-//! and the per-turn situation (current time, addressing) last.
+//! and the per-turn situation (current time, addressing, mood, attitudes and
+//! the sections of prompt contributors) last.
 
 use chrono::{DateTime, Datelike, TimeZone};
 use miyoria_llm::{ChatMessage, ChatRole};
-use miyoria_types::{ContextKey, ContextKind};
+use miyoria_types::{ContextKey, ContextKind, PromptSection};
 
 use crate::session::HistoryEntry;
 
@@ -37,6 +38,11 @@ const VOICE_SITUATION: &str = "# 目前情境
 - 可以用 <emo:名稱> 標記情緒變化。
 - 不需要或不想開口的時候,只輸出 <silence/>。";
 
+const INITIATIVE: &str = "現在沒有人在跟你說話,是你自己想主動開啟話題。";
+const VOICE_INITIATIVE: &str = "大家現在沒有在跟你說話,是你自己想主動用說的開個話題。";
+const INITIATIVE_HINT: &str = "你想到可以聊的:";
+const INITIATIVE_SILENCE: &str = "如果覺得現在不適合開口,只輸出 <silence/>。";
+
 const VOICE_ADDRESSED: &str = "有人在叫你或問你問題,請用說的回應對方。";
 const VOICE_AMBIENT: &str =
     "沒有人直接叫你,大家在聊天。只有在你真的想插一句話時才開口,否則只輸出 <silence/>。";
@@ -58,6 +64,44 @@ pub struct Situation<'a> {
     /// voice channel: the people in it).
     pub present: &'a [String],
     pub direct: bool,
+    /// She starts the conversation on her own; what she might bring up
+    /// (may be empty).
+    pub initiative: Option<&'a str>,
+    /// Extra lines under the situation (mood, attitudes towards people).
+    pub notes: &'a [String],
+}
+
+impl Situation<'_> {
+    /// The addressing line plus the notes, as `- ` list items (the template
+    /// supplies the first `- `).
+    fn addressing(&self, voice: bool) -> String {
+        let mut out = match self.initiative {
+            Some(hint) => {
+                let mut line = (if voice { VOICE_INITIATIVE } else { INITIATIVE }).to_owned();
+                let hint = hint.trim();
+                if !hint.is_empty() {
+                    line.push_str(INITIATIVE_HINT);
+                    line.push_str(hint);
+                    if !hint.ends_with(['。', '!', '?', '!', '?', '.']) {
+                        line.push('。');
+                    }
+                }
+                line.push_str(INITIATIVE_SILENCE);
+                line
+            }
+            None => match (voice, self.direct) {
+                (true, true) => VOICE_ADDRESSED.to_owned(),
+                (true, false) => VOICE_AMBIENT.to_owned(),
+                (false, true) => ADDRESSED.to_owned(),
+                (false, false) => AMBIENT.to_owned(),
+            },
+        };
+        for note in self.notes.iter().filter(|n| !n.trim().is_empty()) {
+            out.push_str("\n- ");
+            out.push_str(note.trim());
+        }
+        out
+    }
 }
 
 pub fn situation_prompt<Tz: TimeZone>(s: &Situation<'_>, now: DateTime<Tz>) -> String
@@ -77,27 +121,47 @@ where
     } else {
         s.present.join("、")
     };
-    if s.context.kind == ContextKind::Voice {
-        return VOICE_SITUATION
-            .replace("{time}", &time)
-            .replace("{platform}", s.context.platform.as_str())
-            .replace("{channel}", &s.context.channel)
-            .replace("{present}", &present)
-            .replace(
-                "{addressing}",
-                if s.direct {
-                    VOICE_ADDRESSED
-                } else {
-                    VOICE_AMBIENT
-                },
-            );
-    }
-    SITUATION
+    let voice = s.context.kind == ContextKind::Voice;
+    let template = if voice { VOICE_SITUATION } else { SITUATION };
+    // `{addressing}` last: notes come from other modules and must not be
+    // treated as placeholders.
+    template
         .replace("{time}", &time)
         .replace("{platform}", s.context.platform.as_str())
+        .replace("{channel}", &s.context.channel)
         .replace("{place}", &place)
         .replace("{present}", &present)
-        .replace("{addressing}", if s.direct { ADDRESSED } else { AMBIENT })
+        .replace("{addressing}", &s.addressing(voice))
+}
+
+/// Contributed sections as `## {title}\n{body}` blocks, lowest `order` first
+/// (ties by key), at most `max_chars` characters in total. A section that does
+/// not fit is cut short and the rest is dropped. `None` if nothing remains.
+pub fn render_sections(mut sections: Vec<PromptSection>, max_chars: usize) -> Option<String> {
+    sections.retain(|s| !s.body.trim().is_empty());
+    sections.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.key.cmp(&b.key)));
+    let mut out = String::new();
+    let mut used = 0;
+    for section in sections {
+        let sep = if out.is_empty() { "" } else { "\n\n" };
+        let block = format!("{sep}## {}\n{}", section.title.trim(), section.body.trim());
+        let len = block.chars().count();
+        if used + len <= max_chars {
+            out.push_str(&block);
+            used += len;
+            continue;
+        }
+        let room = max_chars.saturating_sub(used);
+        // Only worth it if the heading and a bit of the body fit.
+        let heading = sep.chars().count() + section.title.trim().chars().count() + 4;
+        if room > heading + 20 {
+            let cut: String = block.chars().take(room - 1).collect();
+            out.push_str(&cut);
+            out.push('…');
+        }
+        break;
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// `[persona, history..., situation]`. Her messages become `assistant`,
@@ -155,6 +219,16 @@ pub fn check_messages<'a>(
                 .replace("{name}", name),
         ),
     ]
+}
+
+/// A history entry as one transcript line (`"{name}: {text}"`), for prompt
+/// contributors; `name` is hers.
+pub fn transcript_line(entry: &HistoryEntry, name: &str) -> String {
+    if entry.is_self {
+        format!("{name}: {}", own_line(entry))
+    } else {
+        other_line(entry)
+    }
 }
 
 fn own_line(entry: &HistoryEntry) -> String {
@@ -291,6 +365,8 @@ mod tests {
                 context: &ctx,
                 present: &present,
                 direct: false,
+                initiative: None,
+                notes: &[],
             },
             now,
         );
@@ -339,6 +415,8 @@ mod tests {
                 context: &ctx,
                 present: &present,
                 direct: true,
+                initiative: None,
+                notes: &[],
             },
             now,
         );
@@ -349,6 +427,88 @@ mod tests {
         assert!(s.contains("<emo:名稱>"));
         assert!(s.contains(VOICE_ADDRESSED));
         assert!(!s.contains(ADDRESSED));
+    }
+
+    #[test]
+    fn initiative_situation_and_notes() {
+        let ctx = ContextKey {
+            platform: PlatformId::new("discord"),
+            scope: Some("g".into()),
+            channel: "general".into(),
+            kind: ContextKind::Channel,
+        };
+        let notes = vec![
+            "你現在的狀態:心情不錯".to_owned(),
+            "你對 Owen 的態度:親近".to_owned(),
+        ];
+        let now = Utc.with_ymd_and_hms(2026, 11, 1, 9, 0, 0).unwrap();
+        let s = situation_prompt(
+            &Situation {
+                context: &ctx,
+                present: &[],
+                direct: false,
+                initiative: Some("問 Owen 考試考得怎樣"),
+                notes: &notes,
+            },
+            now,
+        );
+        assert!(s.contains(INITIATIVE), "{s}");
+        assert!(s.contains("你想到可以聊的:問 Owen 考試考得怎樣。"), "{s}");
+        assert!(s.contains(INITIATIVE_SILENCE));
+        assert!(!s.contains(AMBIENT));
+        assert!(
+            s.contains("\n- 你現在的狀態:心情不錯\n- 你對 Owen 的態度:親近\n"),
+            "{s}"
+        );
+
+        let voice = ContextKey {
+            kind: ContextKind::Voice,
+            ..ctx
+        };
+        let s = situation_prompt(
+            &Situation {
+                context: &voice,
+                present: &[],
+                direct: false,
+                initiative: Some(""),
+                notes: &[],
+            },
+            now,
+        );
+        assert!(s.contains(VOICE_INITIATIVE), "{s}");
+        assert!(!s.contains(INITIATIVE_HINT));
+    }
+
+    fn section(key: &str, order: i32, body: &str) -> PromptSection {
+        PromptSection {
+            key: key.into(),
+            title: format!("標題{key}"),
+            body: body.into(),
+            order,
+        }
+    }
+
+    #[test]
+    fn sections_are_ordered_and_capped() {
+        let sections = vec![
+            section("b", 10, "第二"),
+            section("a", 0, "第一"),
+            section("c", 10, "第三"),
+            section("empty", -5, "  "),
+        ];
+        assert_eq!(
+            render_sections(sections.clone(), 4000).unwrap(),
+            "## 標題a\n第一\n\n## 標題b\n第二\n\n## 標題c\n第三"
+        );
+        // Room for the first block only.
+        assert_eq!(render_sections(sections, 12).unwrap(), "## 標題a\n第一");
+        assert!(render_sections(Vec::new(), 100).is_none());
+
+        let long = vec![section("a", 0, "短"), section("b", 1, &"長".repeat(100))];
+        let out = render_sections(long, 60).unwrap();
+        assert_eq!(out.chars().count(), 60);
+        assert!(out.starts_with("## 標題a\n短\n\n## 標題b\n長"));
+        assert!(out.ends_with('…'));
     }
 
     #[test]

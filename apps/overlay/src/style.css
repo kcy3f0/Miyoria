@@ -1,0 +1,300 @@
+/*
+ * Miyoria stream overlay (OBS browser source). Dark, quiet, and legible over any game footage.
+ *
+ * The page background stays transparent; everything that carries text sits on its own plate (near-black
+ * with a cool tint, 82% opaque) so contrast does not depend on what is behind it. One accent family:
+ * the emotion dot. Sizes are in rem, and rem follows the frame (16px at 1920x1080), so the layout is the
+ * same at 720p, 1440p or 4K; ?scale= adjusts it.
+ */
+
+:root {
+  --scale: 1;
+
+  --plate: oklch(0.15 0.014 275 / 0.88);
+  --plate-edge: oklch(1 0 0 / 0.09);
+  --rule: oklch(1 0 0 / 0.09);
+  --ink: oklch(0.97 0.006 275);
+  --ink-dim: oklch(0.78 0.012 275);
+  --ink-faint: oklch(0.64 0.012 275);
+  --ok: oklch(0.8 0.15 160);
+  --live: oklch(0.68 0.21 25);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft JhengHei UI", "Noto Sans TC", "PingFang TC",
+    system-ui, sans-serif;
+}
+
+html {
+  /* 16px at 1920x1080; follows whichever of width or height is the limiting side of a 16:9 frame. */
+  font-size: calc(min(100vw, 177.7778vh) / 120 * var(--scale));
+  background: transparent;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font);
+  font-weight: 500;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+::selection {
+  background: oklch(0.55 0.1 275 / 0.6);
+  color: var(--ink);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* ── subtitles ────────────────────────────────────────────────────────── */
+
+.subtitle {
+  position: absolute;
+  left: 50%;
+  bottom: 5.5rem;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(88rem, 92%);
+  padding: 0.65rem 1.4rem 0.75rem;
+  background: var(--plate);
+  border: 1px solid var(--plate-edge);
+  border-radius: 0.7rem;
+  box-shadow: 0 0.6rem 1.8rem oklch(0 0 0 / 0.38);
+  transform: translateX(-50%);
+  transition:
+    opacity 220ms var(--ease-out),
+    transform 260ms var(--ease-out);
+}
+
+.subtitle.is-hidden {
+  opacity: 0;
+  transform: translate(-50%, 0.6rem);
+  transition-duration: 420ms, 420ms;
+}
+
+.subtitle__text {
+  margin: 0;
+  font-size: 2.45rem;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+  line-break: strict;
+  white-space: pre-wrap;
+}
+
+/* The not-yet-typed part keeps its place in the layout but cannot be seen. */
+.subtitle__rest {
+  color: transparent;
+}
+
+/* ── side panel ───────────────────────────────────────────────────────── */
+
+.panel {
+  position: absolute;
+  top: 2rem;
+  right: 2rem;
+  box-sizing: border-box;
+  width: 18rem;
+  display: grid;
+  gap: 0.85rem;
+  padding: 0.95rem 1.1rem;
+  background: var(--plate);
+  border: 1px solid var(--plate-edge);
+  border-radius: 0.7rem;
+  box-shadow: 0 0.5rem 1.4rem oklch(0 0 0 / 0.32);
+  font-size: 1.05rem;
+  line-height: 1.35;
+}
+
+/* Sections after the first are separated by a hairline, not by more boxes. */
+.panel > * + * {
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--rule);
+}
+
+.emotion {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.emotion__dot {
+  --dot: var(--ink-faint);
+  --level: 1;
+  flex: none;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  background: var(--dot);
+  opacity: var(--level);
+  transition:
+    background-color 500ms var(--ease-out),
+    opacity 500ms var(--ease-out);
+}
+
+.emotion__name {
+  min-width: 0;
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.status__live {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-weight: 600;
+}
+
+.status__pulse {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--live);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+.status__scene {
+  color: var(--ink-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status__chips {
+  display: flex;
+  gap: 1rem;
+  color: var(--ink-faint);
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.chip__dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  box-sizing: border-box;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+
+.chip.is-ok {
+  color: var(--ink-dim);
+}
+
+.chip.is-ok .chip__dot {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+
+.queue {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.queue__title {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.queue__list {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.queue__item {
+  display: grid;
+  grid-template-columns: 1.1rem minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 0.55rem;
+}
+
+.queue__n {
+  color: var(--ink-faint);
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.queue__what {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue__by {
+  max-width: 6rem;
+  overflow: hidden;
+  color: var(--ink-dim);
+  font-size: 0.92rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue__more {
+  color: var(--ink-faint);
+  font-size: 0.92rem;
+}
+
+.offline {
+  position: absolute;
+  left: 1.2rem;
+  bottom: 1.2rem;
+  padding: 0.3rem 0.7rem;
+  background: var(--plate);
+  border-radius: 0.4rem;
+  color: var(--ink-dim);
+  font-size: 0.9rem;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .subtitle,
+  .subtitle.is-hidden,
+  .emotion__dot {
+    transition-duration: 1ms;
+  }
+
+  .status__pulse {
+    animation: none;
+  }
+}

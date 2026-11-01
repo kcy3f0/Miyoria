@@ -4,20 +4,23 @@ use std::sync::Arc;
 use chrono::Utc;
 use miyoria_kernel::{ModuleContext, Subscription, TopicFilter};
 use miyoria_types::{
-    AccountRef, ActionId, ContextKey, ContextKind, Envelope, Event, IncomingMessage, MessageRef,
-    ModuleStateKind, PlatformId, PlaybackState, TurnId, VoiceParticipant, VoiceUtterance,
+    AccountRef, ActionId, Attitude, ContextKey, ContextKind, DecisionTrace, Envelope, Event,
+    IncomingMessage, MessageRef, ModuleStateKind, Mood, MoodSignals, PlatformId, PlaybackState,
+    SocialSignals, TurnId, VoiceParticipant, VoiceUtterance,
 };
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc;
-use tracing::debug;
+use tokio::time::Instant;
+use tracing::{debug, info, warn};
 
 use crate::attention::RandomSource;
 use crate::commands::AgentCommands;
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, ChannelMode};
 use crate::coordinator::Coordinator;
 use crate::handle::AgentHandle;
 use crate::persona::PersonaHandle;
 use crate::session::Session;
+use crate::signals::{self, BUDGET_TOPIC, BudgetState};
 use crate::tools::ToolRegistry;
 
 /// Module whose restart means the agent commands must be registered again.
@@ -34,6 +37,16 @@ pub(crate) enum Input {
         turn: TurnId,
         state: PlaybackState,
     },
+    /// Start a turn on her own (no new input), if the context is quiet.
+    Initiative(Initiative),
+}
+
+/// An `agent.initiative` request.
+#[derive(Clone, Debug)]
+pub(crate) struct Initiative {
+    pub reason: String,
+    pub hint: String,
+    pub about: Vec<AccountRef>,
 }
 
 struct ContextHandle {
@@ -54,6 +67,8 @@ pub(crate) struct Agent {
     contexts: Mutex<HashMap<ContextKey, ContextHandle>>,
     /// Her submitted messages awaiting `action.completed`.
     pending_actions: Mutex<HashMap<ActionId, Arc<Mutex<Session>>>>,
+    /// When she last said she is out of energy (budget exhausted), per context.
+    budget_notices: Mutex<HashMap<ContextKey, Instant>>,
 }
 
 impl Agent {
@@ -77,6 +92,7 @@ impl Agent {
             self_accounts: RwLock::new(HashSet::new()),
             contexts: Mutex::new(HashMap::new()),
             pending_actions: Mutex::new(HashMap::new()),
+            budget_notices: Mutex::new(HashMap::new()),
         }
     }
 
@@ -88,6 +104,8 @@ impl Agent {
             "voice.*",
             "action.completed",
             "system.module.state",
+            "agent.initiative",
+            BUDGET_TOPIC,
         ])
     }
 
@@ -169,6 +187,20 @@ impl Agent {
                     self.persona.clone(),
                 );
             }
+            Event::AgentInitiative {
+                context,
+                reason,
+                hint,
+                about,
+            } => self.on_initiative(
+                context,
+                Initiative {
+                    reason: reason.clone(),
+                    hint: hint.clone(),
+                    about: about.clone(),
+                },
+            ),
+            Event::Custom { topic, payload } if topic == BUDGET_TOPIC => self.on_budget(payload),
             _ => {}
         }
     }
@@ -203,6 +235,10 @@ impl Agent {
     }
 
     fn on_message(self: &Arc<Self>, msg: &IncomingMessage) {
+        if self.is_blocked(&msg.author.account) {
+            debug!(context = %msg.context(), account = %msg.author.account.id, "ignoring blocked user");
+            return;
+        }
         let is_self = self.is_self(&msg.author.account);
         let ignored = is_self || (msg.author.is_bot && !self.config.respond_to_bots);
         self.with_context(msg.context(), |handle| {
@@ -227,7 +263,10 @@ impl Agent {
     }
 
     fn on_utterance(self: &Arc<Self>, utterance: &VoiceUtterance) {
-        if utterance.text.trim().is_empty() || self.is_self(&utterance.speaker.account) {
+        if utterance.text.trim().is_empty()
+            || self.is_self(&utterance.speaker.account)
+            || self.is_blocked(&utterance.speaker.account)
+        {
             return;
         }
         self.handle.set_voice_room(&utterance.context, true);
@@ -268,6 +307,119 @@ impl Agent {
                 let _ = h.tx.send(Input::Playback { turn, state });
             }
         });
+    }
+
+    fn on_initiative(self: &Arc<Self>, context: &ContextKey, initiative: Initiative) {
+        let mode = self.handle.channel_mode(context);
+        if matches!(mode, ChannelMode::Off | ChannelMode::MentionOnly) {
+            self.initiative_skipped(context, &initiative.reason, &format!("mode {mode}"));
+            return;
+        }
+        let budget = self.handle.llm_budget();
+        if budget != BudgetState::Ok {
+            self.initiative_skipped(context, &initiative.reason, &format!("llm budget {budget}"));
+            return;
+        }
+        if context.kind == ContextKind::Voice {
+            // Only where she is: a stray request must not create a session.
+            let mut delivered = false;
+            self.with_existing(context, |h| {
+                delivered = h.tx.send(Input::Initiative(initiative.clone())).is_ok();
+            });
+            if !delivered {
+                self.initiative_skipped(context, &initiative.reason, "not in this voice channel");
+            }
+            return;
+        }
+        self.with_context(context, |h| {
+            let _ = h.tx.send(Input::Initiative(initiative));
+        });
+    }
+
+    /// Publishes the decision not to act on an initiative request.
+    pub fn initiative_skipped(&self, context: &ContextKey, reason: &str, why: &str) {
+        debug!(%context, reason, why, "initiative skipped");
+        let turn = TurnId::new();
+        self.ctx.publish_in_turn(
+            Event::AgentDecision(DecisionTrace {
+                turn,
+                context: context.clone(),
+                respond: false,
+                score: 0.0,
+                reasons: vec![format!("initiative:{reason}"), format!("skipped: {why}")],
+            }),
+            turn,
+        );
+    }
+
+    fn on_budget(&self, payload: &serde_json::Value) {
+        let Some(state) = payload.get("state").and_then(|s| s.as_str()) else {
+            warn!(%payload, "llm.budget event without a state");
+            return;
+        };
+        match state.parse::<BudgetState>() {
+            Ok(state) => {
+                let before = self.handle.set_llm_budget(state);
+                if before != state {
+                    info!(%before, %state, "llm budget state changed");
+                }
+                if state != BudgetState::Exhausted {
+                    self.budget_notices.lock().clear();
+                }
+            }
+            Err(e) => warn!(error = %e, "ignoring llm.budget event"),
+        }
+    }
+
+    /// Whether she may say she is out of energy in `context` now; records it
+    /// if so (at most once per `budget_notice_interval_ms`).
+    pub fn take_budget_notice(&self, context: &ContextKey) -> bool {
+        let now = Instant::now();
+        let interval = self.config.budget_notice_interval();
+        let mut notices = self.budget_notices.lock();
+        match notices.get(context) {
+            Some(last) if now.saturating_duration_since(*last) < interval => false,
+            _ => {
+                notices.insert(context.clone(), now);
+                true
+            }
+        }
+    }
+
+    pub fn social(&self) -> Option<Arc<dyn SocialSignals>> {
+        self.ctx.services().get::<dyn SocialSignals>()
+    }
+
+    pub fn attitude(&self, account: &AccountRef) -> Option<Attitude> {
+        self.social().and_then(|s| s.attitude(account))
+    }
+
+    pub fn mood(&self) -> Option<Mood> {
+        self.ctx
+            .services()
+            .get::<dyn MoodSignals>()
+            .map(|m| m.mood())
+    }
+
+    /// She ignores this person entirely (social module decision).
+    pub fn is_blocked(&self, account: &AccountRef) -> bool {
+        self.attitude(account).is_some_and(|a| a.blocked)
+    }
+
+    /// Minimum time since she last spoke before she starts a conversation in
+    /// `context`: the attention cooldown scaled by activeness and energy.
+    pub fn ambient_cooldown(&self, context: &ContextKey) -> chrono::Duration {
+        let base = if context.kind == ContextKind::Voice {
+            self.config.voice.cooldown_ms
+        } else {
+            self.config.attention.cooldown_ms
+        };
+        let energy = self
+            .mood()
+            .as_ref()
+            .map_or(1.0, signals::energy_cooldown_factor);
+        let factor = self.handle.activeness(context).cooldown_factor() * energy;
+        chrono::Duration::milliseconds((base as f32 * factor) as i64)
     }
 
     fn is_self(&self, account: &AccountRef) -> bool {

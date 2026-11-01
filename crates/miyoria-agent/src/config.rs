@@ -151,6 +151,14 @@ pub struct AgentConfig {
     pub session_idle_ms: u64,
     /// Seed for the decision sampler; random when unset.
     pub seed: Option<u64>,
+    /// Time limit for each prompt contributor; slower ones are skipped.
+    pub contributor_timeout_ms: u64,
+    /// Contributed context added to the situation message is capped at this
+    /// many characters.
+    pub max_context_chars: usize,
+    /// While the LLM budget is exhausted, her canned "out of energy" line is
+    /// sent at most once per context in this interval.
+    pub budget_notice_interval_ms: u64,
     pub attention: AttentionConfig,
     pub voice: VoiceConfig,
 }
@@ -180,6 +188,9 @@ impl Default for AgentConfig {
             max_tokens: None,
             session_idle_ms: 6 * 3600 * 1000,
             seed: None,
+            contributor_timeout_ms: 800,
+            max_context_chars: 4000,
+            budget_notice_interval_ms: 3600 * 1000,
             attention: AttentionConfig::default(),
             voice: VoiceConfig::default(),
         }
@@ -213,6 +224,14 @@ impl AgentConfig {
 
     pub fn tool_timeout(&self) -> Duration {
         Duration::from_millis(self.tool_timeout_ms)
+    }
+
+    pub fn contributor_timeout(&self) -> Duration {
+        Duration::from_millis(self.contributor_timeout_ms)
+    }
+
+    pub fn budget_notice_interval(&self) -> Duration {
+        Duration::from_millis(self.budget_notice_interval_ms)
     }
 
     /// Mode for `context`, falling back to `default_mode`, then `profile_default`.
@@ -464,5 +483,8 @@ mod tests {
         assert_eq!(cfg.max_debounce_ms, 4000);
         assert!(cfg.tools_enabled);
         assert_eq!(cfg.max_tool_steps, 3);
+        assert_eq!(cfg.contributor_timeout_ms, 800);
+        assert_eq!(cfg.max_context_chars, 4000);
+        assert_eq!(cfg.budget_notice_interval_ms, 3_600_000);
     }
 }

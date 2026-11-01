@@ -37,8 +37,8 @@ pub use barge::BargeIn;
 pub use config::{BargeInMode, VoiceConfig, VoiceProfile};
 pub use consent::{Consent, ConsentPolicy, consent_key};
 pub use link::{
-    AudioEvent, Playback, Stoppable, StreamInfo, VoiceLink, VoiceLinkConfig, VoiceLinkModule,
-    voice_context,
+    AudioEvent, GOLIVE_TOPIC, GoLiveRequest, GoLiveState, GoLiveStatus, Playback, Stoppable,
+    StreamInfo, VoiceLink, VoiceLinkConfig, VoiceLinkModule, voice_context,
 };
 pub use module::VoiceModule;
 pub use segment::{Segmenter, SegmenterConfig, Utterance};

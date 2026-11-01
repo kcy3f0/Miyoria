@@ -4,6 +4,10 @@
 //! cooldown), layer 2 a cheap salience score. Layer 3, the optional `fast`
 //! LLM check for ambient gray-zone turns, runs in the turn itself.
 //!
+//! Social signals scale the reply probability by how much she likes the
+//! speakers (direct address is only ignored at very low affinity), and her
+//! energy scales the ambient probability and cooldown a little.
+//!
 //! Voice turns add [`VoiceAttention`]: a question right after she spoke
 //! addresses her, she never joins in while someone is speaking and ambient
 //! probabilities are scaled down.
@@ -12,10 +16,11 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
-use miyoria_types::{ContextKind, IncomingMessage};
+use miyoria_types::{ContextKind, IncomingMessage, Mood};
 
 use crate::config::{Activeness, AttentionConfig, ChannelMode};
 use crate::session::Session;
+use crate::signals;
 
 /// Source of uniform randomness in `[0, 1)` for the final decision.
 pub trait RandomSource: Send + Sync {
@@ -70,6 +75,9 @@ pub struct Assessment {
     pub score: f32,
     pub gate: Gate,
     pub reasons: Vec<String>,
+    /// Multiplier for ambient probabilities decided later (after the LLM
+    /// check): activeness, voice factor, affinity and energy.
+    pub ambient_scale: f32,
 }
 
 /// Extra rules for voice contexts.
@@ -98,13 +106,34 @@ pub struct AttentionInput<'a> {
     pub now: DateTime<Utc>,
     /// Set for voice contexts.
     pub voice: Option<VoiceAttention>,
+    /// Mean affinity of the turn's speakers, if social signals are available.
+    pub affinity: Option<f32>,
+    /// Her mood, if mood signals are available.
+    pub mood: Option<Mood>,
 }
 
 impl AttentionInput<'_> {
-    /// Ambient probability after activeness (and the voice factor).
+    /// Multiplier for ambient probabilities: activeness, the voice factor,
+    /// affinity and energy.
+    pub fn ambient_scale(&self) -> f32 {
+        let voice = self.voice.map_or(1.0, |v| v.ambient_factor);
+        let affinity = self.affinity.map_or(1.0, signals::affinity_ambient_factor);
+        let energy = self
+            .mood
+            .as_ref()
+            .map_or(1.0, signals::energy_probability_factor);
+        self.activeness.probability_factor() * voice * affinity * energy
+    }
+
+    /// Ambient probability after [`ambient_scale`](Self::ambient_scale), clamped.
     pub fn ambient_probability(&self, p: f32) -> f32 {
-        let factor = self.voice.map_or(1.0, |v| v.ambient_factor);
-        self.activeness.scale(p * factor)
+        (p * self.ambient_scale()).clamp(0.0, 1.0)
+    }
+
+    /// Reply probability when directly addressed (scaled slightly by affinity).
+    fn direct_probability(&self) -> f32 {
+        let factor = self.affinity.map_or(1.0, signals::affinity_direct_factor);
+        (self.config.direct_probability * factor).clamp(0.0, 1.0)
     }
 }
 
@@ -166,20 +195,31 @@ pub fn assess(input: &AttentionInput<'_>) -> Assessment {
     if let Some(why) = &direct {
         reasons.push(format!("direct: {why}"));
     }
+    if let Some(a) = input.affinity {
+        reasons.push(format!("affinity {a:+.0}"));
+    }
     let score = salience(input, direct.is_some(), &mut reasons);
     let direct = direct.is_some();
+    let ambient_scale = input.ambient_scale();
     let done = |gate, reasons| Assessment {
         direct,
         score,
         gate,
         reasons,
+        ambient_scale,
     };
 
     match input.mode {
         ChannelMode::Off => return done(Gate::Ignore, reasons),
         ChannelMode::Always => return done(Gate::Sample(1.0), reasons),
         ChannelMode::MentionOnly | ChannelMode::Ambient if direct => {
-            return done(Gate::Sample(cfg.direct_probability), reasons);
+            if input
+                .affinity
+                .is_some_and(|a| a <= signals::IGNORE_DIRECT_AFFINITY)
+            {
+                reasons.push("very low affinity: may ignore".into());
+            }
+            return done(Gate::Sample(input.direct_probability()), reasons);
         }
         ChannelMode::MentionOnly => {
             reasons.push("not addressed".into());
@@ -196,7 +236,14 @@ pub fn assess(input: &AttentionInput<'_>) -> Assessment {
     if activeness != Activeness::Medium {
         reasons.push(format!("activeness {activeness}"));
     }
-    let cooldown_ms = (cfg.cooldown_ms as f32 * activeness.cooldown_factor()) as i64;
+    let energy = input
+        .mood
+        .as_ref()
+        .map_or(1.0, signals::energy_cooldown_factor);
+    if let Some(mood) = &input.mood {
+        reasons.push(format!("energy {:.2}", mood.energy));
+    }
+    let cooldown_ms = (cfg.cooldown_ms as f32 * activeness.cooldown_factor() * energy) as i64;
     if let Some(last) = input.session.last_self_at() {
         let since = input.now.signed_duration_since(last);
         if since.num_milliseconds() < cooldown_ms {
@@ -405,6 +452,8 @@ mod tests {
             inputs,
             now: Utc::now(),
             voice: None,
+            affinity: None,
+            mood: None,
         })
     }
 
@@ -628,6 +677,8 @@ mod tests {
                 ambient_factor: 0.5,
                 question_window_ms: 8000,
             }),
+            affinity: None,
+            mood: None,
         })
     }
 
@@ -671,6 +722,82 @@ mod tests {
         let mut late = follow[0].clone();
         late.ts = Utc::now() + chrono::Duration::seconds(30);
         assert!(!voice_run(&cfg, &s, &[late], false).direct);
+    }
+
+    #[test]
+    fn affinity_and_energy_scale_ambient_turns() {
+        let cfg = AttentionConfig {
+            llm_check: false,
+            cooldown_ms: 10_000,
+            ..Default::default()
+        };
+        let names = vec!["小鯨魚".to_owned()];
+        let q = vec![msg(ContextKind::Channel, "a", "你們看過鯨魚嗎?")];
+        let named = vec![msg(ContextKind::Channel, "a", "小鯨魚早安")];
+        let assess_with = |s: &Session, inputs: &[IncomingMessage], affinity, mood| {
+            assess(&AttentionInput {
+                config: &cfg,
+                mode: ChannelMode::Ambient,
+                activeness: Activeness::Medium,
+                names: &names,
+                interests: &[],
+                max_share: 0.3,
+                session: s,
+                inputs,
+                now: Utc::now(),
+                voice: None,
+                affinity,
+                mood,
+            })
+        };
+        let sample = |a: &Assessment| match a.gate {
+            Gate::Sample(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let s = session_with(&q);
+        let base = sample(&assess_with(&s, &q, None, None));
+        let liked = assess_with(&s, &q, Some(100.0), None);
+        assert!((sample(&liked) - (base * 1.4).min(1.0)).abs() < 1e-6);
+        assert!((liked.ambient_scale - 1.4).abs() < 1e-6);
+        let disliked = sample(&assess_with(&s, &q, Some(-100.0), None));
+        assert!((disliked - base * 0.3).abs() < 1e-6);
+
+        // Direct address: answered unless affinity is very low.
+        assert_eq!(
+            assess_with(&s, &named, Some(-79.0), None).gate,
+            Gate::Sample(1.0)
+        );
+        let hated = assess_with(&s, &named, Some(-90.0), None);
+        assert!(matches!(hated.gate, Gate::Sample(p) if (p - 0.4).abs() < 1e-6));
+
+        let tired = Mood {
+            valence: 0.0,
+            arousal: 0.5,
+            energy: 0.0,
+        };
+        let fresh = Mood {
+            energy: 1.0,
+            ..tired
+        };
+        let low = sample(&assess_with(&s, &q, None, Some(tired)));
+        assert!((low - base * 0.7).abs() < 1e-6);
+        // She spoke 8 s ago: inside the cooldown (10 s; 13 s tired), outside
+        // the fresh one (7 s).
+        let mut s = session_with(&q);
+        let me = AccountRef {
+            platform: PlatformId::new("t"),
+            id: "her".into(),
+        };
+        let ago = Utc::now() - chrono::Duration::seconds(8);
+        s.record_own("Her", me, "嗯", ActionId::new(), ago);
+        s.record_message(&q[0], false);
+        let a = assess_with(&s, &q, None, Some(tired));
+        assert!(a.reasons.iter().any(|r| r.starts_with("cooldown")));
+        let a = assess_with(&s, &q, None, Some(fresh));
+        assert!(
+            !a.reasons.iter().any(|r| r.starts_with("cooldown")),
+            "{a:?}"
+        );
     }
 
     #[test]
