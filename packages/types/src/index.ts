@@ -58,6 +58,7 @@ export {
   type PersonId,
   type PlatformId,
   type ProfileId,
+  ProfileIdKey,
   type TurnId,
 } from "./ids.js";
 export { isJsonObject, type JsonObject, type JsonPrimitive, type JsonValue } from "./json.js";

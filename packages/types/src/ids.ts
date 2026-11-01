@@ -1,4 +1,5 @@
 import { monotonicFactory } from "ulid";
+import { serviceKey } from "./service-key.js";
 
 // ULID ids (26-character Crockford base32 strings, sortable by creation time).
 export type EventId = string;
@@ -13,6 +14,8 @@ export type PersonId = string;
 export type ModuleId = string;
 /** A profile bundles persona, LLM, voice and avatar, e.g. `"deepseek-chan"`. */
 export type ProfileId = string;
+/** Service: the active profile id, provided by the app before modules start. */
+export const ProfileIdKey = serviceKey<ProfileId>("ProfileId");
 /** `"discord"`, later `"twitch"`, `"youtube"`, `"cli"` ... */
 export type PlatformId = string;
 
