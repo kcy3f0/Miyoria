@@ -1,9 +1,9 @@
 // CLI commands that talk to a running core through the Admin API.
 
+import { ApiClient } from "@miyoria/api";
 import type { Config } from "@miyoria/kernel";
 import type { ModuleStateKind } from "@miyoria/types";
 import { eventTopic } from "@miyoria/types";
-import { ApiClient } from "../api-client.js";
 import { cyan, dim, green, println, red, yellow } from "../ui.js";
 
 export const DEFAULT_API_BIND = "127.0.0.1:7878";
@@ -28,7 +28,7 @@ export function clientFor(config: Config): ApiClient {
 /** `true` when a core answers `/api/health` within `timeoutMs`. */
 export async function isRunning(client: ApiClient, timeoutMs = 2000): Promise<boolean> {
   try {
-    await client.health(AbortSignal.timeout(timeoutMs));
+    await client.health({ signal: AbortSignal.timeout(timeoutMs) });
     return true;
   } catch {
     return false;
@@ -114,9 +114,16 @@ export async function events(
   signal?: AbortSignal,
 ): Promise<void> {
   const filter = topics.length === 0 ? ["*"] : topics;
-  for await (const env of client.events(filter, signal)) {
-    println(
-      `${localStamp(env.ts, false)} ${eventTopic(env.event).padEnd(26)} ${JSON.stringify(env.event)}`,
-    );
+  const stream = await client.events(filter, signal ? { signal } : {});
+  try {
+    for await (const env of stream) {
+      println(
+        `${localStamp(env.ts, false)} ${eventTopic(env.event).padEnd(26)} ${JSON.stringify(env.event)}`,
+      );
+    }
+  } catch (error) {
+    if (!signal?.aborted) throw error;
+  } finally {
+    stream.close();
   }
 }

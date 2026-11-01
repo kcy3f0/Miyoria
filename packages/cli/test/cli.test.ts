@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { ApiClient } from "@miyoria/api";
 import { afterEach, describe, expect, it } from "vitest";
-import { ApiClient, SseParser } from "../src/api-client.js";
 import { checkArgs, helpText, main, parseArgs, UsageError } from "../src/cli.js";
 import { type Output, setOutput } from "../src/ui.js";
 
@@ -79,12 +79,6 @@ describe("admin API client", () => {
   let server: Server | undefined;
   afterEach(() => server?.close());
 
-  it("parses_server_sent_events", () => {
-    const p = new SseParser();
-    expect(p.feed('data: {"a":1}\n')).toEqual([]);
-    expect(p.feed("\n: comment\nid: 3\ndata: x\r\ndata:y\n\n")).toEqual(['{"a":1}', "x\ny"]);
-  });
-
   it("sends_the_token_and_reports_api_errors", async () => {
     const seen: string[] = [];
     server = createServer((req, res) => {
@@ -102,7 +96,7 @@ describe("admin API client", () => {
     const client = new ApiClient(`http://127.0.0.1:${port}`, "tok");
     expect(await client.health()).toEqual({ status: "ok", version: "0.1.0" });
     await expect(client.moduleAction("platform.discord.bot", "enable")).rejects.toThrow(
-      "admin API returned 404: unknown module `x`",
+      "unknown module `x`",
     );
     expect(seen).toEqual([
       "GET /api/health Bearer tok",
