@@ -124,7 +124,15 @@ export interface ExtensionContext {
   };
   readonly log: Logger;
   readonly game: {
-    /** Exposes a game adapter as tools `game.<id>.observe|act` and events `game.<id>.*`. */
+    /**
+     * Game id this extension owns (manifest `game` with kind `game-adapter`);
+     * `undefined` when it is not a declared game adapter.
+     */
+    readonly id: string | undefined;
+    /**
+     * Exposes a game adapter as tools `game.<id>.observe|act` and events
+     * `game.<id>.*`. `describe().id` must equal `ctx.game.id`.
+     */
     registerAdapter(adapter: GameAdapter): Promise<RegisteredAdapter>;
   };
   /** Runs before the process exits on `shutdown`. */
@@ -440,6 +448,7 @@ export class ExtensionRuntime {
       },
       log: { debug: log("debug"), info: log("info"), warn: log("warn"), error: log("error") },
       game: {
+        id: init.extension.game ?? undefined,
         registerAdapter: (adapter) => registerGameAdapter(ctx, adapter),
       },
       onShutdown(hook) {

@@ -29,4 +29,12 @@ cargo run -- core      # 啟動 Discord bot
 3. 在直播機啟動 self 帳號語音節點:見 [apps/voice-node/README.md](apps/voice-node/README.md)(`VOICE_LINK_TOKEN` 要跟 core 的 `.env` 一樣)
 4. 在 Discord 打 `/join`
 
-> 目前狀態:Phase 1(文字)、Phase 2(語音)已完成,尚未用真的 Discord 與模型實測。
+### 其他節點與工具
+
+- `cargo run -- stage`:直播機上的 Stage 節點(VTube Studio、OBS、overlay),見 [docs/protocols/stage-link.md](docs/protocols/stage-link.md)
+- 管理面板:`cd apps/panel && pnpm install --ignore-workspace && pnpm build`,之後 core 會在 http://127.0.0.1:7878/ 提供
+- 擴充套件:`cargo run -- ext new my-ext`、`cargo run -- ext dev`
+- Minecraft:[extensions/minecraft/README.md](extensions/minecraft/README.md)
+- 部署與維運:[docs/OPERATIONS.md](docs/OPERATIONS.md)
+
+> 目前狀態:Phase 0–8 的程式都寫完了(見 [Roadmap](docs/ROADMAP.md)),Rust 測試 556 個全過;**尚未用真的 Discord、DeepSeek、語音模型、VTube Studio、OBS、Minecraft 實測**。

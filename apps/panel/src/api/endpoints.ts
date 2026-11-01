@@ -5,6 +5,7 @@
 
 import { type ApiClient, seg } from "./http";
 import type {
+  AdjustPersonRequest,
   AssignRoleRequest,
   CostReport,
   ExtensionInfo,
@@ -17,12 +18,16 @@ import type {
   PersonDetail,
   PersonSummary,
   QueueState,
+  RemoveMappingRequest,
   RoleAssignment,
   RoleDefinition,
+  RoleMapping,
   SayRequest,
   StageState,
+  StreamAction,
   UpdateMemoryRequest,
   UpdatePersonRequest,
+  UpsertRoleRequest,
   VoiceState,
 } from "./planned-types";
 import type {
@@ -63,7 +68,7 @@ export function createApi(client: ApiClient) {
     personaHistory: (key: string, o?: Opts) =>
       client.get<PersonaOverride[]>(`/api/persona/${seg(key)}/history`, o),
 
-    // --- planned (API-PLAN.md) ---------------------------------------------
+    // --- panel routes (API-PLAN.md) -----------------------------------------
     llmCost: (o?: Opts) => client.get<CostReport>("/api/llm/cost", o),
 
     people: (q: PeopleQuery = {}, o?: Opts) =>
@@ -71,6 +76,8 @@ export function createApi(client: ApiClient) {
     person: (id: string, o?: Opts) => client.get<PersonDetail>(`/api/people/${seg(id)}`, o),
     updatePerson: (id: string, req: UpdatePersonRequest) =>
       client.patch<PersonSummary>(`/api/people/${seg(id)}`, req),
+    adjustPerson: (id: string, req: AdjustPersonRequest) =>
+      client.post<PersonSummary>(`/api/people/${seg(id)}/adjust`, req),
 
     memory: (q: MemoryQuery = {}, o?: Opts) =>
       client.get<Page<MemoryItem>>("/api/memory", { ...o, query: { ...q } }),
@@ -84,6 +91,15 @@ export function createApi(client: ApiClient) {
       client.post<RoleAssignment>("/api/auth/assignments", req),
     revokeRole: (req: AssignRoleRequest) =>
       client.delete<void>("/api/auth/assignments", { body: req }),
+    role: (name: string, o?: Opts) => client.get<RoleDefinition>(`/api/auth/roles/${seg(name)}`, o),
+    upsertRole: (name: string, req: UpsertRoleRequest) =>
+      client.put<RoleDefinition>(`/api/auth/roles/${seg(name)}`, req),
+    deleteRole: (name: string) => client.delete<void>(`/api/auth/roles/${seg(name)}`),
+    mappings: (platform: string, guild: string, o?: Opts) =>
+      client.get<RoleMapping[]>("/api/auth/mappings", { ...o, query: { platform, guild } }),
+    setMapping: (req: RoleMapping) => client.put<RoleMapping>("/api/auth/mappings", req),
+    removeMapping: (req: RemoveMappingRequest) =>
+      client.delete<void>("/api/auth/mappings", { body: req }),
 
     extensions: (o?: Opts) => client.get<ExtensionInfo[]>("/api/extensions", o),
     extensionAction: (id: string, action: "enable" | "disable" | "restart") =>
@@ -104,6 +120,7 @@ export function createApi(client: ApiClient) {
     stageScene: (scene: string) => client.post<StageState>("/api/stage/scene", { scene }),
     stageExpression: (expression: string) =>
       client.post<StageState>("/api/stage/expression", { expression }),
+    stageStream: (action: StreamAction) => client.post<StageState>("/api/stage/stream", { action }),
     stageSay: (req: SayRequest) => client.post<{ turn: string | null }>("/api/stage/say", req),
 
     voice: (o?: Opts) => client.get<VoiceState>("/api/voice", o),

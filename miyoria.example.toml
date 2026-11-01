@@ -18,6 +18,32 @@ api_key = "${LLM_API_KEY:-}"
 [llm.purposes]
 chat = ["deepseek:deepseek-chat"]
 
+# 價格(USD / 百萬 token)與預算;不設就不限制
+# [llm.pricing."deepseek:deepseek-chat"]
+# input_per_mtok = 0.27
+# cached_input_per_mtok = 0.07
+# output_per_mtok = 1.10
+# [llm.budget]
+# daily_usd = 2.0
+# monthly_usd = 40.0
+# degrade_at = 0.8           # 用到 80% 時改用便宜模型 / 少主動發話
+# on_exhausted = "stop"
+
+# ---- 長期記憶 --------------------------------------------------------------
+# DeepSeek 沒有 embeddings;不設也能用(全文檢索 + 新舊 + 重要度)。
+# 有 Ollama / LM Studio / OpenAI 等 /embeddings 端點時可以打開:
+# [memory.embedding]
+# provider = "openai-compatible"
+# base_url = "http://127.0.0.1:11434/v1"
+# model = "bge-m3"
+
+# ---- MCP 工具 --------------------------------------------------------------
+# [mcp.servers.files]
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "C:/data"]
+# tools_allow = ["read_*"]
+
 # ---- 語音辨識 / 合成 -------------------------------------------------------
 # 本機 worker 見 workers/README.md;也可以換成雲端(kind = "openai")
 [speech.asr.local]
@@ -43,6 +69,9 @@ voice = "deepseek-chan"
 [modules.commands]
 owners = ["discord:${MIYORIA_OWNER_ID:-0}"]
 
+[modules.auth]
+owners = ["discord:${MIYORIA_OWNER_ID:-0}"]
+
 [modules."platform.discord.bot"]
 token = "${DISCORD_BOT_TOKEN:-}"
 # 填伺服器 id 可以讓 slash command 立即生效;空的 = 全域(最多要等一小時)
@@ -57,6 +86,15 @@ token = "${MIYORIA_API_TOKEN:-}"
 [modules."voice.link"]
 bind = "127.0.0.1:7879"
 token = "${VOICE_LINK_TOKEN:-}"
+
+# Stage 節點(VTube Studio / OBS / overlay)連進來的位址
+[modules."stage.link"]
+bind = "127.0.0.1:7882"
+token = "${STAGE_LINK_TOKEN:-}"
+
+# 擴充套件資料夾(`miyoria ext list` / `miyoria ext dev`)
+[modules.extensions]
+dirs = ["extensions"]
 
 [modules.voice]
 consent = "opt-out"        # opt-out:預設收音,可用 /voice consent off 退出;opt-in:同意後才收
@@ -73,3 +111,19 @@ default_mode = "ambient"
 ambient_factor = 0.5       # 主動插話機率的倍率
 cooldown_ms = 20000        # 她講完後至少隔多久才會再主動開口
 debounce_ms = 700          # 對方講完後等多久(看他是不是還要繼續講)
+
+# ---- Stage 節點(在直播機執行 `miyoria stage`)-------------------------------
+[stage]
+core_url = "ws://127.0.0.1:7882/stage-link"
+token = "${STAGE_LINK_TOKEN:-}"
+
+[stage.vts]
+enabled = true                 # VTube Studio:設定 → 開啟 API(port 8001)
+
+[stage.obs]
+enabled = false                # OBS:工具 → WebSocket 伺服器設定
+host = "127.0.0.1"
+port = 4455
+password = "${OBS_PASSWORD:-}"
+# subtitle_source = "Miyoria 字幕"
+

@@ -272,7 +272,17 @@ async fn failing_server_is_isolated() {
     for name in ["refuses", "missing", "invalid"] {
         let s = status.server(name).unwrap();
         assert!(!s.connected, "{name}");
-        assert_eq!(s.state, ServerState::Failed, "{name}");
+        // Retrying servers flip between Failed and Connecting with the fast
+        // test backoff; an invalid config never retries.
+        if name == "invalid" {
+            assert_eq!(s.state, ServerState::Failed, "{name}");
+        } else {
+            assert!(
+                matches!(s.state, ServerState::Failed | ServerState::Connecting),
+                "{name}: {:?}",
+                s.state
+            );
+        }
         assert!(s.tools.is_empty());
     }
     assert!(

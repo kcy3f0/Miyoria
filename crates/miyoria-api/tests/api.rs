@@ -16,7 +16,7 @@ use miyoria_kernel::{
 };
 use miyoria_llm::LlmRouter;
 use miyoria_profile::Profile;
-use miyoria_store::{DecisionLog, DecisionRecord, PersonaOverrideStore, Store};
+use miyoria_store::{AuditLog, DecisionLog, DecisionRecord, PersonaOverrideStore, Store};
 use miyoria_types::{
     ContextKey, ContextKind, DecisionTrace, Event, ModuleId, ModuleStateKind, PlatformId,
     ProfileId, TurnId,
@@ -81,6 +81,7 @@ async fn harness() -> Harness {
     services.provide::<SupervisorHandle>(&kernel, Arc::new(sup.clone()));
     services.provide::<dyn DecisionLog>(&kernel, store.decisions.clone());
     services.provide::<dyn PersonaOverrideStore>(&kernel, store.persona_overrides.clone());
+    services.provide::<dyn AuditLog>(&kernel, store.audit.clone());
     services.provide(&kernel, Arc::new(ProfileId::from(PROFILE)));
     services.provide(&kernel, Arc::new(persona.clone()));
     services.provide(
@@ -216,6 +217,18 @@ async fn persona_edit_and_history() {
         .map(|o| (o.version, o.edited_by.as_str()))
         .collect();
     assert_eq!(editors, [(1, "api"), (2, "panel:owen")]);
+    let audit = h.store.audit.recent(10, Some("api")).await.unwrap();
+    let edits: Vec<(&str, &str, &serde_json::Value)> = audit
+        .iter()
+        .map(|e| (e.action.as_str(), e.target.as_str(), &e.detail["version"]))
+        .collect();
+    assert_eq!(
+        edits,
+        [
+            ("persona.set", "style", &json!(2)),
+            ("persona.set", "style", &json!(1))
+        ]
+    );
     let current = h
         .store
         .persona_overrides

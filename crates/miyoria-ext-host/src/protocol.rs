@@ -31,6 +31,9 @@ pub struct ExtensionInfo {
     pub id: String,
     pub version: String,
     pub dir: String,
+    /// Game id owned by a declared game adapter (manifest `game`), else `None`.
+    #[serde(default)]
+    pub game: Option<String>,
 }
 
 /// `initialize` result (extension → host).

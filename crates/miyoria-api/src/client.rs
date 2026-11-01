@@ -5,14 +5,19 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use miyoria_store::{DecisionRecord, PersonaOverride};
-use miyoria_types::{ContextKey, Envelope};
+use miyoria_stage::StreamAction;
+use miyoria_store::{DecisionRecord, PersonaOverride, RoleAssignment, RoleDefinition, RoleMapping};
+use miyoria_types::{ContextKey, Envelope, PlatformId};
 use reqwest::{Method, RequestBuilder, Response, StatusCode, Url};
 use serde::de::DeserializeOwned;
 
 use crate::types::{
-    ErrorBody, HealthInfo, ModuleInfo, PersonaSectionInfo, SetPersonaRequest, SetPersonaResponse,
-    UsageInfo,
+    AdjustPersonRequest, AssignRoleRequest, CostInfo, ErrorBody, ExpressionRequest, ExtensionInfo,
+    HealthInfo, McpServerInfo, MemoryItem, MemoryListQuery, MemoryRecordView, ModuleInfo,
+    MoveRequest, Page, PersonDetail, PersonSummary, PersonaSectionInfo, QueueState,
+    RemoveMappingRequest, SayRequest, SayResponse, SceneRequest, SetPersonaRequest,
+    SetPersonaResponse, StageState, StreamRequest, UpdateMemoryRequest, UpdatePersonRequest,
+    UpsertRoleRequest, UsageInfo, VoiceState,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -146,6 +151,280 @@ impl ApiClient {
             .await
     }
 
+    /// Spend today and this month per model, plus the budget state.
+    pub async fn cost(&self) -> Result<CostInfo> {
+        self.json(self.request(Method::GET, &["llm", "cost"])).await
+    }
+
+    // ----- people -----
+
+    /// People with a relationship, most recent interaction first. `q`
+    /// filters by name or account id; `cursor` is a previous `next_cursor`.
+    pub async fn people(
+        &self,
+        q: Option<&str>,
+        limit: Option<usize>,
+        cursor: Option<&str>,
+    ) -> Result<Page<PersonSummary>> {
+        let mut url = self.url(&["people"]);
+        {
+            let mut pairs = url.query_pairs_mut();
+            if let Some(q) = q {
+                pairs.append_pair("q", q);
+            }
+            if let Some(limit) = limit {
+                pairs.append_pair("limit", &limit.to_string());
+            }
+            if let Some(cursor) = cursor {
+                pairs.append_pair("cursor", cursor);
+            }
+        }
+        self.json(self.http.get(url)).await
+    }
+
+    pub async fn person(&self, id: &str) -> Result<PersonDetail> {
+        self.json(self.request(Method::GET, &["people", id])).await
+    }
+
+    pub async fn update_person(
+        &self,
+        id: &str,
+        request: &UpdatePersonRequest,
+    ) -> Result<PersonSummary> {
+        self.json(self.request(Method::PATCH, &["people", id]).json(request))
+            .await
+    }
+
+    /// Adds `affinity` directly (ignoring the daily caps).
+    pub async fn adjust_person(&self, id: &str, affinity: f32) -> Result<PersonSummary> {
+        let request = AdjustPersonRequest { affinity };
+        self.json(
+            self.request(Method::POST, &["people", id, "adjust"])
+                .json(&request),
+        )
+        .await
+    }
+
+    // ----- memory -----
+
+    /// Lists (newest first) or, with `q`, searches her memories.
+    pub async fn memory(&self, query: &MemoryListQuery) -> Result<Page<MemoryItem>> {
+        let mut url = self.url(&["memory"]);
+        {
+            let mut pairs = url.query_pairs_mut();
+            if let Some(q) = &query.q {
+                pairs.append_pair("q", q);
+            }
+            if let Some(kind) = query.kind
+                && let Ok(serde_json::Value::String(kind)) = serde_json::to_value(kind)
+            {
+                pairs.append_pair("kind", &kind);
+            }
+            if let Some(subject) = query.subject {
+                pairs.append_pair("subject", &subject.to_string());
+            }
+            if let Some(before) = query.before {
+                pairs.append_pair("before", &before.to_rfc3339());
+            }
+            if query.include_superseded {
+                pairs.append_pair("include_superseded", "true");
+            }
+            if let Some(limit) = query.limit {
+                pairs.append_pair("limit", &limit.to_string());
+            }
+        }
+        self.json(self.http.get(url)).await
+    }
+
+    pub async fn update_memory(
+        &self,
+        id: &str,
+        request: &UpdateMemoryRequest,
+    ) -> Result<MemoryRecordView> {
+        self.json(self.request(Method::PATCH, &["memory", id]).json(request))
+            .await
+    }
+
+    pub async fn delete_memory(&self, id: &str) -> Result<()> {
+        self.empty(self.request(Method::DELETE, &["memory", id]))
+            .await
+    }
+
+    // ----- roles & permissions -----
+
+    /// Every role, highest rank first.
+    pub async fn roles(&self) -> Result<Vec<RoleDefinition>> {
+        self.json(self.request(Method::GET, &["auth", "roles"]))
+            .await
+    }
+
+    pub async fn role(&self, name: &str) -> Result<RoleDefinition> {
+        self.json(self.request(Method::GET, &["auth", "roles", name]))
+            .await
+    }
+
+    /// Creates or replaces a role.
+    pub async fn upsert_role(
+        &self,
+        name: &str,
+        request: &UpsertRoleRequest,
+    ) -> Result<RoleDefinition> {
+        self.json(
+            self.request(Method::PUT, &["auth", "roles", name])
+                .json(request),
+        )
+        .await
+    }
+
+    pub async fn delete_role(&self, name: &str) -> Result<()> {
+        self.empty(self.request(Method::DELETE, &["auth", "roles", name]))
+            .await
+    }
+
+    pub async fn assignments(&self) -> Result<Vec<RoleAssignment>> {
+        self.json(self.request(Method::GET, &["auth", "assignments"]))
+            .await
+    }
+
+    pub async fn assign_role(&self, request: &AssignRoleRequest) -> Result<RoleAssignment> {
+        self.json(
+            self.request(Method::POST, &["auth", "assignments"])
+                .json(request),
+        )
+        .await
+    }
+
+    pub async fn revoke_role(&self, request: &AssignRoleRequest) -> Result<()> {
+        self.empty(
+            self.request(Method::DELETE, &["auth", "assignments"])
+                .json(request),
+        )
+        .await
+    }
+
+    /// Platform role mappings of one guild.
+    pub async fn mappings(&self, platform: &PlatformId, guild: &str) -> Result<Vec<RoleMapping>> {
+        let mut url = self.url(&["auth", "mappings"]);
+        url.query_pairs_mut()
+            .append_pair("platform", platform.as_str())
+            .append_pair("guild", guild);
+        self.json(self.http.get(url)).await
+    }
+
+    pub async fn set_mapping(&self, mapping: &RoleMapping) -> Result<RoleMapping> {
+        self.json(
+            self.request(Method::PUT, &["auth", "mappings"])
+                .json(mapping),
+        )
+        .await
+    }
+
+    pub async fn remove_mapping(&self, request: &RemoveMappingRequest) -> Result<()> {
+        self.empty(
+            self.request(Method::DELETE, &["auth", "mappings"])
+                .json(request),
+        )
+        .await
+    }
+
+    // ----- extensions & MCP -----
+
+    pub async fn extensions(&self) -> Result<Vec<ExtensionInfo>> {
+        self.json(self.request(Method::GET, &["extensions"])).await
+    }
+
+    /// `action` is `"enable"`, `"disable"` or `"restart"`.
+    pub async fn extension_action(&self, id: &str, action: &str) -> Result<ExtensionInfo> {
+        self.json(self.request(Method::POST, &["extensions", id, action]))
+            .await
+    }
+
+    pub async fn mcp_servers(&self) -> Result<Vec<McpServerInfo>> {
+        self.json(self.request(Method::GET, &["mcp"])).await
+    }
+
+    /// Only `"restart"` is supported at runtime.
+    pub async fn mcp_action(&self, name: &str, action: &str) -> Result<McpServerInfo> {
+        self.json(self.request(Method::POST, &["mcp", name, action]))
+            .await
+    }
+
+    // ----- request queue -----
+
+    pub async fn queue(&self) -> Result<QueueState> {
+        self.json(self.request(Method::GET, &["queue"])).await
+    }
+
+    pub async fn queue_skip(&self, id: &str) -> Result<QueueState> {
+        self.json(self.request(Method::POST, &["queue", id, "skip"]))
+            .await
+    }
+
+    /// Moves an item to a 0-based index of [`QueueState::items`].
+    pub async fn queue_move(&self, id: &str, position: usize) -> Result<QueueState> {
+        self.json(
+            self.request(Method::POST, &["queue", id, "move"])
+                .json(&MoveRequest { position }),
+        )
+        .await
+    }
+
+    pub async fn queue_pause(&self, paused: bool) -> Result<QueueState> {
+        let action = if paused { "pause" } else { "resume" };
+        self.json(self.request(Method::POST, &["queue", action]))
+            .await
+    }
+
+    // ----- stage & voice -----
+
+    pub async fn stage(&self) -> Result<StageState> {
+        self.json(self.request(Method::GET, &["stage"])).await
+    }
+
+    pub async fn stage_scene(&self, scene: &str) -> Result<StageState> {
+        let request = SceneRequest {
+            scene: scene.to_owned(),
+        };
+        self.json(
+            self.request(Method::POST, &["stage", "scene"])
+                .json(&request),
+        )
+        .await
+    }
+
+    pub async fn stage_expression(&self, expression: &str) -> Result<StageState> {
+        let request = ExpressionRequest {
+            expression: expression.to_owned(),
+        };
+        self.json(
+            self.request(Method::POST, &["stage", "expression"])
+                .json(&request),
+        )
+        .await
+    }
+
+    pub async fn stage_stream(&self, action: StreamAction) -> Result<StageState> {
+        self.json(
+            self.request(Method::POST, &["stage", "stream"])
+                .json(&StreamRequest { action }),
+        )
+        .await
+    }
+
+    /// Speaks `text` in her voice channel without the LLM.
+    pub async fn stage_say(&self, text: &str, emotion: Option<&str>) -> Result<SayResponse> {
+        let request = SayRequest {
+            text: text.to_owned(),
+            emotion: emotion.map(str::to_owned),
+        };
+        self.json(self.request(Method::POST, &["stage", "say"]).json(&request))
+            .await
+    }
+
+    pub async fn voice(&self) -> Result<VoiceState> {
+        self.json(self.request(Method::GET, &["voice"])).await
+    }
+
     /// Streams bus envelopes matching `topics` (e.g. `["platform.*",
     /// "agent.*"]`; empty means everything). The subscription is active once
     /// this returns; the stream ends when the server stops.
@@ -214,6 +493,12 @@ impl ApiClient {
 
     async fn json<T: DeserializeOwned>(&self, request: RequestBuilder) -> Result<T> {
         Ok(self.send(request).await?.json().await?)
+    }
+
+    /// For routes answering `204 No Content`.
+    async fn empty(&self, request: RequestBuilder) -> Result<()> {
+        self.send(request).await?.bytes().await?;
+        Ok(())
     }
 }
 

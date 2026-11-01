@@ -1,8 +1,10 @@
-//! Routes and handlers. Every service is looked up per request, because the
-//! modules providing them may be stopped or restarted at any time.
+//! Router, shared state, errors and the original routes. Every service is
+//! looked up per request, because the modules providing them may be stopped
+//! or restarted at any time. The route groups live in sibling modules.
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::rejection::{JsonRejection, QueryRejection};
@@ -13,79 +15,131 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use chrono::Utc;
 use futures::{Stream, StreamExt};
 use miyoria_agent::PersonaHandle;
 use miyoria_kernel::{ModuleContext, ModuleStatus, SupervisorHandle, TopicFilter};
 use miyoria_llm::LlmRouter;
-use miyoria_store::{DecisionLog, DecisionRecord, PersonaOverride, PersonaOverrideStore};
+use miyoria_store::{
+    AuditEntry, AuditLog, DecisionLog, DecisionRecord, PersonaOverride, PersonaOverrideStore,
+};
 use miyoria_types::{ContextKey, ModuleId, ProfileId};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use subtle::ConstantTimeEq;
 use tracing::warn;
+use ulid::Ulid;
 
+use crate::monitor::Monitor;
 use crate::types::{
-    ErrorBody, HealthInfo, ModuleInfo, PersonaSectionInfo, SetPersonaRequest, SetPersonaResponse,
-    UsageInfo,
+    CostInfo, ErrorBody, HealthInfo, ModuleInfo, PersonaSectionInfo, SetPersonaRequest,
+    SetPersonaResponse, UsageInfo,
 };
+use crate::{memory, ops, panel, people, roles};
 
 const DEFAULT_DECISIONS: usize = 50;
 const MAX_DECISIONS: usize = 1000;
 
+/// Actor recorded in audit entries for changes made through the API.
+pub(crate) const ACTOR: &str = "api";
+
+/// The message of the fallback for unknown `/api/*` routes; the panel shows
+/// "not provided by this Core" when it sees exactly this.
+pub(crate) const NO_SUCH_ENDPOINT: &str = "no such endpoint";
+
 #[derive(Clone)]
-struct ApiState {
-    ctx: ModuleContext,
+pub(crate) struct ApiState {
+    pub(crate) ctx: ModuleContext,
     token: Arc<[u8]>,
+    pub(crate) monitor: Arc<Monitor>,
+    panel: Option<Arc<PathBuf>>,
 }
 
 impl ApiState {
-    fn service<T>(&self, what: &str) -> Result<Arc<T>, ApiError>
+    pub(crate) fn service<T>(&self, what: &str) -> Result<Arc<T>, ApiError>
     where
         T: ?Sized + Send + Sync + 'static,
     {
-        self.ctx
-            .services()
-            .get::<T>()
+        self.optional::<T>()
             .ok_or_else(|| ApiError::unavailable(format!("{what} is not available")))
     }
 
-    fn profile(&self) -> Result<ProfileId, ApiError> {
+    pub(crate) fn optional<T>(&self) -> Option<Arc<T>>
+    where
+        T: ?Sized + Send + Sync + 'static,
+    {
+        self.ctx.services().get::<T>()
+    }
+
+    pub(crate) fn profile(&self) -> Result<ProfileId, ApiError> {
         self.service::<ProfileId>("active profile id")
             .map(|p| (*p).clone())
+    }
+
+    /// Records a change in the audit log, when there is one. Failures to
+    /// write are logged, never returned.
+    pub(crate) async fn audit(
+        &self,
+        action: &str,
+        target: &str,
+        detail: serde_json::Value,
+        ok: bool,
+    ) {
+        let Some(log) = self.optional::<dyn AuditLog>() else {
+            return;
+        };
+        let entry = AuditEntry {
+            id: Ulid::new(),
+            at: Utc::now(),
+            actor: ACTOR.to_owned(),
+            action: action.to_owned(),
+            target: target.to_owned(),
+            detail,
+            ok,
+        };
+        if let Err(e) = log.append(&entry).await {
+            warn!(action, error = %format!("{e:#}"), "cannot write audit entry");
+        }
     }
 }
 
 /// An error response, serialized as `{ "error": "..." }`.
 #[derive(Debug)]
-struct ApiError {
+pub(crate) struct ApiError {
     status: StatusCode,
     message: String,
 }
 
 impl ApiError {
-    fn new(status: StatusCode, message: impl Into<String>) -> Self {
+    pub(crate) fn new(status: StatusCode, message: impl Into<String>) -> Self {
         Self {
             status,
             message: message.into(),
         }
     }
 
-    fn bad_request(message: impl Into<String>) -> Self {
+    pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, message)
     }
 
-    fn not_found(message: impl Into<String>) -> Self {
+    pub(crate) fn not_found(message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, message)
     }
 
-    fn conflict(message: impl Into<String>) -> Self {
+    pub(crate) fn conflict(message: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, message)
     }
 
-    fn unavailable(message: impl Into<String>) -> Self {
+    pub(crate) fn unavailable(message: impl Into<String>) -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, message)
     }
 
-    fn internal(error: &anyhow::Error) -> Self {
+    /// A downstream node (stage, voice) failed the request.
+    pub(crate) fn bad_gateway(error: &anyhow::Error) -> Self {
+        Self::new(StatusCode::BAD_GATEWAY, format!("{error:#}"))
+    }
+
+    pub(crate) fn internal(error: &anyhow::Error) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, format!("{error:#}"))
     }
 }
@@ -120,27 +174,66 @@ impl From<QueryRejection> for ApiError {
     }
 }
 
+/// Unwraps a JSON body, turning a rejection into an [`ApiError`].
+pub(crate) fn body<T: DeserializeOwned>(
+    body: Result<Json<T>, JsonRejection>,
+) -> Result<T, ApiError> {
+    Ok(body?.0)
+}
+
+/// Unwraps a query string, turning a rejection into an [`ApiError`].
+pub(crate) fn query<T: DeserializeOwned>(
+    query: Result<Query<T>, QueryRejection>,
+) -> Result<T, ApiError> {
+    Ok(query?.0)
+}
+
+pub(crate) type ApiResult<T> = Result<Json<T>, ApiError>;
+
 /// Builds the API router for a running `api` module.
-pub(crate) fn router(ctx: ModuleContext, token: &str) -> Router {
+pub(crate) fn router(
+    ctx: ModuleContext,
+    token: &str,
+    monitor: Arc<Monitor>,
+    panel_dir: Option<PathBuf>,
+) -> Router {
     let state = ApiState {
         ctx,
         token: Arc::from(token.as_bytes()),
+        monitor,
+        panel: panel_dir.map(Arc::new),
     };
     let protected = Router::new()
         .route("/api/modules", get(list_modules))
         .route("/api/modules/{id}/{action}", post(module_action))
         .route("/api/decisions", get(decisions))
         .route("/api/llm/usage", get(llm_usage))
+        .route("/api/llm/cost", get(llm_cost))
         .route("/api/persona", get(persona))
         .route("/api/persona/{key}", put(set_persona_section))
         .route("/api/persona/{key}/history", get(persona_history))
         .route("/api/events", get(events))
+        .merge(people::routes())
+        .merge(memory::routes())
+        .merge(roles::routes())
+        .merge(ops::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
     Router::new()
         .route("/api/health", get(health))
         .merge(protected)
-        .fallback(|| async { ApiError::not_found("no such endpoint") })
+        .fallback(fallback)
         .with_state(state)
+}
+
+/// Unknown `/api/*` routes get the JSON 404 the panel checks for; anything
+/// else is a panel file when a panel directory is configured.
+async fn fallback(State(state): State<ApiState>, request: Request) -> Response {
+    let path = request.uri().path();
+    let is_api = path == "/api" || path.starts_with("/api/");
+    match &state.panel {
+        Some(dir) if !is_api => panel::serve(dir, request).await,
+        _ => ApiError::not_found(NO_SUCH_ENDPOINT).into_response(),
+    }
 }
 
 async fn require_token(State(state): State<ApiState>, request: Request, next: Next) -> Response {
@@ -164,32 +257,39 @@ async fn health() -> Json<HealthInfo> {
     })
 }
 
-async fn list_modules(State(state): State<ApiState>) -> Result<Json<Vec<ModuleInfo>>, ApiError> {
+async fn list_modules(State(state): State<ApiState>) -> ApiResult<Vec<ModuleInfo>> {
     let sup = state.service::<SupervisorHandle>("supervisor")?;
     Ok(Json(
         sup.list().await.into_iter().map(ModuleInfo::from).collect(),
     ))
 }
 
-fn find(list: Vec<ModuleStatus>, id: &ModuleId) -> Result<ModuleStatus, ApiError> {
+pub(crate) fn find_module(
+    list: Vec<ModuleStatus>,
+    id: &ModuleId,
+) -> Result<ModuleStatus, ApiError> {
     list.into_iter()
         .find(|m| &m.id == id)
         .ok_or_else(|| ApiError::not_found(format!("unknown module `{id}`")))
 }
 
-async fn module_action(
-    State(state): State<ApiState>,
-    Path((id, action)): Path<(String, String)>,
-) -> Result<Json<ModuleInfo>, ApiError> {
+/// Enables, disables or restarts a module and returns its status afterwards.
+/// Refuses to stop the `api` module itself. Recorded in the audit log as
+/// `<audit_prefix>.<action>`.
+pub(crate) async fn run_module_action(
+    state: &ApiState,
+    id: &ModuleId,
+    action: &str,
+    audit_prefix: &str,
+) -> Result<ModuleStatus, ApiError> {
     let sup = state.service::<SupervisorHandle>("supervisor")?;
-    let id = ModuleId::from(id);
-    if !matches!(action.as_str(), "enable" | "disable" | "restart") {
+    if !matches!(action, "enable" | "disable" | "restart") {
         return Err(ApiError::not_found(format!(
             "unknown action `{action}` (expected enable, disable or restart)"
         )));
     }
-    let current = find(sup.list().await, &id)?;
-    if action != "enable" && &id == state.ctx.id() {
+    let current = find_module(sup.list().await, id)?;
+    if action != "enable" && id == state.ctx.id() {
         return Err(ApiError::conflict(format!(
             "refusing to {action} `{id}` through itself: it would stop this server"
         )));
@@ -201,10 +301,10 @@ async fn module_action(
     }
 
     let op = async {
-        match action.as_str() {
-            "enable" => sup.enable(&id).await,
-            "disable" => sup.disable(&id).await,
-            _ => sup.restart(&id).await,
+        match action {
+            "enable" => sup.enable(id).await,
+            "disable" => sup.disable(id).await,
+            _ => sup.restart(id).await,
         }
     };
     // Don't hold up our own shutdown behind a slow lifecycle operation.
@@ -214,8 +314,29 @@ async fn module_action(
             return Err(ApiError::unavailable("API is shutting down"));
         }
     };
+    let detail = match &result {
+        Ok(()) => serde_json::json!({}),
+        Err(e) => serde_json::json!({ "error": format!("{e:#}") }),
+    };
+    state
+        .audit(
+            &format!("{audit_prefix}.{action}"),
+            id.as_str(),
+            detail,
+            result.is_ok(),
+        )
+        .await;
     result.map_err(|e| ApiError::internal(&e))?;
-    Ok(Json(find(sup.list().await, &id)?.into()))
+    find_module(sup.list().await, id)
+}
+
+async fn module_action(
+    State(state): State<ApiState>,
+    Path((id, action)): Path<(String, String)>,
+) -> ApiResult<ModuleInfo> {
+    let id = ModuleId::from(id);
+    let status = run_module_action(&state, &id, &action, "module").await?;
+    Ok(Json(status.into()))
 }
 
 #[derive(Deserialize)]
@@ -227,16 +348,16 @@ struct DecisionsQuery {
 
 async fn decisions(
     State(state): State<ApiState>,
-    query: Result<Query<DecisionsQuery>, QueryRejection>,
-) -> Result<Json<Vec<DecisionRecord>>, ApiError> {
-    let Query(query) = query?;
-    let context = match query.context.as_deref().map(str::trim) {
+    q: Result<Query<DecisionsQuery>, QueryRejection>,
+) -> ApiResult<Vec<DecisionRecord>> {
+    let q = query(q)?;
+    let context = match q.context.as_deref().map(str::trim) {
         None | Some("") => None,
         Some(raw) => Some(serde_json::from_str::<ContextKey>(raw).map_err(|e| {
             ApiError::bad_request(format!("`context` must be a JSON context key: {e}"))
         })?),
     };
-    let limit = query.limit.unwrap_or(DEFAULT_DECISIONS).min(MAX_DECISIONS);
+    let limit = q.limit.unwrap_or(DEFAULT_DECISIONS).min(MAX_DECISIONS);
     let log = state.service::<dyn DecisionLog>("decision log")?;
     let profile = state.profile()?;
     let records = log
@@ -246,9 +367,7 @@ async fn decisions(
     Ok(Json(records))
 }
 
-async fn llm_usage(
-    State(state): State<ApiState>,
-) -> Result<Json<BTreeMap<String, UsageInfo>>, ApiError> {
+async fn llm_usage(State(state): State<ApiState>) -> ApiResult<BTreeMap<String, UsageInfo>> {
     let router = state.service::<LlmRouter>("LLM router")?;
     Ok(Json(
         router
@@ -259,7 +378,12 @@ async fn llm_usage(
     ))
 }
 
-async fn persona(State(state): State<ApiState>) -> Result<Json<Vec<PersonaSectionInfo>>, ApiError> {
+async fn llm_cost(State(state): State<ApiState>) -> ApiResult<CostInfo> {
+    let router = state.service::<LlmRouter>("LLM router")?;
+    Ok(Json(router.cost_report().into()))
+}
+
+async fn persona(State(state): State<ApiState>) -> ApiResult<Vec<PersonaSectionInfo>> {
     let persona = state.service::<PersonaHandle>("persona")?;
     Ok(Json(
         persona
@@ -291,9 +415,9 @@ fn check_section_key(key: &str) -> Result<(), ApiError> {
 async fn set_persona_section(
     State(state): State<ApiState>,
     Path(key): Path<String>,
-    body: Result<Json<SetPersonaRequest>, JsonRejection>,
-) -> Result<Json<SetPersonaResponse>, ApiError> {
-    let Json(request) = body?;
+    request: Result<Json<SetPersonaRequest>, JsonRejection>,
+) -> ApiResult<SetPersonaResponse> {
+    let request = body(request)?;
     check_section_key(&key)?;
     let persona = state.service::<PersonaHandle>("persona")?;
     let overrides = state.service::<dyn PersonaOverrideStore>("persona override store")?;
@@ -303,21 +427,26 @@ async fn set_persona_section(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("api");
-    let body = request.body.trim();
+        .unwrap_or(ACTOR);
+    let text = request.body.trim();
     // Persist first, so a failed write never leaves an unrecorded live edit.
-    let version = overrides
-        .set(&profile, &key, body, edited_by)
-        .await
-        .map_err(|e| ApiError::internal(&e))?;
-    persona.set_section(&key, body);
+    let result = overrides.set(&profile, &key, text, edited_by).await;
+    let detail = match &result {
+        Ok(version) => serde_json::json!({ "version": version, "edited_by": edited_by }),
+        Err(e) => serde_json::json!({ "edited_by": edited_by, "error": format!("{e:#}") }),
+    };
+    state
+        .audit("persona.set", &key, detail, result.is_ok())
+        .await;
+    let version = result.map_err(|e| ApiError::internal(&e))?;
+    persona.set_section(&key, text);
     Ok(Json(SetPersonaResponse { key, version }))
 }
 
 async fn persona_history(
     State(state): State<ApiState>,
     Path(key): Path<String>,
-) -> Result<Json<Vec<PersonaOverride>>, ApiError> {
+) -> ApiResult<Vec<PersonaOverride>> {
     check_section_key(&key)?;
     let overrides = state.service::<dyn PersonaOverrideStore>("persona override store")?;
     let profile = state.profile()?;
@@ -336,10 +465,10 @@ struct EventsQuery {
 
 async fn events(
     State(state): State<ApiState>,
-    query: Result<Query<EventsQuery>, QueryRejection>,
+    q: Result<Query<EventsQuery>, QueryRejection>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, ApiError> {
-    let Query(query) = query?;
-    let patterns: Vec<String> = query
+    let q = query(q)?;
+    let patterns: Vec<String> = q
         .topics
         .as_deref()
         .unwrap_or_default()

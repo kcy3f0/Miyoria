@@ -301,6 +301,58 @@ async fn events_are_filtered_by_permissions() {
     assert_eq!(publish("ext.test.fixture.mine").await, "ok");
     assert_eq!(publish("custom.no.z").await, "denied: -32001");
     assert_eq!(publish("platform.message.created").await, "denied: -32001");
+    // `game.*` is granted, but only a declared adapter may publish game events.
+    assert_eq!(publish("game.fake.death").await, "denied: -32001");
+    h.sup.stop_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn game_adapter_owns_its_namespace() {
+    const GAME: &str = "ext.test.game";
+    let Some(h) = harness(&[fixtures().join("game-ext")], "").await else {
+        return;
+    };
+    h.wait_state(GAME, ModuleStateKind::Running, Duration::from_secs(5))
+        .await;
+    // The declared game id reaches the extension in `initialize`.
+    assert!(h.tools.names().contains(&"game_fake_id".to_owned()));
+    assert_eq!(h.call("game_fake_id", json!({})).await.unwrap(), "fake");
+
+    let publish = async |topic: &str| {
+        h.call("try_publish", json!({ "topic": topic }))
+            .await
+            .unwrap()
+    };
+    assert_eq!(publish("game.fake.death").await, "ok");
+    assert_eq!(publish("game.fake.goal.reached").await, "ok");
+    assert_eq!(publish("ext.test.game.status").await, "ok");
+    assert_eq!(publish("game.other.death").await, "denied: -32001");
+    assert_eq!(publish("game.fake").await, "denied: -32001");
+    assert_eq!(publish("custom.ok.x").await, "denied: -32001");
+    h.sup.stop_all().await;
+
+    // Tools in another game's namespace are refused.
+    let extra = "[extensions.\"test.game\"]
+dynamic = true
+dynamic_name = \"game.other.act\"";
+    let Some(h) = harness(&[fixtures().join("game-ext")], extra).await else {
+        return;
+    };
+    let mut results = h
+        .bus
+        .subscribe(TopicFilter::new(["ext.test.game.register_result"]));
+    h.wait_state(GAME, ModuleStateKind::Running, Duration::from_secs(5))
+        .await;
+    let env = tokio::time::timeout(Duration::from_secs(3), results.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let Event::Custom { payload, .. } = &env.event else {
+        panic!("unexpected event");
+    };
+    assert_eq!(payload["ok"], false);
+    assert_eq!(payload["code"], -32001);
+    assert!(h.tools.is_empty());
     h.sup.stop_all().await;
 }
 
@@ -429,13 +481,14 @@ async fn discovery_skips_stage_extensions_and_honours_enabled() {
         ids,
         [
             ("extensions".to_owned(), true),
+            ("ext.test.game".to_owned(), true),
             ("ext.test.noperms".to_owned(), false),
             ("ext.test.fixture".to_owned(), true),
         ]
     );
     assert_eq!(d.skipped.len(), 1);
     assert!(d.skipped[0].1.contains("stage"));
-    let ext = d.modules[2].module.manifest();
+    let ext = d.modules[3].module.manifest();
     assert_eq!(ext.requires, [ModuleId::from("extensions")]);
 }
 

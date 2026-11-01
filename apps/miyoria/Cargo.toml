@@ -33,6 +33,7 @@ miyoria-queue.workspace = true
 miyoria-mcp.workspace = true
 miyoria-stage.workspace = true
 miyoria-ext-host.workspace = true
+miyoria-game.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

@@ -1,13 +1,16 @@
-# Admin API — routes the panel already calls
+# Admin API — routes the panel calls
 
-The panel ships UI for these routes before the Core serves them. Until a route
-exists, the Core's fallback answers `404 {"error":"no such endpoint"}` and the
-panel shows "尚未提供(core 版本較舊)" for that page. Implement a route with the
-shapes below and the page lights up with no panel change.
+`crates/miyoria-api` serves every route below (Rust wire types in
+`src/types.rs`, typed client in `src/client.rs`). An older Core answers unknown
+routes with its fallback `404 {"error":"no such endpoint"}` and the panel shows
+"尚未提供(core 版本較舊)" for that page. Notes marked **Served as** describe
+where the live shape differs from the first proposal.
 
 Conventions (same as the live API in `crates/miyoria-api`):
 
-- Every route requires `Authorization: Bearer <token>`.
+- Every route requires `Authorization: Bearer <token>`. The Core also serves
+  the built panel (`[modules.api] panel_dir`, default `apps/panel/dist`,
+  `MIYORIA_PANEL_DIR` overrides) at `/` without a token.
 - Errors are `{"error": "..."}`. Use **404 with a specific message** (not the
   fallback text) for "this item does not exist", 409 for refused state changes,
   503 when the backing service/module is stopped.
@@ -15,6 +18,7 @@ Conventions (same as the live API in `crates/miyoria-api`):
   `snake_case`, `Option` is `null` (not omitted) unless noted.
 - Lists that can grow use `Page<T>`: `{"items": [...], "next_cursor": "opaque" | null}`.
 - All requests act on the **active profile**, like `/api/decisions` and `/api/persona`.
+- Every change is written to the audit log (actor `"api"`).
 
 TypeScript mirrors: `src/api/planned-types.ts`; client calls: `src/api/endpoints.ts`.
 `Settings → API 支援度` probes every GET below and shows which ones a Core serves.
@@ -98,6 +102,9 @@ most recent interaction first.
 `person` = `miyoria_store::Person`, `relationship` = `miyoria_store::Relationship`
 (or `null` before the first interaction), `label` / `blocked` = `Attitude.label` / `Attitude.blocked`.
 
+**Served as:** only people with a relationship to the active profile are listed
+(the people store cannot enumerate everyone yet). `next_cursor` is an offset.
+
 ### `GET /api/people/{id}`
 
 A `PersonSummary` (above) plus:
@@ -128,7 +135,13 @@ Every field optional; omitted = unchanged. `call_name: null` clears it.
 { "tags": ["常客"], "notes": "…", "call_name": "歐文", "blocked": true }
 ```
 
-Response: the updated `PersonSummary`.
+Response: the updated `PersonSummary`. `tags` replaces every tag except
+`blocked`, which only `blocked` changes. Needs the `social` module (503 otherwise).
+
+### `POST /api/people/{id}/adjust`
+
+`{ "affinity": 5.0 }` is added to the affinity directly (ignoring the daily
+caps, -200..200). Response: the updated `PersonSummary`.
 
 ---
 
@@ -185,6 +198,10 @@ Response: the updated `PersonSummary`.
 
 All optional. Changing `content` should re-tokenize and re-embed. Response: the updated record (shape above).
 
+**Served as:** changing `content` re-tokenizes and **drops** the stale
+embedding (`has_embedding: false`) because the memory module does not expose
+its embedder yet; search is full-text only, so `vector_score` is `null`.
+
 ### `DELETE /api/memory/{id}` → `204`
 
 Hard delete (the panel confirms first). Should write an audit entry.
@@ -230,7 +247,17 @@ The server fills `granted_by` (e.g. `"panel"`) and `at`. 404 for an unknown role
 
 Same body as POST (the assignment's natural key). 404 if absent.
 
-(Not called yet, reserve for later: `GET/PUT /api/auth/roles/{name}`, `GET/PUT /api/auth/mappings` for `RoleMapping`, node overrides.)
+### Also served (not called by the panel yet)
+
+- `GET /api/auth/roles/{name}`; `PUT /api/auth/roles/{name}` with
+  `{"rank": 30, "grants": ["queue.*"], "denies": []}` → the `RoleDefinition`
+  (400 for invalid nodes); `DELETE /api/auth/roles/{name}` → `204` (409 for
+  built-in / default roles).
+- `GET /api/auth/mappings?platform=discord&guild=110…` → `RoleMapping[]`
+  (`{platform, guild, platform_role, role}`); `PUT /api/auth/mappings` with a
+  `RoleMapping` → it; `DELETE /api/auth/mappings` with
+  `{platform, guild, platform_role}` → `204`.
+- Node overrides: reserved.
 
 ---
 
@@ -255,6 +282,10 @@ Same body as POST (the assignment's natural key). 404 if absent.
 ```
 
 `state` uses `ModuleStateKind` (`disabled | starting | running | degraded | stopping | stopped | failed`).
+
+**Served as:** also `"module": "ext.song-request"`; `source` is the extension
+directory; `permissions` are the granted ones as `"tools"`, `"commands"`,
+`"events:<topic>"`, `"network:<host>"`, `"input:<kind>"`.
 
 ### `POST /api/extensions/{id}/enable|disable|restart` → the updated `ExtensionInfo`
 
@@ -285,6 +316,11 @@ Same semantics and errors as `/api/modules/{id}/{action}`.
 
 ### `POST /api/mcp/{name}/enable|disable|restart` → the updated `McpServerInfo`
 
+**Served as:** `target` is `null` (the MCP module does not report it yet);
+extra fields `remote_tool_count`, `permission`, `reconnects`. Only `restart`
+works at runtime (it restarts the whole `mcp` module); `enable` / `disable`
+answer 409 because servers are switched in `miyoria.toml`.
+
 ---
 
 ## Request queue
@@ -309,6 +345,11 @@ Same semantics and errors as `/api/modules/{id}/{action}`.
 ```
 
 `items` are in processing order. `kind` ∈ `message | voice | initiative | request`; `author` is `null` for system items.
+
+**Served as** (`miyoria_queue::RequestQueue`): `id` is the queue's numeric id
+as a string (`"3"`); `kind` is free-form (`chat`, `song`, `game_goal`, …);
+`context` may be `null`; plus `"state": "active" | "pending"` (active items
+first) and `"votes"`. Only pending items can be moved or reordered (409).
 
 ### Mutations — each returns the new `QueueState`
 
@@ -341,8 +382,16 @@ The panel polls `GET /api/queue` every 3 s; a `queue.changed` custom event would
 
 - `POST /api/stage/scene` `{"scene": "Gaming"}` → `StageState` (409 if OBS is not connected)
 - `POST /api/stage/expression` `{"expression": "blush"}` → `StageState` (409 if VTS is not connected)
+- `POST /api/stage/stream` `{"action": "start" | "stop"}` → `StageState` (409 if OBS is not connected)
 - `POST /api/stage/say` `{"text": "哼,才不是特地為你唱的。", "emotion": "embarrassed"}` → `{"turn": "<TurnId>" | null}`
   Speaks the text through TTS + lip sync directly, without the LLM. `emotion` optional.
+
+**Served as:** plus `"node": "<stage node name>" | null` and `"streaming": bool`.
+`scenes`, `expressions` are `[]` and `overlay_url` is `null` until the Stage
+node reports them; `expression` is the last one triggered through the API (a
+VTube Studio hotkey); `speaking` follows `voice.playback`. A failure on the
+node is `502`. `say` speaks in the voice channel she joined first (409 when
+she is in none; 503 without the `voice` module).
 
 ---
 
@@ -374,6 +423,12 @@ The panel polls `GET /api/queue` every 3 s; a `queue.changed` custom event would
 ```
 
 `participants` = `VoiceParticipant[]`. Latency stats over a recent window (e.g. last 15 min); `null` when no samples.
+
+**Served as:** built from bus events since the `api` module started
+(`voice.joined/left/participants/speaking/playback`, `voice.latency`), so a
+channel joined before that appears with its next participants update. `label`
+is `null`; `llm_first_token` stays empty until something publishes
+`voice.latency` with `stage: "llm"` and `first_token_ms`.
 The live transcript on that page already works today from SSE (`voice.utterance`, `voice.playback`, `voice.latency`).
 
 ---
@@ -382,4 +437,5 @@ The live transcript on that page already works today from SSE (`voice.utterance`
 
 - `GET /api/events?since=<event id>`: replay from a ring buffer; the panel already sends `Last-Event-ID` on reconnect.
 - Module config schemas (`GET /api/modules/{id}/config` + JSON Schema) for the generated settings forms in ARCHITECTURE §15.1.
-- Serving `apps/panel/dist` from the `api` module at `/` (the panel uses hash routing, so no SPA fallback is needed; asset URLs are relative).
+- ~~Serving `apps/panel/dist` from the `api` module at `/`~~ — done (`index.html`
+  is `no-cache`, `assets/*` are immutable).

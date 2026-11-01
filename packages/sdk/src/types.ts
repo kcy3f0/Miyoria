@@ -265,7 +265,8 @@ export interface Permissions {
 export interface InitializeParams {
   protocol: number;
   host: { name: string; version: string };
-  extension: { id: string; version: string; dir: string };
+  /** `game`: the game id a declared game adapter owns (manifest `game`), else null / absent. */
+  extension: { id: string; version: string; dir: string; game?: string | null };
   config: Record<string, unknown>;
   /** What the host grants (declared ∩ config override). */
   permissions: Permissions;

@@ -6,6 +6,7 @@ let buffer = Buffer.alloc(0);
 let nextId = 1;
 const pending = new Map();
 let extId = "";
+let game = null;
 
 function send(message) {
   const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", ...message }), "utf8");
@@ -68,6 +69,7 @@ async function onRequest(method, params) {
   switch (method) {
     case "initialize": {
       extId = params.extension.id;
+      game = params.extension.game ?? null;
       const config = params.config ?? {};
       if (config.hang_init) return NEVER;
       process.stderr.write(`fixture ${extId} initializing\n`);
@@ -75,7 +77,7 @@ async function onRequest(method, params) {
         setTimeout(async () => {
           let outcome;
           try {
-            await request("tools.register", { name: "dyn.tool", description: "dynamic" });
+            await request("tools.register", { name: config.dynamic_name ?? "dyn.tool", description: "dynamic" });
             outcome = { ok: true };
           } catch (error) {
             outcome = { ok: false, code: error.code, message: error.message };
@@ -96,6 +98,7 @@ async function onRequest(method, params) {
             { name: "crash.now", description: "Exits the process" },
             { name: "try.publish", description: "Publishes on a topic" },
             { name: "store.roundtrip", description: "Writes and reads storage" },
+            ...(game ? [{ name: `game.${game}.id`, description: "Echoes the declared game id" }] : []),
           ],
           commands: [
             {
@@ -116,6 +119,8 @@ async function onRequest(method, params) {
       switch (name) {
         case "echo.say":
           return { content: `echo: ${args.text} from ${context.account.id}` };
+        case `game.${game}.id`:
+          return String(game);
         case "slow.wait":
           return NEVER;
         case "crash.now":

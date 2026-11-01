@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { GameAdapter, GameEvent } from "../src/game.js";
-import { ErrorCode } from "../src/types.js";
-import { fakeHost, toolContext, waitFor } from "./helpers.js";
+import { ErrorCode, type InitializeParams } from "../src/types.js";
+import { fakeHost, initParams, toolContext, waitFor } from "./helpers.js";
 
 function adapter(events: GameEvent[]): GameAdapter & { acted: unknown[] } {
   const acted: unknown[] = [];
@@ -40,7 +40,7 @@ describe("game adapter helper", () => {
         expect(reg.info.id).toBe("mc");
       },
     });
-    const result = await h.initialize();
+    const result = await h.initialize(gameInit("mc"));
     expect(result.contributions.tools.map((t) => t.name)).toEqual(["game.mc.observe", "game.mc.act"]);
     expect(result.contributions.tools[1]?.parameters).toMatchObject({
       required: ["action"],
@@ -77,6 +77,34 @@ describe("game adapter helper", () => {
         await ctx.game.registerAdapter(bad);
       },
     });
-    await expect(h.initialize()).rejects.toMatchObject({ code: ErrorCode.InternalError });
+    await expect(h.initialize(gameInit("Not Valid"))).rejects.toMatchObject({ code: ErrorCode.InternalError });
+  });
+
+  it("requires the manifest to declare the same game", async () => {
+    let seen: string | undefined = "unset";
+    const register = (game: GameAdapter) =>
+      fakeHost({
+        async activate(ctx) {
+          seen = ctx.game.id;
+          await ctx.game.registerAdapter(game);
+        },
+      });
+    const undeclared = register(adapter([]));
+    await expect(undeclared.initialize()).rejects.toMatchObject({
+      code: ErrorCode.InternalError,
+      message: expect.stringContaining('game = "mc"'),
+    });
+    expect(seen).toBeUndefined();
+
+    const other = register(adapter([]));
+    await expect(other.initialize(gameInit("terraria"))).rejects.toMatchObject({
+      message: expect.stringContaining('manifest game "terraria"'),
+    });
+    expect(seen).toBe("terraria");
   });
 });
+
+function gameInit(game: string): Partial<InitializeParams> {
+  const base = initParams();
+  return { extension: { ...base.extension, game } };
+}

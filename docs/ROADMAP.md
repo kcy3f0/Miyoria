@@ -57,71 +57,71 @@
 
 ## Phase 3:記憶、社交、權限
 
-- [ ] Episodic / Semantic / Self 記憶 + consolidation 背景工作 + 混合檢索 + 隱私範圍
-- [ ] `/memory show / forget / export`
-- [ ] `miyoria-social`:Person / Account、`/link`、Relationship、Appraisal、防刷
-- [ ] Mood 模型
-- [ ] Initiative Engine(主動發話)+ 預算
-- [ ] `miyoria-auth`:RBAC、權限節點、Discord 角色對應、稽核紀錄
-- [ ] 成本預算與自動降級
+- [x] `miyoria-memory`:Episode / Fact / Self note / Followup、背景 consolidation、混合檢索(全文 + 向量 + 新舊 + 重要度 + 在場者)、隱私範圍(私訊內容不外流)、jieba 斷詞、可選 embeddings、遺忘
+- [x] `/memory show / forget / export`;工具 `remember` / `recall`
+- [x] `miyoria-social`:Person / Account、`/link`、Relationship、Appraisal(規則 + LLM)、每日上限與報酬遞減、`/me`、`/admin person …`
+- [x] Mood 模組(往基準值回歸、日夜曲線、事件推動)
+- [x] `miyoria-initiative`:冷場、followup、打招呼、有人進語音;每日上限、沒人理就退避、安靜時段
+- [x] `miyoria-auth`:RBAC(owner / admin / moderator / trusted / user / restricted / blocked)、全域 / 伺服器 / 頻道範圍、Discord 角色對應、防越權、稽核紀錄
+- [x] LLM 價格、每日 / 每月預算、降級與停止、用量持久化
+- [ ] 實測:真的 DeepSeek 上 consolidation 的 JSON 品質、好感變化是否合理
+- [ ] `/link` 合併兩個人的記憶(目前只合併好感)
 
-**完成條件**:她記得人、記得發生過的事,對不同人態度不同,會主動找人聊天;權限控管完整。
+**完成條件**:她記得人、記得發生過的事,對不同人態度不同,會主動找人聊天;權限控管完整。(待實測)
 
-## Phase 4:Admin API + Panel v1
+## Phase 4:Admin API + Panel
 
-- [x] `miyoria-api`:REST + SSE 事件串流、bearer token(`miyoria init` 產生)、typed client
-- [ ] OpenAPI、Discord OAuth2 登入
-- [ ] `packages/api-client` 自動產生
-- [ ] Panel(impeccable,深色極簡):總覽、子系統、Decision Trace、Persona 編輯 + Playground、記憶瀏覽、人與關係、權限、日誌與花費
-- [ ] CLI 改成透過 API 操作正在跑的 Core
+- [x] `miyoria-api`:REST + SSE、bearer token、稽核;人物、記憶、權限、擴充、MCP、佇列、Stage、語音、花費等路由(見 `apps/panel/API-PLAN.md`)
+- [x] Core 直接提供面板網頁(`panel_dir`)
+- [x] `apps/panel`:深色極簡(impeccable)、總覽、子系統、決策追蹤、人格編輯 + 歷史、即時事件、人物與好感、記憶、權限、擴充、MCP、佇列、Stage、語音監控
+- [x] CLI 透過 API 操作執行中的 core
+- [ ] Discord OAuth2 登入(目前是 token)
+- [ ] 小缺口:人物列表只列出有好感紀錄的人、記憶搜尋暫時只用全文、`llm_first_token` 延遲尚未量測
 
 **完成條件**:不用碰設定檔就能管理她的一切。
 
 ## Phase 5:擴充系統 + MCP
 
-- [ ] `miyoria-ext-host`:manifest、JSON-RPC、生命週期、權限、熱重載
-- [ ] `@miyoria/sdk`(TS)+ 由 Rust 型別產生的 protocol 型別
-- [ ] Contribution points:tools、commands、event handlers、module、providers
-- [ ] `miyoria-mcp`:MCP client(工具權限政策);可選 MCP server
-- [ ] CLI:`ext new / dev / install / list`
-- [ ] 範例擴充(天氣、網路搜尋)、Panel 擴充管理頁
+- [x] `miyoria-ext-host`:manifest、JSON-RPC over stdio、每個擴充是一個可啟停的 module、權限、熱重載(`miyoria ext dev`)
+- [x] `@miyoria/sdk`(TS):tools / commands / events / prompt / storage / game adapter
+- [x] `miyoria ext new / list / install / validate / dev`;範例 `extensions/examples/hello`
+- [x] `miyoria-mcp`:MCP client(rmcp 3.8)、允許 / 禁止清單、權限、重連;可選唯讀 MCP server
+- [ ] WASM 擴充(可選)
 
 **完成條件**:用 TS 寫一個新子系統或工具,`miyoria ext dev` 就能熱載入;MCP 工具可以安全地開放給她用。
 
 ## Phase 6:Stage — VTuber 化
 
-- [ ] `miyoria-node`:Node Link(gRPC)、配對、capabilities、斷線重連
-- [ ] `miyoria stage`:VTS client(表情、嘴型、頭部 / 視線)、OBS client、音訊輸出
-- [ ] split 部署設定檔;self voice node 改用 Node Link
-- [ ] Go Live:OBS 本機串流 → self voice node → Discord Go Live;`/stream start` 一併開關
-- [ ] Overlay(字幕、佇列、狀態)
-- [ ] 第二個平台 adapter:直播聊天室(Twitch / YouTube / Bilibili,依你的選擇)
-- [ ] `/stream start / stop / scene`
+- [x] Stage link(WebSocket,見 `docs/protocols/stage-link.md`)+ `miyoria stage`
+- [x] VTube Studio:表情 / hotkey、嘴型同步(voice node 推送播放音量)、頭部與視線
+- [x] OBS:場景、開始 / 停止直播、字幕文字來源;`/stream start / stop / scene / status`
+- [x] Overlay(`apps/overlay`):字幕、情緒、狀態、佇列
+- [x] Go Live(self 帳號,hybrid / exclusive 模式)
+- [ ] 實測:真的 VTube Studio(部分 API 欄位待確認)、OBS、Discord Go Live 與語音能否同時
+- [ ] Twitch / YouTube 聊天室 adapter(做成可開關的 platform module)
 
 **完成條件**:她能以 VTuber 樣子開播,講話時嘴型、表情同步,讀直播聊天室並回應。
 
 ## Phase 7:遊戲
 
-- [ ] Game Adapter 協定(SDK 型別 + 宿主)
-- [ ] `extensions/minecraft/mod`:Fabric 橋接模組(Baritone + AltoClef,先固定 1.21.1),本機 WebSocket 提供狀態、事件、動作、截圖
-- [ ] `extensions/minecraft/adapter`:TS game adapter(`observe()` 摘要、`events()` 推送、高階動作)
-- [ ] OBS 直接擷取她的遊戲視窗
-- [ ] 備案:mineflayer 路線(fork minecraft-mcp-server)
-- [ ] 雙速遊戲迴圈 + 實況評論
-- [ ] Request Queue 完整版:觀眾請求、公平排序、投票模式、overlay 顯示、`/queue` 指令
-- [ ] `/game start / stop / goal`
+- [x] Game adapter 協定:`game = "<id>"` 的擴充擁有 `game.<id>.*` 命名空間
+- [x] `extensions/minecraft/mod`:Fabric 1.21.1 橋接模組(Baritone + 可選 AltoClef),`gradlew build` 通過
+- [x] `extensions/minecraft/adapter`:TS game adapter
+- [x] `miyoria-game`:遊戲導演(慢迴路決策、目標延續、觀眾點單變目標、實況評論限流、死亡反應、mood 推動)、`/game start / stop / goal / status`
+- [x] `miyoria-queue`:觀眾請求、公平排序、投票、overlay 顯示
+- [ ] 實測:真的 Minecraft 客戶端 + 她的帳號
 
-**完成條件**:她能直播玩 Minecraft,邊玩邊實況,觀眾可以點單、投票影響她的行動。
+**完成條件**:她能直播玩 Minecraft,邊玩邊實況,觀眾可以點單、投票影響她的行動。(待實測)
 
 ## Phase 8:強化與維運
 
-- [ ] OpenTelemetry + Prometheus、Grafana dashboard 範例
-- [ ] 備份 / 還原、資料匯出
-- [ ] Docker 映像檔發佈、部署文件
-- [ ] 負載與長時間穩定性測試(連續直播 6 小時以上)
-- [ ] WASM 擴充(可選)
-- [ ] 多角色支援(可選)
+- [x] `deploy/Dockerfile.core`、compose(core profile)、CI(Rust / TS / Python / Docker build)
+- [x] 備份 / 還原腳本、`docs/OPERATIONS.md`
+- [x] SIGTERM 正常關機
+- [ ] OpenTelemetry + Prometheus metrics
+- [ ] 長時間穩定性測試(連續直播 6 小時以上)
+- [ ] 多角色同時上線(可選)
 
 ## 後續可以考慮
 
-更多遊戲 adapter、Telegram / LINE adapter、唱歌(歌聲合成)、記憶視覺化、她自己寫日記 / 發社群貼文、影像理解(看觀眾貼的圖)。
+更多遊戲 adapter、Telegram / LINE adapter、唱歌(歌聲合成)、記憶視覺化、她自己寫日記 / 發社群貼文、影像理解(看觀眾貼的圖)、vLLM-Omni 的 WebSocket 文字串流輸入(邊生成邊合成)。

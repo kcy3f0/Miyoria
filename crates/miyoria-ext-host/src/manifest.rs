@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 /// File name of an extension manifest.
 pub const MANIFEST_FILE: &str = "miyoria.extension.toml";
 
+/// Kind of extensions that own a `game.<id>.*` namespace.
+pub const GAME_ADAPTER_KIND: &str = "game-adapter";
+
 /// Contribution kinds the host knows about. Unknown kinds only warn.
 pub const KNOWN_KINDS: &[&str] = &[
     "module",
@@ -33,6 +36,11 @@ pub struct ExtensionManifest {
     /// What the extension contributes. Accepts a string or a list.
     #[serde(default, deserialize_with = "one_or_many")]
     pub kind: Vec<String>,
+    /// Game id of a `game-adapter` extension (e.g. `"minecraft"`). Only that
+    /// extension may publish under `game.<id>.*` and register `game.<id>.*`
+    /// tools.
+    #[serde(default)]
+    pub game: Option<String>,
     pub runtime: Runtime,
     /// Entry point relative to the extension directory (script or binary).
     pub entry: String,
@@ -143,6 +151,13 @@ impl ExtensionManifest {
         self.name.as_deref().unwrap_or(&self.id)
     }
 
+    /// The game id this extension owns, when it is a declared game adapter.
+    pub fn game_id(&self) -> Option<&str> {
+        self.game
+            .as_deref()
+            .filter(|_| self.kind.iter().any(|k| k == GAME_ADAPTER_KIND))
+    }
+
     /// Supervisor module id of this extension: `ext.<id>`.
     pub fn module_id(&self) -> String {
         format!("ext.{}", self.id)
@@ -162,6 +177,16 @@ impl ExtensionManifest {
         }
         if self.entry.trim().is_empty() {
             errors.push("entry is empty".to_owned());
+        }
+        if let Some(game) = &self.game {
+            if !valid_game_id(game) {
+                errors.push(format!(
+                    "game `{game}` must be 1-32 chars of lowercase letters, digits, `-` or `_`"
+                ));
+            }
+            if !self.kind.iter().any(|k| k == GAME_ADAPTER_KIND) {
+                errors.push(format!("`game` needs kind `{GAME_ADAPTER_KIND}`"));
+            }
         }
         for pattern in &self.permissions.events {
             if !valid_pattern(pattern) {
@@ -190,6 +215,11 @@ impl ExtensionManifest {
         if self.kind.is_empty() {
             warnings.push("no `kind` declared".to_owned());
         }
+        if self.kind.iter().any(|k| k == GAME_ADAPTER_KIND) && self.game.is_none() {
+            warnings.push(format!(
+                "kind `{GAME_ADAPTER_KIND}` without `game`: it cannot publish game events"
+            ));
+        }
         if self.kind.iter().any(|k| k == "tools") && !self.permissions.tools {
             warnings.push("kind `tools` without `permissions.tools = true`".to_owned());
         }
@@ -204,6 +234,14 @@ impl ExtensionManifest {
         }
         warnings
     }
+}
+
+/// Game ids: 1-32 lowercase ASCII letters, digits, `-`, `_` (one topic segment).
+pub fn valid_game_id(id: &str) -> bool {
+    (1..=32).contains(&id.len())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
 }
 
 /// Extension ids: lowercase ASCII letters, digits, `.`, `-`, `_`.
@@ -260,6 +298,7 @@ mod tests {
         id = "miyoria.minecraft"
         version = "0.1.0"
         kind = ["game-adapter", "tools", "commands"]
+        game = "minecraft"
         runtime = "node"
         entry = "dist/index.js"
         placement = "stage"
@@ -291,6 +330,7 @@ mod tests {
         assert_eq!(m.config.schema.as_deref(), Some("config.schema.json"));
         assert_eq!(m.mcp_servers[0].args, ["-y", "some-minecraft-wiki-mcp"]);
         assert_eq!(m.module_id(), "ext.miyoria.minecraft");
+        assert_eq!(m.game_id(), Some("minecraft"));
         assert!(m.errors().is_empty());
         assert!(m.warnings().is_empty());
     }
@@ -326,6 +366,34 @@ mod tests {
         let warnings = m.warnings();
         assert_eq!(warnings.len(), 3, "{warnings:?}");
         assert!(ExtensionManifest::parse("id = \"x\"").is_err());
+    }
+
+    #[test]
+    fn game_declaration() {
+        let base = "id = \"x\"
+version = \"1\"
+runtime = \"node\"
+entry = \"i.js\"
+";
+        let m = ExtensionManifest::parse(&format!(
+            "{base}kind = \"tools\"
+game = \"mc\""
+        ))
+        .unwrap();
+        assert_eq!(m.errors(), ["`game` needs kind `game-adapter`"]);
+        assert_eq!(m.game_id(), None);
+        let m = ExtensionManifest::parse(&format!(
+            "{base}kind = \"game-adapter\"
+game = \"Mine Craft\""
+        ))
+        .unwrap();
+        assert_eq!(m.errors().len(), 1);
+        let m = ExtensionManifest::parse(&format!("{base}kind = \"game-adapter\"")).unwrap();
+        assert!(m.errors().is_empty());
+        assert_eq!(m.warnings().len(), 1, "{:?}", m.warnings());
+        assert_eq!(m.game_id(), None);
+        assert!(valid_game_id("minecraft") && valid_game_id("ow-2"));
+        assert!(!valid_game_id("a.b") && !valid_game_id(""));
     }
 
     #[test]

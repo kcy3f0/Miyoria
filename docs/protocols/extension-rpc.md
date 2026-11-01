@@ -45,12 +45,13 @@ Content-Length: 51\r\n
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{
   "protocol":1,
   "host":{"name":"miyoria","version":"0.1.0"},
-  "extension":{"id":"miyoria.hello","version":"0.1.0","dir":"C:\\Miyoria\\extensions\\examples\\hello"},
+  "extension":{"id":"miyoria.hello","version":"0.1.0","dir":"C:\\Miyoria\\extensions\\examples\\hello","game":null},
   "config":{"greeting":"哈囉"},
   "permissions":{"events":["agent.turn.completed"],"tools":true,"commands":true,"network":[],"input":[]}
 }}
 ```
 
+- `extension.game`:宣告為 game adapter 的擴充(見〈Game adapter〉)擁有的遊戲 id,例如 `"minecraft"`;其他擴充為 `null`。
 - `config`:`[extensions."<id>"]` 去掉 `enabled`、`permissions` 之後的內容。
 - `permissions`:宿主**實際授予**的權限(manifest 宣告 ∩ 設定檔覆寫),見〈權限〉。
 
@@ -173,14 +174,15 @@ agent 組 prompt 時,對每個已註冊的 prompt key 送出。逾時 `prompt_ti
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"events.publish","params":{
-  "topic":"game.minecraft.death","payload":{"cause":"creeper"},"correlation":null
+  "topic":"ext.miyoria.hello.greeted","payload":{"who":"Owen"},"correlation":null
 }}
 ```
 
 發佈一個 `Custom` 事件,`source` 是 `ext.<id>`。允許的 topic:
 
 - `ext.<id>.*`(自己的命名空間)永遠可以;
-- 其他 topic 要符合權限 `events` 的某個 pattern,而且**不能**在內建前綴 `platform`、`agent`、`voice`、`action`、`system` 底下(防止偽造內建事件)。
+- `game.<遊戲 id>.*`:只有宣告了這個遊戲的 game adapter 可以(不需要 `events` 權限,見〈Game adapter〉);
+- 其他 topic 要符合權限 `events` 的某個 pattern,而且**不能**在保留前綴 `platform`、`agent`、`voice`、`action`、`system`、`game` 底下(防止偽造內建事件和遊戲事件)。
 
 `correlation`(選填)是 TurnId,讓事件掛在某個回合底下。
 
@@ -196,6 +198,7 @@ agent 組 prompt 時,對每個已註冊的 prompt key 送出。逾時 `prompt_ti
 
 - 需要權限 `tools = true`,否則 `-32001`。
 - `name`:1–64 個 ASCII 英數、`_`、`-`、`.`。模型 API 不接受 `.`,所以宿主在 agent 的工具清單裡登記成 `weather_now`;`tools.call` 仍然用原名。
+- `game.` 開頭(登記名 `game_` 開頭)的工具只有宣告該遊戲的 game adapter 能註冊,而且只能在 `game.<自己的遊戲 id>.` 底下;否則 `-32001`。
 - 名稱已被其他模組(或其他擴充)用掉時回 `-32003`。同一個擴充重複註冊同名工具 = 取代。
 - `parameters` 省略時是空物件 schema;`permission` 是觸發者需要的權限節點(選填)。
 - 結果:`{"name":"weather_now"}`(登記用的名字)。
@@ -274,6 +277,31 @@ input = ["keyboard"]                # 高風險:只有這裡也列出才會授�
 | `input` | 預設**不授予**,要在設定檔的 `permissions.input` 明確列出 |
 
 prompt 片段和 storage 不需要額外權限(都在擴充自己的命名空間)。
+
+## Game adapter
+
+遊戲 adapter(`docs/ARCHITECTURE.md` §12.3)擁有自己的遊戲命名空間 `game.<遊戲 id>.*`。在 manifest 宣告:
+
+```toml
+id = "miyoria.minecraft"
+kind = ["game-adapter", "tools"]
+game = "minecraft"          # 遊戲 id:1–32 個小寫英數、`-`、`_`(一個 topic 片段)
+```
+
+- `game` 必須搭配 kind `game-adapter`(否則 manifest 無效);只有 `game-adapter` 沒有 `game` 只會警告,但它不能發佈遊戲事件。
+- 同一個遊戲 id 只能有一個擴充;第二個在 discovery 時被略過。
+- 宿主在 `initialize` 的 `extension.game` 送出這個 id。
+- **事件**:adapter 可以發佈 `game.<id>.<type>`(例如 `game.minecraft.death`),不需要 `events` 權限。別的擴充即使有 `events = ["game.*"]` 也只能**訂閱**、不能發佈 `game.*`。
+- **工具**:`game.<id>.observe`、`game.<id>.act`(登記成 `game_<id>_observe` / `game_<id>_act`;慢迴路 `crates/miyoria-game` 就是呼叫這兩個)。`game.` 底下的工具名稱只保留給該 adapter。
+- **prompt**:`prompt.register` 的 key 照常加上 `ext.<id>.` 前綴。
+
+SDK 的 `ctx.game.registerAdapter(adapter)` 負責這些對應;`describe().id` 必須等於 `ctx.game.id`(= `extension.game`),否則丟出錯誤、啟動失敗。事件的 `payload` 是 `GameEvent`:
+
+```json
+{"type":"death","data":{"text":"死掉了(被殭屍打死)","last_damage_source":"mob"},"important":true}
+```
+
+`type` 是 topic 最後的部分;`important: true` 表示值得立刻實況評論;`data.text`(選填)是一句繁體中文描述,給實況提示用。
 
 ## 逾時
 

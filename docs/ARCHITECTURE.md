@@ -76,7 +76,7 @@ flowchart LR
 
 | 連線 | 協定 | 原因 |
 |---|---|---|
-| Node ↔ Core | **gRPC 雙向串流**(tonic + prost),TLS + 配對 token | 要有型別、串流,還要傳二進位音訊;節點主動外連 |
+| Node ↔ Core | **WebSocket + JSON**(二進位訊框傳音訊),token 認證;跨網路走 Tailscale / wss | 節點主動外連;不需要在 Windows 裝 protoc。協定:[voice-link](protocols/voice-link.md)、[stage-link](protocols/stage-link.md) |
 | Panel / CLI ↔ Core | **REST + WebSocket**(axum),由 OpenAPI 產生 TS client | 瀏覽器友善;CLI 和 Panel 共用同一套 API |
 | Extension ↔ 宿主 | **JSON-RPC 2.0** over stdio / WebSocket | 跟 LSP/MCP 同模式,TS 寫起來最簡單,與語言無關 |
 | Agent ↔ 外部工具 | **MCP**(rmcp) | 生態系現成工具 |

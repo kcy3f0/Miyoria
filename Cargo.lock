@@ -1742,6 +1742,7 @@ dependencies = [
  "miyoria-commands",
  "miyoria-discord",
  "miyoria-ext-host",
+ "miyoria-game",
  "miyoria-initiative",
  "miyoria-kernel",
  "miyoria-llm",
@@ -1801,10 +1802,18 @@ dependencies = [
  "chrono",
  "futures",
  "miyoria-agent",
+ "miyoria-auth",
+ "miyoria-ext-host",
  "miyoria-kernel",
  "miyoria-llm",
+ "miyoria-mcp",
+ "miyoria-memory",
  "miyoria-profile",
+ "miyoria-queue",
+ "miyoria-social",
+ "miyoria-stage",
  "miyoria-store",
+ "miyoria-tools",
  "miyoria-types",
  "parking_lot",
  "reqwest 0.12.28",
@@ -1815,6 +1824,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "tower-http",
  "tracing",
  "ulid",
 ]
@@ -1896,6 +1906,28 @@ dependencies = [
  "toml",
  "tracing",
  "ulid",
+]
+
+[[package]]
+name = "miyoria-game"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "futures",
+ "miyoria-commands",
+ "miyoria-kernel",
+ "miyoria-llm",
+ "miyoria-profile",
+ "miyoria-queue",
+ "miyoria-tools",
+ "miyoria-types",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Minecraft adapter",
+  "type": "object",
+  "properties": {
+    "minecraft_dir": {
+      "type": "string",
+      "description": "Minecraft 實例目錄;從 <目錄>/config/miyoria-bridge.json 讀 port 和 token(也可以用環境變數 MIYORIA_MC_DIR)"
+    },
+    "bridge_config": { "type": "string", "description": "直接指定 miyoria-bridge.json 的路徑" },
+    "url": { "type": "string", "description": "WebSocket 位址,預設 ws://127.0.0.1:<port>(環境變數 MIYORIA_MC_URL)" },
+    "host": { "type": "string", "default": "127.0.0.1" },
+    "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 7890 },
+    "token": { "type": "string", "description": "共享密鑰;預設讀模組設定檔(環境變數 MIYORIA_MC_TOKEN)" },
+    "request_timeout_ms": { "type": "integer", "minimum": 500, "default": 10000 },
+    "reconnect_min_ms": { "type": "integer", "minimum": 100, "default": 1000 },
+    "reconnect_max_ms": { "type": "integer", "minimum": 1000, "default": 15000 },
+    "damage_important": { "type": "number", "minimum": 0, "default": 4, "description": "一次受傷超過幾點算重要事件(會觸發實況)" },
+    "allow_commands": { "type": "boolean", "default": false, "description": "允許 chat 動作送 / 開頭的遊戲指令" }
+  },
+  "additionalProperties": false
+}

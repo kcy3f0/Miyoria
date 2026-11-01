@@ -9,7 +9,15 @@ import { useToast } from "../components/toast";
 import { Badge, Button, EmptyState, PageHeader, Panel } from "../components/ui";
 import { contextShort, fmtRelative } from "../lib/format";
 
-const KIND: Record<QueueItemKind, string> = { message: "訊息", voice: "語音", initiative: "主動", request: "點播" };
+const KIND: Record<QueueItemKind, string> = {
+  chat: "聊天",
+  song: "點歌",
+  game_goal: "遊戲目標",
+  message: "訊息",
+  voice: "語音",
+  initiative: "主動",
+  request: "點播",
+};
 
 function useQueueMutation<A>(fn: (a: A) => Promise<QueueState>) {
   const qc = useQueryClient();
@@ -69,11 +77,13 @@ export function QueuePage() {
                   </span>
                   <div className="row__main">
                     <div className="row__title">
-                      <Badge tone={item.kind === "request" ? "accent" : "neutral"}>{KIND[item.kind] ?? item.kind}</Badge>
+                      <Badge tone={item.state === "active" ? "accent" : "neutral"}>{KIND[item.kind] ?? item.kind}</Badge>
                       <span style={{ fontWeight: 400, minWidth: 0, overflowWrap: "anywhere" }}>{item.text}</span>
                     </div>
                     <div className="row__meta">
-                      {item.author?.display_name ?? "系統"} · {contextShort(item.context)} · {fmtRelative(item.enqueued_at)}
+                      {item.author?.display_name ?? "系統"}
+                      {item.context && ` · ${contextShort(item.context)}`} · {fmtRelative(item.enqueued_at)}
+                      {item.state === "active" && " · 處理中"}
                       {item.priority !== 0 && ` · 優先 ${item.priority}`}
                     </div>
                   </div>

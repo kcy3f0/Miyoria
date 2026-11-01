@@ -132,6 +132,17 @@ pub fn discover_in(config: &Config, base: &Path) -> anyhow::Result<Discovery> {
                 skipped.push((dir, format!("duplicate extension id `{}`", manifest.id)));
                 continue;
             }
+            if let Some(game) = manifest.game_id()
+                && catalog
+                    .iter()
+                    .any(|e: &CatalogEntry| e.spec.manifest.game_id() == Some(game))
+            {
+                skipped.push((
+                    dir,
+                    format!("another extension already adapts game `{game}`"),
+                ));
+                continue;
+            }
             let settings = ExtensionSettings::from_config(config, &manifest.id)?;
             let schema = manifest.config.schema.as_ref().and_then(|file| {
                 let path = dir.join(file);

@@ -1,6 +1,10 @@
 // Game adapter interface (docs/ARCHITECTURE.md §12.3) and its mapping onto
 // tools and events: `game.<id>.observe`, `game.<id>.act`, events
 // `game.<id>.<type>`, plus a prompt section from `describe().prompt`.
+//
+// The `game.<id>.*` namespace belongs to the extension whose manifest has
+// kind `game-adapter` and `game = "<id>"`; the host refuses game topics and
+// tools from anyone else (docs/protocols/extension-rpc.md, "Game adapters").
 
 import type { ExtensionContext } from "./extension.js";
 import { isValidTopic } from "./topics.js";
@@ -108,6 +112,13 @@ export async function registerGameAdapter(
 ): Promise<RegisteredAdapter> {
   const info = adapter.describe();
   if (!GAME_ID.test(info.id)) throw new Error(`invalid game id "${info.id}"`);
+  if (ctx.game.id !== info.id) {
+    throw new Error(
+      ctx.game.id === undefined
+        ? `game adapter "${info.id}" needs kind = ["game-adapter", ...] and game = "${info.id}" in miyoria.extension.toml`
+        : `game adapter id "${info.id}" does not match the manifest game "${ctx.game.id}"`,
+    );
+  }
   const base = `game.${info.id}`;
 
   await ctx.tools.register({

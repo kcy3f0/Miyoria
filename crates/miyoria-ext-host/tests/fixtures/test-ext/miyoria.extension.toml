@@ -6,6 +6,6 @@ entry = "index.mjs"
 placement = "core"
 
 [permissions]
-events = ["custom.ok.*", "ext.other.*"]
+events = ["custom.ok.*", "ext.other.*", "game.*"]
 tools = true
 commands = true

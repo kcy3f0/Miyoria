@@ -32,6 +32,7 @@ miyoria-ext-host = { path = "crates/miyoria-ext-host" }
 miyoria-mcp = { path = "crates/miyoria-mcp" }
 miyoria-stage = { path = "crates/miyoria-stage" }
 miyoria-queue = { path = "crates/miyoria-queue" }
+miyoria-game = { path = "crates/miyoria-game" }
 
 # external
 anyhow = "1"

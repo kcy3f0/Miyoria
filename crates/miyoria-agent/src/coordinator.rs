@@ -215,6 +215,8 @@ impl Coordinator {
                     }
                     let last = self.session.lock().last_self_at();
                     let cooldown = self.agent.ambient_cooldown(&self.key);
+                    // Live game commentary is rate-limited by the game director itself.
+                    let last = last.filter(|_| initiative.reason != "game");
                     if let Some(last) = last {
                         let since = chrono::Utc::now().signed_duration_since(last);
                         if since < cooldown {

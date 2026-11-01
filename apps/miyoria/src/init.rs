@@ -77,7 +77,7 @@ pub fn run(config_path: &Path) -> anyhow::Result<()> {
             env = upsert_env(&env, key, value);
         }
     }
-    for key in ["MIYORIA_API_TOKEN", "VOICE_LINK_TOKEN"] {
+    for key in ["MIYORIA_API_TOKEN", "VOICE_LINK_TOKEN", "STAGE_LINK_TOKEN"] {
         if env_value(&env, key).is_none_or(str::is_empty) {
             // Two ULIDs = 160 random bits; only authenticates local nodes / CLI.
             let token = format!("{}{}", ulid::Ulid::new(), ulid::Ulid::new()).to_lowercase();

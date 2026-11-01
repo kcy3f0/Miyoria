@@ -1,0 +1,21 @@
+# Minecraft game adapter:連到 Fabric 模組 miyoria-bridge 的本機 WebSocket,
+# 提供 game.minecraft.observe / game.minecraft.act 工具與 game.minecraft.* 事件。
+# 建置:先 `pnpm build` packages/sdk,再在這裡 `pnpm install && pnpm build`。
+id = "miyoria.minecraft"
+version = "0.1.0"
+name = "Minecraft"
+description = "Minecraft game adapter(miyoria-bridge 模組 + Baritone / AltoClef)"
+kind = ["game-adapter", "tools"]
+game = "minecraft"
+runtime = "node"
+entry = "dist/index.js"
+# 要跟 Minecraft 客戶端在同一台機器(mod 只綁 127.0.0.1)。
+placement = "any"
+
+[permissions]
+events = []
+tools = true
+network = ["127.0.0.1:7890"]
+
+[config]
+schema = "config.schema.json"

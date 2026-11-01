@@ -8,7 +8,7 @@
 |---|---|---|
 | Async runtime | tokio | 生態系標準 |
 | HTTP / WS API | axum + utoipa(OpenAPI) | 由 OpenAPI 產生 TS client,Panel 和 CLI 共用 |
-| 節點間 RPC | tonic + prost(gRPC 雙向串流) | 有型別、可串流、可傳二進位音訊 |
+| 節點間連線 | WebSocket + JSON(音訊用二進位訊框) | 2026-11-01 改:原本規劃 gRPC,但在 Windows 要裝 protoc;WebSocket 夠用而且 TS 節點好寫 |
 | DB | PostgreSQL + pgvector,sqlx | 向量 + 全文 + 關聯資料一次搞定;不另外支援 SQLite,避免維護兩套 |
 | 中文全文檢索 | 在 Rust 端用 `jieba-rs` 斷詞,存成 `simple` 設定的 `tsvector` | 不需要在 Postgres 裝 zhparser 之類的擴充,Docker 映像檔維持原版 |
 | 嵌入模型 | 本地 bge-m3(`fastembed` / `ort`,CPU),可換雲端 | 中日英多語效果好,量不大時 CPU 就夠 |

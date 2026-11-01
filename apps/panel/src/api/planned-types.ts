@@ -1,7 +1,8 @@
-// Wire types of endpoints the Core does not serve yet. Shapes follow the store
-// records in `crates/miyoria-store` (people, relationships, memory, auth) where
-// they exist; everything else is the panel's proposal. `apps/panel/API-PLAN.md`
-// documents each route with example JSON — change both together.
+// Wire types of the panel-facing routes in `API-PLAN.md`, served by
+// `crates/miyoria-api` (Rust mirrors in `src/types.rs`). Shapes follow the store
+// records in `crates/miyoria-store` (people, relationships, memory, auth).
+// `apps/panel/API-PLAN.md` documents each route with example JSON — change
+// both together.
 
 import type {
   AccountRef,
@@ -112,6 +113,11 @@ export interface PersonDetail extends PersonSummary {
   memory_count: number;
 }
 
+/** `POST /api/people/{id}/adjust`: added to the affinity, ignoring daily caps. */
+export interface AdjustPersonRequest {
+  affinity: number;
+}
+
 export interface PeopleQuery {
   q?: string;
   limit?: number;
@@ -120,6 +126,7 @@ export interface PeopleQuery {
 
 /** `PATCH /api/people/{id}`; every field optional. */
 export interface UpdatePersonRequest {
+  /** Replaces every tag except `blocked` (set that with `blocked`). */
   tags?: string[];
   notes?: string;
   call_name?: string | null;
@@ -217,20 +224,44 @@ export interface AssignRoleRequest {
   scope: AuthScope;
 }
 
+/** `PUT /api/auth/roles/{name}`. */
+export interface UpsertRoleRequest {
+  rank: number;
+  grants: string[];
+  denies: string[];
+}
+
+/** Platform role (e.g. a Discord role id) → Miyoria role, per guild. */
+export interface RoleMapping {
+  platform: PlatformId;
+  guild: string;
+  platform_role: string;
+  role: string;
+}
+
+/** `DELETE /api/auth/mappings`. */
+export interface RemoveMappingRequest {
+  platform: PlatformId;
+  guild: string;
+  platform_role: string;
+}
+
 // ---------------------------------------------------------------------------
 // Extensions
 
 export interface ExtensionInfo {
   id: string;
+  /** Supervisor module running it, `ext.<id>`. */
+  module: string;
   name: string;
   version: string;
   description: string;
-  /** `"bundled"`, a path or a registry URL. */
+  /** Extension directory. */
   source: string;
   enabled: boolean;
   state: ModuleStateKind;
   reason: string | null;
-  /** Permission nodes the extension requests, e.g. `"platform.send"`. */
+  /** Granted permissions: `"tools"`, `"commands"`, `"events:<topic>"`, `"network:<host>"`, `"input:<kind>"`. */
   permissions: string[];
 }
 
@@ -248,27 +279,41 @@ export interface McpToolInfo {
 export interface McpServerInfo {
   name: string;
   transport: McpTransport;
-  /** Command line (`stdio`) or URL (`http`). */
-  target: string;
+  /** Command line (`stdio`) or URL (`http`); `null` while the Core does not report it. */
+  target: string | null;
+  /** `false` when disabled in `miyoria.toml`; only `restart` works at runtime (409 otherwise). */
   enabled: boolean;
   state: McpState;
   error: string | null;
   tools: McpToolInfo[];
+  /** Tools the server offers before allow / deny filtering. */
+  remote_tool_count: number;
+  /** Permission node required to use the tools. */
+  permission: string | null;
+  reconnects: number;
 }
 
 // ---------------------------------------------------------------------------
 // Request queue
 
-export type QueueItemKind = "message" | "voice" | "initiative" | "request";
+/** Free-form request kind from the queue, e.g. `"chat"`, `"song"`, `"game_goal"`. */
+export type QueueItemKind = string;
+
+export type QueueItemState = "pending" | "active" | "done" | "skipped" | "removed";
 
 export interface QueueItem {
-  id: Ulid;
+  /** The queue's numeric item id, as a string (e.g. `"3"`). */
+  id: string;
   kind: QueueItemKind;
-  context: ContextKey;
+  /** Where the request was made; `null` for requests from the API or a game. */
+  context: ContextKey | null;
   author: { account: AccountRef; display_name: string } | null;
   text: string;
   priority: number;
   enqueued_at: Timestamp;
+  /** `active` items come first, then `pending` ones. */
+  state: QueueItemState;
+  votes: number;
 }
 
 export interface QueueState {
@@ -295,7 +340,13 @@ export interface StageState {
   /** Browser-source URL of the overlay, if the stage serves one. */
   overlay_url: string | null;
   speaking: boolean;
+  /** Name of the connected Stage node; `null` while disconnected. */
+  node: string | null;
+  /** OBS is streaming. */
+  streaming: boolean;
 }
+
+export type StreamAction = "start" | "stop";
 
 export interface SayRequest {
   text: string;

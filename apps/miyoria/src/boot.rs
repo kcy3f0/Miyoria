@@ -10,6 +10,7 @@ use miyoria_api::ApiModule;
 use miyoria_auth::AuthModule;
 use miyoria_commands::CommandsModule;
 use miyoria_discord::DiscordBotModule;
+use miyoria_game::GameModule;
 use miyoria_initiative::InitiativeModule;
 use miyoria_kernel::{
     Config, EventBus, Module, ModuleContext, ModuleManifest, ServiceRegistry, Supervisor,
@@ -56,6 +57,7 @@ const MODULES: &[&str] = &[
     MemoryModule::ID,
     InitiativeModule::ID,
     QueueModule::ID,
+    GameModule::ID,
     McpModule::ID,
     StageLinkModule::ID,
     "extensions",
@@ -201,6 +203,7 @@ pub async fn build(config: &Config, options: Options) -> anyhow::Result<Boot> {
     let profile_id = profile.id.clone();
     services.provide(&kernel, Arc::new(profile_id.clone()));
 
+    let game = GameModule::from_profile(&profile);
     let social = SocialModule::new(&profile);
     let mood = MoodModule::new(profile_id.clone(), profile.manifest.mood);
     let mut modules: Vec<Arc<dyn Module>> = vec![
@@ -222,6 +225,7 @@ pub async fn build(config: &Config, options: Options) -> anyhow::Result<Boot> {
         )),
         Arc::new(InitiativeModule::new(profile_id.clone())),
         Arc::new(QueueModule::new()),
+        Arc::new(game),
         Arc::new(McpModule::from_app_config(config)?),
         Arc::new(StageLinkModule::new()),
         Arc::new(RecorderModule::new(store.clone(), profile_id)),

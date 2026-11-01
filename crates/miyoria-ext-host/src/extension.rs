@@ -31,8 +31,9 @@ use crate::protocol::{
 use crate::proxy::{ProxyPrompt, ProxyTool, invoke_command};
 use crate::rpc::{self, Handler, Peer, RpcError};
 
-/// Topic prefixes of built-in events; extensions can never publish on them.
-const RESERVED_PREFIXES: &[&str] = &["platform", "agent", "voice", "action", "system"];
+/// Topic prefixes of built-in events; extensions can never publish on them
+/// (except a game adapter on its own `game.<id>.*`).
+const RESERVED_PREFIXES: &[&str] = &["platform", "agent", "voice", "action", "system", "game"];
 
 /// A discovered extension with the permissions the host grants it.
 #[derive(Clone, Debug)]
@@ -163,6 +164,7 @@ impl ExtensionModule {
                 id: m.id.clone(),
                 version: m.version.clone(),
                 dir: self.spec.dir.display().to_string(),
+                game: m.game_id().map(str::to_owned),
             },
             config: match shared.ctx.raw_config() {
                 Value::Null => json!({}),
@@ -428,10 +430,16 @@ impl Shared {
             return Err(RpcError::invalid_params(format!("bad topic `{}`", p.topic)));
         }
         let own = format!("ext.{}.", self.id());
+        let own_game = self
+            .spec
+            .manifest
+            .game_id()
+            .is_some_and(|g| p.topic.starts_with(&format!("game.{g}.")));
         let reserved = RESERVED_PREFIXES
             .iter()
             .any(|r| p.topic == *r || p.topic.starts_with(&format!("{r}.")));
-        let allowed = p.topic.starts_with(&own) || (!reserved && self.grants.matches(&p.topic));
+        let allowed =
+            p.topic.starts_with(&own) || own_game || (!reserved && self.grants.matches(&p.topic));
         if !allowed {
             return Err(RpcError::denied(format!(
                 "publishing on `{}` is not permitted",
@@ -460,6 +468,12 @@ impl Shared {
         if !valid_tool_name(&decl.name) {
             return Err(RpcError::invalid_params(format!(
                 "invalid tool name `{}`",
+                decl.name
+            )));
+        }
+        if !game_tool_allowed(&decl.name, self.spec.manifest.game_id()) {
+            return Err(RpcError::denied(format!(
+                "tool `{}` is in another game's namespace; only the adapter declaring that `game` may use `game.<id>.*`",
                 decl.name
             )));
         }
@@ -646,6 +660,19 @@ impl Shared {
     }
 }
 
+/// Tools under `game.` (registry `game_`) are reserved for the adapter that
+/// declared that game: `game.<id>.*` (or `game_<id>_*`) with `own` = `<id>`.
+fn game_tool_allowed(wire: &str, own: Option<&str>) -> bool {
+    let name = registry_tool_name(wire);
+    let Some(rest) = name.strip_prefix("game_") else {
+        return true;
+    };
+    own.is_some_and(|g| {
+        rest.strip_prefix(&registry_tool_name(g))
+            .is_some_and(|tail| tail.starts_with('_'))
+    })
+}
+
 fn unregister_tool_if_ours(registry: &ToolRegistry, name: &str, ours: &Arc<dyn Tool>) {
     if registry
         .get(name)
@@ -753,5 +780,26 @@ impl Handler for Shared {
             "log" => self.log(params),
             _ => debug!(ext = %self.id(), %method, "ignored notification"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::game_tool_allowed;
+
+    #[test]
+    fn game_tool_namespace() {
+        assert!(game_tool_allowed("weather.now", None));
+        assert!(game_tool_allowed("gamer_tag", None));
+        assert!(!game_tool_allowed("game.minecraft.act", None));
+        assert!(!game_tool_allowed("game_minecraft_act", None));
+        assert!(game_tool_allowed("game.minecraft.act", Some("minecraft")));
+        assert!(game_tool_allowed(
+            "game_minecraft_observe",
+            Some("minecraft")
+        ));
+        assert!(!game_tool_allowed("game.minecraft2.act", Some("minecraft")));
+        assert!(!game_tool_allowed("game.minecraft", Some("minecraft")));
+        assert!(!game_tool_allowed("game.terraria.act", Some("minecraft")));
     }
 }

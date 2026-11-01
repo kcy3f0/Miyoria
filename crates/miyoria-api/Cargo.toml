@@ -8,12 +8,21 @@ publish.workspace = true
 
 [dependencies]
 miyoria-agent.workspace = true
+miyoria-auth.workspace = true
+miyoria-ext-host.workspace = true
 miyoria-kernel.workspace = true
 miyoria-llm.workspace = true
+miyoria-mcp.workspace = true
+miyoria-memory.workspace = true
+miyoria-queue.workspace = true
+miyoria-social.workspace = true
+miyoria-stage.workspace = true
 miyoria-store.workspace = true
+miyoria-tools.workspace = true
 miyoria-types.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
 reqwest.workspace = true
@@ -23,13 +32,13 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+ulid.workspace = true
 axum = "0.8"
 subtle = "2.6"
+tower-http = { version = "0.6", features = ["fs"] }
 
 [dev-dependencies]
 miyoria-profile.workspace = true
-chrono.workspace = true
-ulid.workspace = true
 tempfile = "3"
 
 [lints]
