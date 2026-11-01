@@ -1,0 +1,23 @@
+# Rust / Node
+/target/
+node_modules/
+dist/
+
+# Secrets
+.env
+.env.*
+!.env.example
+secrets.toml
+
+# 第三方素材:授權不允許原樣再散佈,只放本機
+profiles/*/avatar/model/
+profiles/*/voice/*.wav
+profiles/*/voice/*.txt
+
+# Spikes:錄音、模型、評測結果只放本機
+spikes/voice-node/recordings/
+spikes/speech-bench/models/
+spikes/speech-bench/results/
+spikes/speech-bench/out/
+**/.venv/
+__pycache__/

@@ -1,0 +1,39 @@
+[package]
+name = "miyoria"
+description = "Miyoria CLI and node runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "miyoria"
+path = "src/main.rs"
+
+[dependencies]
+miyoria-types.workspace = true
+miyoria-kernel.workspace = true
+miyoria-llm.workspace = true
+miyoria-llm-openai.workspace = true
+miyoria-profile.workspace = true
+miyoria-agent.workspace = true
+miyoria-scheduler.workspace = true
+miyoria-commands.workspace = true
+miyoria-store.workspace = true
+miyoria-discord.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap = { version = "4", features = ["derive"] }
+dotenvy = "0.15"
+inquire = "0.7"
+
+[lints]
+workspace = true

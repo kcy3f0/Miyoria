@@ -1,0 +1,29 @@
+# DeepSeek-chan:一個 profile = 人格 + LLM + 聲音 + Live2D 模型
+id = "deepseek-chan"
+display_name = "DeepSeek-chan"
+nicknames = ["DeepSeek", "小鯨魚", "鯨魚娘", "DS醬"]   # 被叫到這些名字算「直接叫她」
+
+[language]
+primary = "zh-TW"
+secondary = ["ja", "en"]
+
+[mood]          # 傲嬌:平常不太坦率、精神不錯
+valence = 0.1   # -1..1 愉快程度
+arousal = 0.5   # 0..1 興奮程度
+energy  = 0.7   # 0..1 精神
+
+[behavior]
+default_channel_mode = "ambient"
+initiative = "medium"
+max_share_of_recent = 0.3
+
+[persona]
+# persona/ 底下的段落,依這個順序組成人格 prompt;可以自由增減、改內容
+sections = ["identity", "style"]
+
+# 這個角色用的模型。provider 名稱對應 miyoria.toml 的 [llm.providers.<name>]
+[llm.purposes]
+chat       = ["deepseek:deepseek-chat"]
+fast       = ["deepseek:deepseek-chat"]
+summarizer = ["deepseek:deepseek-chat"]
+game       = ["deepseek:deepseek-chat"]

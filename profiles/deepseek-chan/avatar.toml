@@ -1,0 +1,29 @@
+# DeepSeek-chan 模型對照(草稿)
+#
+# 模型:「DeepSeek-chan Live2D Model + Layered PSD」by Kamiya_Ryoko
+# https://vgen.co/KAMIYA/product/deepseek-chan-deepseek-free-live2d-model-layered-psd-psd/1c55a71a-2747-4616-819d-2dc0a934089d
+# 授權:可用於商業內容、可修改;不可原樣再散佈或轉售模型檔 / PSD
+#   → 模型檔放在 VTube Studio 的模型資料夾,不放進這個 repo
+#
+# 下面的 expression / hotkey 名稱要等匯入 VTS 之後依實際模型填寫
+
+vts_model = "<VTS 中的模型名稱或 ID>"
+
+[emotion]   # 情緒標記 → VTS expression 檔或 hotkey
+neutral     = ""
+happy       = "<expression>.exp3.json"
+smug        = "<expression>.exp3.json"
+annoyed     = "<expression>.exp3.json"
+angry       = "<expression>.exp3.json"
+embarrassed = "<expression>.exp3.json"
+sad         = "<expression>.exp3.json"
+surprised   = "<expression>.exp3.json"
+thinking    = "<expression>.exp3.json"
+
+[lipsync]
+mode = "inject"        # inject:由 TTS 音訊算出嘴型注入;mic:VTS 用虛擬音源線自己做
+mouth_open = "MouthOpen"
+mouth_form = "MouthForm"
+
+[credit]
+text = "\"DeepSeek-chan Live2D Model + Layered PSD\" by Kamiya_Ryoko"

@@ -1,0 +1,28 @@
+# DeepSeek-chan 聲音(草稿)— 數值要等 Phase 0 的 TTS 評測後再調
+
+provider = "qwen3-tts"
+# 先用 VoiceDesign 依描述生成參考音,滿意後固定成 clone 的參考音檔
+mode = "voice-design-then-clone"
+
+[design]
+language = "Chinese"
+instruct = """
+十六、七歲少女的聲音,音色清亮、音調偏高,帶一點傲氣和不耐煩。
+說話節奏輕快,台灣口音的普通話。
+生氣時語速加快、音調上揚;害羞時聲音變小、略帶結巴。
+"""
+sample_text = "哼,你終於來了喔?我才、才沒有在等你呢。好啦,今天要做什麼?"
+
+[clone]
+ref_audio = "voice/ref.wav"     # 由 VoiceDesign 產生並挑選後放這裡(不進 git)
+ref_text  = "voice/ref.txt"
+
+# 各情緒的指令。只有 CustomVoice / VoiceDesign 或微調過的模型才吃 instruct;
+# 純 clone(Base)模式下會忽略,情緒只能靠文字本身
+[emotion.instruct]
+happy       = "開心、語調上揚"
+smug        = "得意、有點欠揍的語氣"
+annoyed     = "不耐煩、拖長音"
+angry       = "生氣、語速快"
+embarrassed = "害羞、小聲、略結巴"
+sad         = "低落、聲音變輕"
