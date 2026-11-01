@@ -4,7 +4,7 @@
 
 ## 它怎麼拿到資料
 
-連到 Stage 的 overlay 推送(`crates/miyoria-stage/src/overlay.rs`):
+連到 Stage 的 overlay 推送(`packages/stage/src/overlay.ts`):
 
 | 訊息 | 用途 |
 |---|---|
@@ -19,8 +19,8 @@
 ## 用法
 
 ```bash
+pnpm install        # 在 repo 根目錄(pnpm workspace)
 cd apps/overlay
-pnpm install --ignore-workspace
 pnpm build          # → apps/overlay/dist(Stage 預設就從這裡服務 /overlay/)
 pnpm test           # vitest:訊息解析、reducer、打字機、設定
 pnpm dev            # 開發:http://localhost:5173/?demo=1

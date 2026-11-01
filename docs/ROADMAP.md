@@ -6,28 +6,28 @@
 
 先把最大的不確定性消掉,再開始寫正式的程式碼。
 
-- [x] Monorepo 骨架:Cargo workspace、pnpm workspace、CI(fmt / clippy / test)、`.editorconfig`
+- [x] Monorepo 骨架:pnpm workspace、CI(Biome / typecheck / Vitest / build)、`.editorconfig`
 - [ ] 授權(待決定)
 - [ ] **Spike:Discord self 帳號**(程式已備好:`spikes/voice-node`,待你用小帳號執行):候選 self-bot 函式庫能不能在 DAVE 加密下分別接收每個人的音訊、送出音訊、推 Go Live(風險 R1);同一個伺服器裡 bot 帳號和 self 帳號同時在線
 - [ ] **Spike:ASR 評測**(程式已備好:`spikes/speech-bench`):SenseVoice-Small vs Qwen3-ASR-0.6B / 1.7B(Whisper turbo 當參考),用 Discord 真實錄音(台灣腔、夾日英、遊戲用語),量準確率、每段延遲、VRAM
 - [ ] **Spike:TTS 評測**(程式已備好:`spikes/speech-bench`):Qwen3-TTS(Base 複製、VoiceDesign → Clone)vs GPT-SoVITS(CosyVoice、IndexTTS2 有空再測),在 4070S 上跟遊戲同時跑,量首包延遲、即時率、VRAM、中日混說與情緒表現
 - [ ] **Spike:DeepSeek-chan 的聲音**:用 Qwen3-TTS VoiceDesign 依 `voice.toml` 的描述生成多個候選,挑一個固定成參考音
 - [ ] **Spike:VTS 嘴型**:匯入 DeepSeek-chan 模型,列出它的 expression / 參數,從音訊注入 `MouthOpen`,確認同步效果
-- [x] **Spike:LLM 抽象**:決定自己寫薄 trait + OpenAI 相容 provider(`miyoria-llm`、`miyoria-llm-openai`)
+- [x] **Spike:LLM 抽象**:決定自己寫薄介面 + OpenAI 相容 provider(`@miyoria/llm`)
 - [ ] 寫下評測結果,更新 DECISIONS.md 的 🧪 項目
 
 **完成條件**:所有 🧪 項目有結論;repo 能 build、CI 綠燈。
 
 ## Phase 1:Kernel + 文字聊天 MVP
 
-- [x] `miyoria-types`、`miyoria-kernel`(Module、Supervisor、事件匯流排、service registry、設定與 JSON Schema)
-- [x] `miyoria-store`(記憶體 + Postgres、migrations)、`deploy/docker-compose.yml`(Postgres 部分尚未對真資料庫測過)
-- [x] `miyoria-llm`(OpenAI 相容供應者 + DeepSeek 專屬處理:推理內容過濾、前綴快取友善的 prompt 順序;依用途路由、成本記錄)
-- [x] `miyoria-profile`(載入、驗證、執行期修改人格段落;所有資料帶 `profile_id`)+ 把 `profiles/deepseek-chan/` 定案
-- [x] `miyoria-agent`:Stimulus、Conversation Session(working memory)、TurnCoordinator(debounce / 合併)、Attention 第一、二層、Expression Parser(文字部分)
-- [x] `miyoria-scheduler`:`text` lane
-- [x] `miyoria-discord`:文字收發、輸入中、反應、rate limit(尚未連真的 Discord 測)
-- [x] `miyoria-commands` 框架 + `/ping`、`/admin module ...`
+- [x] `@miyoria/types`、`@miyoria/kernel`(Module、Supervisor、事件匯流排、service registry、設定與 JSON Schema)
+- [x] `@miyoria/store`(SQLite 預設 + Postgres / pgvector、migrations)、`deploy/docker-compose.yml`(Postgres 部分尚未對真資料庫測過)
+- [x] `@miyoria/llm`(OpenAI 相容供應者 + DeepSeek 專屬處理:推理內容過濾、前綴快取友善的 prompt 順序;依用途路由、成本記錄)
+- [x] `@miyoria/profile`(載入、驗證、執行期修改人格段落;所有資料帶 `profile_id`)+ 把 `profiles/deepseek-chan/` 定案
+- [x] `@miyoria/agent`:Stimulus、Conversation Session(working memory)、TurnCoordinator(debounce / 合併)、Attention 第一、二層、Expression Parser(文字部分)
+- [x] `@miyoria/scheduler`:`text` lane
+- [x] `@miyoria/discord`:文字收發、輸入中、反應、rate limit(尚未連真的 Discord 測)
+- [x] `@miyoria/commands` 框架 + `/ping`、`/admin module ...`
 - [x] `/mode`、`/activeness`、`/persona show`(設定存進 DB,重開還在)
 - [x] 工具呼叫迴圈(`ToolRegistry`、觸發者權限檢查、內建 `react`)
 - [x] CLI:`init`、`doctor`、`core`、`chat`(REPL)、`module list`、`profile validate`
@@ -39,11 +39,11 @@
 
 ## Phase 2:語音
 
-- [x] `apps/voice-node`(TS):self 帳號登入、進出語音、每人 PCM 串流、播放音訊;用 [Voice Link 協定](protocols/voice-link.md)(WebSocket)接 Core,Phase 6 換成 Node Link
+- [x] `apps/voice-node`(TS):self 帳號登入、進出語音、每人 PCM 串流、播放音訊;用 [Voice Link 協定](protocols/voice-link.md)(WebSocket)接 Core
 - [x] 雙帳號整合:bot 收 `/join`、self 帳號執行;`voice:*` lane 經 `VoiceSink` 播放;self 掉線時語音降級、文字照常
-- [x] `miyoria-speech`:ASR / TTS trait、fallback chain;provider:`http-worker`、OpenAI 相容(雲端備援)、GPT-SoVITS
+- [x] `@miyoria/speech`:ASR / TTS 介面、fallback chain;provider:`http-worker`、OpenAI 相容(雲端備援)、GPT-SoVITS
 - [x] `workers/`:ASR(SenseVoice / Qwen3-ASR)與 TTS(Qwen3-TTS,逐句串流)的 FastAPI worker、Docker、聲音設計工具、假 worker
-- [x] `miyoria-voice`:每人能量 VAD + 斷句、ASR、轉繁體、幻聽過濾、Voice Room 成員
+- [x] `@miyoria/voice`:每人能量 VAD + 斷句、ASR、轉繁體、幻聽過濾、Voice Room 成員
 - [x] 語音版 Attention(更保守)+ 逐句送 TTS + `voice` lane + barge-in(被打斷就丟掉那一輪剩下的句子)
 - [x] 語音同意流程(`/voice consent`、進頻道公告;預設 opt-out)
 - [x] `/join`、`/leave`、`/voice mode`、`/voice consent`
@@ -57,35 +57,37 @@
 
 ## Phase 3:記憶、社交、權限
 
-- [x] `miyoria-memory`:Episode / Fact / Self note / Followup、背景 consolidation、混合檢索(全文 + 向量 + 新舊 + 重要度 + 在場者)、隱私範圍(私訊內容不外流)、jieba 斷詞、可選 embeddings、遺忘
+- [x] `@miyoria/memory`:Episode / Fact / Self note / Followup、背景 consolidation、混合檢索(全文 + 向量 + 新舊 + 重要度 + 在場者)、隱私範圍(私訊內容不外流)、jieba 斷詞、可選 embeddings、遺忘
 - [x] `/memory show / forget / export`;工具 `remember` / `recall`
-- [x] `miyoria-social`:Person / Account、`/link`、Relationship、Appraisal(規則 + LLM)、每日上限與報酬遞減、`/me`、`/admin person …`
+- [x] `@miyoria/social`:Person / Account、`/link`、Relationship、Appraisal(規則 + LLM)、每日上限與報酬遞減、`/me`、`/admin person …`
 - [x] Mood 模組(往基準值回歸、日夜曲線、事件推動)
-- [x] `miyoria-initiative`:冷場、followup、打招呼、有人進語音;每日上限、沒人理就退避、安靜時段
-- [x] `miyoria-auth`:RBAC(owner / admin / moderator / trusted / user / restricted / blocked)、全域 / 伺服器 / 頻道範圍、Discord 角色對應、防越權、稽核紀錄
+- [x] `@miyoria/initiative`:冷場、followup、打招呼、有人進語音;每日上限、沒人理就退避、安靜時段
+- [x] `@miyoria/auth`:RBAC(owner / admin / moderator / trusted / user / restricted / blocked)、全域 / 伺服器 / 頻道範圍、Discord 角色對應、防越權、稽核紀錄
 - [x] LLM 價格、每日 / 每月預算、降級與停止、用量持久化
 - [ ] 實測:真的 DeepSeek 上 consolidation 的 JSON 品質、好感變化是否合理
-- [ ] `/link` 合併兩個人的記憶(目前只合併好感)
+- [x] `/link` 合併兩個人的記憶(連同好感一起搬到保留的那個人)
 
 **完成條件**:她記得人、記得發生過的事,對不同人態度不同,會主動找人聊天;權限控管完整。(待實測)
 
 ## Phase 4:Admin API + Panel
 
-- [x] `miyoria-api`:REST + SSE、bearer token、稽核;人物、記憶、權限、擴充、MCP、佇列、Stage、語音、花費等路由(見 `apps/panel/API-PLAN.md`)
+- [x] `@miyoria/api`:REST + SSE、bearer token、稽核;人物、記憶、權限、擴充、MCP、佇列、Stage、語音、花費等路由(見 `apps/panel/API-PLAN.md`)
 - [x] Core 直接提供面板網頁(`panel_dir`)
 - [x] `apps/panel`:深色極簡(impeccable)、總覽、子系統、決策追蹤、人格編輯 + 歷史、即時事件、人物與好感、記憶、權限、擴充、MCP、佇列、Stage、語音監控
 - [x] CLI 透過 API 操作執行中的 core
-- [ ] Discord OAuth2 登入(目前是 token)
-- [ ] 小缺口:人物列表只列出有好感紀錄的人、記憶搜尋暫時只用全文、`llm_first_token` 延遲尚未量測
+- [x] Discord OAuth2 登入(面板「使用 Discord 登入」;token 照樣能用)
+- [x] 人物列表列出所有認識的人(包含還沒有好感紀錄的)
+- [x] API 的記憶搜尋走記憶模組的混合檢索(memory 模組沒開時退回全文)
+- [x] 量測 `llm_first_token` 延遲(面板語音監控、`/metrics`)
 
 **完成條件**:不用碰設定檔就能管理她的一切。
 
 ## Phase 5:擴充系統 + MCP
 
-- [x] `miyoria-ext-host`:manifest、JSON-RPC over stdio、每個擴充是一個可啟停的 module、權限、熱重載(`miyoria ext dev`)
+- [x] `@miyoria/ext-host`:manifest、JSON-RPC over stdio、每個擴充是一個可啟停的 module、權限、熱重載(`miyoria ext dev`)
 - [x] `@miyoria/sdk`(TS):tools / commands / events / prompt / storage / game adapter
 - [x] `miyoria ext new / list / install / validate / dev`;範例 `extensions/examples/hello`
-- [x] `miyoria-mcp`:MCP client(rmcp 3.8)、允許 / 禁止清單、權限、重連;可選唯讀 MCP server
+- [x] `@miyoria/mcp`:MCP client(`@modelcontextprotocol/sdk`)、允許 / 禁止清單、權限、重連;可選唯讀 MCP server
 - [ ] WASM 擴充(可選)
 
 **完成條件**:用 TS 寫一個新子系統或工具,`miyoria ext dev` 就能熱載入;MCP 工具可以安全地開放給她用。
@@ -107,20 +109,32 @@
 - [x] Game adapter 協定:`game = "<id>"` 的擴充擁有 `game.<id>.*` 命名空間
 - [x] `extensions/minecraft/mod`:Fabric 1.21.1 橋接模組(Baritone + 可選 AltoClef),`gradlew build` 通過
 - [x] `extensions/minecraft/adapter`:TS game adapter
-- [x] `miyoria-game`:遊戲導演(慢迴路決策、目標延續、觀眾點單變目標、實況評論限流、死亡反應、mood 推動)、`/game start / stop / goal / status`
-- [x] `miyoria-queue`:觀眾請求、公平排序、投票、overlay 顯示
+- [x] `@miyoria/game`:遊戲導演(慢迴路決策、目標延續、觀眾點單變目標、實況評論限流、死亡反應、mood 推動)、`/game start / stop / goal / status`
+- [x] `@miyoria/queue`:觀眾請求、公平排序、投票、overlay 顯示
 - [ ] 實測:真的 Minecraft 客戶端 + 她的帳號
 
 **完成條件**:她能直播玩 Minecraft,邊玩邊實況,觀眾可以點單、投票影響她的行動。(待實測)
 
 ## Phase 8:強化與維運
 
-- [x] `deploy/Dockerfile.core`、compose(core profile)、CI(Rust / TS / Python / Docker build)
+- [x] `deploy/Dockerfile.core`(Node 24)、compose(core profile)、CI(TS / Python / Docker build / compose 驗證)
 - [x] 備份 / 還原腳本、`docs/OPERATIONS.md`
-- [x] SIGTERM 正常關機
-- [ ] OpenTelemetry + Prometheus metrics
+- [x] SIGTERM 正常關機;Windows 上 `Ctrl+C`(以及 Ctrl+Break、關掉主控台視窗)也驗證過會正常關機
+- [x] Prometheus metrics:`GET /metrics`(bus 事件、LLM 首 token 延遲與用量等)
+- [ ] OpenTelemetry
 - [ ] 長時間穩定性測試(連續直播 6 小時以上)
 - [ ] 多角色同時上線(可選)
+
+## TypeScript 改寫
+
+Phase 0–8 先用 Rust 寫成原型(留在 git 歷史裡),之後整個改寫成 TypeScript(理由見 [DECISIONS.md](DECISIONS.md) ADR 13)。
+
+- [x] pnpm workspace(Node 24):`packages/*` 的 `@miyoria/*` 套件逐一移植,module id、設定鍵、事件、JSON 格式與預設值照舊,測試一併移植
+- [x] Store:SQLite(`node:sqlite`)預設 + PostgreSQL / pgvector,兩個後端跑同一份行為測試
+- [x] 端到端驗證:假 LLM + 假語音節點 + 假 worker 跑完整流程(文字、語音、Stage)
+- [x] npm 套件 `miyoria`:esbuild 打包(內含管理面板、內建角色、migrations),`npx miyoria@latest init` 就能開始;已可發佈(`pnpm release:publish`)
+- [x] Docker 映像檔、CI 換成 Node 版本
+- [ ] 實測(跟上面各 phase 的「實測」項目相同):真的 DeepSeek、Discord(bot + self 帳號)、VTube Studio / OBS、Minecraft、Go Live
 
 ## 後續可以考慮
 

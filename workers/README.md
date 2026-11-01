@@ -1,6 +1,6 @@
 # Miyoria 推論 Worker(ASR / TTS)
 
-`miyoria-speech` 的 `http-worker` provider 對應的 GPU 推論服務。協定在 [`docs/protocols/voice-link.md`](../docs/protocols/voice-link.md)「推論 Worker HTTP 介面」,這裡的三個服務都照那份契約實作。
+`@miyoria/speech` 的 `http-worker` provider 對應的 GPU 推論服務。協定在 [`docs/protocols/voice-link.md`](../docs/protocols/voice-link.md)「推論 Worker HTTP 介面」,這裡的三個服務都照那份契約實作。
 
 | 目錄 | 服務 | 預設埠 | 說明 |
 |---|---|---|---|
@@ -20,7 +20,7 @@ workers/
 └── docker-compose.yml
 ```
 
-ASR / TTS 的輸出入都是「原始模型文字」:繁簡轉換(OpenCC `s2tw`)由 Rust 端負責,worker 不做。
+ASR / TTS 的輸出入都是「原始模型文字」:繁簡轉換(OpenCC `s2tw`)由 Core 端(`opencc-js`)負責,worker 不做。
 
 ---
 

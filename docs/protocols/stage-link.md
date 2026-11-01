@@ -1,6 +1,6 @@
 # Stage Link 協定(v1)
 
-Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之間的連線。跟 [Voice Link](voice-link.md) 一樣用 WebSocket + JSON(不用 gRPC,Windows 上不必裝 protoc)。實作在 `crates/miyoria-stage`。
+Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之間的連線。跟 [Voice Link](voice-link.md) 一樣用 WebSocket + JSON(不用 gRPC,Windows 上不必裝 protoc)。實作在 `packages/stage`(`@miyoria/stage`)。
 
 - **方向**:Stage 主動連到 Core:`ws://<core>:7882/stage-link`(位址由 `[modules."stage.link"] bind` 設定,預設 `127.0.0.1:7882`)。
 - **訊框**:只有文字訊框,都是 JSON,都有 `type` 欄位。
@@ -13,7 +13,7 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
    {"type":"hello","version":1,"token":"<STAGE_LINK_TOKEN>","node":"stage",
     "capabilities":["overlay","vts","lipsync","obs"]}
    ```
-   `capabilities` 只是告知用(Core 會記下來,`StageLink::node()` 查得到)。
+   `capabilities` 只是告知用(Core 會記下來,`StageLink.node()` 查得到)。
 2. Core 回 `{"type":"welcome","session":"<ulid>"}`。token 錯誤用 close code `4401` 關閉;版本不符、格式錯誤或 5 秒內沒送 hello 用 `4400`。Stage 收到 `4401` / `4400` 會直接結束(重試也沒用),其他情況會以 1 秒起跳、最多 30 秒的退避重連。
 3. 新的 Stage 連線取代舊的,舊的用 `4409` 關閉。被取代的 Stage 等 30 秒再試。
 4. 心跳:Core 每 15 秒送 `{"type":"ping"}`,Stage 回 `{"type":"pong"}`;任一方 45 秒沒收到任何東西就斷線(Core 用 `4408` 關閉)。

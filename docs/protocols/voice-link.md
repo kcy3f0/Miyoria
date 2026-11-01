@@ -1,6 +1,6 @@
 # Voice Link 協定(v1)
 
-Self voice node(`apps/voice-node`,TS)和 Core 的 `voice.link` 模組之間的連線。Phase 6 會換成 Node Link(gRPC);在那之前用這個 WebSocket 協定。
+Self voice node(`apps/voice-node`,TS)和 Core 的 `voice.link` 模組之間的連線。WebSocket + JSON(音訊用二進位訊框);原本規劃的 gRPC Node Link 已經放棄(見 DECISIONS)。
 
 - **方向**:voice node 主動連到 Core:`ws://<core>:7879/voice-link`(位址由 `[modules."voice.link"] bind` 設定)。
 - **訊框**:文字訊框是 JSON(都有 `type` 欄位);二進位訊框是音訊。
@@ -99,7 +99,7 @@ voice node 另外把**實際送去 Discord 的 PCM**(重新取樣成 48 kHz 之�
 
 # 推論 Worker HTTP 介面(v1)
 
-`workers/` 底下的 ASR / TTS 服務(Python),對應 `miyoria-speech` 的 `http-worker` provider。
+`workers/` 底下的 ASR / TTS 服務(Python),對應 `@miyoria/speech` 的 `http-worker` provider。
 
 ## ASR:`POST /asr`
 

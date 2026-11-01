@@ -1,8 +1,8 @@
 # Extension RPC 協定(v1)
 
-Core 的擴充宿主(`miyoria-ext-host`,module id `extensions`)和每個擴充套件行程之間的協定。TS 擴充用 `@miyoria/sdk` 就不用自己處理這些細節;其他語言照這份文件實作即可(`crates/miyoria-ext-host/tests/fixtures/test-ext/index.mjs` 是一個不用 SDK、約 150 行的完整範例)。
+Core 的擴充宿主(`@miyoria/ext-host`,module id `extensions`)和每個擴充套件行程之間的協定。TS 擴充用 `@miyoria/sdk` 就不用自己處理這些細節;其他語言照這份文件實作即可(`packages/ext-host/test/fixtures/test-ext/index.mjs` 是一個不用 SDK、約 150 行的完整範例)。
 
-- **傳輸**:宿主把擴充當子行程啟動,協定走 **stdin / stdout**。**stdout 只能拿來寫協定訊框**;擴充自己的輸出請寫到 stderr(宿主會逐行轉進 `tracing`,target `miyoria_ext`)或用 `log` 方法。SDK 會自動把 `console.log / info / debug` 導到 stderr。
+- **傳輸**:宿主把擴充當子行程啟動,協定走 **stdin / stdout**。**stdout 只能拿來寫協定訊框**;擴充自己的輸出請寫到 stderr(宿主會逐行轉進 Core 的 pino 日誌,logger 名稱 `miyoria_ext`)或用 `log` 方法。SDK 會自動把 `console.log / info / debug` 導到 stderr。
 - **訊息**:JSON-RPC 2.0。雙方都可以送 request 和 notification;request 可以並行,用 `id` 對應 response。
 - **環境變數**:`MIYORIA_RPC=stdio`、`MIYORIA_EXTENSION_ID=<id>`。工作目錄是擴充目錄。
 - **啟動指令**(依 manifest 的 `runtime`):
@@ -148,7 +148,7 @@ agent 組 prompt 時,對每個已註冊的 prompt key 送出。逾時 `prompt_ti
 }}
 ```
 
-`event` 是 `miyoria_types::Event` 的 JSON(`{"type", "data"}`);自訂事件是 `{"type":"custom","data":{"topic":"…","payload":…}}`。完整型別見 `packages/sdk/src/types.ts`。擴充處理太慢、宿主的送出佇列滿了時,事件會被丟棄(會記警告)。
+`event` 是 `@miyoria/types` 的 `Event` 的 JSON(`{"type", "data"}`);自訂事件是 `{"type":"custom","data":{"topic":"…","payload":…}}`。完整型別見 `packages/sdk/src/types.ts`。擴充處理太慢、宿主的送出佇列滿了時,事件會被丟棄(會記警告)。
 
 ### `shutdown`(notification)
 
@@ -292,7 +292,7 @@ game = "minecraft"          # 遊戲 id:1–32 個小寫英數、`-`、`_`(一�
 - 同一個遊戲 id 只能有一個擴充;第二個在 discovery 時被略過。
 - 宿主在 `initialize` 的 `extension.game` 送出這個 id。
 - **事件**:adapter 可以發佈 `game.<id>.<type>`(例如 `game.minecraft.death`),不需要 `events` 權限。別的擴充即使有 `events = ["game.*"]` 也只能**訂閱**、不能發佈 `game.*`。
-- **工具**:`game.<id>.observe`、`game.<id>.act`(登記成 `game_<id>_observe` / `game_<id>_act`;慢迴路 `crates/miyoria-game` 就是呼叫這兩個)。`game.` 底下的工具名稱只保留給該 adapter。
+- **工具**:`game.<id>.observe`、`game.<id>.act`(登記成 `game_<id>_observe` / `game_<id>_act`;慢迴路 `@miyoria/game` 就是呼叫這兩個)。`game.` 底下的工具名稱只保留給該 adapter。
 - **prompt**:`prompt.register` 的 key 照常加上 `ext.<id>.` 前綴。
 
 SDK 的 `ctx.game.registerAdapter(adapter)` 負責這些對應;`describe().id` 必須等於 `ctx.game.id`(= `extension.game`),否則丟出錯誤、啟動失敗。事件的 `payload` 是 `GameEvent`:

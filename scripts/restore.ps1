@@ -8,7 +8,7 @@
   scripts\restore.ps1 -Yes <file>        # no confirmation prompt
 .NOTES
   If the core container is running (compose profile `core`) it is stopped first and started again
-  afterwards. A core running on the host (cargo run -- core) must be stopped by you first.
+  afterwards. A core running on the host (miyoria core) must be stopped by you first.
 #>
 [CmdletBinding()]
 param(

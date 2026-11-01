@@ -2,7 +2,9 @@
 
 這份文件講「怎麼把 Miyoria 跑起來並維持運作」:選部署型態、第一次設定、啟動各節點、Discord 設定、升級、備份、日誌、安全與疑難排解。架構背景見 [ARCHITECTURE.md](ARCHITECTURE.md) §1、§16。
 
-> 狀態:Phase 1(文字)、Phase 2(語音)已實作。Stage 節點(`miyoria stage`)、管理面板(`apps/panel`)、overlay 還沒有,對應的段落標示「之後」,埠號和 compose 設定先預留好。
+> 狀態:Phase 0–8 的程式都已實作(TypeScript,Node 24);尚未用真的 Discord、DeepSeek、語音模型、VTube Studio、OBS、Minecraft 實測。
+>
+> 指令寫法:下面的 `miyoria <指令>` 在不同安裝方式下是 `npx miyoria <指令>`(npm 套件)或 `pnpm dev <指令>`(從原始碼,在 repo 根目錄)。
 
 ## 目錄
 
@@ -23,11 +25,11 @@
 
 | 節點 | 怎麼跑 | 在哪 | 對外埠(預設) |
 |---|---|---|---|
-| **Core** | `miyoria core`(原生或 Docker) | 直播機或 server | `7878` Admin API(CLI / 面板)、`7879` voice link(voice node 連進來)、`7882` stage link(之後) |
-| **PostgreSQL** | `deploy/docker-compose.yml` | 跟 Core 同一台 | `5432`(只綁 127.0.0.1) |
-| **Self voice node** | `apps/voice-node`(Node ≥ 22) | 直播機(跟 ASR/TTS、OBS 同一台最好) | 不開埠,主動連 Core 的 7879 |
+| **Core** | `miyoria core`(npx、從原始碼或 Docker) | 直播機或 server | `7878` Admin API(CLI / 面板 / `/metrics`)、`7879` voice link(voice node 連進來)、`7882` stage link(Stage 連進來) |
+| **資料庫** | 預設 SQLite 檔案(`data/miyoria.db`,Core 自己開,不用另外跑);選用 PostgreSQL:`deploy/docker-compose.yml` | 跟 Core 同一台 | Postgres `5432`(只綁 127.0.0.1) |
+| **Self voice node** | `apps/voice-node`(Node ≥ 22.4) | 直播機(跟 ASR/TTS、OBS 同一台最好) | 不開埠,主動連 Core 的 7879 |
 | **ASR / TTS worker** | `workers/`(Python,GPU) | 有 GPU 的機器 | `8001` ASR、`8002` TTS(只給 Core 用,不要對外) |
-| **Stage**(之後) | `miyoria stage`(原生,不放 Docker) | 直播機 | 主動連 Core 的 7882 |
+| **Stage** | `miyoria stage`(原生,不放 Docker) | 直播機 | 主動連 Core 的 7882;本機 `7883` 嘴型音量、`7884` overlay |
 
 節點一律**主動往外連** Core,所以直播機在 NAT 後面不用做任何 port forwarding。
 
@@ -41,23 +43,23 @@
 
 | 在直播機上 | 怎麼跑 |
 |---|---|
-| Postgres(可省略,用 `memory://` 就不保存) | `docker compose -f deploy/docker-compose.yml up -d postgres` |
-| Core | `cargo run --release -- core` |
+| 資料庫 | 不用做什麼:預設 SQLite(`data/miyoria.db`)。要 Postgres 再 `docker compose -f deploy/docker-compose.yml up -d postgres` |
+| Core | `npx miyoria core`(或從原始碼 `pnpm dev:core`) |
 | ASR / TTS worker | 見 [workers/README.md](../workers/README.md)(沒有 GPU 先用 `workers/fake`) |
-| Voice node | `cd apps/voice-node && pnpm start` |
+| Voice node | `cd apps/voice-node && pnpm start`(repo 根目錄先 `pnpm install`) |
 
 所有 URL 都是預設的 `127.0.0.1`,不用改任何位址。
 
 ### B. Split:Core 在 server,語音與 Stage 在直播機(目標型態)
 
-Core + Postgres 在 server(Docker),直播機跑 worker、voice node、Stage。Discord 語音音訊在直播機上直接進 ASR、TTS 直接出,不繞 server 一圈。
+Core(+ 資料庫)在 server(Docker),直播機跑 worker、voice node、Stage。Discord 語音音訊在直播機上直接進 ASR、TTS 直接出,不繞 server 一圈。
 
 ```
 直播機(Windows)                               Server(Linux, Docker)
 ┌──────────────────────────┐   voice link     ┌─────────────────────────┐
 │ voice node ──────────────┼──── ws/wss ────▶ │ Core :7879              │
 │ ASR :8001 / TTS :8002 ◀──┼── HTTP(經 tunnel)│  ├ Admin API :7878       │
-│ Stage(之後)─────────────┼── ws/wss ────▶   │  └ Postgres :5432        │
+│ Stage ───────────────────┼── ws/wss ────▶   │  └ SQLite / Postgres     │
 └──────────────────────────┘                  └─────────────────────────┘
 ```
 
@@ -72,13 +74,15 @@ Server 上:
 ```bash
 git clone <repo> miyoria && cd miyoria
 cp deploy/.env.example deploy/.env        # 改 POSTGRES_PASSWORD(只用字母數字 - _ .)
-# 在專案根目錄產生 .env 與 miyoria.toml:可以在任何機器跑 `miyoria init` 再把 .env 複製過來,
+# 在專案根目錄產生 .env:可以在任何機器跑 `npx miyoria init` 再把 .env 複製過來,
 # 或直接手動從 .env.example 建立,token 用 `openssl rand -hex 32` 產生
 docker compose -f deploy/docker-compose.yml --profile core up -d --build
 docker compose -f deploy/docker-compose.yml --profile core ps      # 等 core 變成 healthy
 ```
 
-`core` 服務由 [`deploy/Dockerfile.core`](../deploy/Dockerfile.core) 建出來,使用 [`deploy/miyoria.docker.toml`](../deploy/miyoria.docker.toml) 當設定(容器內監聽 0.0.0.0,宿主機端只映射到 `127.0.0.1`)。要改設定,複製那個檔案,在 `deploy/.env` 設 `MIYORIA_CONFIG_FILE=<路徑>`。
+`core` 服務由 [`deploy/Dockerfile.core`](../deploy/Dockerfile.core) 建出來(Node 24,內含管理面板),使用 [`deploy/miyoria.docker.toml`](../deploy/miyoria.docker.toml) 當設定。**容器裡的 Admin API、voice link、stage link 必須綁 `0.0.0.0`**(綁 `127.0.0.1` 的話宿主機的埠映射連不進去,healthcheck 會過但外面連不到);對外與否由 compose 的 `ports:` 決定,一律只映射到宿主機的 `127.0.0.1`。容器的日誌會警告 `admin API is reachable from the network over plain HTTP`(voice / stage link 也一樣),在容器裡這是預期的。所以不要直接把給宿主機用的 `miyoria.toml` 掛進容器;要改設定就複製 `miyoria.docker.toml`,保留那三個 `bind`,在 `deploy/.env` 設 `MIYORIA_CONFIG_FILE=<路徑>`。
+
+compose 裡的 Core 預設用同一個 compose 的 Postgres(`DATABASE_URL` 由 compose 組成)。想在容器裡用 SQLite,在 `deploy/.env` 設 `CORE_DATABASE_URL=sqlite:/data/miyoria.db`(存在 `core-data` volume)。
 
 ### B'. Split + 語音在 server
 
@@ -101,26 +105,42 @@ Core 在 server,ASR / TTS 用雲端供應者(`miyoria.toml` 的 `[speech.*]` 改
 
 ## 3. 第一次設定
 
-需求:Rust stable(`rust-toolchain.toml` 會自動選)、Docker(要 Postgres 或 Core 容器時)、Node ≥ 22 + pnpm 9(voice node)。
+需求:Node ≥ 24;從原始碼跑還要 pnpm 9(`corepack enable` 會用 `package.json` 指定的版本);Docker 只有要 Postgres 或 Core 容器時才需要。
+
+用 npm 套件(在一個空資料夾):
 
 ```bash
-cargo build --release                  # 或開發時 cargo build
-cargo run --release -- init            # 互動式精靈
-cargo run --release -- doctor          # 檢查連線
-cargo run --release -- profile validate
-cargo run --release -- chat            # 在終端機跟她聊天,不需要 Discord
+npx miyoria@latest init                # 互動式精靈
+npx miyoria doctor                     # 檢查連線
+npx miyoria profile validate
+npx miyoria chat                       # 在終端機跟她聊天,不需要 Discord
+```
+
+想固定版本、少打 `npx`:`npm install -g miyoria`(之後直接打 `miyoria …`),或在專案裡 `npm install miyoria`。
+
+從原始碼(repo 根目錄):
+
+```bash
+corepack enable && pnpm install
+pnpm dev init                          # 跟 miyoria init 一樣;tsx 直接跑原始碼,不用 build
+pnpm dev doctor
+pnpm dev chat
 ```
 
 `miyoria init` 會:
 
-- 寫 `miyoria.toml`(從 `miyoria.example.toml`)和 `.env`(秘密放這裡,不進 git);
+- 寫 `miyoria.toml`(從 `miyoria.example.toml`)和 `.env`(秘密放這裡,不進 git),並把內建角色複製到 `profiles/`;
 - 詢問 LLM base URL / API key / 模型 id、Discord bot token、你的 Discord user id(擁有者);
-- 自動產生 `MIYORIA_API_TOKEN` 和 `VOICE_LINK_TOKEN`;
-- 資料庫二選一:`memory://`(重啟就沒了,先試用)或 Postgres。
+- 自動產生 `MIYORIA_API_TOKEN`、`VOICE_LINK_TOKEN`、`STAGE_LINK_TOKEN`;
+- 資料庫:預設 SQLite(`sqlite:data/miyoria.db`);也可以選 `memory://`(重啟就沒了,先試用)或 Postgres。
 
 `miyoria doctor` 檢查設定檔、profile、LLM、Discord、資料庫連線。每次改完設定、換機器、升級後都先跑一次。
 
+之後改設定用 `miyoria config`(互動選單)或 `miyoria config set <key> <value>`、`miyoria config set --env <NAME> <value>`。
+
 ### 資料庫
+
+預設是 SQLite:`DATABASE_URL=sqlite:data/miyoria.db`(相對路徑以 `miyoria.toml` 所在的資料夾為準),Core 第一次啟動時建立檔案並套用 migration,不用做任何事。資料量大、要放 server 或想用 pgvector 做向量檢索時改用 PostgreSQL:
 
 ```bash
 cp deploy/.env.example deploy/.env            # 改 POSTGRES_PASSWORD
@@ -134,7 +154,7 @@ docker compose -f deploy/docker-compose.yml ps    # 等 healthy
 DATABASE_URL=postgres://miyoria:<密碼>@127.0.0.1:5432/miyoria
 ```
 
-migration 在 Core 第一次連上資料庫時自動執行,`vector` 擴充也是那時建立,不需要手動處理。
+migration 在 Core 第一次連上資料庫時自動執行,`vector` 擴充也是那時建立,不需要手動處理。SQLite 換到 Postgres 時資料不會自動搬過去。
 
 > `deploy/.env`(給 docker compose 用:資料庫密碼、埠)和根目錄 `.env`(給 Miyoria 用:LLM key、Discord token、各種 token)是兩個不同的檔案。Core 容器會自動把 `DATABASE_URL` 換成 compose 網路上的 `postgres:5432`,所以根目錄 `.env` 可以保留給宿主機用的 `127.0.0.1` 位址。
 
@@ -145,8 +165,10 @@ migration 在 Core 第一次連上資料庫時自動執行,`vector` 擴充也是
 原生:
 
 ```bash
-cargo run --release -- core        # 或 ./target/release/miyoria core
+npx miyoria core                   # 或從原始碼:pnpm dev:core
 ```
+
+Core 預設在 `http://127.0.0.1:7878/` 提供管理面板(npm 套件內含;從原始碼要先 `pnpm build:panel`)。
 
 Docker:
 
@@ -156,7 +178,7 @@ docker compose -f deploy/docker-compose.yml --profile core logs -f core
 docker compose -f deploy/docker-compose.yml --profile core down       # 停止(資料 volume 保留)
 ```
 
-只想要資料庫、Core 自己用 `cargo run`:不加 `--profile core`,只會啟動 `postgres`。
+只想要 Postgres、Core 在宿主機跑:不加 `--profile core`,只會啟動 `postgres`。
 
 Core 起來之後,用 CLI 操作(CLI 讀 `miyoria.toml` 的 `[modules.api]` 連 `127.0.0.1:7878`;Core 在 server 時,先 `ssh -L 7878:127.0.0.1:7878 <server>` 或走 Tailscale):
 
@@ -171,8 +193,8 @@ miyoria persona show
 ### Voice node(直播機)
 
 ```bash
+pnpm install                    # 在 repo 根目錄(voice node 是 workspace 的一員)
 cd apps/voice-node
-pnpm install --ignore-workspace
 cp .env.example .env            # 填 SELF_TOKEN、VOICE_LINK_URL、VOICE_LINK_TOKEN
 pnpm start                      # 或 pnpm build && pnpm start:dist
 ```
@@ -198,9 +220,11 @@ python -m venv .venv && .venv/Scripts/pip install -r fake/requirements.txt   # L
 WORKER_ASR_URL=http://127.0.0.1:8001 WORKER_TTS_URL=http://127.0.0.1:8002 python -m pytest tests/test_contract.py
 ```
 
-### Stage 與管理面板(之後)
+### Stage 與管理面板
 
-Stage 要直接碰 VTube Studio / OBS / 遊戲,所以原生在直播機執行,不放 Docker,啟動方式之後補上(`miyoria stage`)。管理面板是靜態檔,由 Core 提供:build 好 `apps/panel/dist` 後,用 `--build-arg PANEL_DIST=apps/panel/dist`(compose:`deploy/.env` 設 `PANEL_DIST=apps/panel/dist`)把它放進 Core 映像檔。
+Stage 要直接碰 VTube Studio / OBS / 遊戲,所以原生在直播機執行,不放 Docker:`miyoria stage`,讀 `miyoria.toml` 的 `[stage]`(`core_url`、`token` = `STAGE_LINK_TOKEN`、`[stage.vts]`、`[stage.obs]`),協定見 [stage-link.md](protocols/stage-link.md);overlay 見 [apps/overlay/README.md](../apps/overlay/README.md)。
+
+管理面板是靜態檔,由 Core 提供(`[modules.api] panel_dir`,`MIYORIA_PANEL_DIR` 可覆寫):npm 套件與 Docker 映像檔都已內含;從原始碼跑時先 `pnpm build:panel`(輸出 `apps/panel/dist`,Core 預設就讀這裡)。
 
 ## 5. Discord 設定
 
@@ -251,9 +275,9 @@ git pull
 原生 Core:
 
 ```bash
-cargo build --release
-miyoria doctor
-# 重啟 core(Ctrl+C 後再 cargo run --release -- core,或你的行程管理員)
+npx miyoria@latest doctor        # npm 套件:@latest 會拿最新版;全域安裝的用 npm install -g miyoria@latest
+# 從原始碼:git pull && pnpm install
+# 重啟 core(Ctrl+C 後再 miyoria core,或你的行程管理員)
 ```
 
 Docker Core:
@@ -265,8 +289,8 @@ docker compose -f deploy/docker-compose.yml --profile core logs -f core
 
 - 資料庫 migration 在 Core 啟動時自動往前套用。**migration 不會自動回退**,要降版就是「還原備份 + 換回舊版映像檔」。
 - 想保留舊版可回退:升級前 `docker tag miyoria-core:local miyoria-core:previous`,出問題時在 `deploy/.env` 設 `MIYORIA_IMAGE=miyoria-core:previous`,`up -d` 時不加 `--build`。
-- voice node:`git pull && cd apps/voice-node && pnpm install --ignore-workspace && pnpm build`,再重啟。Core 與 voice node 的協定版本不符會用 close code `4400` 拒絕連線,兩邊要一起升級。
-- 設定檔有新欄位時,對照 `miyoria.example.toml` 手動合併(`miyoria init` 不會覆寫你的 `miyoria.toml` 除非你同意)。
+- voice node:`git pull && pnpm install && pnpm --filter @miyoria/voice-node build`,再重啟。Core 與 voice node 的協定版本不符會用 close code `4400` 拒絕連線,兩邊要一起升級。
+- 設定檔有新欄位時,對照 `miyoria.example.toml` 手動合併,或重跑 `miyoria init`(可重複執行,Enter 保留現值,寫入前會問)。
 - Postgres 大版本(例如 17 → 18)升級不能直接換 image tag:先備份,用新版 image 開一個新 volume,再還原。
 
 ## 7. 備份與還原
@@ -275,12 +299,22 @@ docker compose -f deploy/docker-compose.yml --profile core logs -f core
 
 | 項目 | 位置 | 怎麼備份 |
 |---|---|---|
-| 資料庫(記憶、好感、決策紀錄、persona 歷史) | compose 的 `pgdata` volume | `scripts/backup.sh` / `scripts\backup.ps1` |
+| 資料庫(記憶、好感、決策紀錄、persona 歷史) | SQLite:`data/miyoria.db`(Docker:`core-data` volume 的 `/data`);Postgres:compose 的 `pgdata` volume | SQLite:見下方;Postgres:`scripts/backup.sh` / `scripts\backup.ps1` |
 | 設定與秘密 | 根目錄 `.env`、`miyoria.toml`、`deploy/.env` | 手動複製到安全的地方(**不要進 git、不要上傳到公開處**) |
 | 角色 profile | `profiles/` | 在 git 裡;但 `profiles/*/avatar/model/` 與 `voice/*.wav` 因授權不進 git,要另外備份 |
 | 聲音檔 | `workers/voices/` | 手動備份 |
 
-### 備份
+### SQLite
+
+資料就是 `data/miyoria.db` 一個檔案(WAL 模式,旁邊可能有 `miyoria.db-wal`、`miyoria.db-shm`)。最簡單:停掉 Core 再複製 `data/` 整個資料夾。不想停機就用 sqlite3 的線上備份:
+
+```bash
+sqlite3 data/miyoria.db ".backup backups/miyoria-$(date +%Y%m%d-%H%M%S).db"
+```
+
+還原:停掉 Core,把備份檔複製回 `data/miyoria.db`(刪掉舊的 `-wal` / `-shm`),再啟動。下面的腳本只處理 Postgres。
+
+### 備份(Postgres)
 
 ```bash
 scripts/backup.sh                    # -> backups/miyoria-YYYYMMDD-HHMMSS.dump
@@ -309,7 +343,7 @@ schtasks /Create /SC DAILY /ST 03:30 /TN "Miyoria Backup" /TR "pwsh -NoProfile -
 
 **備份要放到另一台機器或雲端**(`rsync`、`rclone`、NAS),同一顆硬碟上的備份擋不住硬碟故障。
 
-### 還原
+### 還原(Postgres)
 
 **會取代資料庫目前的內容。**
 
@@ -331,16 +365,15 @@ scripts\restore.ps1 -Latest
 
 ## 8. 日誌
 
-Rust 端用 `tracing`,層級由環境變數 `RUST_LOG` 控制,沒設時用 `miyoria.toml` 的 `[core] log`(預設 `info,miyoria=debug`)。
+Core 用 pino:預設每行一筆 JSON(在終端機會自動改成好讀的單行格式),層級由環境變數 `MIYORIA_LOG_LEVEL`(`fatal|error|warn|info|debug|trace|silent`)控制;沒設時用 `miyoria.toml` 的 `[core] log` 的第一個層級(預設 `info,miyoria=debug` → `info`)。`MIYORIA_LOG_FORMAT=json` / `pretty` 可以強制格式。
 
 ```bash
-RUST_LOG=info cargo run --release -- core                         # 安靜
-RUST_LOG=info,miyoria=debug cargo run --release -- core           # 預設
-RUST_LOG=info,miyoria_voice=trace,miyoria_speech=debug ... core   # 查語音管線
-RUST_LOG=warn,miyoria_discord=debug ... core                      # 只看 Discord adapter
+MIYORIA_LOG_LEVEL=warn npx miyoria core          # 安靜
+MIYORIA_LOG_LEVEL=debug npx miyoria core         # 查語音管線、Discord adapter 等細節
+MIYORIA_LOG_LEVEL=debug pnpm dev:core            # 從原始碼
 ```
 
-crate 名稱的 `-` 在 `RUST_LOG` 裡要寫成 `_`。
+模組的日誌帶 `module`(例如 `voice`、`platform.discord.bot`),函式庫的帶 `scope`(例如 `llm.router`);JSON 格式時可以用 `jq` 過濾:`MIYORIA_LOG_FORMAT=json miyoria core | jq 'select(.module == "voice")'`。
 
 Docker:
 
@@ -350,7 +383,7 @@ docker compose -f deploy/docker-compose.yml --profile core logs --since 1h core
 docker compose -f deploy/docker-compose.yml logs -f postgres
 ```
 
-在 `deploy/.env` 設 `RUST_LOG=...` 再 `up -d` 就能改容器內的層級。Docker 預設的 json-file 日誌沒有大小上限,長期運行建議在 `/etc/docker/daemon.json` 設 `"log-driver": "local"` 或 `"log-opts": {"max-size": "20m", "max-file": "5"}`。
+在 `deploy/.env` 設 `MIYORIA_LOG_LEVEL=...` 再 `up -d` 就能改容器內的層級。Docker 預設的 json-file 日誌沒有大小上限,長期運行建議在 `/etc/docker/daemon.json` 設 `"log-driver": "local"` 或 `"log-opts": {"max-size": "20m", "max-file": "5"}`。
 
 不用看 log 也能知道她在想什麼:
 
@@ -358,7 +391,10 @@ docker compose -f deploy/docker-compose.yml logs -f postgres
 miyoria decisions -l 50      # 最近的 attention 決策:回話或沉默,以及原因
 miyoria events 'agent.*'     # 即時事件串流(依 topic 過濾)
 miyoria status               # LLM 用量(token、費用)
+curl -s -H "Authorization: Bearer $MIYORIA_API_TOKEN" http://127.0.0.1:7878/metrics   # Prometheus 指標
 ```
+
+`GET /metrics` 是 Prometheus 文字格式(事件數、LLM 首 token 延遲、用量等),跟其他 API 一樣要 token;給沒有憑證的 Prometheus 抓,可以設 `[modules.api] metrics_public = true`(只在 API 沒有對外時這樣做)。OpenTelemetry 還沒有。
 
 Voice node 的層級用它的 `LOG_LEVEL`(`error|warn|info|debug`);`debug` 會印出 `@discordjs/voice` 與 DAVE 的細節。Worker 的日誌在各自的終端機(或 `docker compose logs`)。
 
@@ -366,9 +402,9 @@ Voice node 的層級用它的 `LOG_LEVEL`(`error|warn|info|debug`);`debug` 會�
 
 上線前逐項確認:
 
-- [ ] **Token 都是隨機長字串**:`MIYORIA_API_TOKEN`、`VOICE_LINK_TOKEN` 由 `miyoria init` 產生(或 `openssl rand -hex 32`);`POSTGRES_PASSWORD` 不是 `change-me`。
-- [ ] **秘密不進 git**:`.env`、`deploy/.env`、`miyoria.toml`、`secrets.toml` 都在 `.gitignore`;`git status` 看不到它們。Docker 映像檔不含 `.env`(`deploy/Dockerfile.core.dockerignore` 已排除),不要把映像檔推到公開 registry 前自行 `docker history` 檢查。
-- [ ] **全部綁 127.0.0.1**:`docker compose ... ps` 的 PORTS 欄看到的是 `127.0.0.1:7878->7878/tcp`,不是 `0.0.0.0:`。原生 Core 的 `[modules.api] bind`、`[modules."voice.link"] bind` 維持 `127.0.0.1:...`。`miyoria.docker.toml` 裡的 `0.0.0.0` 只是容器內部的位址,對外與否由 compose 的 `ports:` 決定,不要把 `ports:` 的 `127.0.0.1:` 前綴拿掉。
+- [ ] **Token 都是隨機長字串**:`MIYORIA_API_TOKEN`、`VOICE_LINK_TOKEN`、`STAGE_LINK_TOKEN` 由 `miyoria init` 產生(或 `openssl rand -hex 32`);`POSTGRES_PASSWORD` 不是 `change-me`。
+- [ ] **秘密不進 git**:`.env`、`deploy/.env`、`miyoria.toml` 都在 `.gitignore`;`git status` 看不到它們。Docker 映像檔不含 `.env`(根目錄的 `.dockerignore` 已排除),不要把映像檔推到公開 registry 前自行 `docker history` 檢查。
+- [ ] **全部綁 127.0.0.1**:`docker compose ... ps` 的 PORTS 欄看到的是 `127.0.0.1:7878->7878/tcp`,不是 `0.0.0.0:`。原生 Core 的 `[modules.api] bind`、`[modules."voice.link"] bind`、`[modules."stage.link"] bind` 維持 `127.0.0.1:...`。`miyoria.docker.toml` 裡的 `0.0.0.0` 只是容器內部的位址,對外與否由 compose 的 `ports:` 決定,不要把 `ports:` 的 `127.0.0.1:` 前綴拿掉。
 - [ ] **7878 / 7879 / 7882(以及 8001 / 8002 / 5432)沒有直接開到公網**:防火牆(`ufw`、雲端 security group)對這些埠預設全擋。Docker 發布的埠會繞過 `ufw`,所以更要靠 `127.0.0.1` 綁定而不是靠防火牆。
 - [ ] **跨機器連線有加密**:
   - **Tailscale / WireGuard(最簡單)**:`bind` 改成 server 的 tailnet IP(compose 的 `ports:` 也改成 `<tailnet-ip>:7879:7879`),voice node 用 `VOICE_LINK_URL=ws://<tailnet-ip>:7879/voice-link`。tailnet 內部流量本身已加密。
@@ -393,7 +429,7 @@ Voice node 的層級用它的 `LOG_LEVEL`(`error|warn|info|debug`);`debug` 會�
 |---|---|
 | `docker compose up` 說 `set POSTGRES_PASSWORD in deploy/.env` | 還沒建 `deploy/.env`:`cp deploy/.env.example deploy/.env`。用 `-f deploy/docker-compose.yml` 時,compose 讀的是 **deploy/** 底下的 `.env`。 |
 | `--profile core` 說 `env file ...\.env not found` | 根目錄還沒有 `.env`:先跑 `miyoria init`(或手動建立)。 |
-| `core` 容器一直重啟 / unhealthy | `logs core` 看原因。常見:`[modules.api] token is empty`(根目錄 `.env` 沒有 `MIYORIA_API_TOKEN`)、`cannot bind`(宿主機埠被佔用,在 `deploy/.env` 改 `API_PORT` 等)、`DATABASE_URL` 密碼含特殊字元(`@ : / %` 會讓 URL 解析失敗,改用字母數字密碼)。 |
+| `core` 容器一直重啟 / unhealthy | `logs core` 看原因。常見:掛進去的設定把 `bind` 改回 `127.0.0.1`(容器裡要 `0.0.0.0`,見 §2 B)、`[modules.api] token is empty`(根目錄 `.env` 沒有 `MIYORIA_API_TOKEN`)、`cannot bind`(宿主機埠被佔用,在 `deploy/.env` 改 `API_PORT` 等)、`DATABASE_URL` 密碼含特殊字元(`@ : / %` 會讓 URL 解析失敗,改用字母數字密碼)。 |
 | `core` 容器讀不到 `/profiles/...`、權限錯誤 | Linux:`profiles/` 擁有者不是 uid 10001。設 `MIYORIA_UID=$(id -u)`、`MIYORIA_GID=$(id -g)`。 |
 | Core 連不到宿主機上的 ASR / TTS(容器內) | worker 要綁 `0.0.0.0` 或 docker bridge 位址才連得到(只綁 `127.0.0.1` 的 worker 容器內看不到);或把 `ASR_URL` / `TTS_URL` 設成別台的位址。 |
 | `miyoria status` 說沒有設定 `MIYORIA_API_TOKEN` | 根目錄 `.env` 缺這一行;CLI 和 Core 要讀到同一個 token。 |
@@ -405,10 +441,11 @@ Voice node 的層級用它的 `LOG_LEVEL`(`error|warn|info|debug`);`debug` 會�
 | Voice node 結束,close code 4400 | Core 與 voice node 版本不符,兩邊都升級到同一版。 |
 | Voice node 結束,close code 4409 | 同一個 self 帳號被另一個 voice node 取代了,確認沒有重複啟動。 |
 | Voice node 一直重連 | `VOICE_LINK_URL` 不對,或 Core 的 7879 沒有發布出來(`docker compose ps`);跨機器時 Tailscale 沒連上。指數退避最長 30 秒。 |
-| 她進語音但沒反應 | 用 `RUST_LOG=info,miyoria_voice=debug,miyoria_speech=debug` 看 log:ASR 有沒有收到、`ASR_URL` 對不對、worker `/health` 是否回 200(`curl http://127.0.0.1:8001/health`)。 |
+| 她進語音但沒反應 | 用 `MIYORIA_LOG_LEVEL=debug` 看 log(`module` 是 `voice`、`speech`):ASR 有沒有收到、`ASR_URL` 對不對、worker `/health` 是否回 200(`curl http://127.0.0.1:8001/health`)。 |
 | 語音延遲很高 | TTS 沒用真串流(看 worker `/health` 的 `streaming`);GPU 記憶體被遊戲吃光;跨網路的 voice link 延遲過大(改用 B')。 |
 | 備份腳本說 `cannot reach the Docker daemon` | Docker Desktop / dockerd 沒啟動。 |
 | 備份腳本說 `postgres service is not running` | `docker compose -f deploy/docker-compose.yml up -d postgres`。 |
 | 還原後 Core 報 migration 錯誤 | 備份是比較新的版本做的,Core 比較舊:用同版或更新的 Core。 |
-| 想完全重來 | `docker compose -f deploy/docker-compose.yml --profile core down -v` 會**刪掉資料庫與 Core 資料 volume**。先 `scripts/backup.sh`。 |
+| 想完全重來 | 原生:停掉 Core,刪掉 `data/`(SQLite)。Docker:`docker compose -f deploy/docker-compose.yml --profile core down -v` 會**刪掉資料庫與 Core 資料 volume**。先備份(§7)。 |
+| 啟動時說 `No such built-in module: node:sqlite` 或 `npx miyoria` 拒絕安裝(engines) | Node 版本太舊:要 Node ≥ 24(`node -v`)。 |
 | 磁碟被 Docker 吃滿 | `docker system df`;`docker image prune`、`docker builder prune`;設定日誌輪替(§8)。 |

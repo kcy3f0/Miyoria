@@ -1,6 +1,6 @@
 # Miyoria 架構設計
 
-> 狀態:草案 v0.1(2026-11-01)。決策理由與待確認問題見 [DECISIONS.md](DECISIONS.md),實作順序見 [ROADMAP.md](ROADMAP.md)。
+> 狀態:v0.2(2026-11-01,TypeScript 改寫後)。程式碼慣例見 [TS-CONVENTIONS.md](TS-CONVENTIONS.md)。決策理由與待確認問題見 [DECISIONS.md](DECISIONS.md),實作順序見 [ROADMAP.md](ROADMAP.md)。
 
 Miyoria 是打造「全能 AI waifu」的框架;角色本身是一個 **profile**(人格 + LLM + 聲音 + Live2D 模型),第一個角色是鯨魚娘 **DeepSeek-chan**(`profiles/deepseek-chan/`)。角色常駐在通訊平台(先做 Discord),能在文字頻道主動聊天、加入語音聽人說話並決定要不要插話、記得每個人、對人有好感度;同時能以 VTuber 形式直播、透過遊戲專屬 API/mod 玩遊戲。整個系統由可獨立啟停的**子系統(module)**組成,並以**擴充套件(extension)**和 **MCP** 對外延伸。
 
@@ -8,7 +8,7 @@ Miyoria 是打造「全能 AI waifu」的框架;角色本身是一個 **profile*
 
 | 項目 | 決定 |
 |---|---|
-| 語言 | 後端 Rust;前端、擴充 SDK、overlay 用 TypeScript |
+| 語言 | **TypeScript(Node 24、pnpm workspace)**:Core、Stage、self voice node、管理面板、overlay、擴充 SDK 都是 TS;第三方推論模型以 Python worker 接入(見 [DECISIONS.md](DECISIONS.md) ADR 13) |
 | LLM | 擁有者自行提供 API;模型綁在 persona 上。第一個角色用 **DeepSeek API**(OpenAI 相容)。框架同時支援 Claude / OpenAI / Gemini / OpenRouter 與本地端點 |
 | 角色語言 | 中文為主,夾雜日文 / 英文 |
 | 遊戲控制 | 每款遊戲寫專屬 API/mod 的 game adapter(不做通用「看畫面+鍵鼠」) |
@@ -26,7 +26,7 @@ Miyoria 是打造「全能 AI waifu」的框架;角色本身是一個 **profile*
 flowchart LR
   subgraph Server["Server(Docker)"]
     Core["miyoria core<br/>kernel · agent · memory · social<br/>scheduler · platform adapters · API"]
-    PG[(PostgreSQL<br/>+ pgvector)]
+    PG[(SQLite 檔案<br/>或 PostgreSQL + pgvector)]
     Panel["Admin Panel<br/>(靜態檔,由 Core 提供)"]
     Core --- PG
     Core --- Panel
@@ -47,9 +47,9 @@ flowchart LR
   Live(("Twitch / YouTube"))
 
   Core <-->|Bot 帳號:Gateway + REST<br/>文字 · 指令| Discord
-  Stage -->|Node Link gRPC 外連| Core
-  Workers -->|Node Link 外連| Core
-  VoiceNode -->|Node Link 外連| Core
+  Stage -->|stage link(WebSocket)外連| Core
+  Core -->|HTTP| Workers
+  VoiceNode -->|voice link(WebSocket)外連| Core
   VoiceNode <-->|Self 帳號:語音 UDP + Go Live| Discord
   OBS -->|本機影像串流| VoiceNode
   Core --> Cloud
@@ -62,13 +62,13 @@ flowchart LR
 |---|---|---|---|
 | **Core** | `miyoria core` | 大腦:kernel、事件匯流排、agent、記憶、社交、排程、平台 adapter(文字)、Admin API、擴充宿主 | Server 上 Docker,或本機 |
 | **Stage** | `miyoria stage` | 「身體」:VTube Studio 控制與嘴型、OBS 控制、音訊播放、game adapter、overlay | 直播機原生執行(要直接碰 VTS/OBS/遊戲,不放 Docker) |
-| **Worker** | `miyoria worker` 或第三方服務 | GPU 推論:ASR、TTS、(可選)本地 LLM、嵌入 | 有 GPU 的機器;可 Docker |
+| **Worker** | `workers/`(Python FastAPI)或第三方服務 | GPU 推論:ASR、TTS、(可選)本地 LLM、嵌入。Core 用 HTTP 呼叫它們 | 有 GPU 的機器;可 Docker |
 | **Self voice node** | `apps/voice-node`(TS / Node) | 用 self 帳號登入 Discord:進語音、分別接收每個人的音訊、播放 TTS、Go Live 推流。不處理文字 | 放在直播機,跟 ASR/TTS 與 OBS 同一台 |
 
-三種部署設定檔(`deploy/profiles/`):
+部署型態(步驟見 [OPERATIONS.md](OPERATIONS.md) §2):
 
 - **all-in-one**:全部跑在直播機,開發用。
-- **split**(目標):Core + Postgres(含 bot 帳號連線)在 server;Stage + Workers + self voice node 在直播機。Discord 語音音訊在直播機上直接進 ASR、TTS 直接出,不必繞 server 一圈;Go Live 的畫面也直接從本機 OBS 推出去。
+- **split**(目標):Core(含 bot 帳號連線與資料庫)在 server;Stage + Workers + self voice node 在直播機。Discord 語音音訊在直播機上直接進 ASR、TTS 直接出,不必繞 server 一圈;Go Live 的畫面也直接從本機 OBS 推出去。
 - **split + 語音在 server**:server 有 GPU 時,ASR / TTS(Linux 上可用 vLLM-Omni)跟 Core 放同一台,直播機只跑 Stage 和 voice node,VRAM 留給遊戲。見 [deploy/speech](../deploy/speech/README.md)。跨網路的 voice link 要走 Tailscale / WireGuard 或 wss 反向代理。
 - **cloud-voice**:Core 在 server,ASR/TTS 用雲端服務,直播機只跑 Stage。
 
@@ -77,11 +77,11 @@ flowchart LR
 | 連線 | 協定 | 原因 |
 |---|---|---|
 | Node ↔ Core | **WebSocket + JSON**(二進位訊框傳音訊),token 認證;跨網路走 Tailscale / wss | 節點主動外連;不需要在 Windows 裝 protoc。協定:[voice-link](protocols/voice-link.md)、[stage-link](protocols/stage-link.md) |
-| Panel / CLI ↔ Core | **REST + WebSocket**(axum),由 OpenAPI 產生 TS client | 瀏覽器友善;CLI 和 Panel 共用同一套 API |
+| Panel / CLI ↔ Core | **REST + SSE**(Hono),typed client 在 `@miyoria/api` | 瀏覽器友善;CLI 和 Panel 共用同一套 API |
 | Extension ↔ 宿主 | **JSON-RPC 2.0** over stdio / WebSocket | 跟 LSP/MCP 同模式,TS 寫起來最簡單,與語言無關 |
-| Agent ↔ 外部工具 | **MCP**(rmcp) | 生態系現成工具 |
+| Agent ↔ 外部工具 | **MCP**(`@modelcontextprotocol/sdk`) | 生態系現成工具 |
 
-節點配對:`miyoria node pair` 在 Core 產生一次性代碼 → 在直播機執行 `miyoria stage --pair <code>` → 換成長期憑證。斷線自動重連;Core 依節點回報的 **capabilities**(例如 `vts`、`obs`、`tts:gpt-sovits`、`game:minecraft`)動態啟用相依的子系統。
+節點認證:目前用共用 token(`VOICE_LINK_TOKEN`、`STAGE_LINK_TOKEN`,由 `miyoria init` 產生,節點與 Core 的 `.env` 填同一個);之後可以加一次性配對碼。斷線自動重連;節點在 `hello` 裡回報 **capabilities**(例如 `vts`、`obs`、`overlay`),Core 記下來給管理面板看。
 
 ---
 
@@ -91,60 +91,59 @@ flowchart LR
 
 ### 2.1 Module 合約
 
-```rust
-#[async_trait]
-pub trait Module: Send + Sync {
-    fn manifest(&self) -> &ModuleManifest;               // id、版本、相依、提供的 capabilities、config schema
-    async fn start(&self, ctx: ModuleContext) -> Result<()>;
-    async fn stop(&self) -> Result<()>;
-    async fn health(&self) -> Health;                     // Healthy / Degraded(reason) / Unhealthy(reason)
-    async fn reconfigure(&self, cfg: serde_json::Value) -> Result<()> { Err(NeedsRestart) }
+```ts
+// @miyoria/kernel
+export interface Module {
+  readonly manifest: ModuleManifest;        // id、名稱、requires / optional、config 的 zod schema
+  start(ctx: ModuleContext): Promise<void>;
+  stop?(): Promise<void>;                   // 在 module 的背景工作被中止前呼叫
+  health?(): Promise<Health>;               // healthy / degraded(reason) / unhealthy(reason)
 }
 ```
 
 `ModuleContext` 是 module 跟外界互動的**唯一**管道:
 
-- `bus`:發佈 / 訂閱型別化事件
-- `services`:service registry,用 capability 名稱取得其他 module 的服務介面(例如 `dyn MemoryService`)
-- `config`:這個 module 的設定(依 JSON Schema 驗證,可熱更新)
-- `store`:這個 module 專屬的資料表或命名空間
-- `scheduler`:把要輸出的動作送進排程
-- `perms`:權限檢查
-- `tracing span`
+- `publish` / `subscribe`:發佈 / 訂閱型別化事件(訂閱在 module 停止時自動關閉)
+- `services` / `provide`:service registry,用型別化的 `ServiceKey` 取得其他 module 的服務介面(例如 `ActionSinkKey`、`AuthorizerKey`、`StoreKey`);資料庫、排程、權限檢查都是這樣拿到的
+- `config(schema)`:用這個 module 的 zod schema 驗證 `[modules.<id>]`(同一份 schema 轉成 JSON Schema 給 Panel 產生表單)
+- `spawn`:受監管的背景工作;失敗時 module 會被標成 failed 並自動重啟
+- `signal`:module 停止時中止的 `AbortSignal`
+- `clock`、`log`(pino,綁定 `{ module }`)
 
-規則:**module 之間不能直接 import 對方的實作**,只能透過事件或 registry 裡的 trait。Cargo 依賴圖會強制這件事(每個 module 只依賴 `miyoria-kernel` 和 `miyoria-types`)。
+規則:**module 之間不能直接 import 對方的實作**,只能透過事件或 registry 裡的服務介面。每個 module 是獨立的 pnpm 套件,`package.json` 只依賴基礎套件(`@miyoria/types`、`kernel`、`store`、`llm`、`commands`、`tools`、`profile`),服務介面定義在 `@miyoria/types`;直接引用各模組的只有負責組裝的 `@miyoria/core` 和管理 API `@miyoria/api`。
 
 ### 2.2 Supervisor
 
 - 狀態機:`Disabled → Starting → Running ⇄ Degraded → Stopping → Stopped / Failed`
 - 依 manifest 的相依關係做拓撲排序啟動;停用某 module 時,依賴它的 module 會進入 `Degraded` 或一起停(由 manifest 宣告是 `requires` 還是 `optional`)。例:關掉 `speech.asr` → `voice.listen` 降級成「只能說不能聽」。
 - module 崩潰時用指數退避自動重啟,超過次數就標成 `Failed` 並通知管理員。
-- 執行期操作:`enable / disable / restart / reconfigure`,CLI、Panel、Discord 指令都能下(要有權限)。
-- 每個 module 的啟用狀態與 config 存在 DB,重開機後還原。
+- 執行期操作:`enable / disable / restart`,CLI、Panel、Discord 指令都能下(要有權限)。改設定後重啟該 module 生效。
+- 每個 module 的啟用狀態存在 DB,重開機後還原。
 
 ### 2.3 三種 module 來源
 
-1. **內建 module**:Rust,編進執行檔,可用 Cargo feature 排除。
+1. **內建 module**:`packages/*` 的 TS 套件,由 `@miyoria/core` 組裝;用 `[modules.<id>] enabled = false` 關掉。
 2. **擴充 module**:跨行程的 extension,宣告 `kind = "module"`,在 Supervisor 裡跟內建 module 一樣管理(見 §9)。**「自己建立子系統」就是走這條路。**
-3. **遠端 module**:由節點(Stage / Worker)提供,透過 Node Link 註冊進 Core 的 registry;節點離線時自動轉成 `Degraded`。
+3. **遠端節點**:Stage、voice node 透過 voice link / stage link 連進 Core 對應的 module(`voice.link`、`stage.link`);節點離線時依賴它的功能降級(例如語音關閉、文字照常)。
 
 ### 2.4 事件匯流排
 
-```rust
-pub struct Envelope<E> {
-    pub id: EventId,             // ULID
-    pub ts: Timestamp,
-    pub source: ModuleId,
-    pub causation: Option<EventId>,   // 由哪個事件引起
-    pub correlation: TurnId,          // 同一個「回合」貫穿整條鏈,方便追蹤
-    pub payload: E,
+```ts
+// @miyoria/types
+export interface Envelope {
+  id: EventId;                  // ULID
+  ts: Timestamp;                // RFC 3339
+  source: ModuleId;
+  causation: EventId | null;    // 由哪個事件引起
+  correlation: TurnId | null;   // 同一個「回合」貫穿整條鏈,方便追蹤
+  event: Event;                 // { type, data } 的 union
 }
 ```
 
-- 程序內:`tokio::broadcast` 加 topic 路由;payload 是 `enum` 分主題(`platform.*`、`voice.*`、`agent.*`、`stage.*`、`game.*`、`system.*`)。
-- 跨節點:Node Link 只轉送節點有訂閱的 topic。
+- 程序內:`@miyoria/kernel` 的 `EventBus`,依 topic 過濾(`"*"`、`"prefix.*"`、完整名稱);每個訂閱者有自己的緩衝,落後太多就丟最舊的。事件是 tagged union,依主題分(`platform.*`、`voice.*`、`agent.*`、`stage.*`、`game.*`、`system.*`)。
+- 跨節點:voice link / stage link 只送各自協定定義的訊息,不轉送整條匯流排。
 - 擴充套件:JSON 序列化後轉送,依權限過濾 topic。
-- 事件類型集中定義在 `miyoria-types`,並產生 JSON Schema / TS 型別給 SDK 用。
+- 事件類型集中定義在 `@miyoria/types`;`@miyoria/sdk` 帶一份給擴充用的對應型別。
 
 ---
 
@@ -169,20 +168,21 @@ flowchart LR
 
 ## 4. Agent(認知核心)
 
-crate:`miyoria-agent`。
+套件:`@miyoria/agent`。
 
 ### 4.1 Stimulus 與 Context
 
 所有輸入都正規化成 `Stimulus`:
 
-```rust
-pub struct Stimulus {
-    pub kind: StimulusKind,          // TextMessage / VoiceUtterance / GameEvent / StreamChat / Timer / System
-    pub context: ContextKey,         // 對話情境:platform + guild + channel(或 voice room / stream / DM)
-    pub speaker: Option<PersonId>,   // 已解析的人(見 §6)
-    pub content: Content,            // 文字、附件、圖片、遊戲狀態摘要
-    pub addressed: Addressing,       // Direct(@她 / 回覆她 / DM / 叫名字)/ Ambient
-    pub ts: Timestamp,
+```ts
+// 概念上的形狀;實作散在 @miyoria/types 的 IncomingMessage、語音段落與遊戲事件
+interface Stimulus {
+  kind: StimulusKind;          // text_message / voice_utterance / game_event / stream_chat / timer / system
+  context: ContextKey;         // 對話情境:platform + guild + channel(或 voice room / stream / DM)
+  speaker: PersonId | null;    // 已解析的人(見 §6)
+  content: Content;            // 文字、附件、圖片、遊戲狀態摘要
+  addressed: Addressing;       // direct(@她 / 回覆她 / DM / 叫名字)/ ambient
+  ts: Timestamp;
 }
 ```
 
@@ -235,7 +235,7 @@ pub struct Stimulus {
 
 ## 5. 記憶系統
 
-crate:`miyoria-memory`。
+套件:`@miyoria/memory`。
 
 ### 5.1 分層
 
@@ -254,7 +254,7 @@ crate:`miyoria-memory`。
 
 ### 5.3 讀取:混合檢索
 
-`score = w1·向量相似 + w2·全文(BM25) + w3·新近度 + w4·重要性 + w5·跟在場者相關`,取前 K 筆後可選 rerank。嵌入模型預設用本地 **bge-m3**(中日英多語,CPU 跑得動),可換成雲端嵌入。
+`score = w1·向量相似 + w2·全文(BM25) + w3·新近度 + w4·重要性 + w5·跟在場者相關`,取前 K 筆後可選 rerank。嵌入是可選的:任何 OpenAI 相容的 `/embeddings` 端點都行(例如 Ollama / LM Studio 跑 **bge-m3**,中日英多語,CPU 跑得動),沒設時只用全文 + 新近度 + 重要性。
 
 ### 5.4 隱私範圍(很重要)
 
@@ -264,13 +264,13 @@ crate:`miyoria-memory`。
 - 例外:`person-global` 的事實(例如「他的名字叫 Owen」)可以跨伺服器使用,使用者可以設定。
 - 使用者權利:`/memory show`(看她記得你什麼)、`/memory forget`(刪除)、`/memory export`;管理員可以在 Panel 編輯。
 
-儲存:PostgreSQL + pgvector(向量)+ 內建全文索引(中文需要分詞,見 DECISIONS)。
+儲存:預設 SQLite(FTS5 全文索引,向量存成 BLOB、在 JS 端算 cosine),或 PostgreSQL + pgvector(`tsvector` 全文);中文都先用 jieba 分詞(見 DECISIONS)。
 
 ---
 
 ## 6. 社交系統:身分與好感
 
-crate:`miyoria-social`。
+套件:`@miyoria/social`。
 
 ### 6.1 身分
 
@@ -281,13 +281,16 @@ crate:`miyoria-social`。
 
 ### 6.2 關係模型
 
-```rust
-pub struct Relationship {
-    pub affinity: f32,     // 好感 -100..100
-    pub trust: f32,        // 信任 0..100(影響願不願意幫忙做事、講私事)
-    pub familiarity: f32,  // 熟悉度,依互動次數與時間累積,會慢慢衰減
-    pub tags: Vec<Tag>,    // owner / friend / regular / troll ...
-    pub notes: String,     // 她對這個人的印象摘要(LLM 維護)
+```ts
+// @miyoria/types 的 Attitude(她對某人的態度;完整紀錄在 store 的 relationships)
+export interface Attitude {
+  person: PersonId;
+  affinity: number;          // 好感 -100..100
+  trust: number;             // 信任 0..100(影響願不願意幫忙做事、講私事)
+  familiarity: number;       // 熟悉度,依互動次數與時間累積,會慢慢衰減
+  blocked: boolean;          // 管理員封鎖
+  label: string;             // 給 prompt 和 /me 用的稱呼,例如「陌生人」「朋友」
+  call_name: string | null;  // 她怎麼叫這個人
 }
 ```
 
@@ -304,7 +307,7 @@ pub struct Relationship {
 
 ## 7. Profile(角色)
 
-crate:`miyoria-profile`。一個 profile 是一個資料夾,用 git 管版本:
+套件:`@miyoria/profile`。一個 profile 是一個資料夾,用 git 管版本:
 
 ```
 profiles/deepseek-chan/
@@ -329,25 +332,27 @@ profiles/deepseek-chan/
 
 ## 8. Action Scheduler 與請求佇列(order queue)
 
-crate:`miyoria-scheduler`。這一層負責文字頻道、語音、遊戲、直播共用的佇列。
+套件:`@miyoria/scheduler`(lanes)、`@miyoria/queue`(請求佇列)。這一層負責文字頻道、語音、遊戲、直播共用的佇列。
 
 ### 8.1 Action 與 Lane
 
 Agent 不直接輸出,而是把 `Action` 交給 Scheduler:
 
-```rust
-pub struct Action {
-    pub id: ActionId,
-    pub lane: LaneKey,             // text:<channel> / voice:<guild> / avatar / game:<adapter> / overlay
-    pub priority: Priority,        // P0 系統/管理 > P1 直接回覆 > P2 觀眾請求 > P3 主動發話 > P4 閒聊填空
-    pub created_at: Timestamp,
-    pub ttl: Duration,             // 超過就作廢(過時的回覆不送)
-    pub coalesce_key: Option<String>,  // 同 key 合併,最新的勝出(例如表情)
-    pub preempt: PreemptPolicy,    // 能不能被插隊打斷;語音只在句子邊界打斷
-    pub turn: TurnId,
-    pub payload: ActionPayload,
+```ts
+// @miyoria/types
+export interface Action {
+  id: ActionId;
+  lane: LaneKey;                 // text:<channel> / voice:<guild> / avatar / game:<adapter> / overlay
+  priority: Priority;            // P0 系統/管理 > P1 直接回覆 > P2 觀眾請求 > P3 主動發話 > P4 閒聊填空
+  created_at: Timestamp;
+  ttl: number;                   // 毫秒;超過就作廢(過時的回覆不送)
+  coalesce_key: string | null;   // 同 key 合併,最新的勝出(例如表情)
+  turn: TurnId | null;
+  payload: ActionPayload;
 }
 ```
+
+語音只在句子邊界打斷(barge-in 見 §10.1)。
 
 | Lane | 併發 | 特性 |
 |---|---|---|
@@ -372,7 +377,7 @@ pub struct Action {
 
 ## 9. 擴充系統(Extensions)與 MCP
 
-crate:`miyoria-ext-host`、`miyoria-mcp`;SDK:`@miyoria/sdk`(TS)、`miyoria-sdk`(Rust)。
+套件:`@miyoria/ext-host`、`@miyoria/mcp`;SDK:`@miyoria/sdk`(TS)。其他語言照 [Extension RPC 協定](protocols/extension-rpc.md) 實作即可。
 
 ### 9.1 為什麼跨行程
 
@@ -447,14 +452,14 @@ export default defineExtension({
 
 ## 10. 語音系統
 
-crate:`miyoria-voice`(管線)、`miyoria-speech`(ASR/TTS 供應者);Discord 語音連線由 self voice node(`apps/voice-node`)負責,透過 Node Link 把每個人的 PCM 串流送進管線(見 §11.2)。
+套件:`@miyoria/voice`(管線、`voice.link`)、`@miyoria/speech`(ASR/TTS 供應者);Discord 語音連線由 self voice node(`apps/voice-node`)負責,透過 [voice link](protocols/voice-link.md) 把每個人的 PCM 串流送進管線(見 §11.2)。
 
 ### 10.1 管線
 
 ```mermaid
 flowchart LR
   RX["Discord 語音接收<br/>(每人一條 Opus 串流)"] --> DEC[解碼 48k → 16k]
-  DEC --> VAD["VAD(Silero)<br/>每人獨立"]
+  DEC --> VAD["VAD(目前是能量 VAD,之後 Silero)<br/>每人獨立"]
   VAD --> ASR["ASR 串流<br/>partial / final"]
   ASR --> SEG["Utterance 聚合<br/>+ 換人說話偵測"]
   SEG --> ROOM["Voice Room Context<br/>誰說了什麼"]
@@ -475,14 +480,15 @@ flowchart LR
 
 ### 10.2 供應者介面
 
-```rust
-#[async_trait]
-pub trait AsrProvider: Send + Sync {
-    async fn stream(&self, opts: AsrOptions) -> Result<AsrSession>;  // 送 PCM,收 partial/final
+```ts
+// @miyoria/speech
+export interface AsrProvider {
+  readonly name: string;
+  transcribe(audio: AudioBuf, hint: AsrHint, signal?: AbortSignal): Promise<Transcript>;  // 整段辨識(partial 之後再加)
 }
-#[async_trait]
-pub trait TtsProvider: Send + Sync {
-    async fn synthesize(&self, req: TtsRequest) -> Result<AudioStream>;  // 文字 + 情緒 + 語言提示 → PCM 串流
+export interface TtsProvider {
+  readonly name: string;
+  synthesize(request: TtsRequest, signal?: AbortSignal): Promise<AudioStream>;  // 文字 + 情緒 + 語言提示 → PCM 串流
 }
 ```
 
@@ -490,7 +496,7 @@ pub trait TtsProvider: Send + Sync {
 - **TTS 候選**:Qwen3-TTS(首選;串流低延遲、中日英、聲音複製與聲音設計)、GPT-SoVITS(微調角色聲音)、CosyVoice、IndexTTS2、雲端備援(Azure、ElevenLabs、MiniMax)。
 - ASR 輸出和 TTS 輸入都經過 OpenCC 繁簡轉換。
 - Phase 0 會在 4070S 上實測後再定預設,見 DECISIONS。
-- 第三方模型(多半是 Python)以**獨立 worker 服務**接入(HTTP / gRPC),我們自己的程式碼維持 Rust/TS。Worker 透過 Node Link 註冊,Core 依 capability 選用,並支援備援鏈(本地失敗 → 雲端)。
+- 第三方模型(多半是 Python)以**獨立 worker 服務**接入(HTTP,`kind = "http-worker"`),我們自己的程式碼維持 TS。`[speech.asr.*]` / `[speech.tts.*]` 列出供應者,支援備援鏈(本地失敗 → 雲端)。
 
 ---
 
@@ -498,14 +504,13 @@ pub trait TtsProvider: Send + Sync {
 
 ### 11.1 Platform Adapter
 
-```rust
-#[async_trait]
-pub trait PlatformAdapter: Module {
-    fn platform(&self) -> PlatformId;
-    async fn send(&self, target: Target, msg: OutgoingMessage) -> Result<MessageRef>;
-    async fn react(&self, msg: MessageRef, emoji: Emoji) -> Result<()>;
-    async fn typing(&self, target: Target) -> Result<()>;
-    fn capabilities(&self) -> PlatformCaps;   // voice、threads、reactions、embeds、video …
+```ts
+// @miyoria/types:平台 module 啟動時把自己的 sink 登記到 PlatformSinks
+export interface PlatformSink {
+  readonly platform: PlatformId;
+  send(context: ContextKey, message: OutgoingMessage, signal?: AbortSignal): Promise<MessageRef>;
+  react(message: MessageRef, emoji: string, signal?: AbortSignal): Promise<void>;
+  typing(context: ContextKey, signal?: AbortSignal): Promise<void>;
 }
 ```
 
@@ -517,10 +522,10 @@ pub trait PlatformAdapter: Module {
 
 | | Bot 帳號(`platform.discord.bot`) | Self 帳號(`platform.discord.self`) |
 |---|---|---|
-| 實作 | Rust module(serenity),跑在 Core | TS voice node(Node + self-bot 函式庫),跑在直播機 |
+| 實作 | Core 裡的 module(`@miyoria/discord`,discord.js) | TS voice node(`apps/voice-node`,self-bot 函式庫 + `@discordjs/voice`),跑在直播機 |
 | 負責 | 讀寫文字訊息、slash commands、反應、權限與角色對應、開播通知 | 進出語音、每人音訊接收、播放 TTS、Go Live(VTuber + 遊戲畫面) |
 | 不做 | 語音(預設) | **不發文字訊息**、不回指令(降低被偵測的機會,也讓她對外只有一個「說話的帳號」) |
-| 掉線時 | — | `Degraded`:語音與 Go Live 關閉,文字照常;可選擇讓 bot 帳號用 songbird 接手「只說不聽」 |
+| 掉線時 | — | `Degraded`:語音與 Go Live 關閉,文字照常 |
 
 **共用資料**:兩條連線不存任何自己的狀態,所有東西都在 Core。
 
@@ -540,7 +545,7 @@ pub trait PlatformAdapter: Module {
 
 **Go Live**:OBS 把畫面(VTuber + 遊戲)用本機串流輸出(RTMP / SRT 到 localhost,或虛擬攝影機)→ self voice node 用 ffmpeg 轉碼後推到 Discord Go Live。可以同時推 Twitch / YouTube。
 
-**設定**:self 帳號的 token 由擁有者自己放進直播機的 `secrets.toml`,只存在那台機器、不上傳到 Core。建議用**專用的小帳號**,不要用你的主帳號。
+**設定**:self 帳號的 token 由擁有者自己放進直播機的 `apps/voice-node/.env`(`SELF_TOKEN`),只存在那台機器、不上傳到 Core。建議用**專用的小帳號**,不要用你的主帳號。
 
 > ⚠️ Self-bot 違反 Discord 服務條款,帳號可能被封,而且 Discord 改協定時 self-bot 函式庫常常會壞。這是擁有者明確選擇承擔的風險;架構上 self 連線是可以隨時拔掉的獨立節點,壞掉時其他功能照常運作。語音同意流程(§10.1)照樣適用。
 
@@ -548,12 +553,16 @@ pub trait PlatformAdapter: Module {
 
 指令定義一次,自動對應到 Discord slash command、文字前綴指令、直播聊天室 `!cmd`、CLI 和 Panel:
 
-```rust
-command!("memory forget")
-    .describe("讓 Miyoria 忘記關於你的某件事")
-    .arg::<String>("what")
-    .permission("memory.forget.self")
-    .handler(memory_forget);
+```ts
+// @miyoria/commands
+registry.register(
+  commandSpec("memory forget", "讓 Miyoria 忘記關於你的某件事", {
+    args: [argSpec("what", "要忘記什麼", ArgKind.string)],
+    permission: "memory.self.forget",
+    ephemeral: true,
+  }),
+  (inv) => forget(inv),
+);
 ```
 
 預設指令群組(之後再細化):
@@ -572,7 +581,7 @@ command!("memory forget")
 
 ## 12. Stage:VTuber 直播與遊戲
 
-crate:`miyoria-stage`、`miyoria-vts`、`miyoria-obs`。
+套件:`@miyoria/stage`(Core 端的 `stage.link` module + `miyoria stage` 節點:VTube Studio、OBS、overlay、嘴型);overlay 網頁在 `apps/overlay`。
 
 ### 12.1 VTube Studio
 
@@ -669,9 +678,9 @@ extensions/minecraft/
 
 ## 13. LLM 層
 
-crate:`miyoria-llm`。
+套件:`@miyoria/llm`。
 
-- **供應者**:Anthropic、OpenAI、Google Gemini、OpenRouter、OpenAI 相容(Ollama、llama.cpp、vLLM、LM Studio)。
+- **供應者**:目前是 OpenAI 相容 provider,`kind` = `deepseek` / `openai` / `opencode` / `openai-compatible`(Ollama、llama.cpp、vLLM、LM Studio、OpenRouter 等);Anthropic、Gemini 原生 API 之後再加。
 - **能力**:串流、工具呼叫、圖片輸入、結構化輸出、prompt caching(persona 和記憶前綴很適合快取)。
 - **依用途路由**:把「用途」對應到模型,可以設備援鏈。全域設定一份預設值,每個 profile 可以在 `profile.toml` 的 `[llm.purposes]` 覆寫(DeepSeek-chan 全部走 DeepSeek):
 
@@ -682,7 +691,6 @@ crate:`miyoria-llm`。
   summarizer = ["deepseek:<model>"]      # 記憶整理
   game       = ["deepseek:<model>"]
   vision     = ["<支援圖片的供應者>"]    # 用的模型不支援圖片時才需要
-  embedding  = ["local:bge-m3"]
   ```
 
 - **DeepSeek 要注意的地方**:
@@ -691,18 +699,18 @@ crate:`miyoria-llm`。
   - DeepSeek 會自動快取相同的 prompt 前綴。所以 prompt 組裝要把固定的部分(persona、範例)放最前面,變動的部分(記憶、近期對話)放後面。
 
 - **成本控制**:記錄每次呼叫的 token 與費用(依 context、人、module 分類);每日 / 每月預算,超過時自動降級(改用便宜模型、關閉主動發話)或停止;Panel 有圖表。
-- 實作上自己定義一層薄薄的 trait,底層是否用現成 crate(`genai`、`rig` 等)在 Phase 0 評估。
+- 實作上是自己定義的薄介面(`ChatProvider`)+ OpenAI 相容 provider,直接用 `fetch` 打 HTTP、自己解析 SSE;`LlmRouter` 負責用途路由、備援鏈、成本與預算。嵌入另外在 `[memory.embedding]` 設定(見 §5.3)。
 
 ---
 
 ## 14. 權限
 
-crate:`miyoria-auth`。
+套件:`@miyoria/auth`。
 
 - **RBAC + 權限節點**:角色 `owner > admin > moderator > trusted > user > restricted > blocked`;權限節點像 `module.toggle`、`memory.forget.others`、`voice.join`、`game.control`、`queue.skip`、`tools.mcp.<server>.<tool>`。角色可以自訂。
 - **範圍**:全域 / 每個伺服器 / 每個頻道,可以覆寫。
 - **Discord 角色對應**:`/admin role map @Mods moderator`,把 Discord 角色對應到 Miyoria 角色;slash command 同時設定 Discord 原生的 `default_member_permissions` 當第一道防線。
-- **Panel 登入**:Discord OAuth2(Panel 使用者就是 Discord 使用者,權限一致);第一次啟動時 CLI 產生 owner bootstrap token。
+- **Panel 登入**:Discord OAuth2(Panel 使用者就是 Discord 使用者,權限一致,要有 `admin.panel.access` / `admin.panel.write`);`miyoria init` 產生的 `MIYORIA_API_TOKEN` 照樣能用(CLI 一直用 token)。
 - **稽核紀錄**:所有管理操作(誰、何時、改了什麼)都記下來。
 
 ---
@@ -724,23 +732,25 @@ crate:`miyoria-auth`。
 - **直播控制**:場景、表情測試、「說這句話」測試、overlay 預覽
 - **日誌與花費**
 
-### 15.2 CLI(`miyoria`,Rust + clap)
+### 15.2 CLI(`miyoria`,npm 套件 `packages/cli`)
+
+安裝後是 `miyoria`,不安裝就用 `npx miyoria@latest <指令>`;在 repo 裡是 `pnpm dev <指令>`。
 
 | 指令 | 用途 |
 |---|---|
-| `miyoria init` | 互動式設定精靈:Discord token、LLM API key、資料庫(可直接起 Docker)、persona 樣板、部署設定檔 |
-| `miyoria doctor` | 檢查所有連線:Discord、LLM、DB、workers、VTS、OBS、GPU、音訊裝置 |
-| `miyoria core` / `stage` / `worker` | 啟動各種節點(`stage` 會一併啟動 self voice node) |
-| `miyoria up` / `down` | 用 docker compose 起 / 停 server 那一側 |
-| `miyoria status` / `logs` | 狀態與日誌 |
+| `miyoria init` | 互動式設定精靈:LLM base URL / API key / 模型 id、Discord token、擁有者、資料庫、面板登入;寫 `miyoria.toml`、`.env`,複製內建角色到 `profiles/` |
+| `miyoria config` / `config list / get / set / unset / edit` | 改設定(不帶子指令時開互動選單) |
+| `miyoria doctor` | 檢查設定檔、角色、LLM、Discord、資料庫連線 |
+| `miyoria core` / `stage` | 啟動 Core 節點 / 直播機上的 Stage 節點 |
+| `miyoria chat` | 終端機 REPL 直接跟她聊天(測試用,不需要 Discord) |
+| `miyoria status` | 執行中 Core 的模組狀態與 LLM 用量 |
 | `miyoria module list / enable / disable / restart` | 管理子系統 |
-| `miyoria chat` | 終端機 REPL 直接跟她聊天(測試用) |
-| `miyoria say "…"` | 測試 TTS + 嘴型 |
-| `miyoria persona validate / edit` | persona 管理 |
-| `miyoria memory search / forget` | 記憶管理 |
-| `miyoria ext new / dev / install / list` | 擴充開發與管理 |
-| `miyoria node pair` | 節點配對 |
-| `miyoria migrate` / `backup` / `restore` | 資料庫維運 |
+| `miyoria decisions` / `events [topics]` | 決策紀錄 / 即時事件 |
+| `miyoria persona show / set` | 看 / 改執行期的人格段落 |
+| `miyoria profile validate` | 檢查 profile 格式 |
+| `miyoria ext new / list / install / validate / dev` | 擴充開發與管理 |
+
+之後可能再加:`say`(測試 TTS + 嘴型)、`memory search / forget`、節點配對。資料庫備份 / 還原目前用 `scripts/backup.*`、`scripts/restore.*`(見 OPERATIONS §7)。
 
 CLI 透過 Admin API 操作正在跑的 Core,跟 Panel 用同一套權限。
 
@@ -748,11 +758,11 @@ CLI 透過 Admin API 操作正在跑的 Core,跟 Panel 用同一套權限。
 
 ## 16. 設定、儲存、可觀測性
 
-- **設定分層**:`miyoria.toml`(檔案)→ 環境變數 → DB 中的執行期覆寫(Panel / 指令改的)。每個 module 的設定都有 JSON Schema。
-- **Secrets**:放環境變數或 `secrets.toml`;Panel 設定的 secret 用 master key 加密後存 DB。
-- **資料庫**:PostgreSQL 16+ 與 pgvector,sqlx 搭配 migrations。不另外加 Redis 或 message broker(事件匯流排在程序內,跨節點走 gRPC)。
-- **可觀測性**:`tracing` + OpenTelemetry;Prometheus metrics(各階段延遲、token、佇列長度);每個回合可追蹤;Panel 內建檢視,也可以接 Grafana。
-- **Docker**:Core 映像檔 + Postgres 用 compose;Stage 在 Windows 原生跑;GPU workers 可以用 Docker(WSL2 + NVIDIA container toolkit)或原生。
+- **設定分層**:`miyoria.toml`(檔案,`${VAR}` / `${VAR:-預設}` 引用環境變數)→ `.env` 與環境變數 → DB 中的執行期設定(頻道模式、人格覆寫等由 Panel / 指令改的)。每個 module 的設定都有 zod schema(轉成 JSON Schema 給 Panel)。
+- **Secrets**:放 `.env`(`miyoria init` 產生,不進 git)或環境變數,`miyoria.toml` 只用 `${VAR}` 引用。
+- **資料庫**:預設 SQLite(`node:sqlite`,WAL,`data/miyoria.db`);選用 PostgreSQL 16+ 與 pgvector(`pg`)。兩邊各有一套 migrations(`packages/store/migrations/{sqlite,postgres}`),Core 啟動時自動套用。不另外加 Redis 或 message broker(事件匯流排在程序內,跨節點走 WebSocket)。
+- **可觀測性**:pino 結構化日誌(`MIYORIA_LOG_LEVEL`);Admin API 的 `GET /metrics` 提供 Prometheus metrics(事件數、LLM 首 token 延遲、用量等),可以接 Grafana;每個回合有 Decision Trace,Panel 內建檢視。OpenTelemetry 之後再加。
+- **Docker**:Core 映像檔(`deploy/Dockerfile.core`,Node 24)+ 可選的 Postgres 用 compose;Stage 在 Windows 原生跑;GPU workers 可以用 Docker(WSL2 + NVIDIA container toolkit)或原生。
 
 ---
 
@@ -771,48 +781,45 @@ CLI 透過 Admin API 操作正在跑的 Core,跟 Panel 用同一套權限。
 
 ```
 miyoria/
-├─ Cargo.toml                 # Rust workspace
-├─ pnpm-workspace.yaml        # TS workspace
-├─ crates/
-│  ├─ miyoria-types/          # 共用型別、事件、ID(產生 JSON Schema / TS 型別)
-│  ├─ miyoria-kernel/         # Module trait、Supervisor、事件匯流排、service registry、設定
-│  ├─ miyoria-proto/          # Node Link protobuf
-│  ├─ miyoria-store/          # Postgres、migrations、repositories
-│  ├─ miyoria-auth/           # RBAC
-│  ├─ miyoria-llm/            # LLM 供應者、路由、工具、成本
-│  ├─ miyoria-agent/          # attention、initiative、turn coordinator、prompt、expression parser
-│  ├─ miyoria-memory/
-│  ├─ miyoria-profile/
-│  ├─ miyoria-social/
-│  ├─ miyoria-scheduler/      # lanes + request queue
-│  ├─ miyoria-commands/       # 跨平台指令框架
-│  ├─ miyoria-platform/       # PlatformAdapter trait
-│  ├─ miyoria-discord/        # Discord bot 帳號:文字 + 指令
-│  ├─ miyoria-voice/          # VAD、斷句、換人說話、barge-in
-│  ├─ miyoria-speech/         # ASR/TTS trait 與實作
-│  ├─ miyoria-ext-host/       # 擴充宿主、JSON-RPC、manifest
-│  ├─ miyoria-mcp/
-│  ├─ miyoria-api/            # axum REST/WS + OpenAPI
-│  ├─ miyoria-node/           # Node Link client/server、配對
-│  ├─ miyoria-vts/
-│  ├─ miyoria-obs/
-│  └─ miyoria-stage/
+├─ package.json / pnpm-workspace.yaml   # pnpm workspace(Node 24);pnpm dev / test / typecheck / lint
+├─ packages/                  # @miyoria/* 函式庫與模組(TypeScript)
+│  ├─ types/                  # 共用型別、事件、ID、service 介面
+│  ├─ kernel/                 # Module、Supervisor、事件匯流排、service registry、設定、日誌、metrics
+│  ├─ store/                  # SQLite / PostgreSQL 後端與 migrations
+│  ├─ llm/                    # LLM 供應者、用途路由、成本與預算
+│  ├─ tools/                  # 工具註冊(給 LLM 呼叫)
+│  ├─ profile/                # 角色載入與驗證
+│  ├─ agent/                  # attention、turn coordinator、prompt、expression parser
+│  ├─ scheduler/              # action lanes
+│  ├─ commands/               # 跨平台指令框架
+│  ├─ auth/                   # RBAC
+│  ├─ discord/                # Discord bot 帳號:文字 + 指令
+│  ├─ speech/                 # ASR / TTS 介面與供應者
+│  ├─ voice/                  # voice link、VAD、斷句、barge-in
+│  ├─ memory/                 # 長期記憶
+│  ├─ social/                 # 身分、好感、mood
+│  ├─ initiative/             # 主動發話
+│  ├─ queue/                  # 觀眾請求佇列
+│  ├─ game/                   # 遊戲導演
+│  ├─ api/                    # Admin API(Hono REST + SSE)、Discord 登入、/metrics
+│  ├─ ext-host/               # 擴充宿主、JSON-RPC、manifest
+│  ├─ mcp/                    # MCP client / server
+│  ├─ stage/                  # stage link + Stage 節點(VTS、OBS、overlay)
+│  ├─ core/                   # 組裝所有模組、啟動與關機
+│  ├─ sdk/                    # @miyoria/sdk(擴充用)
+│  └─ cli/                    # npm 套件 `miyoria`:CLI,esbuild 打包
 ├─ apps/
-│  ├─ miyoria/                # 單一執行檔:CLI + core/stage/worker 子指令
-│  ├─ voice-node/             # TS:Discord self 帳號(語音 + Go Live),透過 Node Link 接 Core
+│  ├─ voice-node/             # Discord self 帳號(語音 + Go Live),透過 voice link 接 Core
 │  ├─ panel/                  # React + Vite 管理面板
 │  └─ overlay/                # OBS overlay
-├─ packages/
-│  ├─ sdk/                    # @miyoria/sdk
-│  ├─ api-client/             # 由 OpenAPI 產生
-│  └─ protocol/               # 由 Rust 型別產生的事件 / RPC 型別
 ├─ extensions/
 │  ├─ minecraft/              # 第一個 game adapter:Fabric 橋接模組(Java)+ TS adapter
 │  └─ examples/
-├─ workers/                   # 第三方推論服務的 Dockerfile / 啟動設定
+├─ workers/                   # 第三方推論服務(Python)與 Dockerfile
 ├─ profiles/deepseek-chan/    # 第一個角色
-├─ deploy/                    # compose、profiles、Dockerfiles
+├─ deploy/                    # Dockerfile.core、compose
+├─ scripts/                   # 備份 / 還原
 └─ docs/
 ```
 
-Phase 1 不會一次建出所有 crate,只建骨幹(types、kernel、store、llm、agent、discord、apps/miyoria),其他依 roadmap 再拆出來。但 **module 之間只能透過 kernel 溝通**這條規則從第一天就成立。
+**module 之間只能透過 kernel 溝通**:各模組的套件不互相引用實作,只有 `@miyoria/core` 負責組裝(程式慣例見 [TS-CONVENTIONS.md](TS-CONVENTIONS.md))。

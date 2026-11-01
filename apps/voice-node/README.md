@@ -26,8 +26,8 @@ Discord 語音 ⇄ (self 帳號) ⇄ voice-node ⇄ Voice Link(WebSocket) ⇄ Co
 ## 安裝與執行
 
 ```bash
+pnpm install                      # 在 repo 根目錄:voice node 是 pnpm workspace 的一員
 cd apps/voice-node
-pnpm install --ignore-workspace   # 跟 spikes/voice-node 一樣,用自己的 lockfile,不動 root workspace
 cp .env.example .env              # 然後填 SELF_TOKEN 等
 pnpm typecheck
 pnpm test

@@ -7,7 +7,7 @@
 #   scripts/restore.sh --yes <file>             # no confirmation prompt
 #
 # If the core container is running (compose profile `core`) it is stopped first and started again
-# afterwards. A core running on the host (cargo run -- core) must be stopped by you first.
+# afterwards. A core running on the host (miyoria core) must be stopped by you first.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

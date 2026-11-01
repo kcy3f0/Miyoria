@@ -1,8 +1,9 @@
 # TypeScript conventions
 
-Miyoria is being rewritten from Rust (`legacy/rust/`) to TypeScript. The Rust code is the
-**behavioural reference**: same module ids, config keys, event topics, JSON shapes, defaults and
-tests. When in doubt, read the Rust crate and do what it does.
+How the TypeScript code is organised. Miyoria started as a Rust prototype (kept in git
+history) and was ported module by module; module ids, config keys, event topics, JSON shapes and
+defaults were kept as they were, and they are now a compatibility contract (stored data, config
+files, the panel, voice node, Stage and extensions all depend on them).
 
 Runtime: **Node 24**, **pnpm 9**, ESM only, strict TypeScript 5.9. Database default: SQLite
 (`node:sqlite`), Postgres optional.
@@ -12,7 +13,8 @@ Runtime: **Node 24**, **pnpm 9**, ESM only, strict TypeScript 5.9. Database defa
 | Path | Package | Notes |
 |---|---|---|
 | `packages/<name>` | `@miyoria/<name>` | libraries and modules (`types`, `kernel`, `llm`, ...) |
-| `apps/<name>` | `@miyoria/<name>` | executables (`core`, `voice-node`, `panel`, ...); the CLI ships as `miyoria` |
+| `packages/cli` | `miyoria` | the CLI / npm package (`miyoria core`, `init`, ...), bundled with esbuild |
+| `apps/<name>` | `@miyoria/<name>` | separately run apps (`panel`, `overlay`, `voice-node`) |
 | `extensions/**` | `@miyoria/ext-<name>` | extensions (use `@miyoria/sdk` only) |
 
 Root scripts: `pnpm typecheck` / `pnpm test` / `pnpm build` (each = `pnpm -r <script>`),
@@ -60,29 +62,32 @@ only when it clearly pays for itself; prefer Node built-ins (`fetch`, `node:cryp
 
 - Files `kebab-case.ts`; types / classes `PascalCase`; functions / variables `camelCase`;
   constants `UPPER_SNAKE` only for true constants (`STOP_TIMEOUT_MS`). TS-side durations carry
-  their unit (`timeoutMs`, `backoff_ms` log fields); JSON fields keep the legacy name (`ttl`, `asr_ms`).
+  their unit (`timeoutMs`, `backoff_ms` log fields); JSON fields keep their existing name (`ttl`, `asr_ms`).
 - Relative imports end in `.js` (`import { x } from "./bus.js"`); type-only imports use
   `import type` (`verbatimModuleSyntax`).
-- **Wire / persisted data mirrors the Rust serde JSON exactly.** Any type that is serialized
-  (events, actions, store records, API bodies, config sections, protocol messages) keeps Rust's
-  snake_case field names, and:
-  - `Option<T>` → `T | null`, key always present (serde writes `null`). Pure in-process option
-    bags may use `?:` instead.
-  - `#[serde(tag = "type", content = "data")]` → `{ type: "snake_case", data: ... }`;
-    `#[serde(tag = "type")]` → `{ type: "snake_case", ...fields }`; unit enums → string unions.
-  - `DateTime<Utc>` → `Timestamp` (RFC 3339 string; compare with `Date.parse`);
-    `Duration` → number of ms (as legacy serialized it); ULIDs → `string` (`newId()`).
-  - `HashMap` / `BTreeMap` in return values → `Map` (BTreeMap: keys ascending).
-- TS-only APIs (methods, constructor options, classes without serde in Rust) are camelCase:
+- **Wire / persisted data has a fixed JSON shape.** Any type that is serialized (events,
+  actions, store records, API bodies, config sections, protocol messages) uses snake_case field
+  names, and:
+  - optional values are `T | null` with the key always present. Pure in-process option bags
+    may use `?:` instead.
+  - tagged unions are `{ type: "snake_case", data: ... }` (adjacently tagged) or
+    `{ type: "snake_case", ...fields }` (internally tagged), whichever the type already uses;
+    plain enums are string unions.
+  - times are `Timestamp` (RFC 3339 string; compare with `Date.parse`); durations are a
+    number of ms; ULIDs are `string` (`newId()`).
+  - maps in return values are `Map` (sorted maps: keys ascending).
+- TS-only APIs (methods, constructor options, in-process classes) are camelCase:
   `store.dueFollowups(...)`, `new OpenAiConfig(...).timeoutMs`.
 - **Module ids, config keys, event topics, service names, permission nodes, settings keys and
-  every JSON shape must match legacy exactly.** Grep the Rust code before inventing a name.
+  JSON shapes are a compatibility contract.** Grep the existing packages (and
+  `docs/protocols/`) before inventing a name; changing one needs a migration or a note in the
+  docs.
 - Language: code, comments, logs and errors in English. Only user-facing strings (chat
-  replies, prompt text, CLI output, panel text) are Traditional Chinese, copied from legacy.
+  replies, prompt text, CLI output, panel text) are Traditional Chinese.
 
 ## 3. Errors
 
-- Throw `Error` subclasses with a `name` and a message in the legacy wording
+- Throw `Error` subclasses with a `name` and a short, specific message
   (`` `unknown module \`${id}\`` ``). Keep data on the error (`code`, `status`, `path`), attach
   causes with `{ cause }`.
 - No `any` (Biome errors on it). Use `unknown` + narrowing, zod for untrusted input.
@@ -109,15 +114,15 @@ only when it clearly pays for itself; prefer Node built-ins (`fetch`, `node:cryp
 - Module code logs with `ctx.log` (bound to `{ module }`); library code creates a scoped logger
   at import time: `const log = getLogger("llm.router")`.
 - Structured fields first: `log.warn({ model, err }, "model failed, trying next in chain")`.
-  Messages are the legacy `tracing` messages.
+  Keep existing messages stable; people grep logs for them.
 
 ## 6. Config
 
 - Loading: `loadDotenv(configPath)` (`.env` next to `miyoria.toml`, never overrides the
   environment), then `Config.load(path)`: TOML via `smol-toml`, `${VAR}` / `${VAR:-default}`
   interpolation, `config.module(id)` → `{ enabled, config }` (`enabled = false` disables).
-- Every module exports a **zod** schema of its section with defaults equal to the Rust
-  `Default` impls. `z.object` (unknown keys ignored, like serde) with `.default(...)` per field;
+- Every module exports a **zod** schema of its section with a default for every field (equal
+  to `miyoria.example.toml`). `z.object` (unknown keys ignored) with `.default(...)` per field;
   nested sections use **`.prefault({})`** (zod 4's `.default({})` skips parsing and would drop
   the nested defaults).
 - In `start`: `const cfg = ctx.config(MyConfigSchema)` (missing section = `{}`); an invalid
@@ -164,7 +169,7 @@ export class SchedulerModule implements Module {
   settle within 5 s of `signal` aborting.
 - `Supervisor`: `register(module, config, enabled)`, `startAll()` (topological over
   `requires` + `optional`), `stopAll()`, `enable / disable / restart(id)`, `list()` →
-  `ModuleStatus[]` (legacy JSON). Disabling a module stops everything that `requires` it.
+  `ModuleStatus[]` (the JSON the API serves). Disabling a module stops everything that `requires` it.
   Every transition is published as `system.module.state` from source `kernel`. Never call the
   supervisor from inside `start` / `stop` (deadlock); from tasks is fine. The app provides it
   as `SupervisorKey` for admin modules.
@@ -174,50 +179,28 @@ export class SchedulerModule implements Module {
 
 ### Services: `ServiceKey<T>`
 
-Rust's `services().get::<dyn Trait>()` becomes a typed token declared next to the interface:
+Services are looked up with a typed token declared next to the interface:
 
 ```ts
 export interface ActionSink { submit(action: Action): Promise<void>; cancelTurn(turn: TurnId): Promise<void> }
-export const ActionSinkKey = serviceKey<ActionSink>("ActionSink"); // id = Rust type name
+export const ActionSinkKey = serviceKey<ActionSink>("ActionSink"); // id = interface name
 
 ctx.provide(ActionSinkKey, impl);          // owner = this module, removed when it stops
 ctx.services.get(ActionSinkKey);           // ActionSink | undefined
 ctx.services.require(ActionSinkKey);       // or throws ServiceUnavailableError
 ```
 
-Keys exist for every legacy service: `ActionSinkKey`, `VoiceSinkKey`, `AuthorizerKey`,
+Keys exist for every core service: `ActionSinkKey`, `VoiceSinkKey`, `AuthorizerKey`,
 `SocialSignalsKey`, `MoodSignalsKey`, `FollowupSourceKey`, `PlatformSinksKey`,
 `PromptContributorsKey` (`@miyoria/types`), `SupervisorKey` (`kernel`), `LlmRouterKey`
 (`llm`), `ToolRegistryKey` (`tools`), one per store area plus `StoreKey` (`store`). A module that
 owns a new service exports its key from its own package. Look services up when needed; don't
 cache another module's service across its restarts.
 
-## 9. Porting a Rust crate
+## 9. Tests
 
-| Rust | TypeScript |
-|---|---|
-| crate `miyoria-foo` | package `@miyoria/foo` (`packages/foo`) |
-| `trait Foo` used as `Arc<dyn Foo>` | `interface Foo` + `FooKey = serviceKey<Foo>("Foo")` |
-| trait default method | abstract base class (`BaseAuthorizer`) or a helper function |
-| `impl Module for X` | `class X implements Module` with `static readonly ID` |
-| `ctx.config::<T>()` + `#[serde(default)]` | zod schema + `ctx.config(Schema)` |
-| `tokio::spawn` inside a module | `ctx.spawn(name, (signal) => ...)` |
-| `CancellationToken` / `select!` on cancel | `AbortSignal`; `sleep(ms, signal)`, `interval` |
-| `broadcast` / `bus.subscribe` loop | `ctx.subscribe(filter)` + `for await` |
-| `mpsc` channel between own tasks | an `AsyncIterable` queue or direct method calls |
-| `Mutex` around async state | `SerialQueue`; plain fields for sync state (single thread) |
-| `parking_lot::RwLock<HashMap>` | `Map` |
-| `anyhow::bail!("...")` | `throw new FooError("...")` (same message) |
-| `tracing::warn!(x = %y, "msg")` | `log.warn({ x: y }, "msg")` |
-| `#[cfg(test)] mod tests` / `tests/*.rs` | `test/*.test.ts`, same test names (snake_case is fine) |
-| `tokio::time::pause` / `advance` | `vi.useFakeTimers()` / `await vi.advanceTimersByTimeAsync(ms)` |
-
-Keep file structure close to the Rust modules so reviewers can diff behaviour.
-
-## 10. Tests
-
-- Vitest, `test/*.test.ts`. **Port every Rust test** of the crate (keep its name), then add
-  tests for TS-specific behaviour (cancellation, JSON shapes).
+- Vitest, `test/*.test.ts` (or `src/**/*.test.ts`). Cover behaviour, cancellation and the JSON
+  shapes of anything serialized.
 - Time-dependent code: fake timers or an injected `Clock`. Restore with `vi.useRealTimers()`
   in `afterEach`.
 - No real network. HTTP clients are tested against a local `node:http` server on
@@ -227,11 +210,11 @@ Keep file structure close to the Rust modules so reviewers can diff behaviour.
   (`sub.tryRecv()`) and `list()`, then `stopAll()`.
 - Temp files under `os.tmpdir()` (`mkdtempSync`), removed in `finally`.
 
-## 11. Lint and format
+## 10. Lint and format
 
 Biome (`biome.json`): 2-space indent, 100 columns, double quotes, trailing commas, organized
 imports, recommended rules plus `noExplicitAny`, `useImportType`, `noFloatingPromises`. Run
-`pnpm format` before committing. The packages that existed before the rewrite (`apps/panel`,
+`pnpm format` before committing. The packages that were written before the rest of the TS workspace (`apps/panel`,
 `apps/overlay`, `apps/voice-node`, `packages/sdk`, `extensions/minecraft/adapter`,
 `extensions/examples/hello`) are lint-only with their
 current violations switched off (see the override); new packages get the full rules.

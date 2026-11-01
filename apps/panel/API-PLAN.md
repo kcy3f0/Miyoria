@@ -1,12 +1,12 @@
 # Admin API — routes the panel calls
 
-`crates/miyoria-api` serves every route below (Rust wire types in
-`src/types.rs`, typed client in `src/client.rs`). An older Core answers unknown
+`@miyoria/api` (`packages/api`) serves every route below (wire types in
+`src/types.ts`, typed client in `src/client.ts`). An older Core answers unknown
 routes with its fallback `404 {"error":"no such endpoint"}` and the panel shows
 "尚未提供(core 版本較舊)" for that page. Notes marked **Served as** describe
 where the live shape differs from the first proposal.
 
-Conventions (same as the live API in `crates/miyoria-api`):
+Conventions (same as the live API in `packages/api`):
 
 - Every route requires `Authorization: Bearer <token>` **or** the panel's
   Discord session cookie (see [Panel login](#panel-login)). The Core also serves
@@ -19,8 +19,8 @@ Conventions (same as the live API in `crates/miyoria-api`):
 - Errors are `{"error": "..."}`. Use **404 with a specific message** (not the
   fallback text) for "this item does not exist", 409 for refused state changes,
   503 when the backing service/module is stopped.
-- Timestamps are RFC 3339 (chrono), ids are ULID strings, enums are
-  `snake_case`, `Option` is `null` (not omitted) unless noted.
+- Timestamps are RFC 3339, ids are ULID strings, enums are
+  `snake_case`, optional fields are `null` (not omitted) unless noted.
 - Lists that can grow use `Page<T>`: `{"items": [...], "next_cursor": "opaque" | null}`.
 - All requests act on the **active profile**, like `/api/decisions` and `/api/persona`.
 - Every change is written to the audit log (actor `"api"` for the token,
@@ -33,7 +33,7 @@ TypeScript mirrors: `src/api/planned-types.ts`; client calls: `src/api/endpoints
 
 ## Panel login
 
-Live in `crates/miyoria-api/src/oauth.rs` / `session.rs`. Discord login is on
+Live in `packages/api/src/oauth.ts` / `session.ts`. Discord login is on
 only when `[modules.api.discord_oauth]` has `client_id`, `client_secret` and
 `redirect_uri`; the token always works.
 
@@ -250,7 +250,7 @@ caps, -200..200). Response: the updated `PersonSummary`.
 ```
 
 `record` is `MemoryRecord` **without** `tokens` and `embedding`, plus
-`has_embedding`. `scope` uses `MemoryScope`'s serde (`{"type": "global" | "guild" | "channel" | "dm" | "person", ...}`).
+`has_embedding`. `scope` is a `MemoryScope` (`{"type": "global" | "guild" | "channel" | "dm" | "person", ...}`).
 `text_score` / `vector_score` are present only when `q` was given.
 
 ### `PATCH /api/memory/{id}`
@@ -296,7 +296,7 @@ Hard delete (the panel confirms first). Should write an audit entry.
 ]
 ```
 
-`scope` uses `AuthScope`'s serde: `{"type":"global"}`, `{"type":"guild","platform","guild"}`, `{"type":"channel","context":{…}}`.
+`scope` is an `AuthScope`: `{"type":"global"}`, `{"type":"guild","platform","guild"}`, `{"type":"channel","context":{…}}`.
 
 ### `POST /api/auth/assignments` → the created `RoleAssignment`
 
@@ -490,8 +490,8 @@ she is in none; 503 without the `voice` module).
 **Served as:** built from bus events since the `api` module started
 (`voice.joined/left/participants/speaking/playback`, `voice.latency`), so a
 channel joined before that appears with its next participants update. `label`
-is `null`; `llm_first_token` stays empty until something publishes
-`voice.latency` with `stage: "llm"` and `first_token_ms`.
+is `null`; `llm_first_token` comes from the `voice.latency` events with `stage: "llm"` and
+`first_token_ms` the agent publishes for the first model response of each voice turn.
 The live transcript on that page already works today from SSE (`voice.utterance`, `voice.playback`, `voice.latency`).
 
 ---
