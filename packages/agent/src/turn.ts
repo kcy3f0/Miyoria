@@ -50,6 +50,7 @@ import { gather } from "./contributors.js";
 import type { TurnFlags } from "./coordinator.js";
 import { Expression, ExpressionParser, type Segment } from "./expression.js";
 import { voiceScope } from "./handle.js";
+import { agentTurns } from "./metrics.js";
 import {
   buildMessages,
   checkMessages,
@@ -243,10 +244,15 @@ export function parseCheck(text: string): CheckReply {
   return { respond: obj.respond, reason };
 }
 
+/** Topic of latency measurements (the `voice` package's `LATENCY_TOPIC`). */
+const VOICE_LATENCY_TOPIC = "voice.latency";
+
 class Turn {
   /** A voice channel: the reply is spoken. */
   readonly voice: boolean;
   readonly social: SocialSignals | undefined;
+  /** The first model response's latency was published (`voice.latency`, stage `llm`). */
+  #latencyReported = false;
 
   constructor(
     readonly agent: Agent,
@@ -307,6 +313,7 @@ class Turn {
 
   #publishDecision(respond: boolean, score: number, reasons: string[]): void {
     this.signal.throwIfAborted();
+    agentTurns.inc({ decision: respond ? "responded" : "ignored" });
     this.agent.ctx.publish(
       {
         type: "agent_decision",
@@ -831,6 +838,7 @@ class Turn {
         void Promise.resolve(iterator.return?.()).catch(() => undefined);
       }
     }
+    this.#reportLatency(stream.model, stream.firstTokenMs);
     for (const segment of parser.finish()) await this.#take(expression, segment, speech);
     if (speech) await speech.flush();
     const named = calls.filter((c) => c.name !== "");
@@ -838,6 +846,31 @@ class Turn {
       if (call.id === "") call.id = `call_${i}`;
     });
     return { expression, raw, calls: named };
+  }
+
+  /**
+   * Publishes the first token latency of the turn's first model response in a voice channel
+   * (`voice.latency`, stage `llm`; the panel's voice monitor shows it).
+   */
+  #reportLatency(model: string, firstTokenMs: number | null): void {
+    if (!this.voice || this.#latencyReported || firstTokenMs === null) return;
+    this.#latencyReported = true;
+    this.agent.ctx.publish(
+      {
+        type: "custom",
+        data: {
+          topic: VOICE_LATENCY_TOPIC,
+          payload: {
+            stage: "llm",
+            context: contextJson(this.key),
+            turn: this.turn,
+            model,
+            first_token_ms: Math.round(firstTokenMs),
+          },
+        },
+      },
+      { turn: this.turn },
+    );
   }
 
   /** Distinct authors of the turn's messages; a tool permission must be granted to all. */

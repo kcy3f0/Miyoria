@@ -28,6 +28,7 @@ import type { AgentCommands } from "./commands.js";
 import { type AgentConfig, cooldownFactor } from "./config.js";
 import { Coordinator } from "./coordinator.js";
 import type { AgentHandle } from "./handle.js";
+import { agentTurns } from "./metrics.js";
 import type { PersonaHandle } from "./persona.js";
 import { Session } from "./session.js";
 import { BUDGET_TOPIC, energyCooldownFactor, parseBudgetState } from "./signals.js";
@@ -343,6 +344,7 @@ export class Agent {
   initiativeSkipped(context: ContextKey, reason: string, why: string): void {
     this.log.debug({ context: contextId(context), reason, why }, "initiative skipped");
     const turn = newId();
+    agentTurns.inc({ decision: "ignored" });
     this.ctx.publish(
       {
         type: "agent_decision",

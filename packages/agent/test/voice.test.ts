@@ -12,6 +12,7 @@ import {
   type VoiceParticipant,
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { agentTurns } from "../src/metrics.js";
 import {
   account,
   channel,
@@ -229,6 +230,41 @@ describe("voice", () => {
     expect(all[2]).toEqual(["好啦好啦。", "happy"]);
     const turns = h.sink.speakActions().map((a) => a.turn);
     expect(turns.every((t) => t === turns[0])).toBe(true);
+  });
+
+  it("first_token_latency_is_published_for_the_monitor", async () => {
+    const paced = new Paced([
+      [
+        [640, textDelta("好啊。")],
+        [200, textDelta("走吧。")],
+        [0, done()],
+      ],
+    ]);
+    const h = await Harness.create("off", voiceConfig("always"), paced);
+    const latency = h.sup.bus.subscribe("voice.latency");
+    const responded = agentTurns.get({ decision: "responded" });
+    h.publish(joined());
+    h.publish(utterance("Owen", "要不要去吃飯"));
+    await wait(3000);
+    expect(texts(h)).toEqual(["好啊。", "走吧。"]);
+    const env = latency.tryRecv();
+    expect(env?.event).toEqual({
+      type: "custom",
+      data: {
+        topic: "voice.latency",
+        payload: {
+          stage: "llm",
+          context: voiceCtx(),
+          turn: env?.correlation ?? null,
+          model: "chat:m",
+          first_token_ms: 640,
+        },
+      },
+    });
+    expect(env?.correlation).not.toBeNull();
+    expect(latency.tryRecv(), "once per turn").toBeNull();
+    expect(agentTurns.get({ decision: "responded" })).toBe(responded + 1);
+    latency.close();
   });
 
   it("silence_and_unspeakable_replies_say_nothing", async () => {
