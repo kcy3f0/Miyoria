@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { type CoreLogLevel, loadProfile, logFilter, logLevel } from "@miyoria/core/light";
 import { Config, configureLogging } from "@miyoria/kernel";
 import { isJsonObject } from "@miyoria/types";
+import { PACKAGE_ROOT } from "../assets.js";
 import { fail, ok, println, warn } from "../ui.js";
 
 export class NodeCommandError extends Error {
@@ -25,9 +26,26 @@ function setLogLevel(config: Config, fallback?: CoreLogLevel): void {
   configureLogging({ level: fallback ?? logLevel(logFilter(config)) });
 }
 
+/**
+ * Points `MIYORIA_PANEL_DIR` at the panel bundled with the npm package (`dist/panel`) when
+ * neither the variable nor `[modules.api] panel_dir` leads to a built panel.
+ */
+function useBundledPanel(config: Config): void {
+  if (process.env.MIYORIA_PANEL_DIR?.trim()) return;
+  const section = config.module("api").config;
+  const configured =
+    isJsonObject(section) && typeof section.panel_dir === "string"
+      ? section.panel_dir
+      : "apps/panel/dist";
+  if (configured.trim() === "" || existsSync(join(configured, "index.html"))) return;
+  const bundled = join(PACKAGE_ROOT, "dist", "panel");
+  if (existsSync(join(bundled, "index.html"))) process.env.MIYORIA_PANEL_DIR = bundled;
+}
+
 export async function core(configPath: string): Promise<void> {
   const config = await loadConfig(configPath);
   setLogLevel(config);
+  useBundledPanel(config);
   const { buildCore, runUntilSignal } = await import("@miyoria/core");
   const node = await buildCore(config, { baseDir: dirname(resolve(configPath)) });
   await runUntilSignal(node);
@@ -54,7 +72,15 @@ export async function stage(configPath: string): Promise<void> {
   const { runStageNode, shutdownSignal } = await import("@miyoria/core");
   const controller = new AbortController();
   void shutdownSignal().then(() => controller.abort());
-  await runStageNode(config, { baseDir: dirname(resolve(configPath)), signal: controller.signal });
+  const bundled = join(PACKAGE_ROOT, "dist", "overlay");
+  await runStageNode(config, {
+    baseDir: dirname(resolve(configPath)),
+    signal: controller.signal,
+    // The npm package ships the overlay; from the repo the default `apps/overlay/dist` applies.
+    ...(!existsSync("apps/overlay/dist/index.html") && existsSync(join(bundled, "index.html"))
+      ? { overlayDir: bundled }
+      : {}),
+  });
 }
 
 export async function profileValidate(configPath: string): Promise<void> {

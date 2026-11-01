@@ -21,7 +21,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepack": "pnpm build"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

@@ -33,6 +33,7 @@ import { MoodModule, SocialModule } from "@miyoria/social";
 import { SpeechConfigSchema, SpeechModule } from "@miyoria/speech";
 import { AvatarProfile, parseStageConfig, runStage, StageLinkModule } from "@miyoria/stage";
 import { openStore as openStoreBackend, type Store } from "@miyoria/store";
+import { isJsonObject } from "@miyoria/types";
 import { VoiceLinkModule, VoiceModule } from "@miyoria/voice";
 import {
   buildCoreWith,
@@ -116,7 +117,12 @@ export function buildCore(config: Config, options: CoreOptions = {}): Promise<Co
 /** `miyoria stage`: runs the stage node (VTube Studio, OBS, overlay) until `signal` aborts. */
 export async function runStageNode(
   config: Config,
-  options: { baseDir?: string; signal?: AbortSignal } = {},
+  options: {
+    baseDir?: string;
+    signal?: AbortSignal;
+    /** Overlay build to serve when `[stage] overlay_dir` is not set (e.g. the npm bundle's). */
+    overlayDir?: string;
+  } = {},
 ): Promise<void> {
   const baseDir = options.baseDir ?? process.cwd();
   const profile = await loadProfile(config, baseDir);
@@ -124,7 +130,14 @@ export async function runStageNode(
     profile.avatar !== null
       ? AvatarProfile.load(join(profile.dir, "avatar.toml"))
       : new AvatarProfile();
-  const stage = parseStageConfig(config.section("stage") ?? {}, avatar);
+  const section = config.section("stage") ?? {};
+  const explicit = isJsonObject(section) && typeof section.overlay_dir === "string";
+  const stage = parseStageConfig(
+    explicit || options.overlayDir === undefined
+      ? section
+      : { ...(isJsonObject(section) ? section : {}), overlay_dir: options.overlayDir },
+    avatar,
+  );
   await runStage(stage, options.signal ? { signal: options.signal } : {});
 }
 

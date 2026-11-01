@@ -297,6 +297,49 @@ importers:
       '@clack/prompts':
         specifier: ^1.8.1
         version: 1.8.1
+      '@hono/node-server':
+        specifier: ^2.1.5
+        version: 2.1.5(hono@4.13.16)
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.32.2
+        version: 1.32.2(zod@4.6.7)
+      '@node-rs/jieba':
+        specifier: ^2.0.4
+        version: 2.0.4
+      discord.js:
+        specifier: ^14.26.0
+        version: 14.28.0
+      hono:
+        specifier: ^4.13.16
+        version: 4.13.16
+      obs-websocket-js:
+        specifier: ^5.0.6
+        version: 5.0.8
+      opencc-js:
+        specifier: ^1.4.2
+        version: 1.4.2
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
+      pino:
+        specifier: ^10.4.0
+        version: 10.4.0
+      smol-toml:
+        specifier: ^1.9.1
+        version: 1.9.1
+      ulid:
+        specifier: ^3.0.2
+        version: 3.0.2
+      ws:
+        specifier: ^8.22.1
+        version: 8.22.1
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@miyoria/api':
+        specifier: workspace:*
+        version: link:../api
       '@miyoria/core':
         specifier: workspace:*
         version: link:../core
@@ -309,13 +352,12 @@ importers:
       '@miyoria/types':
         specifier: workspace:*
         version: link:../types
-      smol-toml:
-        specifier: ^1.9.1
-        version: 1.9.1
-    devDependencies:
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       typescript:
         specifier: ~5.9.3
         version: 5.9.3

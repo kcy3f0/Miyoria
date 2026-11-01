@@ -12,31 +12,55 @@
   "exports": {
     ".": {
       "@miyoria/source": "./src/index.ts",
-      "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": "./dist/index.js",
+      "./package.json": "./package.json"
     }
   },
   "files": [
     "dist",
+    "!dist/**/*.map",
     "templates",
-    "assets"
+    "assets",
+    "migrations"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
+    "build": "node scripts/build.mjs",
+    "prepack": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "dev": "tsx --conditions=@miyoria/source src/main.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.8.1",
+    "@hono/node-server": "^2.1.5",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@node-rs/jieba": "^2.0.4",
+    "discord.js": "^14.26.0",
+    "hono": "^4.13.16",
+    "obs-websocket-js": "^5.0.6",
+    "opencc-js": "^1.4.2",
+    "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "smol-toml": "^1.9.1",
+    "ulid": "^3.0.2",
+    "ws": "^8.22.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@miyoria/api": "workspace:*",
     "@miyoria/core": "workspace:*",
     "@miyoria/kernel": "workspace:*",
     "@miyoria/llm": "workspace:*",
     "@miyoria/types": "workspace:*",
-    "smol-toml": "^1.9.1"
-  },
-  "devDependencies": {
     "@types/node": "^24.19.2",
+    "esbuild": "^0.28.2",
     "typescript": "~5.9.3",
     "vitest": "^4.1.12"
   }
