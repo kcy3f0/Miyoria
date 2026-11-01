@@ -5,6 +5,7 @@ import { type ChatProvider, LlmRouter, type MockProvider, parseModelRef } from "
 import type {
   Account,
   IdentityStore,
+  MemoryRecordStore,
   PeopleStore,
   Person,
   Relationship,
@@ -65,6 +66,10 @@ export class FakeStore implements PeopleStore, RelationshipStore, IdentityStore 
     const p = this.accounts.get(accountRefString(account));
     const person = p === undefined ? undefined : this.people.get(p);
     return person ? structuredClone(person) : null;
+  }
+
+  async all(): Promise<Person[]> {
+    return [...this.people.values()].map((p) => structuredClone(p));
   }
 
   // RelationshipStore
@@ -180,13 +185,14 @@ export class Harness {
   constructor(
     config: SocialConfig = socialConfig(),
     readonly store: FakeStore = new FakeStore(),
+    memories: MemoryRecordStore | null = null,
   ) {
     this.social = new Social(
       profile(),
       "DeepSeek-chan",
       ["DS醬", "小鯨魚"],
       config,
-      { people: store, relationships: store, identity: store },
+      { people: store, relationships: store, identity: store, memories },
       (e) => {
         this.events.push(e);
       },

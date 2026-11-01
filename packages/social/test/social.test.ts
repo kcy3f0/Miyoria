@@ -17,13 +17,18 @@ import {
 import { LlmRouterKey, MockProvider } from "@miyoria/llm";
 import {
   IdentityStoreKey,
+  type MemoryKind,
+  type MemoryRecord,
+  type MemoryScope,
   PeopleStoreKey,
   type Relationship,
   RelationshipStoreKey,
+  SqliteStore,
 } from "@miyoria/store";
 import {
   type Event,
   MoodSignalsKey,
+  newId,
   PromptContributors,
   PromptContributorsKey,
   type PromptRequest,
@@ -337,6 +342,94 @@ describe("social engine", () => {
     expect(await h.social.redeemLinkCode(b, "x", "NOPE", t(1, 10))).toEqual({
       type: "too_many_attempts",
     });
+  });
+
+  it("link_moves_memories_to_the_kept_person", async () => {
+    const store = await SqliteStore.open(":memory:");
+    try {
+      const h = new Harness(socialConfig(), new FakeStore(), store.memories);
+      const a = acc("discord:1");
+      const b = acc("twitch:9");
+      const keep = (await h.social.resolve(a, "Owen", t(1, 10))) ?? "";
+      const absorb = (await h.social.resolve(b, "owen_tw", t(1, 10))) ?? "";
+      const other = (await h.social.resolve(acc("discord:5"), "Amy", t(1, 10))) ?? "";
+      const at = new Date(t(1, 10)).toISOString();
+      const memory = (
+        kind: MemoryKind,
+        scope: MemoryScope,
+        subjects: string[],
+        tokens: string,
+        profileId = profile(),
+      ): MemoryRecord => ({
+        id: newId(),
+        profile: profileId,
+        kind,
+        scope,
+        subjects,
+        content: tokens,
+        tokens,
+        embedding: [0, 1],
+        importance: 0.5,
+        confidence: 0.8,
+        created_at: at,
+        updated_at: at,
+        last_accessed: null,
+        access_count: 0,
+        source_context: null,
+        due: kind === "followup" ? at : null,
+        done: false,
+        superseded_by: null,
+      });
+      const episode = memory("episode", { type: "global" }, [absorb, other], "minecraft lava");
+      const fact = memory("fact", { type: "person", person: absorb }, [absorb], "likes ramen");
+      const followup = memory("followup", { type: "dm", account: b }, [absorb], "dentist");
+      const note = memory("self_note", { type: "person", person: absorb }, [], "owe him cake");
+      const elsewhere = memory("fact", { type: "global" }, [absorb, keep], "tall", "other-chan");
+      const unrelated = memory("fact", { type: "person", person: other }, [other], "cats");
+      const all = [episode, fact, followup, note, elsewhere, unrelated];
+      for (const r of all) await store.memories.upsert(r);
+
+      const code = (await h.social.issueLinkCode(a, "Owen", t(1, 10))) ?? "";
+      const outcome = await h.social.redeemLinkCode(b, "owen_tw", code, t(1, 10));
+      expect(outcome).toEqual({ type: "linked", keep, absorbed: absorb });
+
+      const read = async (r: MemoryRecord) => (await store.memories.get(r.id)) as MemoryRecord;
+      expect((await read(episode)).subjects).toEqual([keep, other]);
+      expect((await read(fact)).scope).toEqual({ type: "person", person: keep });
+      expect((await read(fact)).subjects).toEqual([keep]);
+      expect((await read(followup)).subjects).toEqual([keep]);
+      expect((await read(followup)).scope, "account scopes stay").toEqual({
+        type: "dm",
+        account: b,
+      });
+      expect((await read(note)).scope).toEqual({ type: "person", person: keep });
+      expect((await read(elsewhere)).subjects, "other profiles too, no duplicate").toEqual([keep]);
+      expect((await read(unrelated)).subjects).toEqual([other]);
+
+      // Full text and vectors still find them under the kept person.
+      const keepScope: MemoryScope = { type: "person", person: keep };
+      const hits = await store.memories.search({
+        profile: profile(),
+        scopes: [keepScope],
+        kinds: null,
+        tokens: ["ramen", "cake"],
+        embedding: [0, 1],
+        limit: 10,
+      });
+      expect(hits.map((x) => x.record.id).sort()).toEqual([fact.id, note.id].sort());
+      expect(hits.every((x) => x.text_score > 0 && (x.vector_score ?? 0) > 0.99)).toBe(true);
+      const filter = {
+        subject: absorb,
+        scope: null,
+        kind: null,
+        before: null,
+        include_superseded: true,
+        limit: 100,
+      };
+      expect(await store.memories.list(profile(), filter)).toEqual([]);
+    } finally {
+      await store.close();
+    }
   });
 
   it("merge_keeps_higher_affinity_and_combines_the_rest", () => {

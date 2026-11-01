@@ -8,7 +8,13 @@ import {
 } from "@miyoria/kernel";
 import { LlmRouterKey } from "@miyoria/llm";
 import type { Profile } from "@miyoria/profile";
-import { IdentityStoreKey, PeopleStoreKey, RelationshipStoreKey, StoreKey } from "@miyoria/store";
+import {
+  IdentityStoreKey,
+  MemoryRecordStoreKey,
+  PeopleStoreKey,
+  RelationshipStoreKey,
+  StoreKey,
+} from "@miyoria/store";
 import {
   AuthorizerKey,
   type ContextKey,
@@ -44,16 +50,20 @@ function stores(ctx: ModuleContext): SocialStores {
   if (!relationships) throw new SocialError("social needs a `dyn RelationshipStore` service");
   const identity = services.get(IdentityStoreKey) ?? bundle?.identity ?? null;
   if (!identity) ctx.log.warn("no identity store: `/link` is unavailable");
-  return { people, relationships, identity };
+  const memories = services.get(MemoryRecordStoreKey) ?? bundle?.memories ?? null;
+  if (identity && !memories) {
+    ctx.log.warn("no memory record store: `/link` does not move memories");
+  }
+  return { people, relationships, identity, memories };
 }
 
 /**
  * Module `social`. Requires `llm`; `commands` is optional.
  *
  * Services used: `RelationshipStoreKey` (required), `PeopleStoreKey` (or the `StoreKey`
- * bundle), `IdentityStoreKey` (optional, for `/link`), `PromptContributorsKey`,
- * `CommandRegistryKey` and `AuthorizerKey` (optional). Provides `SocialSignalsKey` and
- * `SocialKey`.
+ * bundle), `IdentityStoreKey` (optional, for `/link`), `MemoryRecordStoreKey` (optional, so
+ * `/link` moves memories too), `PromptContributorsKey`, `CommandRegistryKey` and
+ * `AuthorizerKey` (optional). Provides `SocialSignalsKey` and `SocialKey`.
  */
 export class SocialModule implements Module {
   static readonly ID = "social";

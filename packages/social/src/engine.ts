@@ -7,6 +7,7 @@ import { getLogger, SerialQueue } from "@miyoria/kernel";
 import { type LlmRouter, sessionId } from "@miyoria/llm";
 import type {
   IdentityStore,
+  MemoryRecordStore,
   PeopleStore,
   Relationship,
   RelationshipDelta,
@@ -79,6 +80,8 @@ export interface SocialStores {
   relationships: RelationshipStore;
   /** Needed for `/link` and to know people's accounts right after start. */
   identity: IdentityStore | null;
+  /** When set, `/link` moves the absorbed person's memories to the surviving person. */
+  memories?: MemoryRecordStore | null;
 }
 
 /** One line someone said, as seen by the engine. */
@@ -863,8 +866,9 @@ export class Social implements SocialSignals {
 
   /**
    * Redeems a code from another account: the invoker's person is merged into the issuer's.
-   * Relationships keep the higher-affinity side; other per-profile data (memories) is not
-   * merged here.
+   * Relationships keep the higher-affinity side; memories about the absorbed person (subjects
+   * and `person` scopes, every profile) move to the kept one when a memory store is set. Both
+   * happen before the people are merged, so a failure leaves the absorbed person in place.
    */
   async redeemLinkCode(
     account: AccountRef,
@@ -894,17 +898,20 @@ export class Social implements SocialSignals {
     if (absorb === null) return { type: "invalid_code" };
     if (keep === absorb) return { type: "already_linked" };
     await this.#merge(keep, absorb, now);
+    const memories = this.#stores.memories ?? null;
+    const moved = memories ? await memories.mergePerson(keep, absorb) : null;
     await identity.linkAccount(account, keep);
     await identity.mergePeople(keep, absorb);
     for (const [k, p] of this.#accounts) if (p === absorb) this.#accounts.set(k, keep);
     this.#personNames.delete(absorb);
     this.#ledgers.delete(absorb);
-    const moved = this.#activity.get(absorb);
-    if (moved) {
+    const activity = this.#activity.get(absorb);
+    if (activity) {
       this.#activity.delete(absorb);
-      getOrInsert(this.#activity, keep, newActivity).lines.push(...moved.lines);
+      getOrInsert(this.#activity, keep, newActivity).lines.push(...activity.lines);
     }
-    log.info({ keep, absorb }, "accounts linked; memories are not merged");
+    if (moved === null) log.info({ keep, absorb }, "accounts linked; memories are not merged");
+    else log.info({ keep, absorb, memories: moved }, "accounts linked");
     return { type: "linked", keep, absorbed: absorb };
   }
 
