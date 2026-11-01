@@ -34,8 +34,13 @@ export interface Logger {
 export interface LoggingOptions {
   /** Default: `$MIYORIA_LOG_LEVEL`, else `"silent"` under Vitest and `"info"` otherwise. */
   level?: LogLevel;
-  /** Default: stdout (JSON lines). */
+  /** Default: stdout (JSON lines, or `pretty` lines on a terminal). */
   destination?: pino.DestinationStream;
+  /**
+   * One readable line per entry instead of JSON. Default: `$MIYORIA_LOG_FORMAT` (`pretty` /
+   * `json`), else pretty when stdout is a terminal. Ignored with a `destination`.
+   */
+  pretty?: boolean;
 }
 
 function defaultLevel(): LogLevel {
@@ -44,9 +49,84 @@ function defaultLevel(): LogLevel {
   return process.env.VITEST ? "silent" : "info";
 }
 
+function defaultPretty(): boolean {
+  const env = process.env.MIYORIA_LOG_FORMAT;
+  if (env === "json") return false;
+  if (env === "pretty") return true;
+  return process.stdout.isTTY === true;
+}
+
+const LEVEL_NAMES: Record<number, string> = {
+  10: "TRACE",
+  20: "DEBUG",
+  30: "INFO ",
+  40: "WARN ",
+  50: "ERROR",
+  60: "FATAL",
+};
+const LEVEL_COLORS: Record<number, string> = {
+  10: "90",
+  20: "90",
+  30: "36",
+  40: "33",
+  50: "31",
+  60: "31",
+};
+const HIDDEN_FIELDS = new Set(["level", "time", "pid", "hostname", "msg", "scope", "module"]);
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** One pino JSON line as `HH:MM:SS INFO  scope/module message key=value ...`. */
+export function formatLogLine(line: string, color: boolean): string {
+  let entry: Record<string, unknown>;
+  try {
+    entry = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return line;
+  }
+  const paint = (code: string, text: string) => (color ? `\x1b[${code}m${text}\x1b[0m` : text);
+  const level = typeof entry.level === "number" ? entry.level : 30;
+  const d = new Date(typeof entry.time === "number" ? entry.time : Date.now());
+  const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  const where = [entry.module, entry.scope].filter((v) => typeof v === "string").join(" ");
+  const fields = Object.entries(entry)
+    .filter(([k]) => !HIDDEN_FIELDS.has(k))
+    .map(([k, v]) => {
+      if (k === "err" && v !== null && typeof v === "object") {
+        const err = v as { message?: unknown; stack?: unknown };
+        return `err=${String(err.message ?? JSON.stringify(v))}`;
+      }
+      return `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`;
+    });
+  return [
+    paint("90", time),
+    paint(LEVEL_COLORS[level] ?? "0", LEVEL_NAMES[level] ?? String(level)),
+    where === "" ? "" : paint("35", where),
+    String(entry.msg ?? ""),
+    fields.length === 0 ? "" : paint("90", fields.join(" ")),
+  ]
+    .filter((part) => part !== "")
+    .join(" ");
+}
+
+/** pino destination that writes `formatLogLine` output to stdout. */
+function prettyDestination(): pino.DestinationStream {
+  const color = process.stdout.isTTY === true && !process.env.NO_COLOR;
+  return {
+    write(chunk: string) {
+      for (const line of chunk.split("\n")) {
+        if (line !== "") process.stdout.write(`${formatLogLine(line, color)}\n`);
+      }
+    },
+  };
+}
+
 function makeRoot(options: LoggingOptions): pino.Logger {
   const config: pino.LoggerOptions = { level: options.level ?? defaultLevel() };
-  return options.destination ? pino(config, options.destination) : pino(config);
+  if (options.destination) return pino(config, options.destination);
+  return (options.pretty ?? defaultPretty()) ? pino(config, prettyDestination()) : pino(config);
 }
 
 let root = makeRoot({});

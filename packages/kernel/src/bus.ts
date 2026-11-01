@@ -7,6 +7,7 @@ import {
   newEnvelope,
 } from "@miyoria/types";
 import { getLogger } from "./log.js";
+import { type Counter, type MetricsRegistry, metrics } from "./metrics.js";
 
 const log = getLogger("kernel.bus");
 
@@ -66,14 +67,16 @@ export class Subscription implements AsyncIterableIterator<Envelope> {
   readonly #queue: Envelope[] = [];
   readonly #waiters: Array<(result: IteratorResult<Envelope>) => void> = [];
   readonly #onClose: () => void;
+  readonly #dropped: Counter | undefined;
   #closed = false;
   #lagged = 0;
 
   /** @internal Created by `EventBus.subscribe`. */
-  constructor(filter: TopicFilter, capacity: number, onClose: () => void) {
+  constructor(filter: TopicFilter, capacity: number, onClose: () => void, dropped?: Counter) {
     this.filter = filter;
     this.#capacity = capacity;
     this.#onClose = onClose;
+    this.#dropped = dropped;
   }
 
   get closed(): boolean {
@@ -91,6 +94,7 @@ export class Subscription implements AsyncIterableIterator<Envelope> {
     if (this.#queue.length >= this.#capacity) {
       this.#queue.shift();
       this.#lagged++;
+      this.#dropped?.inc();
     }
     this.#queue.push(envelope);
   }
@@ -141,16 +145,43 @@ export class Subscription implements AsyncIterableIterator<Envelope> {
   }
 }
 
+/** Distinct topic prefixes counted before the rest collapse into `"other"`. */
+const MAX_TOPIC_PREFIXES = 64;
+
+/** First segment of a dotted topic (`platform.message.created` -> `platform`). */
+export function topicPrefix(topic: string): string {
+  const dot = topic.indexOf(".");
+  return dot < 0 ? topic : topic.slice(0, dot);
+}
+
+export interface EventBusOptions {
+  capacity?: number;
+  /** Where publish / drop counts go. Default: the process-wide `metrics`. */
+  metrics?: MetricsRegistry;
+}
+
 /** In-process publish / subscribe bus. Publishing never blocks and never fails. */
 export class EventBus {
   readonly #subscriptions = new Set<Subscription>();
   readonly #capacity: number;
+  readonly #published: Counter;
+  readonly #dropped: Counter;
 
-  constructor(options: { capacity?: number } = {}) {
+  constructor(options: EventBusOptions = {}) {
     this.#capacity = options.capacity ?? DEFAULT_BUS_CAPACITY;
+    const registry = options.metrics ?? metrics;
+    this.#published = registry.counter("miyoria_bus_events_published_total", {
+      help: "Events published on the bus, by the first segment of the topic.",
+      labels: ["prefix"],
+      maxSeries: MAX_TOPIC_PREFIXES,
+    });
+    this.#dropped = registry.counter("miyoria_bus_events_dropped_total", {
+      help: "Events dropped because a subscriber fell more than its capacity behind.",
+    });
   }
 
   publishEnvelope(envelope: Envelope): void {
+    this.#published.inc({ prefix: topicPrefix(envelopeTopic(envelope)) });
     // No subscribers is not an error.
     for (const sub of this.#subscriptions) sub.deliver(envelope);
   }
@@ -172,6 +203,7 @@ export class EventBus {
         this.#subscriptions.delete(sub);
         signal?.removeEventListener("abort", onAbort);
       },
+      this.#dropped,
     );
     this.#subscriptions.add(sub);
     if (signal?.aborted) sub.close();

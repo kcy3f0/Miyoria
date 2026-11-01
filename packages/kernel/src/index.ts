@@ -14,10 +14,12 @@ export {
 export {
   DEFAULT_BUS_CAPACITY,
   EventBus,
+  type EventBusOptions,
   type SubscribeOptions,
   Subscription,
   TopicFilter,
   type TopicFilterLike,
+  topicPrefix,
 } from "./bus.js";
 export {
   Config,
@@ -35,6 +37,7 @@ export {
 export { ModuleContext, type PublishOptions, type Task } from "./context.js";
 export {
   configureLogging,
+  formatLogLine,
   getLogger,
   type LogBindings,
   type LogFn,
@@ -43,6 +46,25 @@ export {
   type LogLevel,
   rootLogger,
 } from "./log.js";
+export {
+  Counter,
+  DEFAULT_BUCKETS,
+  formatValue,
+  Gauge,
+  Histogram,
+  type HistogramOptions,
+  type Labels,
+  METRICS_CONTENT_TYPE,
+  type MetricFamily,
+  type MetricOptions,
+  type MetricSample,
+  MetricsError,
+  MetricsRegistry,
+  type MetricType,
+  metrics,
+  OVERFLOW_LABEL,
+  renderMetrics,
+} from "./metrics.js";
 export {
   defineManifest,
   HEALTHY,
