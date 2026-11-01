@@ -8,7 +8,13 @@
 // Third-party models (Qwen3-ASR, SenseVoice, Qwen3-TTS, GPT-SoVITS, ...) usually run as separate
 // worker processes; providers here are clients.
 
-import { errorMessage, getLogger } from "@miyoria/kernel";
+import {
+  type Counter,
+  errorMessage,
+  getLogger,
+  type MetricsRegistry,
+  metrics,
+} from "@miyoria/kernel";
 import { type JsonValue, serviceKey } from "@miyoria/types";
 
 const log = getLogger("speech");
@@ -109,14 +115,43 @@ export class SpeechError extends Error {
   override name = "SpeechError";
 }
 
-/** Fallback chains of ASR and TTS providers. */
+export interface SpeechServiceOptions {
+  /** Where request counts go. Default: the process-wide `metrics`. */
+  metrics?: MetricsRegistry;
+}
+
+/** `aborted` when the caller cancelled, else `error`. */
+function failure(signal: AbortSignal | undefined): string {
+  return signal?.aborted ? "aborted" : "error";
+}
+
+/**
+ * Fallback chains of ASR and TTS providers. Every attempt is counted in
+ * `miyoria_asr_requests_total` / `miyoria_tts_requests_total` by provider and outcome (`ok`,
+ * `error`, `aborted`); a TTS attempt is `ok` once its stream started.
+ */
 export class SpeechService {
   readonly #asr: readonly AsrProvider[];
   readonly #tts: readonly TtsProvider[];
+  readonly #asrRequests: Counter;
+  readonly #ttsRequests: Counter;
 
-  constructor(asr: readonly AsrProvider[], tts: readonly TtsProvider[]) {
+  constructor(
+    asr: readonly AsrProvider[],
+    tts: readonly TtsProvider[],
+    options: SpeechServiceOptions = {},
+  ) {
     this.#asr = [...asr];
     this.#tts = [...tts];
+    const registry = options.metrics ?? metrics;
+    this.#asrRequests = registry.counter("miyoria_asr_requests_total", {
+      help: "ASR requests by provider and outcome (ok, error, aborted).",
+      labels: ["provider", "outcome"],
+    });
+    this.#ttsRequests = registry.counter("miyoria_tts_requests_total", {
+      help: "TTS requests by provider and outcome (ok, error, aborted).",
+      labels: ["provider", "outcome"],
+    });
   }
 
   hasAsr(): boolean {
@@ -136,8 +171,11 @@ export class SpeechService {
     let last: unknown;
     for (const p of this.#asr) {
       try {
-        return [p.name, await p.transcribe(audio, hint, signal)];
+        const transcript = await p.transcribe(audio, hint, signal);
+        this.#asrRequests.inc({ provider: p.name, outcome: "ok" });
+        return [p.name, transcript];
       } catch (error) {
+        this.#asrRequests.inc({ provider: p.name, outcome: failure(signal) });
         if (signal?.aborted) throw error;
         log.warn({ provider: p.name, err: errorMessage(error) }, "ASR failed, trying next");
         last = error;
@@ -151,8 +189,11 @@ export class SpeechService {
     let last: unknown;
     for (const p of this.#tts) {
       try {
-        return [p.name, await p.synthesize({ ...request }, signal)];
+        const stream = await p.synthesize({ ...request }, signal);
+        this.#ttsRequests.inc({ provider: p.name, outcome: "ok" });
+        return [p.name, stream];
       } catch (error) {
+        this.#ttsRequests.inc({ provider: p.name, outcome: failure(signal) });
         if (signal?.aborted) throw error;
         log.warn({ provider: p.name, err: errorMessage(error) }, "TTS failed, trying next");
         last = error;

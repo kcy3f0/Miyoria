@@ -53,6 +53,7 @@ export {
   SpeechError,
   SpeechService,
   SpeechServiceKey,
+  type SpeechServiceOptions,
   type Transcript,
   type TtsFactory,
   type TtsProvider,

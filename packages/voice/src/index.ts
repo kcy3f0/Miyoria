@@ -8,7 +8,8 @@
 //   playback, with barge-in). It registers `join`, `leave` and `voice consent <on|off>`.
 //
 // Latency measurements are published as `custom` events on `voice.latency` with `stage` =
-// `asr` (`asr_ms`, `transcribe_ms`) or `tts` (`first_audio_ms`).
+// `asr` (`asr_ms`, `transcribe_ms`) or `tts` (`first_audio_ms`); the agent adds `llm`
+// (`first_token_ms`).
 
 export { BargeIn } from "./barge.js";
 export { joinAnnouncement, PATHS, registerCommands, unregisterCommands } from "./commands.js";
