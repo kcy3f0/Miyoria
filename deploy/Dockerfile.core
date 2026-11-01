@@ -1,0 +1,87 @@
+# syntax=docker/dockerfile:1.7
+#
+# Miyoria Core image (`miyoria core`), built from the TypeScript workspace.
+#
+# Build context = repo root (ignore rules: /.dockerignore):
+#   docker build -f deploy/Dockerfile.core -t miyoria-core .
+#
+# Stages:
+#   1. build:   pnpm install (only the CLI, the packages it bundles and the panel), build the admin
+#               panel and the esbuild bundle of the `miyoria` npm package (packages/cli/dist), then
+#               `pnpm deploy` it with its production dependencies into /out.
+#   2. runtime: node:24 slim + /out, non-root, panel served from the bundle, SQLite in /data.
+#
+# The core has no native dependencies that need a compiler: `@node-rs/jieba` ships prebuilt
+# binaries, SQLite is `node:sqlite`. The Discord voice / Go Live stack (opus, DAVE, zeromq) lives
+# in apps/voice-node and is not installed here.
+
+ARG NODE_IMAGE=node:24-bookworm-slim
+
+# ---- 1. build ------------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS build
+ENV PNPM_HOME=/pnpm \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    CI=true
+ENV PATH=$PNPM_HOME:$PATH
+# pnpm version from "packageManager" in package.json.
+RUN corepack enable
+WORKDIR /src
+
+# Download every package in the lockfile into the store (cached layer: only the lockfile matters).
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm fetch
+
+COPY . .
+# `miyoria...` = the CLI plus every workspace package it bundles (its devDependencies), and the panel.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --offline --frozen-lockfile --filter "miyoria..." --filter "@miyoria/panel..."
+RUN pnpm --filter @miyoria/panel build \
+    && pnpm --filter miyoria build \
+    && test -f packages/cli/dist/panel/index.html
+# The publishable package (files from package.json "files") + production node_modules.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm --filter miyoria deploy --prod /out \
+    && ls /out /out/node_modules
+
+# ---- 2. runtime ----------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS runtime
+
+LABEL org.opencontainers.image.title="miyoria-core" \
+      org.opencontainers.image.description="Miyoria Core node (kernel, agent, Discord bot, admin API and panel)"
+
+# tini reaps the child processes of extensions and MCP stdio servers.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 miyoria \
+    && useradd --system --uid 10001 --gid miyoria --home-dir /data --shell /usr/sbin/nologin miyoria \
+    && mkdir -p /data /profiles /etc/miyoria \
+    && chown -R miyoria:miyoria /data
+
+COPY --from=build /out /opt/miyoria
+# Built-in profiles (compose mounts ../profiles over them).
+COPY --from=build /out/assets/profiles/ /profiles/
+# Container-oriented default config (binds 0.0.0.0 inside the container; compose publishes the
+# ports on 127.0.0.1 only). Mount your own file over it to customise.
+COPY deploy/miyoria.docker.toml /etc/miyoria/miyoria.toml
+RUN ln -s /opt/miyoria/dist/main.js /usr/local/bin/miyoria
+
+ENV NODE_ENV=production \
+    MIYORIA_PANEL_DIR=/opt/miyoria/dist/panel \
+    MIYORIA_LOG_FORMAT=json
+
+USER miyoria:miyoria
+WORKDIR /data
+# SQLite database (sqlite:/data/miyoria.db) and extensions (/data/extensions).
+VOLUME ["/data"]
+
+# 7878 admin API + panel, 7879 voice link, 7882 stage link. Publish them on 127.0.0.1 only.
+EXPOSE 7878 7879 7882
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
+    CMD ["node", "-e", "fetch('http://127.0.0.1:7878/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+
+# Core stops cleanly on SIGTERM (`docker stop`) as well as SIGINT.
+ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/miyoria/dist/main.js", "--config", "/etc/miyoria/miyoria.toml"]
+CMD ["core"]

@@ -1,16 +1,18 @@
 # Miyoria 的 Docker 部署。兩種用法:
 #
-#   只要資料庫(本機開發,Core 用 cargo run 在宿主機跑):
+#   只要 PostgreSQL(本機開發,Core 用 `npx miyoria core` / `pnpm dev:core` 在宿主機跑):
 #     cp deploy/.env.example deploy/.env      # 改 POSTGRES_PASSWORD
 #     docker compose -f deploy/docker-compose.yml up -d postgres
+#   (不想用 Postgres 就不需要這個檔案:Core 預設用 SQLite)
 #
 #   Core 也放進 Docker(server 部署):
 #     cp deploy/.env.example deploy/.env      # 改 POSTGRES_PASSWORD
-#     miyoria init                            # 在專案根目錄產生 .env(LLM key、Discord token、各種 token)
+#     npx miyoria init                        # 在專案根目錄產生 .env(LLM key、Discord token、各種 token)
 #     docker compose -f deploy/docker-compose.yml --profile core up -d --build
 #
 # `core` 服務掛在 compose profile `core` 後面,所以不加 --profile 時只會啟動 postgres。
-# 詳細步驟、升級、備份見 docs/OPERATIONS.md。
+# 容器內的 Admin API / voice link / stage link 綁 0.0.0.0(deploy/miyoria.docker.toml),
+# 對外只由下面的 `127.0.0.1:` 埠映射決定。詳細步驟、升級、備份見 docs/OPERATIONS.md。
 name: miyoria
 
 services:
@@ -38,18 +40,16 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.core
-      args:
-        # 管理面板 build 好之後設成 apps/panel/dist,Core 之後會從 /opt/panel 提供
-        PANEL_DIST: ${PANEL_DIST:-deploy/panel-placeholder}
     restart: unless-stopped
     # 秘密(LLM key、Discord token、各種 link token)放專案根目錄的 .env,由 `miyoria init` 產生
     env_file:
       - ../.env
     environment:
-      # 覆寫 .env 裡給宿主機用的 127.0.0.1 位址:容器內要用 compose 網路上的 postgres
-      DATABASE_URL: postgres://${POSTGRES_USER:-miyoria}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_DB:-miyoria}
-      # 取消註解可調整日誌層級,語法同 RUST_LOG(見 docs/OPERATIONS.md)
-      RUST_LOG: ${RUST_LOG:-info,miyoria=debug}
+      # 覆寫 .env 裡給宿主機用的位址:容器內預設用 compose 網路上的 postgres。
+      # 想改用 SQLite(存在 core-data volume),在 deploy/.env 設 CORE_DATABASE_URL=sqlite:/data/miyoria.db
+      DATABASE_URL: ${CORE_DATABASE_URL:-postgres://${POSTGRES_USER:-miyoria}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_DB:-miyoria}}
+      # 日誌層級:fatal | error | warn | info | debug | trace(見 docs/OPERATIONS.md §8)
+      MIYORIA_LOG_LEVEL: ${MIYORIA_LOG_LEVEL:-info}
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,9 +58,9 @@ services:
       - "host.docker.internal:host-gateway"
     # 一律只綁 127.0.0.1。要讓別台機器連,走 Tailscale / SSH tunnel / wss 反向代理,不要改成 0.0.0.0
     ports:
-      - "127.0.0.1:${API_PORT:-7878}:7878"     # Admin API / 管理面板
+      - "127.0.0.1:${API_PORT:-7878}:7878"         # Admin API / 管理面板 / /metrics
       - "127.0.0.1:${VOICE_LINK_PORT:-7879}:7879"  # voice link(self 帳號語音節點)
-      - "127.0.0.1:${STAGE_LINK_PORT:-7882}:7882"  # stage link(Stage 節點,之後的階段)
+      - "127.0.0.1:${STAGE_LINK_PORT:-7882}:7882"  # stage link(直播機上的 `miyoria stage`)
     volumes:
       - core-data:/data
       - ../profiles:/profiles

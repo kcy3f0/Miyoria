@@ -1,0 +1,80 @@
+# Core 在 Docker 容器裡用的設定(Dockerfile.core 內建一份;compose 會把這個檔案掛進去)。
+#
+# 跟 miyoria.example.toml 的差別:
+#   - 監聽位址是 0.0.0.0(容器內一定要這樣,綁 127.0.0.1 的話宿主機的埠映射連不進來);
+#     對外只由 compose 的 `127.0.0.1:` 埠映射決定,不要把映射改成對外公開
+#   - profiles 在 /profiles(映像檔內建一份,compose 會掛 ../profiles 蓋過去)
+#   - 資料庫預設是 /data 底下的 SQLite;compose 會注入指向 compose 內 postgres 的 DATABASE_URL
+#   - 語音 worker 預設連宿主機(host.docker.internal);worker 在別台就設 ASR_URL / TTS_URL
+# 要自訂就複製這個檔案(保留三個 bind = "0.0.0.0:..."),在 deploy/.env 設 MIYORIA_CONFIG_FILE=<你的檔案路徑>。
+# 字串可以用 ${ENV_VAR} 或 ${ENV_VAR:-預設值} 引用環境變數(來自根目錄 .env)。
+
+[core]
+profile = "${MIYORIA_PROFILE:-deepseek-chan}"
+profiles_dir = "/profiles"
+database_url = "${DATABASE_URL:-sqlite:/data/miyoria.db}"
+log = "info,miyoria=debug"
+
+[llm.providers.deepseek]
+kind = "deepseek"                  # deepseek | openai | openai-compatible
+base_url = "${LLM_BASE_URL:-https://api.deepseek.com}"
+api_key = "${LLM_API_KEY:-}"
+
+[llm.purposes]
+chat = ["deepseek:deepseek-chat"]
+
+[speech.asr.local]
+kind = "http-worker"
+url = "${ASR_URL:-http://host.docker.internal:8001}"
+
+[speech.tts.local]
+kind = "http-worker"
+url = "${TTS_URL:-http://host.docker.internal:8002}"
+voice = "deepseek-chan"
+
+[modules.commands]
+owners = ["discord:${MIYORIA_OWNER_ID:-0}"]
+
+[modules.auth]
+owners = ["discord:${MIYORIA_OWNER_ID:-0}"]
+
+[modules."platform.discord.bot"]
+token = "${DISCORD_BOT_TOKEN:-}"
+command_guilds = []
+
+# Admin API + 管理面板(映像檔內建,MIYORIA_PANEL_DIR 指過去)。容器內監聽 0.0.0.0,宿主機端只映射到 127.0.0.1:7878
+[modules.api]
+bind = "0.0.0.0:7878"
+token = "${MIYORIA_API_TOKEN:-}"
+
+# 管理面板用 Discord 登入(見 miyoria.example.toml 與 docs/OPERATIONS.md §5)
+# [modules.api.discord_oauth]
+# client_id = "${DISCORD_CLIENT_ID:-}"
+# client_secret = "${DISCORD_CLIENT_SECRET:-}"
+# redirect_uri = "http://127.0.0.1:7878/api/auth/oauth/callback"
+
+# Self 帳號語音節點連進來的位址。跨機器時走 Tailscale / wss,見 docs/OPERATIONS.md
+[modules."voice.link"]
+bind = "0.0.0.0:7879"
+token = "${VOICE_LINK_TOKEN:-}"
+
+# Stage 節點(直播機上的 `miyoria stage`)連進來的位址
+[modules."stage.link"]
+bind = "0.0.0.0:7882"
+token = "${STAGE_LINK_TOKEN:-}"
+
+# 擴充套件放在 data volume 裡(容器內有 Node,可以跑 runtime = "node" 的擴充)
+[modules.extensions]
+dirs = ["/data/extensions"]
+
+[modules.voice]
+consent = "opt-out"
+barge_in = "stop"
+
+[modules.agent]
+
+[modules.agent.voice]
+default_mode = "ambient"
+ambient_factor = 0.5
+cooldown_ms = 20000
+debounce_ms = 700
