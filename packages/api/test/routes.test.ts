@@ -10,7 +10,13 @@ import { ExtensionCatalog, ExtensionCatalogKey, ExtensionManifest } from "@miyor
 import { Supervisor, SupervisorKey } from "@miyoria/kernel";
 import { LlmRouter, LlmRouterKey } from "@miyoria/llm";
 import { McpStatus, McpStatusKey } from "@miyoria/mcp";
-import { tokenString } from "@miyoria/memory";
+import {
+  type Embedder,
+  MemoryEngine,
+  MemoryEngineKey,
+  memoryConfig,
+  tokenString,
+} from "@miyoria/memory";
 import { RequestQueue, RequestQueueKey } from "@miyoria/queue";
 import { Social, SocialKey, socialConfig } from "@miyoria/social";
 import { StageLinkModule } from "@miyoria/stage";
@@ -25,6 +31,7 @@ import {
   PeopleStoreKey,
   RelationshipStoreKey,
   type RoleMapping,
+  SqliteStore,
 } from "@miyoria/store";
 import {
   type AccountRef,
@@ -135,6 +142,16 @@ function account(id: string): AccountRef {
 
 function voiceContext(): ContextKey {
   return { platform: "discord", scope: "g1", channel: "vc1", kind: "voice" };
+}
+
+/** Fixed vectors per text (a short vector equally close to every axis otherwise). */
+class TableEmbedder implements Embedder {
+  readonly name = "table";
+  readonly enabled = true;
+  constructor(readonly table: Map<string, number[]>) {}
+  async embed(texts: readonly string[]): Promise<number[][]> {
+    return texts.map((t) => [...(this.table.get(t) ?? [0.01, 0.01, 0.01])]);
+  }
 }
 
 function memory(
@@ -294,6 +311,127 @@ describe("routes", () => {
     expect(await statusOf(c.updatePerson(owen, {}))).toBe(503);
     // Reads still work from the stores.
     expect((await c.people()).items).toHaveLength(2);
+  });
+
+  it("people_list_includes_people_without_a_relationship", async () => {
+    const h = await harness();
+    const c = h.client;
+    const now = Date.now();
+    const owen = await h.store.people.upsertAccount(account("1"), "Owen");
+    const mika = await h.store.people.upsertAccount(account("2"), "Mika");
+    const lurker = await h.store.people.upsertAccount(account("3"), "Lurker");
+    await h.social.adjust(owen, 10, "test", now);
+
+    let page = await c.people();
+    const order = page.items.map((i) => i.person.id);
+    expect(order[0], "with a relationship first").toBe(owen);
+    expect([...order].sort()).toEqual([owen, mika, lurker].sort());
+    const stranger = page.items.find((i) => i.person.id === mika);
+    expect(stranger?.relationship).toBeNull();
+    expect(stranger?.label).toBe("陌生人");
+    expect(stranger?.blocked).toBe(false);
+    expect(stranger?.person.display_name).toBe("Mika");
+    expect(stranger?.person.accounts.map((a) => a.account)).toEqual([account("2")]);
+    expect(page.items[0]?.relationship?.affinity).toBe(10);
+
+    page = await c.people({ q: "mik" });
+    expect(page.items.map((i) => i.person.id)).toEqual([mika]);
+    page = await c.people({ q: "discord" });
+    expect(page.items, "account ids are not matched by platform").toHaveLength(0);
+    page = await c.people({ q: "3" });
+    expect(
+      page.items.map((i) => i.person.id),
+      "account id",
+    ).toEqual([lurker]);
+
+    page = await c.people({ limit: 2 });
+    expect(page.items.map((i) => i.person.id)).toEqual(order.slice(0, 2));
+    expect(page.next_cursor).toBe("2");
+    page = await c.people({ limit: 2, cursor: "2" });
+    expect(page.items.map((i) => i.person.id)).toEqual(order.slice(2));
+    expect(page.next_cursor).toBeNull();
+
+    // A relationship the engine has not written yet still shows.
+    await h.social.adjust(mika, 1, "test", now);
+    page = await c.people();
+    expect(page.items.find((i) => i.person.id === mika)?.relationship?.affinity).toBe(1);
+    const detail = await c.person(lurker);
+    expect(detail.relationship).toBeNull();
+    expect(detail.label).toBe("陌生人");
+    expect(detail.memory_count).toBe(0);
+  });
+
+  it("memory_search_uses_hybrid_recall", async () => {
+    const h = await harness();
+    const c = h.client;
+    const sqlite = await SqliteStore.open(":memory:");
+    try {
+      const embedder = new TableEmbedder(
+        new Map([
+          ["Owen 喜歡 豚骨 拉麵", [1, 0, 0]],
+          ["大家 一起 玩 Minecraft", [0, 1, 0]],
+          ["Owen 下週 要 看 牙醫", [0, 0, 1]],
+          ["他愛吃什麼", [0.9, 0.1, 0]],
+          ["Minecraft", [0, 1, 0]],
+        ]),
+      );
+      const engine = new MemoryEngine(PROFILE, memoryConfig(), sqlite.memories, { embedder });
+      h.sup.services.provide("memory", MemoryEngineKey, engine);
+      const owen = newId();
+      const withVector = async (r: MemoryRecord) => {
+        r.embedding = (await embedder.embed([r.content]))[0] ?? null;
+        await sqlite.memories.upsert(r);
+        return r;
+      };
+      const ramen = await withVector(memory(owen, "fact", "Owen 喜歡 豚骨 拉麵", 1));
+      const game = await withVector(memory(null, "episode", "大家 一起 玩 Minecraft", 2));
+      const dentist = memory(owen, "followup", "Owen 下週 要 看 牙醫", 3);
+      dentist.scope = { type: "dm", account: account("1") };
+      dentist.done = true;
+      await withVector(dentist);
+      const old = memory(owen, "fact", "Owen 喜歡 拉麵", 0);
+      old.superseded_by = ramen.id;
+      await withVector(old);
+
+      // No shared words: found by the vector, ranked by the hybrid score.
+      let page = await c.memory({ q: "他愛吃什麼" });
+      const first = page.items[0];
+      expect(first?.record.id).toBe(ramen.id);
+      expect(first?.text_score).toBe(0);
+      expect(first?.vector_score ?? 0).toBeGreaterThan(0.9);
+      expect(first?.score ?? 0).toBeGreaterThan(0);
+      expect(
+        page.items.map((i) => i.record.id),
+        "never superseded",
+      ).not.toContain(old.id);
+      for (let i = 1; i < page.items.length; i++) {
+        expect(page.items[i - 1]?.score ?? 0).toBeGreaterThanOrEqual(page.items[i]?.score ?? 0);
+      }
+      expect(page.next_cursor).toBeNull();
+
+      // Every scope (DM too) and done followups are visible to the admin; filters apply.
+      page = await c.memory({ q: "牙醫" });
+      expect(page.items[0]?.record.id).toBe(dentist.id);
+      expect(page.items[0]?.text_score ?? 0).toBeGreaterThan(0);
+      page = await c.memory({ q: "拉麵", kind: "episode" });
+      expect(page.items.every((i) => i.record.kind === "episode")).toBe(true);
+      page = await c.memory({ q: "拉麵", subject: owen });
+      expect(page.items.every((i) => i.record.subjects.includes(owen))).toBe(true);
+      expect(page.items.map((i) => i.record.id)).toContain(ramen.id);
+      page = await c.memory({ q: "Minecraft", limit: 1 });
+      expect(page.items.map((i) => i.record.id)).toEqual([game.id]);
+      page = await c.memory({ q: "拉麵", before: "2026-10-01T12:00:30Z" });
+      expect(page.items, "only records created before").toEqual([]);
+
+      expect((await sqlite.memories.get(ramen.id))?.access_count, "not touched").toBe(0);
+
+      // Without the memory module the store's full-text search answers.
+      h.sup.services.removeOwnedBy("memory");
+      page = await c.memory({ q: "他愛吃什麼" });
+      expect(page.items).toEqual([]);
+    } finally {
+      await sqlite.close();
+    }
   });
 
   it("memory_list_search_edit_delete", async () => {

@@ -1,9 +1,10 @@
 // `/api/people*`: people the active profile knows and how she feels about them. Reads come from
 // the stores (with the social engine's cached numbers when it runs); every change goes through
-// the social engine.
+// the social engine. Everyone in the people store is listed; people she has no relationship with
+// yet have `relationship: null` and the label of a neutral relationship.
 
 import { MemoryEngineKey } from "@miyoria/memory";
-import { attitude, BLOCKED_TAG, type Social, SocialKey } from "@miyoria/social";
+import { attitude, BLOCKED_TAG, label, type Social, SocialKey } from "@miyoria/social";
 import {
   type IdentityStore,
   IdentityStoreKey,
@@ -50,6 +51,21 @@ function parsePerson(id: string): PersonId {
 function ms(ts: string | null): number {
   return ts === null ? Number.NEGATIVE_INFINITY : Date.parse(ts);
 }
+
+/** The label of someone she has no relationship with yet (all levels at zero: 陌生人). */
+const NEUTRAL_LABEL = label({
+  profile: "",
+  person: "",
+  affinity: 0,
+  trust: 0,
+  familiarity: 0,
+  tags: [],
+  notes: "",
+  call_name: null,
+  interactions: 0,
+  last_interaction: null,
+  updated_at: toTimestamp(0),
+});
 
 /** The services people routes read from. */
 class PeopleCtx {
@@ -105,7 +121,29 @@ class PeopleCtx {
 
 function summarize(person: Person, relationship: Relationship | null): PersonSummary {
   const a = relationship ? attitude(relationship) : null;
-  return { person, relationship, label: a?.label ?? null, blocked: a?.blocked ?? false };
+  return { person, relationship, label: a?.label ?? NEUTRAL_LABEL, blocked: a?.blocked ?? false };
+}
+
+/** When one of the person's accounts was last seen. */
+function lastSeen(person: Person): number {
+  let last = Number.NEGATIVE_INFINITY;
+  for (const a of person.accounts) last = Math.max(last, Date.parse(a.last_seen));
+  return last;
+}
+
+/**
+ * Most recent interaction first, then the most recently changed relationship, then whoever was
+ * seen last (people without a relationship sort after those with one of the same recency).
+ */
+function byRecency(a: PersonSummary, b: PersonSummary): number {
+  const ra = a.relationship;
+  const rb = b.relationship;
+  return (
+    ms(rb?.last_interaction ?? null) - ms(ra?.last_interaction ?? null) ||
+    ms(rb?.updated_at ?? null) - ms(ra?.updated_at ?? null) ||
+    lastSeen(b.person) - lastSeen(a.person) ||
+    0
+  );
 }
 
 function matches(summary: PersonSummary, needle: string): boolean {
@@ -124,7 +162,10 @@ const ListQuerySchema = z.object({
   cursor: z.string().optional(),
 });
 
-/** `GET /api/people?q=&limit=&cursor=`: most recent interaction first. */
+/**
+ * `GET /api/people?q=&limit=&cursor=`: every known person, most recent interaction first. Without
+ * a people store only people with a relationship are known.
+ */
 async function list(state: ApiState, c: ApiContext): Promise<Response> {
   const q = readQuery(c, ListQuerySchema);
   const ctx = new PeopleCtx(state);
@@ -137,21 +178,27 @@ async function list(state: ApiState, c: ApiContext): Promise<Response> {
   const limit = Math.min(Math.max(q.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
   const needle = q.q?.trim().toLowerCase() || null;
 
-  let rels = await ctx.relationships.list(ctx.profile);
-  if (ctx.social) {
-    const social = ctx.social;
-    rels = rels.map((r) => social.relationship(r.person) ?? r);
+  const social = ctx.social;
+  const rels = new Map<PersonId, Relationship>();
+  for (const r of await ctx.relationships.list(ctx.profile)) {
+    rels.set(r.person, social?.relationship(r.person) ?? r);
   }
-  rels.sort(
-    (a, b) =>
-      ms(b.last_interaction) - ms(a.last_interaction) ||
-      Date.parse(b.updated_at) - Date.parse(a.updated_at),
-  );
-  const items: PersonSummary[] = [];
-  for (const r of rels) {
-    const summary = await ctx.summary(r.person, r);
-    if (summary && (needle === null || matches(summary, needle))) items.push(summary);
+  const all: PersonSummary[] = [];
+  if (ctx.people) {
+    for (const person of await ctx.people.all()) {
+      // The engine may hold a relationship it has not written yet.
+      const relationship = rels.get(person.id) ?? social?.relationship(person.id) ?? null;
+      all.push(summarize(person, relationship));
+    }
+  } else {
+    for (const r of rels.values()) {
+      const summary = await ctx.summary(r.person, r);
+      if (summary) all.push(summary);
+    }
   }
+  const items = all
+    .filter((summary) => needle === null || matches(summary, needle))
+    .sort(byRecency);
   const page: Page<PersonSummary> = {
     items: items.slice(offset, offset + limit),
     next_cursor: items.length > offset + limit ? String(offset + limit) : null,

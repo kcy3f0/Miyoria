@@ -112,12 +112,12 @@ export type { ModelUsage };
 
 // ---- people -----------------------------------------------------------------------------
 
-/** `GET /api/people` items. */
+/** `GET /api/people` items: every known person, with or without a relationship. */
 export interface PersonSummary {
   person: Person;
   /** `null` before the first interaction. */
   relationship: Relationship | null;
-  /** Short attitude label, e.g. `"朋友"`. */
+  /** Short attitude label, e.g. `"朋友"`; `"陌生人"` (a neutral relationship's) without one. */
   label: string | null;
   blocked: boolean;
 }
@@ -171,14 +171,23 @@ export interface MemoryRecordView {
 /** `GET /api/memory` items. The scores are present only for a search (`q`). */
 export interface MemoryItem {
   record: MemoryRecordView;
+  /** The backend's full-text relevance, 0 when only the vector matched. */
   text_score?: number;
   /** `null` for a search that compared no vectors. */
   vector_score?: number | null;
+  /**
+   * Hybrid recall score (vector, text, recency, importance), present when the search ran through
+   * the memory engine; results are ordered by it.
+   */
+  score?: number;
 }
 
 /** Query of `GET /api/memory`. */
 export interface MemoryListQuery {
-  /** Search text; omitted lists newest first. */
+  /**
+   * Search text: hybrid recall (vector, text, recency, importance) through the memory module
+   * when it runs, full text otherwise. Omitted lists newest first.
+   */
   q?: string;
   kind?: MemoryKind;
   subject?: PersonId;

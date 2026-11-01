@@ -153,12 +153,25 @@ export class MemoryRecords implements MemoryRecordStore {
   async deleteBySubject(): Promise<number> {
     return 0;
   }
+  async mergePerson(keep: PersonId, absorb: PersonId): Promise<number> {
+    if (keep === absorb) return 0;
+    let n = 0;
+    for (const r of this.#rows.values()) {
+      const scoped = r.scope.type === "person" && r.scope.person === absorb;
+      if (!r.subjects.includes(absorb) && !scoped) continue;
+      r.subjects = [...new Set(r.subjects.map((s) => (s === absorb ? keep : s)))];
+      if (scoped) r.scope = { type: "person", person: keep };
+      n += 1;
+    }
+    return n;
+  }
 }
 
 /** People, identities and relationships, sharing one account table like the SQL backend. */
 export class MemoryPeople implements PeopleStore, IdentityStore {
   readonly #accounts: Array<Account & { person: PersonId }> = [];
   readonly #names = new Map<PersonId, string>();
+  readonly #created = new Map<PersonId, Timestamp>();
 
   async upsertAccount(account: AccountRef, displayName: string): Promise<PersonId> {
     const now = toTimestamp(Date.now());
@@ -170,6 +183,7 @@ export class MemoryPeople implements PeopleStore, IdentityStore {
     }
     const person = newId();
     this.#names.set(person, displayName);
+    this.#created.set(person, now);
     this.#accounts.push({
       account: clone(account),
       display_name: displayName,
@@ -190,12 +204,26 @@ export class MemoryPeople implements PeopleStore, IdentityStore {
       accounts,
     };
   }
+  async all(): Promise<Person[]> {
+    const out: Person[] = [];
+    for (const [id, name] of this.#names) {
+      const accounts = await this.accountsOf(id);
+      out.push({
+        id,
+        display_name: name,
+        created_at: this.#created.get(id) ?? toTimestamp(0),
+        accounts,
+      });
+    }
+    return out;
+  }
   async linkAccount(account: AccountRef, person: PersonId): Promise<void> {
     const found = this.#accounts.find((a) => sameAccount(a.account, account));
     if (found) found.person = person;
   }
   async mergePeople(keep: PersonId, absorb: PersonId): Promise<void> {
     for (const a of this.#accounts) if (a.person === absorb) a.person = keep;
+    this.#names.delete(absorb);
   }
   async accountsOf(person: PersonId): Promise<Account[]> {
     return this.#accounts.filter((a) => a.person === person).map(({ person: _, ...a }) => clone(a));

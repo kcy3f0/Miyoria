@@ -1,6 +1,8 @@
 // `/api/memory*`: browse, search, edit and delete her long-term memories (active profile).
+// Searches use the memory engine's hybrid recall when the memory module runs, else the store's
+// full-text search; either way over every scope of the profile (an admin view).
 
-import { MemoryEngineKey, tokenString } from "@miyoria/memory";
+import { type MemoryEngine, MemoryEngineKey, tokenString } from "@miyoria/memory";
 import {
   type MemoryFilter,
   type MemoryHit,
@@ -24,7 +26,8 @@ const MAX_LIMIT = 500;
 const SCAN_LIMIT = 100_000;
 const MAX_CONTENT_CHARS = 4000;
 
-const MemoryKindSchema = z.enum(["episode", "fact", "self_note", "followup"]);
+const ALL_KINDS: MemoryKind[] = ["episode", "fact", "self_note", "followup"];
+const MemoryKindSchema = z.enum(ALL_KINDS);
 
 /** A record without its search tokens and embedding vector. */
 export function recordView(r: MemoryRecord): MemoryRecordView {
@@ -49,12 +52,19 @@ export function recordView(r: MemoryRecord): MemoryRecordView {
   };
 }
 
+interface Records {
+  store: MemoryRecordStore;
+  profile: ProfileId;
+  /** The memory module's engine, when it runs (hybrid search). */
+  engine: MemoryEngine | null;
+}
+
 /** The memory module's store and profile, else the app's store and the active profile. */
-function records(state: ApiState): { store: MemoryRecordStore; profile: ProfileId } {
+function records(state: ApiState): Records {
   const engine = state.optional(MemoryEngineKey);
-  if (engine) return { store: engine.records, profile: engine.profile };
+  if (engine) return { store: engine.records, profile: engine.profile, engine };
   const store = state.service(MemoryRecordStoreKey, "memory store");
-  return { store, profile: state.profile() };
+  return { store, profile: state.profile(), engine: null };
 }
 
 const ListQuerySchema = z.object({
@@ -80,10 +90,11 @@ function sameScope(a: MemoryScope, b: MemoryScope): boolean {
 
 async function list(state: ApiState, c: ApiContext): Promise<Response> {
   const q = readQuery(c, ListQuerySchema);
-  const { store, profile } = records(state);
+  const recs = records(state);
+  const { store, profile } = recs;
   const limit = Math.min(Math.max(q.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
   const text = q.q?.trim() ?? "";
-  if (text !== "") return json(await search(state, store, profile, q, text, limit));
+  if (text !== "") return json(await search(state, recs, q, text, limit));
 
   const filter: MemoryFilter = {
     subject: q.subject ?? null,
@@ -104,17 +115,8 @@ async function list(state: ApiState, c: ApiContext): Promise<Response> {
   return json(page);
 }
 
-/** Full-text search over every scope of the profile. Superseded records are never returned. */
-async function search(
-  state: ApiState,
-  store: MemoryRecordStore,
-  profile: ProfileId,
-  q: ListQuery,
-  text: string,
-  limit: number,
-): Promise<Page<MemoryItem>> {
-  const tokens = state.tokenize(text);
-  if (tokens.length === 0) return { items: [], next_cursor: null };
+/** Every scope the profile has records in: an admin search may look everywhere. */
+async function profileScopes(store: MemoryRecordStore, profile: ProfileId): Promise<MemoryScope[]> {
   const all = await store.list(profile, {
     subject: null,
     scope: null,
@@ -127,34 +129,75 @@ async function search(
   for (const r of all) {
     if (!scopes.some((s) => sameScope(s, r.scope))) scopes.push(r.scope);
   }
-  if (scopes.length === 0) return { items: [], next_cursor: null };
-  const kinds: MemoryKind[] | null = q.kind ? [q.kind] : null;
-  const hits = await store.search({
+  return scopes;
+}
+
+/** Search over every scope of the profile. Superseded records are never returned. */
+async function search(
+  state: ApiState,
+  recs: Records,
+  q: ListQuery,
+  text: string,
+  limit: number,
+): Promise<Page<MemoryItem>> {
+  const { store, profile, engine } = recs;
+  const before = q.before !== undefined ? Date.parse(q.before) : null;
+  const keep = (r: MemoryRecord) =>
+    (q.subject === undefined || r.subjects.includes(q.subject)) &&
+    (before === null || Date.parse(r.created_at) < before);
+  let items: MemoryItem[];
+  if (engine) {
+    const scopes = await profileScopes(store, profile);
+    const kinds = q.kind ? [q.kind] : ALL_KINDS;
+    const found = await engine.search(scopes, text, kinds, MAX_LIMIT, toTimestamp(state.now()));
+    items = found
+      .filter((h) => keep(h.record))
+      .slice(0, limit)
+      .map((h) => ({
+        record: recordView(h.record),
+        text_score: h.text_score,
+        vector_score: h.vector_score,
+        score: h.score,
+      }));
+  } else {
+    const hits = await textSearch(state, store, profile, q, text);
+    const score = (h: MemoryHit) => Math.max(h.text_score, h.vector_score ?? 0);
+    items = hits
+      .filter((h) => keep(h.record))
+      .sort(
+        (a, b) =>
+          score(b) - score(a) || Date.parse(b.record.created_at) - Date.parse(a.record.created_at),
+      )
+      .slice(0, limit)
+      .map((h) => ({
+        record: recordView(h.record),
+        text_score: h.text_score,
+        vector_score: h.vector_score,
+      }));
+  }
+  return { items, next_cursor: null };
+}
+
+/** The store's full-text search (no memory module). */
+async function textSearch(
+  state: ApiState,
+  store: MemoryRecordStore,
+  profile: ProfileId,
+  q: ListQuery,
+  text: string,
+): Promise<MemoryHit[]> {
+  const tokens = state.tokenize(text);
+  if (tokens.length === 0) return [];
+  const scopes = await profileScopes(store, profile);
+  if (scopes.length === 0) return [];
+  return store.search({
     profile,
     scopes,
-    kinds,
+    kinds: q.kind ? [q.kind] : null,
     tokens,
     embedding: null,
     limit: MAX_LIMIT,
   });
-  const before = q.before !== undefined ? Date.parse(q.before) : null;
-  const score = (h: MemoryHit) => Math.max(h.text_score, h.vector_score ?? 0);
-  const kept = hits
-    .filter((h) => q.subject === undefined || h.record.subjects.includes(q.subject))
-    .filter((h) => before === null || Date.parse(h.record.created_at) < before)
-    .sort(
-      (a, b) =>
-        score(b) - score(a) || Date.parse(b.record.created_at) - Date.parse(a.record.created_at),
-    )
-    .slice(0, limit);
-  return {
-    items: kept.map((h) => ({
-      record: recordView(h.record),
-      text_score: h.text_score,
-      vector_score: h.vector_score,
-    })),
-    next_cursor: null,
-  };
 }
 
 function unknownMemory(id: string): ApiError {

@@ -237,8 +237,8 @@ export class ApiClient {
   // ---- people ---------------------------------------------------------------------------
 
   /**
-   * People with a relationship, most recent interaction first. `q` filters by name or account
-   * id; `cursor` is a previous `next_cursor`.
+   * Every known person (with or without a relationship), most recent interaction first. `q`
+   * filters by name or account id; `cursor` is a previous `next_cursor`.
    */
   people(
     query: { q?: string; limit?: number; cursor?: string } = {},
@@ -269,7 +269,10 @@ export class ApiClient {
 
   // ---- memory ---------------------------------------------------------------------------
 
-  /** Lists (newest first) or, with `q`, searches her memories. */
+  /**
+   * Lists (newest first) or, with `q`, searches her memories (hybrid recall when the memory
+   * module runs, full text otherwise).
+   */
   memory(query: MemoryListQuery = {}, o?: CallOptions): Promise<Page<MemoryItem>> {
     return this.#json("GET", ["memory"], {
       ...o,
