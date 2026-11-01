@@ -17,83 +17,42 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Legacy Rust implementation (behavioural reference until the TS port reaches parity).
   rust:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: legacy/rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: legacy/rust
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
-  # TypeScript packages. Each one has its own lockfile and is installed on its own
-  # (--ignore-workspace), like on a developer machine. A package that does not exist yet is skipped.
+  # TypeScript workspace (pnpm-workspace.yaml): one install from the root lockfile, then lint and
+  # every package's typecheck / test (against workspace sources, no build needed) and build.
   node:
-    name: node (${{ matrix.dir }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        dir: [apps/voice-node, apps/panel, apps/overlay, packages/sdk]
-    defaults:
-      run:
-        working-directory: ${{ matrix.dir }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Detect package
-        id: detect
-        working-directory: .
-        run: |
-          if [ -n "${{ hashFiles(format('{0}/package.json', matrix.dir)) }}" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::${{ matrix.dir }} has no package.json yet, skipping"
-          fi
-
       # Version comes from "packageManager" in the root package.json (pnpm@9.x).
       - uses: pnpm/action-setup@v4
-        if: steps.detect.outputs.present == 'true'
       - uses: actions/setup-node@v4
-        if: steps.detect.outputs.present == 'true'
         with:
           node-version: 24
-
-      - name: Locate pnpm store
-        id: pnpm-store
-        if: steps.detect.outputs.present == 'true'
-        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        if: steps.detect.outputs.present == 'true'
-        with:
-          path: ${{ steps.pnpm-store.outputs.path }}
-          key: pnpm-${{ runner.os }}-${{ matrix.dir }}-${{ hashFiles(format('{0}/pnpm-lock.yaml', matrix.dir)) }}
-          restore-keys: |
-            pnpm-${{ runner.os }}-${{ matrix.dir }}-
-
-      - name: Install
-        if: steps.detect.outputs.present == 'true'
-        run: |
-          if [ -f pnpm-lock.yaml ]; then
-            pnpm install --ignore-workspace --frozen-lockfile
-          else
-            pnpm install --ignore-workspace
-          fi
-      # --if-present: a package only needs the scripts it actually defines.
-      - name: Typecheck
-        if: steps.detect.outputs.present == 'true'
-        run: pnpm run --if-present typecheck
-      - name: Test
-        if: steps.detect.outputs.present == 'true'
-        run: pnpm run --if-present test
-      - name: Build
-        if: steps.detect.outputs.present == 'true'
-        run: pnpm run --if-present build
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm -r typecheck
+      - run: pnpm -r test
+      - run: pnpm -r build
 
   # Light-weight worker tests: they run against the in-process fake worker, no GPU or model needed.
   workers-python:

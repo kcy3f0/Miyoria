@@ -27,3 +27,7 @@ __pycache__/
 
 # 本機設定(用 `miyoria init` / `miyoria config` 產生)
 /miyoria.toml
+
+# TypeScript build state
+*.tsbuildinfo
+coverage/

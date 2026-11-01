@@ -14,13 +14,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@miyoria/sdk": "link:../../../packages/sdk",
+    "@miyoria/sdk": "workspace:*",
     "ws": "^8.19.0"
   },
   "devDependencies": {
-    "@types/node": "^24",
+    "@types/node": "^24.19.2",
     "@types/ws": "^8.18.1",
-    "typescript": "^5.7.2",
-    "vitest": "^4.0.18"
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.12"
   }
 }

@@ -1,0 +1,454 @@
+// OpenAI-compatible Chat Completions provider (OpenAI, DeepSeek, OpenCode, OpenRouter, Ollama,
+// vLLM, llama.cpp, LM Studio, ...).
+
+import { STATUS_CODES } from "node:http";
+import { inspect } from "node:util";
+import { errorMessage, getLogger, isAbortError, sleep } from "@miyoria/kernel";
+import { z } from "zod";
+import type { ProviderConfig, ProviderFactory } from "../module.js";
+import {
+  type ChatProvider,
+  type ChatRequest,
+  type ChatStream,
+  LlmError,
+  ProviderHttpError,
+  type StreamEvent,
+  type Usage,
+} from "../types.js";
+import { MIYORIA_VERSION } from "../version.js";
+import { SseParser } from "./sse.js";
+import { ChunkSchema, requestBody, wireUsage } from "./wire.js";
+
+const log = getLogger("llm.openai");
+
+export const OPENAI_BASE_URL = "https://api.openai.com/v1";
+export const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+export const OPENCODE_BASE_URL = "https://opencode.ai/inference/go/v1";
+/** Header OpenCode reads the conversation id from. */
+export const OPENCODE_SESSION_HEADER = "x-opencode-session";
+/** Identifies Miyoria (not the HTTP library) to every provider. */
+export const DEFAULT_USER_AGENT = `miyoria/${MIYORIA_VERSION}`;
+const MAX_BACKOFF_MS = 30_000;
+const MAX_RETRY_AFTER_MS = 60_000;
+
+const REDACTED = "<redacted>";
+
+/** Settings for `OpenAiProvider`. Inspecting or JSON-serializing it redacts secrets. */
+export class OpenAiConfig {
+  /** API root; `/chat/completions` is appended as-is (no `/v1` is added). */
+  baseUrl: string;
+  /** Sent as `Authorization: Bearer ...` when set. */
+  apiKey: string | null = null;
+  /** Extra request headers. */
+  headers: Record<string, string> = {};
+  /** `User-Agent` of every request. A `User-Agent` entry in `headers` takes precedence. */
+  userAgent: string = DEFAULT_USER_AGENT;
+  /**
+   * Name of the header that carries `ChatRequest.session` (e.g. `x-opencode-session`). Nothing
+   * is sent when `null` or when the request has no session.
+   */
+  sessionHeader: string | null = null;
+  /** Max idle time while waiting for response bytes (headers or stream), in ms. */
+  timeoutMs = 120_000;
+  /** Retries for 429 / 5xx / network errors before the stream starts. */
+  maxRetries = 2;
+  /** First retry delay; doubles on every attempt unless `Retry-After` is sent. */
+  retryBackoffMs = 500;
+
+  constructor(baseUrl: string) {
+    this.baseUrl = baseUrl;
+  }
+
+  /**
+   * Reads `base_url`, `api_key` and the extras `timeout_secs`, `max_retries`, `headers`,
+   * `user_agent` and `session_header`.
+   *
+   * `openai`, `deepseek` and `opencode` default `base_url` to the official endpoints.
+   * `opencode` also requires an API key and defaults `session_header` to
+   * `x-opencode-session` (set it to `""` to turn the header off).
+   */
+  static fromProviderConfig(config: ProviderConfig): OpenAiConfig {
+    const parsed = ExtraSchema.safeParse(config.extra);
+    if (!parsed.success) {
+      throw new LlmError(`invalid provider settings: ${z.prettifyError(parsed.error)}`);
+    }
+    const extra = parsed.data;
+    const url = config.base_url?.trim();
+    let baseUrl: string;
+    if (url) baseUrl = url;
+    else if (config.kind === "openai") baseUrl = OPENAI_BASE_URL;
+    else if (config.kind === "deepseek") baseUrl = DEEPSEEK_BASE_URL;
+    else if (config.kind === "opencode") baseUrl = OPENCODE_BASE_URL;
+    else throw new LlmError(`\`base_url\` is required for kind \`${config.kind}\``);
+
+    const out = new OpenAiConfig(baseUrl);
+    out.apiKey = config.api_key?.trim() ? config.api_key : null;
+    out.headers = { ...(extra.headers ?? {}) };
+    if (config.kind === "opencode" && out.apiKey === null) {
+      throw new LlmError("`api_key` is required for kind `opencode`");
+    }
+    const ua = extra.user_agent?.trim();
+    if (ua) out.userAgent = ua;
+    if (extra.session_header != null) {
+      out.sessionHeader = extra.session_header.trim() || null;
+    } else if (config.kind === "opencode") {
+      out.sessionHeader = OPENCODE_SESSION_HEADER;
+    }
+    if (extra.timeout_secs != null) out.timeoutMs = extra.timeout_secs * 1000;
+    if (extra.max_retries != null) out.maxRetries = extra.max_retries;
+    return out;
+  }
+
+  /** Same fields with the API key and header values redacted. */
+  toJSON(): Record<string, unknown> {
+    return {
+      baseUrl: this.baseUrl,
+      apiKey: this.apiKey === null ? null : REDACTED,
+      headers: Object.keys(this.headers),
+      userAgent: this.userAgent,
+      sessionHeader: this.sessionHeader,
+      timeoutMs: this.timeoutMs,
+      maxRetries: this.maxRetries,
+      retryBackoffMs: this.retryBackoffMs,
+    };
+  }
+
+  [inspect.custom](): string {
+    return `OpenAiConfig ${inspect(this.toJSON())}`;
+  }
+}
+
+const ExtraSchema = z.object({
+  timeout_secs: z.number().int().nonnegative().nullable().optional(),
+  max_retries: z.number().int().nonnegative().nullable().optional(),
+  headers: z.record(z.string(), z.string()).nullable().optional(),
+  user_agent: z.string().nullable().optional(),
+  session_header: z.string().nullable().optional(),
+});
+
+const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const HEADER_VALUE = /^[\t\x20-\x7e]*$/;
+
+export interface OpenAiProviderOptions {
+  /** `fetch` implementation (tests). Default: the global `fetch`. */
+  fetch?: typeof fetch;
+}
+
+/** Streaming Chat Completions client for OpenAI-compatible APIs. */
+export class OpenAiProvider implements ChatProvider {
+  readonly name: string;
+  /** Full request URL (`{base_url}/chat/completions`). */
+  readonly url: string;
+  readonly #headers: Readonly<Record<string, string>>;
+  readonly #sessionHeader: string | null;
+  readonly #timeoutMs: number;
+  readonly #maxRetries: number;
+  readonly #retryBackoffMs: number;
+  readonly #fetch: typeof fetch;
+
+  /** Throws `LlmError` for invalid header names / values, user agent or API key. */
+  constructor(name: string, config: OpenAiConfig, options: OpenAiProviderOptions = {}) {
+    this.name = name;
+    const headers: Record<string, string> = {};
+    if (!HEADER_VALUE.test(config.userAgent)) throw new LlmError("invalid `user_agent`");
+    headers["user-agent"] = config.userAgent;
+    if (config.sessionHeader !== null && !TOKEN.test(config.sessionHeader)) {
+      throw new LlmError(`invalid \`session_header\` name \`${config.sessionHeader}\``);
+    }
+    if (config.apiKey !== null) {
+      const value = `Bearer ${config.apiKey}`;
+      if (!HEADER_VALUE.test(value)) throw new LlmError("API key contains invalid characters");
+      headers.authorization = value;
+    }
+    for (const [k, v] of Object.entries(config.headers)) {
+      if (!TOKEN.test(k)) throw new LlmError(`invalid header name \`${k}\``);
+      if (!HEADER_VALUE.test(v)) throw new LlmError(`invalid value for header \`${k}\``);
+      headers[k.toLowerCase()] = v;
+    }
+    this.#headers = headers;
+    this.#sessionHeader = config.sessionHeader?.toLowerCase() ?? null;
+    this.#timeoutMs = config.timeoutMs;
+    this.#maxRetries = config.maxRetries;
+    this.#retryBackoffMs = config.retryBackoffMs;
+    this.#fetch = options.fetch ?? fetch;
+    this.url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+  }
+
+  toString(): string {
+    return `OpenAiProvider(${this.name}, ${this.url})`;
+  }
+
+  [inspect.custom](): string {
+    return `OpenAiProvider ${inspect({
+      name: this.name,
+      url: this.url,
+      sessionHeader: this.#sessionHeader,
+      maxRetries: this.#maxRetries,
+    })}`;
+  }
+
+  async stream(request: ChatRequest, signal?: AbortSignal): Promise<ChatStream> {
+    const body = JSON.stringify(requestBody(request));
+    log.debug(
+      { provider: this.name, model: request.model, url: this.url },
+      "chat completion request",
+    );
+    const headers: Record<string, string> = {
+      ...this.#headers,
+      "content-type": "application/json",
+      accept: "text/event-stream",
+    };
+    const session = this.#sessionValue(request);
+    if (this.#sessionHeader !== null && session !== null) headers[this.#sessionHeader] = session;
+    const { response, idle } = await this.#send(body, headers, signal);
+    return events(this.name, response, idle, signal);
+  }
+
+  /** The session header value, if one is configured and the request has a header-safe id. */
+  #sessionValue(request: ChatRequest): string | null {
+    if (this.#sessionHeader === null || request.session == null) return null;
+    if (!HEADER_VALUE.test(request.session)) {
+      log.warn({ provider: this.name }, "session id is not a valid header value, not sent");
+      return null;
+    }
+    return request.session;
+  }
+
+  #backoff(attempt: number): number {
+    return Math.min(this.#retryBackoffMs * 2 ** attempt, MAX_BACKOFF_MS);
+  }
+
+  /**
+   * Sends the request, retrying transient failures. Resolves once a 2xx response arrives,
+   * i.e. before any of the stream is consumed.
+   */
+  async #send(
+    body: string,
+    headers: Record<string, string>,
+    signal: AbortSignal | undefined,
+  ): Promise<{ response: Response; idle: IdleTimer }> {
+    for (let attempt = 0; ; attempt++) {
+      const idle = new IdleTimer(this.#timeoutMs);
+      const fetchSignal = signal ? AbortSignal.any([signal, idle.signal]) : idle.signal;
+      let response: Response;
+      try {
+        response = await this.#fetch(this.url, {
+          method: "POST",
+          headers,
+          body,
+          signal: fetchSignal,
+        });
+      } catch (error) {
+        idle.clear();
+        if (signal?.aborted) throw signal.reason;
+        if (attempt >= this.#maxRetries) {
+          throw new LlmError(`${this.name}: request failed: ${describeFetchError(error)}`, {
+            cause: error,
+          });
+        }
+        const delay = this.#backoff(attempt);
+        log.warn(
+          { provider: this.name, err: describeFetchError(error), delay_ms: delay },
+          "LLM request failed, retrying",
+        );
+        await sleep(delay, signal);
+        continue;
+      }
+      idle.clear();
+      if (response.ok) return { response, idle };
+      if (attempt < this.#maxRetries && isRetryable(response.status)) {
+        const delay = retryAfterMs(response) ?? this.#backoff(attempt);
+        await response.body?.cancel().catch(() => undefined);
+        log.warn(
+          { provider: this.name, status: response.status, delay_ms: delay },
+          "LLM request failed, retrying",
+        );
+        await sleep(delay, signal);
+        continue;
+      }
+      throw await httpError(this.name, response);
+    }
+  }
+}
+
+/** Aborts its signal after `ms` without `reset()`. */
+class IdleTimer {
+  readonly #controller = new AbortController();
+  readonly #ms: number;
+  #timer: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(ms: number) {
+    this.#ms = ms;
+    this.reset();
+  }
+
+  get signal(): AbortSignal {
+    return this.#controller.signal;
+  }
+
+  reset(): void {
+    clearTimeout(this.#timer);
+    this.#timer = setTimeout(() => {
+      this.#controller.abort(new DOMException(`no data for ${this.#ms} ms`, "TimeoutError"));
+    }, this.#ms);
+  }
+
+  clear(): void {
+    clearTimeout(this.#timer);
+  }
+}
+
+function isRetryable(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+function retryAfterMs(response: Response): number | null {
+  const raw = response.headers.get("retry-after")?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return null;
+  return Math.min(Number(raw) * 1000, MAX_RETRY_AFTER_MS);
+}
+
+/** Like Rust's `StatusCode` display: `"401 Unauthorized"`. */
+function statusText(status: number): string {
+  return `${status} ${STATUS_CODES[status] ?? "<unknown status code>"}`;
+}
+
+async function httpError(provider: string, response: Response): Promise<ProviderHttpError> {
+  const body = await response.text().catch(() => "");
+  return new ProviderHttpError(
+    `${provider}: HTTP ${statusText(response.status)}: ${snippet(body)}`,
+    response.status,
+  );
+}
+
+function describeFetchError(error: unknown): string {
+  if (isAbortError(error)) return errorMessage(error);
+  const cause = error instanceof Error ? error.cause : undefined;
+  return cause instanceof Error ? `${errorMessage(error)} (${cause.message})` : errorMessage(error);
+}
+
+/** At most 500 characters, trimmed. */
+function snippet(s: string): string {
+  const chars = [...s.trim()];
+  return chars.length > 500 ? `${chars.slice(0, 500).join("")}...` : chars.join("");
+}
+
+/** Turns the SSE byte stream into `StreamEvent`s, ending with exactly one `done` (or an error). */
+async function* events(
+  provider: string,
+  response: Response,
+  idle: IdleTimer,
+  signal: AbortSignal | undefined,
+): ChatStream {
+  const state = { finishReason: null as string | null, usage: null as Usage | null };
+  const parser = new SseParser();
+  const body = response.body;
+  if (!body) throw new LlmError(`${provider}: response has no body`);
+  const reader = body.getReader();
+  try {
+    for (;;) {
+      let chunk: Awaited<ReturnType<typeof reader.read>>;
+      // The idle timeout only runs while waiting for bytes, not while the consumer is busy.
+      idle.reset();
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        if (signal?.aborted) throw signal.reason;
+        throw new LlmError(`${provider}: stream interrupted: ${errorMessage(error)}`, {
+          cause: error,
+        });
+      } finally {
+        idle.clear();
+      }
+      const payloads = chunk.done ? parser.finish() : parser.push(chunk.value);
+      for (const payload of payloads) {
+        const result = handle(provider, payload, state);
+        if (result === "done") {
+          yield done(state);
+          return;
+        }
+        yield* result;
+      }
+      if (chunk.done) {
+        // Some servers omit `[DONE]`; accept a stream that reported how it finished.
+        if (state.finishReason !== null || state.usage !== null) {
+          yield done(state);
+          return;
+        }
+        throw new LlmError(`${provider}: stream ended unexpectedly`);
+      }
+    }
+  } finally {
+    idle.clear();
+    // Also after `[DONE]`: nothing after it matters.
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
+function done(state: { finishReason: string | null; usage: Usage | null }): StreamEvent {
+  return { type: "done", finish_reason: state.finishReason, usage: state.usage };
+}
+
+/** Events of one SSE payload, `"done"` for `[DONE]`; throws for invalid or error chunks. */
+function handle(
+  provider: string,
+  raw: string,
+  state: { finishReason: string | null; usage: Usage | null },
+): StreamEvent[] | "done" {
+  const payload = raw.trim();
+  if (payload === "") return [];
+  if (payload === "[DONE]") return "done";
+  let json: unknown;
+  try {
+    json = JSON.parse(payload);
+  } catch (error) {
+    throw new LlmError(
+      `${provider}: invalid stream chunk (${errorMessage(error)}): ${snippet(payload)}`,
+    );
+  }
+  const parsed = ChunkSchema.safeParse(json);
+  if (!parsed.success) {
+    throw new LlmError(
+      `${provider}: invalid stream chunk (${z.prettifyError(parsed.error)}): ${snippet(payload)}`,
+    );
+  }
+  const chunk = parsed.data;
+  if (chunk.error != null) {
+    throw new LlmError(`${provider}: error in stream: ${JSON.stringify(chunk.error)}`);
+  }
+  if (chunk.usage) state.usage = wireUsage(chunk.usage);
+  const out: StreamEvent[] = [];
+  for (const choice of chunk.choices ?? []) {
+    const delta = choice.delta;
+    if (delta) {
+      const reasoning = delta.reasoning_content ?? delta.reasoning;
+      if (reasoning) out.push({ type: "reasoning_delta", text: reasoning });
+      if (delta.content) out.push({ type: "text_delta", text: delta.content });
+      for (const call of delta.tool_calls ?? []) {
+        out.push({
+          type: "tool_call_delta",
+          index: call.index ?? 0,
+          id: call.id ?? null,
+          name: call.function?.name ?? null,
+          arguments: call.function?.arguments ?? "",
+        });
+      }
+    }
+    if (choice.finish_reason != null) state.finishReason = choice.finish_reason;
+  }
+  return out;
+}
+
+/** Handles the provider kinds `openai-compatible`, `openai`, `deepseek` and `opencode`. */
+export class OpenAiFactory implements ProviderFactory {
+  static readonly KINDS = ["openai-compatible", "openai", "deepseek", "opencode"] as const;
+  readonly kinds: readonly string[] = OpenAiFactory.KINDS;
+
+  build(name: string, config: ProviderConfig): ChatProvider {
+    try {
+      return new OpenAiProvider(name, OpenAiConfig.fromProviderConfig(config));
+    } catch (error) {
+      throw new LlmError(`provider \`${name}\`: ${errorMessage(error)}`, { cause: error });
+    }
+  }
+}

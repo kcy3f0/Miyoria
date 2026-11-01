@@ -1,6 +1,10 @@
-import "@testing-library/jest-dom/vitest";
+import * as matchers from "@testing-library/jest-dom/matchers";
 import { cleanup } from "@testing-library/react";
-import { afterEach } from "vitest";
+import { afterEach, expect } from "vitest";
+
+// Registered on this package's own Vitest: `@testing-library/jest-dom/vitest` would import
+// whichever `vitest` pnpm hoists in the workspace, which is not the one running these tests.
+expect.extend(matchers);
 
 // jsdom has <dialog> but not its modal methods.
 if (typeof HTMLDialogElement !== "undefined") {

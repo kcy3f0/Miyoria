@@ -1,5 +1,10 @@
+# One pnpm workspace for every TypeScript package. `spikes/` stays out (throwaway experiments
+# with their own lockfiles); `legacy/rust` is the behavioural reference, not a package.
 packages:
-  - "apps/*"
   - "packages/*"
+  - "apps/*"
   - "extensions/*"
-  - "spikes/*"
+  - "extensions/*/adapter"
+  - "extensions/examples/*"
+  - "!spikes/**"
+  - "!legacy/**"

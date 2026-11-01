@@ -1,23 +1,34 @@
 {
-  "name": "miyoria",
+  "name": "miyoria-monorepo",
   "private": true,
+  "type": "module",
   "packageManager": "pnpm@9.15.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:watch": "vitest",
     "lint": "biome check .",
-    "format": "biome format --write ."
+    "format": "biome format --write .",
+    "dev:core": "node -e \"console.error('apps/core is not ported yet; it will run as: tsx --conditions=@miyoria/source apps/core/src/main.ts'); process.exit(1)\""
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
-    "typescript": "^5.7.2"
+    "@biomejs/biome": "^2.6.4",
+    "@types/node": "^24.19.2",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.12"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "zeromq",
+      "@biomejs/biome",
       "@snazzah/davey",
-      "sharp"
+      "esbuild",
+      "sharp",
+      "zeromq"
     ]
   }
 }
