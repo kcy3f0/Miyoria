@@ -12,6 +12,7 @@ import {
   type ChatStream,
   LlmError,
   ProviderHttpError,
+  ProviderTimeoutError,
   type StreamEvent,
   type Usage,
 } from "../types.js";
@@ -28,6 +29,8 @@ export const OPENCODE_BASE_URL = "https://opencode.ai/inference/go/v1";
 export const OPENCODE_SESSION_HEADER = "x-opencode-session";
 /** Identifies Miyoria (not the HTTP library) to every provider. */
 export const DEFAULT_USER_AGENT = `miyoria/${MIYORIA_VERSION}`;
+/** Default of `connect_timeout_secs`. */
+export const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const MAX_BACKOFF_MS = 30_000;
 const MAX_RETRY_AFTER_MS = 60_000;
 
@@ -50,6 +53,13 @@ export class OpenAiConfig {
   sessionHeader: string | null = null;
   /** Max idle time while waiting for response bytes (headers or stream), in ms. */
   timeoutMs = 120_000;
+  /**
+   * Max time from sending a request to its response headers, in ms; `0` turns it off. Unlike
+   * the idle timeout it is not retried, so a provider that hangs falls back to the next model
+   * of the purpose quickly. Raise it for servers that only answer once the first token is
+   * ready (e.g. Ollama loading a model).
+   */
+  connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS;
   /** Retries for 429 / 5xx / network errors before the stream starts. */
   maxRetries = 2;
   /** First retry delay; doubles on every attempt unless `Retry-After` is sent. */
@@ -60,8 +70,8 @@ export class OpenAiConfig {
   }
 
   /**
-   * Reads `base_url`, `api_key` and the extras `timeout_secs`, `max_retries`, `headers`,
-   * `user_agent` and `session_header`.
+   * Reads `base_url`, `api_key` and the extras `timeout_secs`, `connect_timeout_secs`,
+   * `max_retries`, `headers`, `user_agent` and `session_header`.
    *
    * `openai`, `deepseek` and `opencode` default `base_url` to the official endpoints.
    * `opencode` also requires an API key and defaults `session_header` to
@@ -95,6 +105,9 @@ export class OpenAiConfig {
       out.sessionHeader = OPENCODE_SESSION_HEADER;
     }
     if (extra.timeout_secs != null) out.timeoutMs = extra.timeout_secs * 1000;
+    if (extra.connect_timeout_secs != null) {
+      out.connectTimeoutMs = extra.connect_timeout_secs * 1000;
+    }
     if (extra.max_retries != null) out.maxRetries = extra.max_retries;
     return out;
   }
@@ -108,6 +121,7 @@ export class OpenAiConfig {
       userAgent: this.userAgent,
       sessionHeader: this.sessionHeader,
       timeoutMs: this.timeoutMs,
+      connectTimeoutMs: this.connectTimeoutMs,
       maxRetries: this.maxRetries,
       retryBackoffMs: this.retryBackoffMs,
     };
@@ -120,6 +134,7 @@ export class OpenAiConfig {
 
 const ExtraSchema = z.object({
   timeout_secs: z.number().int().nonnegative().nullable().optional(),
+  connect_timeout_secs: z.number().nonnegative().nullable().optional(),
   max_retries: z.number().int().nonnegative().nullable().optional(),
   headers: z.record(z.string(), z.string()).nullable().optional(),
   user_agent: z.string().nullable().optional(),
@@ -142,6 +157,7 @@ export class OpenAiProvider implements ChatProvider {
   readonly #headers: Readonly<Record<string, string>>;
   readonly #sessionHeader: string | null;
   readonly #timeoutMs: number;
+  readonly #connectTimeoutMs: number;
   readonly #maxRetries: number;
   readonly #retryBackoffMs: number;
   readonly #fetch: typeof fetch;
@@ -168,6 +184,7 @@ export class OpenAiProvider implements ChatProvider {
     this.#headers = headers;
     this.#sessionHeader = config.sessionHeader?.toLowerCase() ?? null;
     this.#timeoutMs = config.timeoutMs;
+    this.#connectTimeoutMs = config.connectTimeoutMs;
     this.#maxRetries = config.maxRetries;
     this.#retryBackoffMs = config.retryBackoffMs;
     this.#fetch = options.fetch ?? fetch;
@@ -220,7 +237,8 @@ export class OpenAiProvider implements ChatProvider {
 
   /**
    * Sends the request, retrying transient failures. Resolves once a 2xx response arrives,
-   * i.e. before any of the stream is consumed.
+   * i.e. before any of the stream is consumed. A connect timeout is not retried: it rejects
+   * with `ProviderTimeoutError` so the router can try the next model.
    */
   async #send(
     body: string,
@@ -229,7 +247,14 @@ export class OpenAiProvider implements ChatProvider {
   ): Promise<{ response: Response; idle: IdleTimer }> {
     for (let attempt = 0; ; attempt++) {
       const idle = new IdleTimer(this.#timeoutMs);
-      const fetchSignal = signal ? AbortSignal.any([signal, idle.signal]) : idle.signal;
+      // Only runs until the headers arrive; the idle timer then guards the body alone.
+      const connectMs = this.#connectTimeoutMs;
+      const connect =
+        connectMs > 0 ? new IdleTimer(connectMs, `no response within ${connectMs} ms`) : null;
+      const signals = [idle.signal];
+      if (connect) signals.push(connect.signal);
+      if (signal) signals.push(signal);
+      const fetchSignal = AbortSignal.any(signals);
       let response: Response;
       try {
         response = await this.#fetch(this.url, {
@@ -240,7 +265,15 @@ export class OpenAiProvider implements ChatProvider {
         });
       } catch (error) {
         idle.clear();
+        connect?.clear();
         if (signal?.aborted) throw signal.reason;
+        if (connect?.signal.aborted) {
+          throw new ProviderTimeoutError(
+            `${this.name}: request failed: no response within ${connectMs} ms (connect timeout)`,
+            "connect",
+            { cause: error },
+          );
+        }
         if (attempt >= this.#maxRetries) {
           throw new LlmError(`${this.name}: request failed: ${describeFetchError(error)}`, {
             cause: error,
@@ -255,6 +288,7 @@ export class OpenAiProvider implements ChatProvider {
         continue;
       }
       idle.clear();
+      connect?.clear();
       if (response.ok) return { response, idle };
       if (attempt < this.#maxRetries && isRetryable(response.status)) {
         const delay = retryAfterMs(response) ?? this.#backoff(attempt);
@@ -271,14 +305,16 @@ export class OpenAiProvider implements ChatProvider {
   }
 }
 
-/** Aborts its signal after `ms` without `reset()`. */
+/** Aborts its signal (a `TimeoutError`) after `ms` without `reset()`. */
 class IdleTimer {
   readonly #controller = new AbortController();
   readonly #ms: number;
+  readonly #message: string;
   #timer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(ms: number) {
+  constructor(ms: number, message = `no data for ${ms} ms`) {
     this.#ms = ms;
+    this.#message = message;
     this.reset();
   }
 
@@ -289,7 +325,7 @@ class IdleTimer {
   reset(): void {
     clearTimeout(this.#timer);
     this.#timer = setTimeout(() => {
-      this.#controller.abort(new DOMException(`no data for ${this.#ms} ms`, "TimeoutError"));
+      this.#controller.abort(new DOMException(this.#message, "TimeoutError"));
     }, this.#ms);
   }
 

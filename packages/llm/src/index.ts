@@ -28,6 +28,13 @@ export {
   USAGE_KEY_PREFIX,
   USAGE_PROFILE,
 } from "./cost.js";
+export {
+  type ErrorStage,
+  errorKind,
+  FIRST_TOKEN_BUCKETS,
+  type LlmMetrics,
+  llmMetrics,
+} from "./metrics.js";
 export { MockProvider } from "./mock.js";
 export {
   type LlmConfig,
@@ -41,7 +48,7 @@ export {
   USAGE_FLUSH_INTERVAL_MS,
 } from "./module.js";
 export * from "./openai/index.js";
-export { LlmRouter, type LlmRouterOptions, type UsageRecord } from "./router.js";
+export { LlmRouter, type LlmRouterOptions, RoutedStream, type UsageRecord } from "./router.js";
 export { contextHash, contextSession, sessionId } from "./session.js";
 export {
   assistantMessage,
@@ -59,6 +66,7 @@ export {
   ModelRefSchema,
   modelRefString,
   ProviderHttpError,
+  ProviderTimeoutError,
   parseModelRef,
   type StreamEvent,
   systemMessage,

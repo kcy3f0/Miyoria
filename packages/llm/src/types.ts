@@ -186,6 +186,23 @@ export class ProviderHttpError extends LlmError {
 }
 
 /**
+ * The provider did not answer in time. `connect`: no response headers within the connect
+ * timeout (never retried, so the router falls back right away); `idle`: no bytes for the idle
+ * timeout.
+ */
+export class ProviderTimeoutError extends LlmError {
+  override name = "ProviderTimeoutError";
+
+  constructor(
+    message: string,
+    readonly phase: "connect" | "idle",
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+  }
+}
+
+/**
  * `provider:model`, e.g. `deepseek:deepseek-chat`. The model part may itself contain `:` (the
  * split happens at the first one).
  */

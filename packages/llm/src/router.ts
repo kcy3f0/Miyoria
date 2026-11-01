@@ -1,5 +1,6 @@
-import { errorMessage, getLogger } from "@miyoria/kernel";
+import { errorMessage, getLogger, type MetricsRegistry } from "@miyoria/kernel";
 import type { SettingsStore } from "@miyoria/store";
+import { type Clock, systemClock } from "@miyoria/types";
 import {
   type BudgetConfig,
   type BudgetState,
@@ -9,11 +10,11 @@ import {
   type EventSink,
   type Pricing,
 } from "./cost.js";
+import { errorKind, type LlmMetrics, llmMetrics } from "./metrics.js";
 import {
   type ChatProvider,
   type ChatRequest,
   type ChatResponse,
-  type ChatStream,
   collectResponse,
   LlmError,
   type ModelRef,
@@ -38,6 +39,54 @@ export interface LlmRouterOptions {
   budget?: BudgetConfig;
   /** Replaces the cost tracker (tests with a fake clock). */
   tracker?: CostTracker;
+  /** Where call, token, cost, latency and error metrics go. Default: the process-wide one. */
+  metrics?: MetricsRegistry;
+  /** Clock of the first-token latency. Default: the system clock. */
+  clock?: Clock;
+}
+
+/** One routed call while it streams. */
+interface Call {
+  key: string;
+  purpose: string;
+  /** When `LlmRouter.stream` was called (before any fallback). */
+  requestedAt: number;
+  /** When the request to the answering model was sent. */
+  sentAt: number;
+  firstTokenAt: number | null;
+}
+
+/**
+ * The stream `LlmRouter.stream` returns: a `ChatStream` that also tells which model answered
+ * and how long the first token took.
+ */
+export class RoutedStream implements AsyncIterable<StreamEvent> {
+  readonly #call: Call;
+  readonly #events: AsyncGenerator<StreamEvent>;
+
+  /** @internal Created by `LlmRouter.stream`. */
+  constructor(call: Call, events: AsyncGenerator<StreamEvent>) {
+    this.#call = call;
+    this.#events = events;
+  }
+
+  /** `provider:model` that is answering. */
+  get model(): string {
+    return this.#call.key;
+  }
+
+  /**
+   * Milliseconds from the `stream` call to the first text or reasoning delta, including time
+   * spent on models that failed before it; `null` until one arrives.
+   */
+  get firstTokenMs(): number | null {
+    const at = this.#call.firstTokenAt;
+    return at === null ? null : Math.max(0, at - this.#call.requestedAt);
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<StreamEvent> {
+    return this.#events;
+  }
 }
 
 /**
@@ -50,6 +99,8 @@ export class LlmRouter {
   readonly #purposes: Map<string, ModelRef[]>;
   readonly #usage = new Map<string, UsageRecord>();
   readonly #cost: CostTracker;
+  readonly #metrics: LlmMetrics;
+  readonly #clock: Clock;
 
   constructor(
     providers: ReadonlyMap<string, ChatProvider>,
@@ -60,6 +111,8 @@ export class LlmRouter {
     this.#purposes = new Map(purposes);
     this.#cost =
       options.tracker ?? new CostTracker(options.pricing, options.budget ?? budgetConfig());
+    this.#metrics = llmMetrics(options.metrics);
+    this.#clock = options.clock ?? systemClock;
   }
 
   /** Overrides purposes, e.g. with the active profile's `[llm.purposes]`. */
@@ -136,7 +189,8 @@ export class LlmRouter {
    * (unless the purpose is exempt). While degraded or exhausted the `[llm.budget.fallback]`
    * chain replaces the normal one.
    */
-  async stream(purpose: string, request: ChatRequest, signal?: AbortSignal): Promise<ChatStream> {
+  async stream(purpose: string, request: ChatRequest, signal?: AbortSignal): Promise<RoutedStream> {
+    const requestedAt = this.#clock.now();
     const state = this.#cost.gate(purpose);
     const chain = this.#chainForState(purpose, state);
     if (chain.length === 0) {
@@ -155,6 +209,7 @@ export class LlmRouter {
       }
       let iterator: AsyncIterator<StreamEvent>;
       let first: IteratorResult<StreamEvent>;
+      const sentAt = this.#clock.now();
       try {
         const stream = await provider.stream({ ...request, model: model.model }, signal);
         iterator = stream[Symbol.asyncIterator]();
@@ -163,10 +218,19 @@ export class LlmRouter {
       } catch (error) {
         if (signal?.aborted) throw error;
         log.warn({ model: key, err: errorMessage(error) }, "model failed, trying next in chain");
+        this.#metrics.errors.inc({
+          model: key,
+          purpose,
+          stage: "request",
+          kind: errorKind(error),
+        });
         lastError = error;
         continue;
       }
-      return this.#track(key, first, iterator);
+      const call: Call = { key, purpose, requestedAt, sentAt, firstTokenAt: null };
+      this.#metrics.calls.inc({ model: key, purpose });
+      if (!first.done) this.#observe(call, first.value);
+      return new RoutedStream(call, this.#track(call, first, iterator, signal));
     }
     throw lastError ?? new LlmError("all models failed");
   }
@@ -179,7 +243,20 @@ export class LlmRouter {
     return collectResponse(await this.stream(purpose, request, signal));
   }
 
-  #record(key: string, usage: Usage): void {
+  /** Notes the first text or reasoning delta of `call`. */
+  #observe(call: Call, ev: StreamEvent): void {
+    if (call.firstTokenAt !== null) return;
+    if (ev.type !== "text_delta" && ev.type !== "reasoning_delta") return;
+    const now = this.#clock.now();
+    call.firstTokenAt = now;
+    this.#metrics.firstToken.observe(
+      { model: call.key, purpose: call.purpose },
+      Math.max(0, now - call.sentAt) / 1000,
+    );
+  }
+
+  #record(call: Call, usage: Usage): void {
+    const key = call.key;
     let record = this.#usage.get(key);
     if (!record) {
       record = { calls: 0, prompt_tokens: 0, completion_tokens: 0, cached_prompt_tokens: 0 };
@@ -189,20 +266,41 @@ export class LlmRouter {
     record.prompt_tokens += usage.prompt_tokens;
     record.completion_tokens += usage.completion_tokens;
     record.cached_prompt_tokens += usage.cached_prompt_tokens ?? 0;
-    this.#cost.record(key, usage);
+    const cost = this.#cost.record(key, usage);
+    const labels = { model: key, purpose: call.purpose };
+    const tokens = this.#metrics.tokens;
+    tokens.inc({ ...labels, type: "prompt" }, usage.prompt_tokens);
+    tokens.inc({ ...labels, type: "completion" }, usage.completion_tokens);
+    tokens.inc({ ...labels, type: "cached_prompt" }, usage.cached_prompt_tokens ?? 0);
+    this.#metrics.cost.inc(labels, cost);
   }
 
   async *#track(
-    key: string,
+    call: Call,
     first: IteratorResult<StreamEvent>,
     rest: AsyncIterator<StreamEvent>,
-  ): ChatStream {
+    signal: AbortSignal | undefined,
+  ): AsyncGenerator<StreamEvent> {
     let finished = false;
     try {
-      for (let next = first; !next.done; next = await rest.next()) {
+      for (let next = first; !next.done; ) {
         const ev = next.value;
-        if (ev.type === "done" && ev.usage) this.#record(key, ev.usage);
+        this.#observe(call, ev);
+        if (ev.type === "done" && ev.usage) this.#record(call, ev.usage);
         yield ev;
+        try {
+          next = await rest.next();
+        } catch (error) {
+          if (!signal?.aborted) {
+            this.#metrics.errors.inc({
+              model: call.key,
+              purpose: call.purpose,
+              stage: "stream",
+              kind: errorKind(error),
+            });
+          }
+          throw error;
+        }
       }
       finished = true;
     } finally {

@@ -1,3 +1,4 @@
+import { MetricsRegistry } from "@miyoria/kernel";
 import { MemorySettingsStore } from "@miyoria/store";
 import type { Clock, JsonValue } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
@@ -8,11 +9,18 @@ import {
   type ChatRequest,
   CostTracker,
   callCost,
+  collectResponse,
+  errorKind,
   LlmConfigSchema,
+  LlmError,
   LlmRouter,
+  llmMetrics,
   MockProvider,
+  ProviderHttpError,
+  ProviderTimeoutError,
   parseModelRef,
   pricing,
+  type StreamEvent,
   USAGE_PROFILE,
   userMessage,
 } from "../src/index.js";
@@ -384,5 +392,162 @@ describe("cost", () => {
     expect(() => LlmConfigSchema.parse({ purposes: { chat: ["no-colon"] } })).toThrow(
       /provider:model/,
     );
+  });
+});
+
+describe("LlmRouter metrics", () => {
+  /** A clock the test moves; providers advance it to simulate latency. */
+  function manualClock(): Clock & { t: number } {
+    return {
+      t: 0,
+      now() {
+        return this.t;
+      },
+    };
+  }
+
+  /** A provider whose headers take `connectMs` and whose events take `eventMs` each. */
+  function timed(
+    name: string,
+    clock: { t: number },
+    connectMs: number,
+    eventMs: number,
+    events: StreamEvent[],
+  ): ChatProvider {
+    return {
+      name,
+      stream: async () => {
+        clock.t += connectMs;
+        return (async function* () {
+          for (const ev of events) {
+            clock.t += eventMs;
+            yield ev;
+          }
+        })();
+      },
+    };
+  }
+
+  const usage = { prompt_tokens: 1000, completion_tokens: 200, cached_prompt_tokens: 400 };
+
+  it("measures the first text or reasoning delta and counts calls, tokens and cost", async () => {
+    const clock = manualClock();
+    const registry = new MetricsRegistry();
+    const events: StreamEvent[] = [
+      { type: "tool_call_delta", index: 0, id: "c", name: "f", arguments: "" },
+      { type: "reasoning_delta", text: "hmm" },
+      { type: "text_delta", text: "hi" },
+      { type: "done", finish_reason: "stop", usage },
+    ];
+    const r = new LlmRouter(
+      new Map([["a", timed("a", clock, 100, 50, events)]]),
+      new Map([["chat", [parseModelRef("a:m")]]]),
+      {
+        metrics: registry,
+        clock,
+        pricing: new Map([["a:m", pricing({ input_per_mtok: 1, output_per_mtok: 2 })]]),
+      },
+    );
+    const stream = await r.stream("game", req());
+    expect(stream.model).toBe("a:m");
+    expect((await collectResponse(stream)).text).toBe("hi");
+    // 100 ms to the headers, the tool call delta, then the reasoning delta.
+    expect(stream.firstTokenMs).toBe(200);
+
+    const m = llmMetrics(registry);
+    const labels = { model: "a:m", purpose: "game" };
+    expect(m.calls.get(labels)).toBe(1);
+    expect(m.tokens.get({ ...labels, type: "prompt" })).toBe(1000);
+    expect(m.tokens.get({ ...labels, type: "completion" })).toBe(200);
+    expect(m.tokens.get({ ...labels, type: "cached_prompt" })).toBe(400);
+    expect(m.cost.get(labels)).toBeCloseTo(
+      callCost(pricing({ input_per_mtok: 1, output_per_mtok: 2 }), usage),
+    );
+    const text = registry.render();
+    expect(text).toContain(
+      'miyoria_llm_first_token_seconds_bucket{model="a:m",purpose="game",le="0.25"} 1',
+    );
+    expect(text).toContain('miyoria_llm_first_token_seconds_sum{model="a:m",purpose="game"} 0.2');
+  });
+
+  it("first token of a fallback includes the failed model for the caller, not the histogram", async () => {
+    const clock = manualClock();
+    const registry = new MetricsRegistry();
+    const down: ChatProvider = {
+      name: "a",
+      stream: async () => {
+        clock.t += 1000;
+        throw new ProviderHttpError("a: HTTP 503 Service Unavailable: busy", 503);
+      },
+    };
+    const r = new LlmRouter(
+      new Map<string, ChatProvider>([
+        ["a", down],
+        ["b", timed("b", clock, 100, 0, [{ type: "text_delta", text: "x" }])],
+      ]),
+      new Map([["chat", [parseModelRef("a:m"), parseModelRef("b:m")]]]),
+      { metrics: registry, clock },
+    );
+    const stream = await r.stream("chat", req());
+    await collectResponse(stream).catch(() => undefined);
+    expect(stream.firstTokenMs).toBe(1100);
+    const m = llmMetrics(registry);
+    expect(
+      m.errors.get({ model: "a:m", purpose: "chat", stage: "request", kind: "http_5xx" }),
+    ).toBe(1);
+    expect(registry.render()).toContain(
+      'miyoria_llm_first_token_seconds_sum{model="b:m",purpose="chat"} 0.1',
+    );
+  });
+
+  it("counts mid-stream errors but not caller aborts; no first token without text", async () => {
+    const registry = new MetricsRegistry();
+    async function* broken() {
+      yield { type: "tool_call_delta" as const, index: 0, id: null, name: "f", arguments: "" };
+      throw new LlmError("a: stream interrupted: reset");
+    }
+    const r = new LlmRouter(
+      new Map<string, ChatProvider>([["a", { name: "a", stream: async () => broken() }]]),
+      new Map([["chat", [parseModelRef("a:m")]]]),
+      { metrics: registry },
+    );
+    const stream = await r.stream("chat", req());
+    await expect(collectResponse(stream)).rejects.toThrow(/stream interrupted/);
+    expect(stream.firstTokenMs).toBeNull();
+    const m = llmMetrics(registry);
+    expect(m.errors.get({ model: "a:m", purpose: "chat", stage: "stream", kind: "error" })).toBe(1);
+    expect(m.firstToken.count({ model: "a:m", purpose: "chat" })).toBe(0);
+
+    const controller = new AbortController();
+    controller.abort();
+    const aborting: ChatProvider = {
+      name: "a",
+      stream: async (_r, signal) => {
+        signal?.throwIfAborted();
+        return broken();
+      },
+    };
+    const r2 = new LlmRouter(
+      new Map([["a", aborting]]),
+      new Map([["chat", [parseModelRef("a:m")]]]),
+      { metrics: registry },
+    );
+    await expect(r2.stream("chat", req(), controller.signal)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(m.errors.get({ model: "a:m", purpose: "chat", stage: "request", kind: "aborted" })).toBe(
+      0,
+    );
+  });
+
+  it("classifies errors with bounded kinds", () => {
+    expect(errorKind(new ProviderTimeoutError("x", "connect"))).toBe("connect_timeout");
+    expect(errorKind(new ProviderTimeoutError("x", "idle"))).toBe("timeout");
+    expect(errorKind(new ProviderHttpError("x", 429))).toBe("http_4xx");
+    expect(errorKind(new ProviderHttpError("x", 500))).toBe("http_5xx");
+    const idle = new DOMException("no data for 5 ms", "TimeoutError");
+    expect(errorKind(new LlmError("request failed", { cause: idle }))).toBe("timeout");
+    expect(errorKind(new DOMException("stop", "AbortError"))).toBe("aborted");
+    expect(errorKind("weird")).toBe("error");
   });
 });

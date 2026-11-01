@@ -3,20 +3,27 @@
 import { createServer, type Server as HttpServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import { inspect } from "node:util";
+import { MetricsRegistry } from "@miyoria/kernel";
 import type { JsonValue } from "@miyoria/types";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assistantMessage,
+  type ChatProvider,
   type ChatRequest,
   collectResponse,
   completeChat,
+  DEFAULT_CONNECT_TIMEOUT_MS,
   DEFAULT_USER_AGENT,
+  LlmRouter,
+  llmMetrics,
   MIYORIA_VERSION,
   OpenAiConfig,
   OpenAiFactory,
   OpenAiProvider,
   type ProviderConfig,
   ProviderConfigSchema,
+  ProviderTimeoutError,
+  parseModelRef,
   SseParser,
   type StreamEvent,
   systemMessage,
@@ -576,5 +583,144 @@ describe("OpenAiProvider", () => {
       base_url: "http://x/v1",
     });
     expect(() => new OpenAiFactory().build("local", local)).not.toThrow();
+  });
+});
+
+/** Accepts connections and reads requests but never answers. */
+class HangingServer {
+  hits = 0;
+  /** Requests whose connection the client closed. */
+  closed = 0;
+  readonly #http: HttpServer;
+  baseUrl = "";
+
+  private constructor() {
+    this.#http = createServer((req) => {
+      this.hits++;
+      req.resume();
+      req.socket.on("close", () => {
+        this.closed++;
+      });
+    });
+  }
+
+  static async start(): Promise<HangingServer> {
+    const server = new HangingServer();
+    await new Promise<void>((resolve) => server.#http.listen(0, "127.0.0.1", resolve));
+    const { port } = server.#http.address() as AddressInfo;
+    server.baseUrl = `http://127.0.0.1:${port}/v1/`;
+    hanging.push(server);
+    return server;
+  }
+
+  config(connectTimeoutMs: number): OpenAiConfig {
+    const config = new OpenAiConfig(this.baseUrl);
+    config.connectTimeoutMs = connectTimeoutMs;
+    config.timeoutMs = 10_000;
+    config.maxRetries = 2;
+    config.retryBackoffMs = 10;
+    return config;
+  }
+
+  close(): Promise<void> {
+    this.#http.closeAllConnections();
+    return new Promise((resolve) => this.#http.close(() => resolve()));
+  }
+}
+
+const hanging: HangingServer[] = [];
+afterEach(async () => {
+  await Promise.all(hanging.splice(0).map((s) => s.close()));
+});
+
+describe("connect timeout", () => {
+  it("aborts a server that never responds, without retrying", async () => {
+    const server = await HangingServer.start();
+    const provider = new OpenAiProvider("hang", server.config(150));
+    const started = Date.now();
+    const error = await provider.stream(request()).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProviderTimeoutError);
+    expect(error).toMatchObject({ phase: "connect" });
+    expect(String((error as Error).message)).toMatch(
+      /^hang: request failed: no response within 150 ms \(connect timeout\)$/,
+    );
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(server.hits).toBe(1);
+    // The connection is closed, not left hanging.
+    await expect.poll(() => server.closed).toBe(1);
+  });
+
+  it("a caller abort while waiting wins over the connect timeout", async () => {
+    const server = await HangingServer.start();
+    const provider = new OpenAiProvider("hang", server.config(5_000));
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 50);
+    await expect(provider.stream(request(), controller.signal)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    await expect.poll(() => server.closed).toBe(1);
+  });
+
+  it("does not limit a slow stream once the headers arrived", async () => {
+    // Headers right away, the first token after 300 ms: longer than the connect timeout.
+    const http = createServer((req, res) => {
+      req.resume();
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.flushHeaders();
+      setTimeout(() => {
+        res.end(`data: ${JSON.stringify(delta({ content: "slow" }))}\n\ndata: [DONE]\n\n`);
+      }, 300);
+    });
+    await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = http.address() as AddressInfo;
+      const config = new OpenAiConfig(`http://127.0.0.1:${port}/v1`);
+      config.connectTimeoutMs = 100;
+      const response = await completeChat(new OpenAiProvider("slow", config), request());
+      expect(response.text).toBe("slow");
+    } finally {
+      http.closeAllConnections();
+      await new Promise<void>((resolve) => http.close(() => resolve()));
+    }
+  });
+
+  it("is read from connect_timeout_secs and can be turned off", () => {
+    const parse = (extra: Record<string, JsonValue>) =>
+      OpenAiConfig.fromProviderConfig(
+        ProviderConfigSchema.parse({ kind: "openai", api_key: "k", ...extra }),
+      );
+    expect(DEFAULT_CONNECT_TIMEOUT_MS).toBe(15_000);
+    expect(parse({}).connectTimeoutMs).toBe(15_000);
+    expect(parse({ connect_timeout_secs: 3 }).connectTimeoutMs).toBe(3_000);
+    expect(parse({ connect_timeout_secs: 0.5 }).connectTimeoutMs).toBe(500);
+    expect(parse({ connect_timeout_secs: 0 }).connectTimeoutMs).toBe(0);
+    expect(() => parse({ connect_timeout_secs: -1 })).toThrow(/invalid provider settings/);
+    expect(JSON.parse(JSON.stringify(parse({})))).toMatchObject({ connectTimeoutMs: 15_000 });
+  });
+
+  it("triggers the purpose fallback and is counted", async () => {
+    const hang = await HangingServer.start();
+    const ok = await Server.start(okScript());
+    const registry = new MetricsRegistry();
+    const providers = new Map<string, ChatProvider>([
+      ["hang", new OpenAiProvider("hang", hang.config(150))],
+      ["ok", ok.provider()],
+    ]);
+    const router = new LlmRouter(
+      providers,
+      new Map([["chat", [parseModelRef("hang:m"), parseModelRef("ok:m")]]]),
+      { metrics: registry },
+    );
+    const stream = await router.stream("chat", request());
+    expect(stream.model).toBe("ok:m");
+    expect((await collectResponse(stream)).text).toBe("ok");
+    expect(stream.firstTokenMs).toBeGreaterThanOrEqual(150);
+    const m = llmMetrics(registry);
+    expect(
+      m.errors.get({ model: "hang:m", purpose: "chat", stage: "request", kind: "connect_timeout" }),
+    ).toBe(1);
+    expect(m.calls.get({ model: "ok:m", purpose: "chat" })).toBe(1);
+    expect(m.firstToken.count({ model: "ok:m", purpose: "chat" })).toBe(1);
+    expect(hang.hits).toBe(1);
   });
 });

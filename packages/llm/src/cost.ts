@@ -358,8 +358,8 @@ export class CostTracker {
     return 0;
   }
 
-  /** Adds one finished call. */
-  record(model: string, usage: Usage): void {
+  /** Adds one finished call; returns its cost in USD. */
+  record(model: string, usage: Usage): number {
     const cost = this.#price(model, usage);
     const rolled = this.#refresh();
     this.#today.add(model, usage, cost);
@@ -367,6 +367,7 @@ export class CostTracker {
     this.#dirty = true;
     const changed = this.#setState(this.#evaluate(this.#today.cost(), this.#thisMonth.cost()));
     if (rolled || changed) this.#emit(this.#payload());
+    return cost;
   }
 
   report(): CostReport {
