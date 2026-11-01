@@ -13,28 +13,7 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  # Legacy Rust implementation (behavioural reference until the TS port reaches parity).
-  rust:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: legacy/rust
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: legacy/rust
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-
   # TypeScript workspace (pnpm-workspace.yaml): one install from the root lockfile, then lint and
   # every package's typecheck / test (against workspace sources, no build needed) and build.
   node:
@@ -53,6 +32,27 @@ jobs:
       - run: pnpm -r typecheck
       - run: pnpm -r test
       - run: pnpm -r build
+      # The published `miyoria` package: `pnpm pack` runs its prepack (esbuild bundle + panel,
+      # profiles, migrations), then the tarball is installed like a user would and smoke-tested.
+      - name: Pack the miyoria npm package
+        run: |
+          mkdir -p "$RUNNER_TEMP/pack"
+          pnpm --dir packages/cli pack --pack-destination "$RUNNER_TEMP/pack"
+          tarball=$(ls "$RUNNER_TEMP"/pack/miyoria-*.tgz)
+          tar -tzf "$tarball" > "$RUNNER_TEMP/pack/files.txt"
+          for f in package/dist/main.js package/dist/panel/index.html package/templates/miyoria.example.toml \
+                   package/assets/profiles/deepseek-chan/profile.toml package/migrations/sqlite/0001_init.sql; do
+            grep -qx "$f" "$RUNNER_TEMP/pack/files.txt" || { echo "::error::$f missing from $(basename "$tarball")"; exit 1; }
+          done
+      - name: Smoke-test the packed CLI
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir smoke && cd smoke
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund "$RUNNER_TEMP"/pack/miyoria-*.tgz
+          npx --no-install miyoria --version
+          npx --no-install miyoria init --yes
+          npx --no-install miyoria profile validate
 
   # Light-weight worker tests: they run against the in-process fake worker, no GPU or model needed.
   workers-python:
