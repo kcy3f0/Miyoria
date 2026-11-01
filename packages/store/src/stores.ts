@@ -73,6 +73,8 @@ export interface PeopleStore {
    */
   upsertAccount(account: AccountRef, displayName: string): Promise<PersonId>;
   personByAccount(account: AccountRef): Promise<Person | null>;
+  /** Every person with their accounts, oldest first (by `created_at`, then id). */
+  all(): Promise<Person[]>;
 }
 
 export interface DecisionLog {
@@ -114,6 +116,14 @@ export interface MemoryRecordStore {
   prune(profile: ProfileId, policy: PrunePolicy): Promise<number>;
   /** Deletes everything about a person (they asked her to forget them). */
   deleteBySubject(profile: ProfileId, person: PersonId): Promise<number>;
+  /**
+   * Rewrites every record about `absorb` to be about `keep`, in every profile (people are
+   * shared and `absorb` no longer exists once merged): `absorb` in `subjects` becomes `keep`
+   * (no duplicates, order kept) and a `person` scope of `absorb` becomes `keep`'s. Content,
+   * tokens, embeddings and timestamps are unchanged, so the full-text and vector indexes stay
+   * valid. One transaction. Returns how many records changed.
+   */
+  mergePerson(keep: PersonId, absorb: PersonId): Promise<number>;
 }
 
 export interface RelationshipStore {

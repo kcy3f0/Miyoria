@@ -335,6 +335,36 @@ function behaviour(open: () => Promise<Store>): void {
     expect(Date.parse(acc?.first_seen ?? "")).toBeLessThanOrEqual(Date.parse(acc?.last_seen ?? ""));
   });
 
+  it("people_all", async () => {
+    const people = store.people;
+    const a1 = account(unique("a1"));
+    const a2 = account(unique("a2"));
+    const b1 = account(unique("b1"));
+    const p1 = await people.upsertAccount(a1, "One");
+    const p2 = await people.upsertAccount(b1, "Two");
+    await store.identity.linkAccount(a2, p1);
+    // A person whose only account moved away is still a person.
+    const c1 = account(unique("c1"));
+    const p3 = await people.upsertAccount(c1, "Three");
+    await store.identity.linkAccount(c1, p2);
+
+    // The database may be shared with other cases: look at ours only.
+    const all = await people.all();
+    const ours = all.filter((p) => [p1, p2, p3].includes(p.id));
+    expect(ours.map((p) => p.id)).toEqual([p1, p2, p3]);
+    const [one, two, three] = ours;
+    expect(one?.display_name).toBe("One");
+    expect(one?.accounts.map((a) => a.account)).toEqual([a1, a2]);
+    expect(one).toEqual(await people.personByAccount(a1));
+    expect(two?.accounts).toHaveLength(2);
+    expect(three?.accounts).toEqual([]);
+    for (let i = 1; i < all.length; i++) {
+      const prev = all[i - 1] as (typeof all)[number];
+      const next = all[i] as (typeof all)[number];
+      expect(Date.parse(prev.created_at)).toBeLessThanOrEqual(Date.parse(next.created_at));
+    }
+  });
+
   it("decision_log_recent", async () => {
     const log = store.decisions;
     const profile = unique("profile");
@@ -800,6 +830,70 @@ function behaviour(open: () => Promise<Store>): void {
     for (const r of gone) expect(await memories.get(r.id)).toBeNull();
     for (const r of kept) expect(await memories.get(r.id)).not.toBeNull();
     expect(await memories.deleteBySubject(otherProfile, alice)).toBe(1);
+  });
+
+  it("memory_merge_person", async () => {
+    const memories = store.memories;
+    const profile = unique("profile");
+    const otherProfile = unique("profile");
+    const t0 = at(Date.now());
+    const keep = newId();
+    const absorb = newId();
+    const bob = newId();
+    const mk = (p: ProfileId, scope: MemoryScope, subjects: PersonId[], kind: MemoryKind) => {
+      const r = memory(p, kind, scope, "ramen shop", t0);
+      r.subjects = subjects;
+      r.embedding = [1, 0, 0];
+      return r;
+    };
+    const fact = mk(profile, { type: "global" }, [bob, absorb], "fact");
+    const both = mk(profile, guildScope(unique("g")), [absorb, bob, keep], "episode");
+    const scoped = mk(profile, { type: "person", person: absorb }, [], "self_note");
+    const followup = mk(profile, { type: "person", person: absorb }, [absorb], "followup");
+    const foreign = mk(otherProfile, { type: "dm", account: account("x") }, [absorb], "fact");
+    const untouched = mk(profile, { type: "person", person: bob }, [bob], "fact");
+    for (const r of [fact, both, scoped, followup, foreign, untouched]) await memories.upsert(r);
+
+    expect(await memories.mergePerson(keep, absorb)).toBe(5);
+    expect(await memories.mergePerson(keep, absorb)).toBe(0);
+    expect(await memories.mergePerson(keep, keep)).toBe(0);
+
+    const read = async (r: MemoryRecord) => (await memories.get(r.id)) as MemoryRecord;
+    expect((await read(fact)).subjects).toEqual([bob, keep]);
+    expect((await read(both)).subjects, "no duplicates, first occurrence kept").toEqual([
+      keep,
+      bob,
+    ]);
+    expect((await read(scoped)).scope).toEqual({ type: "person", person: keep });
+    expect((await read(followup)).scope).toEqual({ type: "person", person: keep });
+    expect((await read(followup)).subjects).toEqual([keep]);
+    expect((await read(foreign)).subjects, "every profile").toEqual([keep]);
+    expect((await read(foreign)).scope).toEqual({ type: "dm", account: account("x") });
+    expect((await read(untouched)).subjects).toEqual([bob]);
+    expect((await read(untouched)).scope).toEqual(untouched.scope);
+    const after = await read(fact);
+    expect(after.tokens).toBe(fact.tokens);
+    expect(after.embedding).toEqual([1, 0, 0]);
+    expect(Date.parse(after.updated_at)).toBe(Date.parse(fact.updated_at));
+
+    // Indexes still agree: filters, scope lookups, full text and vectors see the new person.
+    const listed = await memories.list(profile, { ...baseFilter, subject: keep, limit: 10 });
+    expect(idSet(listed)).toEqual(new Set([fact.id, both.id, followup.id]));
+    expect(await memories.list(profile, { ...baseFilter, subject: absorb, limit: 10 })).toEqual([]);
+    const keepScope: MemoryScope = { type: "person", person: keep };
+    const absorbScope: MemoryScope = { type: "person", person: absorb };
+    const scopedList = await memories.list(profile, { ...baseFilter, scope: keepScope, limit: 10 });
+    expect(idSet(scopedList)).toEqual(new Set([scoped.id, followup.id]));
+    const text = await memories.search(textQuery(profile, [keepScope], ["ramen"], 10));
+    expect(hitIds(text)).toEqual(new Set([scoped.id, followup.id]));
+    expect(await memories.search(textQuery(profile, [absorbScope], ["ramen"], 10))).toEqual([]);
+    const vector = await memories.search({
+      ...textQuery(profile, [keepScope], [], 10),
+      embedding: [1, 0, 0],
+    });
+    expect(hitIds(vector)).toEqual(new Set([scoped.id, followup.id]));
+    expect(vector.every((h) => near(h.vector_score ?? 0, 1))).toBe(true);
+    expect(await memories.deleteBySubject(profile, keep)).toBe(4);
   });
 
   // ---- relationships and identity ---------------------------------------------------------

@@ -460,6 +460,28 @@ class SqlitePeople implements PeopleStore {
       accounts: this.db.all(ACCOUNTS_OF, { person: id }).map(accountFromRow),
     };
   }
+
+  async all(): Promise<Person[]> {
+    const accounts = new Map<PersonId, Account[]>();
+    const rows = this.db.all(
+      "SELECT person_id, platform, account_id, display_name, first_seen, last_seen FROM accounts " +
+        "ORDER BY first_seen, platform, account_id",
+    );
+    for (const row of rows) {
+      const person = str(row, "person_id");
+      const list = accounts.get(person) ?? [];
+      list.push(accountFromRow(row));
+      accounts.set(person, list);
+    }
+    return this.db
+      .all("SELECT id, display_name, created_at FROM people ORDER BY created_at, id")
+      .map((row) => ({
+        id: str(row, "id"),
+        display_name: str(row, "display_name"),
+        created_at: ts(row, "created_at"),
+        accounts: accounts.get(str(row, "id")) ?? [],
+      }));
+  }
 }
 
 class SqliteIdentity implements IdentityStore {
@@ -882,6 +904,37 @@ class SqliteMemories implements MemoryRecordStore {
         "json_each(subjects) WHERE value = $person) OR scope_key = $scope)",
       { profile, person, scope: memoryScopeKey({ type: "person", person }) },
     );
+  }
+
+  async mergePerson(keep: PersonId, absorb: PersonId): Promise<number> {
+    if (keep === absorb) return 0;
+    const absorbScope = memoryScopeKey({ type: "person", person: absorb });
+    const keepScope = memoryScopeKey({ type: "person", person: keep });
+    // `tokens` is untouched, so the FTS triggers do not fire and `seq` (the FTS rowid) stays.
+    return this.db.tx(() => {
+      const rows = this.db.all(
+        "SELECT id, subjects, scope_key FROM memory_records WHERE EXISTS (SELECT 1 FROM " +
+          "json_each(subjects) WHERE value = $absorb) OR scope_key = $scope",
+        { absorb, scope: absorbScope },
+      );
+      for (const row of rows) {
+        const subjects = json<PersonId[]>(row, "subjects", "memory subjects");
+        const moved = [...new Set(subjects.map((s) => (s === absorb ? keep : s)))];
+        const rescoped = str(row, "scope_key") === absorbScope;
+        this.db.run(
+          "UPDATE memory_records SET subjects = $subjects, " +
+            "scope = CASE WHEN $rescope THEN $scope ELSE scope END, " +
+            "scope_key = CASE WHEN $rescope THEN $scope ELSE scope_key END WHERE id = $id",
+          {
+            id: str(row, "id"),
+            subjects: JSON.stringify(moved),
+            rescope: rescoped ? 1 : 0,
+            scope: keepScope,
+          },
+        );
+      }
+      return rows.length;
+    });
   }
 }
 

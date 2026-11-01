@@ -544,6 +544,33 @@ class PgPeople implements PeopleStore {
       accounts: (await this.db.query(ACCOUNTS_OF, [id])).map(accountFromRow),
     };
   }
+
+  async all(): Promise<Person[]> {
+    // One statement, so people and accounts come from the same snapshot.
+    const rows = await this.db.query(
+      "SELECT p.id, p.display_name AS person_name, p.created_at, a.platform, a.account_id, " +
+        "a.display_name, a.first_seen, a.last_seen FROM people p " +
+        "LEFT JOIN accounts a ON a.person_id = p.id " +
+        'ORDER BY p.created_at, p.id COLLATE "C", a.first_seen, a.platform COLLATE "C", ' +
+        'a.account_id COLLATE "C"',
+    );
+    const out: Person[] = [];
+    for (const row of rows) {
+      const id = str(row, "id");
+      let person = out[out.length - 1];
+      if (person?.id !== id) {
+        person = {
+          id,
+          display_name: str(row, "person_name"),
+          created_at: ts(row, "created_at"),
+          accounts: [],
+        };
+        out.push(person);
+      }
+      if (row.platform != null) person.accounts.push(accountFromRow(row));
+    }
+    return out;
+  }
 }
 
 /** Rolls back a first-sight insert that lost to a concurrent one. */
@@ -938,6 +965,32 @@ class PgMemories implements MemoryRecordStore {
       "DELETE FROM memory_records WHERE profile_id = $1 AND ($2 = ANY(subjects) OR scope_key = $3)",
       [profile, person, memoryScopeKey({ type: "person", person })],
     );
+  }
+
+  async mergePerson(keep: PersonId, absorb: PersonId): Promise<number> {
+    if (keep === absorb) return 0;
+    // One statement. `tokens` and `embedding` are untouched, so the generated `tsv` and the
+    // vectors stay as they are. Subjects keep their first-occurrence order without duplicates.
+    try {
+      return await this.db.execute(
+        "UPDATE memory_records SET " +
+          "subjects = CASE WHEN $2::text = ANY(subjects) THEN ARRAY(" +
+          "SELECT u.s FROM unnest(array_replace(subjects, $2::text, $1::text)) " +
+          "WITH ORDINALITY AS u(s, ord) GROUP BY u.s ORDER BY min(u.ord)) ELSE subjects END, " +
+          "scope = CASE WHEN scope_key = $3 THEN $4::text::jsonb ELSE scope END, " +
+          "scope_key = CASE WHEN scope_key = $3 THEN $4::text ELSE scope_key END " +
+          "WHERE $2::text = ANY(subjects) OR scope_key = $3",
+        [
+          keep,
+          absorb,
+          memoryScopeKey({ type: "person", person: absorb }),
+          memoryScopeKey({ type: "person", person: keep }),
+        ],
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot merge memory records", { cause });
+    }
   }
 }
 
