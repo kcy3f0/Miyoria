@@ -75,12 +75,17 @@ owners = ["discord:${MIYORIA_OWNER_ID:-0}"]
 [modules."platform.discord.bot"]
 token = "${DISCORD_BOT_TOKEN:-}"
 # 填伺服器 id 可以讓 slash command 立即生效;空的 = 全域(最多要等一小時)
+# id 要加引號,例如 ["123456789012345678"](數字太大,TOML 整數會失真)
 command_guilds = []
 
 # Admin API:CLI(`miyoria module ...`)和之後的管理面板用。token 由 `miyoria init` 產生
 [modules.api]
 bind = "127.0.0.1:7878"
 token = "${MIYORIA_API_TOKEN:-}"
+# Prometheus 指標在 GET /metrics,預設跟 /api 一樣要 Authorization: Bearer <token>
+# (Prometheus 用 authorization.credentials 帶 token)。設成 true 就不用驗證,
+# 但連得到 bind 位址(或前面的反向代理)的人都看得到。
+# metrics_public = false
 
 # 管理面板用 Discord 登入(token 照樣能用)。三個值都填才會開啟;
 # redirect_uri 要跟 Developer Portal → OAuth2 → Redirects 裡的一模一樣,
