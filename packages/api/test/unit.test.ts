@@ -348,6 +348,7 @@ describe("config and helpers", () => {
         recheck_secs: 5,
         discord_url: "https://discord.com",
       },
+      metrics_public: false,
     });
   });
 

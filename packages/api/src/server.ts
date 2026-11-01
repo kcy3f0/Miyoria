@@ -7,6 +7,7 @@ import { Hono } from "hono";
 import { coreRoutes } from "./core.js";
 import { ApiError, NO_SUCH_ENDPOINT } from "./errors.js";
 import { memoryRoutes } from "./memory.js";
+import { metricsRoutes } from "./metrics.js";
 import * as oauth from "./oauth.js";
 import { opsRoutes } from "./ops.js";
 import { servePanel } from "./panel.js";
@@ -77,8 +78,13 @@ function sessionRoutes(): Route[] {
   return [{ method: "GET", path: "/api/auth/session", handler: (c) => json(oauth.session(c)) }];
 }
 
+export interface AppOptions {
+  /** Serve `GET /metrics` without authentication (`metrics_public`). Default `false`. */
+  metricsPublic?: boolean;
+}
+
 /** Every route of the API. */
-export function routes(state: ApiState): Route[] {
+export function routes(state: ApiState, options: AppOptions = {}): Route[] {
   return [
     ...coreRoutes(state),
     ...publicRoutes(state),
@@ -87,6 +93,7 @@ export function routes(state: ApiState): Route[] {
     ...memoryRoutes(state),
     ...roleRoutes(state),
     ...opsRoutes(state),
+    ...metricsRoutes(state, { public: options.metricsPublic ?? false }),
   ];
 }
 
@@ -97,9 +104,9 @@ function toResponse(error: unknown): Response {
 }
 
 /** Builds the API app for a running `api` module. */
-export function createApp(state: ApiState): Hono<ApiEnv> {
+export function createApp(state: ApiState, options: AppOptions = {}): Hono<ApiEnv> {
   const app = new Hono<ApiEnv>();
-  const all = routes(state);
+  const all = routes(state, options);
   const byPath = new Map<string, Route[]>();
   for (const route of all) {
     const list = byPath.get(route.path) ?? [];

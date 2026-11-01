@@ -18,6 +18,7 @@
 //
 // Every `/api` route except `GET /api/health` and the login routes requires
 // `Authorization: Bearer <token>` or a panel session cookie; panel files at `/` never do.
+// `GET /metrics` (Prometheus) needs the same unless `metrics_public = true`.
 
 import type { AddressInfo } from "node:net";
 import { isIPv4, isIPv6 } from "node:net";
@@ -60,6 +61,11 @@ export const ApiConfigSchema = z.object({
   panel_dir: z.string().default(DEFAULT_PANEL_DIR),
   /** Discord OAuth2 login for the panel; off unless configured. */
   discord_oauth: DiscordOAuthConfigSchema.prefault({}),
+  /**
+   * Serve `GET /metrics` without the token, for a Prometheus without credentials. Anyone who
+   * can reach `bind` (or a reverse proxy in front of it) can then read the metrics.
+   */
+  metrics_public: z.boolean().default(false),
 });
 export type ApiConfig = z.output<typeof ApiConfigSchema>;
 
@@ -195,7 +201,7 @@ export class ApiModule implements Module {
 
     const monitor = new Monitor();
     const state = new ApiState(ctx, auth, monitor, panelDir, this.#tokenize);
-    const app = createApp(state);
+    const app = createApp(state, { metricsPublic: config.metrics_public });
     const server = createAdaptorServer({ fetch: app.fetch });
     let address: AddressInfo;
     try {
@@ -211,6 +217,7 @@ export class ApiModule implements Module {
     }
     this.#address = address;
     ctx.log.info({ addr: `${address.address}:${address.port}` }, "admin API listening");
+    if (config.metrics_public) ctx.log.info("serving /metrics without authentication");
 
     const sub = ctx.subscribe(MONITOR_TOPICS);
     ctx.spawn("monitor", () => monitor.run(sub));

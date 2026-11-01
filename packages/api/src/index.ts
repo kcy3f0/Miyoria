@@ -40,6 +40,7 @@ export {
   SseParser,
 } from "./client.js";
 export { ApiError, NO_SUCH_ENDPOINT } from "./errors.js";
+export { METRICS_PATH } from "./metrics.js";
 export {
   type ApiConfig,
   ApiConfigError,
