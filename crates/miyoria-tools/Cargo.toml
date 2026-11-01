@@ -1,0 +1,18 @@
+[package]
+name = "miyoria-tools"
+description = "Tool interface and registry shared by the agent, memory, extensions and MCP"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+miyoria-llm.workspace = true
+miyoria-types.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

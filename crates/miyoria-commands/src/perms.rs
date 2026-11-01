@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use miyoria_types::{AccountRef, Authorizer, PlatformId};
+use miyoria_types::{AccountRef, Authorizer, PlatformId, Subject};
 
 use crate::spec::Invocation;
 
@@ -74,9 +74,11 @@ impl Permissions {
 /// turn). Without guild-admin information an account is either an owner or a
 /// plain user, so `admin.*` nodes are granted to owners only.
 impl Authorizer for Permissions {
-    fn allows(&self, account: &AccountRef, node: &str) -> bool {
-        let role = if self.is_owner(account) {
+    fn allows_subject(&self, subject: &Subject, node: &str) -> bool {
+        let role = if self.is_owner(&subject.account) {
             Role::Owner
+        } else if subject.is_guild_admin {
+            Role::Admin
         } else {
             Role::User
         };

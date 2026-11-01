@@ -1446,6 +1446,7 @@ dependencies = [
  "miyoria-llm",
  "miyoria-profile",
  "miyoria-store",
+ "miyoria-tools",
  "miyoria-types",
  "parking_lot",
  "serde",
@@ -1626,6 +1627,18 @@ dependencies = [
  "tokio",
  "tracing",
  "ulid",
+]
+
+[[package]]
+name = "miyoria-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "miyoria-llm",
+ "miyoria-types",
+ "parking_lot",
+ "serde_json",
 ]
 
 [[package]]

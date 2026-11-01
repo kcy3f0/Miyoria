@@ -119,6 +119,16 @@ pub enum Event {
         state: PlaybackState,
         text: String,
     },
+    /// Asks the agent to start a turn on her own initiative (no new input).
+    AgentInitiative {
+        context: ContextKey,
+        /// Why, for the decision trace (e.g. `"idle_channel"`, `"followup"`).
+        reason: String,
+        /// What she might bring up, added to the situation message.
+        hint: String,
+        /// Accounts the hint is about, if any.
+        about: Vec<AccountRef>,
+    },
     ModuleStateChanged {
         module: ModuleId,
         state: ModuleStateKind,
@@ -148,6 +158,7 @@ impl Event {
             Self::VoiceSpeaking { .. } => "voice.speaking",
             Self::VoiceUtterance(_) => "voice.utterance",
             Self::VoicePlayback { .. } => "voice.playback",
+            Self::AgentInitiative { .. } => "agent.initiative",
             Self::ModuleStateChanged { .. } => "system.module.state",
             Self::Custom { topic, .. } => topic,
         }

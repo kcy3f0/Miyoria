@@ -23,6 +23,15 @@ miyoria-discord = { path = "crates/miyoria-discord" }
 miyoria-api = { path = "crates/miyoria-api" }
 miyoria-speech = { path = "crates/miyoria-speech" }
 miyoria-voice = { path = "crates/miyoria-voice" }
+miyoria-tools = { path = "crates/miyoria-tools" }
+miyoria-memory = { path = "crates/miyoria-memory" }
+miyoria-social = { path = "crates/miyoria-social" }
+miyoria-auth = { path = "crates/miyoria-auth" }
+miyoria-initiative = { path = "crates/miyoria-initiative" }
+miyoria-ext-host = { path = "crates/miyoria-ext-host" }
+miyoria-mcp = { path = "crates/miyoria-mcp" }
+miyoria-stage = { path = "crates/miyoria-stage" }
+miyoria-queue = { path = "crates/miyoria-queue" }
 
 # external
 anyhow = "1"

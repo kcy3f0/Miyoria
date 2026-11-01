@@ -10,6 +10,7 @@ publish.workspace = true
 miyoria-commands.workspace = true
 miyoria-kernel.workspace = true
 miyoria-llm.workspace = true
+miyoria-tools.workspace = true
 miyoria-profile.workspace = true
 miyoria-store.workspace = true
 miyoria-types.workspace = true

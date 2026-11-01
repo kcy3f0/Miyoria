@@ -8,8 +8,11 @@
 //! Data that belongs to one character is keyed by [`ProfileId`]. Module state
 //! and people are shared by all profiles.
 
+mod authz;
+mod knowledge;
 mod memory;
 mod postgres;
+mod social;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -23,8 +26,17 @@ use miyoria_types::{
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
+pub use authz::{
+    AuditEntry, AuditLog, AuthScope, AuthStore, NodeOverride, RoleAssignment, RoleDefinition,
+    RoleMapping,
+};
+pub use knowledge::{
+    MemoryFilter, MemoryHit, MemoryKind, MemoryQuery, MemoryRecord, MemoryRecordStore, MemoryScope,
+    PrunePolicy,
+};
 pub use memory::MemoryStore;
 pub use postgres::{MIGRATOR, PgStore};
+pub use social::{IdentityStore, Relationship, RelationshipDelta, RelationshipStore};
 
 /// One entry of the conversation log.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
