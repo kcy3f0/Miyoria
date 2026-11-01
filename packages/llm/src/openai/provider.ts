@@ -1,6 +1,7 @@
 // OpenAI-compatible Chat Completions provider (OpenAI, DeepSeek, OpenCode, OpenRouter, Ollama,
 // vLLM, llama.cpp, LM Studio, ...).
 
+import { randomBytes } from "node:crypto";
 import { STATUS_CODES } from "node:http";
 import { inspect } from "node:util";
 import { errorMessage, getLogger, isAbortError, sleep } from "@miyoria/kernel";
@@ -156,6 +157,8 @@ export class OpenAiProvider implements ChatProvider {
   readonly url: string;
   readonly #headers: Readonly<Record<string, string>>;
   readonly #sessionHeader: string | null;
+  /** Stable for the provider's lifetime, so background requests share one cache route. */
+  readonly #fallbackSession = `miyoria-${randomBytes(8).toString("hex")}`;
   readonly #timeoutMs: number;
   readonly #connectTimeoutMs: number;
   readonly #maxRetries: number;
@@ -221,12 +224,17 @@ export class OpenAiProvider implements ChatProvider {
     return events(this.name, response, idle, signal);
   }
 
-  /** The session header value, if one is configured and the request has a header-safe id. */
+  /**
+   * The session header value when one is configured: the request's id, or this provider's
+   * fallback id for requests outside a conversation (doctor, memory consolidation, appraisal…)
+   * since some providers (OpenCode) reject requests without one.
+   */
   #sessionValue(request: ChatRequest): string | null {
-    if (this.#sessionHeader === null || request.session == null) return null;
+    if (this.#sessionHeader === null) return null;
+    if (request.session == null) return this.#fallbackSession;
     if (!HEADER_VALUE.test(request.session)) {
-      log.warn({ provider: this.name }, "session id is not a valid header value, not sent");
-      return null;
+      log.warn({ provider: this.name }, "session id is not a valid header value, using fallback");
+      return this.#fallbackSession;
     }
     return request.session;
   }

@@ -526,7 +526,7 @@ describe("OpenAiProvider", () => {
     expect(server.lastRequest().headers["user-agent"]).toBe("custom/3");
   });
 
-  it("session_header_only_when_configured_and_present", async () => {
+  it("session_header_only_when_configured_with_a_stable_fallback", async () => {
     // Not configured: never sent, even with a session.
     let server = await Server.start(okScript());
     let provider = new OpenAiFactory().build("a", kindConfig(server, "deepseek"));
@@ -541,9 +541,13 @@ describe("OpenAiProvider", () => {
     );
     await completeChat(provider, sessionRequest("miyoria-x-1"));
     expect(server.lastRequest().headers["x-session"]).toBe("miyoria-x-1");
-    // Configured but the request has no session.
+    // Configured but the request has no session (doctor, background jobs): a fallback id that
+    // stays the same for the provider's lifetime.
     await completeChat(provider, sessionRequest(null));
-    expect(server.lastRequest().headers["x-session"]).toBeUndefined();
+    const fallback = server.lastRequest().headers["x-session"];
+    expect(fallback).toMatch(/^miyoria-[0-9a-f]{16}$/);
+    await completeChat(provider, sessionRequest(null));
+    expect(server.lastRequest().headers["x-session"]).toBe(fallback);
     // The session never ends up in the body.
     expect(server.lastRequest().body.session).toBeUndefined();
   });
