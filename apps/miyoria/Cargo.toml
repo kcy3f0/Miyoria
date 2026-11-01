@@ -21,6 +21,7 @@ miyoria-scheduler.workspace = true
 miyoria-commands.workspace = true
 miyoria-store.workspace = true
 miyoria-discord.workspace = true
+miyoria-api.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
@@ -31,6 +32,8 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+ulid.workspace = true
+futures.workspace = true
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
 inquire = "0.7"

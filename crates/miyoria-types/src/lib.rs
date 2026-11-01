@@ -5,11 +5,13 @@
 //! defined here through the kernel's service registry.
 
 pub mod action;
+pub mod auth;
 pub mod event;
 pub mod ids;
 pub mod platform;
 
 pub use action::{Action, ActionPayload, ActionSink, LaneKey, Priority};
+pub use auth::Authorizer;
 pub use event::{DecisionTrace, Envelope, Event, ModuleStateKind};
 pub use ids::{ActionId, EventId, ModuleId, PersonId, ProfileId, TurnId};
 pub use platform::{

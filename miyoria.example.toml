@@ -29,6 +29,12 @@ token = "${DISCORD_BOT_TOKEN:-}"
 # 填伺服器 id 可以讓 slash command 立即生效;空的 = 全域(最多要等一小時)
 command_guilds = []
 
+# Admin API:CLI(`miyoria module ...`)和之後的管理面板用。token 由 `miyoria init` 產生
+[modules.api]
+bind = "127.0.0.1:7878"
+token = "${MIYORIA_API_TOKEN:-}"
+
 [modules.agent]
-# 個別頻道的模式:off | mention-only | ambient | always
-# channel_modes = { "discord:<guild id>:<channel id>" = "always" }
+# 頻道模式:off | mention-only | ambient | always。也可以在 Discord 用 /mode 即時切換
+# default_mode = "ambient"
+# channels = { "<channel id>" = "always", "discord:<guild id>" = "mention-only" }

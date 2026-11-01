@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use miyoria_types::{AccountRef, PlatformId};
+use miyoria_types::{AccountRef, Authorizer, PlatformId};
 
 use crate::spec::Invocation;
 
@@ -70,6 +70,20 @@ impl Permissions {
     }
 }
 
+/// Account-only checks (e.g. tools run on behalf of the user who triggered a
+/// turn). Without guild-admin information an account is either an owner or a
+/// plain user, so `admin.*` nodes are granted to owners only.
+impl Authorizer for Permissions {
+    fn allows(&self, account: &AccountRef, node: &str) -> bool {
+        let role = if self.is_owner(account) {
+            Role::Owner
+        } else {
+            Role::User
+        };
+        role >= Role::required_for(node)
+    }
+}
+
 /// Parses `"platform:id"` into an [`AccountRef`].
 pub fn parse_account(s: &str) -> anyhow::Result<AccountRef> {
     match s.trim().split_once(':') {
@@ -130,6 +144,20 @@ mod tests {
         assert!(perms.allows(&admin, "admin.x"));
         assert!(!perms.allows(&user, "admin.x"));
         assert!(perms.allows(&user, "chat"));
+    }
+
+    #[test]
+    fn authorizer_checks_accounts() {
+        let perms = Permissions::from_strings(&["discord:1"]).unwrap();
+        let auth: &dyn Authorizer = &perms;
+        let owner = parse_account("discord:1").unwrap();
+        let user = parse_account("discord:2").unwrap();
+        assert!(auth.allows(&owner, "owner.x"));
+        assert!(auth.allows(&owner, "admin.x"));
+        assert!(auth.allows(&user, "chat.react"));
+        assert!(!auth.allows(&user, "admin.x"));
+        assert!(!auth.allows(&user, "owner.x"));
+        assert!(!auth.allows(&parse_account("twitch:1").unwrap(), "admin.x"));
     }
 
     #[test]

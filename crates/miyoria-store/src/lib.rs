@@ -17,7 +17,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, SubsecRound, Utc};
 use miyoria_types::{
-    AccountRef, ContextKey, ContextKind, IncomingMessage, ModuleId, PersonId, ProfileId, TurnId,
+    AccountRef, ContextKey, ContextKind, DecisionTrace, IncomingMessage, ModuleId, PersonId,
+    ProfileId, TurnId,
 };
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
@@ -160,6 +161,8 @@ pub struct Store {
     pub module_state: Arc<dyn ModuleStateStore>,
     pub persona_overrides: Arc<dyn PersonaOverrideStore>,
     pub people: Arc<dyn PeopleStore>,
+    pub decisions: Arc<dyn DecisionLog>,
+    pub settings: Arc<dyn SettingsStore>,
 }
 
 impl Store {
@@ -186,13 +189,21 @@ impl Store {
     /// Uses one backend for every area.
     pub fn from_backend<B>(backend: Arc<B>) -> Self
     where
-        B: MessageLog + ModuleStateStore + PersonaOverrideStore + PeopleStore + 'static,
+        B: MessageLog
+            + ModuleStateStore
+            + PersonaOverrideStore
+            + PeopleStore
+            + DecisionLog
+            + SettingsStore
+            + 'static,
     {
         Self {
             messages: backend.clone(),
             module_state: backend.clone(),
             persona_overrides: backend.clone(),
-            people: backend,
+            people: backend.clone(),
+            decisions: backend.clone(),
+            settings: backend,
         }
     }
 }
@@ -218,4 +229,52 @@ pub(crate) fn kind_from_str(s: &str) -> anyhow::Result<ContextKind> {
 /// Timestamps are stored with microsecond precision, like PostgreSQL.
 pub(crate) fn to_micros(ts: DateTime<Utc>) -> DateTime<Utc> {
     ts.trunc_subsecs(6)
+}
+
+/// One attention decision of the agent, for "why did she (not) reply" views.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DecisionRecord {
+    pub id: Ulid,
+    pub profile: ProfileId,
+    pub ts: DateTime<Utc>,
+    pub trace: DecisionTrace,
+}
+
+#[async_trait]
+pub trait DecisionLog: Send + Sync {
+    async fn append(&self, record: &DecisionRecord) -> anyhow::Result<()>;
+
+    /// Newest first, optionally only for one context.
+    async fn recent(
+        &self,
+        profile: &ProfileId,
+        context: Option<&ContextKey>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<DecisionRecord>>;
+}
+
+/// Small per-profile JSON settings changed at runtime (e.g. channel modes set
+/// with `/mode`). Keys are free-form, conventionally `area:subkey`.
+#[async_trait]
+pub trait SettingsStore: Send + Sync {
+    async fn get(
+        &self,
+        profile: &ProfileId,
+        key: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>>;
+
+    /// `None` deletes the key.
+    async fn set(
+        &self,
+        profile: &ProfileId,
+        key: &str,
+        value: Option<serde_json::Value>,
+    ) -> anyhow::Result<()>;
+
+    /// All keys starting with `prefix`.
+    async fn list(
+        &self,
+        profile: &ProfileId,
+        prefix: &str,
+    ) -> anyhow::Result<BTreeMap<String, serde_json::Value>>;
 }

@@ -28,6 +28,9 @@ pub struct ProfileManifest {
     /// Names that count as addressing her directly.
     #[serde(default)]
     pub nicknames: Vec<String>,
+    /// Topics she cares about; they make ambient messages more interesting.
+    #[serde(default)]
+    pub interests: Vec<String>,
     #[serde(default)]
     pub language: LanguageConfig,
     #[serde(default)]
@@ -237,4 +240,27 @@ fn read_optional_table(path: &Path) -> anyhow::Result<Option<toml::Table>> {
     Ok(Some(
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interests_default_to_empty() {
+        let m: ProfileManifest = toml::from_str("id = \"x\"\ndisplay_name = \"X\"").unwrap();
+        assert!(m.interests.is_empty());
+        let m: ProfileManifest =
+            toml::from_str("id = \"x\"\ndisplay_name = \"X\"\ninterests = [\"海\"]").unwrap();
+        assert_eq!(m.interests, ["海"]);
+    }
+
+    #[test]
+    fn loads_the_bundled_profile() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles");
+        let p = Profile::load(dir, "deepseek-chan").unwrap();
+        assert_eq!(p.id.as_str(), "deepseek-chan");
+        assert!(p.manifest.interests.iter().any(|i| i == "鯨魚"));
+        assert!(!p.persona_prompt().is_empty());
+    }
 }

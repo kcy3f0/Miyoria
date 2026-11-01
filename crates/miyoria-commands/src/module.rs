@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use miyoria_kernel::{Module, ModuleContext, ModuleManifest, ModuleStatus, SupervisorHandle};
-use miyoria_types::{ModuleId, ModuleStateKind};
+use miyoria_types::{Authorizer, ModuleId, ModuleStateKind};
 use serde::Deserialize;
 
 use crate::perms::Permissions;
@@ -22,8 +22,8 @@ pub struct CommandsConfig {
     pub owners: Vec<String>,
 }
 
-/// Module `commands`: provides `Arc<CommandRegistry>` as a service and
-/// registers the built-in commands (`ping`, `admin module ...`).
+/// Module `commands`: provides `Arc<CommandRegistry>` and `Arc<dyn Authorizer>`
+/// as services and registers the built-in commands (`ping`, `admin module ...`).
 pub struct CommandsModule {
     manifest: ModuleManifest,
 }
@@ -53,11 +53,11 @@ impl Module for CommandsModule {
 
     async fn start(&self, ctx: ModuleContext) -> anyhow::Result<()> {
         let config: CommandsConfig = ctx.config()?;
-        let registry = Arc::new(CommandRegistry::new(Permissions::from_strings(
-            &config.owners,
-        )?));
+        let perms = Permissions::from_strings(&config.owners)?;
+        let registry = Arc::new(CommandRegistry::new(perms.clone()));
         register_builtins(&registry, &ctx)?;
         ctx.provide(registry);
+        ctx.provide::<dyn Authorizer>(Arc::new(perms));
         Ok(())
     }
 }
@@ -304,7 +304,11 @@ mod tests {
         );
         let pong = reg.dispatch(inv("ping", "5", None)).await.unwrap();
         assert!(pong.text.starts_with("pong") && !pong.ephemeral);
+        let auth = sup.services().require::<dyn Authorizer>().unwrap();
+        assert!(auth.allows(&parse_account("discord:1").unwrap(), "admin.x"));
+        assert!(!auth.allows(&parse_account("discord:5").unwrap(), "admin.x"));
         sup.stop_all().await;
+        assert!(sup.services().get::<dyn Authorizer>().is_none());
     }
 
     #[tokio::test]

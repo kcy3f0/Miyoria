@@ -6,8 +6,11 @@
 //! runs.
 
 use chrono::{DateTime, Duration, SubsecRound, Utc};
-use miyoria_store::{LogEntry, Store};
-use miyoria_types::{AccountRef, ContextKey, ContextKind, ModuleId, PlatformId, ProfileId, TurnId};
+use miyoria_store::{DecisionRecord, LogEntry, Store};
+use miyoria_types::{
+    AccountRef, ContextKey, ContextKind, DecisionTrace, ModuleId, PlatformId, ProfileId, TurnId,
+};
+use serde_json::json;
 use ulid::Ulid;
 
 const DB_ENV: &str = "MIYORIA_TEST_DATABASE_URL";
@@ -48,6 +51,33 @@ fn entry(profile: &ProfileId, context: &ContextKey, text: &str, ts: DateTime<Utc
 
 fn texts(entries: &[LogEntry]) -> Vec<&str> {
     entries.iter().map(|e| e.text.as_str()).collect()
+}
+
+fn decision(
+    profile: &ProfileId,
+    context: &ContextKey,
+    reason: &str,
+    ts: DateTime<Utc>,
+) -> DecisionRecord {
+    DecisionRecord {
+        id: Ulid::new(),
+        profile: profile.clone(),
+        ts,
+        trace: DecisionTrace {
+            turn: TurnId::new(),
+            context: context.clone(),
+            respond: false,
+            score: 0.25,
+            reasons: vec![reason.to_owned()],
+        },
+    }
+}
+
+fn reasons(records: &[DecisionRecord]) -> Vec<&str> {
+    records
+        .iter()
+        .map(|r| r.trace.reasons[0].as_str())
+        .collect()
 }
 
 mod cases {
@@ -244,6 +274,158 @@ mod cases {
         assert!(acc.first_seen <= acc.last_seen);
     }
 
+    pub async fn decision_log_recent(store: &Store) {
+        let log = &store.decisions;
+        let profile = ProfileId(unique("profile"));
+        let other_profile = ProfileId(unique("profile"));
+        let id = unique("chan");
+        let a = channel(Some("guild"), &id, ContextKind::Channel);
+        let b = channel(Some("guild"), &id, ContextKind::Voice);
+        let t0 = Utc::now().trunc_subsecs(6);
+
+        // Appended out of order.
+        for (reason, ctx, secs) in [("a2", &a, 2), ("a1", &a, 1), ("b3", &b, 3), ("a4", &a, 4)] {
+            log.append(&decision(
+                &profile,
+                ctx,
+                reason,
+                t0 + Duration::seconds(secs),
+            ))
+            .await
+            .unwrap();
+        }
+        log.append(&decision(&other_profile, &a, "other", t0))
+            .await
+            .unwrap();
+
+        let all = log.recent(&profile, None, 100).await.unwrap();
+        assert_eq!(reasons(&all), ["a4", "b3", "a2", "a1"]);
+        let last = log.recent(&profile, None, 2).await.unwrap();
+        assert_eq!(reasons(&last), ["a4", "b3"]);
+        let only_a = log.recent(&profile, Some(&a), 100).await.unwrap();
+        assert_eq!(reasons(&only_a), ["a4", "a2", "a1"]);
+        let only_b = log.recent(&profile, Some(&b), 100).await.unwrap();
+        assert_eq!(reasons(&only_b), ["b3"]);
+        assert!(log.recent(&profile, None, 0).await.unwrap().is_empty());
+        let other = log.recent(&other_profile, None, 100).await.unwrap();
+        assert_eq!(reasons(&other), ["other"]);
+        let empty = channel(Some("guild"), &unique("chan"), ContextKind::Channel);
+        assert!(
+            log.recent(&profile, Some(&empty), 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    pub async fn decision_log_round_trip(store: &Store) {
+        let log = &store.decisions;
+        let profile = ProfileId(unique("profile"));
+        let ctx = channel(None, &unique("dm"), ContextKind::Dm);
+        let mut d = decision(&profile, &ctx, "被提到了", Utc::now());
+        d.trace.respond = true;
+        d.trace.score = 0.875;
+        d.trace.reasons.push("direct message".to_owned());
+        log.append(&d).await.unwrap();
+
+        let got = log.recent(&profile, Some(&ctx), 10).await.unwrap();
+        assert_eq!(got.len(), 1);
+        let got = &got[0];
+        assert_eq!(got.id, d.id);
+        assert_eq!(got.profile, profile);
+        assert_eq!(got.ts, d.ts.trunc_subsecs(6));
+        assert_eq!(got.trace.turn, d.trace.turn);
+        assert_eq!(got.trace.context, ctx);
+        assert!(got.trace.respond);
+        assert_eq!(got.trace.score, 0.875);
+        assert_eq!(got.trace.reasons, d.trace.reasons);
+
+        assert!(log.append(&d).await.is_err(), "duplicate id must fail");
+    }
+
+    pub async fn settings(store: &Store) {
+        let settings = &store.settings;
+        let profile = ProfileId(unique("profile"));
+        let other = ProfileId(unique("profile"));
+        assert_eq!(settings.get(&profile, "mode:general").await.unwrap(), None);
+        assert!(settings.list(&profile, "").await.unwrap().is_empty());
+
+        let chatty = json!({"mode": "chatty", "n": 2});
+        settings
+            .set(&profile, "mode:general", Some(json!("quiet")))
+            .await
+            .unwrap();
+        settings
+            .set(&profile, "mode:general", Some(chatty.clone()))
+            .await
+            .unwrap();
+        settings
+            .set(&profile, "mode:dm", Some(json!(null)))
+            .await
+            .unwrap();
+        settings
+            .set(&other, "mode:general", Some(json!("other")))
+            .await
+            .unwrap();
+        assert_eq!(
+            settings.get(&profile, "mode:general").await.unwrap(),
+            Some(chatty)
+        );
+        assert_eq!(
+            settings.get(&profile, "mode:dm").await.unwrap(),
+            Some(json!(null))
+        );
+
+        // Deleting, also of a missing key, leaves other profiles alone.
+        settings.set(&profile, "mode:dm", None).await.unwrap();
+        settings.set(&profile, "mode:missing", None).await.unwrap();
+        assert_eq!(settings.get(&profile, "mode:dm").await.unwrap(), None);
+        assert_eq!(
+            settings.get(&other, "mode:general").await.unwrap(),
+            Some(json!("other"))
+        );
+    }
+
+    pub async fn settings_list_prefix(store: &Store) {
+        let settings = &store.settings;
+        let profile = ProfileId(unique("profile"));
+        let keys = [
+            "mode:b", "mode:a", "mode_x", "modeX:y", "mo%de:1", "other", "MODE:c",
+        ];
+        for (i, key) in keys.into_iter().enumerate() {
+            settings.set(&profile, key, Some(json!(i))).await.unwrap();
+        }
+        settings
+            .set(&ProfileId(unique("profile")), "mode:z", Some(json!(0)))
+            .await
+            .unwrap();
+
+        let mut listed = Vec::new();
+        for prefix in ["mode:", "mode_", "mo%", "mo", "mode:a", "nothing", ""] {
+            let list = settings.list(&profile, prefix).await.unwrap();
+            listed.push(list.into_keys().collect::<Vec<_>>());
+        }
+        // `_` and `%` are literal, and matching is case-sensitive.
+        assert_eq!(
+            listed,
+            [
+                vec!["mode:a", "mode:b"],
+                vec!["mode_x"],
+                vec!["mo%de:1"],
+                vec!["mo%de:1", "mode:a", "mode:b", "modeX:y", "mode_x"],
+                vec!["mode:a"],
+                vec![],
+                vec![
+                    "MODE:c", "mo%de:1", "mode:a", "mode:b", "modeX:y", "mode_x", "other"
+                ],
+            ]
+        );
+
+        let list = settings.list(&profile, "mode:").await.unwrap();
+        assert_eq!(list["mode:a"], json!(1));
+        assert_eq!(list["mode:b"], json!(0));
+    }
+
     pub async fn from_url_memory(_store: &Store) {
         let store = Store::from_url("memory://").await.unwrap();
         assert!(store.module_state.list().await.unwrap().is_empty());
@@ -296,5 +478,36 @@ suite!(
     persona_overrides,
     persona_overrides_concurrent,
     people,
+    decision_log_recent,
+    decision_log_round_trip,
+    settings,
+    settings_list_prefix,
     from_url_memory,
 );
+
+/// The memory backend keeps only the newest decisions of each profile.
+#[tokio::test]
+async fn memory_decision_log_cap() {
+    const CAP: usize = 10_000;
+    let store = Store::memory();
+    let profile = ProfileId(unique("profile"));
+    let ctx = channel(Some("guild"), "chan", ContextKind::Channel);
+    let t0 = Utc::now().trunc_subsecs(6);
+    for i in 0..=CAP {
+        let ts = t0 + Duration::seconds(i64::try_from(i).unwrap());
+        store
+            .decisions
+            .append(&decision(&profile, &ctx, &i.to_string(), ts))
+            .await
+            .unwrap();
+    }
+
+    let all = store
+        .decisions
+        .recent(&profile, None, usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(all.len(), CAP);
+    assert_eq!(all[0].trace.reasons[0], CAP.to_string());
+    assert_eq!(all[CAP - 1].trace.reasons[0], "1");
+}

@@ -1,6 +1,6 @@
 [package]
 name = "miyoria-store"
-description = "Persistence: message log, module state, persona overrides and people (memory and PostgreSQL backends)"
+description = "Persistence: message log, module state, persona overrides, people, decisions and settings (memory and PostgreSQL backends)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

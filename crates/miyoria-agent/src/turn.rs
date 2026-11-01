@@ -1,4 +1,5 @@
-//! One turn: attention decision, prompt assembly, generation and output.
+//! One turn: attention decision, prompt assembly, generation (with the tool
+//! loop) and output.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,21 +7,21 @@ use std::time::Duration;
 
 use chrono::{Local, Utc};
 use futures::StreamExt;
-use miyoria_llm::{ChatRequest, LlmRouter, StreamEvent};
+use miyoria_llm::{ChatMessage, ChatRequest, LlmRouter, StreamEvent, ToolCall};
 use miyoria_types::{
-    Action, ActionPayload, ActionSink, ContextKey, ContextKind, DecisionTrace, Event,
-    IncomingMessage, LaneKey, OutgoingMessage, Priority, TurnId,
+    AccountRef, Action, ActionPayload, ActionSink, Authorizer, ContextKey, ContextKind,
+    DecisionTrace, Event, IncomingMessage, LaneKey, OutgoingMessage, Priority, TurnId,
 };
 use parking_lot::Mutex;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
 use crate::attention::{self, AttentionInput, Gate};
-use crate::config::ChannelMode;
 use crate::expression::{Expression, ExpressionParser, Segment};
 use crate::prompt::{self, Situation};
 use crate::runtime::Agent;
 use crate::session::Session;
+use crate::tools::ToolContext;
 
 const TYPING_TTL: Duration = Duration::from_secs(10);
 /// History lines shown to the `fast` model.
@@ -66,6 +67,14 @@ struct Turn<'a> {
     inputs: &'a [IncomingMessage],
 }
 
+/// One model response of the generation loop.
+struct Step {
+    expression: Expression,
+    /// Raw text as the model wrote it (tags included).
+    raw: String,
+    calls: Vec<ToolCall>,
+}
+
 #[derive(Deserialize)]
 struct CheckReply {
     respond: bool,
@@ -86,20 +95,22 @@ impl Turn<'_> {
     /// Runs attention; `Some(direct)` if she should respond.
     async fn decide(&self, names: &[String]) -> Option<bool> {
         let cfg = &self.agent.config;
-        let (profile_mode, profile_share) = self.agent.persona.read(|p| {
-            let b = &p.manifest.behavior;
-            (b.default_channel_mode.clone(), b.max_share_of_recent)
+        let (interests, profile_share) = self.agent.persona.read(|p| {
+            (
+                p.manifest.interests.clone(),
+                p.manifest.behavior.max_share_of_recent,
+            )
         });
-        let profile_mode = profile_mode.parse().unwrap_or_else(|e| {
-            warn!(error = %e, "invalid default_channel_mode in profile, using mention-only");
-            ChannelMode::MentionOnly
-        });
+        let mode = self.agent.handle.channel_mode(self.key);
+        let activeness = self.agent.handle.activeness(self.key);
         let assessment = {
             let session = self.session.lock();
             attention::assess(&AttentionInput {
                 config: &cfg.attention,
-                mode: cfg.mode_for(self.key, profile_mode),
+                mode,
+                activeness,
                 names,
+                interests: &interests,
                 max_share: cfg.attention.max_share_of_recent.unwrap_or(profile_share),
                 session: &session,
                 inputs: self.inputs,
@@ -113,7 +124,7 @@ impl Turn<'_> {
             Gate::AskLlm => match self.llm_check().await {
                 Ok(reply) if reply.respond => {
                     reasons.push(format!("fast model: respond ({})", reply.reason));
-                    cfg.attention.llm_yes_probability
+                    activeness.scale(cfg.attention.llm_yes_probability)
                 }
                 Ok(reply) => {
                     reasons.push(format!("fast model: stay quiet ({})", reply.reason));
@@ -121,7 +132,7 @@ impl Turn<'_> {
                 }
                 Err(e) => {
                     reasons.push(format!("fast model check failed: {e:#}"));
-                    assessment.score
+                    activeness.scale(assessment.score)
                 }
             },
         };
@@ -201,50 +212,13 @@ impl Turn<'_> {
             Priority::Initiative
         };
         let lane = LaneKey::text(self.key);
-        let typing = Action::new(
-            lane.clone(),
-            priority,
-            ActionPayload::Typing {
-                context: self.key.clone(),
-            },
-        )
-        .with_ttl(TYPING_TTL)
-        .with_turn(self.turn)
-        .with_coalesce_key(format!("typing:{}", self.key));
-        if let Err(e) = sink.submit(typing).await {
-            warn!(error = %e, "could not submit typing action");
-        }
-
-        let request = ChatRequest {
-            messages,
-            temperature: cfg.temperature,
-            max_tokens: cfg.max_tokens,
-            ..Default::default()
+        // Typing is refreshed until the reply is ready; dropping the turn
+        // (cancellation) stops it too.
+        let expression = tokio::select! {
+            biased;
+            () = self.keep_typing(&*sink, &lane, priority) => unreachable!("typing never ends"),
+            expression = self.produce(&router, messages, priority) => expression?,
         };
-        let mut stream = router.stream("chat", request).await?;
-        let mut parser = ExpressionParser::new();
-        let mut expression = Expression::default();
-        while let Some(event) = stream.next().await {
-            match event? {
-                StreamEvent::TextDelta(text) => {
-                    for segment in parser.push(&text) {
-                        self.apply(&mut expression, segment);
-                    }
-                    if expression.silence {
-                        break;
-                    }
-                }
-                StreamEvent::ReasoningDelta(text) => {
-                    debug!(turn = %self.turn, reasoning = %text, "reasoning");
-                }
-                StreamEvent::ToolCallDelta { .. } => {}
-                StreamEvent::Done { .. } => break,
-            }
-        }
-        drop(stream);
-        for segment in parser.finish() {
-            self.apply(&mut expression, segment);
-        }
         if expression.is_silent() {
             debug!(turn = %self.turn, "she chose silence");
             return Ok(String::new());
@@ -291,6 +265,224 @@ impl Turn<'_> {
         Ok(text)
     }
 
+    /// Submits a typing indicator every `typing_refresh_ms`. Never returns.
+    async fn keep_typing(&self, sink: &dyn ActionSink, lane: &LaneKey, priority: Priority) {
+        let refresh = self.agent.config.typing_refresh();
+        loop {
+            let typing = Action::new(
+                lane.clone(),
+                priority,
+                ActionPayload::Typing {
+                    context: self.key.clone(),
+                },
+            )
+            .with_ttl(TYPING_TTL)
+            .with_turn(self.turn)
+            .with_coalesce_key(format!("typing:{}", self.key));
+            if let Err(e) = sink.submit(typing).await {
+                warn!(error = %e, "could not submit typing action");
+            }
+            tokio::time::sleep(refresh).await;
+        }
+    }
+
+    /// Runs the model, executing tool calls for up to `max_tool_steps`
+    /// rounds, and returns the reply to send.
+    ///
+    /// Text written alongside tool calls is kept in the conversation sent back
+    /// to the model but only used as the reply if the final response has none,
+    /// so it is never sent twice.
+    async fn produce(
+        &self,
+        router: &LlmRouter,
+        mut messages: Vec<ChatMessage>,
+        priority: Priority,
+    ) -> anyhow::Result<Expression> {
+        let cfg = &self.agent.config;
+        let tools_enabled = cfg.tools_enabled && !self.inputs.is_empty();
+        let mut earlier: Option<Expression> = None;
+        for step in 0..=cfg.max_tool_steps {
+            let tools = if tools_enabled {
+                self.agent.tools.specs()
+            } else {
+                Vec::new()
+            };
+            let offered = !tools.is_empty();
+            let request = ChatRequest {
+                messages: messages.clone(),
+                tools,
+                temperature: cfg.temperature,
+                max_tokens: cfg.max_tokens,
+                ..Default::default()
+            };
+            let Step {
+                expression,
+                raw,
+                calls,
+            } = self.stream_step(router, request).await?;
+            if calls.is_empty() || !offered || step == cfg.max_tool_steps {
+                if !calls.is_empty() {
+                    warn!(turn = %self.turn, offered, "ignoring tool calls (disabled or step limit reached)");
+                }
+                return Ok(match earlier {
+                    Some(earlier) if expression.is_silent() => earlier,
+                    _ => expression,
+                });
+            }
+            if !expression.is_silent() {
+                earlier = Some(expression);
+            }
+            messages.push(ChatMessage {
+                tool_calls: calls.clone(),
+                ..ChatMessage::assistant(raw)
+            });
+            for call in &calls {
+                let result = self.run_tool(call, priority).await;
+                messages.push(ChatMessage::tool_result(call.id.clone(), result));
+            }
+        }
+        Ok(earlier.unwrap_or_default())
+    }
+
+    /// Streams one model response, publishing emotions as they arrive.
+    async fn stream_step(&self, router: &LlmRouter, request: ChatRequest) -> anyhow::Result<Step> {
+        let offered_tools = !request.tools.is_empty();
+        let mut stream = router.stream("chat", request).await?;
+        let mut parser = ExpressionParser::new();
+        let mut expression = Expression::default();
+        let mut raw = String::new();
+        let mut calls: Vec<ToolCall> = Vec::new();
+        while let Some(event) = stream.next().await {
+            match event? {
+                StreamEvent::TextDelta(text) => {
+                    raw.push_str(&text);
+                    for segment in parser.push(&text) {
+                        self.apply(&mut expression, segment);
+                    }
+                    // With tools on offer, calls may still follow the silence.
+                    if expression.silence && !offered_tools {
+                        break;
+                    }
+                }
+                StreamEvent::ReasoningDelta(text) => {
+                    debug!(turn = %self.turn, reasoning = %text, "reasoning");
+                }
+                StreamEvent::ToolCallDelta {
+                    index,
+                    id,
+                    name,
+                    arguments,
+                } => {
+                    let index = index as usize;
+                    while calls.len() <= index {
+                        calls.push(ToolCall {
+                            id: String::new(),
+                            name: String::new(),
+                            arguments: String::new(),
+                        });
+                    }
+                    let call = &mut calls[index];
+                    if let Some(id) = id {
+                        call.id = id;
+                    }
+                    if let Some(name) = name {
+                        call.name.push_str(&name);
+                    }
+                    call.arguments.push_str(&arguments);
+                }
+                StreamEvent::Done { .. } => break,
+            }
+        }
+        drop(stream);
+        for segment in parser.finish() {
+            self.apply(&mut expression, segment);
+        }
+        calls.retain(|c| !c.name.is_empty());
+        for (i, call) in calls.iter_mut().enumerate() {
+            if call.id.is_empty() {
+                call.id = format!("call_{i}");
+            }
+        }
+        Ok(Step {
+            expression,
+            raw,
+            calls,
+        })
+    }
+
+    /// Distinct authors of the turn's messages; a tool permission must be
+    /// granted to all of them.
+    fn authors(&self) -> Vec<&AccountRef> {
+        let mut out: Vec<&AccountRef> = Vec::new();
+        for m in self.inputs {
+            if !out.contains(&&m.author.account) {
+                out.push(&m.author.account);
+            }
+        }
+        out
+    }
+
+    /// Runs one tool call; the result (or error) is a short text for the model.
+    async fn run_tool(&self, call: &ToolCall, priority: Priority) -> String {
+        let (ok, result) = self.try_tool(call, priority).await;
+        let result = truncate(&result, self.agent.config.max_tool_result_chars);
+        debug!(turn = %self.turn, tool = %call.name, ok, %result, "tool call");
+        self.agent.ctx.publish_in_turn(
+            Event::Custom {
+                topic: "agent.tool".into(),
+                payload: serde_json::json!({
+                    "turn": self.turn,
+                    "context": self.key,
+                    "tool": call.name,
+                    "ok": ok,
+                    "result": result,
+                }),
+            },
+            self.turn,
+        );
+        result
+    }
+
+    async fn try_tool(&self, call: &ToolCall, priority: Priority) -> (bool, String) {
+        let Some(tool) = self.agent.tools.get(&call.name) else {
+            return (false, format!("error: unknown tool `{}`", call.name));
+        };
+        if let Some(node) = tool.permission() {
+            let authorizer = self.agent.ctx.services().get::<dyn Authorizer>();
+            let allowed = authorizer
+                .is_some_and(|a| self.authors().iter().all(|account| a.allows(account, node)));
+            if !allowed {
+                return (
+                    false,
+                    "error: permission denied (the user who asked may not use this tool)".into(),
+                );
+            }
+        }
+        let args = if call.arguments.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            match serde_json::from_str(&call.arguments) {
+                Ok(v) => v,
+                Err(e) => return (false, format!("error: arguments are not valid JSON: {e}")),
+            }
+        };
+        let Some(last) = self.inputs.last() else {
+            return (false, "error: no triggering message".into());
+        };
+        let ctx = ToolContext {
+            turn: self.turn,
+            context: self.key.clone(),
+            account: last.author.account.clone(),
+            message: last.id.clone(),
+            priority,
+        };
+        match tokio::time::timeout(self.agent.config.tool_timeout(), tool.call(&ctx, args)).await {
+            Ok(Ok(out)) => (true, out),
+            Ok(Err(e)) => (false, format!("error: {e:#}")),
+            Err(_) => (false, "error: timed out".into()),
+        }
+    }
+
     fn apply(&self, expression: &mut Expression, segment: Segment) {
         if let Segment::Emotion(emotion) = &segment {
             if !expression.silence {
@@ -308,6 +500,13 @@ impl Turn<'_> {
             }
         }
         expression.apply(segment);
+    }
+}
+
+fn truncate(text: &str, max_chars: usize) -> String {
+    match text.char_indices().nth(max_chars) {
+        Some((i, _)) => format!("{}…", &text[..i]),
+        None => text.to_owned(),
     }
 }
 
@@ -333,5 +532,11 @@ mod tests {
         assert!(!parse_check("{\"respond\": false}").unwrap().respond);
         assert!(parse_check("yes").is_err());
         assert!(parse_check("{\"respond\": \"maybe\"}").is_err());
+    }
+
+    #[test]
+    fn truncates_tool_results() {
+        assert_eq!(truncate("短", 5), "短");
+        assert_eq!(truncate("一二三四五六", 3), "一二三…");
     }
 }

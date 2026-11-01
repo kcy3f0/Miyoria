@@ -77,6 +77,16 @@ pub fn run(config_path: &Path) -> anyhow::Result<()> {
             env = upsert_env(&env, key, value);
         }
     }
+    if !env.contains("MIYORIA_API_TOKEN=")
+        || env.contains(
+            "MIYORIA_API_TOKEN=
+",
+        )
+    {
+        // Two ULIDs = 160 random bits; only used to authenticate the local CLI / panel.
+        let token = format!("{}{}", ulid::Ulid::new(), ulid::Ulid::new()).to_lowercase();
+        env = upsert_env(&env, "MIYORIA_API_TOKEN", &token);
+    }
     fs::write(&env_path, env).with_context(|| format!("writing {}", env_path.display()))?;
     println!("✓ 已寫入 {}(不會進 git)", env_path.display());
 

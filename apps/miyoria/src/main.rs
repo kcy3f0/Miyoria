@@ -2,6 +2,7 @@ mod boot;
 mod cli_platform;
 mod doctor;
 mod init;
+mod remote;
 
 use std::path::{Path, PathBuf};
 
@@ -37,12 +38,26 @@ enum Command {
         #[arg(long)]
         with_discord: bool,
     },
-    /// Inspect modules (subsystems)
+    /// Status of the running core: modules and LLM usage
+    Status,
+    /// Manage modules (subsystems) of the running core
     Module {
         #[command(subcommand)]
         command: ModuleCommand,
     },
-    /// Profile tools
+    /// Recent attention decisions (why she replied or stayed quiet)
+    Decisions {
+        #[arg(long, short, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Follow live events of the running core, e.g. `miyoria events 'agent.*'`
+    Events { topics: Vec<String> },
+    /// Persona sections of the running core
+    Persona {
+        #[command(subcommand)]
+        command: PersonaCommand,
+    },
+    /// Profile tools (offline)
     Profile {
         #[command(subcommand)]
         command: ProfileCommand,
@@ -51,8 +66,27 @@ enum Command {
 
 #[derive(Subcommand)]
 enum ModuleCommand {
-    /// List configured modules and whether they are enabled
+    /// List modules (falls back to the config when the core is not running)
     List,
+    Enable {
+        id: String,
+    },
+    Disable {
+        id: String,
+    },
+    Restart {
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PersonaCommand {
+    Show,
+    /// Replace a section with the contents of a file (`-` for stdin)
+    Set {
+        key: String,
+        file: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -87,20 +121,61 @@ async fn main() -> anyhow::Result<()> {
                 boot::Options {
                     cli_chat_name: Some(name),
                     discord: with_discord,
+                    api: false,
                 },
             )
             .await?;
             println!("和 {} 聊天中(Ctrl+C 結束)。", boot.profile_display_name);
             boot.run_until_ctrl_c().await
         }
-        Command::Module {
-            command: ModuleCommand::List,
-        } => {
+        Command::Status => {
             let config = Config::load(&cli.config)?;
-            for (id, enabled) in boot::configured_modules(&config) {
-                println!("{} {id}", if enabled { "●" } else { "○" });
+            remote::status(&remote::client(&config)?).await
+        }
+        Command::Module { command } => {
+            let config = Config::load(&cli.config)?;
+            let (id, action) = match command {
+                ModuleCommand::List => {
+                    let client = remote::client(&config);
+                    if let Ok(client) = &client
+                        && client.health().await.is_ok()
+                    {
+                        return remote::modules(client).await;
+                    }
+                    println!("(core 沒有在執行,顯示設定檔內容)");
+                    for (id, enabled) in boot::configured_modules(&config) {
+                        println!("{} {id}", if enabled { "●" } else { "○" });
+                    }
+                    return Ok(());
+                }
+                ModuleCommand::Enable { id } => (id, "enable"),
+                ModuleCommand::Disable { id } => (id, "disable"),
+                ModuleCommand::Restart { id } => (id, "restart"),
+            };
+            remote::module_action(&remote::client(&config)?, &id, action).await
+        }
+        Command::Decisions { limit } => {
+            let config = Config::load(&cli.config)?;
+            remote::decisions(&remote::client(&config)?, limit).await
+        }
+        Command::Events { topics } => {
+            let config = Config::load(&cli.config)?;
+            remote::events(&remote::client(&config)?, &topics).await
+        }
+        Command::Persona { command } => {
+            let config = Config::load(&cli.config)?;
+            let client = remote::client(&config)?;
+            match command {
+                PersonaCommand::Show => remote::persona_show(&client).await,
+                PersonaCommand::Set { key, file } => {
+                    let body = if file.as_os_str() == "-" {
+                        std::io::read_to_string(std::io::stdin())?
+                    } else {
+                        std::fs::read_to_string(&file)?
+                    };
+                    remote::persona_set(&client, &key, body.trim()).await
+                }
             }
-            Ok(())
         }
         Command::Profile {
             command: ProfileCommand::Validate,

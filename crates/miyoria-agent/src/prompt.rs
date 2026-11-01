@@ -1,5 +1,6 @@
-//! Prompt assembly. Message 1 is the persona prompt and never contains
-//! anything per-turn, so providers can cache it as a prefix.
+//! Prompt assembly, ordered for provider prefix caching: the stable persona
+//! prompt first, then the conversation history (which only grows at the end),
+//! and the per-turn situation (current time, addressing) last.
 
 use chrono::{DateTime, Datelike, TimeZone};
 use miyoria_llm::{ChatMessage, ChatRole};
@@ -62,7 +63,7 @@ where
         .replace("{addressing}", if s.direct { ADDRESSED } else { AMBIENT })
 }
 
-/// `[persona, situation, history...]`. Her messages become `assistant`,
+/// `[persona, history..., situation]`. Her messages become `assistant`,
 /// everyone else's `user` as `"{name}: {text}"`; consecutive messages of the
 /// same role are merged.
 pub fn build_messages<'a>(
@@ -70,7 +71,7 @@ pub fn build_messages<'a>(
     situation: &str,
     history: impl IntoIterator<Item = &'a HistoryEntry>,
 ) -> Vec<ChatMessage> {
-    let mut out = vec![ChatMessage::system(persona), ChatMessage::system(situation)];
+    let mut out = vec![ChatMessage::system(persona)];
     let mut tail: Vec<ChatMessage> = Vec::new();
     for entry in history {
         let (role, line) = if entry.is_self {
@@ -90,6 +91,7 @@ pub fn build_messages<'a>(
         }
     }
     out.extend(tail);
+    out.push(ChatMessage::system(situation));
     out
 }
 
@@ -212,10 +214,10 @@ mod tests {
         let msgs = build_messages("PERSONA", "SITUATION", &history);
         assert_eq!(msgs.len(), 5);
         assert_eq!(msgs[0], ChatMessage::system("PERSONA"));
-        assert_eq!(msgs[1], ChatMessage::system("SITUATION"));
-        assert_eq!(msgs[2], ChatMessage::user("Owen: 早安\n阿明: 安安"));
-        assert_eq!(msgs[3], ChatMessage::assistant("早啦"));
-        assert_eq!(msgs[4], ChatMessage::user("Owen: 吃了沒"));
+        assert_eq!(msgs[1], ChatMessage::user("Owen: 早安\n阿明: 安安"));
+        assert_eq!(msgs[2], ChatMessage::assistant("早啦"));
+        assert_eq!(msgs[3], ChatMessage::user("Owen: 吃了沒"));
+        assert_eq!(msgs[4], ChatMessage::system("SITUATION"));
     }
 
     #[test]

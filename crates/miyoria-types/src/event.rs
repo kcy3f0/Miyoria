@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{ActionId, EventId, ModuleId, TurnId};
-use crate::platform::{AccountRef, ContextKey, IncomingMessage, PlatformId};
+use crate::platform::{AccountRef, ContextKey, IncomingMessage, MessageRef, PlatformId};
 
 /// Every event on the bus is wrapped in an envelope.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -86,6 +86,9 @@ pub enum Event {
         turn: Option<TurnId>,
         ok: bool,
         error: Option<String>,
+        /// The message created by a successful `SendMessage`.
+        #[serde(default)]
+        message: Option<MessageRef>,
     },
     ModuleStateChanged {
         module: ModuleId,

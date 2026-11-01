@@ -7,9 +7,11 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+miyoria-commands.workspace = true
 miyoria-kernel.workspace = true
 miyoria-llm.workspace = true
 miyoria-profile.workspace = true
+miyoria-store.workspace = true
 miyoria-types.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true

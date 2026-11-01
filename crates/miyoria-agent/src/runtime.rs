@@ -3,17 +3,23 @@ use std::sync::Arc;
 
 use miyoria_kernel::{ModuleContext, Subscription, TopicFilter};
 use miyoria_types::{
-    AccountRef, ActionId, ContextKey, Envelope, Event, IncomingMessage, PlatformId,
+    AccountRef, ActionId, ContextKey, Envelope, Event, IncomingMessage, ModuleStateKind, PlatformId,
 };
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::attention::RandomSource;
+use crate::commands::AgentCommands;
 use crate::config::AgentConfig;
 use crate::coordinator::Coordinator;
+use crate::handle::AgentHandle;
 use crate::persona::PersonaHandle;
 use crate::session::Session;
+use crate::tools::ToolRegistry;
+
+/// Module whose restart means the agent commands must be registered again.
+const COMMANDS_MODULE: &str = "commands";
 
 pub(crate) enum Input {
     Message(Box<IncomingMessage>),
@@ -31,6 +37,9 @@ pub(crate) struct Agent {
     pub config: AgentConfig,
     pub persona: PersonaHandle,
     pub random: Arc<dyn RandomSource>,
+    pub handle: Arc<AgentHandle>,
+    pub tools: Arc<ToolRegistry>,
+    commands: Arc<AgentCommands>,
     self_accounts: RwLock<HashSet<AccountRef>>,
     contexts: Mutex<HashMap<ContextKey, ContextHandle>>,
     /// Her submitted messages awaiting `action.completed`.
@@ -43,12 +52,18 @@ impl Agent {
         config: AgentConfig,
         persona: PersonaHandle,
         random: Arc<dyn RandomSource>,
+        handle: Arc<AgentHandle>,
+        tools: Arc<ToolRegistry>,
+        commands: Arc<AgentCommands>,
     ) -> Self {
         Self {
             ctx,
             config,
             persona,
             random,
+            handle,
+            tools,
+            commands,
             self_accounts: RwLock::new(HashSet::new()),
             contexts: Mutex::new(HashMap::new()),
             pending_actions: Mutex::new(HashMap::new()),
@@ -61,6 +76,7 @@ impl Agent {
             "platform.message.created",
             "platform.typing",
             "action.completed",
+            "system.module.state",
         ])
     }
 
@@ -97,6 +113,17 @@ impl Agent {
                 if let (Some(session), false) = (session, ok) {
                     session.lock().forget_action(*action);
                 }
+            }
+            Event::ModuleStateChanged {
+                module,
+                state: ModuleStateKind::Running,
+                ..
+            } if module.as_str() == COMMANDS_MODULE => {
+                self.commands.install(
+                    self.ctx.services(),
+                    self.handle.clone(),
+                    self.persona.clone(),
+                );
             }
             _ => {}
         }

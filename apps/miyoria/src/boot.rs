@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use async_trait::async_trait;
 use miyoria_agent::AgentModule;
+use miyoria_api::ApiModule;
 use miyoria_commands::CommandsModule;
 use miyoria_discord::DiscordBotModule;
 use miyoria_kernel::{
@@ -16,7 +17,9 @@ use miyoria_llm::{LlmConfig, LlmModule, ModelRef};
 use miyoria_llm_openai::OpenAiFactory;
 use miyoria_profile::Profile;
 use miyoria_scheduler::SchedulerModule;
-use miyoria_store::{LogEntry, Store};
+use miyoria_store::{
+    DecisionLog, DecisionRecord, LogEntry, PersonaOverrideStore, SettingsStore, Store,
+};
 use miyoria_types::{AccountRef, Event, ModuleId, ModuleStateKind, PlatformSinks, ProfileId};
 use tracing::{info, warn};
 
@@ -32,6 +35,7 @@ const MODULES: &[&str] = &[
     CommandsModule::ID,
     DiscordBotModule::ID,
     RecorderModule::ID,
+    ApiModule::ID,
 ];
 
 pub struct Options {
@@ -39,6 +43,8 @@ pub struct Options {
     pub cli_chat_name: Option<String>,
     /// Connect the Discord bot.
     pub discord: bool,
+    /// Serve the Admin API.
+    pub api: bool,
 }
 
 impl Default for Options {
@@ -46,6 +52,7 @@ impl Default for Options {
         Self {
             cli_chat_name: None,
             discord: true,
+            api: true,
         }
     }
 }
@@ -129,6 +136,9 @@ pub async fn build(config: &Config, options: Options) -> anyhow::Result<Boot> {
     services.provide(&kernel, Arc::new(PlatformSinks::new()));
     services.provide::<SupervisorHandle>(&kernel, Arc::new(supervisor.clone()));
     services.provide(&kernel, store.clone());
+    services.provide::<dyn SettingsStore>(&kernel, store.settings.clone());
+    services.provide::<dyn DecisionLog>(&kernel, store.decisions.clone());
+    services.provide::<dyn PersonaOverrideStore>(&kernel, store.persona_overrides.clone());
 
     let mut profile = load_profile(config)?;
     for (key, body) in store.persona_overrides.current(&profile.id).await? {
@@ -136,6 +146,7 @@ pub async fn build(config: &Config, options: Options) -> anyhow::Result<Boot> {
     }
     let profile_display_name = profile.display_name().to_owned();
     let profile_id = profile.id.clone();
+    services.provide(&kernel, Arc::new(profile_id.clone()));
 
     let mut modules: Vec<Arc<dyn Module>> = vec![
         Arc::new(llm_module(config, &profile)?),
@@ -146,6 +157,9 @@ pub async fn build(config: &Config, options: Options) -> anyhow::Result<Boot> {
     ];
     if options.discord {
         modules.push(Arc::new(DiscordBotModule::new()));
+    }
+    if options.api {
+        modules.push(Arc::new(ApiModule::new()));
     }
     if let Some(name) = options.cli_chat_name {
         modules.push(Arc::new(CliPlatform::new(name, &profile_display_name)));
@@ -158,13 +172,12 @@ pub async fn build(config: &Config, options: Options) -> anyhow::Result<Boot> {
         if let Some(saved) = store.module_state.get(&id).await? {
             enabled = enabled && saved;
         }
-        if id.as_str() == DiscordBotModule::ID
-            && section
-                .get("token")
-                .and_then(|t| t.as_str())
-                .is_none_or(str::is_empty)
-        {
-            warn!("Discord bot token is empty; `platform.discord.bot` disabled");
+        let token_missing = section
+            .get("token")
+            .and_then(|t| t.as_str())
+            .is_none_or(str::is_empty);
+        if token_missing && (id.as_str() == DiscordBotModule::ID || id.as_str() == ApiModule::ID) {
+            warn!(module = %id, "token is empty; module disabled");
             enabled = false;
         }
         supervisor.register(module, section, enabled).await;
@@ -197,8 +210,8 @@ fn persist_module_state(bus: &EventBus, store: Arc<Store>) {
     });
 }
 
-/// `recorder`: writes every message (hers included) to the message log and
-/// keeps the people table up to date.
+/// `recorder`: writes every message (hers included) to the message log, keeps
+/// the people table up to date and stores the agent's decision traces.
 struct RecorderModule {
     manifest: ModuleManifest,
     store: Arc<Store>,
@@ -228,6 +241,7 @@ impl Module for RecorderModule {
         let mut sub = ctx.subscribe(TopicFilter::new([
             "platform.ready",
             "platform.message.created",
+            "agent.decision",
         ]));
         let store = self.store.clone();
         let profile = self.profile.clone();
@@ -257,6 +271,17 @@ impl Module for RecorderModule {
                                 .await
                         {
                             warn!(error = %e, "failed to record person");
+                        }
+                    }
+                    Event::AgentDecision(trace) => {
+                        let record = DecisionRecord {
+                            id: ulid::Ulid::new(),
+                            profile: profile.clone(),
+                            ts: env.ts,
+                            trace: trace.clone(),
+                        };
+                        if let Err(e) = store.decisions.append(&record).await {
+                            warn!(error = %e, "failed to record decision");
                         }
                     }
                     _ => {}

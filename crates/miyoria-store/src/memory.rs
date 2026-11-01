@@ -1,6 +1,7 @@
 //! In-memory backend. Nothing survives a restart.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::ops::Bound;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -9,9 +10,12 @@ use parking_lot::Mutex;
 use ulid::Ulid;
 
 use crate::{
-    Account, LogEntry, MessageLog, ModuleStateStore, PeopleStore, Person, PersonaOverride,
-    PersonaOverrideStore, context_lookup_key, to_micros,
+    Account, DecisionLog, DecisionRecord, LogEntry, MessageLog, ModuleStateStore, PeopleStore,
+    Person, PersonaOverride, PersonaOverrideStore, SettingsStore, context_lookup_key, to_micros,
 };
+
+/// Decisions kept per profile; older ones are dropped.
+const MAX_DECISIONS: usize = 10_000;
 
 /// Implements every storage trait in process memory.
 #[derive(Default)]
@@ -20,6 +24,8 @@ pub struct MemoryStore {
     modules: Mutex<BTreeMap<ModuleId, bool>>,
     overrides: Mutex<HashMap<(ProfileId, String), Vec<PersonaOverride>>>,
     people: Mutex<People>,
+    decisions: Mutex<Decisions>,
+    settings: Mutex<HashMap<ProfileId, BTreeMap<String, serde_json::Value>>>,
 }
 
 #[derive(Default)]
@@ -27,6 +33,13 @@ struct Messages {
     ids: HashSet<Ulid>,
     /// Sorted by timestamp; equal timestamps keep append order.
     by_context: HashMap<(ProfileId, String), Vec<LogEntry>>,
+}
+
+#[derive(Default)]
+struct Decisions {
+    ids: HashSet<Ulid>,
+    /// Sorted by `(ts, id)`, at most [`MAX_DECISIONS`] per profile.
+    by_profile: HashMap<ProfileId, VecDeque<DecisionRecord>>,
 }
 
 struct PersonRecord {
@@ -212,5 +225,108 @@ impl PeopleStore for MemoryStore {
             created_at: record.created_at,
             accounts,
         }))
+    }
+}
+
+#[async_trait]
+impl DecisionLog for MemoryStore {
+    async fn append(&self, record: &DecisionRecord) -> anyhow::Result<()> {
+        let mut decisions = self.decisions.lock();
+        if !decisions.ids.insert(record.id) {
+            anyhow::bail!("decision `{}` already exists", record.id);
+        }
+        let mut record = record.clone();
+        record.ts = to_micros(record.ts);
+        let list = decisions
+            .by_profile
+            .entry(record.profile.clone())
+            .or_default();
+        let at = list.partition_point(|d| (d.ts, d.id) <= (record.ts, record.id));
+        list.insert(at, record);
+        let dropped: Vec<Ulid> = list
+            .drain(..list.len().saturating_sub(MAX_DECISIONS))
+            .map(|d| d.id)
+            .collect();
+        for id in dropped {
+            decisions.ids.remove(&id);
+        }
+        Ok(())
+    }
+
+    async fn recent(
+        &self,
+        profile: &ProfileId,
+        context: Option<&ContextKey>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<DecisionRecord>> {
+        let decisions = self.decisions.lock();
+        let Some(list) = decisions.by_profile.get(profile) else {
+            return Ok(Vec::new());
+        };
+        Ok(list
+            .iter()
+            .rev()
+            .filter(|d| context.is_none_or(|c| &d.trace.context == c))
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+}
+
+#[async_trait]
+impl SettingsStore for MemoryStore {
+    async fn get(
+        &self,
+        profile: &ProfileId,
+        key: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        Ok(self
+            .settings
+            .lock()
+            .get(profile)
+            .and_then(|settings| settings.get(key))
+            .cloned())
+    }
+
+    async fn set(
+        &self,
+        profile: &ProfileId,
+        key: &str,
+        value: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        let mut settings = self.settings.lock();
+        match value {
+            Some(value) => {
+                settings
+                    .entry(profile.clone())
+                    .or_default()
+                    .insert(key.to_owned(), value);
+            }
+            None => {
+                if let Some(profile_settings) = settings.get_mut(profile) {
+                    profile_settings.remove(key);
+                    if profile_settings.is_empty() {
+                        settings.remove(profile);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn list(
+        &self,
+        profile: &ProfileId,
+        prefix: &str,
+    ) -> anyhow::Result<BTreeMap<String, serde_json::Value>> {
+        let settings = self.settings.lock();
+        let Some(settings) = settings.get(profile) else {
+            return Ok(BTreeMap::new());
+        };
+        Ok(settings
+            .range::<str, _>((Bound::Included(prefix), Bound::Unbounded))
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect())
     }
 }

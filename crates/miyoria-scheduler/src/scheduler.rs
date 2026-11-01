@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use miyoria_kernel::ModuleContext;
 use miyoria_types::{
-    Action, ActionPayload, ActionSink, Event, LaneKey, PlatformSink, PlatformSinks, TurnId,
+    Action, ActionPayload, ActionSink, Event, LaneKey, MessageRef, PlatformSink, PlatformSinks,
+    TurnId,
 };
 use parking_lot::Mutex;
 use tokio::sync::Notify;
@@ -207,7 +208,7 @@ impl Inner {
         let result = tokio::select! {
             r = tokio::time::timeout(self.config.execute_timeout(), run(&*sink, &action.payload)) => {
                 match r {
-                    Ok(Ok(())) => Ok(()),
+                    Ok(Ok(message)) => Ok(message),
                     Ok(Err(e)) => Err(format!("{e:#}")),
                     Err(_) => Err("timed out".to_owned()),
                 }
@@ -217,7 +218,7 @@ impl Inner {
         self.complete(&action, result);
     }
 
-    fn complete(&self, action: &Action, result: Result<(), String>) {
+    fn complete(&self, action: &Action, result: Result<Option<MessageRef>, String>) {
         if let Err(error) = &result {
             match error.as_str() {
                 "expired" | "cancelled" | "coalesced" => {
@@ -226,22 +227,30 @@ impl Inner {
                 _ => warn!(action = %action.id, lane = %action.lane, %error, "action failed"),
             }
         }
+        let (ok, error, message) = match result {
+            Ok(message) => (true, None, message),
+            Err(error) => (false, Some(error), None),
+        };
         let event = Event::ActionCompleted {
             action: action.id,
             turn: action.turn,
-            ok: result.is_ok(),
-            error: result.err(),
+            ok,
+            error,
+            message,
         };
         self.ctx.bus().publish(self.ctx.id(), event, action.turn);
     }
 }
 
-async fn run(sink: &dyn PlatformSink, payload: &ActionPayload) -> anyhow::Result<()> {
+async fn run(
+    sink: &dyn PlatformSink,
+    payload: &ActionPayload,
+) -> anyhow::Result<Option<MessageRef>> {
     match payload {
         ActionPayload::SendMessage { context, message } => {
-            sink.send(context, message.clone()).await.map(drop)
+            sink.send(context, message.clone()).await.map(Some)
         }
-        ActionPayload::React { message, emoji } => sink.react(message, emoji).await,
-        ActionPayload::Typing { context } => sink.typing(context).await,
+        ActionPayload::React { message, emoji } => sink.react(message, emoji).await.map(|()| None),
+        ActionPayload::Typing { context } => sink.typing(context).await.map(|()| None),
     }
 }

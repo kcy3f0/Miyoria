@@ -14,8 +14,9 @@ use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use ulid::Ulid;
 
 use crate::{
-    Account, LogEntry, MessageLog, ModuleStateStore, PeopleStore, Person, PersonaOverride,
-    PersonaOverrideStore, context_lookup_key, kind_from_str, kind_to_str,
+    Account, DecisionLog, DecisionRecord, LogEntry, MessageLog, ModuleStateStore, PeopleStore,
+    Person, PersonaOverride, PersonaOverrideStore, SettingsStore, context_lookup_key,
+    kind_from_str, kind_to_str,
 };
 
 /// Migrations embedded from `crates/miyoria-store/migrations`.
@@ -337,5 +338,125 @@ impl PeopleStore for PgStore {
                 )
                 .collect(),
         }))
+    }
+}
+
+/// Parses a JSONB column. JSONB values travel as text (`$n::jsonb` and
+/// `col::text`), so sqlx's `json` feature is not needed.
+fn parse_json<T: serde::de::DeserializeOwned>(s: &str, what: &str) -> anyhow::Result<T> {
+    serde_json::from_str(s).with_context(|| format!("invalid {what} JSON in database"))
+}
+
+#[async_trait]
+impl DecisionLog for PgStore {
+    async fn append(&self, record: &DecisionRecord) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO decision_log (id, profile_id, context_key, ts, trace)              VALUES ($1, $2, $3, $4, $5::jsonb)",
+        )
+        .bind(record.id.to_string())
+        .bind(record.profile.as_str())
+        .bind(context_lookup_key(&record.trace.context))
+        .bind(record.ts)
+        .bind(serde_json::to_string(&record.trace)?)
+        .execute(&self.pool)
+        .await
+        .context("cannot append decision")?;
+        Ok(())
+    }
+
+    async fn recent(
+        &self,
+        profile: &ProfileId,
+        context: Option<&ContextKey>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<DecisionRecord>> {
+        let rows: Vec<(String, DateTime<Utc>, String)> = sqlx::query_as(
+            "SELECT id, ts, trace::text FROM decision_log              WHERE profile_id = $1 AND ($2::text IS NULL OR context_key = $2)              ORDER BY ts DESC, id DESC LIMIT $3",
+        )
+        .bind(profile.as_str())
+        .bind(context.map(context_lookup_key))
+        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+        .fetch_all(&self.pool)
+        .await
+        .context("cannot read decisions")?;
+        rows.into_iter()
+            .map(|(id, ts, trace)| {
+                Ok(DecisionRecord {
+                    id: parse_ulid(&id)?,
+                    profile: profile.clone(),
+                    ts,
+                    trace: parse_json(&trace, "decision trace")?,
+                })
+            })
+            .collect()
+    }
+}
+
+#[async_trait]
+impl SettingsStore for PgStore {
+    async fn get(
+        &self,
+        profile: &ProfileId,
+        key: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        let value: Option<String> = sqlx::query_scalar(
+            "SELECT value::text FROM profile_settings WHERE profile_id = $1 AND key = $2",
+        )
+        .bind(profile.as_str())
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?;
+        value
+            .as_deref()
+            .map(|v| parse_json(v, "setting"))
+            .transpose()
+    }
+
+    async fn set(
+        &self,
+        profile: &ProfileId,
+        key: &str,
+        value: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        match value {
+            Some(value) => {
+                sqlx::query(
+                    "INSERT INTO profile_settings (profile_id, key, value)                      VALUES ($1, $2, $3::jsonb)                      ON CONFLICT (profile_id, key)                      DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+                )
+                .bind(profile.as_str())
+                .bind(key)
+                .bind(serde_json::to_string(&value)?)
+                .execute(&self.pool)
+                .await
+                .context("cannot store setting")?;
+            }
+            None => {
+                sqlx::query("DELETE FROM profile_settings WHERE profile_id = $1 AND key = $2")
+                    .bind(profile.as_str())
+                    .bind(key)
+                    .execute(&self.pool)
+                    .await
+                    .context("cannot delete setting")?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn list(
+        &self,
+        profile: &ProfileId,
+        prefix: &str,
+    ) -> anyhow::Result<BTreeMap<String, serde_json::Value>> {
+        // `left()` instead of `LIKE`, so `%` and `_` in the prefix are literal.
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT key, value::text FROM profile_settings              WHERE profile_id = $1 AND left(key, char_length($2)) = $2",
+        )
+        .bind(profile.as_str())
+        .bind(prefix)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|(key, value)| Ok((key, parse_json(&value, "setting")?)))
+            .collect()
     }
 }

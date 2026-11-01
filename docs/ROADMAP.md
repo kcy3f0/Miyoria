@@ -28,11 +28,12 @@
 - [x] `miyoria-scheduler`:`text` lane
 - [x] `miyoria-discord`:文字收發、輸入中、反應、rate limit(尚未連真的 Discord 測)
 - [x] `miyoria-commands` 框架 + `/ping`、`/admin module ...`
-- [ ] `/mode`、`/activeness`(頻道模式切換指令)
+- [x] `/mode`、`/activeness`、`/persona show`(設定存進 DB,重開還在)
+- [x] 工具呼叫迴圈(`ToolRegistry`、觸發者權限檢查、內建 `react`)
 - [x] CLI:`init`、`doctor`、`core`、`chat`(REPL)、`module list`、`profile validate`
-- [ ] CLI `module enable/disable`(要等 Phase 4 的 Admin API 才能操作執行中的 core)
+- [x] CLI `status`、`module list/enable/disable/restart`、`decisions`、`events`、`persona show/set`(透過 Admin API)
 - [x] Decision Trace 以事件發佈(`agent.decision`)
-- [ ] Decision Trace 存進 DB
+- [x] Decision Trace 存進 DB(`miyoria decisions` 可查)
 
 **完成條件**:她在 Discord 有自己的個性,會判斷要不要回、不會洗版;可以用 CLI 和指令開關子系統。
 
@@ -64,7 +65,8 @@
 
 ## Phase 4:Admin API + Panel v1
 
-- [ ] `miyoria-api`:REST + WebSocket + OpenAPI、Discord OAuth2 登入、owner bootstrap
+- [x] `miyoria-api`:REST + SSE 事件串流、bearer token(`miyoria init` 產生)、typed client
+- [ ] OpenAPI、Discord OAuth2 登入
 - [ ] `packages/api-client` 自動產生
 - [ ] Panel(impeccable,深色極簡):總覽、子系統、Decision Trace、Persona 編輯 + Playground、記憶瀏覽、人與關係、權限、日誌與花費
 - [ ] CLI 改成透過 API 操作正在跑的 Core
