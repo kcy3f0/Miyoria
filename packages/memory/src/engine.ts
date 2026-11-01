@@ -101,6 +101,22 @@ export interface Recalled {
   score: number;
 }
 
+/** A search result (`MemoryEngine.search`): the final score and the match scores behind it. */
+export interface Searched extends Recalled {
+  /** The backend's full-text relevance, 0 when it did not match the text. */
+  text_score: number;
+  /** Cosine similarity, `null` when no vectors were compared. */
+  vector_score: number | null;
+}
+
+/** Candidate selection and ranking options shared by `recall` and `search`. */
+interface RankOptions {
+  /** Keep followups already brought up. */
+  includeDone: boolean;
+  /** Drop records scoring below this; `null` keeps every candidate. */
+  minScore: number | null;
+}
+
 export interface ConsolidationReport {
   /** New log lines read. */
   lines: number;
@@ -330,11 +346,72 @@ export class MemoryEngine implements FollowupSource {
     now: Timestamp,
     signal?: AbortSignal,
   ): Promise<Recalled[]> {
+    const ranked = await this.#rank(
+      scopes,
+      present,
+      query,
+      kinds,
+      limit,
+      now,
+      { includeDone: false, minScore: this.config.min_score },
+      signal,
+    );
+    if (ranked.length > 0) {
+      try {
+        await this.records.touch(
+          ranked.map((r) => r.record.id),
+          now,
+        );
+      } catch (error) {
+        log.warn({ error: errorMessage(error) }, "touching recalled memories failed");
+      }
+    }
+    return ranked.map(({ record, score }) => ({ record, score }));
+  }
+
+  /**
+   * Hybrid search for browsing (the admin API): the candidates and score of `recall` with
+   * nobody present, but records are not touched, followups already brought up are kept and
+   * there is no score threshold. Only records matching the text or the vector are returned.
+   */
+  async search(
+    scopes: readonly MemoryScope[],
+    query: string,
+    kinds: readonly MemoryKind[],
+    limit: number,
+    now: Timestamp,
+    signal?: AbortSignal,
+  ): Promise<Searched[]> {
+    return this.#rank(
+      scopes,
+      [],
+      query,
+      kinds,
+      limit,
+      now,
+      { includeDone: true, minScore: null },
+      signal,
+    );
+  }
+
+  async #rank(
+    scopes: readonly MemoryScope[],
+    present: readonly PersonId[],
+    query: string,
+    kinds: readonly MemoryKind[],
+    limit: number,
+    now: Timestamp,
+    options: RankOptions,
+    signal?: AbortSignal,
+  ): Promise<Searched[]> {
     if (limit === 0 || scopes.length === 0) return [];
     const tokens = tokenize(query);
     const embedding = await this.#embedOne(query, signal);
     const wanted = (r: MemoryRecord) =>
-      hasScope(scopes, r.scope) && kinds.includes(r.kind) && r.superseded_by === null && !r.done;
+      hasScope(scopes, r.scope) &&
+      kinds.includes(r.kind) &&
+      r.superseded_by === null &&
+      (options.includeDone || !r.done);
     const fetch = Math.max(this.config.candidate_limit, limit);
 
     // id -> (record, backend text score, vector score)
@@ -368,7 +445,7 @@ export class MemoryEngine implements FollowupSource {
 
     let maxText = 0;
     for (const [, t] of candidates.values()) maxText = Math.max(maxText, t);
-    const ranked: Recalled[] = [];
+    const ranked: Searched[] = [];
     for (const [record, text, vectorScore] of candidates.values()) {
       const vector =
         vectorScore ??
@@ -379,20 +456,12 @@ export class MemoryEngine implements FollowupSource {
       const t = Math.max(backend, tokenOverlap(tokens, record.tokens));
       const s = signals(this.config, record, vector, t, present, now);
       const score = finalScore(this.config, record, s);
-      if (score >= this.config.min_score) ranked.push({ record, score });
+      if (options.minScore === null || score >= options.minScore) {
+        ranked.push({ record, score, text_score: text, vector_score: vector });
+      }
     }
     ranked.sort((a, b) => b.score - a.score || ms(b.record.updated_at) - ms(a.record.updated_at));
     ranked.length = Math.min(ranked.length, limit);
-    if (ranked.length > 0) {
-      try {
-        await this.records.touch(
-          ranked.map((r) => r.record.id),
-          now,
-        );
-      } catch (error) {
-        log.warn({ error: errorMessage(error) }, "touching recalled memories failed");
-      }
-    }
     return ranked;
   }
 

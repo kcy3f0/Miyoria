@@ -95,6 +95,18 @@ export class FakeStore implements MessageLog, PeopleStore, MemoryRecordStore {
     return { id, display_name: record.display_name, created_at: record.created_at, accounts };
   }
 
+  async all(): Promise<Person[]> {
+    const out: Person[] = [];
+    for (const [id, record] of this.#people) {
+      const accounts = [...this.#accounts.values()]
+        .filter(([p]) => p === id)
+        .map(([, a]) => structuredClone(a))
+        .sort((a, b) => ms(a.first_seen) - ms(b.first_seen));
+      out.push({ id, display_name: record.display_name, created_at: record.created_at, accounts });
+    }
+    return out.sort((a, b) => ms(a.created_at) - ms(b.created_at) || (a.id < b.id ? -1 : 1));
+  }
+
   // ---- MemoryRecordStore -----------------------------------------------------------------
 
   async upsert(record: MemoryRecord): Promise<void> {
@@ -231,6 +243,19 @@ export class FakeStore implements MessageLog, PeopleStore, MemoryRecordStore {
         this.#memories.delete(id);
         n += 1;
       }
+    }
+    return n;
+  }
+
+  async mergePerson(keep: PersonId, absorb: PersonId): Promise<number> {
+    if (keep === absorb) return 0;
+    let n = 0;
+    for (const r of this.#memories.values()) {
+      const scoped = r.scope.type === "person" && r.scope.person === absorb;
+      if (!r.subjects.includes(absorb) && !scoped) continue;
+      r.subjects = [...new Set(r.subjects.map((s) => (s === absorb ? keep : s)))];
+      if (scoped) r.scope = { type: "person", person: keep };
+      n += 1;
     }
     return n;
   }

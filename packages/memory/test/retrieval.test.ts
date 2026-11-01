@@ -99,6 +99,51 @@ describe.each(BACKENDS)("retrieval (%s store)", (backend) => {
     expect(got[0]?.score ?? 0, "cosine ~0.99 scaled by fact confidence").toBeGreaterThan(0.85);
   });
 
+  it("search_ranks_like_recall_without_touching", async () => {
+    const embedder = new TableEmbedder()
+      .with("Owen 喜歡拉麵", [1, 0, 0])
+      .with("拉麵店開了", [0.8, 0.2, 0])
+      .with("提醒 Owen 去吃拉麵", [0.7, 0.3, 0])
+      .with("他愛吃什麼", [0.9, 0.1, 0])
+      .with("Amy 討厭下雨", [0, 1, 0]);
+    const e = await envWith(backend, memoryConfig(), null, embedder);
+    const owen = await e.person(acct("2"), "Owen");
+    const global: MemoryScope = { type: "global" };
+    const ramen = await e.add("fact", global, [owen], "Owen 喜歡拉麵", 0.5, t0());
+    const shop = await e.add("episode", G1, [], "拉麵店開了", 0.5, t0());
+    const rain = await e.add("fact", global, [], "Amy 討厭下雨", 0.5, t0());
+    const followup = await e.add("followup", global, [owen], "提醒 Owen 去吃拉麵", 0.5, t0());
+    await e.engine.markDone(followup);
+
+    // Semantic match without shared words; only the given scopes and kinds.
+    let got = await e.engine.search([global], "他愛吃什麼", PROMPT_KINDS, 10, t0());
+    expect(got[0]?.record.id).toBe(ramen);
+    expect(got[0]?.text_score).toBe(0);
+    expect(got[0]?.vector_score ?? 0).toBeGreaterThan(0.9);
+    expect(got.map((r) => r.record.id)).not.toContain(shop);
+    for (let i = 1; i < got.length; i++) {
+      expect(got[i - 1]?.score ?? 0).toBeGreaterThanOrEqual(got[i]?.score ?? 0);
+    }
+    expect(got.at(-1)?.record.id, "least similar last").toBe(rain);
+
+    // Text matches score too; followups already brought up are kept for browsing.
+    got = await e.engine.search(
+      [global, G1],
+      "拉麵",
+      ["fact", "episode", "self_note", "followup"],
+      10,
+      t0(),
+    );
+    const ids = got.map((r) => r.record.id);
+    expect(ids).toEqual(expect.arrayContaining([ramen, shop, followup]));
+    expect(got.find((r) => r.record.id === shop)?.text_score ?? 0).toBeGreaterThan(0);
+    const recalled = await e.engine.recall([global, G1], [], "拉麵", ["followup"], 10, t0());
+    expect(recalled, "recall skips done followups").toEqual([]);
+
+    expect((await e.rec(ramen))?.access_count, "search does not touch").toBe(0);
+    expect(await e.engine.search([], "拉麵", PROMPT_KINDS, 10, t0())).toEqual([]);
+  });
+
   it("prompt_lines_have_relative_dates", async () => {
     const e = await env(backend);
     const id = await e.add("fact", { type: "global" }, [], "Owen 喜歡拉麵", 0.5, t0(-3 * DAY));

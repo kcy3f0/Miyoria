@@ -54,6 +54,7 @@ export {
   memoryFilter,
   type NewMemory,
   type Recalled,
+  type Searched,
   type Stored,
   storedId,
   toFollowup,
