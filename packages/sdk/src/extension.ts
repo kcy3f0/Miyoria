@@ -40,7 +40,6 @@ export interface ToolDefinition {
   /** Permission node the triggering user needs. */
   permission?: string;
   /** Returns the text the model sees; non-strings are JSON encoded. */
-  // biome-ignore lint/suspicious/noExplicitAny: arguments come from the model
   run(args: Record<string, any>, ctx: ToolCallContext): unknown;
 }
 
@@ -211,7 +210,6 @@ export class ExtensionRuntime {
   readonly #def: ExtensionDefinition;
   readonly #exit: (code: number) => void;
   #phase: Phase = "waiting";
-  #init: InitializeParams | undefined;
   #pending: Contributions = { tools: [], commands: [], prompts: [], subscriptions: [] };
   readonly #tools = new Map<string, ToolDefinition>();
   readonly #commands = new Map<string, CommandDefinition>();
@@ -283,7 +281,6 @@ export class ExtensionRuntime {
 
   async #initialize(params: InitializeParams): Promise<InitializeResult> {
     if (this.#phase !== "waiting") throw new RpcError(ErrorCode.InvalidRequest, "already initialized");
-    this.#init = params;
     this.#phase = "activating";
     await this.#def.activate(this.#context(params));
     this.#phase = "active";

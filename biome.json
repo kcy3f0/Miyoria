@@ -15,7 +15,6 @@
       "**/*.json",
       "**/*.jsonc",
       "**/*.css",
-      "!legacy",
       "!workers",
       "!spikes",
       "!profiles",
@@ -85,7 +84,8 @@
             "useExhaustiveDependencies": "off"
           },
           "style": {
-            "useImportType": "off"
+            "useImportType": "off",
+            "noDescendingSpecificity": "off"
           },
           "suspicious": {
             "noArrayIndexKey": "off",
@@ -97,6 +97,9 @@
           "nursery": {
             "noFloatingPromises": "off",
             "noMisusedPromises": "off"
+          },
+          "complexity": {
+            "noImportantStyles": "off"
           }
         }
       }

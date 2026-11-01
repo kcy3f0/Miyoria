@@ -70,7 +70,7 @@ export function advance(i: RevealInput): number {
   let cps = base + Math.max(0, hidden - CATCH_UP_FROM) * CATCH_UP_GAIN;
   if (i.final) cps = Math.max(cps, FINAL_MIN_CPS);
   const next = i.shown + (cps * i.dtMs) / 1000;
-  return next >= i.total ? i.total : next;
+  return Math.min(next, i.total);
 }
 
 /** How long a finished subtitle stays after it is fully shown and her voice has stopped. */

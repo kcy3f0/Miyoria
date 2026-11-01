@@ -94,7 +94,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     selfToken,
     voiceLinkUrl,
     voiceLinkToken: str(env, "VOICE_LINK_TOKEN") ?? "",
-    logLevel: parseLogLevel(env["LOG_LEVEL"]),
+    logLevel: parseLogLevel(env.LOG_LEVEL),
     silenceMs: num(env, "SILENCE_MS", 400, 100, 5000),
     playbackMaxBufferS: num(env, "PLAYBACK_MAX_BUFFER_S", 60, 1, 600),
     playbackPrebufferMs: num(env, "PLAYBACK_PREBUFFER_MS", 60, 0, 2000),

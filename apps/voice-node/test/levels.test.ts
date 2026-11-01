@@ -158,6 +158,7 @@ describe("LevelPublisher", () => {
     advance(10);
     const late = sent.filter((p) => p.t >= 20);
     expect(late.map((p) => p.t)).toEqual([20, 30]);
+    // biome-ignore lint/style/noNonNullAssertion: the length is asserted above
     expect(late[1]!.at - late[0]!.at).toBe(10);
   });
 

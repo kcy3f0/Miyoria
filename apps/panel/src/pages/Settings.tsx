@@ -114,7 +114,7 @@ export function SettingsPage() {
           <div style={{ display: "grid", gap: "var(--s-4)" }}>
             <dl className="dl">
               <dt>目前位址</dt>
-              <dd className="mono">{config.baseUrl || "同源(" + window.location.origin + ")"}</dd>
+              <dd className="mono">{config.baseUrl || `同源(${window.location.origin})`}</dd>
               <dt>登入身分</dt>
               <dd>
                 {user ? (

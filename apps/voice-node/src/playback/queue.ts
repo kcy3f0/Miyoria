@@ -167,7 +167,7 @@ export class PlaybackQueue {
 
   private pump(): void {
     const head = this.entries[0];
-    if (!head || head.state !== "queued") return;
+    if (head?.state !== "queued") return;
     head.state = "waiting";
     this.tryBegin(head);
   }
@@ -206,8 +206,6 @@ export class PlaybackQueue {
       case "overflow":
         this.finishEntry(e, "failed", "audio buffer limit exceeded");
         break;
-      case "faded":
-      case "stopped":
       default:
         // Also covers the player going idle without the source ending (connection lost, etc.).
         this.finishEntry(e, "interrupted");

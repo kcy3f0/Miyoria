@@ -89,7 +89,7 @@ function nonEmpty(v: unknown): string | null {
 }
 
 function clamp01(n: number): number {
-  return n < 0 ? 0 : n > 1 ? 1 : n;
+  return n < 0 ? 0 : Math.min(n, 1);
 }
 
 /** First non-empty string among `keys` of `o`. */
@@ -123,17 +123,17 @@ export function parseMessage(text: string): FeedMessage | null {
     return null;
   }
   if (!isRecord(raw)) return null;
-  switch (raw["type"]) {
+  switch (raw.type) {
     case "subtitle": {
-      const body = str(raw["text"]);
+      const body = str(raw.text);
       if (body === null) return null;
-      const turn = typeof raw["turn"] === "string" || typeof raw["turn"] === "number" ? String(raw["turn"]) : "";
-      return { type: "subtitle", turn, text: body.slice(0, MAX_TEXT), final: raw["final"] === true };
+      const turn = typeof raw.turn === "string" || typeof raw.turn === "number" ? String(raw.turn) : "";
+      return { type: "subtitle", turn, text: body.slice(0, MAX_TEXT), final: raw.final === true };
     }
     case "emotion": {
-      const name = nonEmpty(raw["name"]);
+      const name = nonEmpty(raw.name);
       if (!name) return null;
-      const i = raw["intensity"];
+      const i = raw.intensity;
       return {
         type: "emotion",
         name: name.toLowerCase().slice(0, 32),
@@ -141,22 +141,22 @@ export function parseMessage(text: string): FeedMessage | null {
       };
     }
     case "speaking": {
-      const state = raw["state"];
+      const state = raw.state;
       return state === "started" || state === "stopped" ? { type: "speaking", state } : null;
     }
     case "status":
       return {
         type: "status",
         status: {
-          core: raw["core"] === true,
-          vts: raw["vts"] === true,
-          obs: raw["obs"] === true,
-          scene: nonEmpty(raw["scene"]),
-          streaming: raw["streaming"] === true,
+          core: raw.core === true,
+          vts: raw.vts === true,
+          obs: raw.obs === true,
+          scene: nonEmpty(raw.scene),
+          streaming: raw.streaming === true,
         },
       };
     case "queue": {
-      const items = raw["items"];
+      const items = raw.items;
       if (!Array.isArray(items)) return null;
       const out: QueueItem[] = [];
       for (const it of items) {

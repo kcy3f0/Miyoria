@@ -132,7 +132,7 @@ export class DvsEngine implements StreamEngine {
     } finally {
       signal.removeEventListener("abort", onAbort);
       inner.abort();
-      delete (streamer as unknown as Record<string, unknown>)["createStream"];
+      delete (streamer as unknown as Record<string, unknown>).createStream;
       this.releaseVoice(streamer, attach);
     }
   }

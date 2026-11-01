@@ -88,12 +88,12 @@ export function parseCoreMessage(text: string): ParseResult<CoreMessage> {
     return fail("invalid JSON");
   }
   if (!isRecord(raw)) return fail("message is not a JSON object");
-  const type = raw["type"];
+  const type = raw.type;
   if (typeof type !== "string") return fail("missing string field `type`");
 
   switch (type) {
     case "welcome": {
-      const session = raw["session"];
+      const session = raw.session;
       if (typeof session !== "string" || session.length === 0) return fail("welcome: `session` must be a string");
       return { ok: true, value: { type, session } };
     }
@@ -120,9 +120,9 @@ export function parseCoreMessage(text: string): ParseResult<CoreMessage> {
       return { ok: true, value: { type, guild } };
     }
     case "play_start": {
-      const play = raw["play"];
+      const play = raw.play;
       const guild = reqId(raw, "guild");
-      const rate = raw["sample_rate"];
+      const rate = raw.sample_rate;
       if (!isU32(play)) return fail("play_start: `play` must be a u32");
       if (!guild) return fail("play_start: `guild` must be a non-empty string");
       if (
@@ -136,14 +136,14 @@ export function parseCoreMessage(text: string): ParseResult<CoreMessage> {
       return { ok: true, value: { type, play, guild, sample_rate: rate } };
     }
     case "play_end": {
-      const play = raw["play"];
+      const play = raw.play;
       if (!isU32(play)) return fail("play_end: `play` must be a u32");
       return { ok: true, value: { type, play } };
     }
     case "play_stop": {
-      const play = raw["play"];
+      const play = raw.play;
       if (!isU32(play)) return fail("play_stop: `play` must be a u32");
-      const fade = raw["fade_ms"];
+      const fade = raw.fade_ms;
       let fadeMs = 0;
       if (fade !== undefined && fade !== null) {
         if (typeof fade !== "number" || !Number.isFinite(fade) || fade < 0) {
@@ -182,7 +182,7 @@ function optBool(o: Record<string, unknown>, key: string): { ok: true; v: boolea
 function parseGoLiveStart(raw: Record<string, unknown>): ParseResult<CoreMessage> {
   const guild = reqId(raw, "guild");
   if (!guild) return fail("golive_start: `guild` must be a non-empty string");
-  const source = raw["source"];
+  const source = raw.source;
   if (typeof source !== "string" || source.trim().length === 0 || source.length > MAX_SOURCE_LEN) {
     return fail(`golive_start: \`source\` must be a non-empty string (max ${MAX_SOURCE_LEN} chars)`);
   }
@@ -195,7 +195,7 @@ function parseGoLiveStart(raw: Record<string, unknown>): ParseResult<CoreMessage
     if (!n.ok) return fail(`golive_start: \`${key}\` must be a positive integer`);
     if (n.v !== undefined) value[key] = n.v;
   }
-  const encoder = raw["encoder"];
+  const encoder = raw.encoder;
   if (encoder !== undefined && encoder !== null) {
     if (encoder !== "auto" && encoder !== "nvenc" && encoder !== "software") {
       return fail("golive_start: `encoder` must be auto, nvenc or software");

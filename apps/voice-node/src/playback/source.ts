@@ -184,7 +184,7 @@ export class PlaybackSource {
     for (let i = 0; i < FRAME_SAMPLES; i++) {
       const g = g0 + step * i;
       let s = Math.round((mono[i] as number) * g);
-      s = s > 32767 ? 32767 : s < -32768 ? -32768 : s;
+      s = s > 32767 ? 32767 : Math.max(s, -32768);
       out.writeInt16LE(s, i * 4);
       out.writeInt16LE(s, i * 4 + 2);
     }
