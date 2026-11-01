@@ -2,7 +2,7 @@ import { Check, Copy } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
 import { Button } from "./ui";
 
-const TOKEN = /("(?:\.|[^"\])*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
+const TOKEN = /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
 
 /** Splits pretty JSON into tinted spans (keys, strings, numbers, literals). */
 export function highlightJson(text: string): ReactNode[] {
