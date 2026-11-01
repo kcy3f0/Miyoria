@@ -1,0 +1,226 @@
+import { type CommandRegistry, CommandRegistryKey } from "@miyoria/commands";
+import {
+  defineManifest,
+  errorMessage,
+  interval,
+  type Module,
+  type ModuleContext,
+} from "@miyoria/kernel";
+import { LlmRouterKey } from "@miyoria/llm";
+import type { Profile } from "@miyoria/profile";
+import { IdentityStoreKey, PeopleStoreKey, RelationshipStoreKey, StoreKey } from "@miyoria/store";
+import {
+  AuthorizerKey,
+  type ContextKey,
+  contextKeyString,
+  type PersonId,
+  type ProfileId,
+  type PromptContributors,
+  PromptContributorsKey,
+  SocialSignalsKey,
+} from "@miyoria/types";
+import { registerCommands, unregisterCommands } from "./commands.js";
+import { SocialConfigSchema } from "./config.js";
+import { type Observed, Social, SocialKey, type SocialStores } from "./engine.js";
+import { SocialPrompt } from "./prompt.js";
+
+/** Thrown by `start` when a required store is missing. */
+export class SocialError extends Error {
+  override readonly name = "SocialError";
+}
+
+interface Running {
+  social: Social;
+  registry: CommandRegistry | undefined;
+  contributors: PromptContributors | undefined;
+}
+
+function stores(ctx: ModuleContext): SocialStores {
+  const services = ctx.services;
+  const bundle = services.get(StoreKey);
+  const people = services.get(PeopleStoreKey) ?? bundle?.people;
+  if (!people) throw new SocialError("social needs a `dyn PeopleStore` (or `Store`) service");
+  const relationships = services.get(RelationshipStoreKey) ?? bundle?.relationships;
+  if (!relationships) throw new SocialError("social needs a `dyn RelationshipStore` service");
+  const identity = services.get(IdentityStoreKey) ?? bundle?.identity ?? null;
+  if (!identity) ctx.log.warn("no identity store: `/link` is unavailable");
+  return { people, relationships, identity };
+}
+
+/**
+ * Module `social`. Requires `llm`; `commands` is optional.
+ *
+ * Services used: `RelationshipStoreKey` (required), `PeopleStoreKey` (or the `StoreKey`
+ * bundle), `IdentityStoreKey` (optional, for `/link`), `PromptContributorsKey`,
+ * `CommandRegistryKey` and `AuthorizerKey` (optional). Provides `SocialSignalsKey` and
+ * `SocialKey`.
+ */
+export class SocialModule implements Module {
+  static readonly ID = "social";
+  readonly manifest = defineManifest(SocialModule.ID, "Social", {
+    description: "Relationships, appraisal and account linking",
+    requires: ["llm"],
+    optional: ["commands"],
+    configSchema: SocialConfigSchema,
+  });
+  readonly #profile: ProfileId;
+  readonly #herName: string;
+  readonly #names: string[];
+  #running: Running | null = null;
+
+  constructor(profile: ProfileId, herName: string, names: readonly string[]) {
+    this.#profile = profile;
+    this.#herName = herName;
+    this.#names = [...names];
+  }
+
+  /** Uses the profile's id, display name and nicknames. */
+  static fromProfile(profile: Profile): SocialModule {
+    return new SocialModule(profile.id, profile.displayName, profile.names());
+  }
+
+  async start(ctx: ModuleContext): Promise<void> {
+    const config = ctx.config(SocialConfigSchema);
+    const social = new Social(
+      this.#profile,
+      this.#herName,
+      this.#names,
+      config,
+      stores(ctx),
+      (event) => {
+        ctx.publish(event);
+      },
+      ctx.clock,
+    );
+    social.setAuthorizer(ctx.services.get(AuthorizerKey) ?? null);
+    await social.load();
+
+    ctx.provide(SocialSignalsKey, social);
+    ctx.provide(SocialKey, social);
+
+    const contributors = ctx.services.get(PromptContributorsKey);
+    contributors?.register(new SocialPrompt(social));
+    const registry = ctx.services.get(CommandRegistryKey);
+    if (registry) registerCommands(registry, social);
+    this.#running = { social, registry, contributors };
+
+    // Subscribe before returning so no event published after start is missed.
+    const sub = ctx.subscribe([
+      "platform.ready",
+      "platform.message.created",
+      "voice.utterance",
+      "agent.turn.completed",
+    ]);
+    ctx.spawn("events", async () => {
+      for await (const env of sub) {
+        const now = ctx.clock.now();
+        const event = env.event;
+        let observed: Observed | null = null;
+        switch (event.type) {
+          case "platform_ready":
+            social.addSelfAccount(event.data.self_account);
+            break;
+          case "platform_message_created": {
+            const m = event.data;
+            const own = m.author.is_bot || social.isSelf(m.author.account);
+            if (!own) {
+              observed = {
+                context: m.id.context,
+                account: m.author.account,
+                display_name: m.author.display_name,
+                text: m.text,
+                directed: m.mentions_self || m.reply_to_self || m.id.context.kind === "dm",
+                ts: now,
+              };
+            }
+            break;
+          }
+          case "voice_utterance": {
+            const u = event.data;
+            const own = u.speaker.is_bot || social.isSelf(u.speaker.account);
+            if (!own) {
+              observed = {
+                context: u.context,
+                account: u.speaker.account,
+                display_name: u.speaker.display_name,
+                text: u.text,
+                directed: false,
+                ts: now,
+              };
+            }
+            break;
+          }
+          case "agent_turn_completed":
+            social.observeSelf(event.data.context, event.data.text, now);
+            break;
+          default:
+            break;
+        }
+        if (observed === null) continue;
+        const key = observed.context;
+        try {
+          if (await social.observe(observed)) spawnAppraisal(ctx, social, key);
+        } catch (error) {
+          ctx.log.warn(
+            { err: errorMessage(error), context: contextKeyString(key) },
+            "social appraisal of a line failed",
+          );
+        }
+      }
+    });
+    ctx.spawn("tick", async (signal) => {
+      for await (const _ of interval(Math.max(config.tick_secs, 1) * 1000, signal)) {
+        // The authorizer may be replaced at runtime (e.g. by `auth`).
+        social.setAuthorizer(ctx.services.get(AuthorizerKey) ?? null);
+        const now = ctx.clock.now();
+        for (const key of social.dueAppraisals(now)) spawnAppraisal(ctx, social, key);
+        const person = social.dueNotes(now)[0];
+        if (person !== undefined) spawnNotes(ctx, social, person);
+        try {
+          await social.flush();
+        } catch (error) {
+          ctx.log.warn({ err: errorMessage(error) }, "cannot write relationship counters");
+        }
+      }
+    });
+    ctx.log.info("social module running");
+  }
+
+  async stop(): Promise<void> {
+    const running = this.#running;
+    this.#running = null;
+    if (!running) return;
+    if (running.registry) unregisterCommands(running.registry);
+    running.contributors?.unregister(SocialPrompt.KEY);
+    await running.social.flush();
+  }
+}
+
+function spawnAppraisal(ctx: ModuleContext, social: Social, key: ContextKey): void {
+  const router = ctx.services.get(LlmRouterKey);
+  if (!router) return;
+  ctx.spawn("appraisal", async (signal) => {
+    try {
+      await social.appraise(router, key, ctx.clock.now(), signal);
+    } catch (error) {
+      if (signal.aborted) return;
+      ctx.log.warn(
+        { err: errorMessage(error), context: contextKeyString(key) },
+        "LLM appraisal failed",
+      );
+    }
+  });
+}
+
+function spawnNotes(ctx: ModuleContext, social: Social, person: PersonId): void {
+  const router = ctx.services.get(LlmRouterKey);
+  if (!router) return;
+  ctx.spawn("notes", async (signal) => {
+    try {
+      await social.refreshNotes(router, person, ctx.clock.now(), signal);
+    } catch (error) {
+      if (signal.aborted) return;
+      ctx.log.warn({ err: errorMessage(error), person }, "notes refresh failed");
+    }
+  });
+}

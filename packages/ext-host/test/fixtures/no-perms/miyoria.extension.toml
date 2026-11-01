@@ -1,0 +1,9 @@
+id = "test.noperms"
+version = "0.0.1"
+kind = ["events"]
+runtime = "node"
+entry = "../test-ext/index.mjs"
+placement = "any"
+
+[permissions]
+events = []

@@ -1,0 +1,58 @@
+{
+  "name": "@miyoria/core",
+  "version": "0.1.0",
+  "description": "Boots a core node: store, profile, services and every module, plus the terminal chat platform",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "@miyoria/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./light": {
+      "@miyoria/source": "./src/light.ts",
+      "types": "./dist/light.d.ts",
+      "default": "./dist/light.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@miyoria/agent": "workspace:*",
+    "@miyoria/api": "workspace:*",
+    "@miyoria/auth": "workspace:*",
+    "@miyoria/commands": "workspace:*",
+    "@miyoria/discord": "workspace:*",
+    "@miyoria/ext-host": "workspace:*",
+    "@miyoria/game": "workspace:*",
+    "@miyoria/initiative": "workspace:*",
+    "@miyoria/kernel": "workspace:*",
+    "@miyoria/llm": "workspace:*",
+    "@miyoria/mcp": "workspace:*",
+    "@miyoria/memory": "workspace:*",
+    "@miyoria/profile": "workspace:*",
+    "@miyoria/queue": "workspace:*",
+    "@miyoria/scheduler": "workspace:*",
+    "@miyoria/social": "workspace:*",
+    "@miyoria/speech": "workspace:*",
+    "@miyoria/stage": "workspace:*",
+    "@miyoria/store": "workspace:*",
+    "@miyoria/tools": "workspace:*",
+    "@miyoria/types": "workspace:*",
+    "@miyoria/voice": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.12"
+  }
+}

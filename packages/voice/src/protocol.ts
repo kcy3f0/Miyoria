@@ -1,0 +1,151 @@
+// Voice Link v1 wire format (`docs/protocols/voice-link.md`).
+
+import { z } from "zod";
+
+export const VERSION = 1;
+
+/** Close codes used by Core. */
+export const CLOSE = {
+  /** Malformed hello, unsupported version or no hello in time. */
+  BAD_HELLO: 4400,
+  /** Wrong token. */
+  UNAUTHORIZED: 4401,
+  /** A newer connection for the same self account replaced this one. */
+  REPLACED: 4409,
+  /** Dead peer (no traffic within the heartbeat timeout). */
+  TIMEOUT: 4408,
+  /** Core is shutting down. */
+  GOING_AWAY: 1001,
+} as const;
+
+/** Binary frame tag of captured audio (node → Core). */
+export const TAG_CAPTURE = 0x01;
+/** Binary frame tag of playback audio (Core → node). */
+export const TAG_PLAYBACK = 0x02;
+
+const u32 = () => z.number().int().min(0).max(0xffff_ffff);
+const optString = () => z.string().nullable().default(null);
+
+export const SelfAccountSchema = z.object({ platform: z.string(), id: z.string() });
+export type SelfAccount = z.output<typeof SelfAccountSchema>;
+
+export const WireParticipantSchema = z.object({
+  user_id: z.string(),
+  display_name: z.string().default(""),
+  is_self: z.boolean().default(false),
+  muted: z.boolean().default(false),
+  deafened: z.boolean().default(false),
+});
+export type WireParticipant = z.output<typeof WireParticipantSchema>;
+
+export const WirePlaybackStateSchema = z.enum(["started", "finished", "interrupted", "failed"]);
+export type WirePlaybackState = z.output<typeof WirePlaybackStateSchema>;
+
+/** Go Live state reported by the node. */
+export const WireGoLiveStateSchema = z.enum(["starting", "live", "stopped", "failed"]);
+export type WireGoLiveState = z.output<typeof WireGoLiveStateSchema>;
+
+/** Text frames sent by the voice node. */
+export const NodeMessageSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("hello"),
+    version: u32(),
+    token: z.string(),
+    node: z.string().default(""),
+    self_account: SelfAccountSchema,
+  }),
+  z.object({ type: z.literal("joined"), guild: z.string(), channel: z.string() }),
+  z.object({ type: z.literal("left"), guild: z.string(), reason: optString() }),
+  z.object({
+    type: z.literal("voice_state"),
+    guild: z.string(),
+    channel: z.string(),
+    participants: z.array(WireParticipantSchema),
+  }),
+  z.object({
+    type: z.literal("speaking"),
+    guild: z.string(),
+    user_id: z.string(),
+    speaking: z.boolean(),
+  }),
+  z.object({
+    type: z.literal("stream_open"),
+    stream: u32(),
+    guild: z.string(),
+    channel: z.string(),
+    user_id: z.string(),
+    display_name: z.string().default(""),
+    sample_rate: u32(),
+  }),
+  z.object({ type: z.literal("stream_close"), stream: u32() }),
+  z.object({
+    type: z.literal("playback"),
+    play: u32(),
+    state: WirePlaybackStateSchema,
+    error: optString(),
+  }),
+  z.object({
+    type: z.literal("golive"),
+    guild: z.string(),
+    state: WireGoLiveStateSchema,
+    error: optString(),
+    reason: optString(),
+  }),
+  z.object({ type: z.literal("error"), message: z.string() }),
+  z.object({ type: z.literal("ping") }),
+  z.object({ type: z.literal("pong") }),
+]);
+export type NodeMessage = z.output<typeof NodeMessageSchema>;
+
+/** Text frames sent by Core. Optional fields are left out when unset. */
+export type CoreMessage =
+  | { type: "welcome"; session: string }
+  | { type: "join"; guild: string; channel?: string; user_id?: string }
+  | { type: "leave"; guild: string }
+  | { type: "play_start"; play: number; guild: string; sample_rate: number }
+  | { type: "play_end"; play: number }
+  | { type: "play_stop"; play: number; fade_ms: number }
+  /** Starts a Go Live stream of `source` (see `docs/protocols/voice-link.md`). */
+  | {
+      type: "golive_start";
+      guild: string;
+      channel?: string;
+      source: string;
+      width?: number;
+      height?: number;
+      fps?: number;
+      bitrate_kbps?: number;
+      encoder?: string;
+      audio?: boolean;
+      listen?: boolean;
+    }
+  | { type: "golive_stop"; guild: string }
+  | { type: "ping" }
+  | { type: "pong" };
+
+/** Serializes a Core message; `undefined` fields are dropped (serde `skip_serializing_if`). */
+export function coreMessageJson(msg: CoreMessage): string {
+  return JSON.stringify(msg);
+}
+
+/** `[tag][id: u32 LE][PCM s16le ...]`. */
+export function encodeAudio(tag: number, id: number, samples: Int16Array): Uint8Array {
+  const out = new Uint8Array(5 + samples.length * 2);
+  const v = new DataView(out.buffer);
+  out[0] = tag;
+  v.setUint32(1, id, true);
+  for (let i = 0; i < samples.length; i++) v.setInt16(5 + i * 2, samples[i] as number, true);
+  return out;
+}
+
+/** Parses a binary frame into `{ tag, id, samples }`. A trailing odd byte is ignored. */
+export function decodeAudio(
+  frame: Uint8Array,
+): { tag: number; id: number; samples: Int16Array } | null {
+  if (frame.length < 5) return null;
+  const v = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+  const count = (frame.length - 5) >> 1;
+  const samples = new Int16Array(count);
+  for (let i = 0; i < count; i++) samples[i] = v.getInt16(5 + i * 2, true);
+  return { tag: frame[0] as number, id: v.getUint32(1, true), samples };
+}

@@ -1,7 +1,23 @@
-// @miyoria/store: persistence interfaces and record types. Backends (SQLite via `node:sqlite`
-// by default, Postgres optional) live in their own package and implement every interface here.
+// @miyoria/store: persistence interfaces, record types and the backends implementing all of
+// them: SQLite via `node:sqlite` (default; `:memory:` for tests) and PostgreSQL + pgvector.
+// `openStore(url)` picks one from a store URL.
 
+export {
+  fromMicros,
+  MAX_DECISIONS,
+  normalizeTimestamp,
+  StoreError,
+  toMicros,
+} from "./common.js";
 export { MemorySettingsStore } from "./memory-settings.js";
+export {
+  DEFAULT_STORE_URL,
+  type OpenStoreOptions,
+  openStore,
+  parseStoreUrl,
+  type StoreLocation,
+} from "./open.js";
+export { PostgresStore, type PostgresStoreOptions } from "./postgres.js";
 export {
   type Account,
   type AuditEntry,
@@ -25,6 +41,7 @@ export {
   type RoleDefinition,
   type RoleMapping,
 } from "./records.js";
+export { SqliteStore, type SqliteStoreOptions } from "./sqlite.js";
 export {
   type AuditLog,
   AuditLogKey,

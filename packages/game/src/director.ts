@@ -1,0 +1,1007 @@
+// The director: one game session at a time, a decision every `decide_secs` (sooner on important
+// events), goal tracking, queue goals, commentary and mood nudges.
+
+import { errorMessage, getLogger, type ModuleContext, withTimeout } from "@miyoria/kernel";
+import { type ChatRequest, type LlmRouter, LlmRouterKey, sessionId } from "@miyoria/llm";
+import { RequestQueueKey } from "@miyoria/queue";
+import { type ToolContext, type ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
+import {
+  type AccountRef,
+  type ContextKey,
+  contextKeyEquals,
+  contextKeyString,
+  customEvent,
+  type Envelope,
+  type JsonObject,
+  type JsonValue,
+  newId,
+  type Timestamp,
+  toTimestamp,
+} from "@miyoria/types";
+import type { GameConfig } from "./config.js";
+import {
+  ActionCall,
+  type Decision,
+  type GoalFacts,
+  type GoalSource,
+  goalLocked,
+  goalNote,
+  judge,
+  type MoodNudge,
+  type PromptParts,
+  parseDecision,
+  prompts,
+  splitObservation,
+  type Verdict,
+  verdictDebug,
+} from "./decision.js";
+
+const log = getLogger("game");
+
+/** Topic of the director's decision traces (for the panel / overlay). */
+export const DECISION_TOPIC = "game.director.decision";
+/** Initiative reason of commentary requests. */
+export const INITIATIVE_REASON = "game";
+
+/** Persona bits used in the decision prompt. */
+export interface Persona {
+  /** Profile id (for the LLM session id). */
+  profile: string;
+  name: string;
+  text: string;
+}
+
+/** Where `game start` sends commentary. */
+export type Placement =
+  /** Her voice channel, else the stream context, else where the command ran. */
+  "auto" | "voice" | "here" | "stream";
+
+/** Current goal as shown by `game status` and the prompt section. */
+export interface GoalView {
+  text: string;
+  /** `(觀眾 Owen 的請求)`, empty for her own goals. */
+  note: string;
+  age_secs: number;
+  action: string | null;
+  /** Request queue item id for viewer goals. */
+  queue_item: number | null;
+}
+
+/** Snapshot of the running session (serialized like the Rust struct). */
+export interface GameStatus {
+  game: string;
+  game_name: string;
+  context: ContextKey;
+  started_at: Timestamp;
+  goal: GoalView | null;
+  backlog: string[];
+  summary: string;
+  busy: boolean | null;
+  last_action: string | null;
+  recent: string[];
+}
+
+/** Shared slot the director writes its status to (read by commands and the prompt section). */
+export class View {
+  current: GameStatus | null = null;
+}
+
+/** A refused control request; the message is user-facing (zh-TW). */
+export class GameError extends Error {
+  override readonly name = "GameError";
+}
+
+interface Goal {
+  text: string;
+  source: GoalSource;
+  setAt: number;
+  action: ActionCall | null;
+  issuedAt: number | null;
+  attempts: number;
+}
+
+function newGoal(text: string, source: GoalSource, now: number): Goal {
+  return { text, source, setAt: now, action: null, issuedAt: null, attempts: 0 };
+}
+
+function goalLabel(goal: Goal): string {
+  return `${goal.text}${goalNote(goal.source)}`;
+}
+
+interface QueuedGoal {
+  item: number;
+  text: string;
+  requester: string;
+}
+
+interface Trigger {
+  text: string[];
+  important: boolean;
+}
+
+type Outcome = { type: "reached" } | { type: "failed"; why: string };
+
+interface Session {
+  generation: number;
+  game: string;
+  gameName: string;
+  context: ContextKey;
+  starter: AccountRef;
+  startedAt: number;
+  goal: Goal | null;
+  backlog: QueuedGoal[];
+  recent: string[];
+  summary: string;
+  busy: boolean | null;
+  lastAction: string | null;
+  nextDecide: number;
+  decideStarted: number | null;
+  trigger: Trigger | null;
+  lastComment: number | null;
+}
+
+const observeTool = (s: Session): string => `game_${s.game}_observe`;
+const actTool = (s: Session): string => `game_${s.game}_act`;
+
+function toolCtx(s: Session, signal: AbortSignal): ToolContext {
+  return {
+    turn: newId(),
+    context: s.context,
+    account: s.starter,
+    message: { context: s.context, id: "game" },
+    priority: "initiative",
+    signal,
+  };
+}
+
+/** `anyhow::Result<T>` stand-in for background steps. */
+type Res<T> = { ok: true; value: T } | { ok: false; error: string };
+
+async function attempt<T>(fn: () => Promise<T>): Promise<Res<T>> {
+  try {
+    return { ok: true, value: await fn() };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+/** Result of a background step. */
+type Done =
+  | {
+      type: "decided";
+      generation: number;
+      trigger: Trigger;
+      observation: Res<string>;
+      decision: Res<Decision> | null;
+    }
+  | {
+      type: "acted";
+      generation: number;
+      action: ActionCall;
+      verdict: Verdict;
+      goal: string | null;
+      result: Res<string>;
+    };
+
+type Work = (signal: AbortSignal) => Promise<Done>;
+
+function firstLine(s: string, max: number): string {
+  const line = s.split("\n")[0]?.replace(/\r$/, "") ?? "";
+  const chars = [...line];
+  const out = chars.slice(0, max).join("");
+  return chars.length > max ? `${out}…` : out;
+}
+
+/** `"在 Minecraft 裡做一個高階動作"` → `Minecraft`; else the capitalized id. */
+function gameName(actDescription: string | null, id: string): string {
+  if (actDescription?.startsWith("在 ")) {
+    const rest = actDescription.slice("在 ".length);
+    const at = rest.indexOf(" 裡");
+    if (at >= 0) {
+      const name = rest.slice(0, at).trim();
+      if (name !== "") return name;
+    }
+  }
+  const chars = [...id];
+  const first = chars.shift();
+  return first === undefined ? "" : first.toUpperCase() + chars.join("");
+}
+
+async function callTool(
+  tools: ToolRegistry,
+  name: string,
+  ctx: ToolContext,
+  args: JsonValue,
+  timeoutMs: number,
+): Promise<string> {
+  const tool = tools.get(name);
+  if (!tool) throw new Error(`tool \`${name}\` is not registered`);
+  const result = await withTimeout(tool.call(ctx, args), timeoutMs);
+  if (result === undefined) throw new Error(`tool \`${name}\` timed out`);
+  return result;
+}
+
+/** Everything a decision needs, owned so it can run in the background. */
+interface DecideInput {
+  generation: number;
+  trigger: Trigger;
+  cfg: GameConfig;
+  tools: ToolRegistry;
+  router: LlmRouter | undefined;
+  toolCtx: ToolContext;
+  observeTool: string;
+  actTool: string;
+  persona: Persona;
+  /** Game adapter id. */
+  game: string;
+  gameName: string;
+  goal: string | null;
+  lastAction: string | null;
+  backlog: string[];
+  recent: string[];
+}
+
+async function decide(input: DecideInput): Promise<Done> {
+  const observation = await attempt(() =>
+    callTool(input.tools, input.observeTool, input.toolCtx, {}, input.cfg.tool_timeout_secs * 1000),
+  );
+  const decision = observation.ok ? await decideFrom(input, observation.value) : null;
+  return {
+    type: "decided",
+    generation: input.generation,
+    trigger: input.trigger,
+    observation,
+    decision,
+  };
+}
+
+/** Asks the model, unless the game is not playable right now. */
+async function decideFrom(input: DecideInput, observation: string): Promise<Res<Decision> | null> {
+  const { state } = splitObservation(observation);
+  if (state && (state.connected === false || state.in_game === false)) return null;
+  return attempt(() => ask(input, observation));
+}
+
+async function ask(input: DecideInput, observation: string): Promise<Decision> {
+  const cfg = input.cfg;
+  const act = input.tools.get(input.actTool);
+  if (!act) throw new Error(`tool \`${input.actTool}\` is not registered`);
+  if (!input.router) throw new Error("no LLM router");
+  const trigger = input.trigger.text.length === 0 ? "定時檢查" : input.trigger.text.join(";");
+  const parts: PromptParts = {
+    name: input.persona.name,
+    persona: input.persona.text,
+    game: input.gameName,
+    actDescription: act.spec.description,
+    actParameters: act.spec.parameters,
+    trigger,
+    goal: input.goal,
+    lastAction: input.lastAction,
+    backlog: input.backlog,
+    recent: input.recent,
+    observation,
+  };
+  const { system, user } = prompts(parts);
+  const request: ChatRequest = {
+    messages: [
+      { role: "system", content: system, name: null, tool_calls: [], tool_call_id: null },
+      { role: "user", content: user, name: null, tool_calls: [], tool_call_id: null },
+    ],
+    temperature: cfg.temperature,
+    max_tokens: cfg.max_tokens,
+    json_mode: true,
+    session: sessionId(input.persona.profile, `game-${input.game}`),
+  };
+  const response = await withTimeout(
+    input.router.complete(cfg.purpose, request, input.toolCtx.signal),
+    cfg.llm_timeout_secs * 1000,
+  );
+  if (response === undefined) throw new Error("the decision timed out");
+  return parseDecision(response.text);
+}
+
+/**
+ * Drives one game session at a time. All methods run to completion without awaiting, so they
+ * never interleave; background steps (observe / ask / act) report back through `#onDone`.
+ */
+export class Director {
+  readonly #cfg: GameConfig;
+  readonly #ctx: ModuleContext;
+  readonly #persona: Persona;
+  readonly #view: View;
+  #voices: ContextKey[] = [];
+  #session: Session | null = null;
+  #generation = 0;
+  /** The running background step, if any (aborted when a session starts or stops). */
+  #work: AbortController | null = null;
+  #timer: ReturnType<typeof setTimeout> | null = null;
+  #closed = false;
+
+  constructor(cfg: GameConfig, ctx: ModuleContext, persona: Persona, view: View) {
+    this.#cfg = cfg;
+    this.#ctx = ctx;
+    this.#persona = persona;
+    this.#view = view;
+  }
+
+  get closed(): boolean {
+    return this.#closed;
+  }
+
+  /** Stops all background activity (module stop). */
+  close(): void {
+    this.#closed = true;
+    this.#work?.abort();
+    this.#work = null;
+    this.#disarm();
+  }
+
+  #now(): number {
+    return this.#ctx.clock.now();
+  }
+
+  #secs(s: number): number {
+    return s * 1000;
+  }
+
+  #disarm(): void {
+    if (this.#timer !== null) clearTimeout(this.#timer);
+    this.#timer = null;
+  }
+
+  /** (Re)arms the decision timer: only while a session runs and no step is in flight. */
+  #arm(): void {
+    this.#disarm();
+    const s = this.#session;
+    if (this.#closed || !s || this.#work) return;
+    const delay = Math.max(s.nextDecide - this.#now(), 0);
+    this.#timer = setTimeout(() => {
+      this.#timer = null;
+      const work = this.#startDecide();
+      if (work) this.#run(work);
+      this.#arm();
+    }, delay);
+  }
+
+  #run(work: Work): void {
+    const controller = new AbortController();
+    this.#work = controller;
+    void work(controller.signal).then(
+      (done) => {
+        if (this.#work !== controller) return;
+        this.#work = null;
+        try {
+          const next = this.#onDone(done);
+          if (next) this.#run(next);
+        } catch (error) {
+          log.error({ err: error }, "game director step failed");
+        }
+        this.#arm();
+      },
+      (error: unknown) => {
+        if (this.#work !== controller) return;
+        this.#work = null;
+        log.error({ err: error }, "game director step failed");
+        this.#arm();
+      },
+    );
+  }
+
+  #cancelWork(): void {
+    this.#work?.abort();
+    this.#work = null;
+  }
+
+  #refreshView(): void {
+    const s = this.#session;
+    if (!s) {
+      this.#view.current = null;
+      return;
+    }
+    const now = this.#now();
+    this.#view.current = {
+      game: s.game,
+      game_name: s.gameName,
+      context: s.context,
+      started_at: toTimestamp(s.startedAt),
+      goal: s.goal
+        ? {
+            text: s.goal.text,
+            note: goalNote(s.goal.source),
+            age_secs: Math.floor(Math.max(now - s.goal.setAt, 0) / 1000),
+            action: s.goal.action ? s.goal.action.display() : null,
+            queue_item: s.goal.source.type === "queue" ? s.goal.source.item : null,
+          }
+        : null,
+      backlog: s.backlog.map((q) => `#${q.item} ${q.text}(${q.requester})`),
+      summary: s.summary,
+      busy: s.busy,
+      last_action: s.lastAction,
+      recent: [...s.recent],
+    };
+  }
+
+  // ----- commands -----
+
+  /** Starts a session. Throws `GameError` (user-facing message) when it cannot. */
+  start(game: string, placement: Placement, here: ContextKey, invoker: AccountRef): string {
+    try {
+      const text = this.#start(game, placement, here, invoker);
+      this.#cancelWork();
+      return text;
+    } finally {
+      this.#refreshView();
+      this.#arm();
+    }
+  }
+
+  stop(): string {
+    try {
+      const text = this.#stop();
+      this.#cancelWork();
+      return text;
+    } finally {
+      this.#refreshView();
+      this.#arm();
+    }
+  }
+
+  goal(text: string, by: string): string {
+    try {
+      return this.#commandGoal(text, by);
+    } finally {
+      this.#refreshView();
+      this.#arm();
+    }
+  }
+
+  #resolveContext(placement: Placement, here: ContextKey): ContextKey {
+    const voice = (): ContextKey | undefined =>
+      this.#voices.find((v) => v.platform === here.platform && v.scope === here.scope) ??
+      this.#voices[0];
+    const stream = (): ContextKey | null => this.#cfg.stream_context;
+    switch (placement) {
+      case "auto":
+        return voice() ?? stream() ?? here;
+      case "voice": {
+        const v = voice();
+        if (!v) throw new GameError("我又不在語音頻道裡,要講給誰聽啦。");
+        return v;
+      }
+      case "here":
+        return here;
+      case "stream": {
+        const s = stream();
+        if (!s) throw new GameError("沒有設定直播頻道([modules.game] stream_context)。");
+        return s;
+      }
+    }
+  }
+
+  #start(game: string, placement: Placement, here: ContextKey, invoker: AccountRef): string {
+    if (this.#session) {
+      throw new GameError(`已經在玩 ${this.#session.gameName} 了啦,要換先 \`game stop\`。`);
+    }
+    const tools = this.#ctx.services.get(ToolRegistryKey);
+    if (!tools) throw new GameError("工具系統沒開,沒辦法玩。");
+    const observe = `game_${game}_observe`;
+    const act = tools.get(`game_${game}_act`);
+    if (!tools.get(observe) || !act) {
+      throw new GameError(`找不到 ${game} 的遊戲 adapter(工具 \`${observe}\`),擴充有開嗎?`);
+    }
+    const context = this.#resolveContext(placement, here);
+    const name = gameName(act.spec.description, game);
+    this.#generation += 1;
+    log.info({ game, context: contextKeyString(context) }, "game session started");
+    const where = context.kind === "voice" ? "語音頻道" : "這邊";
+    const now = this.#now();
+    this.#session = {
+      generation: this.#generation,
+      game,
+      gameName: name,
+      context,
+      starter: invoker,
+      startedAt: now,
+      goal: null,
+      backlog: [],
+      recent: [],
+      summary: "",
+      busy: null,
+      lastAction: null,
+      nextDecide: now,
+      decideStarted: null,
+      trigger: { text: ["剛開始玩"], important: true },
+      lastComment: null,
+    };
+    return `好啦,開始玩 ${name}……才不是因為想玩才玩的喔。實況會在${where}講。`;
+  }
+
+  #stop(): string {
+    const s = this.#session;
+    if (!s) throw new GameError("本來就沒在玩啊。");
+    this.#session = null;
+    this.#generation += 1;
+    log.info({ game: s.game }, "game session stopped");
+    const tools = this.#ctx.services.get(ToolRegistryKey);
+    if (tools) {
+      const act = actTool(s);
+      const timeout = this.#secs(this.#cfg.tool_timeout_secs);
+      this.#ctx.spawn("game-stop", async (signal) => {
+        const args = new ActionCall("stop", {}).toolArgs();
+        try {
+          await callTool(tools, act, toolCtx(s, signal), args, timeout);
+        } catch (error) {
+          log.debug({ error: errorMessage(error) }, "stopping the game bot failed");
+        }
+      });
+    }
+    const open: number[] = s.backlog.map((q) => q.item);
+    if (s.goal?.source.type === "queue") open.unshift(s.goal.source.item);
+    let text = `收工!${s.gameName} 今天就玩到這裡。`;
+    if (open.length > 0) {
+      text += `觀眾的請求 ${open.map((i) => `#${i}`).join("、")} 還沒做完,先放著。`;
+    }
+    return text;
+  }
+
+  #commandGoal(rawText: string, by: string): string {
+    const s = this.#session;
+    if (!s) throw new GameError("又沒在玩,要我做什麼啦。");
+    const text = rawText.trim();
+    if (text === "") throw new GameError("目標是什麼?講清楚啦。");
+    const old = s.goal;
+    s.goal = null;
+    if (old?.source.type === "queue") {
+      // The viewer's goal waits for its turn again.
+      s.backlog.unshift({ item: old.source.item, text: old.text, requester: old.source.requester });
+    }
+    s.goal = newGoal(text, { type: "command", by }, this.#now());
+    this.#trigger(`新目標:${text}`, true);
+    return `知道了啦,${text}。`;
+  }
+
+  // ----- events -----
+
+  onEvent(env: Envelope): void {
+    if (this.#closed || env.source === this.#ctx.id) return;
+    const event = env.event;
+    switch (event.type) {
+      case "voice_joined":
+      case "voice_participants":
+        if (!this.#voices.some((v) => contextKeyEquals(v, event.data.context))) {
+          this.#voices.push(event.data.context);
+        }
+        break;
+      case "voice_left":
+        this.#voices = this.#voices.filter((v) => !contextKeyEquals(v, event.data.context));
+        break;
+      case "custom": {
+        const { topic, payload } = event.data;
+        if (topic === "queue.item_activated") {
+          this.#onQueueItem(payload);
+        } else {
+          const s = this.#session;
+          if (!s) return;
+          const prefix = `game.${s.game}.`;
+          if (!topic.startsWith(prefix)) return;
+          const kind = asObject(payload)?.type;
+          this.#onGameEvent(typeof kind === "string" ? kind : topic.slice(prefix.length), payload);
+        }
+        break;
+      }
+      default:
+        return;
+    }
+    this.#refreshView();
+    this.#arm();
+  }
+
+  #remember(line: string): void {
+    const max = Math.max(this.#cfg.recent_events, 1);
+    const s = this.#session;
+    if (!s) return;
+    s.recent.push(line);
+    while (s.recent.length > max) s.recent.shift();
+  }
+
+  #onGameEvent(kind: string, payload: JsonValue): void {
+    const obj = asObject(payload);
+    const data = obj?.data ?? null;
+    const dataObj = asObject(data);
+    const text = typeof dataObj?.text === "string" ? dataObj.text : kind;
+    const important = obj?.important === true;
+    log.debug({ kind, text, important }, "game event");
+    this.#remember(text);
+
+    const s = this.#session;
+    const issuedAt = s?.goal?.issuedAt ?? null;
+    const settled =
+      issuedAt !== null && this.#now() - issuedAt >= this.#secs(this.#cfg.settle_secs);
+    const cancelled = dataObj?.cancelled === true;
+    if (settled && this.#cfg.failed_events.includes(kind)) {
+      this.#finishGoal({ type: "failed", why: text });
+    } else if (settled && !cancelled && this.#cfg.reached_events.includes(kind)) {
+      this.#finishGoal({ type: "reached" });
+    }
+
+    switch (kind) {
+      case "death": {
+        this.#nudge({ valence: -0.15, arousal: 0.1, energy: 0.0, reason: "game: death" });
+        const cur = this.#session;
+        if (cur) {
+          const g = cur.goal;
+          // A requested goal survives the death; it is retried.
+          if (g && goalLocked(g.source)) {
+            g.action = null;
+            g.issuedAt = null;
+          } else {
+            cur.goal = null;
+          }
+        }
+        this.#commentEvent(text, true);
+        break;
+      }
+      case "advancement":
+        this.#nudge({ valence: 0.15, arousal: 0.1, energy: 0.0, reason: "game: advancement" });
+        this.#commentEvent(text, true);
+        break;
+      default:
+        if (important) this.#commentEvent(text, true);
+    }
+    if (this.#cfg.trigger_events.includes(kind)) this.#trigger(text, important);
+  }
+
+  #onQueueItem(payload: JsonValue): void {
+    const obj = asObject(payload);
+    const kind = typeof obj?.kind === "string" ? obj.kind : "";
+    if (kind !== this.#cfg.queue_kind) return;
+    const item = obj?.id;
+    const text = obj?.text;
+    if (
+      typeof item !== "number" ||
+      !Number.isInteger(item) ||
+      item < 0 ||
+      typeof text !== "string"
+    ) {
+      log.warn({ payload }, "queue item without id or text");
+      return;
+    }
+    const requester = typeof obj?.requester_name === "string" ? obj.requester_name : "觀眾";
+    const s = this.#session;
+    if (!s) {
+      log.debug({ item }, "game goal activated while not playing; ignored");
+      return;
+    }
+    const queued: QueuedGoal = { item, text, requester };
+    if (s.goal && goalLocked(s.goal.source)) {
+      s.backlog.push(queued);
+      return;
+    }
+    this.#beginQueued(queued);
+  }
+
+  /** Makes a viewer goal current and announces it. */
+  #beginQueued(q: QueuedGoal): void {
+    const s = this.#session;
+    if (!s) return;
+    const line = `觀眾 ${q.requester} 想要你:${q.text}`;
+    s.goal = newGoal(q.text, { type: "queue", item: q.item, requester: q.requester }, this.#now());
+    this.#remember(line);
+    this.#comment(`${line}。回應一下,然後開始做。`, true);
+    this.#trigger(line, true);
+  }
+
+  #finishGoal(outcome: Outcome): void {
+    const s = this.#session;
+    if (!s) return;
+    const goal = s.goal;
+    if (!goal) return;
+    s.goal = null;
+    let line: string;
+    let hint: { text: string; urgent: boolean } | null;
+    if (goal.source.type === "queue") {
+      const requester = goal.source.requester;
+      if (outcome.type === "reached") {
+        line = `完成目標:${goalLabel(goal)}`;
+        hint = {
+          text: `完成了觀眾 ${requester} 的請求「${goal.text}」,跟大家說一聲`,
+          urgent: true,
+        };
+      } else {
+        line = `目標失敗:${goalLabel(goal)}(${outcome.why})`;
+        hint = {
+          text: `觀眾 ${requester} 的請求「${goal.text}」沒做成(${outcome.why}),找個藉口`,
+          urgent: true,
+        };
+      }
+    } else if (outcome.type === "reached") {
+      line = `完成目標:${goalLabel(goal)}`;
+      hint = { text: `剛完成「${goal.text}」`, urgent: false };
+    } else {
+      line = `目標失敗:${goalLabel(goal)}(${outcome.why})`;
+      hint = null;
+    }
+    log.info({ goal: goal.text, reached: outcome.type === "reached" }, "game goal finished");
+    if (goal.source.type === "queue") {
+      const queue = this.#ctx.services.get(RequestQueueKey);
+      if (queue) {
+        const item = goal.source.item;
+        try {
+          if (outcome.type === "reached") queue.complete(item);
+          else queue.skip(item);
+        } catch (error) {
+          log.warn({ item, error: errorMessage(error) }, "could not finish the queue item");
+        }
+      }
+    }
+    this.#remember(line);
+    if (hint) this.#comment(hint.text, hint.urgent);
+    const next = this.#session?.backlog.shift();
+    if (next) this.#beginQueued(next);
+    else this.#trigger(line, false);
+  }
+
+  /** Asks for an early decision (at most every `min_decide_secs`). */
+  #trigger(text: string, important: boolean): void {
+    const min = this.#secs(this.#cfg.min_decide_secs);
+    const s = this.#session;
+    if (!s) return;
+    s.trigger ??= { text: [], important: false };
+    s.trigger.text.push(text);
+    s.trigger.important ||= important;
+    const now = this.#now();
+    const earliest = s.decideStarted === null ? now : Math.max(s.decideStarted + min, now);
+    if (earliest < s.nextDecide) s.nextDecide = earliest;
+  }
+
+  // ----- commentary and mood -----
+
+  /**
+   * Requests a commentary line; rate-limited unless urgent (urgent ones have their own, shorter
+   * limit). Returns whether it was sent.
+   */
+  #comment(hint: string, urgent: boolean): boolean {
+    const cfg = this.#cfg;
+    const s = this.#session;
+    if (!s) return false;
+    const gap = this.#secs(urgent ? cfg.urgent_commentary_min_secs : cfg.commentary_min_secs);
+    const now = this.#now();
+    if (s.lastComment !== null && now - s.lastComment < gap) {
+      log.debug({ hint, urgent }, "commentary rate-limited");
+      return false;
+    }
+    s.lastComment = now;
+    const text = urgent
+      ? `(你正在直播玩 ${s.gameName})${hint}`
+      : `(你正在直播玩 ${s.gameName})實況:${hint}`;
+    this.#ctx.publish({
+      type: "agent_initiative",
+      data: { context: s.context, reason: INITIATIVE_REASON, hint: text, about: [] },
+    });
+    return true;
+  }
+
+  #commentEvent(text: string, urgent: boolean): void {
+    this.#comment(`剛剛${text}!馬上用一兩句話反應。`, urgent);
+  }
+
+  #nudge(m: MoodNudge): void {
+    this.#ctx.publish(
+      customEvent("mood.nudge", {
+        valence: m.valence,
+        arousal: m.arousal,
+        energy: m.energy,
+        reason: m.reason,
+      }),
+    );
+  }
+
+  // ----- decisions -----
+
+  #startDecide(): Work | null {
+    const cfg = this.#cfg;
+    const s0 = this.#session;
+    if (!s0) return null;
+    const now = this.#now();
+    // Hold the next tick far away until the result arrives.
+    s0.nextDecide = now + this.#secs(cfg.decide_secs);
+    s0.decideStarted = now;
+    const tools = this.#ctx.services.get(ToolRegistryKey);
+    if (!tools) {
+      log.warn("no tool registry; cannot observe the game");
+      return null;
+    }
+    const maxAge = this.#secs(cfg.max_goal_secs);
+    if (s0.goal && now - s0.goal.setAt >= maxAge) {
+      this.#finishGoal({ type: "failed", why: "太久了,放棄" });
+    }
+    const s = this.#session;
+    if (!s) return null;
+    const trigger = s.trigger ?? { text: [], important: false };
+    s.trigger = null;
+    const input: DecideInput = {
+      generation: s.generation,
+      trigger,
+      cfg,
+      tools,
+      router: this.#ctx.services.get(LlmRouterKey),
+      toolCtx: toolCtx(s, new AbortController().signal),
+      observeTool: observeTool(s),
+      actTool: actTool(s),
+      persona: this.#persona,
+      game: s.game,
+      gameName: s.gameName,
+      goal: s.goal
+        ? `${goalLabel(s.goal)}(${
+            s.goal.action === null
+              ? "還沒開始"
+              : `已進行 ${Math.floor(Math.max(this.#now() - s.goal.setAt, 0) / 1000)} 秒`
+          })`
+        : null,
+      lastAction: s.lastAction,
+      backlog: s.backlog.map((q) => `${q.text}(${q.requester})`),
+      recent: [...s.recent],
+    };
+    return (signal) => decide({ ...input, toolCtx: { ...input.toolCtx, signal } });
+  }
+
+  #onDone(done: Done): Work | null {
+    if (this.#session?.generation !== done.generation) return null;
+    let next: Work | null = null;
+    if (done.type === "decided") {
+      next = this.#onDecided(done.trigger, done.observation, done.decision);
+    } else {
+      this.#onActed(done.action, done.verdict, done.goal, done.result);
+    }
+    if (!next) this.#scheduleAfterWork();
+    this.#refreshView();
+    return next;
+  }
+
+  #scheduleAfterWork(): void {
+    const cfg = this.#cfg;
+    const s = this.#session;
+    if (!s) return;
+    const now = this.#now();
+    const next = s.trigger
+      ? s.decideStarted === null
+        ? now
+        : Math.max(s.decideStarted + this.#secs(cfg.min_decide_secs), now)
+      : (s.decideStarted ?? now) + this.#secs(cfg.decide_secs);
+    s.nextDecide = Math.max(next, now);
+  }
+
+  #onDecided(
+    trigger: Trigger,
+    observation: Res<string>,
+    decisionRes: Res<Decision> | null,
+  ): Work | null {
+    const cfg = this.#cfg;
+    const s = this.#session;
+    if (!s) return null;
+    if (observation.ok) {
+      const { summary, state } = splitObservation(observation.value);
+      s.busy = typeof state?.busy === "boolean" ? state.busy : null;
+      s.summary = summary;
+    } else {
+      log.warn({ error: observation.error }, "observing the game failed");
+      s.summary = `看不到遊戲畫面(${observation.error})`;
+      s.busy = null;
+      return null;
+    }
+    if (!decisionRes) return null;
+    if (!decisionRes.ok) {
+      log.warn({ error: decisionRes.error }, "game decision failed");
+      return null;
+    }
+    const decision = decisionRes.value;
+    if (decision.status === "done") this.#finishGoal({ type: "reached" });
+    else if (decision.status === "failed") this.#finishGoal({ type: "failed", why: "做不到" });
+    if (decision.mood) {
+      const max = Math.abs(cfg.max_llm_nudge);
+      const clamp = (v: number): number => Math.min(Math.max(v, -max), max);
+      const m: MoodNudge = {
+        valence: clamp(decision.mood.valence),
+        arousal: clamp(decision.mood.arousal),
+        energy: clamp(decision.mood.energy),
+        reason: decision.mood.reason,
+      };
+      if (m.valence !== 0 || m.arousal !== 0 || m.energy !== 0) {
+        m.reason = `game: ${m.reason}`;
+        this.#nudge(m);
+      }
+    }
+    if (decision.commentary !== null) this.#comment(decision.commentary, false);
+    const cur = this.#session;
+    if (!cur) return null;
+    let verdict: Verdict | null = null;
+    if (decision.action) {
+      const g = cur.goal;
+      const now = this.#now();
+      const facts: GoalFacts | null = g
+        ? {
+            text: g.text,
+            locked: goalLocked(g.source),
+            pending: g.action === null,
+            action: g.action,
+            ageMs: now - g.setAt,
+            sinceIssuedMs: g.issuedAt === null ? 0 : now - g.issuedAt,
+          }
+        : null;
+      verdict = judge(cfg, facts, decision.action, decision.goal, cur.busy, trigger.important);
+    }
+    this.#ctx.publish(
+      customEvent(DECISION_TOPIC, {
+        game: cur.game,
+        trigger: trigger.text,
+        goal: decision.goal,
+        action: decision.action ? decision.action.display() : null,
+        verdict: verdict ? verdictDebug(verdict) : null,
+        commentary: decision.commentary,
+        busy: cur.busy,
+      }),
+    );
+    if (!decision.action || !verdict) return null;
+    if (verdict.type === "keep") {
+      log.debug({ action: decision.action.display(), why: verdict.why }, "kept the current goal");
+      return null;
+    }
+    const tools = this.#ctx.services.get(ToolRegistryKey);
+    if (!tools) return null;
+    const generation = cur.generation;
+    const act = actTool(cur);
+    const timeout = this.#secs(cfg.tool_timeout_secs);
+    const action = decision.action;
+    const goal = decision.goal;
+    const settled = verdict;
+    return async (signal) => {
+      const result = await attempt(() =>
+        callTool(tools, act, toolCtx(cur, signal), action.toolArgs(), timeout),
+      );
+      return { type: "acted", generation, action, verdict: settled, goal, result };
+    };
+  }
+
+  #onActed(
+    action: ActionCall,
+    verdict: Verdict,
+    goalText: string | null,
+    result: Res<string>,
+  ): void {
+    const maxAttempts = Math.max(this.#cfg.max_attempts, 1);
+    const instant = this.#cfg.instant_actions.includes(action.name);
+    const s = this.#session;
+    if (!s) return;
+    // The SDK formats results as `成功…` / `失敗…`.
+    const [ok, text] = result.ok
+      ? ([!result.value.startsWith("失敗"), result.value] as const)
+      : ([false, `失敗:${result.error}`] as const);
+    s.lastAction = `${action.display()} → ${firstLine(text, 120)}`;
+    log.debug({ action: action.display(), ok }, "game action");
+    let failedGoal = false;
+    const now = this.#now();
+    if (verdict.type === "replace" && ok) {
+      const goal = newGoal(goalText ?? action.display(), { type: "director" }, now);
+      goal.action = action;
+      goal.issuedAt = now;
+      s.goal = goal;
+    } else if (verdict.type === "step" && !instant) {
+      const g = s.goal;
+      if (g) {
+        if (ok) {
+          g.action = action;
+          g.issuedAt = now;
+        } else {
+          g.attempts += 1;
+          failedGoal = g.attempts >= maxAttempts;
+        }
+      }
+    }
+    if (failedGoal) this.#finishGoal({ type: "failed", why: firstLine(text, 60) });
+    else if (!ok) this.#trigger("上一個動作失敗了", false);
+  }
+}
+
+function asObject(value: JsonValue | undefined): JsonObject | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}

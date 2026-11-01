@@ -1,0 +1,304 @@
+// Wires config, store, profile and modules into a running core node (legacy `boot.rs`).
+//
+// The module packages are reached only through a `ModuleCatalog` (see `modules.ts`), so this
+// file stays testable with fake modules and an in-memory store.
+
+import {
+  type Config,
+  EventBus,
+  errorMessage,
+  getLogger,
+  type Module,
+  ServiceRegistry,
+  Supervisor,
+  SupervisorKey,
+} from "@miyoria/kernel";
+import type { Profile } from "@miyoria/profile";
+import {
+  AuditLogKey,
+  AuthStoreKey,
+  DecisionLogKey,
+  IdentityStoreKey,
+  MemoryRecordStoreKey,
+  MessageLogKey,
+  ModuleStateStoreKey,
+  PeopleStoreKey,
+  PersonaOverrideStoreKey,
+  RelationshipStoreKey,
+  SettingsStoreKey,
+  type Store,
+  StoreKey,
+} from "@miyoria/store";
+import { ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
+import {
+  type JsonValue,
+  KERNEL_MODULE,
+  PlatformSinks,
+  PlatformSinksKey,
+  type ProfileId,
+  PromptContributors,
+  PromptContributorsKey,
+  type ServiceKey,
+  serviceKey,
+} from "@miyoria/types";
+import { CliPlatform, type CliPlatformOptions } from "./cli-platform.js";
+import { NEEDS_TOKEN } from "./module-ids.js";
+import { RecorderModule } from "./recorder.js";
+import { databaseUrl, loadProfile, resolveDatabaseUrl } from "./settings.js";
+
+const log = getLogger("core.boot");
+
+// The active profile id (legacy `Arc<ProfileId>` service; used by `mcp` and `ext-host`). It has
+// no key in `@miyoria/types` yet, so the packages share one key object through a global slot
+// (keys are matched by identity), the same one `@miyoria/ext-host` and `@miyoria/mcp` use.
+// TODO(integration): move to `@miyoria/types`.
+const PROFILE_ID_SLOT = Symbol.for("miyoria.service-key.ProfileId");
+const slots = globalThis as { [PROFILE_ID_SLOT]?: ServiceKey<ProfileId> };
+if (!slots[PROFILE_ID_SLOT]) slots[PROFILE_ID_SLOT] = serviceKey<ProfileId>("ProfileId");
+
+/** Service: the active profile id. */
+export const ProfileIdKey: ServiceKey<ProfileId> = slots[PROFILE_ID_SLOT];
+
+/** What the module factories get. */
+export interface ModuleDeps {
+  config: Config;
+  profile: Profile;
+  profileId: ProfileId;
+  store: Store;
+  /** Directory of `miyoria.toml`; relative paths in the config resolve against it. */
+  baseDir: string;
+}
+
+export interface DiscoveredExtension {
+  module: Module;
+  config: JsonValue | null;
+  enabled: boolean;
+}
+
+export interface ExtensionDiscovery {
+  skipped: Array<{ dir: string; reason: string }>;
+  /** The `extensions` host module first, then one `ext.<id>` module per extension. */
+  modules: DiscoveredExtension[];
+}
+
+/** How the core reaches the module packages. `modules.ts` has the real one. */
+export interface ModuleCatalog {
+  openStore(url: string): Promise<Store>;
+  /** `llm` ... `stage.link` in legacy boot order (without `recorder`, Discord, API). */
+  coreModules(deps: ModuleDeps): Promise<Module[]>;
+  discord(deps: ModuleDeps): Module;
+  api(deps: ModuleDeps): Module;
+  discoverExtensions(config: Config, baseDir: string): Promise<ExtensionDiscovery>;
+  /**
+   * Extra kernel-owned services under keys a module package declares itself (e.g. the API's
+   * `ActiveProfileKey`), provided right before the modules are built.
+   */
+  provideServices?(services: ServiceRegistry, deps: ModuleDeps): void;
+}
+
+export interface CoreOptions {
+  /** Run the terminal chat platform with this display name (`miyoria chat`). */
+  cliChatName?: string | null;
+  /** Connect the Discord bot. Default `true`. */
+  discord?: boolean;
+  /** Serve the Admin API. Default `true`. */
+  api?: boolean;
+  /** Directory of `miyoria.toml`. Default `process.cwd()`. */
+  baseDir?: string;
+  /** Streams of the terminal chat (tests). */
+  cli?: CliPlatformOptions;
+  /** Uses this store instead of opening `core.database_url` (tests). */
+  store?: Store;
+}
+
+/** A built (not yet started) core node. */
+export class Core {
+  readonly #persist = new AbortController();
+  #persistTask: Promise<void> | undefined;
+
+  constructor(
+    readonly supervisor: Supervisor,
+    readonly store: Store,
+    readonly profileDisplayName: string,
+    readonly profileId: ProfileId,
+  ) {}
+
+  get bus(): EventBus {
+    return this.supervisor.bus;
+  }
+
+  get services(): ServiceRegistry {
+    return this.supervisor.services;
+  }
+
+  /** @internal Started by `buildCore` before any module runs. */
+  persistModuleState(): void {
+    this.#persistTask = persistModuleState(this.bus, this.store, this.#persist.signal);
+  }
+
+  /** Starts every enabled module and logs those that are not running. */
+  async start(): Promise<void> {
+    await this.supervisor.startAll();
+    for (const status of this.supervisor.list()) {
+      if (status.reason !== null) {
+        log.warn(
+          { module: status.id, state: status.state, reason: status.reason },
+          "module not running",
+        );
+      }
+    }
+  }
+
+  /** Stops every module and closes the store. */
+  async stop(): Promise<void> {
+    await this.supervisor.stopAll();
+    this.#persist.abort();
+    await this.#persistTask;
+    await this.store.close();
+  }
+}
+
+/** Builds the core with the given module catalog (see `buildCore` for the real one). */
+export async function buildCoreWith(
+  catalog: ModuleCatalog,
+  config: Config,
+  options: CoreOptions = {},
+): Promise<Core> {
+  const baseDir = options.baseDir ?? process.cwd();
+  const bus = new EventBus();
+  const services = new ServiceRegistry();
+  const supervisor = new Supervisor({ bus, services });
+
+  let store = options.store;
+  if (!store) {
+    const url = resolveDatabaseUrl(databaseUrl(config), baseDir);
+    try {
+      store = await catalog.openStore(url);
+    } catch (error) {
+      throw new Error(`connecting to the database: ${errorMessage(error)}`, { cause: error });
+    }
+  }
+
+  const k = KERNEL_MODULE;
+  services.provide(k, PlatformSinksKey, new PlatformSinks());
+  services.provide(k, SupervisorKey, supervisor);
+  services.provide(k, StoreKey, store);
+  services.provide(k, SettingsStoreKey, store.settings);
+  services.provide(k, DecisionLogKey, store.decisions);
+  services.provide(k, PersonaOverrideStoreKey, store.personaOverrides);
+  services.provide(k, MessageLogKey, store.messages);
+  services.provide(k, PeopleStoreKey, store.people);
+  services.provide(k, MemoryRecordStoreKey, store.memories);
+  services.provide(k, RelationshipStoreKey, store.relationships);
+  services.provide(k, IdentityStoreKey, store.identity);
+  services.provide(k, AuthStoreKey, store.auth);
+  services.provide(k, AuditLogKey, store.audit);
+  services.provide(k, ModuleStateStoreKey, store.moduleState);
+  // Registries other modules add to, independent of any one module's lifetime.
+  services.provide(k, ToolRegistryKey, new ToolRegistry());
+  services.provide(k, PromptContributorsKey, new PromptContributors());
+
+  const profile = await loadProfile(config, baseDir);
+  for (const [key, body] of await store.personaOverrides.current(profile.id)) {
+    profile.setSection(key, body);
+  }
+  const profileDisplayName = profile.displayName;
+  const profileId = profile.id;
+  services.provide(k, ProfileIdKey, profileId);
+
+  const deps: ModuleDeps = { config, profile, profileId, store, baseDir };
+  catalog.provideServices?.(services, deps);
+
+  const modules: Module[] = [
+    ...(await catalog.coreModules(deps)),
+    new RecorderModule(store, profileId),
+  ];
+  if (options.discord ?? true) modules.push(catalog.discord(deps));
+  if (options.api ?? true) modules.push(catalog.api(deps));
+  if (options.cliChatName != null) {
+    modules.push(new CliPlatform(options.cliChatName, profileDisplayName, options.cli));
+  }
+
+  for (const module of modules) {
+    const id = module.manifest.id;
+    const section = config.module(id);
+    let enabled = section.enabled;
+    // A module disabled at runtime (command / panel) stays disabled.
+    const saved = await store.moduleState.get(id);
+    if (saved !== null) enabled = enabled && saved;
+    if (NEEDS_TOKEN.includes(id) && tokenMissing(section.config)) {
+      log.warn({ module: id }, "token is empty; module disabled");
+      enabled = false;
+    }
+    await supervisor.register(module, section.config, enabled);
+  }
+
+  // Each extension is a module of its own (`ext.<id>`), after the host.
+  try {
+    const found = await catalog.discoverExtensions(config, baseDir);
+    for (const { dir, reason } of found.skipped) {
+      log.warn({ dir, reason }, "extension skipped");
+    }
+    for (const m of found.modules) {
+      let enabled = m.enabled;
+      const saved = await store.moduleState.get(m.module.manifest.id);
+      if (saved !== null) enabled = enabled && saved;
+      await supervisor.register(m.module, m.config, enabled);
+    }
+  } catch (error) {
+    log.warn({ err: errorMessage(error) }, "extension discovery failed");
+  }
+
+  const core = new Core(supervisor, store, profileDisplayName, profileId);
+  core.persistModuleState();
+  return core;
+}
+
+function tokenMissing(section: JsonValue | null): boolean {
+  if (section === null || typeof section !== "object" || Array.isArray(section)) return true;
+  const token = section.token;
+  return typeof token !== "string" || token === "";
+}
+
+/** Remembers runtime enable / disable so it survives restarts. */
+async function persistModuleState(bus: EventBus, store: Store, signal: AbortSignal): Promise<void> {
+  const sub = bus.subscribe("system.module.state", { signal });
+  for await (const env of sub) {
+    if (env.event.type !== "module_state_changed") continue;
+    const { module, state } = env.event.data;
+    let enabled: boolean;
+    if (state === "disabled") enabled = false;
+    else if (state === "running") enabled = true;
+    else continue;
+    try {
+      await store.moduleState.set(module, enabled);
+    } catch (error) {
+      log.warn({ module, err: errorMessage(error) }, "failed to persist module state");
+    }
+  }
+}
+
+/** Resolves on SIGINT (Ctrl+C) or SIGTERM (e.g. `docker stop`), or when `signal` aborts. */
+export function shutdownSignal(signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      process.off("SIGINT", done);
+      process.off("SIGTERM", done);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    process.once("SIGINT", done);
+    process.once("SIGTERM", done);
+    if (signal?.aborted) done();
+    else signal?.addEventListener("abort", done, { once: true });
+  });
+}
+
+/** Starts the core, waits for Ctrl+C / SIGTERM (or `signal`), then stops it. */
+export async function runUntilSignal(core: Core, signal?: AbortSignal): Promise<void> {
+  const stop = shutdownSignal(signal);
+  await core.start();
+  await stop;
+  log.info("shutting down");
+  await core.stop();
+}

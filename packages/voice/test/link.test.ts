@@ -1,0 +1,476 @@
+// Voice Link protocol tests against a real server (port of `tests/link.rs`).
+
+import type { AudioChunk, AudioStream } from "@miyoria/speech";
+import { type Event, type EventData, type EventType, isEvent } from "@miyoria/types";
+import { afterEach, describe, expect, it } from "vitest";
+import { type AudioEvent, GOLIVE_TOPIC, type GoLiveRequest } from "../src/index.js";
+import type { BoundedQueue } from "../src/util.js";
+import { Harness, nextEvent, SELF_ID, sleepMs, TOKEN, waitUntil } from "./harness.js";
+
+let harness: Harness | null = null;
+
+async function start(config = {}): Promise<Harness> {
+  harness = await Harness.start(config);
+  return harness;
+}
+
+afterEach(async () => {
+  await harness?.stop();
+  harness = null;
+});
+
+function chunk(rate: number, samples: number[] | Int16Array): AudioChunk {
+  return { sampleRate: rate, samples: Int16Array.from(samples) };
+}
+
+async function* streamOf(chunks: AudioChunk[], thenPending = false): AudioStream {
+  for (const c of chunks) yield c;
+  if (thenPending) await new Promise(() => undefined);
+}
+
+async function recvAudio(q: BoundedQueue<AudioEvent>): Promise<AudioEvent> {
+  const ev = await Promise.race([q.recv(), sleepMs(5_000).then(() => "timeout" as const)]);
+  if (ev === "timeout" || ev === null) throw new Error("audio event in time");
+  return ev;
+}
+
+function data<T extends EventType>(event: Event, type: T): EventData<T> {
+  if (!isEvent(event, type)) throw new Error(`expected ${type}, got ${event.type}`);
+  return event.data as unknown as EventData<T>;
+}
+
+async function rejection(p: Promise<unknown>): Promise<string> {
+  try {
+    await p;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error("expected a rejection");
+}
+
+describe("voice.link", () => {
+  it("empty_token_fails_to_start", async () => {
+    const h = await start({ token: "  " });
+    let state = h.moduleState("voice.link");
+    for (let i = 0; i < 200 && state.state !== "failed"; i++) {
+      await sleepMs(10);
+      state = h.moduleState("voice.link");
+    }
+    expect(state.state).toBe("failed");
+    expect(state.reason).toContain("VOICE_LINK_TOKEN");
+  });
+
+  it("hello_is_authenticated", async () => {
+    const h = await start({ hello_timeout_ms: 300 });
+
+    const wrong = await h.connect();
+    wrong.hello("nope", SELF_ID);
+    expect(await wrong.expectClose()).toBe(4401);
+
+    const old = await h.connect();
+    old.sendJson({
+      type: "hello",
+      version: 2,
+      token: TOKEN,
+      self_account: { platform: "discord", id: SELF_ID },
+    });
+    expect(await old.expectClose()).toBe(4400);
+
+    const garbage = await h.connect();
+    garbage.sendJson({ type: "joined", guild: "g" });
+    expect(await garbage.expectClose()).toBe(4400);
+
+    const silent = await h.connect();
+    expect(await silent.expectClose()).toBe(4400); // no hello in time
+
+    expect(h.link().isConnected()).toBe(false);
+
+    const ready = h.subscribe(["platform.ready"]);
+    await h.node(SELF_ID);
+    const link = h.link();
+    expect(link.isConnected()).toBe(true);
+    const account = link.selfAccount();
+    expect(account).toEqual({ platform: "discord", id: SELF_ID });
+    const ev = data((await nextEvent(ready)).event, "platform_ready");
+    expect(ev.platform).toBe("discord");
+    expect(ev.self_account).toEqual(account);
+  });
+
+  it("join_voice_state_and_leave", async () => {
+    const h = await start({ join_timeout_ms: 300 });
+    // The bot account announces itself; it must count as her.
+    const bot = { platform: "discord", id: "99" };
+    const ready = h.subscribe(["platform.ready"]);
+    h.bus.publish("platform.discord.bot", {
+      type: "platform_ready",
+      data: { platform: "discord", self_account: bot },
+    });
+    await nextEvent(ready);
+    const link = h.link();
+    await waitUntil(() => link.isSelf(bot));
+
+    const node = await h.node(SELF_ID);
+    const events = h.subscribe(["voice.*"]);
+
+    const joining = link.join("g1", null, "u1");
+    expect(await node.recvJson()).toEqual({ type: "join", guild: "g1", user_id: "u1" });
+    node.sendJson({
+      type: "voice_state",
+      guild: "g1",
+      channel: "vc1",
+      participants: [
+        { user_id: "u1", display_name: "小明", is_self: false, muted: false, deafened: false },
+        {
+          user_id: SELF_ID,
+          display_name: "DeepSeek-chan",
+          is_self: true,
+          muted: false,
+          deafened: false,
+        },
+        { user_id: "99", display_name: "bot", is_self: false, muted: true, deafened: false },
+      ],
+    });
+    node.sendJson({ type: "joined", guild: "g1", channel: "vc1" });
+    expect(await joining).toBe("vc1");
+
+    const vp = data((await nextEvent(events)).event, "voice_participants");
+    expect(vp.context).toEqual({ platform: "discord", scope: "g1", channel: "vc1", kind: "voice" });
+    expect(vp.participants.map((p) => p.is_self)).toEqual([false, true, true]);
+    expect(vp.participants[2]?.muted).toBe(true);
+    const vj = data((await nextEvent(events)).event, "voice_joined");
+    expect(vj.context.channel).toBe("vc1");
+    expect(vj.participants.length).toBe(3);
+    expect(link.channel("g1")).toBe("vc1");
+    expect(link.participants("g1")[0]?.display_name).toBe("小明");
+
+    node.sendJson({ type: "speaking", guild: "g1", user_id: "u1", speaking: true });
+    const vs = data((await nextEvent(events)).event, "voice_speaking");
+    expect(vs.context.channel).toBe("vc1");
+    expect(vs.account.id).toBe("u1");
+    expect(vs.speaking).toBe(true);
+
+    // A failing join resolves with the node's error.
+    const failing = rejection(link.join("g2", "vc9", null));
+    expect(await node.recvJson()).toEqual({ type: "join", guild: "g2", channel: "vc9" });
+    node.sendJson({ type: "error", message: "no permission to connect" });
+    expect(await failing).toContain("no permission");
+
+    // No answer at all: times out.
+    expect(await rejection(link.join("g3", "vc3", null))).toContain("in time");
+    await node.recvType("join");
+
+    await link.leave("g1");
+    expect(await node.recvJson()).toEqual({ type: "leave", guild: "g1" });
+    node.sendJson({ type: "left", guild: "g1", reason: "leave" });
+    const vl = data((await nextEvent(events)).event, "voice_left");
+    expect(vl.context.channel).toBe("vc1");
+    expect(vl.reason).toBe("leave");
+    expect(link.channel("g1")).toBeNull();
+    expect(link.participants("g1")).toEqual([]);
+  });
+
+  it("captured_audio_becomes_audio_events", async () => {
+    const h = await start();
+    const node = await h.node(SELF_ID);
+    const audio = h.link().subscribeAudio();
+
+    node.sendJson({
+      type: "stream_open",
+      stream: 5,
+      guild: "g1",
+      channel: "vc1",
+      user_id: "u1",
+      display_name: "小明",
+      sample_rate: 16000,
+    });
+    // Frames of unknown streams are ignored.
+    node.sendAudio(77, new Int16Array(320).fill(9));
+    const samples = Int16Array.from({ length: 640 }, (_, i) => i);
+    node.sendAudio(5, samples);
+    node.sendJson({ type: "stream_close", stream: 5 });
+
+    const open = await recvAudio(audio);
+    if (open.type !== "stream_open") throw new Error("expected stream_open");
+    const info = open.info;
+    expect(info.speaker.id).toBe("u1");
+    expect(info.displayName).toBe("小明");
+    expect(info.sampleRate).toBe(16_000);
+    expect(info.context.scope).toBe("g1");
+    expect(info.context.channel).toBe("vc1");
+    const got: number[] = [];
+    for (;;) {
+      const ev = await recvAudio(audio);
+      if (ev.type === "frame") {
+        expect(ev.stream).toBe(info.stream);
+        got.push(...ev.samples);
+      } else if (ev.type === "stream_close") {
+        expect(ev.stream).toBe(info.stream);
+        break;
+      } else {
+        throw new Error(`unexpected ${ev.type}`);
+      }
+    }
+    expect(got).toEqual([...samples]);
+  });
+
+  it("play_streams_audio_until_finished", async () => {
+    const h = await start();
+    const node = await h.node(SELF_ID);
+    const link = h.link();
+
+    const audio = streamOf([
+      chunk(24_000, new Int16Array(4000).fill(1)),
+      chunk(24_000, new Int16Array(3000).fill(2)),
+    ]);
+    const playback = await link.play("g1", 24_000, audio);
+    const start_ = await node.recvJson();
+    expect(start_.type).toBe("play_start");
+    expect(start_.guild).toBe("g1");
+    expect(start_.sample_rate).toBe(24_000);
+    const id = start_.play as number;
+    expect(id).toBe(playback.id);
+
+    let samples = 0;
+    for (;;) {
+      const msg = await node.recv();
+      if (msg.kind === "binary") {
+        expect(msg.data[0]).toBe(0x02);
+        expect(msg.data.readUInt32LE(1)).toBe(id);
+        samples += (msg.data.length - 5) / 2;
+      } else if (msg.kind === "text") {
+        expect(JSON.parse(msg.text)).toEqual({ type: "play_end", play: id });
+        break;
+      } else {
+        throw new Error("unexpected close");
+      }
+    }
+    expect(samples).toBe(7000);
+    expect(playback.state()).toBeNull();
+
+    node.sendJson({ type: "playback", play: id, state: "started" });
+    await waitUntil(() => playback.state() === "started");
+    node.sendJson({ type: "playback", play: id, state: "finished" });
+    expect(await playback.wait()).toBe("finished");
+  });
+
+  it("play_stop_interrupts", async () => {
+    const h = await start();
+    const node = await h.node(SELF_ID);
+    const link = h.link();
+
+    // One chunk, then the TTS "keeps generating" forever.
+    const audio = streamOf([chunk(16_000, new Int16Array(1600).fill(3))], true);
+    const playback = await link.play("g1", 16_000, audio);
+    expect((await node.recvJson()).type).toBe("play_start");
+    expect((await node.recv()).kind).toBe("binary");
+    playback.stop(80);
+    expect(await node.recvType("play_stop")).toEqual({
+      type: "play_stop",
+      play: playback.id,
+      fade_ms: 80,
+    });
+    expect(await playback.wait()).toBe("interrupted");
+
+    // A stream error fails the playback.
+    const broken: AudioStream = {
+      [Symbol.asyncIterator]: () => ({
+        next: () => Promise.reject(new Error("worker crashed")),
+      }),
+    };
+    const failed = await link.play("g1", 16_000, broken);
+    expect(await failed.wait()).toBe("failed");
+  });
+
+  it("new_connection_replaces_old", async () => {
+    const h = await start();
+    const first = await h.node(SELF_ID);
+    const events = h.subscribe(["voice.left"]);
+    first.sendJson({ type: "joined", guild: "g1", channel: "vc1" });
+    const link = h.link();
+    await waitUntil(() => link.channel("g1") !== null);
+
+    const audio = link.subscribeAudio();
+    first.sendJson({
+      type: "stream_open",
+      stream: 1,
+      guild: "g1",
+      channel: "vc1",
+      user_id: "u1",
+      display_name: "",
+      sample_rate: 16000,
+    });
+    expect((await recvAudio(audio)).type).toBe("stream_open");
+
+    const second = await h.connect();
+    second.hello(TOKEN, SELF_ID);
+    expect((await second.recvJson()).type).toBe("welcome");
+    expect(await first.expectClose()).toBe(4409);
+    // The old connection's streams are closed.
+    expect((await recvAudio(audio)).type).toBe("stream_close");
+
+    // The new connection is the one in use.
+    expect(link.isConnected()).toBe(true);
+    await link.leave("g1");
+    expect((await second.recvJson()).type).toBe("leave");
+    // Replacement is not reported as leaving voice.
+    await sleepMs(200);
+    expect(events.tryRecv()).toBeNull();
+  });
+
+  it("dead_peer_is_disconnected", async () => {
+    const h = await start({ ping_interval_ms: 50, peer_timeout_ms: 400 });
+    const link = h.link();
+
+    // A node that answers pings stays connected well past the timeout.
+    const alive = await h.node("1");
+    const events = h.subscribe(["voice.left"]);
+    alive.sendJson({ type: "joined", guild: "g1", channel: "vc1" });
+    const until = Date.now() + 1000;
+    while (Date.now() < until) await alive.tryRecv(50);
+    expect(link.isSelf({ platform: "discord", id: "1" })).toBe(true);
+    expect(link.isConnected()).toBe(true);
+
+    // Stop answering: Core gives up after the peer timeout.
+    alive.autoPong = false;
+    expect(await alive.recvJson()).toEqual({ type: "ping" });
+    expect(await alive.expectClose()).toBe(4408);
+    await waitUntil(() => !link.isConnected());
+    const vl = data((await nextEvent(events)).event, "voice_left");
+    expect(vl.context.channel).toBe("vc1");
+    expect(vl.reason).toBe("voice node disconnected");
+  });
+
+  it("ping_from_node_gets_pong", async () => {
+    const h = await start();
+    const node = await h.node(SELF_ID);
+    node.sendJson({ type: "ping" });
+    expect(await node.recvJson()).toEqual({ type: "pong" });
+  });
+
+  it("golive_start_stop_and_state_events", async () => {
+    const h = await start();
+    const node = await h.node(SELF_ID);
+    const link = h.link();
+    const events = h.subscribe([GOLIVE_TOPIC]);
+
+    // Bad requests never reach the node.
+    const bad: GoLiveRequest[] = [
+      { guild: "g1", source: "  " },
+      { guild: "g1", source: "srt://127.0.0.1:9999", encoder: "quicksync" },
+      { guild: "g1", source: "srt://127.0.0.1:9999", fps: 0 },
+    ];
+    for (const req of bad) await rejection(link.goliveStart(req));
+
+    await link.goliveStart({
+      guild: "g1",
+      channel: "vc1",
+      source: "srt://127.0.0.1:9999",
+      height: 1080,
+      fps: 60,
+      bitrateKbps: 6000,
+      encoder: "nvenc",
+    });
+    const sent = await node.recv();
+    expect(sent.kind === "text" && sent.text).toBe(
+      '{"type":"golive_start","guild":"g1","channel":"vc1","source":"srt://127.0.0.1:9999","height":1080,"fps":60,"bitrate_kbps":6000,"encoder":"nvenc"}',
+    );
+    expect(link.golive("g1")).toBeNull();
+
+    node.sendJson({ type: "golive", guild: "g1", state: "starting" });
+    const ev = data((await nextEvent(events)).event, "custom");
+    expect(ev.topic).toBe(GOLIVE_TOPIC);
+    expect(ev.payload).toEqual({
+      platform: "discord",
+      guild: "g1",
+      state: "starting",
+      error: null,
+      reason: null,
+    });
+    expect(link.isStreaming("g1")).toBe(true);
+
+    node.sendJson({ type: "golive", guild: "g1", state: "live" });
+    await nextEvent(events);
+    expect(link.golive("g1")?.state).toBe("live");
+
+    await link.goliveStop("g1");
+    expect(await node.recvJson()).toEqual({ type: "golive_stop", guild: "g1" });
+    node.sendJson({ type: "golive", guild: "g1", state: "stopped", reason: "stop requested" });
+    const stopped = data((await nextEvent(events)).event, "custom").payload as Record<
+      string,
+      unknown
+    >;
+    expect(stopped.state).toBe("stopped");
+    expect(stopped.reason).toBe("stop requested");
+    expect(link.golive("g1")).toEqual({ state: "stopped", error: null, reason: "stop requested" });
+    expect(link.isStreaming("g1")).toBe(false);
+
+    node.sendJson({ type: "golive", guild: "g1", state: "failed", error: "ffmpeg not found" });
+    const failed = data((await nextEvent(events)).event, "custom").payload as Record<
+      string,
+      unknown
+    >;
+    expect(failed.state).toBe("failed");
+    expect(failed.error).toBe("ffmpeg not found");
+    expect(link.golive("g1")?.error).toBe("ffmpeg not found");
+  });
+
+  it("golive_without_a_node_fails_and_disconnect_stops_it", async () => {
+    const h = await start();
+    const link = h.link();
+    const req: GoLiveRequest = { guild: "g1", source: "rtmp://127.0.0.1/live/x" };
+    expect(await rejection(link.goliveStart(req))).toContain("no voice node");
+    await rejection(link.goliveStop("g1"));
+
+    const node = await h.node(SELF_ID);
+    const events = h.subscribe([GOLIVE_TOPIC]);
+    node.sendJson({ type: "golive", guild: "g1", state: "live" });
+    await nextEvent(events);
+    expect(link.isStreaming("g1")).toBe(true);
+    node.drop();
+    const payload = data((await nextEvent(events)).event, "custom").payload as Record<
+      string,
+      unknown
+    >;
+    expect(payload.state).toBe("stopped");
+    expect(payload.reason).toBe("voice node disconnected");
+    await waitUntil(() => !link.isConnected());
+    expect(link.golive("g1")).toBeNull();
+  });
+
+  // ── TS-specific ─────────────────────────────────────────────────────────────
+
+  it("module_stop_closes_nodes_with_going_away", async () => {
+    const h = await start();
+    const node = await h.node(SELF_ID);
+    const closed = node.expectClose();
+    await h.stop();
+    harness = null;
+    expect(await closed).toBe(1001);
+  });
+
+  it("disconnect_fails_pending_join_and_playback", async () => {
+    const h = await start();
+    const node = await h.node(SELF_ID);
+    const link = h.link();
+    const joining = rejection(link.join("g1", "vc1", null));
+    const playback = await link.play("g1", 16_000, streamOf([], true));
+    await node.recvType("play_start");
+    node.drop();
+    expect(await joining).toContain("disconnected");
+    expect(await playback.wait()).toBe("failed");
+  });
+
+  it("unknown_paths_are_rejected", async () => {
+    const h = await start();
+    const url = h.url().replace("/voice-link", "/other");
+    await expect(
+      new Promise((resolve, reject) => {
+        import("ws").then(({ default: WS }) => {
+          const ws = new WS(url);
+          ws.once("open", resolve);
+          ws.once("error", reject);
+        }, reject);
+      }),
+    ).rejects.toThrow(/404/);
+  });
+});

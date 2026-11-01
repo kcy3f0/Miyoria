@@ -1,7 +1,7 @@
 {
   "name": "@miyoria/store",
   "version": "0.1.0",
-  "description": "Storage interfaces and record types (backends live in their own packages)",
+  "description": "Storage interfaces, record types and backends (SQLite via node:sqlite, PostgreSQL + pgvector)",
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -14,7 +14,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "migrations"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -22,10 +23,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@miyoria/types": "workspace:*"
+    "@miyoria/kernel": "workspace:*",
+    "@miyoria/types": "workspace:*",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
     "typescript": "~5.9.3",
     "vitest": "^4.1.12"
   }

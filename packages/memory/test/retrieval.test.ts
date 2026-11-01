@@ -1,0 +1,165 @@
+// Hybrid recall, the prompt section and the model tools (Rust `tests/retrieval.rs`).
+
+import type { MemoryScope } from "@miyoria/store";
+import type { ToolContext } from "@miyoria/tools";
+import { type AccountRef, type ContextKey, newId, systemClock } from "@miyoria/types";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  formatLines,
+  memoryConfig,
+  PROMPT_KINDS,
+  RecallTool,
+  RememberTool,
+  visibleScopes,
+} from "../src/index.js";
+import {
+  acct,
+  BACKENDS,
+  closeAll,
+  DAY,
+  dmCtx,
+  env,
+  envWith,
+  guildCtx,
+  T0_MS,
+  TableEmbedder,
+  t0,
+} from "./helpers.js";
+
+const G1: MemoryScope = { type: "guild", platform: "discord", guild: "g1" };
+
+function toolCtx(context: ContextKey, account: AccountRef): ToolContext {
+  return {
+    turn: newId(),
+    message: { context, id: "m1" },
+    context,
+    account,
+    priority: "direct",
+    signal: new AbortController().signal,
+  };
+}
+
+afterEach(closeAll);
+
+describe.each(BACKENDS)("retrieval (%s store)", (backend) => {
+  it("ranks_by_text_subject_recency_and_importance", async () => {
+    const e = await env(backend);
+    const owen = await e.person(acct("2"), "Owen");
+    const amy = await e.person(acct("3"), "Amy");
+    const now = t0();
+    const ramen = await e.add("fact", G1, [owen], "Owen 喜歡拉麵", 0.5, t0(-3 * DAY));
+    const cat = await e.add("fact", G1, [amy], "Amy 養了一隻貓", 0.9, t0(-DAY));
+    const oldRamen = await e.add("episode", G1, [], "大家去吃拉麵那天下大雨", 0.5, t0(-90 * DAY));
+    const newRamen = await e.add("episode", G1, [], "大家又去吃拉麵", 0.5, t0(-DAY));
+    const scopes = visibleScopes(guildCtx("g1", "c1"), [acct("2")], [owen]);
+
+    let got = await e.engine.recall(scopes, [owen], "拉麵", PROMPT_KINDS, 8, now);
+    let ids = got.map((r) => r.record.id);
+    expect(ids[0], "text + subject wins").toBe(ramen);
+    expect(ids.indexOf(newRamen), "recency breaks the tie").toBeLessThan(ids.indexOf(oldRamen));
+    expect(ids.indexOf(oldRamen)).toBeGreaterThanOrEqual(0);
+    expect(ids, "no match and not present").not.toContain(cat);
+    for (let i = 1; i < got.length; i++) {
+      expect(got[i - 1]?.score ?? 0).toBeGreaterThanOrEqual(got[i]?.score ?? 0);
+    }
+
+    // Present people are candidates even without a text match.
+    got = await e.engine.recall(scopes, [owen, amy], "早安", PROMPT_KINDS, 8, now);
+    ids = got.map((r) => r.record.id);
+    expect(ids, "importance and recency order them").toEqual([cat, ramen]);
+
+    // Recalled records are touched; the limit applies.
+    got = await e.engine.recall(scopes, [owen], "拉麵", PROMPT_KINDS, 1, now);
+    expect(got).toHaveLength(1);
+    const touched = await e.rec(ramen);
+    expect(touched?.access_count).toBe(3);
+    expect(Date.parse(touched?.last_accessed ?? "")).toBe(Date.parse(now));
+
+    // Only the requested kinds come back.
+    got = await e.engine.recall(scopes, [owen], "拉麵", ["episode"], 8, now);
+    expect(got.every((r) => r.record.kind === "episode")).toBe(true);
+  });
+
+  it("vectors_find_matches_without_shared_words", async () => {
+    const embedder = new TableEmbedder()
+      .with("Owen 喜歡拉麵", [1, 0, 0])
+      .with("他愛吃什麼", [0.9, 0.1, 0])
+      .with("Amy 討厭下雨", [0, 1, 0]);
+    const config = memoryConfig({
+      weights: { vector: 1, text: 0, recency: 0, importance: 0, subject: 0 },
+      min_score: 0.5,
+    });
+    const e = await envWith(backend, config, null, embedder);
+    const global: MemoryScope = { type: "global" };
+    const ramen = await e.add("fact", global, [], "Owen 喜歡拉麵", 0.5, t0());
+    await e.add("fact", global, [], "Amy 討厭下雨", 0.5, t0());
+    const got = await e.engine.recall([global], [], "他愛吃什麼", PROMPT_KINDS, 8, t0());
+    expect(got).toHaveLength(1);
+    expect(got[0]?.record.id).toBe(ramen);
+    expect(got[0]?.score ?? 0, "cosine ~0.99 scaled by fact confidence").toBeGreaterThan(0.85);
+  });
+
+  it("prompt_lines_have_relative_dates", async () => {
+    const e = await env(backend);
+    const id = await e.add("fact", { type: "global" }, [], "Owen 喜歡拉麵", 0.5, t0(-3 * DAY));
+    const record = await e.rec(id);
+    if (!record) throw new Error("missing");
+    expect(formatLines([{ record, score: 1 }], t0())).toBe("- Owen 喜歡拉麵(三天前)");
+  });
+
+  it("remember_and_recall_tools_respect_scopes", async () => {
+    const e = await env(backend);
+    const owenAcct = acct("2");
+    const owen = await e.person(owenAcct, "Owen");
+    const clock = { now: () => T0_MS };
+    const remember = new RememberTool(e.engine, clock);
+    const recall = new RecallTool(e.engine, clock);
+    const dm = toolCtx(dmCtx("d1"), owenAcct);
+    const guild = toolCtx(guildCtx("g1", "c1"), owenAcct);
+
+    expect(await remember.call(dm, { content: "Owen 下週三要看牙醫", importance: 0.8 })).toBe(
+      "記住了。",
+    );
+    expect(await remember.call(guild, { content: "Owen 喜歡 Minecraft" })).toBe("記住了。");
+    expect(await remember.call(guild, { content: "我答應要學做蛋糕", about: "self" })).toBe(
+      "記住了。",
+    );
+    const again = await remember.call(guild, { content: "Owen 喜歡 Minecraft!" });
+    expect(again).toContain("本來就記得");
+    await expect(remember.call(guild, {})).rejects.toThrow();
+
+    const records = await e.all();
+    const find = (needle: string) => {
+      const r = records.find((x) => x.content.includes(needle));
+      if (!r) throw new Error(`no ${needle}`);
+      return r;
+    };
+    expect(find("牙醫").scope).toEqual({ type: "dm", account: owenAcct });
+    expect(find("牙醫").subjects).toEqual([owen]);
+    expect(find("Minecraft").scope).toEqual(G1);
+    expect(find("蛋糕").kind).toBe("self_note");
+    expect(find("蛋糕").scope).toEqual({ type: "global" });
+
+    const inGuild = await recall.call(guild, { query: "牙醫 Minecraft" });
+    expect(inGuild).toContain("Minecraft");
+    expect(inGuild, "DM note leaked").not.toContain("牙醫");
+    const inDm = await recall.call(dm, { query: "牙醫" });
+    expect(inDm).toContain("牙醫");
+    const otherGuild = toolCtx(guildCtx("g2", "c1"), acct("9"));
+    expect(await recall.call(otherGuild, { query: "Minecraft 牙醫" })).toBe("想不起來有關的事。");
+  });
+});
+
+describe("tools", () => {
+  it("default to the system clock", async () => {
+    const e = await env("fake");
+    const remember = new RememberTool(e.engine);
+    expect(
+      await remember.call(toolCtx(guildCtx("g1", "c1"), acct("2")), { content: "x 喜歡 y" }),
+    ).toBe("記住了。");
+    const r = (await e.all())[0];
+    expect(Math.abs(Date.parse(r?.created_at ?? "") - systemClock.now())).toBeLessThan(60_000);
+    expect(remember.spec.name).toBe("remember");
+    expect(new RecallTool(e.engine).spec.name).toBe("recall");
+  });
+});

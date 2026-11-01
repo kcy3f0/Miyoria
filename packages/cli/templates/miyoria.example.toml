@@ -1,0 +1,141 @@
+# Miyoria 設定檔(由 `miyoria init` 建立;之後用 `miyoria config` 修改)。
+# 字串可以用 ${ENV_VAR} 或 ${ENV_VAR:-預設值} 引用環境變數 / .env。
+
+[core]
+profile = "deepseek-chan"          # profiles/<id>/
+profiles_dir = "profiles"
+database_url = "${DATABASE_URL:-sqlite:data/miyoria.db}"
+log = "info,miyoria=debug"
+
+# ---- LLM ----------------------------------------------------------------
+# 任何 OpenAI 相容 API 都可以:填 base_url、api_key,模型 id 在 purposes 裡。
+[llm.providers.deepseek]
+kind = "deepseek"                  # deepseek | openai | openai-compatible
+base_url = "${LLM_BASE_URL:-https://api.deepseek.com}"
+api_key = "${LLM_API_KEY:-}"
+
+# 全域預設;profile.toml 的 [llm.purposes] 會覆寫
+[llm.purposes]
+chat = ["deepseek:deepseek-chat"]
+
+# 價格(USD / 百萬 token)與預算;不設就不限制
+# [llm.pricing."deepseek:deepseek-chat"]
+# input_per_mtok = 0.27
+# cached_input_per_mtok = 0.07
+# output_per_mtok = 1.10
+# [llm.budget]
+# daily_usd = 2.0
+# monthly_usd = 40.0
+# degrade_at = 0.8           # 用到 80% 時改用便宜模型 / 少主動發話
+# on_exhausted = "stop"
+
+# ---- 長期記憶 --------------------------------------------------------------
+# DeepSeek 沒有 embeddings;不設也能用(全文檢索 + 新舊 + 重要度)。
+# 有 Ollama / LM Studio / OpenAI 等 /embeddings 端點時可以打開:
+# [memory.embedding]
+# provider = "openai-compatible"
+# base_url = "http://127.0.0.1:11434/v1"
+# model = "bge-m3"
+
+# ---- MCP 工具 --------------------------------------------------------------
+# [mcp.servers.files]
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "C:/data"]
+# tools_allow = ["read_*"]
+
+# ---- 語音辨識 / 合成 -------------------------------------------------------
+# 本機 worker 見 workers/README.md;也可以換成雲端(kind = "openai")
+[speech.asr.local]
+kind = "http-worker"
+url = "${ASR_URL:-http://127.0.0.1:8001}"
+
+# workers/tts 預設用 faster-qwen3-tts(原生 Windows、真串流)
+# 另一個選項:WSL2 / Docker 上的 vLLM-Omni(見 workers/README.md 第 3 節)
+# [speech.tts.qwen]
+# kind = "vllm-omni"
+# base_url = "http://127.0.0.1:8091/v1"
+# voice = "deepseek-chan"
+# language = "Chinese"
+
+[speech.tts.local]
+kind = "http-worker"
+url = "${TTS_URL:-http://127.0.0.1:8002}"
+voice = "deepseek-chan"
+
+# ---- 子系統 --------------------------------------------------------------
+# 每個 [modules.<id>] 都可以加 enabled = false 關掉
+
+[modules.commands]
+owners = ["discord:${MIYORIA_OWNER_ID:-0}"]
+
+[modules.auth]
+owners = ["discord:${MIYORIA_OWNER_ID:-0}"]
+
+[modules."platform.discord.bot"]
+token = "${DISCORD_BOT_TOKEN:-}"
+# 填伺服器 id 可以讓 slash command 立即生效;空的 = 全域(最多要等一小時)
+command_guilds = []
+
+# Admin API:CLI(`miyoria module ...`)和之後的管理面板用。token 由 `miyoria init` 產生
+[modules.api]
+bind = "127.0.0.1:7878"
+token = "${MIYORIA_API_TOKEN:-}"
+
+# 管理面板用 Discord 登入(token 照樣能用)。三個值都填才會開啟;
+# redirect_uri 要跟 Developer Portal → OAuth2 → Redirects 裡的一模一樣,
+# 也要跟你在瀏覽器開面板的網址同源(見 docs/OPERATIONS.md)。
+# 擁有者與 admin 角色可以登入;其他角色要 `/admin perm allow` 給 admin.panel.access(唯讀)
+# 與 admin.panel.write(可修改)。
+# [modules.api.discord_oauth]
+# client_id = "${DISCORD_CLIENT_ID:-}"
+# client_secret = "${DISCORD_CLIENT_SECRET:-}"
+# redirect_uri = "http://127.0.0.1:7878/api/auth/oauth/callback"
+# session_days = 7
+# cookie_secure = true             # 預設:redirect_uri 是 https 就開
+
+# Self 帳號語音節點(apps/voice-node)連進來的位址;token 由 `miyoria init` 產生
+[modules."voice.link"]
+bind = "127.0.0.1:7879"
+token = "${VOICE_LINK_TOKEN:-}"
+
+# Stage 節點(VTube Studio / OBS / overlay)連進來的位址
+[modules."stage.link"]
+bind = "127.0.0.1:7882"
+token = "${STAGE_LINK_TOKEN:-}"
+
+# 擴充套件資料夾(`miyoria ext list` / `miyoria ext dev`)
+[modules.extensions]
+dirs = ["extensions"]
+
+[modules.voice]
+consent = "opt-out"        # opt-out:預設收音,可用 /voice consent off 退出;opt-in:同意後才收
+barge_in = "stop"          # 有人插話時停止說話:stop | ignore
+
+[modules.agent]
+# 頻道模式:off | mention-only | ambient | always。也可以在 Discord 用 /mode 即時切換
+# default_mode = "ambient"
+# channels = { "<channel id>" = "always", "discord:<guild id>" = "mention-only" }
+
+# 語音聊天:比文字更保守,偶爾才插話。也可以用 /voice mode 即時切換
+[modules.agent.voice]
+default_mode = "ambient"
+ambient_factor = 0.5       # 主動插話機率的倍率
+cooldown_ms = 20000        # 她講完後至少隔多久才會再主動開口
+debounce_ms = 700          # 對方講完後等多久(看他是不是還要繼續講)
+
+# ---- Stage 節點(在直播機執行 `miyoria stage`)-------------------------------
+[stage]
+core_url = "ws://127.0.0.1:7882/stage-link"
+token = "${STAGE_LINK_TOKEN:-}"
+
+[stage.vts]
+enabled = true                 # VTube Studio:設定 → 開啟 API(port 8001)
+
+[stage.obs]
+enabled = false                # OBS:工具 → WebSocket 伺服器設定
+host = "127.0.0.1"
+port = 4455
+password = "${OBS_PASSWORD:-}"
+# subtitle_source = "Miyoria 字幕"
+

@@ -1,0 +1,112 @@
+import type { ContextKey } from "@miyoria/types";
+import { describe, expect, test } from "vitest";
+import { DiscordSink, type RestLike, type RestRequest } from "../src/sink.js";
+
+interface Call {
+  method: "post" | "put";
+  route: string;
+  options: RestRequest | undefined;
+}
+
+class FakeRest implements RestLike {
+  calls: Call[] = [];
+  nextId = 1;
+  failWith: Error | null = null;
+
+  async post(route: `/${string}`, options?: RestRequest): Promise<unknown> {
+    this.calls.push({ method: "post", route, options });
+    if (this.failWith) throw this.failWith;
+    return { id: String(this.nextId++) };
+  }
+
+  async put(route: `/${string}`, options?: RestRequest): Promise<unknown> {
+    this.calls.push({ method: "put", route, options });
+    if (this.failWith) throw this.failWith;
+    return undefined;
+  }
+}
+
+const channel: ContextKey = { platform: "discord", scope: "1", channel: "200", kind: "channel" };
+
+describe("DiscordSink", () => {
+  test("sends_and_replies_without_pinging", async () => {
+    const rest = new FakeRest();
+    const sink = new DiscordSink(rest);
+    expect(sink.platform).toBe("discord");
+    const ref = await sink.send(channel, {
+      text: "hello",
+      reply_to: { context: channel, id: "999" },
+    });
+    expect(ref).toEqual({ context: channel, id: "1" });
+    expect(rest.calls).toHaveLength(1);
+    expect(rest.calls[0]?.route).toBe("/channels/200/messages");
+    expect(rest.calls[0]?.options?.body).toEqual({
+      content: "hello",
+      allowed_mentions: { parse: ["users"], replied_user: false },
+      message_reference: { message_id: "999", channel_id: "200", fail_if_not_exists: false },
+    });
+  });
+
+  test("long_text_is_split_and_only_the_first_chunk_replies", async () => {
+    const rest = new FakeRest();
+    const sink = new DiscordSink(rest);
+    const sentence = "今天天氣很好,我們去散步吧。";
+    const ref = await sink.send(channel, {
+      text: sentence.repeat(300),
+      reply_to: { context: channel, id: "5" },
+    });
+    expect(rest.calls.length).toBeGreaterThan(1);
+    // The returned ref is the first chunk's.
+    expect(ref.id).toBe("1");
+    const bodies = rest.calls.map((c) => c.options?.body as Record<string, unknown>);
+    expect(bodies[0]?.message_reference).toBeDefined();
+    for (const body of bodies.slice(1)) expect(body.message_reference).toBeUndefined();
+    for (const body of bodies) expect((body.content as string).length).toBeLessThanOrEqual(2000);
+  });
+
+  test("rejects_empty_text_and_foreign_contexts", async () => {
+    const sink = new DiscordSink(new FakeRest());
+    await expect(sink.send(channel, { text: "  \n", reply_to: null })).rejects.toThrow(
+      "cannot send an empty message",
+    );
+    const other: ContextKey = { ...channel, platform: "twitch" };
+    await expect(sink.send(other, { text: "x", reply_to: null })).rejects.toThrow(
+      "is not a Discord context",
+    );
+    await expect(
+      sink.send({ ...channel, channel: "abc" }, { text: "x", reply_to: null }),
+    ).rejects.toThrow("invalid Discord channel id `abc`");
+  });
+
+  test("reacts_with_an_encoded_emoji", async () => {
+    const rest = new FakeRest();
+    const sink = new DiscordSink(rest);
+    await sink.react({ context: channel, id: "77" }, "👍");
+    expect(rest.calls[0]?.method).toBe("put");
+    expect(rest.calls[0]?.route).toBe(
+      `/channels/200/messages/77/reactions/${encodeURIComponent("👍")}/@me`,
+    );
+  });
+
+  test("typing_and_abort_signal_are_passed_on", async () => {
+    const rest = new FakeRest();
+    const sink = new DiscordSink(rest);
+    const controller = new AbortController();
+    await sink.typing(channel, controller.signal);
+    expect(rest.calls[0]).toMatchObject({ method: "post", route: "/channels/200/typing" });
+    expect(rest.calls[0]?.options?.signal).toBe(controller.signal);
+  });
+
+  test("failures_name_where_they_happened", async () => {
+    const rest = new FakeRest();
+    rest.failWith = new Error("Missing Access");
+    const sink = new DiscordSink(rest);
+    const error = await sink.send(channel, { text: "x", reply_to: null }).catch((e: unknown) => e);
+    expect((error as Error).message).toBe("sending message to discord:1:200");
+    expect(((error as Error).cause as Error).message).toBe("Missing Access");
+    await expect(sink.typing(channel)).rejects.toThrow("typing in discord:1:200");
+    await expect(sink.react({ context: channel, id: "5" }, "x")).rejects.toThrow(
+      "reacting to message 5 in discord:1:200",
+    );
+  });
+});

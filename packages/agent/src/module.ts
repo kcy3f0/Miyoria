@@ -1,0 +1,140 @@
+import { defineManifest, errorMessage, type Module, type ModuleContext } from "@miyoria/kernel";
+import type { Profile } from "@miyoria/profile";
+import { SettingsStoreKey } from "@miyoria/store";
+import { ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
+import { type RandomSource, SeededRandom } from "./attention.js";
+import { AgentCommands } from "./commands.js";
+import { AgentConfigSchema } from "./config.js";
+import {
+  AgentHandle,
+  AgentHandleKey,
+  type BudgetBox,
+  newOverrides,
+  type Overrides,
+  type VoiceRooms,
+} from "./handle.js";
+import { PersonaHandle, PersonaHandleKey } from "./persona.js";
+import { Agent } from "./runtime.js";
+import { ReactTool } from "./tools.js";
+import { TimeoutError, timeout } from "./util.js";
+
+/** Loading persisted settings must not hold up startup for long. */
+const SETTINGS_LOAD_TIMEOUT_MS = 5_000;
+
+/**
+ * Module `agent`: requires `llm` and `scheduler`, optionally uses `commands`.
+ *
+ * Turns `platform.*` and `voice.*` events into replies: each conversation context (text
+ * channel, DM or voice channel) keeps a `Session`, a coordinator debounces messages into turns,
+ * attention decides whether to respond, and the reply is generated through the `chat` LLM
+ * purpose (with an optional tool loop), parsed by the expression parser and submitted to the
+ * scheduler. In voice channels the reply is cut into sentences that are spoken (`speak`
+ * actions) while the model is still generating.
+ *
+ * Provides `PersonaHandleKey` and `AgentHandleKey`. Uses the `ToolRegistryKey` service when the
+ * app provides one at start; otherwise it provides its own (which keeps tools registered by
+ * other modules across agent restarts). Either way the built-in `react` tool is registered
+ * while running.
+ *
+ * Uses the optional services `SettingsStoreKey` (persisting runtime settings), `AuthorizerKey`
+ * (tool permissions), `CommandRegistryKey`, `PromptContributorsKey` (per-turn context),
+ * `SocialSignalsKey` and `MoodSignalsKey`; they are looked up per turn, so they may come and
+ * go. `llm.budget` events make her save tokens (see `BudgetState`).
+ */
+export class AgentModule implements Module {
+  static readonly ID = "agent";
+
+  readonly manifest = defineManifest(AgentModule.ID, "Agent", {
+    description: "Attention, conversation and reply generation",
+    requires: ["llm", "scheduler"],
+    optional: ["commands"],
+    configSchema: AgentConfigSchema,
+  });
+
+  readonly #persona: PersonaHandle;
+  #random: RandomSource | null = null;
+  /** Used when the app provides no registry. */
+  readonly #ownTools = new ToolRegistry();
+  /** The registry in use. */
+  #tools: ToolRegistry;
+  readonly #budget: BudgetBox = { state: "ok" };
+  readonly #overrides: Overrides = newOverrides();
+  readonly #voiceRooms: VoiceRooms = new Map();
+  readonly #commands = new AgentCommands();
+
+  constructor(profile: Profile) {
+    this.#persona = new PersonaHandle(profile);
+    this.#tools = this.#ownTools;
+  }
+
+  /** Replaces the decision sampler (default: seeded from config or entropy). */
+  withRandom(random: RandomSource): this {
+    this.#random = random;
+    return this;
+  }
+
+  persona(): PersonaHandle {
+    return this.#persona;
+  }
+
+  /**
+   * The tool registry in use: the app's (once started, if it provides one) or the module's
+   * own. Tools registered here before start are carried over into an app-provided registry.
+   */
+  tools(): ToolRegistry {
+    return this.#tools;
+  }
+
+  /** The app's registry if it provides one (pre-start registrations carried over), else own. */
+  #resolveTools(ctx: ModuleContext): [ToolRegistry, boolean] {
+    const app = ctx.services.get(ToolRegistryKey);
+    if (app && app !== this.#ownTools) {
+      for (const name of this.#ownTools.names()) {
+        const tool = this.#ownTools.get(name);
+        if (tool && app.get(name) === undefined) app.register(tool);
+      }
+      return [app, false];
+    }
+    return [this.#ownTools, true];
+  }
+
+  async start(ctx: ModuleContext): Promise<void> {
+    const config = ctx.config(AgentConfigSchema);
+    const random =
+      this.#random ??
+      (config.seed !== null ? new SeededRandom(config.seed) : SeededRandom.fromEntropy());
+    const store = ctx.services.get(SettingsStoreKey) ?? null;
+    const handle = new AgentHandle(
+      config,
+      this.#persona,
+      this.#overrides,
+      this.#voiceRooms,
+      this.#budget,
+      store,
+    );
+    try {
+      const n = await timeout(SETTINGS_LOAD_TIMEOUT_MS, ctx.signal, () => handle.load());
+      if (n > 0) ctx.log.info({ count: n }, "loaded runtime channel settings");
+    } catch (error) {
+      if (error instanceof TimeoutError) ctx.log.warn("loading runtime settings timed out");
+      else ctx.log.warn({ error: errorMessage(error) }, "could not load runtime settings");
+    }
+    const [tools, own] = this.#resolveTools(ctx);
+    if (!own) ctx.log.info("using the app's tool registry");
+    this.#tools = tools;
+    tools.register(new ReactTool(ctx));
+
+    const events = ctx.subscribe(Agent.topics());
+    ctx.provide(PersonaHandleKey, this.#persona);
+    ctx.provide(AgentHandleKey, handle);
+    if (own) ctx.provide(ToolRegistryKey, tools);
+    this.#commands.install(ctx.services, handle, this.#persona);
+    const agent = new Agent(ctx, config, this.#persona, random, handle, tools, this.#commands);
+    ctx.spawn("events", () => agent.run(events));
+  }
+
+  async stop(): Promise<void> {
+    this.#commands.uninstall();
+    this.#tools.unregister(ReactTool.NAME);
+  }
+}

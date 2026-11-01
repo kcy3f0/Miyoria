@@ -1,0 +1,188 @@
+// Streaming one playback to the node.
+
+import { errorMessage, getLogger } from "@miyoria/kernel";
+import type { AudioChunk, AudioStream } from "@miyoria/speech";
+import type { PlaybackState } from "@miyoria/types";
+import { encodeAudio, TAG_PLAYBACK } from "../protocol.js";
+import { deferred, Watch } from "../util.js";
+import type { Conn } from "./conn.js";
+
+const log = getLogger("voice.link.playback");
+
+/** Something that is playing and can be cut short (used by barge-in). */
+export interface Stoppable {
+  stop(fadeMs: number): void;
+}
+
+/** Handle of one playback started with `VoiceLink.play`. */
+export class Playback implements Stoppable {
+  readonly id: number;
+  readonly #stop = deferred<void>();
+  #stopped = false;
+  #fadeMs = 0;
+  /** @internal Written by the pump. */
+  readonly state$ = new Watch<PlaybackState | null>(null);
+
+  /** @internal Created by `VoiceLink.play`. */
+  constructor(id: number) {
+    this.id = id;
+  }
+
+  /**
+   * Stops the playback, fading out over `fadeMs`. It then ends as `interrupted` (unless it
+   * already ended).
+   */
+  stop(fadeMs: number): void {
+    if (this.#stopped) return;
+    this.#fadeMs = fadeMs;
+    this.#stopped = true;
+    this.#stop.resolve();
+  }
+
+  /** @internal */
+  get stopRequested(): boolean {
+    return this.#stopped;
+  }
+
+  /** @internal */
+  get stopping(): Promise<void> {
+    return this.#stop.promise;
+  }
+
+  /** @internal */
+  get fadeMs(): number {
+    return this.#fadeMs;
+  }
+
+  /** The latest state: `null` until the node reports `started`. */
+  state(): PlaybackState | null {
+    return this.state$.value;
+  }
+
+  /** Waits until the playback finished, was interrupted or failed. */
+  async wait(): Promise<PlaybackState> {
+    const s = await this.state$.waitFor((s) => s !== null && s !== "started");
+    return s ?? "failed";
+  }
+}
+
+type Next = { ok: true; result: IteratorResult<AudioChunk> } | { ok: false; error: unknown };
+
+/** Starts streaming `audio` to the node. `play_start` has already been sent. */
+export function startPlayback(
+  conn: Conn,
+  id: number,
+  sampleRate: number,
+  audio: AudioStream,
+  node: Watch<PlaybackState | null>,
+): Playback {
+  const playback = new Playback(id);
+  void pump(conn, playback, sampleRate, audio, node)
+    .catch((error: unknown) => {
+      log.warn({ play: id, err: errorMessage(error) }, "playback pump failed");
+      return "failed" as const;
+    })
+    .then((end) => {
+      conn.state.plays.delete(id);
+      log.debug({ play: id, state: end }, "playback ended");
+      playback.state$.set(end);
+    });
+  return playback;
+}
+
+async function pump(
+  conn: Conn,
+  playback: Playback,
+  sampleRate: number,
+  audio: AudioStream,
+  node: Watch<PlaybackState | null>,
+): Promise<PlaybackState> {
+  const id = playback.id;
+  // 100 ms frames keep play_stop responsive without flooding the socket.
+  const frameLen = Math.max(1, Math.floor(sampleRate / 10));
+  const it = audio[Symbol.asyncIterator]();
+  let sending = true;
+  let pending: Promise<Next> | null = null;
+  let settled: Next | null = null;
+  let seen = node.version;
+  const stopPlay = (fadeMs: number) =>
+    conn.sendJson({ type: "play_stop", play: id, fade_ms: fadeMs }).catch(() => undefined);
+  try {
+    for (;;) {
+      if (sending && pending === null) {
+        settled = null;
+        pending = it.next().then(
+          (result): Next => {
+            settled = { ok: true, result };
+            return settled;
+          },
+          (error: unknown): Next => {
+            settled = { ok: false, error };
+            return settled;
+          },
+        );
+      }
+      const ready =
+        playback.stopRequested || conn.isClosed || node.version !== seen || settled !== null;
+      if (!ready) {
+        await Promise.race([
+          playback.stopping,
+          conn.closing,
+          node.changed(),
+          ...(pending !== null ? [pending] : []),
+        ]);
+      }
+      // Same priority as the legacy `biased` select.
+      if (playback.stopRequested) {
+        await stopPlay(playback.fadeMs);
+        return "interrupted";
+      }
+      if (conn.isClosed) return "failed";
+      if (node.version !== seen) {
+        seen = node.version;
+        const state = node.value;
+        if (state === "started") playback.state$.set("started");
+        else if (state !== null) return state;
+        continue;
+      }
+      const next = settled as Next | null;
+      if (next === null) continue;
+      pending = null;
+      settled = null;
+      if (!next.ok) {
+        log.warn({ play: id, err: errorMessage(next.error) }, "audio stream failed");
+        await stopPlay(0);
+        return "failed";
+      }
+      if (next.result.done) {
+        sending = false;
+        try {
+          await conn.sendJson({ type: "play_end", play: id });
+        } catch {
+          return "failed";
+        }
+        continue;
+      }
+      const chunk = next.result.value;
+      if (chunk.sampleRate !== sampleRate) {
+        log.warn(
+          { play: id, expected: sampleRate, got: chunk.sampleRate },
+          "audio chunk has a different sample rate",
+        );
+        await stopPlay(0);
+        return "failed";
+      }
+      for (let at = 0; at < chunk.samples.length; at += frameLen) {
+        const frame = chunk.samples.subarray(at, at + frameLen);
+        try {
+          await conn.send(encodeAudio(TAG_PLAYBACK, id, frame));
+        } catch {
+          return "failed";
+        }
+      }
+    }
+  } finally {
+    // Releases the TTS stream (e.g. cancels the HTTP response) without waiting for it.
+    Promise.resolve(it.return?.()).catch(() => undefined);
+  }
+}

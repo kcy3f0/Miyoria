@@ -1,0 +1,6 @@
+id = "test.stage"
+version = "0.0.1"
+kind = ["game-adapter"]
+runtime = "node"
+entry = "index.mjs"
+placement = "stage"

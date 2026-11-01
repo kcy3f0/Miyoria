@@ -1,0 +1,43 @@
+{
+  "name": "miyoria",
+  "version": "0.1.0",
+  "description": "Miyoria — AI waifu 框架:`npx miyoria@latest init` 建立設定,`miyoria core` 啟動",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "miyoria": "dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "@miyoria/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "templates",
+    "assets"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "tsx --conditions=@miyoria/source src/main.ts"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.8.1",
+    "@miyoria/core": "workspace:*",
+    "@miyoria/kernel": "workspace:*",
+    "@miyoria/llm": "workspace:*",
+    "@miyoria/types": "workspace:*",
+    "smol-toml": "^1.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.12"
+  }
+}

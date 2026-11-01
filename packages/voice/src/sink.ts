@@ -1,0 +1,169 @@
+// Speaking: `VoiceSink` → TTS → voice node playback.
+
+import { errorMessage, type ModuleContext } from "@miyoria/kernel";
+import {
+  type AudioChunk,
+  type AudioStream,
+  SpeechError,
+  type SpeechService,
+} from "@miyoria/speech";
+import {
+  type ContextKey,
+  contextKeyString,
+  type PlaybackState,
+  type SpeakOutcome,
+  type TurnId,
+  type VoiceSink,
+} from "@miyoria/types";
+import type { BargeIn } from "./barge.js";
+import type { VoiceConfig, VoiceProfile } from "./config.js";
+import { VoiceLinkError } from "./link/conn.js";
+import type { VoiceLink } from "./link/link.js";
+import type { Playback } from "./link/playback.js";
+import { stripTags } from "./text.js";
+import { LATENCY_TOPIC } from "./topics.js";
+import { aborted } from "./util.js";
+
+export interface SpeakerDeps {
+  ctx: ModuleContext;
+  link: VoiceLink;
+  speech: SpeechService;
+  profile: VoiceProfile;
+  config: VoiceConfig;
+  barge: BargeIn;
+}
+
+/** `first` followed by the rest of `it`; `return()` releases `it`. */
+function prepend(first: AudioChunk, it: AsyncIterator<AudioChunk>): AudioStream {
+  let sentFirst = false;
+  const stream: AsyncIterableIterator<AudioChunk> = {
+    next() {
+      if (!sentFirst) {
+        sentFirst = true;
+        return Promise.resolve({ value: first, done: false });
+      }
+      return it.next();
+    },
+    async return() {
+      await it.return?.();
+      return { value: undefined, done: true };
+    },
+    [Symbol.asyncIterator]() {
+      return stream;
+    },
+  };
+  return stream;
+}
+
+/** The `VoiceSink` provided by the `voice` module. */
+export class Speaker implements VoiceSink {
+  readonly #d: SpeakerDeps;
+
+  constructor(deps: SpeakerDeps) {
+    this.#d = deps;
+  }
+
+  #playbackEvent(context: ContextKey, turn: TurnId | null, state: PlaybackState, text: string) {
+    this.#d.ctx.publish({ type: "voice_playback", data: { context, turn, state, text } }, { turn });
+  }
+
+  async #start(
+    context: ContextKey,
+    guild: string,
+    text: string,
+    emotion: string | null,
+    turn: TurnId | null,
+    signal: AbortSignal | undefined,
+  ): Promise<Playback> {
+    const { ctx, speech, profile, config, link } = this.#d;
+    const request = {
+      text,
+      language: config.tts_language,
+      emotion,
+      instruct: profile.instructFor(emotion),
+      voice: profile.voice,
+    };
+    const t0 = ctx.clock.now();
+    const [provider, stream] = await speech.synthesize(request, signal);
+    const it = stream[Symbol.asyncIterator]();
+    let first: AudioChunk;
+    try {
+      for (;;) {
+        const r = await it.next();
+        if (r.done) throw new SpeechError("TTS returned no audio");
+        if (r.value.samples.length > 0) {
+          first = r.value;
+          break;
+        }
+      }
+    } catch (error) {
+      Promise.resolve(it.return?.()).catch(() => undefined);
+      throw error;
+    }
+    const firstAudioMs = Math.max(0, ctx.clock.now() - t0);
+    ctx.publish(
+      {
+        type: "custom",
+        data: {
+          topic: LATENCY_TOPIC,
+          payload: {
+            stage: "tts",
+            context: { ...context },
+            turn,
+            provider,
+            chars: [...text].length,
+            first_audio_ms: firstAudioMs,
+          },
+        },
+      },
+      { turn },
+    );
+    return link.play(guild, first.sampleRate, prepend(first, it));
+  }
+
+  async speak(
+    context: ContextKey,
+    rawText: string,
+    emotion: string | null,
+    turn: TurnId | null,
+    signal?: AbortSignal,
+  ): Promise<SpeakOutcome> {
+    const guild = context.scope;
+    if (guild === null) {
+      throw new VoiceLinkError(`voice context \`${contextKeyString(context)}\` has no guild`);
+    }
+    const text = stripTags(rawText);
+    if (text === "") return "completed";
+    let playback: Playback;
+    try {
+      playback = await this.#start(context, guild, text, emotion, turn, signal);
+    } catch (error) {
+      this.#d.ctx.log.warn({ err: errorMessage(error) }, "cannot start speech");
+      this.#playbackEvent(context, turn, "failed", text);
+      throw error;
+    }
+    this.#playbackEvent(context, turn, "started", text);
+    const barge = this.#d.barge;
+    const token = barge.register(guild, playback);
+    let state: PlaybackState;
+    try {
+      // Cancelling `speak` (e.g. the scheduler timed it out) stops the playback.
+      const cancelled = signal ? aborted(signal).then(() => null) : new Promise<null>(() => {});
+      const done = await Promise.race([playback.wait(), cancelled]);
+      if (done === null) throw signal?.reason ?? new VoiceLinkError("speech cancelled");
+      state = done;
+    } finally {
+      barge.unregister(guild, token);
+      playback.stop(0);
+    }
+    this.#playbackEvent(context, turn, state, text);
+    switch (state) {
+      case "finished":
+        return "completed";
+      case "interrupted":
+        return "interrupted";
+      default:
+        throw new VoiceLinkError("playback failed");
+    }
+  }
+}

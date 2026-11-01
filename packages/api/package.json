@@ -1,0 +1,48 @@
+{
+  "name": "@miyoria/api",
+  "version": "0.1.0",
+  "description": "Admin HTTP + SSE API (module `api`) and its typed client",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "@miyoria/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.5",
+    "@miyoria/agent": "workspace:*",
+    "@miyoria/auth": "workspace:*",
+    "@miyoria/ext-host": "workspace:*",
+    "@miyoria/kernel": "workspace:*",
+    "@miyoria/llm": "workspace:*",
+    "@miyoria/mcp": "workspace:*",
+    "@miyoria/memory": "workspace:*",
+    "@miyoria/queue": "workspace:*",
+    "@miyoria/social": "workspace:*",
+    "@miyoria/stage": "workspace:*",
+    "@miyoria/store": "workspace:*",
+    "@miyoria/tools": "workspace:*",
+    "@miyoria/types": "workspace:*",
+    "hono": "^4.13.16",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@miyoria/profile": "workspace:*",
+    "@types/node": "^24.19.2",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.12"
+  }
+}

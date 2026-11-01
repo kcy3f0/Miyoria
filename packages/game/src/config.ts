@@ -1,0 +1,103 @@
+import { z } from "zod";
+
+/** Permission nodes of the `game` commands. */
+export const GamePermissionsSchema = z.object({
+  start: z.string().default("game.start"),
+  stop: z.string().default("game.stop"),
+  goal: z.string().default("game.goal"),
+  status: z.string().default("game.status"),
+});
+export type GamePermissions = z.output<typeof GamePermissionsSchema>;
+
+const ContextKeySchema = z.object({
+  platform: z.string(),
+  scope: z.string().nullable(),
+  channel: z.string(),
+  kind: z.enum(["channel", "thread", "dm", "voice"]),
+});
+
+/**
+ * `[modules.game]`. All fields have defaults; durations are in seconds.
+ *
+ * ```toml
+ * [modules.game]
+ * decide_secs = 20
+ * stream_context = { platform = "discord", scope = "123", channel = "456", kind = "voice" }
+ * ```
+ */
+export const GameConfigSchema = z.object({
+  /** Game id used when `game start` names none. */
+  default_game: z.string().default("minecraft"),
+  /** Regular decision interval while playing. */
+  decide_secs: z.number().default(20),
+  /** Event-triggered decisions happen at most this often. */
+  min_decide_secs: z.number().default(4),
+  /**
+   * A goal is kept at least this long unless it finished, failed, the bot went idle or
+   * something important happened.
+   */
+  min_goal_secs: z.number().default(45),
+  /** A goal still running after this long is given up. */
+  max_goal_secs: z.number().default(600),
+  /**
+   * Goal reached / failed events this soon after an action belong to the previous goal and are
+   * ignored.
+   */
+  settle_secs: z.number().default(3),
+  /** Act failures before a goal counts as failed. */
+  max_attempts: z.number().default(3),
+  /** Minimum time between regular commentary requests. */
+  commentary_min_secs: z.number().default(15),
+  /** Minimum time between urgent ones (death, viewer goals, ...). */
+  urgent_commentary_min_secs: z.number().default(3),
+  /** LLM purpose of the decisions. */
+  purpose: z.string().default("game"),
+  temperature: z.number().default(0.7),
+  max_tokens: z.number().default(400),
+  llm_timeout_secs: z.number().default(30),
+  tool_timeout_secs: z.number().default(20),
+  /** How much of the persona prompt goes into the decision prompt. */
+  persona_chars: z.number().default(600),
+  /** Recent game events remembered for prompts. */
+  recent_events: z.number().default(12),
+  /** Characters of the observation summary in the chat prompt section. */
+  prompt_summary_chars: z.number().default(500),
+  /**
+   * Where commentary goes when `game start` is not run from a voice channel she is in (e.g. the
+   * stream's voice channel).
+   */
+  stream_context: ContextKeySchema.nullable().default(null),
+  /** Request queue item kind consumed as goals. */
+  queue_kind: z.string().default("game_goal"),
+  /** Actions that never replace the current goal. */
+  instant_actions: z
+    .array(z.string())
+    .default(["chat", "look", "attack", "use", "select", "respawn"]),
+  /** Game event types that trigger an early decision. */
+  trigger_events: z
+    .array(z.string())
+    .default([
+      "death",
+      "low_health",
+      "hostile_near",
+      "goal_reached",
+      "goal_failed",
+      "baritone_idle",
+      "advancement",
+      "chat",
+      "connected",
+    ]),
+  /** Event types meaning the current goal was reached. */
+  reached_events: z.array(z.string()).default(["goal_reached", "baritone_idle"]),
+  /** Event types meaning the current goal failed. */
+  failed_events: z.array(z.string()).default(["goal_failed"]),
+  /** Largest mood change the model may ask for per decision. */
+  max_llm_nudge: z.number().default(0.1),
+  permissions: GamePermissionsSchema.prefault({}),
+});
+export type GameConfig = z.output<typeof GameConfigSchema>;
+
+/** Defaults of every field (the Rust `Default` impl). */
+export function defaultGameConfig(): GameConfig {
+  return GameConfigSchema.parse({});
+}

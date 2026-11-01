@@ -1,0 +1,1334 @@
+// PostgreSQL backend (`pg`) with pgvector. Same schema as the Rust backend (the migrations in
+// `migrations/postgres` are the Rust ones verbatim); parameterized queries only.
+//
+// Timestamps travel as text (the `timestamptz` parser is replaced) so microseconds survive;
+// `bigint` columns are parsed to numbers; JSONB is sent as text with `::jsonb`; vectors as the
+// pgvector text form `[1,2,3]`.
+
+import { readdirSync, readFileSync } from "node:fs";
+import { getLogger } from "@miyoria/kernel";
+import {
+  type AccountRef,
+  type Clock,
+  type ContextKey,
+  type DecisionTrace,
+  type JsonValue,
+  type ModuleId,
+  newId,
+  type PersonId,
+  type PlatformId,
+  type ProfileId,
+  type Timestamp,
+} from "@miyoria/types";
+import pg from "pg";
+import {
+  authScopeKey,
+  canonicalMemoryScope,
+  cleanEmbedding,
+  contextLookupKey,
+  embeddingFromF32,
+  fromMicros,
+  memoryKind,
+  memoryScopeKey,
+  normalizeTimestamp,
+  parseJson,
+  queryTokens,
+  StoreError,
+  sqlLimit,
+  toMicros,
+  u32,
+} from "./common.js";
+import type {
+  Account,
+  AuditEntry,
+  AuthScope,
+  DecisionRecord,
+  LogEntry,
+  MemoryFilter,
+  MemoryHit,
+  MemoryKind,
+  MemoryQuery,
+  MemoryRecord,
+  MemoryScope,
+  NodeOverride,
+  Person,
+  PersonaOverride,
+  PrunePolicy,
+  Relationship,
+  RelationshipDelta,
+  RoleAssignment,
+  RoleDefinition,
+  RoleMapping,
+} from "./records.js";
+import type {
+  AuditLog,
+  AuthStore,
+  DecisionLog,
+  IdentityStore,
+  MemoryRecordStore,
+  MessageLog,
+  ModuleStateStore,
+  PeopleStore,
+  PersonaOverrideStore,
+  RelationshipStore,
+  SettingsStore,
+  Store,
+} from "./stores.js";
+
+const log = getLogger("store.postgres");
+
+const MIGRATIONS_DIR = new URL("../migrations/postgres/", import.meta.url);
+
+/** How often account creation retries after losing a race to a concurrent call. */
+const MAX_RETRIES = 5;
+
+/** Session-level advisory lock key held while migrating ("miyo" in ASCII). */
+const MIGRATION_LOCK = 0x6d69796f;
+
+export interface PostgresStoreOptions {
+  /** Source of "now" for rows stamped by the store. Default: the database's `now()`. */
+  clock?: Clock;
+  /** Pool size. Default 10. */
+  maxConnections?: number;
+  /** How long to wait for a pooled connection. Default 10 000 ms. */
+  connectTimeoutMs?: number;
+}
+
+type Row = Record<string, unknown>;
+type Queryable = Pick<pg.PoolClient, "query">;
+
+const OID_INT8 = 20;
+const OID_TIMESTAMP = 1114;
+const OID_TIMESTAMPTZ = 1184;
+
+const TYPES: pg.CustomTypesConfig = {
+  getTypeParser: ((oid: number, format?: "text" | "binary") => {
+    if (oid === OID_TIMESTAMPTZ || oid === OID_TIMESTAMP) return (v: string) => v;
+    if (oid === OID_INT8) return (v: string) => Number(v);
+    return pg.types.getTypeParser(oid, format);
+  }) as pg.CustomTypesConfig["getTypeParser"],
+};
+
+// ---- row accessors ----------------------------------------------------------------------
+
+function str(row: Row, column: string): string {
+  const v = row[column];
+  if (typeof v !== "string") throw new StoreError(`column \`${column}\` is not text`);
+  return v;
+}
+
+function optStr(row: Row, column: string): string | null {
+  const v = row[column];
+  return v === null || v === undefined ? null : str(row, column);
+}
+
+function num(row: Row, column: string): number {
+  const v = row[column];
+  if (typeof v === "number") return v;
+  if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) return Number(v);
+  throw new StoreError(`column \`${column}\` is not a number`);
+}
+
+function bool(row: Row, column: string): boolean {
+  const v = row[column];
+  if (typeof v !== "boolean") throw new StoreError(`column \`${column}\` is not a boolean`);
+  return v;
+}
+
+function strings(row: Row, column: string): string[] {
+  const v = row[column];
+  if (!Array.isArray(v)) throw new StoreError(`column \`${column}\` is not an array`);
+  return v.map(String);
+}
+
+function ts(row: Row, column: string): Timestamp {
+  return normalizeTimestamp(str(row, column));
+}
+
+function optTs(row: Row, column: string): Timestamp | null {
+  return row[column] == null ? null : ts(row, column);
+}
+
+/** Timestamps are sent as normalized UTC text (microsecond precision). */
+function tsParam(value: Timestamp): string {
+  return normalizeTimestamp(value);
+}
+
+function optTsParam(value: Timestamp | null): string | null {
+  return value === null ? null : tsParam(value);
+}
+
+function limitParam(limit: number): number | null {
+  return sqlLimit(limit);
+}
+
+/** `[1,2,3]`, the text form pgvector accepts. */
+function vectorLiteral(v: readonly number[]): string {
+  return `[${v.map((x) => String(Math.fround(x))).join(",")}]`;
+}
+
+function parseVector(s: string): number[] {
+  const inner = s.trim().replace(/^\[/, "").replace(/\]$/, "");
+  if (inner.trim() === "") return [];
+  return embeddingFromF32(
+    inner.split(",").map((x) => {
+      const n = Number(x.trim());
+      if (Number.isNaN(n)) {
+        throw new StoreError(`invalid embedding component \`${x}\` in database`);
+      }
+      return Math.fround(n);
+    }),
+  );
+}
+
+function pgCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+const UNIQUE_VIOLATION = "23505";
+const FOREIGN_KEY_VIOLATION = "23503";
+
+// ---- backend core -----------------------------------------------------------------------
+
+class Pg {
+  constructor(
+    readonly pool: pg.Pool,
+    readonly clock: Clock | null,
+  ) {}
+
+  /** `now` as a query parameter: the clock's time, or `null` for the database's `now()`. */
+  now(): string | null {
+    return this.clock === null ? null : fromMicros(Math.floor(this.clock.now()) * 1000);
+  }
+
+  async query(sql: string, params: unknown[] = [], on: Queryable = this.pool): Promise<Row[]> {
+    const result = await on.query<Row>(sql, params);
+    return result.rows;
+  }
+
+  async execute(sql: string, params: unknown[] = [], on: Queryable = this.pool): Promise<number> {
+    const result = await on.query(sql, params);
+    return result.rowCount ?? 0;
+  }
+
+  async tx<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await fn(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+async function migrate(db: Pg): Promise<void> {
+  const files = readdirSync(MIGRATIONS_DIR)
+    .filter((f) => /^\d+_.+\.sql$/.test(f))
+    .sort();
+  const client = await db.pool.connect();
+  try {
+    await client.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK]);
+    try {
+      await client.query(
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, " +
+          "name TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+      );
+      let applied = new Set(
+        (await db.query("SELECT version FROM schema_version", [], client)).map((r) =>
+          num(r, "version"),
+        ),
+      );
+      if (applied.size === 0) applied = await adoptSqlxMigrations(db, client, files);
+      const known = new Set(files.map((f) => Number.parseInt(f, 10)));
+      for (const version of applied) {
+        if (!known.has(version)) {
+          throw new StoreError(`migration ${version} was previously applied but is missing`);
+        }
+      }
+      for (const file of files) {
+        const version = Number.parseInt(file, 10);
+        if (applied.has(version)) continue;
+        const sql = readFileSync(new URL(file, MIGRATIONS_DIR), "utf8");
+        await client.query("BEGIN");
+        try {
+          await client.query(sql);
+          await client.query("INSERT INTO schema_version (version, name) VALUES ($1, $2)", [
+            version,
+            file.replace(/\.sql$/, ""),
+          ]);
+          await client.query("COMMIT");
+        } catch (error) {
+          await client.query("ROLLBACK").catch(() => undefined);
+          throw error;
+        }
+        log.info({ version, file }, "applied database migration");
+      }
+    } finally {
+      await client.query("SELECT pg_advisory_unlock($1)", [MIGRATION_LOCK]);
+    }
+    log.debug("database migrations are up to date");
+  } catch (cause) {
+    if (cause instanceof StoreError) throw cause;
+    throw new StoreError("database migration failed", { cause });
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * A database migrated by the Rust backend (sqlx's `_sqlx_migrations`) has the same schema:
+ * its successful versions are recorded as applied instead of being run again.
+ */
+async function adoptSqlxMigrations(
+  db: Pg,
+  client: pg.PoolClient,
+  files: string[],
+): Promise<Set<number>> {
+  const exists = await db.query(
+    "SELECT to_regclass('_sqlx_migrations') IS NOT NULL AS x",
+    [],
+    client,
+  );
+  if (!exists[0]?.x) return new Set();
+  const rows = await db.query(
+    "SELECT version FROM _sqlx_migrations WHERE success ORDER BY version",
+    [],
+    client,
+  );
+  const adopted = new Set<number>();
+  for (const row of rows) {
+    const version = num(row, "version");
+    const file = files.find((f) => Number.parseInt(f, 10) === version);
+    if (!file) continue;
+    await client.query(
+      "INSERT INTO schema_version (version, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+      [version, file.replace(/\.sql$/, "")],
+    );
+    adopted.add(version);
+  }
+  if (adopted.size > 0) log.info({ versions: [...adopted] }, "adopted sqlx migrations");
+  return adopted;
+}
+
+// ---- conversation log ---------------------------------------------------------------------
+
+function logEntryFromRow(row: Row): LogEntry {
+  return {
+    id: str(row, "id"),
+    profile: str(row, "profile_id"),
+    context: {
+      platform: str(row, "platform"),
+      scope: optStr(row, "scope"),
+      channel: str(row, "channel"),
+      kind: str(row, "kind") as ContextKey["kind"],
+    },
+    author: { platform: str(row, "author_platform"), id: str(row, "author_id") },
+    author_name: str(row, "author_name"),
+    text: str(row, "text"),
+    is_self: bool(row, "is_self"),
+    ts: ts(row, "ts"),
+    turn: optStr(row, "turn_id"),
+  };
+}
+
+class PgMessageLog implements MessageLog {
+  constructor(private readonly db: Pg) {}
+
+  async append(entry: LogEntry): Promise<void> {
+    try {
+      await this.db.execute(
+        "INSERT INTO message_log (id, profile_id, context_key, platform, scope, channel, kind, " +
+          "author_platform, author_id, author_name, text, is_self, ts, turn_id) " +
+          "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+        [
+          entry.id,
+          entry.profile,
+          contextLookupKey(entry.context),
+          entry.context.platform,
+          entry.context.scope,
+          entry.context.channel,
+          entry.context.kind,
+          entry.author.platform,
+          entry.author.id,
+          entry.author_name,
+          entry.text,
+          entry.is_self,
+          tsParam(entry.ts),
+          entry.turn,
+        ],
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      if (pgCode(cause) === UNIQUE_VIOLATION) {
+        throw new StoreError(`log entry \`${entry.id}\` already exists`, { cause });
+      }
+      throw new StoreError("cannot append log entry", { cause });
+    }
+  }
+
+  async recent(profile: ProfileId, context: ContextKey, limit: number): Promise<LogEntry[]> {
+    const rows = await this.db.query(
+      "SELECT * FROM (SELECT * FROM message_log WHERE profile_id = $1 AND context_key = $2 " +
+        "ORDER BY ts DESC, seq DESC LIMIT $3) recent ORDER BY ts ASC, seq ASC",
+      [profile, contextLookupKey(context), limitParam(limit)],
+    );
+    return rows.map(logEntryFromRow);
+  }
+}
+
+// ---- module state -------------------------------------------------------------------------
+
+class PgModuleState implements ModuleStateStore {
+  constructor(private readonly db: Pg) {}
+
+  async get(module: ModuleId): Promise<boolean | null> {
+    const rows = await this.db.query("SELECT enabled FROM module_state WHERE module_id = $1", [
+      module,
+    ]);
+    return rows[0] ? bool(rows[0], "enabled") : null;
+  }
+
+  async set(module: ModuleId, enabled: boolean): Promise<void> {
+    await this.db.execute(
+      "INSERT INTO module_state (module_id, enabled, updated_at) VALUES ($1, $2, " +
+        "COALESCE($3::timestamptz, now())) ON CONFLICT (module_id) DO UPDATE SET " +
+        "enabled = EXCLUDED.enabled, updated_at = EXCLUDED.updated_at",
+      [module, enabled, this.db.now()],
+    );
+  }
+
+  async list(): Promise<Map<ModuleId, boolean>> {
+    const rows = await this.db.query(
+      'SELECT module_id, enabled FROM module_state ORDER BY module_id COLLATE "C"',
+    );
+    return new Map(rows.map((r) => [str(r, "module_id"), bool(r, "enabled")]));
+  }
+}
+
+// ---- persona overrides --------------------------------------------------------------------
+
+class PgPersonaOverrides implements PersonaOverrideStore {
+  constructor(private readonly db: Pg) {}
+
+  async set(profile: ProfileId, key: string, body: string, editedBy: string): Promise<number> {
+    // Edits of one section are serialized with a transaction-scoped advisory lock, so the next
+    // version number is never contended.
+    try {
+      return await this.db.tx(async (client) => {
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          `persona_overrides/${profile}/${key}`,
+        ]);
+        const rows = await this.db.query(
+          "INSERT INTO persona_overrides (profile_id, section_key, version, body, edited_by, " +
+            "edited_at) SELECT $1, $2, COALESCE(MAX(version), 0) + 1, $3, $4, " +
+            "COALESCE($5::timestamptz, now()) FROM persona_overrides " +
+            "WHERE profile_id = $1 AND section_key = $2 RETURNING version",
+          [profile, key, body, editedBy, this.db.now()],
+          client,
+        );
+        if (!rows[0]) throw new StoreError("cannot store persona override");
+        return num(rows[0], "version");
+      });
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot store persona override", { cause });
+    }
+  }
+
+  async current(profile: ProfileId): Promise<Map<string, string>> {
+    const rows = await this.db.query(
+      "SELECT DISTINCT ON (section_key) section_key, body FROM persona_overrides " +
+        "WHERE profile_id = $1 ORDER BY section_key, version DESC",
+      [profile],
+    );
+    const entries = rows.map((r) => [str(r, "section_key"), str(r, "body")] as const);
+    return new Map([...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  }
+
+  async history(profile: ProfileId, key: string): Promise<PersonaOverride[]> {
+    const rows = await this.db.query(
+      "SELECT version, body, edited_by, edited_at FROM persona_overrides " +
+        "WHERE profile_id = $1 AND section_key = $2 ORDER BY version ASC",
+      [profile, key],
+    );
+    return rows.map((r) => ({
+      profile,
+      key,
+      version: num(r, "version"),
+      body: str(r, "body"),
+      edited_by: str(r, "edited_by"),
+      edited_at: ts(r, "edited_at"),
+    }));
+  }
+}
+
+// ---- people and identity ------------------------------------------------------------------
+
+function accountFromRow(row: Row): Account {
+  return {
+    account: { platform: str(row, "platform"), id: str(row, "account_id") },
+    display_name: str(row, "display_name"),
+    first_seen: ts(row, "first_seen"),
+    last_seen: ts(row, "last_seen"),
+  };
+}
+
+const ACCOUNTS_OF =
+  "SELECT platform, account_id, display_name, first_seen, last_seen FROM accounts " +
+  'WHERE person_id = $1 ORDER BY first_seen, platform COLLATE "C", account_id COLLATE "C"';
+
+class PgPeople implements PeopleStore {
+  constructor(private readonly db: Pg) {}
+
+  async upsertAccount(account: AccountRef, displayName: string): Promise<PersonId> {
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      const existing = await this.db.query(
+        "UPDATE accounts SET display_name = $3, last_seen = COALESCE($4::timestamptz, now()) " +
+          "WHERE platform = $1 AND account_id = $2 RETURNING person_id",
+        [account.platform, account.id, displayName, this.db.now()],
+      );
+      if (existing[0]) return str(existing[0], "person_id");
+      // First sight: create the person and the account together. If a concurrent call created
+      // the account first, roll back and reuse it.
+      const person = newId();
+      const created = await this.db
+        .tx(async (client) => {
+          const now = this.db.now();
+          await client.query(
+            "INSERT INTO people (id, display_name, created_at) VALUES ($1, $2, " +
+              "COALESCE($3::timestamptz, now()))",
+            [person, displayName, now],
+          );
+          const inserted = await this.db.execute(
+            "INSERT INTO accounts (platform, account_id, person_id, display_name, first_seen, " +
+              "last_seen) VALUES ($1, $2, $3, $4, COALESCE($5::timestamptz, now()), " +
+              "COALESCE($5::timestamptz, now())) ON CONFLICT (platform, account_id) DO NOTHING",
+            [account.platform, account.id, person, displayName, now],
+            client,
+          );
+          if (inserted !== 1) throw new LostRace();
+          return true;
+        })
+        .catch((error: unknown) => {
+          if (error instanceof LostRace) return false;
+          throw error;
+        });
+      if (created) return person;
+    }
+    throw new StoreError(
+      `account \`${account.platform}:${account.id}\` is being created concurrently; try again`,
+    );
+  }
+
+  async personByAccount(account: AccountRef): Promise<Person | null> {
+    const rows = await this.db.query(
+      "SELECT p.id, p.display_name, p.created_at FROM accounts a " +
+        "JOIN people p ON p.id = a.person_id WHERE a.platform = $1 AND a.account_id = $2",
+      [account.platform, account.id],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    const id = str(row, "id");
+    return {
+      id,
+      display_name: str(row, "display_name"),
+      created_at: ts(row, "created_at"),
+      accounts: (await this.db.query(ACCOUNTS_OF, [id])).map(accountFromRow),
+    };
+  }
+}
+
+/** Rolls back a first-sight insert that lost to a concurrent one. */
+class LostRace extends Error {
+  override readonly name = "LostRace";
+}
+
+class PgIdentity implements IdentityStore {
+  constructor(private readonly db: Pg) {}
+
+  async linkAccount(account: AccountRef, person: PersonId): Promise<void> {
+    // A new account row has no name yet; its id stands in until the account is seen.
+    try {
+      await this.db.execute(
+        "INSERT INTO accounts (platform, account_id, person_id, display_name, first_seen, " +
+          "last_seen) VALUES ($1, $2, $3, $2, COALESCE($4::timestamptz, now()), " +
+          "COALESCE($4::timestamptz, now())) ON CONFLICT (platform, account_id) " +
+          "DO UPDATE SET person_id = EXCLUDED.person_id",
+        [account.platform, account.id, person, this.db.now()],
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      if (pgCode(cause) === FOREIGN_KEY_VIOLATION) {
+        throw new StoreError(`unknown person \`${person}\``, { cause });
+      }
+      throw new StoreError("cannot link account", { cause });
+    }
+  }
+
+  async mergePeople(keep: PersonId, absorb: PersonId): Promise<void> {
+    await this.db.tx(async (client) => {
+      // Rows are locked in id order, so concurrent merges cannot deadlock.
+      const found = (
+        await this.db.query(
+          "SELECT id FROM people WHERE id = ANY($1) ORDER BY id FOR UPDATE",
+          [[keep, absorb]],
+          client,
+        )
+      ).map((r) => str(r, "id"));
+      for (const person of [keep, absorb]) {
+        if (!found.includes(person)) throw new StoreError(`unknown person \`${person}\``);
+      }
+      if (keep === absorb) return;
+      await client.query("UPDATE accounts SET person_id = $1 WHERE person_id = $2", [keep, absorb]);
+      await client.query("DELETE FROM people WHERE id = $1", [absorb]);
+    });
+  }
+
+  async accountsOf(person: PersonId): Promise<Account[]> {
+    return (await this.db.query(ACCOUNTS_OF, [person])).map(accountFromRow);
+  }
+
+  async setPersonName(person: PersonId, displayName: string): Promise<void> {
+    const changed = await this.db.execute("UPDATE people SET display_name = $2 WHERE id = $1", [
+      person,
+      displayName,
+    ]);
+    if (changed === 0) throw new StoreError(`unknown person \`${person}\``);
+  }
+
+  async createLinkCode(code: string, account: AccountRef, expiresAt: Timestamp): Promise<void> {
+    await this.db.execute(
+      "INSERT INTO link_codes (code, platform, account_id, expires_at) VALUES ($1, $2, $3, $4) " +
+        "ON CONFLICT (code) DO UPDATE SET platform = EXCLUDED.platform, " +
+        "account_id = EXCLUDED.account_id, expires_at = EXCLUDED.expires_at",
+      [code, account.platform, account.id, tsParam(expiresAt)],
+    );
+  }
+
+  async consumeLinkCode(code: string, now: Timestamp): Promise<AccountRef | null> {
+    const rows = await this.db.query(
+      "DELETE FROM link_codes WHERE code = $1 RETURNING platform, account_id, expires_at",
+      [code],
+    );
+    const row = rows[0];
+    if (!row || toMicros(str(row, "expires_at")) <= toMicros(now)) return null;
+    return { platform: str(row, "platform"), id: str(row, "account_id") };
+  }
+}
+
+// ---- decisions ----------------------------------------------------------------------------
+
+class PgDecisionLog implements DecisionLog {
+  constructor(private readonly db: Pg) {}
+
+  async append(record: DecisionRecord): Promise<void> {
+    try {
+      await this.db.execute(
+        "INSERT INTO decision_log (id, profile_id, context_key, ts, trace) " +
+          "VALUES ($1, $2, $3, $4, $5::jsonb)",
+        [
+          record.id,
+          record.profile,
+          contextLookupKey(record.trace.context),
+          tsParam(record.ts),
+          JSON.stringify(record.trace),
+        ],
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      if (pgCode(cause) === UNIQUE_VIOLATION) {
+        throw new StoreError(`decision \`${record.id}\` already exists`, { cause });
+      }
+      throw new StoreError("cannot append decision", { cause });
+    }
+  }
+
+  async recent(
+    profile: ProfileId,
+    context: ContextKey | null,
+    limit: number,
+  ): Promise<DecisionRecord[]> {
+    const rows = await this.db.query(
+      "SELECT id, ts, trace::text AS trace FROM decision_log WHERE profile_id = $1 AND " +
+        '($2::text IS NULL OR context_key = $2) ORDER BY ts DESC, id COLLATE "C" DESC LIMIT $3',
+      [profile, context === null ? null : contextLookupKey(context), limitParam(limit)],
+    );
+    return rows.map((r) => ({
+      id: str(r, "id"),
+      profile,
+      ts: ts(r, "ts"),
+      trace: parseJson<DecisionTrace>(str(r, "trace"), "decision trace"),
+    }));
+  }
+}
+
+// ---- settings -----------------------------------------------------------------------------
+
+class PgSettings implements SettingsStore {
+  constructor(private readonly db: Pg) {}
+
+  async get(profile: ProfileId, key: string): Promise<JsonValue | null> {
+    const rows = await this.db.query(
+      "SELECT value::text AS value FROM profile_settings WHERE profile_id = $1 AND key = $2",
+      [profile, key],
+    );
+    return rows[0] ? parseJson<JsonValue>(str(rows[0], "value"), "setting") : null;
+  }
+
+  async set(profile: ProfileId, key: string, value: JsonValue | null): Promise<void> {
+    if (value === null) {
+      await this.db.execute("DELETE FROM profile_settings WHERE profile_id = $1 AND key = $2", [
+        profile,
+        key,
+      ]);
+      return;
+    }
+    await this.db.execute(
+      "INSERT INTO profile_settings (profile_id, key, value, updated_at) VALUES ($1, $2, " +
+        "$3::jsonb, COALESCE($4::timestamptz, now())) ON CONFLICT (profile_id, key) " +
+        "DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+      [profile, key, JSON.stringify(value), this.db.now()],
+    );
+  }
+
+  async list(profile: ProfileId, prefix: string): Promise<Map<string, JsonValue>> {
+    // `left()` instead of `LIKE`, so `%` and `_` in the prefix are literal.
+    const rows = await this.db.query(
+      "SELECT key, value::text AS value FROM profile_settings WHERE profile_id = $1 AND " +
+        'left(key, char_length($2)) = $2 ORDER BY key COLLATE "C"',
+      [profile, prefix],
+    );
+    return new Map(
+      rows.map((r) => [str(r, "key"), parseJson<JsonValue>(str(r, "value"), "setting")]),
+    );
+  }
+}
+
+// ---- memory records -----------------------------------------------------------------------
+
+/** JSON and vector values travel as text. */
+const MEMORY_COLUMNS =
+  "id, profile_id, kind, scope::text AS scope, subjects, content, tokens, " +
+  "embedding::text AS embedding, importance, confidence, created_at, updated_at, " +
+  "last_accessed, access_count, source_context, due, done, superseded_by";
+
+function memoryFromRow(row: Row): MemoryRecord {
+  const embedding = optStr(row, "embedding");
+  const sourceContext = optStr(row, "source_context");
+  return {
+    id: str(row, "id"),
+    profile: str(row, "profile_id"),
+    kind: memoryKind(str(row, "kind")),
+    scope: parseJson<MemoryScope>(str(row, "scope"), "memory scope"),
+    subjects: strings(row, "subjects"),
+    content: str(row, "content"),
+    tokens: str(row, "tokens"),
+    embedding: embedding === null ? null : parseVector(embedding),
+    importance: num(row, "importance"),
+    confidence: num(row, "confidence"),
+    created_at: ts(row, "created_at"),
+    updated_at: ts(row, "updated_at"),
+    last_accessed: optTs(row, "last_accessed"),
+    access_count: u32(num(row, "access_count")),
+    source_context:
+      sourceContext === null ? null : parseJson<ContextKey>(sourceContext, "memory source context"),
+    due: optTs(row, "due"),
+    done: bool(row, "done"),
+    superseded_by: optStr(row, "superseded_by"),
+  };
+}
+
+class PgMemories implements MemoryRecordStore {
+  constructor(private readonly db: Pg) {}
+
+  async upsert(record: MemoryRecord): Promise<void> {
+    const embedding = cleanEmbedding(record.embedding);
+    const scope = JSON.stringify(canonicalMemoryScope(record.scope));
+    try {
+      await this.db.execute(
+        "INSERT INTO memory_records (id, profile_id, kind, scope, scope_key, subjects, " +
+          "content, tokens, embedding, importance, confidence, created_at, updated_at, " +
+          "last_accessed, access_count, source_context, due, done, superseded_by) " +
+          "VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9::vector, $10, $11, $12, $13, " +
+          "$14, $15, $16, $17, $18, $19) " +
+          "ON CONFLICT (id) DO UPDATE SET profile_id = EXCLUDED.profile_id, " +
+          "kind = EXCLUDED.kind, scope = EXCLUDED.scope, scope_key = EXCLUDED.scope_key, " +
+          "subjects = EXCLUDED.subjects, content = EXCLUDED.content, " +
+          "tokens = EXCLUDED.tokens, embedding = EXCLUDED.embedding, " +
+          "importance = EXCLUDED.importance, confidence = EXCLUDED.confidence, " +
+          "created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, " +
+          "last_accessed = EXCLUDED.last_accessed, access_count = EXCLUDED.access_count, " +
+          "source_context = EXCLUDED.source_context, due = EXCLUDED.due, " +
+          "done = EXCLUDED.done, superseded_by = EXCLUDED.superseded_by",
+        [
+          record.id,
+          record.profile,
+          memoryKind(record.kind),
+          scope,
+          scope,
+          record.subjects,
+          record.content,
+          record.tokens,
+          embedding === null ? null : vectorLiteral(embedding),
+          record.importance,
+          record.confidence,
+          tsParam(record.created_at),
+          tsParam(record.updated_at),
+          optTsParam(record.last_accessed),
+          u32(record.access_count),
+          record.source_context === null ? null : contextLookupKey(record.source_context),
+          optTsParam(record.due),
+          record.done,
+          record.superseded_by,
+        ],
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot store memory record", { cause });
+    }
+  }
+
+  async get(id: string): Promise<MemoryRecord | null> {
+    const rows = await this.db.query(`SELECT ${MEMORY_COLUMNS} FROM memory_records WHERE id = $1`, [
+      id,
+    ]);
+    return rows[0] ? memoryFromRow(rows[0]) : null;
+  }
+
+  async delete(id: string): Promise<boolean> {
+    return (await this.db.execute("DELETE FROM memory_records WHERE id = $1", [id])) > 0;
+  }
+
+  async search(query: MemoryQuery): Promise<MemoryHit[]> {
+    const embedding = cleanEmbedding(query.embedding);
+    const limit = sqlLimit(query.limit);
+    if (limit === 0) return [];
+    const scopes = query.scopes.map(memoryScopeKey);
+    const kinds: MemoryKind[] | null = query.kinds === null ? null : [...query.kinds];
+    const hits: MemoryHit[] = [];
+
+    // Full text: OR of one `plainto_tsquery` per token, so the GIN index on `tsv` applies.
+    const tokens = queryTokens(query.tokens);
+    if (tokens.length > 0) {
+      const tsquery = tokens.map((_, i) => `plainto_tsquery('simple', $${i + 5})`).join(" || ");
+      let rows: Row[];
+      try {
+        rows = await this.db.query(
+          `SELECT ${MEMORY_COLUMNS}, ts_rank(tsv, ${tsquery})::float8 AS score ` +
+            "FROM memory_records WHERE profile_id = $1 AND scope_key = ANY($2) " +
+            "AND ($3::text[] IS NULL OR kind = ANY($3)) " +
+            `AND superseded_by IS NULL AND tsv @@ (${tsquery}) ` +
+            'ORDER BY score DESC, created_at DESC, id COLLATE "C" DESC LIMIT $4',
+          [query.profile, scopes, kinds, limit, ...tokens],
+        );
+      } catch (cause) {
+        if (cause instanceof StoreError) throw cause;
+        throw new StoreError("memory text search failed", { cause });
+      }
+      for (const row of rows) {
+        hits.push({
+          record: memoryFromRow(row),
+          text_score: num(row, "score"),
+          vector_score: null,
+        });
+      }
+    }
+
+    // Nearest neighbours among rows with the query's dimension. Exact scan: there is no ANN
+    // index yet. The CASE keeps the distance from being evaluated on rows of another dimension.
+    if (embedding !== null) {
+      let rows: Row[];
+      try {
+        rows = await this.db.query(
+          `SELECT ${MEMORY_COLUMNS}, ` +
+            "CASE WHEN vector_dims(embedding) = $5 THEN embedding <=> $4::vector END AS dist " +
+            "FROM memory_records WHERE profile_id = $1 AND scope_key = ANY($2) " +
+            "AND ($3::text[] IS NULL OR kind = ANY($3)) " +
+            "AND superseded_by IS NULL AND embedding IS NOT NULL " +
+            "AND vector_dims(embedding) = $5 " +
+            'ORDER BY dist ASC, created_at DESC, id COLLATE "C" DESC LIMIT $6',
+          [query.profile, scopes, kinds, vectorLiteral(embedding), embedding.length, limit],
+        );
+      } catch (cause) {
+        if (cause instanceof StoreError) throw cause;
+        throw new StoreError("memory vector search failed", { cause });
+      }
+      for (const row of rows) {
+        const dist = row.dist == null ? null : num(row, "dist");
+        const score = dist === null || !Number.isFinite(1 - dist) ? 0 : 1 - dist;
+        const id = str(row, "id");
+        const hit = hits.find((h) => h.record.id === id);
+        if (hit) hit.vector_score = score;
+        else hits.push({ record: memoryFromRow(row), text_score: 0, vector_score: score });
+      }
+    }
+    return hits;
+  }
+
+  async list(profile: ProfileId, filter: MemoryFilter): Promise<MemoryRecord[]> {
+    let rows: Row[];
+    try {
+      rows = await this.db.query(
+        `SELECT ${MEMORY_COLUMNS} FROM memory_records WHERE profile_id = $1 ` +
+          "AND ($2::text IS NULL OR $2 = ANY(subjects)) " +
+          "AND ($3::text IS NULL OR scope_key = $3) " +
+          "AND ($4::text IS NULL OR kind = $4) " +
+          "AND ($5::timestamptz IS NULL OR created_at < $5) " +
+          "AND ($6 OR superseded_by IS NULL) " +
+          'ORDER BY created_at DESC, id COLLATE "C" DESC LIMIT $7',
+        [
+          profile,
+          filter.subject,
+          filter.scope === null ? null : memoryScopeKey(filter.scope),
+          filter.kind,
+          optTsParam(filter.before),
+          filter.include_superseded,
+          limitParam(filter.limit),
+        ],
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot list memory records", { cause });
+    }
+    return rows.map(memoryFromRow);
+  }
+
+  async touch(ids: readonly string[], at: Timestamp): Promise<void> {
+    if (ids.length === 0) return;
+    await this.db.execute(
+      "UPDATE memory_records SET access_count = access_count + 1, last_accessed = $2 " +
+        "WHERE id = ANY($1)",
+      [[...new Set(ids)], tsParam(at)],
+    );
+  }
+
+  async dueFollowups(profile: ProfileId, now: Timestamp): Promise<MemoryRecord[]> {
+    const rows = await this.db.query(
+      `SELECT ${MEMORY_COLUMNS} FROM memory_records WHERE profile_id = $1 AND ` +
+        "kind = 'followup' AND NOT done AND superseded_by IS NULL AND due <= $2 " +
+        'ORDER BY due ASC, id COLLATE "C" ASC',
+      [profile, tsParam(now)],
+    );
+    return rows.map(memoryFromRow);
+  }
+
+  async prune(profile: ProfileId, policy: PrunePolicy): Promise<number> {
+    return this.db.execute(
+      "DELETE FROM memory_records WHERE profile_id = $1 AND kind = 'episode' AND " +
+        "created_at < $2 AND importance <= $3 AND (last_accessed IS NULL OR last_accessed < $4)",
+      [
+        profile,
+        tsParam(policy.created_before),
+        policy.max_importance,
+        tsParam(policy.not_accessed_since),
+      ],
+    );
+  }
+
+  async deleteBySubject(profile: ProfileId, person: PersonId): Promise<number> {
+    return this.db.execute(
+      "DELETE FROM memory_records WHERE profile_id = $1 AND ($2 = ANY(subjects) OR scope_key = $3)",
+      [profile, person, memoryScopeKey({ type: "person", person })],
+    );
+  }
+}
+
+// ---- relationships ------------------------------------------------------------------------
+
+function relationshipFromRow(row: Row): Relationship {
+  return {
+    profile: str(row, "profile_id"),
+    person: str(row, "person_id"),
+    affinity: num(row, "affinity"),
+    trust: num(row, "trust"),
+    familiarity: num(row, "familiarity"),
+    tags: strings(row, "tags"),
+    notes: str(row, "notes"),
+    call_name: optStr(row, "call_name"),
+    interactions: u32(num(row, "interactions")),
+    last_interaction: optTs(row, "last_interaction"),
+    updated_at: ts(row, "updated_at"),
+  };
+}
+
+class PgRelationships implements RelationshipStore {
+  constructor(private readonly db: Pg) {}
+
+  async get(profile: ProfileId, person: PersonId): Promise<Relationship | null> {
+    const rows = await this.db.query(
+      "SELECT * FROM relationships WHERE profile_id = $1 AND person_id = $2",
+      [profile, person],
+    );
+    return rows[0] ? relationshipFromRow(rows[0]) : null;
+  }
+
+  async upsert(r: Relationship): Promise<void> {
+    await this.db.execute(
+      "INSERT INTO relationships (profile_id, person_id, affinity, trust, familiarity, tags, " +
+        "notes, call_name, interactions, last_interaction, updated_at) VALUES ($1, $2, $3, $4, " +
+        "$5, $6, $7, $8, $9, $10, $11) ON CONFLICT (profile_id, person_id) DO UPDATE SET " +
+        "affinity = EXCLUDED.affinity, trust = EXCLUDED.trust, " +
+        "familiarity = EXCLUDED.familiarity, tags = EXCLUDED.tags, notes = EXCLUDED.notes, " +
+        "call_name = EXCLUDED.call_name, interactions = EXCLUDED.interactions, " +
+        "last_interaction = EXCLUDED.last_interaction, updated_at = EXCLUDED.updated_at",
+      [
+        r.profile,
+        r.person,
+        r.affinity,
+        r.trust,
+        r.familiarity,
+        r.tags,
+        r.notes,
+        r.call_name,
+        u32(r.interactions),
+        optTsParam(r.last_interaction),
+        tsParam(r.updated_at),
+      ],
+    );
+  }
+
+  async list(profile: ProfileId): Promise<Relationship[]> {
+    const rows = await this.db.query(
+      'SELECT * FROM relationships WHERE profile_id = $1 ORDER BY person_id COLLATE "C"',
+      [profile],
+    );
+    return rows.map(relationshipFromRow);
+  }
+
+  async delete(profile: ProfileId, person: PersonId): Promise<boolean> {
+    return this.db.tx(async (client) => {
+      await client.query(
+        "DELETE FROM relationship_deltas WHERE profile_id = $1 AND person_id = $2",
+        [profile, person],
+      );
+      const removed = await this.db.execute(
+        "DELETE FROM relationships WHERE profile_id = $1 AND person_id = $2",
+        [profile, person],
+        client,
+      );
+      return removed > 0;
+    });
+  }
+
+  async recordDelta(profile: ProfileId, person: PersonId, delta: RelationshipDelta): Promise<void> {
+    await this.db.execute(
+      "INSERT INTO relationship_deltas (profile_id, person_id, at, affinity, trust, " +
+        "familiarity, reason) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+      [
+        profile,
+        person,
+        tsParam(delta.at),
+        delta.affinity,
+        delta.trust,
+        delta.familiarity,
+        delta.reason,
+      ],
+    );
+  }
+
+  async deltasSince(
+    profile: ProfileId,
+    person: PersonId,
+    since: Timestamp,
+  ): Promise<RelationshipDelta[]> {
+    const rows = await this.db.query(
+      "SELECT at, affinity, trust, familiarity, reason FROM relationship_deltas " +
+        "WHERE profile_id = $1 AND person_id = $2 AND at >= $3 ORDER BY at, seq",
+      [profile, person, tsParam(since)],
+    );
+    return rows.map((r) => ({
+      at: ts(r, "at"),
+      affinity: num(r, "affinity"),
+      trust: num(r, "trust"),
+      familiarity: num(r, "familiarity"),
+      reason: str(r, "reason"),
+    }));
+  }
+}
+
+// ---- auth and audit -----------------------------------------------------------------------
+
+function assignmentFromRow(row: Row): RoleAssignment {
+  return {
+    account: { platform: str(row, "platform"), id: str(row, "account_id") },
+    role: str(row, "role"),
+    scope: parseJson<AuthScope>(str(row, "scope"), "auth scope"),
+    granted_by: str(row, "granted_by"),
+    at: ts(row, "at"),
+  };
+}
+
+const ASSIGNMENT_COLUMNS = "platform, account_id, role, scope, granted_by, at";
+const ASSIGNMENT_ORDER =
+  'at, platform COLLATE "C", account_id COLLATE "C", role COLLATE "C", scope COLLATE "C"';
+
+class PgAuth implements AuthStore {
+  constructor(private readonly db: Pg) {}
+
+  async roles(): Promise<RoleDefinition[]> {
+    const rows = await this.db.query(
+      'SELECT name, rank, grants, denies, builtin FROM roles ORDER BY rank DESC, name COLLATE "C"',
+    );
+    return rows.map((r) => ({
+      name: str(r, "name"),
+      rank: num(r, "rank"),
+      grants: strings(r, "grants"),
+      denies: strings(r, "denies"),
+      builtin: bool(r, "builtin"),
+    }));
+  }
+
+  async upsertRole(role: RoleDefinition): Promise<void> {
+    await this.db.execute(
+      "INSERT INTO roles (name, rank, grants, denies, builtin) VALUES ($1, $2, $3, $4, $5) " +
+        "ON CONFLICT (name) DO UPDATE SET rank = EXCLUDED.rank, grants = EXCLUDED.grants, " +
+        "denies = EXCLUDED.denies, builtin = EXCLUDED.builtin",
+      [role.name, role.rank, role.grants, role.denies, role.builtin],
+    );
+  }
+
+  async deleteRole(name: string): Promise<boolean> {
+    return this.db.tx(async (client) => {
+      const rows = await this.db.query(
+        "SELECT builtin FROM roles WHERE name = $1 FOR UPDATE",
+        [name],
+        client,
+      );
+      if (!rows[0]) return false;
+      if (bool(rows[0], "builtin")) throw new StoreError(`role \`${name}\` is built in`);
+      for (const table of ["role_assignments", "role_mappings", "node_overrides"]) {
+        await client.query(`DELETE FROM ${table} WHERE role = $1`, [name]);
+      }
+      await client.query("DELETE FROM roles WHERE name = $1", [name]);
+      return true;
+    });
+  }
+
+  async assignmentsFor(account: AccountRef): Promise<RoleAssignment[]> {
+    const rows = await this.db.query(
+      `SELECT ${ASSIGNMENT_COLUMNS} FROM role_assignments WHERE platform = $1 AND ` +
+        `account_id = $2 ORDER BY ${ASSIGNMENT_ORDER}`,
+      [account.platform, account.id],
+    );
+    return rows.map(assignmentFromRow);
+  }
+
+  async allAssignments(): Promise<RoleAssignment[]> {
+    const rows = await this.db.query(
+      `SELECT ${ASSIGNMENT_COLUMNS} FROM role_assignments ORDER BY ${ASSIGNMENT_ORDER}`,
+    );
+    return rows.map(assignmentFromRow);
+  }
+
+  async assign(a: RoleAssignment): Promise<void> {
+    await this.db.execute(
+      "INSERT INTO role_assignments (platform, account_id, role, scope, granted_by, at) " +
+        "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (platform, account_id, role, scope) " +
+        "DO UPDATE SET granted_by = EXCLUDED.granted_by, at = EXCLUDED.at",
+      [
+        a.account.platform,
+        a.account.id,
+        a.role,
+        authScopeKey(a.scope),
+        a.granted_by,
+        tsParam(a.at),
+      ],
+    );
+  }
+
+  async revoke(account: AccountRef, role: string, scope: AuthScope): Promise<boolean> {
+    const removed = await this.db.execute(
+      "DELETE FROM role_assignments WHERE platform = $1 AND account_id = $2 AND role = $3 " +
+        "AND scope = $4",
+      [account.platform, account.id, role, authScopeKey(scope)],
+    );
+    return removed > 0;
+  }
+
+  async mappings(platform: PlatformId, guild: string): Promise<RoleMapping[]> {
+    const rows = await this.db.query(
+      "SELECT platform_role, role FROM role_mappings WHERE platform = $1 AND guild = $2 " +
+        'ORDER BY platform_role COLLATE "C"',
+      [platform, guild],
+    );
+    return rows.map((r) => ({
+      platform,
+      guild,
+      platform_role: str(r, "platform_role"),
+      role: str(r, "role"),
+    }));
+  }
+
+  async setMapping(m: RoleMapping): Promise<void> {
+    await this.db.execute(
+      "INSERT INTO role_mappings (platform, guild, platform_role, role) VALUES ($1, $2, $3, " +
+        "$4) ON CONFLICT (platform, guild, platform_role) DO UPDATE SET role = EXCLUDED.role",
+      [m.platform, m.guild, m.platform_role, m.role],
+    );
+  }
+
+  async removeMapping(platform: PlatformId, guild: string, platformRole: string): Promise<boolean> {
+    const removed = await this.db.execute(
+      "DELETE FROM role_mappings WHERE platform = $1 AND guild = $2 AND platform_role = $3",
+      [platform, guild, platformRole],
+    );
+    return removed > 0;
+  }
+
+  async overrides(): Promise<NodeOverride[]> {
+    const rows = await this.db.query(
+      "SELECT scope, role, node, allow FROM node_overrides " +
+        'ORDER BY scope COLLATE "C", role COLLATE "C", node COLLATE "C"',
+    );
+    return rows.map((r) => ({
+      scope: parseJson<AuthScope>(str(r, "scope"), "auth scope"),
+      role: str(r, "role"),
+      node: str(r, "node"),
+      allow: bool(r, "allow"),
+    }));
+  }
+
+  async setOverride(o: NodeOverride): Promise<void> {
+    await this.db.execute(
+      "INSERT INTO node_overrides (scope, role, node, allow) VALUES ($1, $2, $3, $4) " +
+        "ON CONFLICT (scope, role, node) DO UPDATE SET allow = EXCLUDED.allow",
+      [authScopeKey(o.scope), o.role, o.node, o.allow],
+    );
+  }
+
+  async removeOverride(scope: AuthScope, role: string, node: string): Promise<boolean> {
+    const removed = await this.db.execute(
+      "DELETE FROM node_overrides WHERE scope = $1 AND role = $2 AND node = $3",
+      [authScopeKey(scope), role, node],
+    );
+    return removed > 0;
+  }
+}
+
+class PgAudit implements AuditLog {
+  constructor(private readonly db: Pg) {}
+
+  async append(entry: AuditEntry): Promise<void> {
+    try {
+      await this.db.execute(
+        "INSERT INTO audit_log (id, at, actor, action, target, detail, ok) " +
+          "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)",
+        [
+          entry.id,
+          tsParam(entry.at),
+          entry.actor,
+          entry.action,
+          entry.target,
+          JSON.stringify(entry.detail),
+          entry.ok,
+        ],
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      if (pgCode(cause) === UNIQUE_VIOLATION) {
+        throw new StoreError(`audit entry \`${entry.id}\` already exists`, { cause });
+      }
+      throw new StoreError("cannot append audit entry", { cause });
+    }
+  }
+
+  async recent(limit: number, actor: string | null): Promise<AuditEntry[]> {
+    const rows = await this.db.query(
+      "SELECT id, at, actor, action, target, detail::text AS detail, ok FROM audit_log " +
+        "WHERE ($2::text IS NULL OR actor = $2) " +
+        'ORDER BY at DESC, id COLLATE "C" DESC LIMIT $1',
+      [limitParam(limit), actor],
+    );
+    return rows.map((r) => ({
+      id: str(r, "id"),
+      at: ts(r, "at"),
+      actor: str(r, "actor"),
+      action: str(r, "action"),
+      target: str(r, "target"),
+      detail: parseJson<JsonValue>(str(r, "detail"), "audit detail"),
+      ok: bool(r, "ok"),
+    }));
+  }
+}
+
+// ---- the store ----------------------------------------------------------------------------
+
+/** Every storage area on one PostgreSQL pool. */
+export class PostgresStore implements Store {
+  readonly messages: MessageLog;
+  readonly moduleState: ModuleStateStore;
+  readonly personaOverrides: PersonaOverrideStore;
+  readonly people: PeopleStore;
+  readonly decisions: DecisionLog;
+  readonly settings: SettingsStore;
+  readonly memories: MemoryRecordStore;
+  readonly relationships: RelationshipStore;
+  readonly identity: IdentityStore;
+  readonly auth: AuthStore;
+  readonly audit: AuditLog;
+  readonly #pool: pg.Pool;
+  #closed = false;
+
+  private constructor(db: Pg) {
+    this.#pool = db.pool;
+    this.messages = new PgMessageLog(db);
+    this.moduleState = new PgModuleState(db);
+    this.personaOverrides = new PgPersonaOverrides(db);
+    this.people = new PgPeople(db);
+    this.decisions = new PgDecisionLog(db);
+    this.settings = new PgSettings(db);
+    this.memories = new PgMemories(db);
+    this.relationships = new PgRelationships(db);
+    this.identity = new PgIdentity(db);
+    this.auth = new PgAuth(db);
+    this.audit = new PgAudit(db);
+  }
+
+  /** Connects and runs pending migrations. */
+  static async connect(url: string, options: PostgresStoreOptions = {}): Promise<PostgresStore> {
+    const pool = new pg.Pool({
+      connectionString: url,
+      max: options.maxConnections ?? 10,
+      connectionTimeoutMillis: options.connectTimeoutMs ?? 10_000,
+      types: TYPES,
+    });
+    // Idle clients that lose their connection emit `error` on the pool; without a listener
+    // that would crash the process.
+    pool.on("error", (err) => log.warn({ err }, "idle PostgreSQL connection failed"));
+    try {
+      const client = await pool.connect();
+      client.release();
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      await pool.end().catch(() => undefined);
+      throw new StoreError("cannot connect to PostgreSQL", { cause });
+    }
+    const db = new Pg(pool, options.clock ?? null);
+    try {
+      await migrate(db);
+    } catch (error) {
+      await pool.end().catch(() => undefined);
+      throw error;
+    }
+    return new PostgresStore(db);
+  }
+
+  /** The underlying pool (for tests and admin tools). */
+  get pool(): pg.Pool {
+    return this.#pool;
+  }
+
+  async close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    await this.#pool.end();
+  }
+}
