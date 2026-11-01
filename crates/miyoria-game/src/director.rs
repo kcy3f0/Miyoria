@@ -37,6 +37,8 @@ pub const INITIATIVE_REASON: &str = "game";
 /// Persona bits used in the decision prompt.
 #[derive(Clone, Debug, Default)]
 pub struct Persona {
+    /// Profile id (for the LLM session id).
+    pub profile: String,
     pub name: String,
     pub text: String,
 }
@@ -267,6 +269,8 @@ struct DecideInput {
     observe_tool: String,
     act_tool: String,
     persona: Persona,
+    /// Game adapter id.
+    game: String,
     game_name: String,
     goal: Option<String>,
     last_action: Option<String>,
@@ -343,6 +347,10 @@ async fn ask(input: &DecideInput, observation: &str) -> anyhow::Result<Decision>
         temperature: Some(cfg.temperature),
         max_tokens: Some(cfg.max_tokens),
         json_mode: true,
+        session: Some(miyoria_llm::session_id(
+            &input.persona.profile,
+            format!("game-{}", input.game),
+        )),
         ..ChatRequest::default()
     };
     let response = tokio::time::timeout(
@@ -910,6 +918,7 @@ impl Director {
             observe_tool: s.observe_tool(),
             act_tool: s.act_tool(),
             persona: self.persona.clone(),
+            game: s.game.clone(),
             game_name: s.game_name.clone(),
             goal: s.goal.as_ref().map(|g| {
                 let status = if g.action.is_none() {

@@ -10,6 +10,7 @@ mod cost;
 mod mock;
 mod module;
 mod router;
+mod session;
 mod types;
 
 pub use cost::{
@@ -19,4 +20,5 @@ pub use cost::{
 pub use mock::MockProvider;
 pub use module::{LlmConfig, LlmModule, ProviderConfig, ProviderFactory};
 pub use router::{LlmRouter, UsageRecord};
+pub use session::{context_hash, context_session, session_id};
 pub use types::*;

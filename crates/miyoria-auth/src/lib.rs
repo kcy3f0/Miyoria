@@ -22,6 +22,16 @@
 //! | `restricted` | 10 | `ping`, `help.*`, `me.*`, `memory.self.*`, `memory.show.self`, `memory.forget.self`, `memory.export.self`, `voice.consent` | |
 //! | `blocked` | 0 | nothing | |
 //!
+//! Admin panel nodes ([`builtin::PANEL_ACCESS`], [`builtin::PANEL_WRITE`]):
+//!
+//! | Node | Allows | Held by default |
+//! |---|---|---|
+//! | `admin.panel.access` | logging in to the admin panel with Discord and reading it | `owner`, `admin` |
+//! | `admin.panel.write` | changes from the panel (every non-`GET` admin API route) | `owner`, `admin` |
+//!
+//! The panel checks them without a guild or channel, so only global grants
+//! count, e.g. `/admin perm allow role:moderator node:admin.panel.access scope:global`.
+//!
 //! `restricted` keeps the privacy controls (consent, forgetting, export) so
 //! nobody loses control over their own data. Whether the agent ignores
 //! blocked people is up to the social module; here they are simply denied.

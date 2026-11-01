@@ -34,6 +34,33 @@ describe("ApiClient", () => {
     expect(headersOf(modulesCall?.[1]).Authorization).toBe("Bearer s3cret");
   });
 
+  it("sends the CSRF header and same-origin credentials on every request, token or not", async () => {
+    const fetch = mockFetch((method, url) => {
+      if (url.pathname === "/api/auth/session") return { body: { method: "discord", user: { id: "1", name: "Owen", avatar_url: null }, permissions: { write: false } } };
+      if (method === "POST" && url.pathname === "/api/auth/logout") return { status: 204 };
+      if (url.pathname === "/api/auth/methods") return { body: { token: true, discord: true } };
+      return { body: [] };
+    });
+    const api = createApi(new ApiClient({ baseUrl: "", token: "" }));
+    expect((await api.authMethods()).discord).toBe(true);
+    const me = await api.session();
+    expect(me.user?.name).toBe("Owen");
+    await api.queuePause(true);
+    await api.logout();
+    expect(fetch.mock.calls).toHaveLength(4);
+    for (const [, init] of fetch.mock.calls) {
+      expect(headersOf(init)["X-Miyoria-Request"]).toBe("1");
+      expect(headersOf(init).Authorization).toBeUndefined();
+      expect(init?.credentials).toBe("same-origin");
+    }
+    expect(fetch.mock.calls[3]?.[1]?.method).toBe("POST");
+  });
+
+  it("builds the Discord login URL with the return path", () => {
+    const api = createApi(new ApiClient({ baseUrl: "", token: "" }));
+    expect(api.discordLoginUrl("/#/people")).toBe("/api/auth/oauth/login?next=%2F%23%2Fpeople");
+  });
+
   it("encodes the decisions context as JSON and passes the limit", async () => {
     const fetch = mockFetch(() => ({ body: [] }));
     const api = createApi(new ApiClient({ baseUrl: "", token: "t" }));

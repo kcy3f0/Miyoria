@@ -106,6 +106,9 @@ describe("streamEvents", () => {
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer tok");
     expect(headers.Accept).toBe("text/event-stream");
+    // Session cookies and the CSRF header go along too.
+    expect(headers["X-Miyoria-Request"]).toBe("1");
+    expect(init.credentials).toBe("same-origin");
     const second = fetch.mock.calls[1]?.[1] as RequestInit;
     expect((second.headers as Record<string, string>)["Last-Event-ID"]).toBe("A");
     expect(statuses).toContain("open");
@@ -126,6 +129,6 @@ describe("streamEvents", () => {
     });
     const last = statuses.at(-1);
     expect(last?.state).toBe("closed");
-    expect(last && "error" in last ? last.error : "").toContain("Token");
+    expect(last && "error" in last ? last.error : "").toContain("登入已失效");
   });
 });

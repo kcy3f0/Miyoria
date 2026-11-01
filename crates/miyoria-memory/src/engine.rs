@@ -523,6 +523,10 @@ impl MemoryEngine {
             temperature: Some(0.2),
             max_tokens: Some(2000),
             json_mode: true,
+            session: Some(miyoria_llm::session_id(
+                &self.profile,
+                format!("memory-{}", miyoria_llm::context_hash(context)),
+            )),
             ..Default::default()
         };
         let response = router.complete(&self.config.purpose, request).await?;

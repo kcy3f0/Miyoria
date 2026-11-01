@@ -600,6 +600,10 @@ async fn llm_appraisal_is_parsed_and_applied() {
     let request = &mock.requests()[0];
     assert!(request.json_mode);
     assert_eq!(request.model, "fast-model");
+    assert_eq!(
+        request.session.as_deref(),
+        Some("miyoria-deepseek-chan-social")
+    );
     assert!(request.messages[0].content.contains("Alice、Bob"));
     assert!(request.messages[1].content.contains("Bob: 她很爛"));
 
@@ -668,6 +672,10 @@ async fn notes_refresh_and_prompt() {
             .unwrap()
     );
     assert_eq!(h.rel("discord:2").notes, "喜歡鯨魚的人,品味還不錯。");
+    assert_eq!(
+        mock.requests()[0].session.as_deref(),
+        Some("miyoria-deepseek-chan-social")
+    );
     assert!(
         mock.requests()[0].messages[1]
             .content

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { isApiError } from "../api/http";
 import { useConnection } from "../app/connection";
 import { useHealth } from "../app/queries";
+import { useSession } from "../app/session";
 import { useToast } from "../components/toast";
 import { Badge, Button, PageHeader, Panel } from "../components/ui";
 import { TokenForm } from "./TokenGate";
@@ -93,6 +94,8 @@ function ApiSupport() {
 
 export function SettingsPage() {
   const { config, signOut } = useConnection();
+  const session = useSession();
+  const user = session?.session.method === "discord" ? session.session.user : null;
   const health = useHealth();
   const toast = useToast();
   return (
@@ -101,7 +104,7 @@ export function SettingsPage() {
         title="設定"
         description="面板連到哪個 Core、用哪個 token。設定只存在這個瀏覽器。"
         actions={
-          <Button icon={LogOut} onClick={signOut}>
+          <Button icon={LogOut} onClick={session?.logout ?? signOut}>
             登出
           </Button>
         }
@@ -112,6 +115,17 @@ export function SettingsPage() {
             <dl className="dl">
               <dt>目前位址</dt>
               <dd className="mono">{config.baseUrl || "同源(" + window.location.origin + ")"}</dd>
+              <dt>登入身分</dt>
+              <dd>
+                {user ? (
+                  <>
+                    Discord · {user.name} <span className="faint mono">({user.id})</span>
+                    {!session?.session.permissions.write && <span className="faint">· 唯讀</span>}
+                  </>
+                ) : (
+                  "Admin token"
+                )}
+              </dd>
               <dt>Core 版本</dt>
               <dd className="mono">{health.data?.version ?? (health.isError ? "無回應" : "…")}</dd>
             </dl>

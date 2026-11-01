@@ -62,7 +62,7 @@ function HistoryList({
                           {open ? "收起" : "比較"}
                         </Button>
                         {!isCurrent && (
-                          <Button size="sm" icon={RotateCcw} onClick={() => onRestore(v)}>
+                          <Button writes size="sm" icon={RotateCcw} onClick={() => onRestore(v)}>
                             還原
                           </Button>
                         )}
@@ -124,7 +124,7 @@ function SectionEditor({
             <Button size="sm" variant="ghost" icon={Undo2} disabled={!dirty} onClick={() => setDraft(section.body)}>
               捨棄
             </Button>
-            <Button size="sm" variant="primary" icon={Save} disabled={!dirty || !next} onClick={() => setReviewing(true)}>
+            <Button writes size="sm" variant="primary" icon={Save} disabled={!dirty || !next} onClick={() => setReviewing(true)}>
               檢視變更
             </Button>
           </div>
@@ -163,7 +163,7 @@ function SectionEditor({
             <Button variant="ghost" onClick={() => setReviewing(false)} disabled={save.isPending}>
               繼續編輯
             </Button>
-            <Button variant="primary" icon={Save} busy={save.isPending} onClick={doSave} autoFocus>
+            <Button writes variant="primary" icon={Save} busy={save.isPending} onClick={doSave} autoFocus>
               儲存
             </Button>
           </>

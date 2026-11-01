@@ -14,7 +14,8 @@ use miyoria_store::{AuthStore, RoleAssignment, RoleDefinition, RoleMapping};
 use miyoria_types::PlatformId;
 use serde::Deserialize;
 
-use crate::server::{ACTOR, ApiError, ApiResult, ApiState, body, query};
+use crate::server::{ApiError, ApiResult, ApiState, body, query};
+use crate::session::actor;
 use crate::types::{AssignRoleRequest, RemoveMappingRequest, UpsertRoleRequest};
 
 pub(crate) fn routes() -> Router<ApiState> {
@@ -87,7 +88,7 @@ async fn upsert_role(
         denies: request.denies,
         builtin: false,
     };
-    auth.upsert_role(ACTOR, role)
+    auth.upsert_role(&actor(), role)
         .await
         .map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     auth.role(&name)
@@ -103,7 +104,7 @@ async fn delete_role(
     if auth.role(&name).is_none() {
         return Err(unknown_role(&name));
     }
-    match auth.delete_role(ACTOR, &name).await {
+    match auth.delete_role(&actor(), &name).await {
         Ok(true) => Ok(StatusCode::NO_CONTENT),
         Ok(false) => Err(unknown_role(&name)),
         Err(e) => Err(ApiError::conflict(format!("{e:#}"))),
@@ -146,7 +147,7 @@ async fn assign(
         )));
     }
     auth.assign(
-        ACTOR,
+        &actor(),
         &request.account,
         &request.role,
         request.scope.clone(),
@@ -166,7 +167,7 @@ async fn revoke(
     let request = body(request)?;
     let auth = auth(&state)?;
     let removed = auth
-        .revoke(ACTOR, &request.account, &request.role, &request.scope)
+        .revoke(&actor(), &request.account, &request.role, &request.scope)
         .await
         .map_err(internal)?;
     if removed {
@@ -213,7 +214,7 @@ async fn set_mapping(
     if auth.role(&mapping.role).is_none() {
         return Err(unknown_role(&mapping.role));
     }
-    auth.map_role(ACTOR, mapping.clone())
+    auth.map_role(&actor(), mapping.clone())
         .await
         .map_err(internal)?;
     Ok(Json(mapping))
@@ -227,7 +228,7 @@ async fn remove_mapping(
     let auth = auth(&state)?;
     let removed = auth
         .unmap_role(
-            ACTOR,
+            &actor(),
             &request.platform,
             &request.guild,
             &request.platform_role,

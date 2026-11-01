@@ -12,10 +12,10 @@ use reqwest::{Method, RequestBuilder, Response, StatusCode, Url};
 use serde::de::DeserializeOwned;
 
 use crate::types::{
-    AdjustPersonRequest, AssignRoleRequest, CostInfo, ErrorBody, ExpressionRequest, ExtensionInfo,
-    HealthInfo, McpServerInfo, MemoryItem, MemoryListQuery, MemoryRecordView, ModuleInfo,
-    MoveRequest, Page, PersonDetail, PersonSummary, PersonaSectionInfo, QueueState,
-    RemoveMappingRequest, SayRequest, SayResponse, SceneRequest, SetPersonaRequest,
+    AdjustPersonRequest, AssignRoleRequest, AuthMethods, CostInfo, ErrorBody, ExpressionRequest,
+    ExtensionInfo, HealthInfo, McpServerInfo, MemoryItem, MemoryListQuery, MemoryRecordView,
+    ModuleInfo, MoveRequest, Page, PersonDetail, PersonSummary, PersonaSectionInfo, QueueState,
+    RemoveMappingRequest, SayRequest, SayResponse, SceneRequest, SessionInfo, SetPersonaRequest,
     SetPersonaResponse, StageState, StreamRequest, UpdateMemoryRequest, UpdatePersonRequest,
     UpsertRoleRequest, UsageInfo, VoiceState,
 };
@@ -76,6 +76,18 @@ impl ApiClient {
 
     pub async fn health(&self) -> Result<HealthInfo> {
         self.json(self.request(Method::GET, &["health"])).await
+    }
+
+    /// Which panel logins the Core offers (public).
+    pub async fn auth_methods(&self) -> Result<AuthMethods> {
+        self.json(self.request(Method::GET, &["auth", "methods"]))
+            .await
+    }
+
+    /// Who this client is to the Core (`method: "token"` for the bearer token).
+    pub async fn session(&self) -> Result<SessionInfo> {
+        self.json(self.request(Method::GET, &["auth", "session"]))
+            .await
     }
 
     pub async fn modules(&self) -> Result<Vec<ModuleInfo>> {

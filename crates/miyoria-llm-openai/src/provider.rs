@@ -17,6 +17,11 @@ use crate::wire::{Chunk, RequestBody};
 
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
+const OPENCODE_BASE_URL: &str = "https://opencode.ai/inference/go/v1";
+/// Header OpenCode reads the conversation id from.
+pub const OPENCODE_SESSION_HEADER: &str = "x-opencode-session";
+/// Identifies Miyoria (not the HTTP library) to every provider.
+pub const DEFAULT_USER_AGENT: &str = concat!("miyoria/", env!("CARGO_PKG_VERSION"));
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
@@ -30,6 +35,13 @@ pub struct OpenAiConfig {
     pub api_key: Option<String>,
     /// Extra request headers.
     pub headers: BTreeMap<String, String>,
+    /// `User-Agent` of every request. A `User-Agent` entry in `headers`
+    /// takes precedence.
+    pub user_agent: String,
+    /// Name of the header that carries [`ChatRequest::session`] (e.g.
+    /// `x-opencode-session`). Nothing is sent when `None` or when the
+    /// request has no session.
+    pub session_header: Option<String>,
     /// Max idle time while waiting for response bytes (headers or stream).
     pub timeout: Duration,
     /// Retries for 429 / 5xx / connect errors before the stream starts.
@@ -44,6 +56,8 @@ impl OpenAiConfig {
             base_url: base_url.into(),
             api_key: None,
             headers: BTreeMap::new(),
+            user_agent: DEFAULT_USER_AGENT.to_owned(),
+            session_header: None,
             timeout: Duration::from_secs(120),
             max_retries: 2,
             retry_backoff: Duration::from_millis(500),
@@ -56,8 +70,12 @@ impl OpenAiConfig {
     }
 
     /// Reads `base_url`, `api_key` and the extras `timeout_secs`,
-    /// `max_retries` and `headers`. `openai` and `deepseek` kinds default
-    /// `base_url` to the official endpoints.
+    /// `max_retries`, `headers`, `user_agent` and `session_header`.
+    ///
+    /// `openai`, `deepseek` and `opencode` default `base_url` to the official
+    /// endpoints. `opencode` also requires an API key and defaults
+    /// `session_header` to `x-opencode-session` (set it to `""` to turn the
+    /// header off).
     pub fn from_provider_config(config: &ProviderConfig) -> anyhow::Result<Self> {
         #[derive(Default, Deserialize)]
         #[serde(default)]
@@ -65,6 +83,8 @@ impl OpenAiConfig {
             timeout_secs: Option<u64>,
             max_retries: Option<u32>,
             headers: BTreeMap<String, String>,
+            user_agent: Option<String>,
+            session_header: Option<String>,
         }
 
         let extra: Extra = serde_json::from_value(serde_json::Value::Object(config.extra.clone()))
@@ -73,11 +93,23 @@ impl OpenAiConfig {
             (Some(url), _) if !url.trim().is_empty() => url.trim().to_owned(),
             (_, "openai") => OPENAI_BASE_URL.to_owned(),
             (_, "deepseek") => DEEPSEEK_BASE_URL.to_owned(),
+            (_, "opencode") => OPENCODE_BASE_URL.to_owned(),
             _ => anyhow::bail!("`base_url` is required for kind `{}`", config.kind),
         };
         let mut out = Self::new(base_url);
         out.api_key = config.api_key.clone().filter(|k| !k.trim().is_empty());
         out.headers = extra.headers;
+        if config.kind == "opencode" && out.api_key.is_none() {
+            anyhow::bail!("`api_key` is required for kind `opencode`");
+        }
+        if let Some(ua) = extra.user_agent.filter(|u| !u.trim().is_empty()) {
+            out.user_agent = ua.trim().to_owned();
+        }
+        out.session_header = match extra.session_header {
+            Some(h) => Some(h.trim().to_owned()).filter(|h| !h.is_empty()),
+            None if config.kind == "opencode" => Some(OPENCODE_SESSION_HEADER.to_owned()),
+            None => None,
+        };
         if let Some(secs) = extra.timeout_secs {
             out.timeout = Duration::from_secs(secs);
         }
@@ -94,6 +126,8 @@ impl fmt::Debug for OpenAiConfig {
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("headers", &self.headers.keys().collect::<Vec<_>>())
+            .field("user_agent", &self.user_agent)
+            .field("session_header", &self.session_header)
             .field("timeout", &self.timeout)
             .field("max_retries", &self.max_retries)
             .field("retry_backoff", &self.retry_backoff)
@@ -107,6 +141,7 @@ pub struct OpenAiProvider {
     name: String,
     url: String,
     client: reqwest::Client,
+    session_header: Option<HeaderName>,
     max_retries: u32,
     retry_backoff: Duration,
 }
@@ -114,6 +149,19 @@ pub struct OpenAiProvider {
 impl OpenAiProvider {
     pub fn new(name: impl Into<String>, config: OpenAiConfig) -> anyhow::Result<Self> {
         let mut headers = HeaderMap::new();
+        headers.insert(
+            header::USER_AGENT,
+            HeaderValue::from_str(&config.user_agent)
+                .map_err(|_| anyhow::anyhow!("invalid `user_agent`"))?,
+        );
+        let session_header = config
+            .session_header
+            .as_deref()
+            .map(|h| {
+                HeaderName::from_bytes(h.as_bytes())
+                    .map_err(|_| anyhow::anyhow!("invalid `session_header` name `{h}`"))
+            })
+            .transpose()?;
         if let Some(key) = &config.api_key {
             let mut value = HeaderValue::from_str(&format!("Bearer {key}"))
                 .map_err(|_| anyhow::anyhow!("API key contains invalid characters"))?;
@@ -136,9 +184,24 @@ impl OpenAiProvider {
             name: name.into(),
             url: format!("{}/chat/completions", config.base_url.trim_end_matches('/')),
             client,
+            session_header,
             max_retries: config.max_retries,
             retry_backoff: config.retry_backoff,
         })
+    }
+
+    /// The session header value for `request`, if one is configured and the
+    /// request has a (header-safe) session id.
+    fn session_value(&self, request: &ChatRequest) -> Option<HeaderValue> {
+        self.session_header.as_ref()?;
+        let session = request.session.as_deref()?;
+        match HeaderValue::from_str(session) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                warn!(provider = %self.name, "session id is not a valid header value, not sent");
+                None
+            }
+        }
     }
 
     /// Full request URL (`{base_url}/chat/completions`).
@@ -154,17 +217,18 @@ impl OpenAiProvider {
 
     /// Sends the request, retrying transient failures. Returns once a 2xx
     /// response arrives, i.e. before any of the stream is consumed.
-    async fn send(&self, body: Bytes) -> anyhow::Result<Response> {
+    async fn send(&self, body: Bytes, session: Option<&HeaderValue>) -> anyhow::Result<Response> {
         let mut attempt = 0;
         loop {
-            let result = self
+            let mut builder = self
                 .client
                 .post(&self.url)
                 .header(header::CONTENT_TYPE, "application/json")
-                .header(header::ACCEPT, "text/event-stream")
-                .body(body.clone())
-                .send()
-                .await;
+                .header(header::ACCEPT, "text/event-stream");
+            if let (Some(name), Some(value)) = (&self.session_header, session) {
+                builder = builder.header(name.clone(), value.clone());
+            }
+            let result = builder.body(body.clone()).send().await;
             let delay = match result {
                 Ok(resp) if resp.status().is_success() => return Ok(resp),
                 Ok(resp) if attempt < self.max_retries && is_retryable(resp.status()) => {
@@ -195,6 +259,7 @@ impl fmt::Debug for OpenAiProvider {
         f.debug_struct("OpenAiProvider")
             .field("name", &self.name)
             .field("url", &self.url)
+            .field("session_header", &self.session_header)
             .field("max_retries", &self.max_retries)
             .finish_non_exhaustive()
     }
@@ -209,7 +274,8 @@ impl ChatProvider for OpenAiProvider {
     async fn stream(&self, request: ChatRequest) -> anyhow::Result<ChatStream> {
         let body = serde_json::to_vec(&RequestBody::new(&request))?;
         debug!(provider = %self.name, model = %request.model, url = %self.url, "chat completion request");
-        let response = self.send(body.into()).await?;
+        let session = self.session_value(&request);
+        let response = self.send(body.into(), session.as_ref()).await?;
         Ok(EventStream::new(self.name.clone(), response).into_stream())
     }
 }

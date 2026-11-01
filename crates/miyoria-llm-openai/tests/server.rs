@@ -468,3 +468,153 @@ async fn factory_builds_from_provider_config() {
     );
     assert!(factory.build("local", &bare("openai-compatible")).is_err());
 }
+
+fn ok_script() -> Vec<Canned> {
+    vec![sse(
+        &[delta(json!({"content": "ok"})), finish("stop", None)],
+        true,
+        64,
+    )]
+}
+
+fn kind_config(server: &Server, kind: &str, extra: Value) -> ProviderConfig {
+    let mut value = json!({"kind": kind, "base_url": server.base_url, "api_key": "k"});
+    value
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    serde_json::from_value(value).unwrap()
+}
+
+fn session_request(session: Option<&str>) -> ChatRequest {
+    ChatRequest {
+        session: session.map(str::to_owned),
+        ..request()
+    }
+}
+
+#[tokio::test]
+async fn every_kind_sends_the_miyoria_user_agent() {
+    let expected = format!("miyoria/{}", env!("CARGO_PKG_VERSION"));
+    for kind in ["openai-compatible", "openai", "deepseek", "opencode"] {
+        let server = Server::start(ok_script()).await;
+        let provider = OpenAiFactory
+            .build(kind, &kind_config(&server, kind, json!({})))
+            .unwrap();
+        provider.complete(request()).await.unwrap();
+        let (headers, _) = server.last_request();
+        assert_eq!(headers["user-agent"], expected.as_str(), "{kind}");
+    }
+
+    // Configurable; an explicit header wins over both.
+    let server = Server::start(ok_script()).await;
+    let config = kind_config(
+        &server,
+        "openai-compatible",
+        json!({"user_agent": "my-bot/2.0"}),
+    );
+    let provider = OpenAiFactory.build("x", &config).unwrap();
+    provider.complete(request()).await.unwrap();
+    assert_eq!(server.last_request().0["user-agent"], "my-bot/2.0");
+
+    let config = kind_config(
+        &server,
+        "openai-compatible",
+        json!({"user_agent": "my-bot/2.0", "headers": {"User-Agent": "custom/3"}}),
+    );
+    let provider = OpenAiFactory.build("x", &config).unwrap();
+    provider.complete(request()).await.unwrap();
+    assert_eq!(server.last_request().0["user-agent"], "custom/3");
+}
+
+#[tokio::test]
+async fn session_header_only_when_configured_and_present() {
+    // Not configured: never sent, even with a session.
+    let server = Server::start(ok_script()).await;
+    let provider = OpenAiFactory
+        .build("a", &kind_config(&server, "deepseek", json!({})))
+        .unwrap();
+    provider
+        .complete(session_request(Some("miyoria-x-1")))
+        .await
+        .unwrap();
+    assert!(server.last_request().0.get("x-opencode-session").is_none());
+
+    // Configured, custom name.
+    let server = Server::start(ok_script()).await;
+    let config = kind_config(
+        &server,
+        "openai-compatible",
+        json!({"session_header": "X-Session"}),
+    );
+    let provider = OpenAiFactory.build("b", &config).unwrap();
+    provider
+        .complete(session_request(Some("miyoria-x-1")))
+        .await
+        .unwrap();
+    assert_eq!(server.last_request().0["x-session"], "miyoria-x-1");
+    // Configured but the request has no session.
+    provider.complete(session_request(None)).await.unwrap();
+    assert!(server.last_request().0.get("x-session").is_none());
+    // The session never ends up in the body.
+    assert!(server.last_request().1.get("session").is_none());
+}
+
+#[tokio::test]
+async fn opencode_defaults() {
+    let bare: ProviderConfig =
+        serde_json::from_value(json!({"kind": "opencode", "api_key": "k"})).unwrap();
+    let cfg = OpenAiConfig::from_provider_config(&bare).unwrap();
+    assert_eq!(cfg.base_url, "https://opencode.ai/inference/go/v1");
+    assert_eq!(cfg.session_header.as_deref(), Some("x-opencode-session"));
+    assert_eq!(
+        OpenAiProvider::new("oc", cfg).unwrap().url(),
+        "https://opencode.ai/inference/go/v1/chat/completions"
+    );
+
+    // Missing or blank key is a clear error.
+    for config in [
+        json!({"kind": "opencode"}),
+        json!({"kind": "opencode", "api_key": "  "}),
+    ] {
+        let config: ProviderConfig = serde_json::from_value(config).unwrap();
+        let err = OpenAiFactory.build("opencode", &config).err().unwrap();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("api_key") && msg.contains("opencode"), "{msg}");
+    }
+
+    // The session header can be switched off.
+    let off: ProviderConfig =
+        serde_json::from_value(json!({"kind": "opencode", "api_key": "k", "session_header": ""}))
+            .unwrap();
+    assert_eq!(
+        OpenAiConfig::from_provider_config(&off)
+            .unwrap()
+            .session_header,
+        None
+    );
+
+    // End to end against the mock (base_url override).
+    let server = Server::start(ok_script()).await;
+    let provider = OpenAiFactory
+        .build("opencode", &kind_config(&server, "opencode", json!({})))
+        .unwrap();
+    provider
+        .complete(session_request(Some(
+            "miyoria-deepseek-chan-0123456789abcdef",
+        )))
+        .await
+        .unwrap();
+    let (headers, _) = server.last_request();
+    assert_eq!(
+        headers["x-opencode-session"],
+        "miyoria-deepseek-chan-0123456789abcdef"
+    );
+    assert_eq!(headers["authorization"], "Bearer k");
+
+    // Other kinds still need no key.
+    let cfg: ProviderConfig =
+        serde_json::from_value(json!({"kind": "openai-compatible", "base_url": "http://x/v1"}))
+            .unwrap();
+    assert!(OpenAiFactory.build("local", &cfg).is_ok());
+}

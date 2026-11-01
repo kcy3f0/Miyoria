@@ -1,6 +1,7 @@
 import { Loader2, type LucideIcon } from "lucide-react";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import type { ModuleStateKind } from "../api/types";
+import { READ_ONLY_HINT, useCanWrite } from "../app/session";
 import type { Tone } from "../lib/events";
 
 type ButtonVariant = "default" | "primary" | "danger" | "ghost";
@@ -13,6 +14,8 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   iconOnly?: boolean;
   label?: string;
   busy?: boolean;
+  /** Changes something on the Core: disabled (with a tooltip) for read-only accounts. */
+  writes?: boolean;
 }
 
 export function Button({
@@ -25,9 +28,12 @@ export function Button({
   className,
   children,
   disabled,
+  writes,
   type = "button",
   ...rest
 }: ButtonProps) {
+  const canWrite = useCanWrite();
+  const readOnly = Boolean(writes) && !canWrite;
   const cls = [
     "btn",
     variant !== "default" && `btn--${variant}`,
@@ -42,11 +48,11 @@ export function Button({
     <button
       type={type}
       className={cls}
-      disabled={disabled || busy}
+      disabled={disabled || busy || readOnly}
       aria-busy={busy || undefined}
       aria-label={iconOnly ? label : undefined}
-      title={iconOnly ? label : rest.title}
       {...rest}
+      title={readOnly ? (iconOnly && label ? `${label}:${READ_ONLY_HINT}` : READ_ONLY_HINT) : iconOnly ? label : rest.title}
     >
       {ShownIcon && <ShownIcon aria-hidden className={busy ? "spin" : undefined} />}
       {!iconOnly && (children ?? label)}

@@ -1,8 +1,9 @@
-import { Eye, EyeOff, LogIn } from "lucide-react";
+import { CircleAlert, Eye, EyeOff, KeyRound, LogIn } from "lucide-react";
 import { type FormEvent, useId, useState } from "react";
 import { createApi } from "../api/endpoints";
 import { ApiClient, type ApiConfig, describeError, isApiError } from "../api/http";
 import { useConnection } from "../app/connection";
+import { isSameOrigin, loginErrorMessage, loginNext } from "../app/session";
 import { Logo } from "../components/logo";
 import { Button, Field } from "../components/ui";
 
@@ -29,11 +30,14 @@ export function TokenForm({
   submitLabel,
   onSaved,
   className = "login__form",
+  secondary = false,
 }: {
   initial: ApiConfig;
   submitLabel: string;
   onSaved?: (version: string) => void;
   className?: string;
+  /** Another login method is the primary action; this submit button steps back. */
+  secondary?: boolean;
 }) {
   const { setConfig } = useConnection();
   const [baseUrl, setBaseUrl] = useState(initial.baseUrl);
@@ -104,15 +108,41 @@ export function TokenForm({
           <Button iconOnly icon={show ? EyeOff : Eye} label={show ? "隱藏 token" : "顯示 token"} onClick={() => setShow((v) => !v)} />
         </div>
       </Field>
-      <Button type="submit" variant="primary" icon={LogIn} busy={busy}>
+      <Button type="submit" variant={secondary ? "default" : "primary"} icon={secondary ? KeyRound : LogIn} busy={busy}>
         {busy ? "驗證中…" : submitLabel}
       </Button>
     </form>
   );
 }
 
-export function TokenGate({ rejected, onSaved }: { rejected?: boolean; onSaved?: () => void }) {
-  const { config } = useConnection();
+/** Login screen: Discord (when the Core offers it) above the token form. */
+export function TokenGate({
+  rejected,
+  expired,
+  discord = false,
+  error,
+  onSaved,
+}: {
+  /** The saved token stopped working. */
+  rejected?: boolean;
+  /** The Discord session ended (logged out elsewhere, expired or revoked). */
+  expired?: boolean;
+  /** `GET /api/auth/methods` said Discord login is configured. */
+  discord?: boolean;
+  /** `?error=` code from a failed Discord login. */
+  error?: string | null;
+  onSaved?: () => void;
+}) {
+  const { config, api } = useConnection();
+  // The session cookie only reaches a Core on the panel's own origin.
+  const showDiscord = discord && isSameOrigin(config.baseUrl);
+  const lead = rejected
+    ? "Token 已失效,請重新輸入。"
+    : expired
+      ? "登入已過期或權限已變更,請重新登入。"
+      : showDiscord
+        ? "用 Discord 帳號或 admin token 登入。"
+        : "連到正在執行的 Core。";
   return (
     <div className="login">
       <div className="login__box">
@@ -121,13 +151,35 @@ export function TokenGate({ rejected, onSaved }: { rejected?: boolean; onSaved?:
           <div>
             <h1 className="login__title">Miyoria 管理面板</h1>
             <p className="muted" style={{ fontSize: "var(--fs-sm)" }}>
-              {rejected ? "Token 已失效,請重新輸入。" : "連到正在執行的 Core。"}
+              {lead}
             </p>
           </div>
         </div>
-        <TokenForm initial={{ baseUrl: config.baseUrl, token: rejected ? "" : config.token }} submitLabel="連線" onSaved={onSaved} />
+        {error && (
+          <div className="notice" data-tone="danger" role="alert">
+            <CircleAlert aria-hidden />
+            <span>{loginErrorMessage(error)}</span>
+          </div>
+        )}
+        {showDiscord && (
+          <>
+            <a className="btn btn--primary login__discord" href={api.discordLoginUrl(loginNext())}>
+              <LogIn aria-hidden />
+              使用 Discord 登入
+            </a>
+            <p className="login__or" aria-hidden>
+              或使用 admin token
+            </p>
+          </>
+        )}
+        <TokenForm
+          initial={{ baseUrl: config.baseUrl, token: rejected ? "" : config.token }}
+          submitLabel={showDiscord ? "用 token 連線" : "連線"}
+          secondary={showDiscord}
+          onSaved={onSaved}
+        />
         <p className="faint" style={{ fontSize: "var(--fs-xs)" }}>
-          Token 只存在這個瀏覽器的 localStorage。
+          {showDiscord ? "Discord 登入用的是瀏覽器 cookie;token 只存在這個瀏覽器的 localStorage。" : "Token 只存在這個瀏覽器的 localStorage。"}
         </p>
       </div>
     </div>

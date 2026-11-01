@@ -57,7 +57,7 @@ function SayForm({ disabled }: { disabled: boolean }) {
           ))}
         </select>
       </Field>
-      <Button type="submit" variant="primary" icon={MessageSquareText} disabled={disabled || !text.trim()} busy={say.isPending}>
+      <Button writes type="submit" variant="primary" icon={MessageSquareText} disabled={disabled || !text.trim()} busy={say.isPending}>
         說這句話
       </Button>
     </form>
@@ -82,6 +82,7 @@ function StageBody({ s }: { s: StageState }) {
             <div className="chips" role="group" aria-label="切換場景">
               {s.scenes.map((name) => (
                 <Button
+                  writes
                   key={name}
                   size="sm"
                   variant={name === s.scene ? "primary" : "default"}
@@ -103,6 +104,7 @@ function StageBody({ s }: { s: StageState }) {
             <div className="chips" role="group" aria-label="觸發表情">
               {s.expressions.map((name) => (
                 <Button
+                  writes
                   key={name}
                   size="sm"
                   variant={name === s.expression ? "primary" : "default"}

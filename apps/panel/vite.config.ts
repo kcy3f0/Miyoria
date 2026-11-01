@@ -12,6 +12,8 @@ export default defineConfig({
   server: {
     port: 5178,
     proxy: {
+      // Same-origin for the browser, so the Discord session cookie works in dev
+      // too (register http://localhost:5178/api/auth/oauth/callback and open the panel at http://localhost:5178).
       "/api": { target: core, changeOrigin: true },
     },
   },

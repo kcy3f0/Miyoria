@@ -20,7 +20,8 @@ use miyoria_types::{PersonId, ProfileId};
 use serde::Deserialize;
 use ulid::Ulid;
 
-use crate::server::{ACTOR, ApiError, ApiResult, ApiState, body, query};
+use crate::server::{ApiError, ApiResult, ApiState, body, query};
+use crate::session::actor;
 use crate::types::{AdjustPersonRequest, Page, PersonDetail, PersonSummary, UpdatePersonRequest};
 
 const DEFAULT_LIMIT: usize = 100;
@@ -354,15 +355,15 @@ async fn apply_update(
 ) -> anyhow::Result<()> {
     if let Some((add, remove)) = tags {
         for tag in &remove {
-            social.set_tag(person, tag, false, ACTOR, now).await?;
+            social.set_tag(person, tag, false, &actor(), now).await?;
         }
         for tag in &add {
-            social.set_tag(person, tag, true, ACTOR, now).await?;
+            social.set_tag(person, tag, true, &actor(), now).await?;
         }
     }
     if let Some(blocked) = request.blocked {
         social
-            .set_tag(person, BLOCKED_TAG, blocked, ACTOR, now)
+            .set_tag(person, BLOCKED_TAG, blocked, &actor(), now)
             .await?;
     }
     if let Some(call_name) = &request.call_name {
@@ -379,7 +380,7 @@ async fn apply_update(
         social.flush().await?;
         let mut rel = match ctx.relationships.get(&ctx.profile, person).await? {
             Some(r) => r,
-            None => social.adjust(person, 0.0, ACTOR, now).await?,
+            None => social.adjust(person, 0.0, &actor(), now).await?,
         };
         rel.notes = notes.trim().to_owned();
         rel.updated_at = now;
@@ -446,7 +447,7 @@ async fn adjust(
         return Err(unknown_person(&id));
     }
     let result = social
-        .adjust(person, request.affinity, ACTOR, Utc::now())
+        .adjust(person, request.affinity, &actor(), Utc::now())
         .await;
     let detail = serde_json::json!({ "affinity": request.affinity });
     state

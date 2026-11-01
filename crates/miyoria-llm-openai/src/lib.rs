@@ -1,7 +1,7 @@
 //! OpenAI-compatible Chat Completions provider.
 //!
 //! Register [`OpenAiFactory`] with `miyoria_llm::LlmModule` to handle the
-//! provider kinds `openai-compatible`, `openai` and `deepseek`:
+//! provider kinds `openai-compatible`, `openai`, `deepseek` and `opencode`:
 //!
 //! ```toml
 //! [llm.providers.deepseek]
@@ -12,6 +12,25 @@
 //! timeout_secs = 120
 //! max_retries = 2
 //! headers = { "X-Title" = "Miyoria" }
+//! ```
+//!
+//! Every request identifies itself with `User-Agent: miyoria/<version>`
+//! (override with `user_agent = "..."`). When `session_header` is set, the
+//! request's [`ChatRequest::session`](miyoria_llm::ChatRequest::session) (a
+//! stable id per conversation) is sent in that header.
+//!
+//! # OpenCode
+//!
+//! Kind `opencode` talks to OpenCode's inference endpoint
+//! (`https://opencode.ai/inference/go/v1` unless `base_url` is set). It needs
+//! an API key and sends the conversation id in `x-opencode-session` by
+//! default, which OpenCode uses for routing and prompt caching:
+//!
+//! ```toml
+//! [llm.providers.opencode]
+//! kind = "opencode"
+//! api_key = "${OPENCODE_API_KEY}"
+//! # [llm.purposes] chat = ["opencode:<model id>"]
 //! ```
 
 mod provider;
@@ -29,7 +48,8 @@ pub use provider::{OpenAiConfig, OpenAiProvider};
 pub struct OpenAiFactory;
 
 impl OpenAiFactory {
-    pub const KINDS: &'static [&'static str] = &["openai-compatible", "openai", "deepseek"];
+    pub const KINDS: &'static [&'static str] =
+        &["openai-compatible", "openai", "deepseek", "opencode"];
 }
 
 impl ProviderFactory for OpenAiFactory {

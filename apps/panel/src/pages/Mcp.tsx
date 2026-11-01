@@ -42,15 +42,15 @@ function ServerRow({ s, onAct }: { s: McpServerInfo; onAct: (a: Act) => void }) 
           <div className="inline-actions">
             {s.enabled ? (
               <>
-                <Button size="sm" icon={RotateCw} onClick={() => onAct("restart")}>
+                <Button writes size="sm" icon={RotateCw} onClick={() => onAct("restart")}>
                   重新連線
                 </Button>
-                <Button size="sm" icon={PowerOff} onClick={() => onAct("disable")}>
+                <Button writes size="sm" icon={PowerOff} onClick={() => onAct("disable")}>
                   停用
                 </Button>
               </>
             ) : (
-              <Button size="sm" icon={Power} onClick={() => onAct("enable")}>
+              <Button writes size="sm" icon={Power} onClick={() => onAct("enable")}>
                 啟用
               </Button>
             )}

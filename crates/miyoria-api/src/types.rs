@@ -24,6 +24,39 @@ pub struct HealthInfo {
     pub version: String,
 }
 
+/// `GET /api/auth/methods`: which panel logins this Core offers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthMethods {
+    /// The static bearer token always works.
+    pub token: bool,
+    /// Discord OAuth2 (`[modules.api.discord_oauth]` is configured).
+    pub discord: bool,
+}
+
+/// `GET /api/auth/session`: who the caller is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInfo {
+    /// `"token"` or `"discord"`.
+    pub method: String,
+    /// The Discord user; `null` for the bearer token.
+    pub user: Option<SessionUser>,
+    pub permissions: SessionPermissions,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionUser {
+    /// Discord user id.
+    pub id: String,
+    pub name: String,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPermissions {
+    /// May use mutating routes (`admin.panel.write`; always for the token).
+    pub write: bool,
+}
+
 /// One module as reported by `GET /api/modules`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleInfo {

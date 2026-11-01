@@ -324,6 +324,11 @@ async fn decide_loop_keeps_the_goal_while_the_bot_works() {
     );
     let req = &llm.requests()[0];
     assert!(req.json_mode);
+    let session = req.session.as_deref().unwrap();
+    assert!(
+        session.starts_with("miyoria-") && session.ends_with("-game-minecraft"),
+        "{session}"
+    );
     assert!(req.messages[0].content.contains("傲嬌的鯨魚女孩"));
     assert!(req.messages[0].content.contains("- mine:挖"));
     assert!(req.messages[1].content.contains("剛開始玩"));

@@ -83,6 +83,7 @@ impl GameModule {
     /// `name` and `persona` flavour the decisions (the persona is cut to
     /// `persona_chars`).
     pub fn new(name: impl Into<String>, persona: impl Into<String>) -> Self {
+        let name = name.into();
         Self {
             manifest: ModuleManifest::new(Self::ID, "Game director")
                 .description(
@@ -93,15 +94,23 @@ impl GameModule {
                 .optional("queue")
                 .optional("extensions"),
             persona: Persona {
-                name: name.into(),
+                profile: name.clone(),
+                name,
                 text: persona.into(),
             },
             running: Mutex::new(None),
         }
     }
 
+    /// Profile id used in the LLM session ids (default: the display name).
+    pub fn with_profile_id(mut self, id: impl Into<String>) -> Self {
+        self.persona.profile = id.into();
+        self
+    }
+
     pub fn from_profile(profile: &Profile) -> Self {
         Self::new(profile.display_name(), profile.persona_prompt())
+            .with_profile_id(profile.id.to_string())
     }
 }
 

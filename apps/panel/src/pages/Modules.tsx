@@ -135,6 +135,7 @@ export function ModulesPage() {
                           {m.enabled ? (
                             <>
                               <Button
+                                writes
                                 size="sm"
                                 icon={RotateCw}
                                 disabled={self}
@@ -145,6 +146,7 @@ export function ModulesPage() {
                                 重新啟動
                               </Button>
                               <Button
+                                writes
                                 size="sm"
                                 icon={PowerOff}
                                 disabled={self}
@@ -156,7 +158,7 @@ export function ModulesPage() {
                               </Button>
                             </>
                           ) : (
-                            <Button size="sm" icon={Power} busy={busy} onClick={() => setPending({ module: m, action: "enable" })}>
+                            <Button writes size="sm" icon={Power} busy={busy} onClick={() => setPending({ module: m, action: "enable" })}>
                               啟用
                             </Button>
                           )}

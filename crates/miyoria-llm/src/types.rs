@@ -91,6 +91,9 @@ pub struct ChatRequest {
     pub stop: Vec<String>,
     /// Ask for a JSON object response when the provider supports it.
     pub json_mode: bool,
+    /// Stable id of the conversation this request belongs to. Providers may
+    /// forward it (e.g. as a header) for routing and prompt caching.
+    pub session: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -44,7 +44,7 @@ export function QueuePage() {
         description="等著她處理的訊息、語音與點播。可以調整順序或跳過。"
         actions={
           queue.isSuccess && (
-            <Button icon={paused ? Play : Pause} variant={paused ? "primary" : "default"} busy={pause.isPending} onClick={() => pause.mutate(!paused)}>
+            <Button writes icon={paused ? Play : Pause} variant={paused ? "primary" : "default"} busy={pause.isPending} onClick={() => pause.mutate(!paused)}>
               {paused ? "恢復處理" : "暫停處理"}
             </Button>
           )
@@ -88,9 +88,9 @@ export function QueuePage() {
                     </div>
                   </div>
                   <div className="inline-actions">
-                    <Button size="sm" variant="ghost" iconOnly icon={ArrowUp} label="往前移" disabled={i === 0 || move.isPending} onClick={() => move.mutate({ id: item.id, position: i - 1 })} />
-                    <Button size="sm" variant="ghost" iconOnly icon={ArrowDown} label="往後移" disabled={i === state.items.length - 1 || move.isPending} onClick={() => move.mutate({ id: item.id, position: i + 1 })} />
-                    <Button size="sm" icon={SkipForward} busy={skip.isPending && skip.variables === item.id} onClick={() => skip.mutate(item.id)}>
+                    <Button writes size="sm" variant="ghost" iconOnly icon={ArrowUp} label="往前移" disabled={i === 0 || move.isPending} onClick={() => move.mutate({ id: item.id, position: i - 1 })} />
+                    <Button writes size="sm" variant="ghost" iconOnly icon={ArrowDown} label="往後移" disabled={i === state.items.length - 1 || move.isPending} onClick={() => move.mutate({ id: item.id, position: i + 1 })} />
+                    <Button writes size="sm" icon={SkipForward} busy={skip.isPending && skip.variables === item.id} onClick={() => skip.mutate(item.id)}>
                       跳過
                     </Button>
                   </div>

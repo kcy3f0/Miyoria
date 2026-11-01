@@ -7,13 +7,26 @@
 //! token = "${MIYORIA_API_TOKEN}"
 //! # Built panel served at `/` (skipped when missing). `MIYORIA_PANEL_DIR` overrides.
 //! panel_dir = "apps/panel/dist"
+//!
+//! # Optional: panel login with Discord (alongside the token).
+//! [modules.api.discord_oauth]
+//! client_id = "${DISCORD_CLIENT_ID:-}"
+//! client_secret = "${DISCORD_CLIENT_SECRET:-}"
+//! redirect_uri = "http://127.0.0.1:7878/api/auth/oauth/callback"
+//! session_days = 7
+//! # cookie_secure = true   # default: on when redirect_uri is https
 //! ```
 //!
-//! Every `/api` route except `GET /api/health` requires
-//! `Authorization: Bearer <token>`; panel files at `/` never do. Unknown
+//! Every `/api` route except `GET /api/health` and the login routes requires
+//! `Authorization: Bearer <token>` or a panel session cookie; panel files at
+//! `/` never do. Session users need `admin.panel.access` (owners and admins
+//! have it through `*` / `admin.*`; grant it to other roles globally with
+//! `/admin perm allow`), and `admin.panel.write` for anything but `GET`;
+//! their changes must also send `X-Miyoria-Request: 1` (CSRF guard). Unknown
 //! `/api/*` routes answer `404 {"error":"no such endpoint"}`. Errors are
 //! `{"error": "..."}`; a missing service (its module is stopped) is `503`.
-//! Changes are recorded in the `dyn AuditLog` (actor `"api"`) when there is one.
+//! Changes are recorded in the `dyn AuditLog` (actor `"api"` for the token,
+//! `discord:<id>` for a session) when there is one.
 //!
 //! The module looks these services up per request:
 //!
@@ -33,10 +46,14 @@
 //! | [`StageLink`](miyoria_stage::StageLink) | `/api/stage*` |
 //! | `dyn VoiceSink` | `POST /api/stage/say` |
 //! | `dyn AuditLog` (optional) | every change |
+//! | `dyn Authorizer`, `dyn SettingsStore` (optional, persists sessions) | panel sessions |
 //!
 //! Routes (shapes in [`types`]; the panel's `API-PLAN.md` has examples):
 //!
 //! * `GET /api/health` → `{ status, version }`
+//! * `GET /api/auth/methods`, `GET /api/auth/oauth/login?next=/#/…`,
+//!   `GET /api/auth/oauth/callback` (public), `GET /api/auth/session`,
+//!   `POST /api/auth/logout`
 //! * `GET /api/modules`, `POST /api/modules/{id}/enable|disable|restart`
 //! * `GET /api/decisions?limit=50&context=<json ContextKey>` (newest first)
 //! * `GET /api/llm/usage`, `GET /api/llm/cost`
@@ -55,28 +72,38 @@
 pub mod client;
 mod memory;
 mod monitor;
+mod oauth;
 mod ops;
 mod panel;
 mod people;
 mod roles;
 mod server;
+mod session;
 pub mod types;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
 use miyoria_kernel::{Module, ModuleContext, ModuleManifest};
+use miyoria_store::SettingsStore;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 
 use crate::monitor::Monitor;
+use crate::oauth::OAuth;
+use crate::session::{PanelAuth, Sessions};
 
 pub use client::{ApiClient, ClientError};
+pub use oauth::DiscordOAuthConfig;
 pub use panel::PANEL_DIR_ENV;
+
+/// How often expired panel sessions are dropped.
+const PRUNE_EVERY: Duration = Duration::from_secs(60 * 60);
 
 /// `[modules.api]` config section.
 #[derive(Clone, Debug, Deserialize)]
@@ -90,6 +117,8 @@ pub struct ApiConfig {
     /// directory. Default `apps/panel/dist`; [`PANEL_DIR_ENV`] overrides it,
     /// empty disables it, and a directory without `index.html` is skipped.
     pub panel_dir: String,
+    /// Discord OAuth2 login for the panel; off unless configured.
+    pub discord_oauth: DiscordOAuthConfig,
 }
 
 impl Default for ApiConfig {
@@ -98,6 +127,7 @@ impl Default for ApiConfig {
             bind: ApiModule::DEFAULT_BIND.to_owned(),
             token: String::new(),
             panel_dir: ApiModule::DEFAULT_PANEL_DIR.to_owned(),
+            discord_oauth: DiscordOAuthConfig::default(),
         }
     }
 }
@@ -148,6 +178,7 @@ impl Module for ApiModule {
                  (with `token = \"${{MIYORIA_API_TOKEN}}\"`) or run `miyoria init`"
             );
         }
+        let oauth = OAuth::from_config(&config.discord_oauth)?;
         let listener = TcpListener::bind(config.bind.as_str())
             .await
             .with_context(|| format!("cannot bind admin API to `{}`", config.bind))?;
@@ -175,7 +206,36 @@ impl Module for ApiModule {
             });
         }
 
-        let app = server::router(ctx.clone(), token, monitor, panel_dir);
+        let oauth_config = &config.discord_oauth;
+        let cookie_secure = oauth_config
+            .cookie_secure
+            .unwrap_or_else(|| oauth.as_ref().is_some_and(OAuth::redirect_is_https));
+        if oauth.is_some() {
+            info!(
+                secure_cookie = cookie_secure,
+                "Discord login for the panel is on"
+            );
+        }
+        let sessions = Sessions::new(oauth_config.session_ttl(), oauth_config.recheck());
+        let has_oauth = oauth.is_some();
+        let auth = Arc::new(PanelAuth::new(token, sessions, oauth, cookie_secure));
+        if has_oauth {
+            let auth = auth.clone();
+            let ctx2 = ctx.clone();
+            let cancel = ctx.cancellation().clone();
+            ctx.spawn("sessions", async move {
+                loop {
+                    let store = ctx2.services().get::<dyn SettingsStore>();
+                    auth.sessions.prune(store.as_deref()).await;
+                    tokio::select! {
+                        () = tokio::time::sleep(PRUNE_EVERY) => {}
+                        () = cancel.cancelled() => return Ok(()),
+                    }
+                }
+            });
+        }
+
+        let app = server::router(ctx.clone(), auth, monitor, panel_dir);
         let shutdown = ctx.cancellation().clone().cancelled_owned();
         ctx.spawn("server", async move {
             axum::serve(listener, app)

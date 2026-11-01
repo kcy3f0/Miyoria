@@ -1,5 +1,6 @@
 // Server-Sent Events over `fetch`. `EventSource` cannot send an
-// `Authorization` header, so the stream is read and parsed here instead
+// `Authorization` header (nor the CSRF header the rest of the client sends),
+// so the stream is read and parsed here instead
 // (https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream).
 
 import { type ApiClient, ApiError, describeError } from "./http";
@@ -144,7 +145,7 @@ export async function streamEvents(client: ApiClient, opts: StreamOptions): Prom
     try {
       const headers = client.headers({ Accept: "text/event-stream", "Cache-Control": "no-cache" });
       if (lastId) headers["Last-Event-ID"] = lastId;
-      const res = await fetch(client.url("/api/events", { topics }), { headers, signal });
+      const res = await fetch(client.url("/api/events", { topics }), { headers, signal, credentials: "same-origin" });
       if (!res.ok || !res.body) {
         const text = await res.text().catch(() => "");
         let message = text;

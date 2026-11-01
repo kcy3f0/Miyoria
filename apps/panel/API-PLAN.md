@@ -8,9 +8,14 @@ where the live shape differs from the first proposal.
 
 Conventions (same as the live API in `crates/miyoria-api`):
 
-- Every route requires `Authorization: Bearer <token>`. The Core also serves
+- Every route requires `Authorization: Bearer <token>` **or** the panel's
+  Discord session cookie (see [Panel login](#panel-login)). The Core also serves
   the built panel (`[modules.api] panel_dir`, default `apps/panel/dist`,
   `MIYORIA_PANEL_DIR` overrides) at `/` without a token.
+- The panel sends `X-Miyoria-Request: 1` and `credentials: "same-origin"` on
+  every request (SSE included). Cookie-authenticated non-GET requests without
+  that header get `403` (CSRF guard); session users without
+  `admin.panel.write` get `403` on every non-GET route.
 - Errors are `{"error": "..."}`. Use **404 with a specific message** (not the
   fallback text) for "this item does not exist", 409 for refused state changes,
   503 when the backing service/module is stopped.
@@ -18,10 +23,68 @@ Conventions (same as the live API in `crates/miyoria-api`):
   `snake_case`, `Option` is `null` (not omitted) unless noted.
 - Lists that can grow use `Page<T>`: `{"items": [...], "next_cursor": "opaque" | null}`.
 - All requests act on the **active profile**, like `/api/decisions` and `/api/persona`.
-- Every change is written to the audit log (actor `"api"`).
+- Every change is written to the audit log (actor `"api"` for the token,
+  `discord:<id>` for a session).
 
 TypeScript mirrors: `src/api/planned-types.ts`; client calls: `src/api/endpoints.ts`.
 `Settings → API 支援度` probes every GET below and shows which ones a Core serves.
+
+---
+
+## Panel login
+
+Live in `crates/miyoria-api/src/oauth.rs` / `session.rs`. Discord login is on
+only when `[modules.api.discord_oauth]` has `client_id`, `client_secret` and
+`redirect_uri`; the token always works.
+
+### `GET /api/auth/methods` (public) → `AuthMethods`
+
+```json
+{ "token": true, "discord": true }
+```
+
+### `GET /api/auth/oauth/login?next=/%23/people` (public) → `302`
+
+Redirects to `https://discord.com/oauth2/authorize` (`response_type=code`,
+`scope=identify`, random `state`, PKCE `S256`). The state and verifier live on
+the Core for 10 minutes. `next` must be a same-origin path (`/…`, not `//…`,
+ASCII, no `\`); anything else becomes `/#/`. The panel links here (a plain
+`<a>`, not `fetch`) only when its API base URL is its own origin.
+
+### `GET /api/auth/oauth/callback?code=&state=` (public) → `302`
+
+Discord redirects here. On success the Core sets
+`miyoria_session=<token>; Max-Age=…; Path=/; HttpOnly; SameSite=Lax[; Secure]`
+and redirects to `next`. On failure it redirects to `/#/login?error=<code>`:
+
+| `error` | Meaning |
+|---|---|
+| `disabled` | Discord login is not configured |
+| `cancelled` | the user declined on Discord |
+| `state` | unknown, reused or expired (10 min) state |
+| `exchange` | Discord refused the code |
+| `discord` | fetching `users/@me` failed |
+| `denied` | the account lacks `admin.panel.access` |
+| `unavailable` | no permission service (`auth` module stopped) |
+
+### `GET /api/auth/session` → `SessionInfo`
+
+```json
+{
+  "method": "discord",
+  "user": { "id": "80351110224678912", "name": "Owen", "avatar_url": "https://cdn.discordapp.com/avatars/…/….png?size=64" },
+  "permissions": { "write": false }
+}
+```
+
+With the token: `{"method": "token", "user": null, "permissions": {"write": true}}`.
+`401` without valid credentials, or once the account lost
+`admin.panel.access` (re-checked every few seconds).
+
+### `POST /api/auth/logout` (public) → `204`
+
+Deletes the session and clears the cookie. Needs `X-Miyoria-Request: 1` when a
+session cookie is sent.
 
 ---
 

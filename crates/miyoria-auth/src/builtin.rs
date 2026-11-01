@@ -15,6 +15,12 @@ pub const BLOCKED: &str = "blocked";
 /// not use commands without a permission node.
 pub const BLOCKED_RANK: i32 = 0;
 
+/// Lets a Discord-logged-in user into the admin panel (`/api/*` reads).
+/// `owner` and `admin` have it through `*` / `admin.*`.
+pub const PANEL_ACCESS: &str = "admin.panel.access";
+/// Lets a panel user make changes (every non-`GET` admin API route).
+pub const PANEL_WRITE: &str = "admin.panel.write";
+
 /// Self-service privacy controls; kept even for `restricted`.
 const PRIVACY: &[&str] = &[
     "ping",

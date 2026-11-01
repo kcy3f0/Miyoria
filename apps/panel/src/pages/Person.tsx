@@ -82,7 +82,7 @@ function RelationshipEditor({ detail }: { detail: PersonDetail }) {
         <Field label="備註" htmlFor={`${id}-notes`}>
           <textarea id={`${id}-notes`} className="textarea" rows={4} value={notes} onChange={(e) => setNotes(e.target.value)} />
         </Field>
-        <Button type="submit" variant="primary" icon={Save} busy={update.isPending}>
+        <Button writes type="submit" variant="primary" icon={Save} busy={update.isPending}>
           儲存
         </Button>
       </form>
@@ -113,6 +113,7 @@ function PersonBody({ detail }: { detail: PersonDetail }) {
         description={`第一次見面:${fmtDateTime(detail.person.created_at)} · ${detail.memory_count} 則相關記憶`}
         actions={
           <Button
+            writes
             icon={Ban}
             variant={detail.blocked ? "default" : "danger"}
             busy={update.isPending}

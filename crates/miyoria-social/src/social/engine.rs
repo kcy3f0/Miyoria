@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
-use miyoria_llm::LlmRouter;
+use miyoria_llm::{ChatRequest, LlmRouter};
 use miyoria_store::{
     IdentityStore, PeopleStore, Relationship, RelationshipDelta, RelationshipStore,
 };
@@ -584,6 +584,11 @@ impl Social {
         })
     }
 
+    /// Session id of the appraisal / notes requests (one per profile).
+    fn llm_session(&self) -> String {
+        miyoria_llm::session_id(&self.profile, "social")
+    }
+
     async fn run_appraisal(
         &self,
         router: &LlmRouter,
@@ -595,7 +600,10 @@ impl Social {
             return Ok(0);
         }
         let names: Vec<String> = snapshot.people.iter().map(|(n, _)| n.clone()).collect();
-        let request = appraisal::appraisal_request(&self.her_name, &snapshot.lines, &names);
+        let request = ChatRequest {
+            session: Some(self.llm_session()),
+            ..appraisal::appraisal_request(&self.her_name, &snapshot.lines, &names)
+        };
         let response = router.complete(&self.config.llm_purpose, request).await?;
         let results = appraisal::parse_appraisal(&response.text)?;
         let mut applied = 0;
@@ -683,7 +691,10 @@ impl Social {
             (a.lines.iter().cloned().collect::<Vec<_>>(), old, name)
         };
         let result = async {
-            let request = appraisal::notes_request(&self.her_name, &name, &old, &lines);
+            let request = ChatRequest {
+                session: Some(self.llm_session()),
+                ..appraisal::notes_request(&self.her_name, &name, &old, &lines)
+            };
             let response = router.complete(&self.config.llm_purpose, request).await?;
             let Some(notes) = appraisal::parse_notes(&response.text) else {
                 return Ok(false);

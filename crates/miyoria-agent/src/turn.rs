@@ -387,6 +387,13 @@ impl Turn<'_> {
         }
     }
 
+    /// Stable id of this conversation for the LLM provider (routing, prompt
+    /// caching); same for every request of the context.
+    fn llm_session(&self) -> String {
+        let profile = self.agent.persona.read(|p| p.id.clone());
+        miyoria_llm::context_session(profile, self.key)
+    }
+
     async fn llm_check(&self) -> anyhow::Result<CheckReply> {
         let router = self.agent.ctx.services().require::<LlmRouter>()?;
         let name = self.agent.persona.display_name();
@@ -402,6 +409,7 @@ impl Turn<'_> {
             temperature: Some(0.0),
             max_tokens: Some(120),
             json_mode: true,
+            session: Some(format!("{}-attention", self.llm_session())),
             ..Default::default()
         };
         let timeout = Duration::from_millis(self.agent.config.attention.llm_check_timeout_ms);
@@ -794,6 +802,7 @@ impl Turn<'_> {
                 tools,
                 temperature: cfg.temperature,
                 max_tokens: cfg.max_tokens,
+                session: Some(self.llm_session()),
                 ..Default::default()
             };
             let Step {

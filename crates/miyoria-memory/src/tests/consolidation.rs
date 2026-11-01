@@ -72,6 +72,10 @@ async fn consolidates_guild_conversation() {
     let reqs = llm.requests();
     assert_eq!(reqs.len(), 1);
     assert!(reqs[0].json_mode);
+    let session = reqs[0].session.as_deref().unwrap();
+    let hash = miyoria_llm::context_hash(&ctx);
+    assert_eq!(session, format!("miyoria-deepseek-chan-memory-{hash}"));
+    assert!(!session.contains("g1"), "{session}");
     let user = &reqs[0].messages[1].content;
     assert!(user.contains("我: 好啦好啦,下次一起去"), "{user}");
     assert!(user.contains("Owen: 我最喜歡豚骨拉麵"));

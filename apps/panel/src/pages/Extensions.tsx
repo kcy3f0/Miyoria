@@ -61,15 +61,15 @@ export function ExtensionsPage() {
                     <div className="inline-actions">
                       {x.enabled ? (
                         <>
-                          <Button size="sm" icon={RotateCw} onClick={() => setPending({ ext: x, act: "restart" })}>
+                          <Button writes size="sm" icon={RotateCw} onClick={() => setPending({ ext: x, act: "restart" })}>
                             重新啟動
                           </Button>
-                          <Button size="sm" icon={PowerOff} onClick={() => setPending({ ext: x, act: "disable" })}>
+                          <Button writes size="sm" icon={PowerOff} onClick={() => setPending({ ext: x, act: "disable" })}>
                             停用
                           </Button>
                         </>
                       ) : (
-                        <Button size="sm" icon={Power} onClick={() => setPending({ ext: x, act: "enable" })}>
+                        <Button writes size="sm" icon={Power} onClick={() => setPending({ ext: x, act: "enable" })}>
                           啟用
                         </Button>
                       )}

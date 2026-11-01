@@ -47,6 +47,7 @@ function AssignDialog({ roles, onClose }: { roles: string[]; onClose: () => void
             取消
           </Button>
           <Button
+            writes
             variant="primary"
             busy={assign.isPending}
             disabled={!account.trim() || !role}
@@ -106,7 +107,7 @@ export function RolesPage() {
         title="權限"
         description="角色決定誰能用哪些指令、工具與 API。權限節點以點分隔,例如 persona.edit。"
         actions={
-          <Button icon={UserPlus} variant="primary" disabled={!roles.isSuccess} onClick={() => setAssigning(true)}>
+          <Button writes icon={UserPlus} variant="primary" disabled={!roles.isSuccess} onClick={() => setAssigning(true)}>
             指派角色
           </Button>
         }
@@ -189,7 +190,7 @@ export function RolesPage() {
                         <td className="faint">{a.granted_by}</td>
                         <td className="faint">{fmtRelative(a.at)}</td>
                         <td className="r">
-                          <Button size="sm" variant="ghost" icon={X} onClick={() => setRevoking(a)}>
+                          <Button writes size="sm" variant="ghost" icon={X} onClick={() => setRevoking(a)}>
                             撤銷
                           </Button>
                         </td>

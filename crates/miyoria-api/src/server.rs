@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
-use axum::middleware::{self, Next};
+use axum::middleware;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -26,21 +26,22 @@ use miyoria_store::{
 use miyoria_types::{ContextKey, ModuleId, ProfileId};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use subtle::ConstantTimeEq;
 use tracing::warn;
 use ulid::Ulid;
 
 use crate::monitor::Monitor;
+use crate::session::{PanelAuth, actor, require_auth};
 use crate::types::{
     CostInfo, ErrorBody, HealthInfo, ModuleInfo, PersonaSectionInfo, SetPersonaRequest,
     SetPersonaResponse, UsageInfo,
 };
-use crate::{memory, ops, panel, people, roles};
+use crate::{memory, oauth, ops, panel, people, roles};
 
 const DEFAULT_DECISIONS: usize = 50;
 const MAX_DECISIONS: usize = 1000;
 
-/// Actor recorded in audit entries for changes made through the API.
+/// Actor recorded in audit entries for changes made with the bearer token
+/// (OAuth sessions record their account, see [`actor`]).
 pub(crate) const ACTOR: &str = "api";
 
 /// The message of the fallback for unknown `/api/*` routes; the panel shows
@@ -50,7 +51,7 @@ pub(crate) const NO_SUCH_ENDPOINT: &str = "no such endpoint";
 #[derive(Clone)]
 pub(crate) struct ApiState {
     pub(crate) ctx: ModuleContext,
-    token: Arc<[u8]>,
+    pub(crate) auth: Arc<PanelAuth>,
     pub(crate) monitor: Arc<Monitor>,
     panel: Option<Arc<PathBuf>>,
 }
@@ -76,10 +77,23 @@ impl ApiState {
             .map(|p| (*p).clone())
     }
 
-    /// Records a change in the audit log, when there is one. Failures to
-    /// write are logged, never returned.
+    /// Records a change in the audit log, when there is one, as made by the
+    /// current request's [`actor`]. Failures to write are logged, never
+    /// returned.
     pub(crate) async fn audit(
         &self,
+        action: &str,
+        target: &str,
+        detail: serde_json::Value,
+        ok: bool,
+    ) {
+        self.audit_as(&actor(), action, target, detail, ok).await;
+    }
+
+    /// Like [`audit`](Self::audit) with an explicit actor.
+    pub(crate) async fn audit_as(
+        &self,
+        actor: &str,
         action: &str,
         target: &str,
         detail: serde_json::Value,
@@ -91,7 +105,7 @@ impl ApiState {
         let entry = AuditEntry {
             id: Ulid::new(),
             at: Utc::now(),
-            actor: ACTOR.to_owned(),
+            actor: actor.to_owned(),
             action: action.to_owned(),
             target: target.to_owned(),
             detail,
@@ -193,13 +207,13 @@ pub(crate) type ApiResult<T> = Result<Json<T>, ApiError>;
 /// Builds the API router for a running `api` module.
 pub(crate) fn router(
     ctx: ModuleContext,
-    token: &str,
+    auth: Arc<PanelAuth>,
     monitor: Arc<Monitor>,
     panel_dir: Option<PathBuf>,
 ) -> Router {
     let state = ApiState {
         ctx,
-        token: Arc::from(token.as_bytes()),
+        auth,
         monitor,
         panel: panel_dir.map(Arc::new),
     };
@@ -217,9 +231,11 @@ pub(crate) fn router(
         .merge(memory::routes())
         .merge(roles::routes())
         .merge(ops::routes())
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
+        .merge(oauth::protected_routes())
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
     Router::new()
         .route("/api/health", get(health))
+        .merge(oauth::public_routes())
         .merge(protected)
         .fallback(fallback)
         .with_state(state)
@@ -233,20 +249,6 @@ async fn fallback(State(state): State<ApiState>, request: Request) -> Response {
     match &state.panel {
         Some(dir) if !is_api => panel::serve(dir, request).await,
         _ => ApiError::not_found(NO_SUCH_ENDPOINT).into_response(),
-    }
-}
-
-async fn require_token(State(state): State<ApiState>, request: Request, next: Next) -> Response {
-    let authorized = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .is_some_and(|t| bool::from(t.trim().as_bytes().ct_eq(&state.token)));
-    if authorized {
-        next.run(request).await
-    } else {
-        ApiError::new(StatusCode::UNAUTHORIZED, "missing or invalid bearer token").into_response()
     }
 }
 
@@ -427,10 +429,10 @@ async fn set_persona_section(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or(ACTOR);
+        .map_or_else(actor, str::to_owned);
     let text = request.body.trim();
     // Persist first, so a failed write never leaves an unrecorded live edit.
-    let result = overrides.set(&profile, &key, text, edited_by).await;
+    let result = overrides.set(&profile, &key, text, &edited_by).await;
     let detail = match &result {
         Ok(version) => serde_json::json!({ "version": version, "edited_by": edited_by }),
         Err(e) => serde_json::json!({ "edited_by": edited_by, "error": format!("{e:#}") }),

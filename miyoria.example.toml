@@ -82,6 +82,18 @@ command_guilds = []
 bind = "127.0.0.1:7878"
 token = "${MIYORIA_API_TOKEN:-}"
 
+# 管理面板用 Discord 登入(token 照樣能用)。三個值都填才會開啟;
+# redirect_uri 要跟 Developer Portal → OAuth2 → Redirects 裡的一模一樣,
+# 也要跟你在瀏覽器開面板的網址同源(見 docs/OPERATIONS.md)。
+# 擁有者與 admin 角色可以登入;其他角色要 `/admin perm allow` 給 admin.panel.access(唯讀)
+# 與 admin.panel.write(可修改)。
+# [modules.api.discord_oauth]
+# client_id = "${DISCORD_CLIENT_ID:-}"
+# client_secret = "${DISCORD_CLIENT_SECRET:-}"
+# redirect_uri = "http://127.0.0.1:7878/api/auth/oauth/callback"
+# session_days = 7
+# cookie_secure = true             # 預設:redirect_uri 是 https 就開
+
 # Self 帳號語音節點(apps/voice-node)連進來的位址;token 由 `miyoria init` 產生
 [modules."voice.link"]
 bind = "127.0.0.1:7879"

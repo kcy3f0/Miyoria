@@ -49,6 +49,8 @@ futures.workspace = true
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
 inquire = "0.7"
+toml.workspace = true
+toml_edit = "0.22"
 
 [lints]
 workspace = true

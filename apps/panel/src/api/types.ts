@@ -249,3 +249,28 @@ export interface DecisionsQuery {
   limit?: number;
   context?: ContextKey;
 }
+
+// ---------------------------------------------------------------------------
+// panel login (crates/miyoria-api/src/oauth.rs)
+
+/** `GET /api/auth/methods` (public). */
+export interface AuthMethods {
+  token: boolean;
+  /** Discord OAuth2 is configured on this Core. */
+  discord: boolean;
+}
+
+export interface SessionUser {
+  /** Discord user id. */
+  id: string;
+  name: string;
+  avatar_url: string | null;
+}
+
+/** `GET /api/auth/session`. */
+export interface SessionInfo {
+  method: "token" | "discord";
+  /** `null` for the bearer token. */
+  user: SessionUser | null;
+  permissions: { write: boolean };
+}

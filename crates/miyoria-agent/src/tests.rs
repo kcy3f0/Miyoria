@@ -650,6 +650,19 @@ async fn ambient_uses_fast_check_in_gray_zone() {
         h.sink.sent(),
         [("鯨魚當然比較大".to_owned(), Priority::Initiative)]
     );
+
+    // One stable session id per conversation; the attention check adds a suffix.
+    let session = miyoria_llm::context_session("test-chan", &c);
+    assert!(session.starts_with("miyoria-test-chan-"), "{session}");
+    assert!(!session.contains("guild"), "{session}");
+    assert_eq!(
+        chat.requests()[0].session.as_deref(),
+        Some(session.as_str())
+    );
+    let attention = format!("{session}-attention");
+    for request in fast.requests() {
+        assert_eq!(request.session.as_deref(), Some(attention.as_str()));
+    }
 }
 
 #[tokio::test(start_paused = true)]

@@ -222,6 +222,23 @@ Stage 要直接碰 VTube Studio / OBS / 遊戲,所以原生在直播機執行,�
 - user token 只放在 voice node 所在機器的 `apps/voice-node/.env`(`SELF_TOKEN`),**不要**放進 Core 的設定,也不要貼到任何地方。
 - 收音前要讓頻道裡的人知道她在聽(`[modules.voice] consent`:`opt-out` 預設收音、可退出;`opt-in` 同意後才收)。
 
+### 管理面板的 Discord 登入(選用)
+
+面板預設用 admin token 登入;開了這個之後,也可以按「使用 Discord 登入」(token 照樣能用,CLI 一直用 token)。
+
+1. 在同一個 Application 的 **OAuth2** 頁籤:**Client ID** 就是 Application ID,填 `.env` 的 `DISCORD_CLIENT_ID`;按 **Reset Secret** 取得 **Client Secret**,填 `DISCORD_CLIENT_SECRET`。
+2. **OAuth2 → Redirects** 新增 redirect URL,例如 `http://127.0.0.1:7878/api/auth/oauth/callback`。
+3. 在 `miyoria.toml` 打開 `[modules.api.discord_oauth]`(見 `miyoria.example.toml`),`redirect_uri` 填**一模一樣**的網址,重啟 Core。`miyoria` 日誌會出現 `Discord login for the panel is on`。
+4. 用瀏覽器開**跟 redirect_uri 同一個 origin** 的面板網址(上例就是 `http://127.0.0.1:7878/`,不是 `localhost:7878`):登入用的 cookie 只屬於那個 origin。開發時用 Vite(`pnpm dev`)就另外登記 `http://localhost:5178/api/auth/oauth/callback`、把 `redirect_uri` 改成它,並用 `http://localhost:5178` 開面板;Vite 的 proxy 會轉給 Core。
+
+誰能登入:
+
+- `[modules.auth] owners` 裡的擁有者,以及**全域**指派了 `admin` 角色的人(`*` / `admin.*` 已包含 `admin.panel.access` 與 `admin.panel.write`)。其他人會看到「沒有管理面板權限」。
+- 開放給其他角色:`/admin perm allow role:moderator node:admin.panel.access scope:global`(唯讀,修改類按鈕會停用),要能修改再加 `node:admin.panel.write`。面板檢查時沒有伺服器 / 頻道,所以只算 `scope:global` 的指派與覆寫。
+- 拿掉角色或權限後幾秒內生效,已登入的人會被送回登入畫面。登入 session 預設 7 天(`session_days`),存在資料庫(只存 token 的雜湊),Core 重啟不會掉;登出會立刻刪掉。
+
+從別台機器用面板:cookie 和 token 都會走明文 HTTP,所以要嘛走 Tailscale(`redirect_uri` 用 tailnet 位址,例如 `http://100.x.y.z:7878/api/auth/oauth/callback`,並把 `[modules.api] bind` 綁到那個位址),要嘛放在 https 反向代理後面(`redirect_uri = "https://panel.example.com/api/auth/oauth/callback"`,cookie 自動加上 `Secure`)。無論哪種,Developer Portal 的 redirect、`redirect_uri` 和你在瀏覽器開的網址三者要一致。
+
 ## 6. 升級
 
 **原則:先備份,再升級,升級後跑 `doctor`。**
@@ -357,6 +374,7 @@ Voice node 的層級用它的 `LOG_LEVEL`(`error|warn|info|debug`);`debug` 會�
   - **Tailscale / WireGuard(最簡單)**:`bind` 改成 server 的 tailnet IP(compose 的 `ports:` 也改成 `<tailnet-ip>:7879:7879`),voice node 用 `VOICE_LINK_URL=ws://<tailnet-ip>:7879/voice-link`。tailnet 內部流量本身已加密。
   - **wss 反向代理**:Caddy / nginx 把 `wss://voice.example.com/voice-link` 轉到 `127.0.0.1:7879`,voice node 用 `wss://...`。Admin API 同理(要從遠端用面板時),且不要在代理上放寬 `Authorization` 檢查。
   - SSH tunnel 也行:`ssh -L 7878:127.0.0.1:7878 <server>`。
+  - 面板開了 Discord 登入時,遠端只用 https 或 tailnet 位址,且 `redirect_uri` 跟瀏覽器網址一致(見 [§5](#管理面板的-discord-登入選用))。
   - voice link 與 Admin API 本身是**明文** HTTP/WebSocket,token 和語音都看得到;不加密就不能跨網路。
 - [ ] **Self 帳號 token**(`SELF_TOKEN`)只存在 voice node 那台機器的 `.env`,權限只有你自己的使用者可讀(Linux:`chmod 600 .env`)。
 - [ ] **Discord bot 權限最小化**:邀請連結只勾上面列的權限,不要給 Administrator。
@@ -364,6 +382,7 @@ Voice node 的層級用它的 `LOG_LEVEL`(`error|warn|info|debug`);`debug` 會�
 - [ ] **備份有加密或放在受信任處**:dump 內含所有人的對話記憶。
 - [ ] **收音同意**:語音頻道有公告她在聽;`[modules.voice] consent` 設定符合你的社群規則;預設不存音訊。
 - [ ] **成本煞車**:LLM 供應者後台設用量上限;用 `miyoria status` 定期看用量。
+- [ ] **面板權限**:只有需要的角色有 `admin.panel.access` / `admin.panel.write`;`DISCORD_CLIENT_SECRET` 跟其他秘密一樣只放 `.env`。
 - [ ] Token 外洩時:立刻到 Discord Developer Portal Reset Token / 換 self 帳號密碼,重新產生 `MIYORIA_API_TOKEN` / `VOICE_LINK_TOKEN`(刪掉 `.env` 裡那行再跑 `miyoria init`,或手動改),重啟所有節點。
 
 ## 10. 疑難排解
@@ -379,6 +398,7 @@ Voice node 的層級用它的 `LOG_LEVEL`(`error|warn|info|debug`);`debug` 會�
 | Core 連不到宿主機上的 ASR / TTS(容器內) | worker 要綁 `0.0.0.0` 或 docker bridge 位址才連得到(只綁 `127.0.0.1` 的 worker 容器內看不到);或把 `ASR_URL` / `TTS_URL` 設成別台的位址。 |
 | `miyoria status` 說沒有設定 `MIYORIA_API_TOKEN` | 根目錄 `.env` 缺這一行;CLI 和 Core 要讀到同一個 token。 |
 | `miyoria status` 連不上 | Core 沒在跑;或 Core 在遠端而沒有 tunnel(`ssh -L 7878:127.0.0.1:7878`);或 `[modules.api] bind` 不是 127.0.0.1:7878。 |
+| 面板按「使用 Discord 登入」後 Discord 說 `Invalid OAuth2 redirect_uri` / 回來又是登入畫面 | Developer Portal 的 Redirects 沒有登記跟 `redirect_uri` 一模一樣的網址;或瀏覽器開的面板 origin(例如 `localhost`)跟 `redirect_uri`(`127.0.0.1`)不同,cookie 落在另一個 origin。登入畫面寫「沒有管理面板權限」就是帳號缺 `admin.panel.access`(見 [§5](#管理面板的-discord-登入選用))。 |
 | `platform.discord.bot` 一直 failed | 沒開 Message Content Intent;或 token 錯 / 被 reset;`miyoria doctor` 會指出。 |
 | Slash command 沒出現 | 全域註冊要等最多一小時;開發時填 `command_guilds`。Bot 邀請時要有 `applications.commands` scope。 |
 | Voice node 印 `bad token` 後結束(close code 4401) | `VOICE_LINK_TOKEN` 跟 Core 的不一樣(注意 Core 容器吃的是根目錄 `.env`)。 |

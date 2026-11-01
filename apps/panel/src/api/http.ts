@@ -1,11 +1,16 @@
 // Minimal typed HTTP layer over `fetch` for the Admin API.
 //
-// Every protected route needs `Authorization: Bearer <token>`; errors come back
-// as `{ "error": "..." }`. Unknown routes hit the server's fallback, which
+// Every protected route needs `Authorization: Bearer <token>` or the panel's
+// Discord session cookie; errors come back as `{ "error": "..." }`. Every
+// request sends `X-Miyoria-Request: 1` (the Core's CSRF guard for cookie
+// sessions) and same-origin credentials. Unknown routes hit the server's fallback, which
 // answers `404 { "error": "no such endpoint" }` — that is how the panel tells
 // "this Core is older than the panel" apart from "this item does not exist".
 
 import type { ErrorBody } from "./types";
+
+/** Header the Core requires on cookie-authenticated changes. */
+export const CSRF_HEADER = "X-Miyoria-Request";
 
 export interface ApiConfig {
   /** Origin (and optional path prefix) of the Core, e.g. `http://127.0.0.1:7878`. Empty = same origin. */
@@ -19,7 +24,7 @@ export const FALLBACK_NOT_FOUND = "no such endpoint";
 export type ApiErrorKind =
   /** The request never got a response (offline, CORS, DNS, refused). */
   | "network"
-  /** 401: token missing or wrong. */
+  /** 401: token or session missing, wrong or expired. */
   | "unauthorized"
   /** The route does not exist on this Core version. */
   | "not_provided"
@@ -128,7 +133,7 @@ export class ApiClient {
   }
 
   headers(extra?: Record<string, string>, isPublic = false): Record<string, string> {
-    const h: Record<string, string> = { Accept: "application/json", ...extra };
+    const h: Record<string, string> = { Accept: "application/json", [CSRF_HEADER]: "1", ...extra };
     const token = this.config.token.trim();
     if (token && !isPublic) h.Authorization = `Bearer ${token}`;
     return h;
@@ -141,6 +146,7 @@ export class ApiClient {
       headers: this.headers(hasBody ? { "Content-Type": "application/json" } : undefined, opts.public),
       body: hasBody ? JSON.stringify(opts.body) : undefined,
       signal: opts.signal,
+      credentials: "same-origin",
     };
     let res: Response;
     try {
@@ -188,7 +194,7 @@ export function describeError(e: unknown): string {
       case "network":
         return e.message;
       case "unauthorized":
-        return "Token 無效或已更換,請到設定重新輸入。";
+        return "登入已失效:請重新登入,或到設定更新 token。";
       case "not_provided":
         return "這個 Core 版本還沒有提供此 API。";
       case "unavailable":

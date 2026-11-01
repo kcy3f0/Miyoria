@@ -1,21 +1,32 @@
 mod boot;
 mod cli_platform;
+mod config_cmd;
 mod doctor;
+mod edit;
 mod init;
+mod prompt;
 mod remote;
+mod settings;
+mod ui;
+mod validate;
 
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Arg, ArgAction, CommandFactory, FromArgMatches, Parser, Subcommand};
 use miyoria_kernel::Config;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "miyoria", version, about = "Miyoria — AI waifu framework")]
+#[command(name = "miyoria", version, about = "Miyoria — AI waifu 框架")]
 struct Cli {
-    /// Path to miyoria.toml
+    /// miyoria.toml 的路徑
     #[arg(long, short, global = true, default_value = "miyoria.toml")]
     config: PathBuf,
+
+    /// 跳過所有確認,直接寫入 / 套用
+    #[arg(long, short = 'y', global = true)]
+    yes: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -23,48 +34,57 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Interactive setup: API keys, Discord token, database
+    /// 設定精靈:LLM、Discord、資料庫、面板登入;可重複執行,Enter 保留現值
     Init,
-    /// Check config, profile, LLM, Discord and database connectivity
+    /// 修改設定(不帶子指令時開互動選單,一次改一項)
+    Config {
+        #[command(subcommand)]
+        command: Option<ConfigCommand>,
+    },
+    /// 檢查設定檔、角色、LLM、Discord 和資料庫連線
     Doctor,
-    /// Run the core node (Discord bot, agent, ...)
+    /// 啟動 core 節點(Discord bot、agent ...)
     Core,
-    /// Run the stage node on the streaming PC (VTube Studio, OBS, overlay)
+    /// 在直播機啟動 stage 節點(VTube Studio、OBS、overlay)
     Stage,
-    /// Chat with her in the terminal (no Discord needed)
+    /// 在終端機跟她聊天(不需要 Discord)
     Chat {
-        /// Your display name in the conversation
+        /// 你在對話裡的名字
         #[arg(long, default_value = "你")]
         name: String,
-        /// Also connect the Discord bot while chatting
+        /// 聊天時也連上 Discord bot
         #[arg(long)]
         with_discord: bool,
     },
-    /// Status of the running core: modules and LLM usage
+    /// 執行中 core 的狀態:模組和 LLM 用量
     Status,
-    /// Manage modules (subsystems) of the running core
+    /// 管理執行中 core 的模組
     Module {
         #[command(subcommand)]
         command: ModuleCommand,
     },
-    /// Recent attention decisions (why she replied or stayed quiet)
+    /// 最近的注意力決策(她為什麼回話或保持安靜)
     Decisions {
+        /// 顯示幾筆
         #[arg(long, short, default_value_t = 20)]
         limit: usize,
     },
-    /// Follow live events of the running core, e.g. `miyoria events 'agent.*'`
-    Events { topics: Vec<String> },
-    /// Persona sections of the running core
+    /// 即時追蹤 core 的事件,例如 `miyoria events 'agent.*'`
+    Events {
+        /// 事件主題(可用萬用字元,省略 = 全部)
+        topics: Vec<String>,
+    },
+    /// 執行中 core 的人格段落
     Persona {
         #[command(subcommand)]
         command: PersonaCommand,
     },
-    /// Profile tools (offline)
+    /// 角色工具(離線)
     Profile {
         #[command(subcommand)]
         command: ProfileCommand,
     },
-    /// Extensions (offline tools, plus `dev` to run the core with hot reload)
+    /// 擴充套件(離線工具,`dev` 會以熱重載啟動 core)
     Ext {
         #[command(subcommand)]
         command: ExtCommand,
@@ -72,74 +92,219 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum ConfigCommand {
+    /// 列出所有設定和實際值(密碼遮蔽,標示哪些來自 .env)
+    List {
+        /// 顯示密碼原文
+        #[arg(long)]
+        reveal: bool,
+    },
+    /// 顯示一個設定的實際值,例如 `core.profile`
+    Get {
+        /// 以點分隔的鍵,例如 modules.api.bind 或 'modules."voice.link".bind'
+        key: Option<String>,
+        /// 改讀 .env 的變數
+        #[arg(long, value_name = "NAME", conflicts_with = "key")]
+        env: Option<String>,
+        /// 顯示密碼原文
+        #[arg(long)]
+        reveal: bool,
+    },
+    /// 設定一個值,例如 `set core.log debug`;引用 ${VAR} 的鍵會改寫 .env
+    Set {
+        /// 改寫 .env 的變數:`set --env LLM_API_KEY sk-...`
+        #[arg(long, value_name = "NAME")]
+        env: Option<String>,
+        /// <key> <值>(值用 TOML 解析:3、true、["a"];其他當字串)
+        #[arg(
+            required = true,
+            num_args = 1..=2,
+            value_name = "KEY 值",
+            allow_hyphen_values = true
+        )]
+        args: Vec<String>,
+    },
+    /// 刪除一個設定(或 `--env NAME` 刪除 .env 變數)
+    Unset {
+        /// 以點分隔的鍵
+        key: Option<String>,
+        /// 刪除 .env 的變數
+        #[arg(long, value_name = "NAME", conflicts_with = "key")]
+        env: Option<String>,
+    },
+    /// 用編輯器開啟 miyoria.toml($VISUAL / $EDITOR,Windows 預設記事本)
+    Edit,
+}
+
+#[derive(Subcommand)]
 enum ExtCommand {
-    /// Scaffold a TypeScript extension
+    /// 建立 TypeScript 擴充套件骨架
     New {
+        /// 套件名稱
         name: String,
-        /// Parent directory
+        /// 上層資料夾
         #[arg(long, default_value = "extensions")]
         dir: PathBuf,
     },
-    /// List discovered extensions
+    /// 列出找到的擴充套件
     List,
-    /// Install from a local path or a git URL
-    Install { source: String },
-    /// Check an extension's manifest
-    Validate { dir: PathBuf },
-    /// Run the core with extension hot reload
+    /// 從本機路徑或 git URL 安裝
+    Install {
+        /// 路徑或 git URL
+        source: String,
+    },
+    /// 檢查擴充套件的 manifest
+    Validate {
+        /// 擴充套件資料夾
+        dir: PathBuf,
+    },
+    /// 以擴充套件熱重載啟動 core
     Dev,
 }
 
 #[derive(Subcommand)]
 enum ModuleCommand {
-    /// List modules (falls back to the config when the core is not running)
+    /// 列出模組(core 沒在執行時顯示設定檔內容)
     List,
+    /// 啟用模組
     Enable {
+        /// 模組 id
         id: String,
     },
+    /// 停用模組
     Disable {
+        /// 模組 id
         id: String,
     },
+    /// 重新啟動模組
     Restart {
+        /// 模組 id
         id: String,
     },
 }
 
 #[derive(Subcommand)]
 enum PersonaCommand {
+    /// 顯示所有人格段落
     Show,
-    /// Replace a section with the contents of a file (`-` for stdin)
+    /// 用檔案內容取代一個段落(`-` 代表 stdin)
     Set {
+        /// 段落名稱
         key: String,
+        /// 檔案路徑或 `-`
         file: PathBuf,
     },
 }
 
 #[derive(Subcommand)]
 enum ProfileCommand {
-    /// Load and validate the active profile
+    /// 載入並檢查目前的角色
     Validate,
 }
 
+const HELP_TEMPLATE: &str =
+    "{before-help}{about-with-newline}\n用法:{usage}\n\n{all-args}{after-help}";
+
+/// Traditional Chinese help: headings and `-h` / `-V` texts on every subcommand.
+fn localize(cmd: clap::Command, root: bool) -> clap::Command {
+    let mut cmd = cmd
+        .help_template(HELP_TEMPLATE)
+        .subcommand_help_heading("指令")
+        .subcommand_value_name("指令")
+        .disable_help_subcommand(true)
+        .disable_help_flag(true)
+        .mut_args(|a| {
+            let heading = if a.is_positional() {
+                "參數"
+            } else {
+                "選項"
+            };
+            a.help_heading(heading)
+        })
+        .arg(
+            Arg::new("help")
+                .short('h')
+                .long("help")
+                .action(ArgAction::Help)
+                .help("顯示說明")
+                .help_heading("選項"),
+        );
+    if root {
+        cmd = cmd.disable_version_flag(true).arg(
+            Arg::new("version")
+                .short('V')
+                .long("version")
+                .action(ArgAction::Version)
+                .help("顯示版本")
+                .help_heading("選項"),
+        );
+    }
+    cmd.mut_subcommands(|sub| localize(sub, false))
+}
+
+fn load_config(path: &Path) -> anyhow::Result<Config> {
+    if !path.exists() {
+        anyhow::bail!("找不到 {}:先執行 `miyoria init` 建立設定", path.display());
+    }
+    Ok(Config::load(path)?)
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) if prompt::is_cancelled(&e) || prompt::is_interrupted(&e) => {
+            ui::warn(e);
+            ExitCode::from(130)
+        }
+        Err(e) => {
+            ui::fail(format!("{e:#}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> anyhow::Result<()> {
+    let matches = localize(Cli::command(), true).get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    edit::capture_process_env();
     load_dotenv(&cli.config);
+    let mut prompter = prompt::Inquire;
 
     match cli.command {
-        Command::Init => init::run(&cli.config),
+        Command::Init => {
+            prompt::require_tty()?;
+            init::run(&cli.config, &mut prompter, cli.yes).await
+        }
+        Command::Config { command } => {
+            let path = &cli.config;
+            match command {
+                None => config_cmd::menu(path, &mut prompter, cli.yes).await,
+                Some(ConfigCommand::List { reveal }) => config_cmd::list(path, reveal),
+                Some(ConfigCommand::Get { key, env, reveal }) => {
+                    config_cmd::get(path, key, env, reveal)
+                }
+                Some(ConfigCommand::Set { env, args }) => {
+                    config_cmd::set(path, args, env, cli.yes).await
+                }
+                Some(ConfigCommand::Unset { key, env }) => {
+                    config_cmd::unset(path, key, env, cli.yes).await
+                }
+                Some(ConfigCommand::Edit) => config_cmd::edit(path, cli.yes).await,
+            }
+        }
         Command::Doctor => {
             init_logging("warn", false);
             doctor::run(&cli.config).await
         }
         Command::Core => {
-            let config = Config::load(&cli.config)?;
+            let config = load_config(&cli.config)?;
             init_logging(&log_filter(&config), false);
             let boot = boot::build(&config, boot::Options::default()).await?;
             boot.run_until_ctrl_c().await
         }
         Command::Stage => {
-            let config = Config::load(&cli.config)?;
+            let config = load_config(&cli.config)?;
             init_logging(&log_filter(&config), false);
             let mut stage: miyoria_stage::StageConfig = config.get("stage")?;
             let profile = boot::load_profile(&config)?;
@@ -150,7 +315,7 @@ async fn main() -> anyhow::Result<()> {
             miyoria_stage::run_stage(stage).await
         }
         Command::Chat { name, with_discord } => {
-            let config = Config::load(&cli.config)?;
+            let config = load_config(&cli.config)?;
             // Keep the terminal readable: only warnings unless RUST_LOG says otherwise.
             init_logging("warn", true);
             let boot = boot::build(
@@ -166,11 +331,11 @@ async fn main() -> anyhow::Result<()> {
             boot.run_until_ctrl_c().await
         }
         Command::Status => {
-            let config = Config::load(&cli.config)?;
+            let config = load_config(&cli.config)?;
             remote::status(&remote::client(&config)?).await
         }
         Command::Module { command } => {
-            let config = Config::load(&cli.config)?;
+            let config = load_config(&cli.config)?;
             let (id, action) = match command {
                 ModuleCommand::List => {
                     let client = remote::client(&config);
@@ -192,15 +357,15 @@ async fn main() -> anyhow::Result<()> {
             remote::module_action(&remote::client(&config)?, &id, action).await
         }
         Command::Decisions { limit } => {
-            let config = Config::load(&cli.config)?;
+            let config = load_config(&cli.config)?;
             remote::decisions(&remote::client(&config)?, limit).await
         }
         Command::Events { topics } => {
-            let config = Config::load(&cli.config)?;
+            let config = load_config(&cli.config)?;
             remote::events(&remote::client(&config)?, &topics).await
         }
         Command::Persona { command } => {
-            let config = Config::load(&cli.config)?;
+            let config = load_config(&cli.config)?;
             let client = remote::client(&config)?;
             match command {
                 PersonaCommand::Show => remote::persona_show(&client).await,
@@ -218,10 +383,10 @@ async fn main() -> anyhow::Result<()> {
         Command::Profile {
             command: ProfileCommand::Validate,
         } => {
-            let config = Config::load(&cli.config)?;
+            let config = load_config(&cli.config)?;
             let profile = boot::load_profile(&config)?;
-            println!(
-                "✓ {}({}):{} 個人格段落、{} 個範例對話,聲音設定 {},模型設定 {}",
+            ui::ok(format!(
+                "{}({}):{} 個人格段落、{} 個範例對話,聲音設定 {},模型設定 {}",
                 profile.display_name(),
                 profile.id,
                 profile.sections.len(),
@@ -236,7 +401,7 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     "無"
                 },
-            );
+            ));
             Ok(())
         }
     }
@@ -246,7 +411,7 @@ async fn ext(config_path: &Path, command: ExtCommand) -> anyhow::Result<()> {
     use miyoria_ext_host::cli;
 
     let base = std::env::current_dir()?;
-    let load = || Config::load(config_path);
+    let load = || load_config(config_path);
     match command {
         ExtCommand::New { name, dir } => {
             // Inside the monorepo link the local SDK; elsewhere use the published one.
@@ -260,7 +425,7 @@ async fn ext(config_path: &Path, command: ExtCommand) -> anyhow::Result<()> {
                 id: None,
             };
             let path = cli::new_extension(&dir, &name, &opts)?;
-            println!("✓ 已建立 {}", path.display());
+            ui::ok(format!("已建立 {}", path.display()));
             Ok(())
         }
         ExtCommand::List => {
@@ -286,22 +451,26 @@ async fn ext(config_path: &Path, command: ExtCommand) -> anyhow::Result<()> {
         }
         ExtCommand::Install { source } => {
             let installed = cli::install(&load()?, &base, &source)?;
-            println!("✓ 已安裝 {} 到 {}", installed.id, installed.dir.display());
+            ui::ok(format!(
+                "已安裝 {} 到 {}",
+                installed.id,
+                installed.dir.display()
+            ));
             for w in installed.warnings {
-                println!("  ! {w}");
+                ui::warn(w);
             }
             Ok(())
         }
         ExtCommand::Validate { dir } => {
             let v = cli::validate(&dir);
             for w in &v.warnings {
-                println!("! {w}");
+                ui::warn(w);
             }
             for e in &v.errors {
-                println!("✗ {e}");
+                ui::fail(e);
             }
             if v.is_ok() {
-                println!("✓ manifest 正常");
+                ui::ok("manifest 正常");
                 Ok(())
             } else {
                 anyhow::bail!("{} 個錯誤", v.errors.len())

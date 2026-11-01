@@ -68,14 +68,13 @@ export class EventStore {
 
 export const EventStoreContext = createContext<EventStore | null>(null);
 
-/** Keeps one `/api/events` stream open while signed in and shares it. */
+/** Keeps one `/api/events` stream open while signed in (token or session) and shares it. */
 export function EventStreamProvider({ children }: { children: ReactNode }) {
-  const { client, config } = useConnection();
+  const { client } = useConnection();
   const queryClient = useQueryClient();
   const store = useMemo(() => new EventStore(), []);
 
   useEffect(() => {
-    if (!config.token) return;
     const ctl = new AbortController();
     void streamEvents(client, {
       signal: ctl.signal,
@@ -90,7 +89,7 @@ export function EventStreamProvider({ children }: { children: ReactNode }) {
       },
     });
     return () => ctl.abort();
-  }, [client, config.token, queryClient, store]);
+  }, [client, queryClient, store]);
 
   return <EventStoreContext.Provider value={store}>{children}</EventStoreContext.Provider>;
 }

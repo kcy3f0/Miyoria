@@ -49,6 +49,7 @@ function EditMemory({ record, onClose }: { record: MemoryRecordView; onClose: ()
             取消
           </Button>
           <Button
+            writes
             variant="primary"
             busy={update.isPending}
             disabled={!content.trim()}
@@ -102,8 +103,8 @@ function MemoryRow({ item, onEdit, onDelete }: { item: MemoryItem; onEdit: () =>
           <Meter value={r.importance} label="重要度" />
         </div>
         <div className="inline-actions">
-          <Button size="sm" variant="ghost" iconOnly icon={Pencil} label="編輯" onClick={onEdit} />
-          <Button size="sm" variant="ghost" iconOnly icon={Trash2} label="刪除" onClick={onDelete} />
+          <Button writes size="sm" variant="ghost" iconOnly icon={Pencil} label="編輯" onClick={onEdit} />
+          <Button writes size="sm" variant="ghost" iconOnly icon={Trash2} label="刪除" onClick={onDelete} />
         </div>
       </div>
     </li>

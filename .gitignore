@@ -24,3 +24,6 @@ __pycache__/
 
 # 資料庫備份(scripts/backup.sh):只放本機 / 自己的備份位置
 /backups/
+
+# 本機設定(用 `miyoria init` / `miyoria config` 產生)
+/miyoria.toml
