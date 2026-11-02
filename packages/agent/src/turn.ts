@@ -9,7 +9,9 @@
 // parents missing from the history and picks the images she looks at (history.ts, vision.ts).
 //
 // An initiative turn has no input and skips attention (the coordinator already checked the
-// context is quiet). While the LLM budget is exhausted nothing is generated: a turn she would
+// context is quiet). An intent turn (her mind loop decided to act or talk) has no input either,
+// skips attention and offers tools, which run as principal `self` (tools that need a person's
+// permission node are refused); her plan goes into the data message. While the LLM budget is exhausted nothing is generated: a turn she would
 // have answered gets a canned line at most once per context per `budget_notice_interval_ms`.
 
 import { errorMessage, sleep } from "@miyoria/kernel";
@@ -70,12 +72,14 @@ import {
   checkMessages,
   cleanReply,
   renderSections,
+  type SituationData,
   situationData,
   situationPrompt,
   splitMessage,
   transcriptLine,
 } from "./prompt.js";
-import type { Agent, Initiative } from "./runtime.js";
+
+import type { Agent, Initiative, IntentTurn } from "./runtime.js";
 import { type HistoryEntry, messageText, type Session } from "./session.js";
 import { attitudeHint, type BudgetState, EXHAUSTED_LINE, moodHint } from "./signals.js";
 import {
@@ -115,8 +119,9 @@ export async function runTurn(
   initiative: Initiative | null,
   flags: TurnFlags,
   signal: AbortSignal,
+  intent: IntentTurn | null = null,
 ): Promise<void> {
-  const t = new Turn(agent, key, session, turn, inputs, initiative, flags, signal);
+  const t = new Turn(agent, key, session, turn, inputs, initiative, flags, signal, intent);
   let text: string;
   try {
     text = await t.respond();
@@ -321,6 +326,8 @@ class Turn {
     readonly initiative: Initiative | null,
     readonly flags: TurnFlags,
     readonly signal: AbortSignal,
+    /** She decided on this herself (her mind loop): principal `self`, with tools. */
+    readonly intent: IntentTurn | null = null,
   ) {
     this.voice = key.kind === "voice";
     this.social = agent.social();
@@ -334,6 +341,19 @@ class Turn {
     return direct ? "direct" : "initiative";
   }
 
+  /** What she decided to do, for the data message. */
+  #intentData(): SituationData["intent"] {
+    const i = this.intent;
+    if (i === null) return null;
+    return {
+      capability: i.intent.capability,
+      summary: i.summary,
+      done: i.done,
+      why: i.intent.why,
+      opening: i.intent.opening,
+    };
+  }
+
   /** Returns the text she sent or said (empty if she stayed quiet). */
   async respond(): Promise<string> {
     const names = this.agent.persona.names();
@@ -341,7 +361,12 @@ class Turn {
     // A cold session's earlier messages (bounded by `history.timeout_ms` from their fetch).
     await awaitBackfill(this.agent, this.session, this.signal);
     let decision: Decision;
-    if (this.initiative !== null) {
+    if (this.intent !== null) {
+      const reasons = [`intent:${this.intent.intent.capability}`];
+      const respond = budget === "ok";
+      if (!respond) reasons.push(`skipped: llm budget ${budget}`);
+      decision = { respond, direct: false, score: 0, reasons };
+    } else if (this.initiative !== null) {
       const reasons = [`initiative:${this.initiative.reason}`];
       const respond = budget === "ok";
       if (!respond) reasons.push(`skipped: llm budget ${budget}`);
@@ -457,6 +482,7 @@ class Turn {
     const mode: ChannelMode =
       budget !== "ok" && configured === "ambient" ? "mention-only" : configured;
     const activeness = this.agent.handle.activeness(this.key);
+    const talkativeness = this.agent.talkativeness(this.key);
     const affinity = this.#speakerAffinity();
     const mood = this.agent.mood();
     const voiceCfg = cfg.voice;
@@ -466,6 +492,7 @@ class Turn {
       attentionCfg = {
         ...cfg.attention,
         cooldown_ms: voiceCfg.cooldown_ms,
+        min_cooldown_ms: voiceCfg.min_cooldown_ms,
         llm_check: voiceCfg.llm_check,
         gray_low: voiceCfg.gray_low,
       };
@@ -486,6 +513,7 @@ class Turn {
       config: attentionCfg,
       mode,
       activeness,
+      talkativeness,
       names,
       interests,
       maxShare,
@@ -582,7 +610,9 @@ class Turn {
    */
   #focus(): AccountRef[] {
     const out = [...this.#authors()];
-    for (const account of this.initiative?.about ?? []) {
+    const about = [...(this.initiative?.about ?? [])];
+    if (this.intent?.intent.about) about.push(this.intent.intent.about);
+    for (const account of about) {
       if (!out.some((a) => sameAccount(a, account))) out.push(account);
     }
     return out;
@@ -650,9 +680,11 @@ class Turn {
       participants.some((p) => sameAccount(p.account, a)),
     );
     const query =
-      this.initiative !== null
-        ? this.initiative.hint.trim()
-        : this.inputs.map((m) => `${m.author.display_name}: ${messageText(m)}`).join("\n");
+      this.intent !== null
+        ? [this.intent.intent.opening ?? "", this.intent.intent.why].join("\n").trim()
+        : this.initiative !== null
+          ? this.initiative.hint.trim()
+          : this.inputs.map((m) => `${m.author.display_name}: ${messageText(m)}`).join("\n");
     const firstInput =
       this.inputs.length === 0 ? null : Math.min(...this.inputs.map((m) => timestampMs(m.ts)));
     const before = this.session
@@ -699,6 +731,7 @@ class Turn {
         context: this.key,
         direct,
         initiative: this.initiative?.hint ?? null,
+        intent: this.intent !== null,
         notes: extras.notes,
       },
       new Date(this.#now),
@@ -711,6 +744,7 @@ class Turn {
         this.initiative === null
           ? null
           : { reason: this.initiative.reason, hint: this.initiative.hint },
+      intent: this.#intentData(),
       sections: extras.sections,
     });
     const messages = buildMessages(
@@ -929,7 +963,8 @@ class Turn {
     speech: Speech | null,
   ): Promise<Expression> {
     const cfg = this.agent.config;
-    const toolsEnabled = cfg.tools_enabled && this.inputs.length > 0;
+    // Reactive turns and the turns she starts herself act; initiative turns only talk.
+    const toolsEnabled = cfg.tools_enabled && (this.inputs.length > 0 || this.intent !== null);
     const messages = [...initial];
     let earlier: Expression | null = null;
     for (let step = 0; step <= cfg.max_tool_steps; step++) {
@@ -1101,6 +1136,10 @@ class Turn {
     const tool = this.#tool(call.name);
     if (!tool) return [false, `error: unknown tool \`${call.name}\``];
     const node = tool.permission ?? null;
+    if (node !== null && this.intent !== null) {
+      // Nobody asked: tools that need a person's permission are not hers to use alone.
+      return [false, "error: permission denied (needs someone who may use this tool to ask)"];
+    }
     if (node !== null) {
       const authorizer = this.agent.ctx.services.get(AuthorizerKey);
       const allowed =
@@ -1120,19 +1159,31 @@ class Turn {
       }
     }
     const last = this.inputs.at(-1);
-    if (!last) return [false, "error: no triggering message"];
+    if (!last && this.intent === null) return [false, "error: no triggering message"];
+    const me = this.agent.selfAccount(this.key.platform);
     try {
       const out = await timeout(this.agent.config.tool_timeout_ms, this.signal, (signal) => {
-        const ctx: ToolContext = {
-          turn: this.turn,
-          context: this.key,
-          account: last.author.account,
-          // The person she is answering asked: a request she may decline (see the gate).
-          principal: Principals.user(last.author.account, this.key),
-          message: last.id,
-          priority,
-          signal,
-        };
+        const ctx: ToolContext = last
+          ? {
+              turn: this.turn,
+              context: this.key,
+              account: last.author.account,
+              // The person she is answering asked: a request she may decline (see the gate).
+              principal: Principals.user(last.author.account, this.key),
+              message: last.id,
+              priority,
+              signal,
+            }
+          : {
+              // Her own turn: she acts as herself (her own limits, consent of whom it concerns).
+              turn: this.turn,
+              context: this.key,
+              account: me,
+              principal: Principals.self(this.key, null),
+              message: { context: this.key, id: this.turn },
+              priority,
+              signal,
+            };
         return tool.call(ctx, args);
       });
       return [true, out];

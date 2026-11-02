@@ -8,6 +8,12 @@
 // address is only ignored at very low affinity), and her energy scales the ambient probability
 // and cooldown a little.
 //
+// How eager she is to join in is her own choice: the talkativeness she set for the context
+// (`SelfState`, docs/design/autonomy.md §6) scales the ambient probability, the cooldown, the
+// gray-zone thresholds and how much she joins in while someone in voice is still talking.
+// Without one, the configured activeness and voice numbers apply as before. The hard limits
+// stay config: her maximum share of recent messages and a minimum cooldown.
+//
 // Voice turns add `VoiceAttention`: a question right after she spoke addresses her, she never
 // joins in while someone is speaking and ambient probabilities are scaled down.
 
@@ -99,11 +105,46 @@ export interface VoiceAttention {
   interruptScale: number;
 }
 
+/** The talkativeness she set for a context (0 = silent, 0.5 = as usual, 1 = very chatty). */
+export interface TalkLevel {
+  level: number;
+  /** The scope it was set for (for the decision trace). */
+  scope: string;
+}
+
+/** At or below this talkativeness she does not join in at all. */
+export const SILENT_TALKATIVENESS = 0.05;
+
+/** Ambient probability multiplier of a talkativeness: ×0.25 at 0, ×1 at 0.5, ×4 at 1. */
+export function talkFactor(level: number): number {
+  return 4 ** (2 * clamp01(level) - 1);
+}
+
+/** Cooldown multiplier: ×4 at 0, ×1 at 0.5, ×0.25 at 1. */
+export function talkCooldownFactor(level: number): number {
+  return 4 ** (1 - 2 * clamp01(level));
+}
+
+/** Gray-zone threshold multiplier: ×2 at 0, ×1 at 0.5, ×0.5 at 1. */
+export function talkThresholdFactor(level: number): number {
+  return 2 ** (1 - 2 * clamp01(level));
+}
+
+/** Ambient multiplier while someone else in voice is still talking: 0.2 at 0 → 0.8 at 1. */
+export function talkInterruptScale(level: number): number {
+  return 0.2 + 0.6 * clamp01(level);
+}
+
 export interface AttentionInput {
   config: AttentionConfig;
   mode: ChannelMode;
-  /** Scales the ambient reply probability and cooldown. */
+  /** Scales the ambient reply probability and cooldown (when `talkativeness` is `null`). */
   activeness: Activeness;
+  /**
+   * Her own talkativeness for this context; replaces `activeness` and the voice ambient
+   * factor and interrupt scale. `null`: she set none.
+   */
+  talkativeness?: TalkLevel | null;
   names: readonly string[];
   /** The profile's interests; matched like `config.keywords`. */
   interests: readonly string[];
@@ -125,14 +166,38 @@ function clamp01(x: number): number {
   return Math.min(Math.max(x, 0), 1);
 }
 
-/** Multiplier for ambient probabilities: activeness, the voice factor, affinity and energy. */
+/**
+ * Multiplier for ambient probabilities: her talkativeness (or activeness and the voice
+ * factor), affinity and energy.
+ */
 export function ambientScale(input: AttentionInput): number {
+  const affinity = input.affinity === null ? 1 : affinityAmbientFactor(input.affinity);
+  const energy = input.mood === null ? 1 : energyProbabilityFactor(input.mood);
+  const talk = input.talkativeness ?? null;
+  if (talk !== null) {
+    const speaking = input.voice?.someoneSpeaking ? talkInterruptScale(talk.level) : 1;
+    return talkFactor(talk.level) * speaking * affinity * energy;
+  }
   const voice = input.voice
     ? input.voice.ambientFactor * (input.voice.someoneSpeaking ? input.voice.interruptScale : 1)
     : 1;
-  const affinity = input.affinity === null ? 1 : affinityAmbientFactor(input.affinity);
-  const energy = input.mood === null ? 1 : energyProbabilityFactor(input.mood);
   return probabilityFactor(input.activeness) * voice * affinity * energy;
+}
+
+/**
+ * Minimum time (ms) between her ambient replies: the base cooldown scaled by her talkativeness
+ * (never below `minMs`) or by activeness, and by her energy.
+ */
+export function ambientCooldown(
+  baseMs: number,
+  minMs: number,
+  activeness: Activeness,
+  talk: TalkLevel | null,
+  mood: Mood | null,
+): number {
+  const energy = mood === null ? 1 : energyCooldownFactor(mood);
+  if (talk === null) return Math.trunc(baseMs * cooldownFactor(activeness) * energy);
+  return Math.max(Math.trunc(baseMs * talkCooldownFactor(talk.level) * energy), minMs);
 }
 
 /** Ambient probability after `ambientScale`, clamped. */
@@ -223,18 +288,33 @@ export function assess(input: AttentionInput): Assessment {
       }
   }
 
+  const talk = input.talkativeness ?? null;
+  if (talk !== null) {
+    reasons.push(`talkativeness ${fixed(talk.level, 2)} (${talk.scope})`);
+    if (talk.level <= SILENT_TALKATIVENESS) {
+      reasons.push("she wants to stay quiet here");
+      return done({ kind: "ignore" });
+    }
+  }
   if (input.voice?.someoneSpeaking) {
+    // `interrupt_scale = 0` is the owner's "never over someone", whatever she wants.
     if (input.voice.interruptScale <= 0) {
       reasons.push("someone is speaking");
       return done({ kind: "ignore" });
     }
-    reasons.push(`someone is speaking ×${fixed(input.voice.interruptScale, 2)}`);
+    const scale = talk === null ? input.voice.interruptScale : talkInterruptScale(talk.level);
+    reasons.push(`someone is speaking ×${fixed(scale, 2)}`);
   }
   const activeness = input.activeness;
-  if (activeness !== "medium") reasons.push(`activeness ${activeness}`);
-  const energy = input.mood === null ? 1 : energyCooldownFactor(input.mood);
+  if (talk === null && activeness !== "medium") reasons.push(`activeness ${activeness}`);
   if (input.mood !== null) reasons.push(`energy ${fixed(input.mood.energy, 2)}`);
-  const cooldownMs = Math.trunc(cfg.cooldown_ms * cooldownFactor(activeness) * energy);
+  const cooldownMs = ambientCooldown(
+    cfg.cooldown_ms,
+    cfg.min_cooldown_ms,
+    activeness,
+    talk,
+    input.mood,
+  );
   const last = input.session.lastSelfAt();
   // In voice, someone answering what she just said is a conversation, not her butting in.
   const answeringHer = input.voice !== null && followsHer(input);
@@ -250,11 +330,14 @@ export function assess(input: AttentionInput): Assessment {
     reasons.push(`anti-spam: her share ${fixed(share, 2)} > ${fixed(input.maxShare, 2)}`);
     return done({ kind: "ignore" });
   }
-  if (score < cfg.gray_low) {
-    reasons.push(`score ${fixed(score, 2)} < ${fixed(cfg.gray_low, 2)}`);
+  const threshold = talk === null ? 1 : talkThresholdFactor(talk.level);
+  const grayLow = cfg.gray_low * threshold;
+  const grayHigh = cfg.gray_high * threshold;
+  if (score < grayLow) {
+    reasons.push(`score ${fixed(score, 2)} < ${fixed(grayLow, 2)}`);
     return done({ kind: "ignore" });
   }
-  if (score >= cfg.gray_high) {
+  if (score >= grayHigh) {
     return done({ kind: "sample", probability: ambientProbability(input, score) });
   }
   if (cfg.llm_check) {

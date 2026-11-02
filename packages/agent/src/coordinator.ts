@@ -11,6 +11,11 @@
 // An initiative request starts a turn without input, but only when the context is quiet: no
 // turn in flight, no debounce pending, no speech of hers still queued and her last words older
 // than the ambient cooldown.
+//
+// An intent (something her mind loop decided) waits instead: it never interrupts a turn in
+// flight, waiting messages or her queued speech (nor, in voice, someone still talking) and
+// starts once the context is free, unless it expired meanwhile. A newer intent replaces a
+// waiting one. New input cancels an intent turn whose reply was not committed, like any turn.
 
 import { errorMessage } from "@miyoria/kernel";
 import {
@@ -22,7 +27,7 @@ import {
   type TurnId,
 } from "@miyoria/types";
 import { maxDebounceMs, voiceMaxDebounceMs } from "./config.js";
-import type { Agent, Inbox, Initiative, Input } from "./runtime.js";
+import type { Agent, Inbox, Initiative, Input, IntentTurn } from "./runtime.js";
 import type { Session } from "./session.js";
 import { runTurn } from "./turn.js";
 import { contextId } from "./util.js";
@@ -96,15 +101,18 @@ export class Coordinator {
     let window: Window | null = null;
     let running: Running | null = null;
     let unplayed: Unplayed | null = null;
+    /** Her intent waiting for the context to be free. */
+    let waiting: IntentTurn | null = null;
     for (;;) {
       // Voice contexts live until she leaves the channel.
-      const idle = pending.length === 0 && running === null && !voice;
+      const idle = pending.length === 0 && running === null && waiting === null && !voice;
       const wake = await this.#next(signal, running, running === null ? window : null, idle);
       const now = this.#now;
       switch (wake.type) {
         case "stop": {
           if (running) await this.#abort(running);
           if (unplayed) await this.#cancel(unplayed.turn);
+          if (waiting) this.#agent.intentSkipped(this.#key, waiting, "the context closed");
           return;
         }
         case "input": {
@@ -168,6 +176,12 @@ export class Coordinator {
               if (started) running = started;
               break;
             }
+            case "intent":
+              if (waiting) {
+                this.#agent.intentSkipped(this.#key, waiting, "replaced by a newer intent");
+              }
+              waiting = input.intent;
+              break;
           }
           break;
         }
@@ -204,7 +218,24 @@ export class Coordinator {
           }
           break;
       }
+      if (waiting !== null && running === null && pending.length === 0) {
+        const speechQueued = unplayed !== null && now < unplayed.since + cfg.voice.speak_ttl_ms;
+        if (!speechQueued && !(voice && this.#session.someoneSpeaking())) {
+          const w = waiting;
+          waiting = null;
+          running = this.#intent(w, signal);
+        }
+      }
     }
+  }
+
+  /** Starts her intent turn, unless it expired while waiting. */
+  #intent(input: IntentTurn, signal: AbortSignal): Running | null {
+    if (this.#now >= Date.parse(input.intent.expires_at)) {
+      this.#agent.intentSkipped(this.#key, input, "expired");
+      return null;
+    }
+    return this.#start([], null, signal, input);
   }
 
   /** Waits for the next thing to do (Rust `select!` over the coordinator's sources). */
@@ -294,8 +325,13 @@ export class Coordinator {
     return this.#start([], initiative, this.#agent.ctx.signal);
   }
 
-  #start(inputs: IncomingMessage[], initiative: Initiative | null, signal: AbortSignal): Running {
-    const turn = newId();
+  #start(
+    inputs: IncomingMessage[],
+    initiative: Initiative | null,
+    signal: AbortSignal,
+    intent: IntentTurn | null = null,
+  ): Running {
+    const turn = intent?.turn ?? newId();
     this.#agent.ctx.publish(
       { type: "agent_turn_started", data: { turn, context: this.#key } },
       { turn },
@@ -320,6 +356,7 @@ export class Coordinator {
       initiative,
       flags,
       controller.signal,
+      intent,
     )
       .catch((error: unknown) => {
         this.#agent.log.warn({ turn, error: errorMessage(error) }, "turn failed");

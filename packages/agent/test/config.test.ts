@@ -111,6 +111,7 @@ describe("config", () => {
       budget_notice_interval_ms: 3_600_000,
       attention: {
         cooldown_ms: 5000,
+        min_cooldown_ms: 2000,
         recent_window: 20,
         max_share_of_recent: null,
         keywords: [],
@@ -127,6 +128,7 @@ describe("config", () => {
         default_mode: "ambient",
         ambient_factor: 0.5,
         cooldown_ms: 20_000,
+        min_cooldown_ms: 5000,
         max_share_of_recent: 0.2,
         question_window_ms: 8000,
         interrupt_scale: 0.35,

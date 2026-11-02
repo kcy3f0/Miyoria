@@ -76,7 +76,7 @@ describe("channel.activeness", () => {
       appTools,
       actuators: app,
     });
-    expect(app.names()).toEqual(["channel.activeness"]);
+    expect(app.names()).toEqual(["channel.activeness", "chat.dm", "chat.start"]);
     expect(appTools.names()).toContain("channel_activeness");
     await h.sup.disable("agent");
     expect(app.names()).toEqual([]);

@@ -10,6 +10,7 @@ import {
   type ContextKey,
   type Envelope,
   type IncomingMessage,
+  type Intent,
   isJsonObject,
   type JsonValue,
   type Mood,
@@ -17,22 +18,23 @@ import {
   newId,
   type PlatformId,
   type PlaybackState,
+  SelfStateKey,
   type SocialSignals,
   SocialSignalsKey,
   type TurnId,
   type VoiceParticipant,
   type VoiceUtterance,
 } from "@miyoria/types";
-import type { RandomSource } from "./attention.js";
+import { ambientCooldown, type RandomSource, type TalkLevel } from "./attention.js";
 import type { AgentCommands } from "./commands.js";
-import { type AgentConfig, cooldownFactor } from "./config.js";
+import type { AgentConfig } from "./config.js";
 import { Coordinator } from "./coordinator.js";
 import type { AgentHandle } from "./handle.js";
 import { startBackfill } from "./history.js";
 import { agentTurns } from "./metrics.js";
 import type { PersonaHandle } from "./persona.js";
 import { Session } from "./session.js";
-import { BUDGET_TOPIC, energyCooldownFactor, parseBudgetState } from "./signals.js";
+import { BUDGET_TOPIC, parseBudgetState } from "./signals.js";
 import { accountId, contextId } from "./util.js";
 import { type FetchLike, ImageLoader } from "./vision.js";
 
@@ -46,6 +48,17 @@ export interface Initiative {
   about: AccountRef[];
 }
 
+/** One of her intents (from her mind loop), to be opened as a turn she starts herself. */
+export interface IntentTurn {
+  intent: Intent;
+  /** The turn's id (chosen up front so gate decisions and outcomes can be linked to it). */
+  turn: TurnId;
+  /** What the action she already took returned (`null`: she only wants to talk). */
+  done: string | null;
+  /** Summary of the capability she used, for the prompt. */
+  summary: string | null;
+}
+
 export type Input =
   /** A platform message or a voice utterance (as a message). */
   | { type: "message"; message: IncomingMessage }
@@ -55,7 +68,9 @@ export type Input =
   /** Playback of her speech for `turn` changed. */
   | { type: "playback"; turn: TurnId; state: PlaybackState }
   /** Start a turn on her own (no new input), if the context is quiet. */
-  | { type: "initiative"; initiative: Initiative };
+  | { type: "initiative"; initiative: Initiative }
+  /** Start a turn she decided on (principal `self`, with tools) once the context is free. */
+  | { type: "intent"; intent: IntentTurn };
 
 /** Unbounded queue from the event loop to one coordinator (Rust `mpsc` channel). */
 export class Inbox {
@@ -122,6 +137,8 @@ export class Agent {
   readonly #budgetNotices = new Map<string, number>();
   /** Downloads the images she looks at (cached by attachment id). */
   readonly images: ImageLoader;
+  /** Intents waiting for her to arrive in a voice channel (after `voice.join`), by context. */
+  readonly #arrivals = new Map<string, IntentTurn>();
 
   constructor(
     readonly ctx: ModuleContext,
@@ -302,7 +319,87 @@ export class Agent {
       if (m.is_self) this.#selfAccounts.set(accountId(m.account), m.account);
     }
     const others = members.filter((m) => !m.is_self);
-    this.#context(context).session.setVoiceMembers(others);
+    const handle = this.#context(context);
+    handle.session.setVoiceMembers(others);
+    const id = contextId(context);
+    const arrival = this.#arrivals.get(id);
+    if (arrival) {
+      this.#arrivals.delete(id);
+      handle.inbox.push({ type: "intent", intent: arrival });
+    }
+  }
+
+  /**
+   * Hands one of her intents to `context`'s coordinator, which opens her turn once the context
+   * is free. Returns why it cannot, or `null` when delivered.
+   */
+  deliverIntent(context: ContextKey, input: IntentTurn): string | null {
+    const why = this.#intentBlocked(context);
+    if (why !== null) {
+      this.intentSkipped(context, input, why);
+      return why;
+    }
+    if (context.kind === "voice") {
+      // Only where she is: a stray intent must not create a voice session.
+      const delivered = this.#existing(context)?.inbox.push({ type: "intent", intent: input });
+      if (delivered) return null;
+      this.intentSkipped(context, input, "not in this voice channel");
+      return "not in this voice channel";
+    }
+    this.#context(context).inbox.push({ type: "intent", intent: input });
+    return null;
+  }
+
+  /** Opens `input` in the voice `context` once she is there (right away if she already is). */
+  deliverOnArrival(context: ContextKey, input: IntentTurn): void {
+    if (this.#existing(context)) {
+      this.deliverIntent(context, input);
+      return;
+    }
+    this.#arrivals.set(contextId(context), input);
+  }
+
+  /** She is in the voice channel `context`. */
+  inVoice(context: ContextKey): boolean {
+    return context.kind === "voice" && this.#existing(context) !== undefined;
+  }
+
+  #intentBlocked(context: ContextKey): string | null {
+    // The owner's channel mode stays a guardrail; a DM she opens herself has no mode.
+    if (context.kind !== "dm") {
+      const mode = this.handle.channelMode(context);
+      if (mode === "off" || mode === "mention-only") return `mode ${mode}`;
+    }
+    const budget = this.handle.llmBudget();
+    return budget === "ok" ? null : `llm budget ${budget}`;
+  }
+
+  /** Publishes the decision not to open (or to drop) one of her intents. */
+  intentSkipped(context: ContextKey, input: IntentTurn, why: string): void {
+    this.log.debug(
+      { context: contextId(context), capability: input.intent.capability, why },
+      "intent skipped",
+    );
+    agentTurns.inc({ decision: "ignored" });
+    this.ctx.publish(
+      {
+        type: "agent_decision",
+        data: {
+          turn: input.turn,
+          context,
+          respond: false,
+          score: 0,
+          reasons: [`intent:${input.intent.capability}`, `skipped: ${why}`],
+        },
+      },
+      { turn: input.turn },
+    );
+  }
+
+  /** Her own talkativeness for `context` (`SelfState`), if she set one. */
+  talkativeness(context: ContextKey): TalkLevel | null {
+    const t = this.ctx.services.get(SelfStateKey)?.talkativeness(context) ?? null;
+    return t === null ? null : { level: t.level, scope: t.scope };
   }
 
   #onUtterance(utterance: VoiceUtterance): void {
@@ -439,15 +536,19 @@ export class Agent {
 
   /**
    * Minimum time (ms) since she last spoke before she starts a conversation in `context`: the
-   * attention cooldown scaled by activeness and energy.
+   * attention cooldown scaled by her talkativeness (or activeness) and energy.
    */
   ambientCooldownMs(context: ContextKey): number {
-    const base =
-      context.kind === "voice" ? this.config.voice.cooldown_ms : this.config.attention.cooldown_ms;
-    const mood = this.mood();
-    const energy = mood === null ? 1 : energyCooldownFactor(mood);
-    const factor = cooldownFactor(this.handle.activeness(context)) * energy;
-    return Math.trunc(base * factor);
+    const voice = context.kind === "voice";
+    const base = voice ? this.config.voice.cooldown_ms : this.config.attention.cooldown_ms;
+    const min = voice ? this.config.voice.min_cooldown_ms : this.config.attention.min_cooldown_ms;
+    return ambientCooldown(
+      base,
+      min,
+      this.handle.activeness(context),
+      this.talkativeness(context),
+      this.mood(),
+    );
   }
 
   isSelf(account: AccountRef): boolean {

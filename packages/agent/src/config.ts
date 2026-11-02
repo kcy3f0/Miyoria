@@ -85,6 +85,11 @@ export const ActivenessSchema = z.enum(["low", "medium", "high"]);
 export const AttentionConfigSchema = z.object({
   /** Minimum time between her replies to turns that did not address her. */
   cooldown_ms: z.number().int().nonnegative().default(5000),
+  /**
+   * Hard floor of that cooldown when she sets her own talkativeness (which scales it): however
+   * chatty she wants to be, never faster than this.
+   */
+  min_cooldown_ms: z.number().int().nonnegative().default(2000),
   /** Window (in messages) for the anti-spam share check. */
   recent_window: z.number().int().nonnegative().default(20),
   /** Overrides the profile's `behavior.max_share_of_recent`. */
@@ -119,21 +124,27 @@ export const VoiceConfigSchema = z.object({
   max_debounce_ms: z.number().int().nonnegative().default(2500),
   /** Mode of voice contexts without a `channels` entry or runtime override. */
   default_mode: ChannelModeSchema.default("ambient"),
-  /** Multiplies the reply probability of ambient voice turns. */
+  /**
+   * Multiplies the reply probability of ambient voice turns (only while she has not set her own
+   * talkativeness for voice).
+   */
   ambient_factor: z.number().default(0.5),
   /**
    * Minimum time between her replies to voice turns that did not address her, counted from
    * when she last spoke.
    */
   cooldown_ms: z.number().int().nonnegative().default(20_000),
+  /** Hard floor of the voice cooldown when her own talkativeness scales it. */
+  min_cooldown_ms: z.number().int().nonnegative().default(5000),
   /** Her maximum share of recent voice history for ambient turns. */
   max_share_of_recent: z.number().default(0.2),
   /** A question this soon after she spoke counts as addressed to her. */
   question_window_ms: z.number().int().nonnegative().default(8000),
   /**
    * Multiplies the ambient reply probability while someone else is still talking (in a busy
-   * channel someone nearly always is). 0 = never join in over someone; direct address and
-   * questions to her are not affected.
+   * channel someone nearly always is). 0 = never join in over someone (also when she set her
+   * own talkativeness, which otherwise decides this); direct address and questions to her are
+   * not affected.
    */
   interrupt_scale: z.number().min(0).max(1).default(0.35),
   /**

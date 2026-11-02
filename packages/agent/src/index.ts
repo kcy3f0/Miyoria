@@ -13,8 +13,15 @@
 
 export { type Tool, type ToolContext, ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
 export {
+  ACTIVENESS_CAPABILITY,
+  activenessCapability,
+  chatCapabilities,
+  LEVEL_TALKATIVENESS,
+} from "./actions.js";
+export {
   type Assessment,
   type AttentionInput,
+  ambientCooldown,
   ambientProbability,
   ambientScale,
   assess,
@@ -25,6 +32,12 @@ export {
   mentionsTopic,
   type RandomSource,
   SeededRandom,
+  SILENT_TALKATIVENESS,
+  type TalkLevel,
+  talkCooldownFactor,
+  talkFactor,
+  talkInterruptScale,
+  talkThresholdFactor,
   type VoiceAttention,
 } from "./attention.js";
 export { activenessLabel, modeLabel, personaSummary } from "./commands.js";
@@ -75,6 +88,7 @@ export {
 } from "./handle.js";
 export { awaitBackfill, backfillLimit, replyParents, startBackfill } from "./history.js";
 export { linkMentions, type MentionTarget } from "./mentions.js";
+export { AgentIntents } from "./intents.js";
 export { AgentModule } from "./module.js";
 export { PersonaHandle, PersonaHandleKey } from "./persona.js";
 export {
@@ -92,8 +106,11 @@ export {
   INITIATIVE_HINT,
   INITIATIVE_SILENCE,
   INITIATIVE_TITLE,
+  INTENT,
+  INTENT_TITLE,
   INTERRUPTED,
   MAX_PARENT_CHARS,
+  type IntentData,
   PEOPLE_TITLE,
   PRESENT_TITLE,
   renderSections,
@@ -112,6 +129,7 @@ export {
   VOICE_ADDRESSED,
   VOICE_AMBIENT,
   VOICE_INITIATIVE,
+  VOICE_INTENT,
   VOICE_PRESENT_TITLE,
   VOICE_SITUATION,
 } from "./prompt.js";
