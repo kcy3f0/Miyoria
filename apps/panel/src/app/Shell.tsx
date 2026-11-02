@@ -28,6 +28,8 @@ import { NAV, titleFor } from "./nav";
 import { useHealth } from "./queries";
 import { READ_ONLY_HINT, useSession } from "./session";
 
+const MOD_KEY = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
+
 /** One dot for Core + event stream; the tooltip has the details. */
 function ConnectionDot() {
   const health = useHealth();
@@ -211,7 +213,7 @@ export function Shell() {
           >
             <Search className="size-4 shrink-0" />
             <span className="hidden sm:inline">搜尋…</span>
-            <Kbd className="ml-auto hidden sm:inline-flex">⌘K</Kbd>
+            <Kbd className="ml-auto hidden sm:inline-flex">{MOD_KEY} K</Kbd>
           </button>
         </header>
         <main id="main" tabIndex={-1} className="flex-1 outline-none">
