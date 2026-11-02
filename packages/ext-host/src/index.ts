@@ -52,6 +52,7 @@ export {
   type DiscoveredModule,
   type Discovery,
   discover,
+  EXAMPLE_DIRS,
   ExtensionCatalog,
   ExtensionCatalogKey,
   ExtensionsModule,

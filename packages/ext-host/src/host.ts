@@ -109,8 +109,14 @@ function isFile(path: string): boolean {
 }
 
 /**
+ * Sample extensions (`extensions/examples/*`) are not loaded when scanning a parent directory;
+ * list such a directory in `dirs` to load them on purpose.
+ */
+export const EXAMPLE_DIRS: readonly string[] = ["examples"];
+
+/**
  * Finds extension directories under `root`: `root` itself if it holds a manifest, otherwise
- * its subdirectories (up to three levels deep).
+ * its subdirectories (up to three levels deep, skipping `examples`).
  */
 export function findExtensionDirs(root: string): string[] {
   const out: string[] = [];
@@ -127,7 +133,10 @@ export function findExtensionDirs(root: string): string[] {
       return;
     }
     const children = names
-      .filter((n) => !n.startsWith(".") && !SKIP_DIRS.includes(n) && n !== "dist")
+      .filter(
+        (n) =>
+          !n.startsWith(".") && !SKIP_DIRS.includes(n) && !EXAMPLE_DIRS.includes(n) && n !== "dist",
+      )
       .map((n) => join(dir, n))
       .filter(isDir)
       .sort();
