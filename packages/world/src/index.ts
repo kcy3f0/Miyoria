@@ -18,12 +18,7 @@ export {
   parseStageStatus,
   parseVoiceState,
 } from "./parse.js";
-export {
-  PRIVACY_PATHS,
-  PrivacyBook,
-  registerPrivacyCommands,
-  unregisterPrivacyCommands,
-} from "./privacy.js";
+export { PrivacyBook } from "./privacy.js";
 export { WORLD_NOTE, WorldPrompt } from "./prompt.js";
 export { type Candidate, Salience, type SalienceOptions } from "./salience.js";
 export { durationText, partOfDay, timeContext, weekdayName } from "./time.js";

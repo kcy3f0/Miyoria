@@ -178,8 +178,13 @@ class Probe implements Module {
 
 class Privacy implements PresencePrivacy {
   readonly denied = new Set<string>();
+  readonly loaded = true;
   presenceAllowed(account: AccountRef): boolean {
     return !this.denied.has(account.id);
+  }
+  async setPresence(account: AccountRef, allowed: boolean): Promise<void> {
+    if (allowed) this.denied.delete(account.id);
+    else this.denied.add(account.id);
   }
 }
 

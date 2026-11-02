@@ -252,7 +252,11 @@ export interface SalientEvent {
  * refuses before publishing it.
  */
 export interface PresencePrivacy {
+  /** The privacy records could be read; until then every presence is refused. */
+  readonly loaded: boolean;
   presenceAllowed(account: AccountRef): boolean;
+  /** Records `account`'s choice (`/me privacy presence`); opting out also drops what she knows. */
+  setPresence(account: AccountRef, allowed: boolean): Promise<void>;
 }
 
 export const PresencePrivacyKey = serviceKey<PresencePrivacy>("PresencePrivacy");

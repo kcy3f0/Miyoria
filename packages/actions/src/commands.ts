@@ -11,6 +11,7 @@ import {
   defineRoute,
   notice,
 } from "@miyoria/commands";
+import type { PresencePrivacy } from "@miyoria/types";
 import type { ActuatorRegistry } from "./registry.js";
 import { APPROVE_ROUTE, answeredCard, DENY_ROUTE } from "./review.js";
 
@@ -41,10 +42,13 @@ function statusReply(registry: ActuatorRegistry): CommandReply {
   });
 }
 
-function privacyText(dm: boolean, approach: boolean): string {
+function privacyText(dm: boolean, approach: boolean, presence: boolean | null): string {
   return [
     `私訊你：${dm ? "可以" : "不可以"}`,
     `主動找你（她自己發起的私訊等）：${approach ? "可以" : "不可以"}`,
+    ...(presence === null
+      ? []
+      : [`看你在 Discord 上的狀態（在線、遊戲、音樂、自訂狀態）：${presence ? "可以" : "不可以"}`]),
   ].join("\n");
 }
 
@@ -52,6 +56,8 @@ function privacyText(dm: boolean, approach: boolean): string {
 export function registerCommands(
   registry: CommandRegistry,
   actuators: () => ActuatorRegistry,
+  /** The `world` module's presence opt-out; `undefined` when it isn't running. */
+  presence: () => PresencePrivacy | undefined = () => undefined,
 ): void {
   registry.register(
     commandSpec("admin autonomy pause", "緊急暫停她的自主行動（指令與面板仍可使用）", {
@@ -96,10 +102,11 @@ export function registerCommands(
   const onOff = (name: string, description: string) =>
     argSpec(name, description, ArgKind.choice(["on", "off"]), { required: false });
   registry.register(
-    commandSpec("me privacy", "設定她能不能私訊你、能不能主動找你（省略 = 查看）", {
+    commandSpec("me privacy", "設定她能不能私訊你、主動找你、看你的狀態（省略 = 查看）", {
       args: [
         onOff("dm", "on = 可以私訊你，off = 不要"),
         onOff("approach", "on = 可以主動找你，off = 不要"),
+        onOff("presence", "on = 可以看你在 Discord 上的狀態（在線、遊戲、音樂），off = 不要"),
       ],
       permission: NODE_PRIVACY,
       ephemeral: true,
@@ -107,16 +114,27 @@ export function registerCommands(
     async (inv) => {
       const dm = inv.str("dm");
       const approach = inv.str("approach");
+      const wantPresence = inv.str("presence");
       const privacy = actuators().privacy;
+      const book = presence();
+      if (wantPresence !== null) {
+        if (!book) return notice("error", "狀態感知沒有啟用，這個設定目前不適用。");
+        if (!book.loaded) return notice("error", "隱私設定暫時無法讀取，請稍後再試。");
+        await book.setPresence(inv.invoker, wantPresence === "on");
+      }
+      const seen = (): boolean | null => (book?.loaded ? book.presenceAllowed(inv.invoker) : null);
       if (dm === null && approach === null) {
         const now = await privacy.get(inv.invoker);
-        return notice("info", privacyText(now.dm, now.approach));
+        const text = privacyText(now.dm, now.approach, seen());
+        return wantPresence === null
+          ? notice("info", text)
+          : notice("success", `已更新。\n${text}`);
       }
       const next = await privacy.set(inv.invoker, {
         ...(dm === null ? {} : { dm: dm === "on" }),
         ...(approach === null ? {} : { approach: approach === "on" }),
       });
-      return notice("success", `已更新。\n${privacyText(next.dm, next.approach)}`);
+      return notice("success", `已更新。\n${privacyText(next.dm, next.approach, seen())}`);
     },
   );
 }

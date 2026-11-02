@@ -3,7 +3,13 @@
 
 import { errorMessage, getLogger, type ServiceLookup } from "@miyoria/kernel";
 import { SettingsStoreKey } from "@miyoria/store";
-import { type AccountRef, isJsonObject, type JsonValue, type ProfileId } from "@miyoria/types";
+import {
+  type AccountRef,
+  isJsonObject,
+  type JsonValue,
+  mergePrivacy,
+  type ProfileId,
+} from "@miyoria/types";
 
 const log = getLogger("actions.privacy");
 
@@ -60,12 +66,9 @@ export class Privacy {
     const store = this.#services.get(SettingsStoreKey);
     const key = privacyKey(account);
     if (store) {
-      const isDefault = next.dm && next.approach;
-      await store.set(
-        PRIVACY_PROFILE,
-        key,
-        isDefault ? null : { dm: next.dm, approach: next.approach },
-      );
+      // The record is shared with other features (e.g. the presence opt-out): merge, never replace.
+      const existing = await store.get(PRIVACY_PROFILE, key);
+      await store.set(PRIVACY_PROFILE, key, mergePrivacy(existing, patch));
     } else {
       this.#local.set(key, next);
     }

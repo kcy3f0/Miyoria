@@ -5,6 +5,7 @@ import { CommandMount } from "@miyoria/commands";
 import { defineManifest, errorMessage, type Module, type ModuleContext } from "@miyoria/kernel";
 import { SettingsStoreKey } from "@miyoria/store";
 import { ToolRegistryKey } from "@miyoria/tools";
+import { PresencePrivacyKey } from "@miyoria/types";
 import { testHigh } from "./builtin.js";
 import { registerCommands, unregisterCommands } from "./commands.js";
 import { ActionsConfigSchema } from "./config.js";
@@ -70,7 +71,12 @@ export class ActionsModule implements Module {
     if (config.test_capability) this.#unregister = registry.register(testHigh);
     const commands = new CommandMount(
       "actions",
-      (r) => registerCommands(r, () => ctx.services.get(ActuatorRegistryKey) ?? registry),
+      (r) =>
+        registerCommands(
+          r,
+          () => ctx.services.get(ActuatorRegistryKey) ?? registry,
+          () => ctx.services.get(PresencePrivacyKey),
+        ),
       unregisterCommands,
     );
     commands.attach(ctx);

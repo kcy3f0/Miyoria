@@ -45,7 +45,7 @@ export function parsePrivacy(value: JsonValue | null): PersonPrivacy {
 /** `existing` with `change` applied, keeping fields other features own. */
 export function mergePrivacy(
   existing: JsonValue | null,
-  change: Partial<PersonPrivacy>,
+  change: Readonly<Record<string, boolean | undefined>>,
 ): JsonObject {
   const base: JsonObject = isJsonObject(existing) ? { ...existing } : {};
   for (const [key, value] of Object.entries(change)) {

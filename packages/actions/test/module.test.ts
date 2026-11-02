@@ -1,7 +1,7 @@
 import { CommandRegistryKey, CommandsModule, Invocation, splitPath } from "@miyoria/commands";
 import { Supervisor } from "@miyoria/kernel";
 import { MemorySettingsStore, SettingsStoreKey } from "@miyoria/store";
-import type { ContextKey, JsonValue } from "@miyoria/types";
+import { type ContextKey, type JsonValue, mergePrivacy, PresencePrivacyKey } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import {
   ActionsModule,
@@ -87,6 +87,34 @@ describe("actions module", () => {
     expect(await a.registry.privacy.get(me)).toEqual({ dm: false, approach: true });
     await a.run("me privacy", "5", { approach: "off", dm: "on" });
     expect(await a.registry.privacy.get(me)).toEqual({ dm: true, approach: false });
+    // Without the world module there is no presence opt-out to set.
+    expect((await a.run("me privacy", "5", { presence: "off" }, DM)).text).toContain("沒有啟用");
+    await a.sup.stopAll();
+  });
+
+  it("me privacy presence goes to the world module and keeps the shared record", async () => {
+    const a = await boot();
+    const seen = new Map<string, boolean>();
+    a.sup.services.provide("world", PresencePrivacyKey, {
+      loaded: true,
+      presenceAllowed: (acc) => seen.get(acc.id) ?? true,
+      async setPresence(acc, allowed) {
+        seen.set(acc.id, allowed);
+        const prev = await a.settings.get("_global", `privacy:${acc.platform}:${acc.id}`);
+        await a.settings.set(
+          "_global",
+          `privacy:${acc.platform}:${acc.id}`,
+          mergePrivacy(prev, { presence: allowed }),
+        );
+      },
+    });
+    const off = await a.run("me privacy", "5", { presence: "off" }, DM);
+    expect(off.text).toContain("看你在 Discord 上的狀態（在線、遊戲、音樂、自訂狀態）：不可以");
+    await a.run("me privacy", "5", { dm: "off" }, DM);
+    expect(await a.settings.get("_global", "privacy:discord:5")).toEqual({
+      presence: false,
+      dm: false,
+    });
     await a.sup.stopAll();
   });
 

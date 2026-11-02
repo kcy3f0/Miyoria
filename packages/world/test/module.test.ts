@@ -1,4 +1,4 @@
-import { CommandRegistryKey, CommandsModule } from "@miyoria/commands";
+import { CommandsModule } from "@miyoria/commands";
 import { Supervisor } from "@miyoria/kernel";
 import { MemorySettingsStore, SettingsStoreKey } from "@miyoria/store";
 import {
@@ -90,7 +90,7 @@ describe("world module", () => {
     expect(await contributor.contribute(request(textCtx("d1", null)))).toEqual([]);
   });
 
-  it("lets people opt out of presence with /me privacy", async () => {
+  it("lets people opt out of presence", async () => {
     const store = new MemorySettingsStore();
     // Another feature's field in the same record survives.
     await store.set("_global", "privacy:discord:1", { dm: false });
@@ -98,20 +98,10 @@ describe("world module", () => {
     const privacy = h.sup.services.require(PresencePrivacyKey);
     h.publish(PRESENCE_TOPIC, presence("1", "online", [playing("Minecraft")]));
     await vi.waitFor(() => expect(h.world.person(acct("1"))?.status).toBe("online"));
+    expect(privacy.loaded).toBe(true);
     expect(privacy.presenceAllowed(acct("1"))).toBe(true);
 
-    const registry = h.sup.services.require(CommandRegistryKey);
-    const invoke = (args: Record<string, string>) =>
-      registry.dispatch({
-        path: ["me", "privacy"],
-        args,
-        invoker: acct("1"),
-        invoker_display_name: "user1",
-        context: textCtx(),
-        invoker_is_guild_admin: false,
-      });
-    const off = await invoke({ presence: "off" });
-    expect(off.text).toContain("她不會讀取你在 Discord 上的狀態");
+    await privacy.setPresence(acct("1"), false);
     expect(await store.get("_global", "privacy:discord:1")).toEqual({ dm: false, presence: false });
     expect(privacy.presenceAllowed(acct("1"))).toBe(false);
     // What she knew is gone, and new presence is dropped.
@@ -119,10 +109,8 @@ describe("world module", () => {
     h.publish(PRESENCE_TOPIC, presence("1", "online", [playing("Minecraft")]));
     await new Promise((r) => setTimeout(r, 20));
     expect(h.world.person(acct("1"))?.activities).toEqual([]);
-    expect((await invoke({})).text).toContain("她不會讀取");
 
-    const on = await invoke({ presence: "on" });
-    expect(on.text).toContain("她可以看到你在 Discord 上的狀態");
+    await privacy.setPresence(acct("1"), true);
     expect(privacy.presenceAllowed(acct("1"))).toBe(true);
   });
 

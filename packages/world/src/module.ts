@@ -1,4 +1,3 @@
-import { CommandMount } from "@miyoria/commands";
 import {
   defineManifest,
   errorMessage,
@@ -39,7 +38,7 @@ import {
   parseStageStatus,
   parseVoiceState,
 } from "./parse.js";
-import { PrivacyBook, registerPrivacyCommands, unregisterPrivacyCommands } from "./privacy.js";
+import { PrivacyBook } from "./privacy.js";
 import { WorldPrompt } from "./prompt.js";
 import { type Candidate, Salience } from "./salience.js";
 
@@ -95,21 +94,20 @@ export class WorldView implements WorldState {
 }
 
 interface Running {
-  commands: CommandMount;
   contributors: PromptContributors | undefined;
 }
 
 /**
  * Module `world`: what she perceives. Consumes platform presence / voice state / member events,
  * messages, her turns, voice, Stage and Go Live state; provides `WorldStateKey` and
- * `PresencePrivacyKey`, the `world` prompt section and `/me privacy`; publishes
+ * `PresencePrivacyKey` (which `/me privacy presence` writes), the `world` prompt section; publishes
  * `world.salient`.
  */
 export class WorldModule implements Module {
   static readonly ID = "world";
   readonly manifest = defineManifest(WorldModule.ID, "World", {
     description: "What she perceives: who is online, in voice and doing what; salient changes",
-    optional: ["commands", "social"],
+    optional: ["social"],
     configSchema: WorldConfigSchema,
   });
   readonly #options: WorldModuleOptions;
@@ -142,18 +140,20 @@ export class WorldModule implements Module {
     };
     const view = new WorldView(engine, signals, clock, game);
     ctx.provide(WorldStateKey, view);
-    ctx.provide(PresencePrivacyKey, book);
+    ctx.provide(PresencePrivacyKey, {
+      get loaded() {
+        return book.loaded;
+      },
+      presenceAllowed: (account) => book.presenceAllowed(account),
+      async setPresence(account, allowed) {
+        await book.setPresence(account, allowed);
+        if (!allowed) engine.forgetPresence(account);
+      },
+    });
 
     const contributors = ctx.services.get(PromptContributorsKey);
     if (config.prompt) contributors?.register(new WorldPrompt(view));
-    const commands = new CommandMount(
-      "world",
-      (registry) =>
-        registerPrivacyCommands(registry, book, (account) => engine.forgetPresence(account)),
-      unregisterPrivacyCommands,
-    );
-    commands.attach(ctx);
-    this.#running = { commands, contributors };
+    this.#running = { contributors };
 
     const offer = (candidates: Candidate[]) => {
       const now = clock.now();
@@ -203,7 +203,6 @@ export class WorldModule implements Module {
     const running = this.#running;
     this.#running = null;
     if (!running) return;
-    running.commands.detach();
     running.contributors?.unregister(WorldPrompt.KEY);
   }
 }
