@@ -6,6 +6,7 @@ import dev.miyoria.bridge.util.ImageUtil;
 import dev.miyoria.bridge.util.LookMath;
 import dev.miyoria.bridge.util.NotableBlocks;
 import dev.miyoria.bridge.util.TimeOfDay;
+import dev.miyoria.bridge.util.Visibility;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -15,6 +16,9 @@ import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -51,11 +55,43 @@ class UtilTest {
         assertTrue(NotableBlocks.isNotable("chest"));
         assertTrue(NotableBlocks.isNotable("red_bed"));
         assertTrue(NotableBlocks.isNotable("blue_shulker_box"));
-        assertFalse(NotableBlocks.isNotable("stone"));
+        assertTrue(NotableBlocks.isNotable("oak_log"));
+        assertTrue(NotableBlocks.isNotable("stone"));
         assertFalse(NotableBlocks.isNotable("dirt"));
+        assertFalse(NotableBlocks.isNotable("oak_leaves"));
         assertFalse(NotableBlocks.isNotable(null));
         assertTrue(NotableBlocks.priority("diamond_ore") < NotableBlocks.priority("iron_ore"));
         assertTrue(NotableBlocks.priority("iron_ore") < NotableBlocks.priority("crafting_table"));
+        assertTrue(NotableBlocks.priority("oak_log") < NotableBlocks.priority("stone"));
+    }
+
+    /** A tiny voxel world: opaque blocks listed as "x,y,z". */
+    private static Visibility.Opaque world(String... blocks) {
+        Set<String> solid = new HashSet<>(List.of(blocks));
+        return (x, y, z) -> solid.contains(x + "," + y + "," + z);
+    }
+
+    @Test
+    void visibilityNeedsAnOpenFaceAndAClearLine() {
+        // eye at (0.5, 1.6, 0.5); target block at (5, 1, 0)
+        assertTrue(Visibility.visible(0.5, 1.6, 0.5, 5, 1, 0, world("5,1,0")));
+        // buried: every neighbour is stone, so no face is open (an ore inside a wall)
+        Visibility.Opaque buried = world("5,1,0", "4,1,0", "6,1,0", "5,0,0", "5,2,0", "5,1,1", "5,1,-1");
+        assertFalse(Visibility.exposed(5, 1, 0, buried));
+        assertFalse(Visibility.visible(0.5, 1.6, 0.5, 5, 1, 0, buried));
+        // open only on the far side (+x): exposed, but not from here
+        Visibility.Opaque farSide = world("5,1,0", "4,1,0", "5,0,0", "5,2,0", "5,1,1", "5,1,-1");
+        assertTrue(Visibility.exposed(5, 1, 0, farSide));
+        assertFalse(Visibility.visible(0.5, 1.6, 0.5, 5, 1, 0, farSide));
+        // a wall between the eye and the block hides it ...
+        Visibility.Opaque wall = world("5,1,0", "3,1,0", "3,2,0", "3,0,0", "3,1,1", "3,1,-1", "3,2,1", "3,2,-1",
+                "3,0,1", "3,0,-1", "5,2,0", "5,0,0", "5,1,1", "5,1,-1");
+        assertFalse(Visibility.visible(0.5, 1.6, 0.5, 5, 1, 0, wall));
+        // ... unless there is a gap in it on the line of sight
+        Visibility.Opaque gap = world("5,1,0", "3,2,0", "3,0,0", "3,1,1", "3,1,-1", "5,2,0", "5,0,0", "5,1,1", "5,1,-1");
+        assertTrue(Visibility.visible(0.5, 1.6, 0.5, 5, 1, 0, gap));
+        // the eye's own voxel never blocks (camera inside a block)
+        assertTrue(Visibility.visible(0.5, 1.6, 0.5, 5, 1, 0, world("5,1,0", "0,1,0")));
     }
 
     @Test

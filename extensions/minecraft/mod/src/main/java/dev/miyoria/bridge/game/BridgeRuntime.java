@@ -45,6 +45,7 @@ public final class BridgeRuntime implements ActionHandler {
     private final BridgeServer server;
     private final GameObserver observer;
     private final GameActions actions = new GameActions();
+    private final Workbench workbench;
     private final ScreenshotService screenshots;
     private final AltoClefBridge alto = new AltoClefBridge();
     private final EventDetector detector;
@@ -68,6 +69,7 @@ public final class BridgeRuntime implements ActionHandler {
         this.screenshots = new ScreenshotService(cfg.screenshotMaxWidth);
         this.detector = new EventDetector(new EventDetector.Config(cfg.lowHealthThreshold, cfg.hostileRadius, 100, 10));
         this.snapshotOptions = new SnapshotSummarizer.Options(cfg.maxEntities, cfg.maxBlockKinds);
+        this.workbench = new Workbench(this::emit, actions);
 
         if (FabricLoader.getInstance().isModLoaded("baritone")) {
             if (!baritoneApiPresent()) {
@@ -78,7 +80,7 @@ public final class BridgeRuntime implements ActionHandler {
                         + " baritone actions disabled");
             } else {
                 try {
-                    this.baritone = new BaritoneBridgeImpl(this::emit);
+                    this.baritone = new BaritoneBridgeImpl(this::emit, cfg.blockScanRadius);
                 } catch (Throwable t) { // NoClassDefFoundError etc: wrong Baritone build
                     LOG.error("Baritone is installed but its API could not be loaded; baritone actions disabled", t);
                 }
@@ -138,8 +140,8 @@ public final class BridgeRuntime implements ActionHandler {
             out.ok(d);
             return;
         }
-        // Block lookups (mine, goto {block}) resolve on a worker first: on the client thread they
-        // wait on a future the client thread itself has to run, and the game hangs for good.
+        // Baritone block lookups (mine) resolve on a worker first: on the client thread they wait on
+        // a future the client thread itself has to run, and the game hangs for good.
         List<String> lookups =
                 baritone != null && Protocol.T_BARITONE.equals(req.type()) ? baritone.lookupTargets(req) : List.of();
         if (!lookups.isEmpty()) {
@@ -179,7 +181,11 @@ public final class BridgeRuntime implements ActionHandler {
             throw new ProtocolException(Protocol.E_NOT_IN_GAME, "no world loaded (main menu / loading)");
         }
         switch (req.type()) {
-            case Protocol.T_OBSERVE -> out.ok(SnapshotSummarizer.summarize(observer.observe(baritone, alto), snapshotOptions));
+            case Protocol.T_OBSERVE -> {
+                RawObservation raw = observer.observe(baritone, alto);
+                raw.crafting = workbench.state();
+                out.ok(SnapshotSummarizer.summarize(raw, snapshotOptions));
+            }
             case Protocol.T_BARITONE -> {
                 if (baritone == null) {
                     throw new ProtocolException(Protocol.E_BARITONE_UNAVAILABLE, "Baritone is not installed");
@@ -192,6 +198,17 @@ public final class BridgeRuntime implements ActionHandler {
             case Protocol.T_USE -> out.ok(actions.use(mc, req));
             case Protocol.T_ATTACK -> out.ok(actions.attack(mc, req));
             case Protocol.T_SELECT_SLOT -> out.ok(actions.selectSlot(mc, req));
+            case Protocol.T_PLACE -> out.ok(actions.place(mc, req));
+            case Protocol.T_CRAFT -> {
+                JsonObject started = workbench.craft(mc, req);
+                standStill();
+                out.ok(started);
+            }
+            case Protocol.T_SMELT -> {
+                JsonObject started = workbench.smelt(mc, req);
+                standStill();
+                out.ok(started);
+            }
             case Protocol.T_RESPAWN -> out.ok(actions.respawn(mc));
             case Protocol.T_STOP -> out.ok(stopAll());
             case Protocol.T_SCREENSHOT -> screenshots.capture(mc, req, out);
@@ -199,8 +216,15 @@ public final class BridgeRuntime implements ActionHandler {
         }
     }
 
+    /** A person stops walking to craft: cancel Baritone and let go of held keys. */
+    private void standStill() {
+        if (baritone != null && baritone.state().busy()) baritone.cancel();
+        actions.releaseAll();
+    }
+
     private JsonObject stopAll() {
         JsonObject o = new JsonObject();
+        workbench.cancel(mc);
         if (baritone != null) {
             baritone.cancel();
         }
@@ -216,6 +240,7 @@ public final class BridgeRuntime implements ActionHandler {
     public void onEndTick(MinecraftClient client) {
         tickCount++;
         actions.tick(client);
+        workbench.tick(client);
 
         ClientPlayerEntity p = client.player;
         boolean inWorld = p != null && client.world != null;

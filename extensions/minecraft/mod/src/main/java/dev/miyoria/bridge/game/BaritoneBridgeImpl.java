@@ -2,23 +2,27 @@ package dev.miyoria.bridge.game;
 
 import baritone.api.BaritoneAPI;
 import baritone.api.IBaritone;
+import baritone.api.Settings;
 import baritone.api.event.events.PathEvent;
 import baritone.api.event.listener.AbstractGameEventListener;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
+import baritone.api.pathing.goals.GoalGetToBlock;
 import baritone.api.pathing.goals.GoalNear;
+import baritone.api.pathing.goals.GoalRunAway;
 import baritone.api.pathing.goals.GoalXZ;
 import baritone.api.process.IBaritoneProcess;
-import baritone.api.utils.BlockOptionalMeta;
 import baritone.api.utils.BlockOptionalMetaLookup;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import dev.miyoria.bridge.model.Models.BlockInfo;
 import dev.miyoria.bridge.model.RawObservation;
 import dev.miyoria.bridge.protocol.Protocol;
 import dev.miyoria.bridge.protocol.ProtocolException;
 import dev.miyoria.bridge.protocol.Request;
 import dev.miyoria.bridge.util.Ids;
+import net.minecraft.block.Block;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
@@ -28,18 +32,36 @@ import net.minecraft.util.math.BlockPos;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
-/** Drives Baritone strictly through its Java API (no chat messages involved). */
+/**
+ * Drives Baritone strictly through its Java API (no chat messages involved).
+ *
+ * <p>Baritone is only her legs and hands: it never picks a block she has not seen. Its chunk cache
+ * knows every ore behind every wall, so {@code mine} runs in {@code legitMine} mode (only ores that
+ * come into view) and {@code goto {block}} paths to a block found by {@link BlockSight}, not by
+ * Baritone's own search. See {@link #applySettings()}.
+ */
 public final class BaritoneBridgeImpl implements BaritoneBridge {
     private static final Pattern BLOCK_ID = Pattern.compile("[a-z0-9_.:/-]+");
     private static final Pattern SCHEMATIC = Pattern.compile("[A-Za-z0-9_.-]+");
     private static final int IDLE_DEBOUNCE_TICKS = 10;
+    /**
+     * In legit mode Baritone only adds ores within 10 blocks of her feet that it can raytrace to
+     * (its {@code addNearby}); a target farther than this would not be picked up.
+     */
+    private static final int MINE_SIGHT_RADIUS = 10;
 
     private final EventSink events;
+    /** How far {@code goto {block}} looks (the observe scan radius, so it matches what she was told). */
+    private final int sightRadius;
     private IBaritone baritone;
     private boolean listenerRegistered;
+    private boolean settingsApplied;
+    /** Why we stopped Baritone ourselves (reported with the next {@code baritone_idle}). */
+    private String stopReason;
 
     private boolean wasBusy;
     private int idleTicks;
@@ -47,8 +69,38 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
     private String lastGoal;
     private boolean cancelledByUs;
 
-    public BaritoneBridgeImpl(EventSink events) {
+    public BaritoneBridgeImpl(EventSink events, int sightRadius) {
         this.events = events;
+        this.sightRadius = sightRadius;
+    }
+
+    /**
+     * Settings that make Baritone play like a person instead of a bot (set once, on the first tick
+     * in a world, after Baritone has read its own {@code settings.txt}; {@code legitMine} is also
+     * re-asserted before every {@code mine}):
+     * <ul>
+     *   <li>{@code legitMine true}: mining only targets ores it has actually seen (raytraced from
+     *       her eyes), never the chunk cache's x-ray list. When nothing is in view it would start a
+     *       blind strip mine; {@link #tick()} stops that instead.</li>
+     *   <li>{@code freeLook false}: the camera turns where she walks (with free look the view stays
+     *       put while the body walks sideways, which looks like a bot on stream).</li>
+     *   <li>{@code smoothLook true}, {@code smoothLookTicks 10}: the camera's yaw is the average of
+     *       the last 10 ticks of Baritone's rotations, so turns are gradual instead of snapping.</li>
+     *   <li>{@code renderPath / renderGoal / renderSelectionBoxes false}: no path lines or goal boxes
+     *       drawn into her (streamed) view.</li>
+     * </ul>
+     */
+    private static void applySettings() {
+        Settings s = BaritoneAPI.getSettings();
+        s.legitMine.value = true;
+        s.freeLook.value = false;
+        s.smoothLook.value = true;
+        s.smoothLookTicks.value = 10;
+        s.renderPath.value = false;
+        s.renderGoal.value = false;
+        s.renderSelectionBoxes.value = false;
+        org.slf4j.LoggerFactory.getLogger("miyoria-bridge").info(
+                "Baritone set to play legit: legitMine true, freeLook false, smoothLook true (10 ticks), path/goal rendering off");
     }
 
     private IBaritone b() {
@@ -93,10 +145,13 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
     private void doGoto(Request req, JsonObject out) throws ProtocolException {
         Goal goal;
         if (req.has("block")) {
+            // Not Baritone's GetToBlock process: that one searches the chunk cache (x-ray).
             String block = blockName(req.str("block"));
-            requireUnpaused();
-            b().getGetToBlockProcess().getToBlock(new BlockOptionalMeta(block));
-            out.addProperty("goal", "GetToBlock{" + block + "}");
+            BlockInfo target = seen(List.of(block), sightRadius);
+            Goal g = new GoalGetToBlock(new BlockPos(target.x(), target.y(), target.z()));
+            b().getCustomGoalProcess().setGoalAndPath(g);
+            out.addProperty("goal", g.toString());
+            out.add("position", position(target));
             return;
         }
         if (req.has("x") && req.has("z")) {
@@ -128,12 +183,36 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
         }
     }
 
+    /**
+     * The nearest block of {@code names} she can see within {@code radius}; throws
+     * {@code not_visible} when there is none. Client thread.
+     */
+    private static BlockInfo seen(List<String> names, int radius) throws ProtocolException {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        Set<Block> kinds = BlockSight.blocks(names);
+        if (kinds.isEmpty()) throw new ProtocolException(Protocol.E_INVALID_ARGS, "unknown block " + names);
+        BlockInfo b = BlockSight.nearestVisible(mc.player, mc.world, kinds, radius);
+        if (b == null) {
+            throw new ProtocolException(Protocol.E_NOT_VISIBLE,
+                    "no " + String.join("/", names) + " in sight within " + radius + " blocks");
+        }
+        return b;
+    }
+
+    private static JsonObject position(BlockInfo b) {
+        JsonObject p = new JsonObject();
+        p.addProperty("x", b.x());
+        p.addProperty("y", b.y());
+        p.addProperty("z", b.z());
+        return p;
+    }
+
     @Override
     public List<String> lookupTargets(Request req) {
         try {
             String command = req.str("command").toLowerCase();
             List<String> names = new ArrayList<>();
-            if (("mine".equals(command) || "goto".equals(command)) && req.has("block")) {
+            if ("mine".equals(command) && req.has("block")) {
                 names.add(blockName(req.str("block")));
             }
             JsonElement arr = req.body().get("blocks");
@@ -169,7 +248,19 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
         if (names.isEmpty()) throw new ProtocolException(Protocol.E_INVALID_ARGS, "mine needs \"blocks\" (or \"block\")");
         int count = Math.max(0, req.optInt("count", 0)); // 0 = until stopped
         requireUnpaused();
+        // Something has to be in view already: legit mining with nothing in sight is a blind dig.
+        BlockInfo first;
+        try {
+            first = seen(names, MINE_SIGHT_RADIUS);
+        } catch (ProtocolException e) {
+            if (!Protocol.E_NOT_VISIBLE.equals(e.code())) throw e;
+            BlockInfo far = seen(names, sightRadius); // throws not_visible when none at all
+            throw new ProtocolException(Protocol.E_TOO_FAR, "nearest " + far.block() + " in sight is "
+                    + Math.round(far.distance()) + " blocks away at " + far.x() + "," + far.y() + "," + far.z());
+        }
+        BaritoneAPI.getSettings().legitMine.value = true;
         b().getMineProcess().mineByName(count, names.toArray(new String[0]));
+        out.add("first", position(first));
         JsonArray echo = new JsonArray();
         names.forEach(echo::add);
         out.add("blocks", echo);
@@ -241,6 +332,7 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
     @Override
     public void cancel() {
         cancelledByUs = true;
+        stopReason = null;
         b().getPathingBehavior().cancelEverything();
     }
 
@@ -258,8 +350,19 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
 
     @Override
     public void tick() {
+        if (!settingsApplied) {
+            settingsApplied = true;
+            applySettings();
+        }
         if (!listenerRegistered) {
             registerListener();
+        }
+        IBaritone bar = b();
+        // Legit mining that ran out of ores in view switches to a GoalRunAway (dig down to
+        // legitMineYLevel and strip mine). She should look around instead, so stop it.
+        if (stopReason == null && bar.getMineProcess().isActive() && bar.getPathingBehavior().getGoal() instanceof GoalRunAway) {
+            stopReason = "nothing_visible";
+            bar.getPathingBehavior().cancelEverything();
         }
         RawObservation.BaritoneState s = state();
         if (s.busy()) {
@@ -273,8 +376,10 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
             d.addProperty("process", lastProcess);
             d.addProperty("goal", lastGoal);
             d.addProperty("cancelled", cancelledByUs);
+            if (stopReason != null) d.addProperty("reason", stopReason);
             events.emit("baritone_idle", d);
             cancelledByUs = false;
+            stopReason = null;
         }
     }
 

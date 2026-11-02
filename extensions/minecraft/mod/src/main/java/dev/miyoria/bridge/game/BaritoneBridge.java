@@ -17,8 +17,9 @@ public interface BaritoneBridge {
     JsonObject execute(Request request) throws ProtocolException;
 
     /**
-     * Block ids a request will make Baritone look up ({@code mine}, {@code goto {block}}); empty when
-     * none. Any thread.
+     * Block ids a request will make Baritone look up ({@code mine}); empty when none. Any thread.
+     * ({@code goto {block}} no longer goes through Baritone's block lookup: it paths to a block
+     * she can see, found by {@link BlockSight}.)
      */
     java.util.List<String> lookupTargets(Request request);
 

@@ -10,4 +10,8 @@ public final class BaritoneAPI {
     public static IBaritoneProvider getProvider() {
         throw new UnsupportedOperationException("Baritone API stub");
     }
+
+    public static Settings getSettings() {
+        throw new UnsupportedOperationException("Baritone API stub");
+    }
 }

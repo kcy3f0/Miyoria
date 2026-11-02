@@ -9,6 +9,7 @@ import dev.miyoria.bridge.model.RawObservation.LookTarget;
 import dev.miyoria.bridge.model.RawObservation.StackSlot;
 import dev.miyoria.bridge.util.Ids;
 import dev.miyoria.bridge.util.NotableBlocks;
+import dev.miyoria.bridge.util.Visibility;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
@@ -30,6 +31,8 @@ import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +40,7 @@ import java.util.Map;
 /** Samples live game state into the Minecraft-free {@link RawObservation}. Client thread only. */
 public final class GameObserver {
     private static final int MAX_SCANNED_BLOCKS = 6000;
+    private static final int VISIBILITY_CHECKS_PER_KIND = 24;
 
     private final BridgeConfig cfg;
     /** Block -> normalized id when notable, "" when not (cache). */
@@ -46,7 +50,7 @@ public final class GameObserver {
         this.cfg = cfg;
     }
 
-    /** Full snapshot input (includes a notable-block scan: ~30k block lookups). */
+    /** Full snapshot input (includes a notable-block scan: ~30k block lookups plus line-of-sight checks). */
     public RawObservation observe(BaritoneBridge baritone, AltoClefBridge alto) {
         MinecraftClient mc = MinecraftClient.getInstance();
         ClientPlayerEntity p = mc.player;
@@ -159,12 +163,21 @@ public final class GameObserver {
         return null;
     }
 
+    /**
+     * Notable blocks she can see (no x-ray): buried ones are dropped during the scan, then the
+     * nearest {@link #VISIBILITY_CHECKS_PER_KIND} of each kind get a line-of-sight check. So a
+     * kind's count is "how many of the nearest ones are in view", not every block in the area.
+     */
     private List<BlockInfo> scanNotableBlocks(ClientPlayerEntity p, ClientWorld w) {
         int r = cfg.blockScanRadius;
         int ry = Math.min(r, 12);
         BlockPos c = p.getBlockPos();
-        List<BlockInfo> out = new ArrayList<>();
+        Vec3d eye = p.getEyePos();
+        Visibility.Opaque opaque = BlockSight.opaque(w);
+        Map<String, List<BlockInfo>> byKind = new HashMap<>();
+        int scanned = 0;
         BlockPos.Mutable m = new BlockPos.Mutable();
+        scan:
         for (int dx = -r; dx <= r; dx++) {
             for (int dz = -r; dz <= r; dz++) {
                 for (int dy = -ry; dy <= ry; dy++) {
@@ -173,10 +186,19 @@ public final class GameObserver {
                     if (st.isAir()) continue;
                     String id = notableId(st.getBlock());
                     if (id.isEmpty()) continue;
+                    if (!Visibility.exposed(m.getX(), m.getY(), m.getZ(), opaque)) continue;
                     double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-                    out.add(new BlockInfo(id, m.getX(), m.getY(), m.getZ(), dist));
-                    if (out.size() >= MAX_SCANNED_BLOCKS) return out;
+                    byKind.computeIfAbsent(id, k -> new ArrayList<>()).add(new BlockInfo(id, m.getX(), m.getY(), m.getZ(), dist));
+                    if (++scanned >= MAX_SCANNED_BLOCKS) break scan;
                 }
+            }
+        }
+        List<BlockInfo> out = new ArrayList<>();
+        for (List<BlockInfo> kind : byKind.values()) {
+            kind.sort(Comparator.comparingDouble(BlockInfo::distance));
+            for (int i = 0; i < Math.min(VISIBILITY_CHECKS_PER_KIND, kind.size()); i++) {
+                BlockInfo b = kind.get(i);
+                if (Visibility.visible(eye.x, eye.y, eye.z, b.x(), b.y(), b.z(), opaque)) out.add(b);
             }
         }
         return out;

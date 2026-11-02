@@ -201,4 +201,14 @@ class SnapshotSummarizerTest {
         assertEquals("GoalBlock{x=1,y=2,z=3}", bar.get("goal").getAsString());
         assertTrue(on.getAsJsonObject("altoclef").get("busy").isJsonNull());
     }
+
+    @Test
+    void craftingJob() {
+        RawObservation r = base();
+        assertTrue(SnapshotSummarizer.summarize(r).get("crafting").isJsonNull());
+        r.crafting = new RawObservation.CraftState("craft", "wooden_pickaxe");
+        JsonObject c = SnapshotSummarizer.summarize(r).getAsJsonObject("crafting");
+        assertEquals("craft", c.get("kind").getAsString());
+        assertEquals("wooden_pickaxe", c.get("item").getAsString());
+    }
 }

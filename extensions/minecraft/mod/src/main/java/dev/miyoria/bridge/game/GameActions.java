@@ -11,17 +11,28 @@ import net.minecraft.client.network.ClientPlayNetworkHandler;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.block.BlockState;
+import net.minecraft.client.world.ClientWorld;
 import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.item.BlockItem;
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
+import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.util.ActionResult;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
+import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Low-level player actions (look / use / attack / hotbar / chat / respawn) plus the per-tick
- * state they need (smooth camera, timed key holds). Client thread only.
+ * Low-level player actions (look / use / attack / hotbar / place / chat / respawn) plus the
+ * per-tick state they need (smooth camera, timed key holds). Client thread only.
  */
 public final class GameActions {
     /** Max camera speed in degrees per tick when smoothing (20 ticks/s => ~600 deg/s is a quick flick). */
@@ -91,6 +102,22 @@ public final class GameActions {
             throw new ProtocolException(Protocol.E_INVALID_ARGS, "look needs {yaw,pitch} or {at:{x,y,z}}");
         }
         boolean smooth = req.optBool("smooth", true);
+        turn(p, yaw, pitch, smooth);
+        JsonObject out = new JsonObject();
+        out.addProperty("yaw", Math.round(yaw * 10f) / 10.0);
+        out.addProperty("pitch", Math.round(pitch * 10f) / 10.0);
+        out.addProperty("smooth", smooth);
+        return out;
+    }
+
+    /** Turns the camera toward a world point (used by crafting and placing, which face what they touch). */
+    public void lookAt(ClientPlayerEntity p, Vec3d at, boolean smooth) {
+        Vec3d eye = p.getEyePos();
+        LookMath.Rotation r = LookMath.toward(at.x - eye.x, at.y - eye.y, at.z - eye.z);
+        turn(p, r.yaw(), r.pitch(), smooth);
+    }
+
+    private void turn(ClientPlayerEntity p, float yaw, float pitch, boolean smooth) {
         if (smooth) {
             targetYaw = yaw;
             targetPitch = pitch;
@@ -99,11 +126,6 @@ public final class GameActions {
             p.setYaw(yaw);
             p.setPitch(pitch);
         }
-        JsonObject out = new JsonObject();
-        out.addProperty("yaw", Math.round(yaw * 10f) / 10.0);
-        out.addProperty("pitch", Math.round(pitch * 10f) / 10.0);
-        out.addProperty("smooth", smooth);
-        return out;
     }
 
     private static double numOf(com.google.gson.JsonObject o, String key) throws ProtocolException {
@@ -166,6 +188,74 @@ public final class GameActions {
         ItemStack held = inv.getStack(slot);
         out.addProperty("item", held.isEmpty() ? null : Ids.normalize(Registries.ITEM.getId(held.getItem()).toString()));
         return out;
+    }
+
+    /**
+     * {@code {"item":"crafting_table"}}: puts that block down on the ground next to her, the
+     * direction she faces first. From the storage part of the inventory it is first swapped into
+     * the selected hotbar slot (a hotbar-swap click, as a player would do).
+     */
+    public JsonObject place(MinecraftClient mc, Request req) throws ProtocolException {
+        ClientPlayerEntity p = mc.player;
+        Item item = Workbench.item(req.str("item"));
+        if (!(item instanceof BlockItem)) {
+            throw new ProtocolException(Protocol.E_INVALID_ARGS, Workbench.id(item) + " is not a block that can be placed");
+        }
+        if (mc.currentScreen != null) throw new ProtocolException(Protocol.E_INVALID_ARGS, "a screen is open; close it first");
+        PlayerInventory inv = p.getInventory();
+        int slot = -1;
+        for (int i = 0; i < inv.main.size(); i++) {
+            if (inv.main.get(i).isOf(item)) {
+                slot = i;
+                break;
+            }
+        }
+        if (slot < 0) throw new ProtocolException(Protocol.E_MISSING_ITEMS, "missing " + Workbench.id(item) + " x1");
+        BlockPos spot = placeSpot(p, mc.world);
+        if (spot == null) {
+            throw new ProtocolException(Protocol.E_INVALID_ARGS, "no free spot with solid ground right next to her");
+        }
+        if (slot < 9) {
+            inv.selectedSlot = slot;
+        } else {
+            // player screen handler slots 9-35 are inventory slots 9-35; SWAP's button is the hotbar slot
+            mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, slot, inv.selectedSlot, SlotActionType.SWAP, p);
+        }
+        Vec3d top = new Vec3d(spot.getX() + 0.5, spot.getY(), spot.getZ() + 0.5);
+        lookAt(p, top, true);
+        ActionResult r = mc.interactionManager.interactBlock(p, Hand.MAIN_HAND, new BlockHitResult(top, Direction.UP, spot.down(), false));
+        if (!r.isAccepted()) throw new ProtocolException(Protocol.E_INVALID_ARGS, "the game refused to place it there");
+        p.swingHand(Hand.MAIN_HAND);
+        JsonObject out = new JsonObject();
+        out.addProperty("item", Workbench.id(item));
+        JsonObject at = new JsonObject();
+        at.addProperty("x", spot.getX());
+        at.addProperty("y", spot.getY());
+        at.addProperty("z", spot.getZ());
+        out.add("position", at);
+        return out;
+    }
+
+    /**
+     * An empty space beside her feet with a plain solid block under it (not one that opens a
+     * screen when clicked, or the click would open it instead of placing).
+     */
+    private static BlockPos placeSpot(ClientPlayerEntity p, ClientWorld w) {
+        Direction facing = p.getHorizontalFacing();
+        Direction[] order = {facing, facing.rotateYClockwise(), facing.rotateYCounterclockwise(), facing.getOpposite()};
+        BlockPos feet = p.getBlockPos();
+        for (int reach = 1; reach <= 2; reach++) {
+            for (Direction d : order) {
+                BlockPos spot = feet.offset(d, reach);
+                BlockPos below = spot.down();
+                BlockState under = w.getBlockState(below);
+                if (!w.getBlockState(spot).isReplaceable()) continue;
+                if (!under.isSolidBlock(w, below) || under.createScreenHandlerFactory(w, below) != null) continue;
+                if (p.getBoundingBox().intersects(new Box(spot))) continue;
+                return spot;
+            }
+        }
+        return null;
     }
 
     /** Chat message, or a slash command when it starts with "/". */

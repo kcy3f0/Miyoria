@@ -42,6 +42,8 @@ public final class RawObservation {
 
     public BaritoneState baritone = BaritoneState.UNAVAILABLE;
     public AltoState altoclef = AltoState.UNAVAILABLE;
+    /** The running craft / smelt job, or null. */
+    public CraftState crafting;
 
     public record StackSlot(int slot, StackInfo stack) {}
 
@@ -51,6 +53,9 @@ public final class RawObservation {
     public record BaritoneState(boolean available, boolean busy, String process, String goal) {
         public static final BaritoneState UNAVAILABLE = new BaritoneState(false, false, null, null);
     }
+
+    /** {@code kind} is craft | smelt; {@code item} the output (craft) or input (smelt, null = collecting). */
+    public record CraftState(String kind, String item) {}
 
     /** {@code busy} may be null when it cannot be determined. */
     public record AltoState(boolean available, Boolean busy) {

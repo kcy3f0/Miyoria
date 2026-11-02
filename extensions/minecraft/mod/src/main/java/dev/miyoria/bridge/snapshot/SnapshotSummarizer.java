@@ -115,6 +115,15 @@ public final class SnapshotSummarizer {
         alto.addProperty("busy", raw.altoclef.busy());
         o.add("altoclef", alto);
 
+        if (raw.crafting != null) {
+            JsonObject c = new JsonObject();
+            c.addProperty("kind", raw.crafting.kind());
+            c.addProperty("item", raw.crafting.item());
+            o.add("crafting", c);
+        } else {
+            o.add("crafting", null);
+        }
+
         return o;
     }
 

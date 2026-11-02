@@ -20,6 +20,9 @@ public final class Protocol {
     public static final String T_STOP = "stop";
     public static final String T_RESPAWN = "respawn";
     public static final String T_SCREENSHOT = "screenshot";
+    public static final String T_CRAFT = "craft";
+    public static final String T_SMELT = "smelt";
+    public static final String T_PLACE = "place";
 
     // server -> client
     public static final String T_HELLO_ACK = "hello_ack";
@@ -39,5 +42,15 @@ public final class Protocol {
     public static final String E_BARITONE_UNAVAILABLE = "baritone_unavailable";
     public static final String E_ALTOCLEF_UNAVAILABLE = "altoclef_unavailable";
     public static final String E_SCREENSHOT_FAILED = "screenshot_failed";
+    /** No block of that kind she can actually see nearby (no x-ray through Baritone's cache). */
+    public static final String E_NOT_VISIBLE = "not_visible";
+    /** She can see one, but it is too far to mine / use from here. */
+    public static final String E_TOO_FAR = "too_far";
+    /** The inventory lacks what the action needs; the message lists {@code item xN}. */
+    public static final String E_MISSING_ITEMS = "missing_items";
+    /** The recipe needs a crafting table (or the smelt a furnace) within reach. */
+    public static final String E_NEEDS_STATION = "needs_station";
+    /** A craft / smelt job is still running. */
+    public static final String E_BUSY = "busy";
     public static final String E_INTERNAL = "internal";
 }
