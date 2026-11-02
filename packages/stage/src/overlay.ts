@@ -19,12 +19,13 @@ interface Snapshot {
   status: string | null;
   subtitle: string | null;
   emotion: string | null;
+  notice: string | null;
 }
 
 /** Fan-out of overlay messages. New clients first get the latest status, subtitle and emotion. */
 export class OverlayHub {
   readonly #listeners = new Set<(text: string) => void>();
-  readonly #snapshot: Snapshot = { status: null, subtitle: null, emotion: null };
+  readonly #snapshot: Snapshot = { status: null, subtitle: null, emotion: null, notice: null };
 
   #send(text: string): void {
     for (const listener of [...this.#listeners]) listener(text);
@@ -39,6 +40,13 @@ export class OverlayHub {
   emotion(name: string, intensity: number): void {
     const v = JSON.stringify({ type: "emotion", name, intensity });
     this.#snapshot.emotion = v;
+    this.#send(v);
+  }
+
+  /** A status line (`""` clears it). */
+  notice(text: string): void {
+    const v = JSON.stringify({ type: "notice", text });
+    this.#snapshot.notice = text === "" ? null : v;
     this.#send(v);
   }
 
@@ -72,10 +80,10 @@ export class OverlayHub {
     this.#send(v);
   }
 
-  /** The snapshot for a new client: status, emotion, subtitle (those that exist). */
+  /** The snapshot for a new client: status, emotion, subtitle, notice (those that exist). */
   initial(): string[] {
     const s = this.#snapshot;
-    return [s.status, s.emotion, s.subtitle].filter((v): v is string => v !== null);
+    return [s.status, s.emotion, s.subtitle, s.notice].filter((v): v is string => v !== null);
   }
 
   /** Receives every message from now on; returns the unsubscribe function. */

@@ -11,6 +11,7 @@ import {
 import {
   type PromptContributors,
   PromptContributorsKey,
+  SpeechPauseKey,
   serviceKey,
   VoiceFloorKey,
 } from "@miyoria/types";
@@ -94,6 +95,7 @@ export class SingModule implements Module {
     prompts?.register(new SingPrompt(singer));
     ctx.provide(SingerKey, singer);
     ctx.provide(VoiceFloorKey, singer);
+    ctx.provide(SpeechPauseKey, singer);
 
     const events = ctx.subscribe([
       "voice.joined",

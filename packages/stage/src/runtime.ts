@@ -328,6 +328,9 @@ class Stage {
       case "gaze":
         this.#avatar?.gaze(msg.target);
         return;
+      case "notice":
+        this.#overlay.notice(msg.text);
+        return;
       case "song_video":
         if (msg.action === "play") this.#songVideo?.play(msg);
         else this.#songVideo?.stop(msg.song);

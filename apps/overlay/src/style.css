@@ -119,6 +119,34 @@ body {
   transition-duration: 900ms;
 }
 
+/* ── notice (a status line above the subtitles) ──────────────────────── */
+
+.notice {
+  position: absolute;
+  left: 50%;
+  bottom: 13.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 1rem 0.5rem;
+  background: var(--plate);
+  border: 1px solid var(--plate-edge);
+  border-radius: 999px;
+  box-shadow: 0 0.4rem 1.2rem oklch(0 0 0 / 0.3);
+  color: var(--ink-dim);
+  font-size: 1.15rem;
+  letter-spacing: 0.04em;
+  transform: translateX(-50%);
+}
+
+.notice__dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
 /* ── side panel ───────────────────────────────────────────────────────── */
 
 .panel {
@@ -313,7 +341,8 @@ body {
     transition-duration: 1ms;
   }
 
-  .status__pulse {
+  .status__pulse,
+  .notice__dot {
     animation: none;
   }
 }

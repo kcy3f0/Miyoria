@@ -116,3 +116,20 @@ export interface VoiceFloor {
 }
 
 export const VoiceFloorKey = serviceKey<VoiceFloor>("VoiceFloor");
+
+/**
+ * Her speech is off for a while because something else has the GPU (the song worker converts a
+ * song, and the TTS / ASR workers dropped their models for it). Meanwhile the voice module does
+ * not send her lines to TTS nor utterances to ASR, and failures that say `offloaded` are
+ * expected. Provided by `sing`; changes are published as `SPEECH_PAUSE_TOPIC`
+ * (`{paused, reason}`).
+ */
+export interface SpeechPause {
+  /** Why speech is off now (`"song"`), or `null`. */
+  paused(): string | null;
+}
+
+export const SpeechPauseKey = serviceKey<SpeechPause>("SpeechPause");
+
+/** Topic of `{paused: boolean, reason: string | null}` custom events. */
+export const SPEECH_PAUSE_TOPIC = "speech.pause";

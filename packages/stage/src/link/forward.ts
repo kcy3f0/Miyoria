@@ -7,6 +7,7 @@ import {
   type PlaybackState,
   parseSongCue,
   SONG_TOPIC,
+  SPEECH_PAUSE_TOPIC,
   type TurnId,
 } from "@miyoria/types";
 import type { CoreMessage } from "../protocol.js";
@@ -145,6 +146,7 @@ export class Forwarder {
     switch (event.type) {
       case "custom":
         if (event.data.topic === SONG_TOPIC) return this.#onSong(event.data.payload);
+        if (event.data.topic === SPEECH_PAUSE_TOPIC) return pauseNotice(event.data.payload);
         return event.data.topic === EMOTION_TOPIC ? this.#onEmotion(event.data.payload) : [];
       case "voice_playback": {
         const { turn, state, text, emotion } = event.data;
@@ -244,6 +246,15 @@ export class Forwarder {
       }
     }
   }
+}
+
+/** The overlay line while her speech is paused for a song being prepared. */
+export const PREPARING_NOTICE = "準備歌曲中…";
+
+function pauseNotice(payload: JsonValue): CoreMessage[] {
+  const p = isJsonObject(payload) ? payload : {};
+  if (typeof p.paused !== "boolean") return [];
+  return [{ type: "notice", text: p.paused ? PREPARING_NOTICE : "" }];
 }
 
 function subtitle(turn: TurnId, text: string, final: boolean): CoreMessage {

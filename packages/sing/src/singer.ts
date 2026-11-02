@@ -13,6 +13,10 @@
 //   is dropped instead of queueing behind the song), barge-in does not apply (it is not her
 //   speech), and only `sing.stop` (skip / stop) ends it early.
 // * After a song that played to the end she is told, so she can say something about it.
+// * When the worker takes the whole GPU to convert (its TTS / ASR go away for a minute or two),
+//   she first says she is off to prepare it, and only then does the worker go ahead
+//   (`exclusive: "waiting"` → `goExclusive`). Meanwhile speech is paused (`SpeechPauseKey`,
+//   `SPEECH_PAUSE_TOPIC`): the voice module neither speaks nor transcribes, the overlay says so.
 
 import { CapabilityError } from "@miyoria/actions";
 import { errorMessage, getLogger, type ModuleContext } from "@miyoria/kernel";
@@ -30,6 +34,8 @@ import {
   type PlaybackState,
   SONG_TOPIC,
   type SongCue,
+  SPEECH_PAUSE_TOPIC,
+  type SpeechPause,
   safeName,
   type TurnId,
   toTimestamp,
@@ -57,6 +63,7 @@ export const REASONS = {
   start: "song_start",
   done: "song_done",
   failed: "song_failed",
+  prepare: "song_prepare",
 } as const;
 
 export class SingError extends CapabilityError {
@@ -90,7 +97,22 @@ interface Playing {
   audible: boolean;
 }
 
-export class Singer implements VoiceFloor {
+/** She was told she is off to prepare a song; the worker waits for her to finish saying so. */
+interface Preparing {
+  no: SongNo;
+  job: string;
+  guild: string | null;
+  asked_at: number;
+  spoke: boolean;
+  quiet_since: number | null;
+}
+
+/** Without a word from her this long after the notice, the worker goes ahead anyway. */
+const EXPECT_NOTICE_MS = 8000;
+/** Worker `exclusive` states during which speech is off. */
+const GPU_TAKEN = new Set(["offloading", "active", "reloading"]);
+
+export class Singer implements VoiceFloor, SpeechPause {
   readonly list: SetList;
   #playing: Playing | null = null;
   /** Voice channels she is in. */
@@ -103,6 +125,13 @@ export class Singer implements VoiceFloor {
   #saved: string | null = null;
   /** Restored songs that never reached the worker. */
   readonly #orphans = new Set<SongNo>();
+  /** Songs whose job has (or is about to have) the GPU, by number. */
+  readonly #gpu = new Set<SongNo>();
+  #preparing: Preparing | null = null;
+  /** Jobs told to go ahead that may still report `waiting` for a poll. */
+  readonly #told = new Set<string>();
+  #lastNotice = Number.NEGATIVE_INFINITY;
+  #paused = false;
 
   /**
    * `videoDir`: the worker's cache dir (absolute) when song videos are shown on stream
@@ -118,6 +147,11 @@ export class Singer implements VoiceFloor {
   }
 
   // ----- views -----
+
+  /** `SpeechPause`: speech is off while a song's job has the GPU. */
+  paused(): string | null {
+    return this.#paused ? "song" : null;
+  }
 
   holder(guild: string): string | null {
     const p = this.#playing;
@@ -159,7 +193,7 @@ export class Singer implements VoiceFloor {
       throw new SingError(errorMessage(error), { cause: error });
     }
     try {
-      const job = await this.worker.submit(workerQuery(query, req.key), signal);
+      const job = await this.worker.submit(this.#query(query, req.key), signal);
       entry.job = job.id;
       this.#apply(entry, job);
     } catch (error) {
@@ -172,11 +206,16 @@ export class Singer implements VoiceFloor {
     return entry;
   }
 
+  #query(query: string, key: number): SongQuery {
+    return { ...workerQuery(query, key), exclusive_ack: this.cfg.prepare_notice };
+  }
+
   /** Worker job state → entry. */
   #apply(entry: SongEntry, job: WorkerJob): void {
     if (entry.state !== "preparing") return;
     entry.stage = job.stage;
     entry.progress = job.progress;
+    this.#onExclusive(entry, job);
     switch (job.state) {
       case "done":
         if (!job.song) {
@@ -197,6 +236,94 @@ export class Singer implements VoiceFloor {
       default:
         return;
     }
+  }
+
+  // ----- the GPU to the worker -----
+
+  #onExclusive(entry: SongEntry, job: WorkerJob): void {
+    const ex = job.exclusive;
+    if (ex === "waiting") {
+      if (this.#preparing?.job !== job.id && !this.#told.has(job.id)) this.#announce(entry, job.id);
+    } else if (ex !== null && GPU_TAKEN.has(ex)) {
+      this.#gpu.add(entry.no);
+      if (this.#preparing?.job === job.id) this.#preparing = null;
+    } else {
+      this.#gpu.delete(entry.no);
+      if (this.#preparing?.job === job.id) this.#preparing = null;
+    }
+    if (ex !== "waiting") this.#told.delete(job.id);
+    if (job.state !== "queued" && job.state !== "running") this.#gpu.delete(entry.no);
+    this.#updatePause();
+  }
+
+  /** The worker waits to take the GPU: she says she is off to prepare it, unless she just did. */
+  #announce(entry: SongEntry, job: string): void {
+    const now = this.ctx.clock.now();
+    const where = this.voiceContext(entry.context?.scope ?? null) ?? this.voiceContext();
+    const recent = now - this.#lastNotice < this.cfg.prepare_notice_gap_secs * 1000;
+    if (where === null || recent || this.#closed) {
+      this.#go(entry.no, job);
+      return;
+    }
+    this.#lastNotice = now;
+    this.#preparing = {
+      no: entry.no,
+      job,
+      guild: where.scope,
+      asked_at: now,
+      spoke: false,
+      quiet_since: null,
+    };
+    this.#tell(
+      where,
+      REASONS.prepare,
+      `你要去準備${songLabel(entry)}了:接下來一兩分鐘顯示卡要拿去做歌,你會暫時不能說話,也聽不到大家。` +
+        "現在用一句很短的話跟大家說(例如「我去準備一下歌喔」),說完就開始。",
+      entry,
+    );
+  }
+
+  /** She said it (or did not in time): the worker takes the GPU. */
+  #go(no: SongNo, job: string): void {
+    if (this.#preparing?.job === job) this.#preparing = null;
+    this.#told.add(job);
+    this.#gpu.add(no);
+    this.#updatePause();
+    void this.worker
+      .goExclusive(job)
+      .catch((error: unknown) =>
+        log.debug({ no, err: errorMessage(error) }, "could not tell the worker to go ahead"),
+      );
+  }
+
+  /** Waits for her notice to be said: she spoke and is quiet again, or she did not start. */
+  #checkPreparing(now: number): void {
+    const p = this.#preparing;
+    if (p === null) return;
+    const talking = p.guild !== null && (this.#speaking.get(p.guild) ?? 0) > 0;
+    if (talking) {
+      p.spoke = true;
+      p.quiet_since = null;
+    } else if (p.spoke) {
+      p.quiet_since ??= now;
+    }
+    const said = p.spoke && p.quiet_since !== null && now - p.quiet_since >= this.cfg.quiet_ms;
+    const silent = !p.spoke && now - p.asked_at >= EXPECT_NOTICE_MS;
+    const late = now - p.asked_at >= this.cfg.announce_max_secs * 1000;
+    if (said || silent || late) this.#go(p.no, p.job);
+  }
+
+  #updatePause(): void {
+    for (const no of this.#gpu) {
+      if (this.list.get(no)?.state !== "preparing") this.#gpu.delete(no);
+    }
+    const paused = this.#gpu.size > 0 && !this.#closed;
+    if (paused === this.#paused) return;
+    this.#paused = paused;
+    log.info({ paused }, paused ? "speech paused: the song worker has the GPU" : "speech is back");
+    this.ctx.publish(
+      customEvent(SPEECH_PAUSE_TOPIC, { paused, reason: paused ? "song" : null } as JsonValue),
+    );
   }
 
   #fail(entry: SongEntry, why: string, tell = true): void {
@@ -269,6 +396,8 @@ export class Singer implements VoiceFloor {
   /** Periodic work: reminders and songs that should start on their own. */
   tick(): void {
     const now = this.ctx.clock.now();
+    this.#checkPreparing(now);
+    this.#updatePause();
     for (const e of this.list.ready()) {
       if (!this.#mindDecides(e)) continue;
       const due = (e.last_reminder_ms ?? now) + this.cfg.remind_secs * 1000;
@@ -537,7 +666,7 @@ export class Singer implements VoiceFloor {
   }
 
   async #resubmit(entry: SongEntry, signal?: AbortSignal): Promise<void> {
-    const job = await this.worker.submit(workerQuery(entry.query, entry.key), signal);
+    const job = await this.worker.submit(this.#query(entry.query, entry.key), signal);
     entry.job = job.id;
     this.#apply(entry, job);
   }
@@ -600,6 +729,7 @@ export class Singer implements VoiceFloor {
   close(): void {
     this.#closed = true;
     this.#playing?.stop.abort();
+    this.#updatePause();
   }
 
   // ----- talking to her -----
@@ -607,9 +737,11 @@ export class Singer implements VoiceFloor {
   #tell(where: ContextKey, reason: string, hint: string, entry: SongEntry): void {
     const about: AccountRef[] = entry.requester ? [entry.requester] : [];
     const mind = this.ctx.services.get(MindKey);
-    // A song that is about to start needs her words now, not after her next thought.
+    // A song about to start, or her voice about to go away, needs her words now, not after her
+    // next thought.
     if (
       reason !== REASONS.start &&
+      reason !== REASONS.prepare &&
       mind?.accepting &&
       mind.suggest({ source: "sing", reason, context: where, hint, about })
     ) {

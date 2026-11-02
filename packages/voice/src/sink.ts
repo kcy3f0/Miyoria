@@ -4,6 +4,7 @@ import { errorMessage, type ModuleContext } from "@miyoria/kernel";
 import {
   type AudioChunk,
   type AudioStream,
+  isOffloaded,
   SpeechError,
   type SpeechService,
 } from "@miyoria/speech";
@@ -12,6 +13,7 @@ import {
   contextKeyString,
   type PlaybackState,
   type SpeakOutcome,
+  SpeechPauseKey,
   type TurnId,
   VoiceFloorKey,
   type VoiceSink,
@@ -164,11 +166,19 @@ export class Speaker implements VoiceSink {
       this.#d.ctx.log.debug({ guild, holder }, "voice channel is held; dropping her line");
       return "interrupted";
     }
+    // The GPU is the song worker's for now: the TTS worker has no model to speak with.
+    const paused = this.#d.ctx.services.get(SpeechPauseKey)?.paused() ?? null;
+    if (paused !== null) {
+      this.#d.ctx.log.debug({ guild, reason: paused }, "speech is paused; dropping her line");
+      return "interrupted";
+    }
     let playback: Playback;
     try {
       playback = await this.#start(context, guild, text, emotion, turn, signal);
     } catch (error) {
-      this.#d.ctx.log.warn({ err: errorMessage(error) }, "cannot start speech");
+      const err = errorMessage(error);
+      if (isOffloaded(err)) this.#d.ctx.log.debug({ err }, "cannot start speech: TTS is offloaded");
+      else this.#d.ctx.log.warn({ err }, "cannot start speech");
       this.#playbackEvent(context, turn, "failed", text, emotion);
       throw error;
     }

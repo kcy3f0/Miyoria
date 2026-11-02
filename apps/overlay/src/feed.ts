@@ -8,6 +8,7 @@
 //   {"type":"status","core":bool,"vts":bool,"obs":bool,"scene":"…"|null,"streaming":bool}
 //   {"type":"queue","items":[…]}
 //   {"type":"levels","rms":0..1,"bands":[…]?}   her voice level, once per avatar frame (~60/s)
+//   {"type":"notice","text":"準備歌曲中…"}       a status line; "" clears it
 
 export interface Subtitle {
   turn: string;
@@ -48,6 +49,8 @@ export interface OverlayState {
   emotion: Emotion | null;
   status: Status | null;
   queue: QueueItem[];
+  /** A status line such as 「準備歌曲中…」, or null. */
+  notice: string | null;
 }
 
 export type FeedMessage =
@@ -57,7 +60,9 @@ export type FeedMessage =
   | { type: "status"; status: Status }
   | { type: "queue"; items: QueueItem[] }
   /** High-rate audio level: drawn by the waveform, never part of the reduced state. */
-  | { type: "levels"; rms: number; bands: number[] | null };
+  | { type: "levels"; rms: number; bands: number[] | null }
+
+  | { type: "notice"; text: string };
 
 /** Everything the reducer accepts: feed messages plus the connection state, which the transport reports. */
 export type Action = FeedMessage | { type: "connection"; connected: boolean };
@@ -75,6 +80,7 @@ export function initialState(): OverlayState {
     emotion: null,
     status: null,
     queue: [],
+    notice: null,
   };
 }
 
@@ -179,6 +185,10 @@ export function parseMessage(text: string): FeedMessage | null {
           : null;
       return { type: "levels", rms: clamp01(rms), bands };
     }
+    case "notice": {
+      const body = str(raw.text);
+      return body === null ? null : { type: "notice", text: body.trim().slice(0, MAX_TITLE) };
+    }
     default:
       return null;
   }
@@ -199,6 +209,10 @@ export function reduce(state: OverlayState, action: Action): OverlayState {
       return { ...state, status: action.status };
     case "queue":
       return { ...state, queue: action.items };
+    case "notice": {
+      const notice = action.text === "" ? null : action.text;
+      return notice === state.notice ? state : { ...state, notice };
+    }
     case "subtitle":
       return reduceSubtitle(state, action);
     case "levels":

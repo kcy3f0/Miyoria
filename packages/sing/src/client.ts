@@ -43,6 +43,15 @@ export const WorkerJobSchema = z.object({
     .nullable()
     .catch(null),
   song: SongMetaSchema.nullable().catch(null),
+  /**
+   * The job has the GPU to itself (the TTS / ASR workers offloaded): `waiting` for our go,
+   * `offloading`, `active`, `reloading`, `done`; `null` when it does not need it (older workers:
+   * always `null`).
+   */
+  exclusive: z
+    .enum(["waiting", "offloading", "active", "reloading", "done"])
+    .nullable()
+    .catch(null),
 });
 export type WorkerJob = z.output<typeof WorkerJobSchema>;
 
@@ -53,6 +62,8 @@ export interface SongQuery {
   path?: string;
   /** Whole-song transposition in semitones (her voice follows). */
   key?: number;
+  /** The worker waits for `goExclusive` before it takes the GPU (she says she is off first). */
+  exclusive_ack?: boolean;
 }
 
 /** The two tracks Core streams: the mix, and the converted vocal her mouth follows. */
@@ -75,6 +86,8 @@ export interface SingWorker {
   submit(query: SongQuery, signal?: AbortSignal): Promise<WorkerJob>;
   job(id: string, signal?: AbortSignal): Promise<WorkerJob>;
   cancel(id: string): Promise<void>;
+  /** Lets a job that is `exclusive: "waiting"` take the GPU. */
+  goExclusive(id: string): Promise<void>;
   /** PCM s16le mono at `song.play.sample_rate`. */
   audio(song: string, track: SongTrack, signal?: AbortSignal): Promise<Int16Array>;
   /** `null` when healthy, else why not. */
@@ -141,6 +154,14 @@ export class HttpSingWorker implements SingWorker {
 
   async cancel(id: string): Promise<void> {
     await this.#call(`/jobs/${encodeURIComponent(id)}`, { method: "DELETE" }, this.#timeoutMs);
+  }
+
+  async goExclusive(id: string): Promise<void> {
+    await this.#call(
+      `/jobs/${encodeURIComponent(id)}/exclusive`,
+      { method: "POST" },
+      this.#timeoutMs,
+    );
   }
 
   async audio(song: string, track: SongTrack, signal?: AbortSignal): Promise<Int16Array> {

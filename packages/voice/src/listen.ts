@@ -1,8 +1,8 @@
 // Listening: audio streams → consent filter → segmentation → ASR → `voice_utterance` events.
 
 import { errorMessage, interval, type ModuleContext } from "@miyoria/kernel";
-import { type AsrHint, durationMs, type SpeechService } from "@miyoria/speech";
-import { newId, sameAccount, toTimestamp } from "@miyoria/types";
+import { type AsrHint, durationMs, isOffloaded, type SpeechService } from "@miyoria/speech";
+import { newId, SpeechPauseKey, sameAccount, toTimestamp } from "@miyoria/types";
 import type { BargeIn } from "./barge.js";
 import { segmenterConfig, type VoiceConfig } from "./config.js";
 import type { Consent } from "./consent.js";
@@ -128,6 +128,15 @@ export class Listener {
 
   /** Runs ASR in the background (bounded by `asr_concurrency`). */
   #transcribe(info: StreamInfo, utterance: Utterance): void {
+    // The ASR worker gave its model to the song worker: drop what was said, do not queue it up.
+    const paused = this.#d.ctx.services.get(SpeechPauseKey)?.paused() ?? null;
+    if (paused !== null) {
+      this.#d.ctx.log.debug(
+        { speaker: info.speaker.id, speech_ms: utterance.speechMs, reason: paused },
+        "speech is paused; dropping an utterance",
+      );
+      return;
+    }
     const detected = this.#d.ctx.clock.now();
     const endedAt = detected - utterance.trailingSilenceMs;
     const startedAt = endedAt - utterance.speechMs;
@@ -180,7 +189,9 @@ export class Listener {
         [provider, transcript] = await speech.transcribe(audio, hint, signal);
       } catch (error) {
         if (signal.aborted) return;
-        ctx.log.warn({ err: errorMessage(error), speaker: info.speaker.id }, "ASR failed");
+        const err = errorMessage(error);
+        if (isOffloaded(err)) ctx.log.debug({ err, speaker: info.speaker.id }, "ASR is offloaded");
+        else ctx.log.warn({ err, speaker: info.speaker.id }, "ASR failed");
         return;
       }
       const now = ctx.clock.now();

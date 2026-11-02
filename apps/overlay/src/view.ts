@@ -61,6 +61,8 @@ export class Overlay {
   private readonly queueMore: HTMLElement;
   private readonly offline: HTMLElement;
   private readonly wave: Wave;
+  private readonly noticeEl: HTMLElement;
+  private readonly noticeText: HTMLElement;
 
   constructor(
     root: HTMLElement,
@@ -103,6 +105,12 @@ export class Overlay {
     el("h2", "queue__title", this.queueBox, "接下來");
     this.queueList = el("ol", "queue__list", this.queueBox);
     this.queueMore = el("div", "queue__more", this.queueBox);
+
+    // A status line above the subtitles (「準備歌曲中…」 while her voice is away for a song).
+    this.noticeEl = el("div", "notice", main);
+    el("i", "notice__dot", this.noticeEl);
+    this.noticeText = el("span", "notice__text", this.noticeEl);
+    this.noticeEl.hidden = true;
 
     this.offline = el("div", "offline", main, "feed offline");
     this.offline.hidden = true;
@@ -210,8 +218,12 @@ export class Overlay {
   // ── side panel ───────────────────────────────────────────────────────────
 
   private renderPanel(): void {
-    const { emotion, status, queue } = this.state;
+    const { emotion, status, queue, notice } = this.state;
     const show = this.cfg.show;
+
+    // Part of the subtitle area: shown wherever subtitles are.
+    this.noticeEl.hidden = !(show.has("subtitles") && notice !== null);
+    this.noticeText.textContent = notice ?? "";
 
     const emotionOn = show.has("emotion") && emotion !== null;
     this.emotionRow.hidden = !emotionOn;

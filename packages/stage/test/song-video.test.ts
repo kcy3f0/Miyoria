@@ -4,12 +4,20 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { customEvent, parseSongCue, SONG_TOPIC, systemClock } from "@miyoria/types";
+import {
+  customEvent,
+  type JsonObject,
+  parseSongCue,
+  SONG_TOPIC,
+  SPEECH_PAUSE_TOPIC,
+  systemClock,
+} from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type CoreMessage,
   Forwarder,
   ObsConfigSchema,
+  OverlayHub,
   parseCoreMessage,
   SceneDirector,
   SceneRoles,
@@ -192,6 +200,25 @@ describe("song cues to stage messages", () => {
     );
     expect(end.at(-1)).toStrictEqual({ type: "song_video", action: "stop", song: "yt-abc" });
     expect(f.resumeSongVideo()).toBeNull();
+  });
+
+  it("a speech pause shows 準備歌曲中… on the overlay until it ends", () => {
+    const f = new Forwarder(false);
+    const pause = (payload: JsonObject) => f.onEvent(customEvent(SPEECH_PAUSE_TOPIC, payload));
+    expect(pause({ paused: true, reason: "song" })).toStrictEqual([
+      { type: "notice", text: "準備歌曲中…" },
+    ]);
+    expect(pause({ paused: false, reason: null })).toStrictEqual([{ type: "notice", text: "" }]);
+    expect(pause({})).toStrictEqual([]);
+    expect(parseCoreMessage({ type: "notice", text: "準備歌曲中…" })).toStrictEqual({
+      type: "notice",
+      text: "準備歌曲中…",
+    });
+    const hub = new OverlayHub();
+    hub.notice("準備歌曲中…");
+    expect(hub.initial()).toContain('{"type":"notice","text":"準備歌曲中…"}');
+    hub.notice("");
+    expect(hub.initial().some((m) => m.includes("notice"))).toBe(false);
   });
 
   it("songs without a video send no video messages", () => {

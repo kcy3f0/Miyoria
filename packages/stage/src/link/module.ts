@@ -20,6 +20,7 @@ import {
   Principals,
   parseSongCue,
   SONG_TOPIC,
+  SPEECH_PAUSE_TOPIC,
   StreamCurtainKey,
 } from "@miyoria/types";
 import { type BoundAddress, formatAddress, HttpServer, isLoopback } from "../net.js";
@@ -199,6 +200,7 @@ export class StageLinkModule implements Module {
     const events = ctx.subscribe([
       EMOTION_TOPIC,
       SONG_TOPIC,
+      SPEECH_PAUSE_TOPIC,
       "agent.turn.completed",
       "voice.playback",
       VOICE_GOLIVE_TOPIC,

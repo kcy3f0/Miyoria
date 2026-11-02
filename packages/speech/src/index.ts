@@ -48,6 +48,7 @@ export {
   type AudioChunk,
   type AudioStream,
   durationMs,
+  isOffloaded,
   NO_HINT,
   type ProviderConfig,
   SpeechError,

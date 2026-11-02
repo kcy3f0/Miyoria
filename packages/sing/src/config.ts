@@ -52,6 +52,15 @@ export const SingConfigSchema = z.object({
   quiet_ms: z.number().int().nonnegative().default(700),
   /** How far ahead of real time the song is streamed to the voice node (it buffers a minute). */
   lead_ms: z.number().int().positive().default(2000),
+  /**
+   * When the worker is set to take the whole GPU while it converts (`SING_OFFLOAD_URLS`: her
+   * TTS and ASR go away for a minute or two), she first says she is off to prepare the song (an
+   * initiative in her voice channel) and the worker waits until she finished, at most
+   * `announce_max_secs`. Off: the worker takes the GPU at once.
+   */
+  prepare_notice: z.boolean().default(true),
+  /** No second notice within this long of the last one (several songs in a row). */
+  prepare_notice_gap_secs: z.number().nonnegative().default(180),
   /** Fade-out of a stopped song. */
   fade_ms: z.number().int().nonnegative().default(1500),
   /** Lyrics lines (when the worker found synced lyrics) become overlay subtitles. */

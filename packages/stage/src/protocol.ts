@@ -173,6 +173,8 @@ export type CoreMessage =
       offset_ms?: number;
       scene?: string;
     }
+  /** A line of status for the overlay (`""` clears it), e.g. 「準備歌曲中…」. */
+  | { type: "notice"; text: string }
   /** Asks for a `status` (with the same `id`). */
   | { type: "status_request"; id?: number }
   | { type: "ping" }
@@ -223,6 +225,7 @@ const CoreMessageSchema = z.discriminatedUnion("type", [
       .nullish()
       .transform((v) => (v?.trim() ? v.trim() : undefined)),
   }),
+  z.object({ type: z.literal("notice"), text: z.string().max(200) }),
   z.object({ type: z.literal("status_request"), id: requestId }),
   z.object({ type: z.literal("ping") }),
   z.object({ type: z.literal("pong") }),

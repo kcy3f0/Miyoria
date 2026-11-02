@@ -81,7 +81,7 @@ describe("parseMessage", () => {
 describe("reduce", () => {
   it("starts empty and offline", () => {
     expect(initialState()).toEqual({
-      connected: false, speaking: false, subtitleSeq: 0, subtitle: null, emotion: null, status: null, queue: [],
+      connected: false, speaking: false, subtitleSeq: 0, subtitle: null, emotion: null, status: null, queue: [], notice: null,
     });
   });
 
@@ -143,5 +143,15 @@ describe("reduce", () => {
     const frozen = Object.freeze({ ...a });
     expect(() => reduce(frozen, sub("t", "x"))).not.toThrow();
     expect(a.subtitle).toBeNull();
+  });
+
+  it("shows a notice until an empty one clears it", () => {
+    const on = parseMessage('{"type":"notice","text":" 準備歌曲中… "}');
+    expect(on).toEqual({ type: "notice", text: "準備歌曲中…" });
+    expect(parseMessage('{"type":"notice"}')).toBeNull();
+    const shown = run([on as Action]);
+    expect(shown.notice).toBe("準備歌曲中…");
+    expect(reduce(shown, on as Action)).toBe(shown);
+    expect(run([{ type: "notice", text: "" }], shown).notice).toBeNull();
   });
 });

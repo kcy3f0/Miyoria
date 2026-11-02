@@ -177,7 +177,10 @@ export class SpeechService {
       } catch (error) {
         this.#asrRequests.inc({ provider: p.name, outcome: failure(signal) });
         if (signal?.aborted) throw error;
-        log.warn({ provider: p.name, err: errorMessage(error) }, "ASR failed, trying next");
+        const err = errorMessage(error);
+        // A worker that gave the GPU to the song worker says so; that is expected.
+        if (isOffloaded(err)) log.debug({ provider: p.name, err }, "ASR failed, trying next");
+        else log.warn({ provider: p.name, err }, "ASR failed, trying next");
         last = error;
       }
     }
@@ -195,7 +198,9 @@ export class SpeechService {
       } catch (error) {
         this.#ttsRequests.inc({ provider: p.name, outcome: failure(signal) });
         if (signal?.aborted) throw error;
-        log.warn({ provider: p.name, err: errorMessage(error) }, "TTS failed, trying next");
+        const err = errorMessage(error);
+        if (isOffloaded(err)) log.debug({ provider: p.name, err }, "TTS failed, trying next");
+        else log.warn({ provider: p.name, err }, "TTS failed, trying next");
         last = error;
       }
     }
@@ -204,3 +209,11 @@ export class SpeechService {
 }
 
 export const SpeechServiceKey = serviceKey<SpeechService>("SpeechService");
+
+/**
+ * The worker answered 503 `offloaded`: it dropped its model while the song worker has the GPU
+ * (`POST /offload`), so the failure is expected and comes back by itself.
+ */
+export function isOffloaded(message: string): boolean {
+  return /\boffloaded\b/i.test(message);
+}

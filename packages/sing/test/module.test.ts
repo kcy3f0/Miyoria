@@ -28,6 +28,8 @@ import {
   type PromptRequest,
   SONG_TOPIC,
   type SongCue,
+  SPEECH_PAUSE_TOPIC,
+  SpeechPauseKey,
   VoiceFloorKey,
   type VoicePlayer,
   VoicePlayerKey,
@@ -85,6 +87,8 @@ function meta(id: string, title: string, seconds = 1): SongMeta {
 class FakeWorker implements SingWorker {
   readonly submitted: SongQuery[] = [];
   readonly cancelled: string[] = [];
+  /** Jobs told to take the GPU. */
+  readonly gone: string[] = [];
   readonly jobs = new Map<string, WorkerJob>();
   #next = 1;
   cacheHit = false;
@@ -105,6 +109,7 @@ class FakeWorker implements SingWorker {
       position: 0,
       source: null,
       song: this.cacheHit ? meta(`s-${id}`, title, this.cacheSeconds) : null,
+      exclusive: null,
     };
     this.jobs.set(id, job);
     return structuredClone(job);
@@ -137,6 +142,18 @@ class FakeWorker implements SingWorker {
 
   async cancel(id: string): Promise<void> {
     this.cancelled.push(id);
+  }
+
+  async goExclusive(id: string): Promise<void> {
+    this.gone.push(id);
+  }
+
+  exclusive(id: string, state: WorkerJob["exclusive"]): void {
+    Object.assign(this.jobs.get(id) ?? {}, {
+      state: "running",
+      stage: "exclusive",
+      exclusive: state,
+    });
   }
 
   async audio(song: string, track: SongTrack): Promise<Int16Array> {
@@ -228,6 +245,19 @@ class FakeMind implements Mind {
       idle_reason: null,
     };
   }
+}
+
+const playback = (state: "started" | "finished"): Event => ({
+  type: "voice_playback",
+  data: { context: VOICE, turn: "t-prep", state, text: "我去準備一下歌喔", emotion: null },
+});
+
+function pauses(h: Harness): boolean[] {
+  return h.events.flatMap((e) =>
+    e.type === "custom" && e.data.topic === SPEECH_PAUSE_TOPIC
+      ? [(e.data.payload as { paused: boolean }).paused]
+      : [],
+  );
 }
 
 async function settle(ms = 5): Promise<void> {
@@ -353,7 +383,9 @@ describe("sing module", () => {
     });
     expect(asked.status).toBe("done");
     expect(asked.status === "done" && asked.result.text).toContain("開始準備");
-    expect(h.worker.submitted).toEqual([{ query: "夜に駆ける YOASOBI", key: 0 }]);
+    expect(h.worker.submitted).toEqual([
+      { query: "夜に駆ける YOASOBI", key: 0, exclusive_ack: true },
+    ]);
     expect(await h.section()).toContain("準備中:#1");
 
     h.worker.progress("j1", 0.5, "convert");
@@ -510,6 +542,59 @@ describe("sing module", () => {
     expect(h.singer.playing()).toBeNull();
   });
 
+  it("she says she is off before the worker takes the GPU, and speech pauses meanwhile", async () => {
+    h = await Harness.create();
+    await h.join();
+    await h.command("queue song request", { song: "Song A" });
+    expect(h.worker.submitted[0]?.exclusive_ack).toBe(true);
+    const pause = () => h.sup.services.require(SpeechPauseKey).paused();
+    h.worker.exclusive("j1", "waiting");
+    await settle(200);
+    expect(h.initiatives().at(-1)).toMatchObject({ reason: "song_prepare", context: VOICE });
+    expect(h.worker.gone).toEqual([]);
+    expect(pause()).toBeNull();
+    // She says it; once she is quiet the worker goes ahead and speech is off.
+    await h.publish(playback("started"));
+    await settle(1600);
+    expect(h.worker.gone).toEqual([]);
+    await h.publish(playback("finished"));
+    await settle(1600 + 800);
+    expect(h.worker.gone).toEqual(["j1"]);
+    expect(pause()).toBe("song");
+    h.worker.exclusive("j1", "active");
+    await settle(1600);
+    expect(pause()).toBe("song");
+    h.worker.finish("j1", "Song A");
+    await settle(1600);
+    expect(pause()).toBeNull();
+    expect(pauses(h)).toEqual([true, false]);
+
+    // The next song right after: no second notice, the worker goes at once.
+    await h.command("queue song request", { song: "Song B" });
+    h.worker.exclusive("j2", "waiting");
+    await settle(1600);
+    expect(h.worker.gone).toEqual(["j1", "j2"]);
+    expect(h.initiatives().filter((i) => i.reason === "song_prepare")).toHaveLength(1);
+  });
+
+  it("without a word from her, or out of voice, the worker does not wait", async () => {
+    h = await Harness.create();
+    await h.command("queue song request", { song: "Song A" });
+    h.worker.exclusive("j1", "waiting");
+    await settle(1600);
+    expect(h.worker.gone, "not in voice: nobody to tell").toEqual(["j1"]);
+    await h.stop();
+
+    h = await Harness.create();
+    await h.join();
+    await h.command("queue song request", { song: "Song A" });
+    h.worker.exclusive("j1", "waiting");
+    await settle(1600);
+    expect(h.worker.gone).toEqual([]);
+    await settle(8000);
+    expect(h.worker.gone).toEqual(["j1"]);
+  });
+
   it("starts after her opening line instead of over it", async () => {
     h = await Harness.create();
     await h.join();
@@ -602,7 +687,7 @@ describe("sing module", () => {
     });
     h.queue.next();
     await settle(50);
-    expect(h.worker.submitted).toEqual([{ query: "Queued Song", key: 0 }]);
+    expect(h.worker.submitted).toEqual([{ query: "Queued Song", key: 0, exclusive_ack: true }]);
     const entry = h.singer.list.get(1);
     expect(entry).toMatchObject({ forced: true, requester: AMY, requester_name: "Amy" });
     h.worker.finish("j1", "Queued Song", 1);

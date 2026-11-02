@@ -33,6 +33,7 @@ import {
   type JsonObject,
   type JsonValue,
   type PlaybackState,
+  SpeechPauseKey,
   VoiceFloorKey,
   VoiceSinkKey,
   type VoiceUtterance,
@@ -602,6 +603,25 @@ describe("voice", () => {
     const start = await e.node.recvType("play_start");
     e.node.sendJson({ type: "playback", play: start.play as number, state: "finished" });
     expect(await speaking).toBe("completed");
+  });
+
+  it("speech_pauses_while_the_song_worker_has_the_gpu", async () => {
+    const e = await boot();
+    let paused: string | null = "song";
+    e.h.services.provide("sing", SpeechPauseKey, { paused: () => paused });
+    const sink = e.h.services.require(VoiceSinkKey);
+    // Her line is not sent to the (offloaded) TTS worker.
+    expect(await sink.speak(voiceCtx, "準備中說話", null, null)).toBe("interrupted");
+    expect(e.tts.requests).toHaveLength(0);
+    // What people say is dropped, not queued for later.
+    e.speakStream(1, "u1", utteranceAudio());
+    await new Promise((r) => setTimeout(r, 300));
+    expect(e.asr.calls).toHaveLength(0);
+    paused = null;
+    const events = e.h.subscribe(["voice.utterance"]);
+    e.speakStream(2, "u1", utteranceAudio());
+    expect((await nextUtterance(events)).text).toBe("這個遊戲好難");
+    expect(e.asr.calls).toHaveLength(1);
   });
 
   it("health_reports_a_missing_node", async () => {
