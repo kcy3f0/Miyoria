@@ -126,6 +126,24 @@ describe("agenda", () => {
     );
   });
 
+  it("puts items on hold and lifts the hold, persisted", () => {
+    const e = new SelfEngine(selfConfig(), T0);
+    const item = e.addAgenda({ text: "過來陪我玩麥塊" }, T0);
+    expect(item.blocked).toBeNull();
+    const held = e.blockAgenda(item.id, { capability: "game.start", reason: "遊戲沒開" }, T0 + 1);
+    expect(held?.blocked).toEqual({
+      capability: "game.start",
+      reason: "遊戲沒開",
+      at: new Date(T0 + 1).toISOString(),
+    });
+    const copy = new SelfEngine(selfConfig(), T0);
+    expect(copy.restore(e.toJson(), T0 + 2)).toBe(true);
+    expect(copy.agenda(T0 + 2)[0]?.blocked?.capability).toBe("game.start");
+    expect(copy.unblockAgenda(item.id, T0 + 3)?.blocked).toBeNull();
+    expect(copy.unblockAgenda(item.id, T0 + 4)).toBeNull();
+    expect(e.blockAgenda("nope", { capability: "x", reason: "y" }, T0)).toBeNull();
+  });
+
   it("keeps the open list and the history bounded", () => {
     const e = new SelfEngine(selfConfig({ max_open_agenda: 2, keep_closed_agenda: 1 }), T0);
     const a = e.addAgenda({ text: "a" }, T0);

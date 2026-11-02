@@ -120,6 +120,18 @@ export class SelfService implements SelfState {
     return item;
   }
 
+  blockAgenda(id: string, block: { capability: string; reason: string }): AgendaItem | null {
+    const item = this.d.engine.blockAgenda(id, block, this.now());
+    if (item) this.d.changed("agenda");
+    return item;
+  }
+
+  unblockAgenda(id: string): AgendaItem | null {
+    const item = this.d.engine.unblockAgenda(id, this.now());
+    if (item) this.d.changed("agenda");
+    return item;
+  }
+
   feeling(person: PersonId): Feeling | null {
     return this.d.feelings.get(person);
   }

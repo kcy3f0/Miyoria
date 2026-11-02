@@ -219,6 +219,9 @@ describe("self prompt", () => {
     });
     h.self.addAgenda({ text: "等 Owen 上線問他報告結果" });
     h.self.addAgenda({ text: "明天再說", due: "2026-11-03T00:00:00Z" });
+    // On hold (its action failed): not pushed in conversations.
+    const held = h.self.addAgenda({ text: "過來陪我玩麥塊" });
+    h.self.blockAgenda(held.id, { capability: "game.start", reason: "Minecraft 還沒開" });
     await h.self.setFeeling("person-1", "他昨天沒理我,有點不爽", "self");
     const [section] = await prompt.contribute(
       request([

@@ -83,6 +83,11 @@ const AgendaSchema = z.object({
   expires_at: z.string().nullable().catch(null),
   status: z.enum(["open", "done", "expired", "dropped"]),
   closed_at: z.string().nullable().catch(null),
+  blocked: z
+    .object({ capability: z.string(), reason: z.string(), at: z.string() })
+    .nullable()
+    .catch(null)
+    .default(null),
 });
 
 const TalkSchema = z.object({
@@ -290,6 +295,7 @@ export class SelfEngine {
       expires_at: expires,
       status: "open",
       closed_at: null,
+      blocked: null,
     };
     this.#agenda.push(item);
     const open = this.#agenda.filter((a) => a.status === "open");
@@ -314,6 +320,31 @@ export class SelfEngine {
 
   dropAgenda(id: string, now: number): AgendaItem | null {
     return this.#finish(id, "dropped", now);
+  }
+
+  /** Puts an open item on hold until `unblockAgenda`. */
+  blockAgenda(
+    id: string,
+    block: { capability: string; reason: string },
+    now: number,
+  ): AgendaItem | null {
+    this.#expire(now);
+    const item = this.#agenda.find((a) => a.id === id && a.status === "open");
+    if (!item) return null;
+    item.blocked = {
+      capability: cut(block.capability, 64),
+      reason: cut(block.reason, MAX_WHY),
+      at: toTimestamp(now),
+    };
+    return { ...item };
+  }
+
+  unblockAgenda(id: string, now: number): AgendaItem | null {
+    this.#expire(now);
+    const item = this.#agenda.find((a) => a.id === id && a.status === "open");
+    if (!item?.blocked) return null;
+    item.blocked = null;
+    return { ...item };
   }
 
   #finish(id: string, status: "done" | "dropped", now: number): AgendaItem | null {

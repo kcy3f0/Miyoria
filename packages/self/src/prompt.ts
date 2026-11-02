@@ -75,7 +75,8 @@ export class SelfPrompt implements PromptContributor {
     const now = Date.parse(snap.at);
     const agenda = this.self
       .agenda()
-      .filter((a) => a.due === null || Date.parse(a.due) <= now)
+      // On hold (its action failed): not brought up until the situation changes.
+      .filter((a) => !a.blocked && (a.due === null || Date.parse(a.due) <= now))
       .slice(0, MAX_AGENDA);
     if (agenda.length > 0) {
       lines.push("你打算做的事:");
