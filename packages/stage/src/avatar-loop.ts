@@ -10,7 +10,14 @@ import type { AvatarProfile } from "./avatar.js";
 import { type BlinkConfig, BlinkScheduler } from "./blink.js";
 import { EmotionController, type VtsCommand } from "./emotion.js";
 import { type GestureConfig, GestureController } from "./gesture.js";
-import { type Levels, type LipSyncConfig, type Mouth, MouthShaper, VOWELS } from "./lipsync.js";
+import {
+  type LevelSample,
+  type Levels,
+  type LipSyncConfig,
+  type Mouth,
+  MouthShaper,
+  VOWELS,
+} from "./lipsync.js";
 import { type GazeConfig, IdleMotion, MOTION_PARAMS, type MotionConfig } from "./motion.js";
 import { clampParam, type EmotionConfig, PoseBlender, paramRange } from "./pose.js";
 import type { GazeTarget } from "./protocol.js";
@@ -66,6 +73,7 @@ export class AvatarLoop {
   #speaking = false;
   #intensity = 1;
   #known: Set<string> | null = null;
+  #levelObserver: ((sample: LevelSample | null) => void) | null = null;
 
   constructor(
     config: AvatarLoopConfig,
@@ -201,10 +209,17 @@ export class AvatarLoop {
     if (this.#vts.get() === client) this.#known = params;
   }
 
+  /** Receives every frame's level sample (`null`: no audio), e.g. for the overlay's waveform. */
+  observeLevels(observer: ((sample: LevelSample | null) => void) | null): void {
+    this.#levelObserver = observer;
+  }
+
   /** Mouth opening the motion reacts to. */
   #mouthFrame(dt: number, now: number): Mouth | null {
     if (this.#config.avatar.lipsync !== "inject") return null;
-    return this.#mouth.update(this.#levels.take(now), dt);
+    const sample = this.#levels.take(now);
+    this.#levelObserver?.(sample);
+    return this.#mouth.update(sample, dt);
   }
 
   /** One frame of parameter values (clamped, unfiltered). */

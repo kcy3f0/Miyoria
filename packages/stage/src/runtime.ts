@@ -158,6 +158,17 @@ export async function runStageWith(
       }
       spawn("vts", () => vtsManager(config, vts, tasks.signal));
       avatar = new AvatarLoop(config, levels, vts, clock);
+      // The overlay's waveform follows the same (latency-delayed) levels as her mouth.
+      let audible = false;
+      avatar.observeLevels((sample) => {
+        if (sample === null) {
+          if (audible) overlay.levels(0, null);
+          audible = false;
+          return;
+        }
+        audible = true;
+        overlay.levels(sample.rms, sample.bands);
+      });
       const loop = avatar;
       spawn("avatar", () => loop.run(tasks.signal));
     }

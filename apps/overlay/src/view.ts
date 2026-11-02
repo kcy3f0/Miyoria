@@ -11,6 +11,7 @@ import {
   splitAt,
   STALE_PARTIAL_MS,
 } from "./typewriter.js";
+import { Wave } from "./wave.js";
 
 const QUEUE_SHOWN = 5;
 
@@ -59,6 +60,7 @@ export class Overlay {
   private readonly queueList: HTMLElement;
   private readonly queueMore: HTMLElement;
   private readonly offline: HTMLElement;
+  private readonly wave: Wave;
 
   constructor(
     root: HTMLElement,
@@ -66,6 +68,9 @@ export class Overlay {
   ) {
     root.replaceChildren();
     const main = el("main", "overlay", root);
+
+    this.wave = new Wave(main);
+    this.wave.hidden = !cfg.show.has("wave");
 
     this.subtitle = el("section", "subtitle is-hidden", main);
     const p = el("p", "subtitle__text", this.subtitle);
@@ -106,6 +111,11 @@ export class Overlay {
   }
 
   dispatch(action: Action): void {
+    if (action.type === "levels") {
+      // Same clock as the rAF timestamps, but not tied to a frame having run.
+      this.wave.level(action.rms, performance.now());
+      return;
+    }
     const prev = this.state;
     this.state = reduce(prev, action);
     if (this.state === prev) return;
@@ -128,6 +138,7 @@ export class Overlay {
       if (this.shown >= total) this.completeAt ??= now;
       this.maybeHide(now, total);
     }
+    this.wave.frame(dt, now);
     this.offline.hidden = !(this.cfg.debug && !this.state.connected);
   }
 
@@ -208,6 +219,7 @@ export class Overlay {
       this.emotionName.textContent = emotion.name;
       const c = emotionColor(emotion.name);
       this.emotionDot.style.setProperty("--dot", c);
+      this.wave.accent(c);
       this.emotionDot.style.setProperty("--level", String(0.45 + 0.55 * emotion.intensity));
     }
 

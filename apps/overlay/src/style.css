@@ -101,6 +101,24 @@ body {
   color: transparent;
 }
 
+/* ── voice waveform (left edge) ───────────────────────────────────────── */
+
+/* Strokes are drawn by wave.ts; the element only places the strip and fades it in and out. */
+.wave {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 10rem;
+  height: 100%;
+  opacity: 1;
+  transition: opacity 260ms var(--ease-out);
+}
+
+.wave.is-idle {
+  opacity: 0;
+  transition-duration: 900ms;
+}
+
 /* ── side panel ───────────────────────────────────────────────────────── */
 
 .panel {
@@ -290,7 +308,8 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .subtitle,
   .subtitle.is-hidden,
-  .emotion__dot {
+  .emotion__dot,
+  .wave {
     transition-duration: 1ms;
   }
 

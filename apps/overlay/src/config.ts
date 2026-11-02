@@ -2,7 +2,7 @@
 //   /overlay/?show=subtitles,queue&cps=16&scale=1.1&ws=ws://192.168.1.20:7884/overlay/ws
 import { DEFAULT_CPS } from "./typewriter.js";
 
-export const SECTIONS = ["subtitles", "emotion", "status", "queue"] as const;
+export const SECTIONS = ["subtitles", "emotion", "status", "queue", "wave"] as const;
 export type Section = (typeof SECTIONS)[number];
 
 export interface OverlayConfig {

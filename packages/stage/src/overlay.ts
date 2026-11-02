@@ -46,6 +46,18 @@ export class OverlayHub {
     this.#send(JSON.stringify({ type: "speaking", state }));
   }
 
+  /**
+   * Her voice level as viewers hear it (`rms` 0..1, the lip-sync `bands`), once per avatar frame
+   * while there is audio and once with `rms: 0` when it stops. Not kept for new clients.
+   */
+  levels(rms: number, bands: readonly number[] | null): void {
+    if (this.#listeners.size === 0) return;
+    const round = (v: number) => Math.round(v * 1e4) / 1e4;
+    const v: Record<string, unknown> = { type: "levels", rms: round(rms) };
+    if (bands !== null && bands.length > 0) v.bands = bands.map(round);
+    this.#send(JSON.stringify(v));
+  }
+
   /** `core`: the Stage is connected to Core. */
   status(status: StageStatus, core: boolean): void {
     const v = JSON.stringify({

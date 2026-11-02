@@ -26,6 +26,18 @@ export function startDemo(emit: (m: FeedMessage) => void): () => void {
       timers.add(t);
     });
 
+  // Voice levels while she "speaks": syllables (~6/s) with a little jitter, like real speech.
+  let talking = false;
+  let phase = 0;
+  const levels = setInterval(() => {
+    if (!talking) return;
+    phase += 1000 / 60;
+    const syllable = Math.max(0, Math.sin((phase / 1000) * Math.PI * 6.2)) ** 0.7;
+    const phrase = 0.55 + 0.45 * Math.sin((phase / 1000) * Math.PI * 0.7);
+    const rms = 0.012 + 0.16 * syllable * phrase * (0.75 + Math.random() * 0.5);
+    emit({ type: "levels", rms, bands: null });
+  }, 1000 / 60);
+
   void (async () => {
     emit({
       type: "status",
@@ -44,6 +56,7 @@ export function startDemo(emit: (m: FeedMessage) => void): () => void {
       const line = LINES[(turn - 1) % LINES.length] as Line;
       emit({ type: "emotion", name: line.emotion, intensity: line.emotion === "neutral" ? 0.6 : 1 });
       emit({ type: "speaking", state: "started" });
+      talking = true;
       const chars = [...line.text];
       // Streamed in chunks, the way the agent's text arrives.
       for (let i = 0; i < chars.length && !stopped; i += 4) {
@@ -52,6 +65,8 @@ export function startDemo(emit: (m: FeedMessage) => void): () => void {
       }
       emit({ type: "subtitle", turn: `demo-${turn}`, text: line.text, final: true });
       await wait(900);
+      talking = false;
+      emit({ type: "levels", rms: 0, bands: null });
       emit({ type: "speaking", state: "stopped" });
       await wait(5200);
     }
@@ -59,6 +74,7 @@ export function startDemo(emit: (m: FeedMessage) => void): () => void {
 
   return () => {
     stopped = true;
+    clearInterval(levels);
     for (const t of timers) clearTimeout(t);
     timers.clear();
   };

@@ -7,6 +7,7 @@
 //   {"type":"speaking","state":"started"|"stopped"}
 //   {"type":"status","core":bool,"vts":bool,"obs":bool,"scene":"…"|null,"streaming":bool}
 //   {"type":"queue","items":[…]}
+//   {"type":"levels","rms":0..1,"bands":[…]?}   her voice level, once per avatar frame (~60/s)
 
 export interface Subtitle {
   turn: string;
@@ -54,7 +55,9 @@ export type FeedMessage =
   | { type: "emotion"; name: string; intensity: number }
   | { type: "speaking"; state: "started" | "stopped" }
   | { type: "status"; status: Status }
-  | { type: "queue"; items: QueueItem[] };
+  | { type: "queue"; items: QueueItem[] }
+  /** High-rate audio level: drawn by the waveform, never part of the reduced state. */
+  | { type: "levels"; rms: number; bands: number[] | null };
 
 /** Everything the reducer accepts: feed messages plus the connection state, which the transport reports. */
 export type Action = FeedMessage | { type: "connection"; connected: boolean };
@@ -166,6 +169,16 @@ export function parseMessage(text: string): FeedMessage | null {
       }
       return { type: "queue", items: out };
     }
+    case "levels": {
+      const rms = raw.rms;
+      if (typeof rms !== "number" || !Number.isFinite(rms)) return null;
+      const b = raw.bands;
+      const bands =
+        Array.isArray(b) && b.length > 0 && b.length <= 16 && b.every((x) => typeof x === "number" && Number.isFinite(x))
+          ? (b as number[]).map((x) => Math.max(x, 0))
+          : null;
+      return { type: "levels", rms: clamp01(rms), bands };
+    }
     default:
       return null;
   }
@@ -188,6 +201,8 @@ export function reduce(state: OverlayState, action: Action): OverlayState {
       return { ...state, queue: action.items };
     case "subtitle":
       return reduceSubtitle(state, action);
+    case "levels":
+      return state;
   }
 }
 
