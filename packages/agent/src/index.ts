@@ -87,8 +87,8 @@ export {
   voiceScope,
 } from "./handle.js";
 export { awaitBackfill, backfillLimit, replyParents, startBackfill } from "./history.js";
-export { linkMentions, type MentionTarget } from "./mentions.js";
 export { AgentIntents } from "./intents.js";
+export { linkMentions, type MentionTarget } from "./mentions.js";
 export { AgentModule } from "./module.js";
 export { PersonaHandle, PersonaHandleKey } from "./persona.js";
 export {
@@ -109,8 +109,8 @@ export {
   INTENT,
   INTENT_TITLE,
   INTERRUPTED,
-  MAX_PARENT_CHARS,
   type IntentData,
+  MAX_PARENT_CHARS,
   PEOPLE_TITLE,
   PRESENT_TITLE,
   renderSections,

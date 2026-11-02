@@ -195,6 +195,7 @@ describe("memory wipe", () => {
       "social",
       "agent",
       "self",
+      "mind",
       "mood",
     ]);
     expect(wipeModules("memories")).toEqual(["memory", "initiative"]);

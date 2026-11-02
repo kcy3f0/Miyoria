@@ -1387,6 +1387,7 @@ function behaviour(open: () => Promise<Store>): void {
       relationship_deltas: 1,
       self_state: 1,
       self_feelings: 1,
+      mind_thoughts: 0,
       mood: 1,
       decision_log: 1,
       channel_modes: 1,

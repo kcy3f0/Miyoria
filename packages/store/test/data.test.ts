@@ -170,6 +170,7 @@ describe("data categories", () => {
       "social",
       "agent",
       "self",
+      "mind",
       "world",
       "memory",
     ]);

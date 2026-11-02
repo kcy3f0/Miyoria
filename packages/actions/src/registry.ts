@@ -780,7 +780,12 @@ export class ActuatorRegistry implements ActuatorExecutor {
     }
     if (sent === 0) this.escalations.cancel(id, "the approval card could not be sent");
     const result = await answer;
-    const by = result.by === null ? null : accountRefString(result.by);
+    const by =
+      result.by === null
+        ? null
+        : typeof result.by === "string"
+          ? result.by
+          : accountRefString(result.by);
     return result.approved
       ? allow("escalation", result.reason, by)
       : deny("escalation", `uncertain (${review}); ${result.reason}`, by);

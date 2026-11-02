@@ -199,7 +199,9 @@ describe("intents", () => {
     // Her plan is data (user role); the system messages carry none of it.
     const system = first?.messages.filter((m) => m.role === "system").map((m) => m.content);
     expect(system?.join("\n")).not.toContain("你們在聊什麼");
-    const data = first?.messages.find((m) => m.role === "user" && m.content.includes("你的打算"));
+    const data = first?.messages.find(
+      (m) => m.role === "user" && typeof m.content === "string" && m.content.includes("你的打算"),
+    );
     expect(data?.content).toContain("欸,你們在聊什麼");
     const trace = r.h.traces().find((t) => t.turn === outcome.turn);
     expect(trace?.reasons).toContain("intent:chat.start");

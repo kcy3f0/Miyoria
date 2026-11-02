@@ -110,7 +110,8 @@ describe("mind prompt", () => {
   });
 
   it("puts it in data blocks that cannot be closed from inside", () => {
-    const data = mindMessages(input())[1]?.content ?? "";
+    const content = mindMessages(input())[1]?.content ?? "";
+    const data = typeof content === "string" ? content : "";
     for (const title of [
       "為什麼現在想這些",
       "可能的契機",
