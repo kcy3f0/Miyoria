@@ -17,6 +17,16 @@ api_key = "${LLM_API_KEY:-}"
 # 全域預設;profile.toml 的 [llm.purposes] 會覆寫
 [llm.purposes]
 chat = ["deepseek:deepseek-chat"]
+# 高風險動作的自我審核;不設就用 chat 的模型(啟動後第一次審核會記一行警告)
+review = ["deepseek:deepseek-chat"]
+
+# 推理模型要不要先思考,依用途(沒列的 = 不思考)。不急的判斷開、要即時的關:
+# 文字回覆會思考、語音回覆一律不思考(agent 每次自己決定,不看這裡的 chat)
+[llm.thinking]
+chat = true          # 文字聊天回覆
+review = true        # 高風險動作的自我審核
+summarizer = true    # 記憶整理
+fast = false         # 要不要插話的快速判斷(語音裡一律不思考)
 
 # 價格(USD / 百萬 token)與預算;不設就不限制
 # [llm.pricing."deepseek:deepseek-chat"]
@@ -131,6 +141,16 @@ barge_in = "stop"          # 有人插話時停止說話:stop | ignore
 # 預設 = OBS 伺服器 rtmp://127.0.0.1:1935/live、金鑰 miyoria。`/voice golive start` 會用它
 # (她還不在語音裡時,會先進你所在的語音頻道)。
 # golive_source = "rtmp://127.0.0.1:1935/live/miyoria"
+
+# 她的行動閘門:進語音、開台、換場景、玩遊戲、私訊……不論誰要求都要過這裡(紀錄在稽核紀錄)。
+# 緊急暫停用 /admin autonomy pause;每個人可以用 /me privacy 拒絕私訊或被主動找
+[modules.actions]
+# forbidden = ["message.dm"]     # 完全禁止的能力(也可以 "stream.*")
+# dm_strangers = false           # 不私訊不熟的人(熟悉度低於 stranger_familiarity)
+# [modules.actions.medium]       # 中風險動作的次數上限(她自己決定或聊天請求時;指令不受限)
+# per_day = 30
+# per_person_per_day = 8
+# cooldown_ms = 20000
 
 [modules.agent]
 # 頻道模式:off | mention-only | ambient | always。也可以在 Discord 用 /channel mode 即時切換

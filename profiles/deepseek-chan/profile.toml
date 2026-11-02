@@ -36,3 +36,4 @@ chat       = ["deepseek:deepseek-v4.1-flash"]
 fast       = ["deepseek:deepseek-v4.1-flash"]
 summarizer = ["deepseek:deepseek-v4.1-flash"]
 game       = ["deepseek:deepseek-v4.1-flash"]
+review     = ["deepseek:deepseek-v4.1-flash"]   # 高風險動作的自我審核(thinking 見 [llm.thinking])
