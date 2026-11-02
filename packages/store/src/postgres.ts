@@ -38,6 +38,15 @@ import {
   toMicros,
   u32,
 } from "./common.js";
+import {
+  EXPORT_TABLES,
+  type ExportTable,
+  emptyCounts,
+  exportColumns,
+  exportRow,
+  planCoversKey,
+  planTables,
+} from "./profile-data.js";
 import type {
   Account,
   AuditEntry,
@@ -70,9 +79,13 @@ import type {
   ModuleStateStore,
   PeopleStore,
   PersonaOverrideStore,
+  ProfileDataStore,
+  ProfileExport,
   RelationshipStore,
   SettingsStore,
   Store,
+  WipeCounts,
+  WipePlan,
 } from "./stores.js";
 
 const log = getLogger("store.postgres");
@@ -372,6 +385,10 @@ class PgMessageLog implements MessageLog {
       }
       throw new StoreError("cannot append log entry", { cause });
     }
+  }
+
+  async purge(profile: ProfileId): Promise<number> {
+    return this.db.execute("DELETE FROM message_log WHERE profile_id = $1", [profile]);
   }
 
   async recent(profile: ProfileId, context: ContextKey, limit: number): Promise<LogEntry[]> {
@@ -736,6 +753,90 @@ class PgSettings implements SettingsStore {
     return new Map(
       rows.map((r) => [str(r, "key"), parseJson<JsonValue>(str(r, "value"), "setting")]),
     );
+  }
+
+  async deletePrefix(profile: ProfileId, prefix: string): Promise<number> {
+    return this.db.execute(
+      "DELETE FROM profile_settings WHERE profile_id = $1 AND left(key, char_length($2)) = $2",
+      [profile, prefix],
+    );
+  }
+}
+
+// ---- whole-profile export / wipe ----------------------------------------------------------
+
+class PgProfileData implements ProfileDataStore {
+  constructor(private readonly db: Pg) {}
+
+  async export(profile: ProfileId, plan: WipePlan): Promise<ProfileExport> {
+    const nowRows = await this.db.query("SELECT COALESCE($1::timestamptz, now()) AS now", [
+      this.db.now(),
+    ]);
+    const out: ProfileExport = {
+      profile,
+      exported_at: normalizeTimestamp(str(nowRows[0] ?? {}, "now")),
+      plan: structuredClone(plan),
+      memories: [],
+      relationships: [],
+      relationship_deltas: [],
+      messages: [],
+      decisions: [],
+      settings: {},
+    };
+    for (const field of planTables(plan)) {
+      const spec: ExportTable = EXPORT_TABLES[field];
+      const rows = await this.db.query(
+        `SELECT ${exportColumns(spec)} FROM ${spec.table} WHERE profile_id = $1 ORDER BY ${spec.order}`,
+        [profile],
+      );
+      out[field] = rows.map((row) => exportRow(spec, row));
+    }
+    const settings = await this.db.query(
+      'SELECT key, value::text AS value FROM profile_settings WHERE profile_id = $1 ORDER BY key COLLATE "C"',
+      [profile],
+    );
+    for (const row of settings) {
+      const key = str(row, "key");
+      if (planCoversKey(plan, key)) {
+        out.settings[key] = parseJson<JsonValue>(str(row, "value"), "setting");
+      }
+    }
+    return out;
+  }
+
+  async wipe(profile: ProfileId, plan: WipePlan): Promise<WipeCounts> {
+    try {
+      return await this.db.tx(async (client) => {
+        const counts = emptyCounts();
+        const del = (table: string) =>
+          this.db.execute(`DELETE FROM ${table} WHERE profile_id = $1`, [profile], client);
+        if (plan.memories) counts.memories = await del("memory_records");
+        if (plan.relationships) {
+          counts.relationships = await del("relationships");
+          counts.relationship_deltas = await del("relationship_deltas");
+        }
+        if (plan.messages) counts.messages = await del("message_log");
+        if (plan.decisions) counts.decisions = await del("decision_log");
+        for (const key of plan.settings_keys) {
+          counts.settings += await this.db.execute(
+            "DELETE FROM profile_settings WHERE profile_id = $1 AND key = $2",
+            [profile, key],
+            client,
+          );
+        }
+        for (const prefix of plan.settings_prefixes) {
+          counts.settings += await this.db.execute(
+            "DELETE FROM profile_settings WHERE profile_id = $1 AND left(key, char_length($2)) = $2",
+            [profile, prefix],
+            client,
+          );
+        }
+        return counts;
+      });
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot wipe the profile data", { cause });
+    }
   }
 }
 
@@ -1327,6 +1428,7 @@ export class PostgresStore implements Store {
   readonly identity: IdentityStore;
   readonly auth: AuthStore;
   readonly audit: AuditLog;
+  readonly profileData: ProfileDataStore;
   readonly #pool: pg.Pool;
   #closed = false;
 
@@ -1343,6 +1445,7 @@ export class PostgresStore implements Store {
     this.identity = new PgIdentity(db);
     this.auth = new PgAuth(db);
     this.audit = new PgAudit(db);
+    this.profileData = new PgProfileData(db);
   }
 
   /** Connects and runs pending migrations. */

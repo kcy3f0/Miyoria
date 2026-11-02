@@ -1287,6 +1287,95 @@ function behaviour(open: () => Promise<Store>): void {
     expect(hitIds(await search(['"', "拉麵"]))).toEqual(new Set([r.id]));
   });
 
+  it("wipes one profile's memory data in one go and exports it first", async () => {
+    const profile = unique("profile");
+    const other = unique("profile");
+    const person = unique("person") as PersonId;
+    const ctx = channel(unique("g"), "chan", "channel");
+    const t0 = Date.UTC(2026, 0, 1);
+    for (const p of [profile, other]) {
+      await store.memories.upsert(memory(p, "fact", guildScope("g"), "喜歡貓", at(t0)));
+      await store.relationships.upsert(relationship(p, person, t0));
+      await store.relationships.recordDelta(p, person, delta(at(t0), 1, "nice"));
+      await store.messages.append(entry(p, ctx, "嗨", at(t0)));
+      await store.decisions.append(decision(p, ctx, "replied", at(t0)));
+      await store.settings.set(p, "memory_watermark:a", { at: 1 });
+      await store.settings.set(p, "memory_watermark:b", { at: 2 });
+      await store.settings.set(p, "mood:last", { v: 1 });
+      await store.settings.set(p, "channel_mode:x", "always");
+    }
+    const plan = {
+      memories: true,
+      relationships: true,
+      messages: true,
+      decisions: true,
+      settings_keys: ["mood:last"],
+      settings_prefixes: ["memory_watermark:"],
+    };
+    const backup = await store.profileData.export(profile, plan);
+    expect(backup.profile).toBe(profile);
+    expect(backup.memories).toHaveLength(1);
+    expect(backup.memories[0]).toMatchObject({
+      kind: "fact",
+      content: "content of 喜歡貓",
+      done: false,
+    });
+    expect(backup.memories[0]).not.toHaveProperty("embedding");
+    expect(backup.relationships[0]).toMatchObject({ person_id: person });
+    expect(backup.relationship_deltas[0]).toMatchObject({ reason: "nice" });
+    expect(backup.messages[0]).toMatchObject({ text: "嗨", is_self: false, ts: at(t0) });
+    expect(backup.decisions).toHaveLength(1);
+    expect(backup.settings).toEqual({
+      "memory_watermark:a": { at: 1 },
+      "memory_watermark:b": { at: 2 },
+      "mood:last": { v: 1 },
+    });
+
+    const counts = await store.profileData.wipe(profile, plan);
+    expect(counts).toEqual({
+      memories: 1,
+      relationships: 1,
+      relationship_deltas: 1,
+      messages: 1,
+      decisions: 1,
+      settings: 3,
+    });
+    expect(await store.memories.list(profile, { ...baseFilter, limit: 9 })).toEqual([]);
+    expect(await store.relationships.get(profile, person)).toBeNull();
+    expect(await store.messages.recent(profile, ctx, 9)).toEqual([]);
+    expect(await store.decisions.recent(profile, null, 9)).toEqual([]);
+    expect([...(await store.settings.list(profile, "")).keys()]).toEqual(["channel_mode:x"]);
+    // Other profiles are untouched.
+    expect(await store.memories.list(other, { ...baseFilter, limit: 9 })).toHaveLength(1);
+    expect(await store.messages.recent(other, ctx, 9)).toHaveLength(1);
+    expect(await store.settings.list(other, "memory_watermark:")).toHaveProperty("size", 2);
+
+    // A narrower plan leaves the rest.
+    const memoriesOnly = { ...plan, relationships: false, messages: false, decisions: false };
+    expect(
+      await store.profileData.wipe(other, {
+        ...memoriesOnly,
+        settings_keys: [],
+        settings_prefixes: [],
+      }),
+    ).toMatchObject({ memories: 1, messages: 0 });
+    expect(await store.messages.recent(other, ctx, 9)).toHaveLength(1);
+  });
+
+  it("purges messages and deletes settings by prefix", async () => {
+    const profile = unique("profile");
+    const ctx = channel(unique("g"), "chan", "channel");
+    await store.messages.append(entry(profile, ctx, "a", at(0)));
+    await store.messages.append(entry(profile, channel(null, "dm", "dm"), "b", at(0)));
+    expect(await store.messages.purge(profile)).toBe(2);
+    expect(await store.messages.recent(profile, ctx, 9)).toEqual([]);
+    await store.settings.set(profile, "a%:1", 1);
+    await store.settings.set(profile, "a%:2", 2);
+    await store.settings.set(profile, "ab:3", 3);
+    expect(await store.settings.deletePrefix(profile, "a%:")).toBe(2);
+    expect([...(await store.settings.list(profile, "")).keys()]).toEqual(["ab:3"]);
+  });
+
   it("scopes match whatever their key order", async () => {
     const profile = unique("profile");
     const guild = unique("g");

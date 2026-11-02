@@ -7,6 +7,7 @@
 import {
   type AccountRef,
   type ContextKey,
+  type JsonObject,
   type JsonValue,
   type ModuleId,
   type PersonId,
@@ -45,6 +46,8 @@ export interface MessageLog {
    * keep their append order.
    */
   recent(profile: ProfileId, context: ContextKey, limit: number): Promise<LogEntry[]>;
+  /** Deletes every entry of a profile (all contexts); returns how many. */
+  purge(profile: ProfileId): Promise<number>;
 }
 
 /** Persisted runtime enabled / disabled flag per module. */
@@ -84,7 +87,7 @@ export interface DecisionLog {
 }
 
 /**
- * Small per-profile JSON settings changed at runtime (e.g. channel modes set with `/mode`).
+ * Small per-profile JSON settings changed at runtime (e.g. channel modes set with `/channel mode`).
  * Keys are free-form, conventionally `area:subkey`.
  */
 export interface SettingsStore {
@@ -93,6 +96,8 @@ export interface SettingsStore {
   set(profile: ProfileId, key: string, value: JsonValue | null): Promise<void>;
   /** All keys starting with `prefix`, in key order. */
   list(profile: ProfileId, prefix: string): Promise<Map<string, JsonValue>>;
+  /** Deletes every key starting with `prefix`; returns how many. */
+  deletePrefix(profile: ProfileId, prefix: string): Promise<number>;
 }
 
 /** Long-term memory records (episodes, facts, her own notes, followups). */
@@ -181,6 +186,53 @@ export interface AuditLog {
   recent(limit: number, actor: string | null): Promise<AuditEntry[]>;
 }
 
+/** What a profile wipe removes (everything else, e.g. people, accounts, roles, stays). */
+export interface WipePlan {
+  /** `memory_records` (with their embeddings). */
+  memories: boolean;
+  /** `relationships` and `relationship_deltas`. */
+  relationships: boolean;
+  /** `message_log`. */
+  messages: boolean;
+  /** `decision_log`. */
+  decisions: boolean;
+  /** Settings keys removed exactly. */
+  settings_keys: string[];
+  /** Settings keys removed by prefix. */
+  settings_prefixes: string[];
+}
+
+/** Rows removed by a wipe, per table. */
+export interface WipeCounts {
+  memories: number;
+  relationships: number;
+  relationship_deltas: number;
+  messages: number;
+  decisions: number;
+  settings: number;
+}
+
+/** The rows a wipe would remove, as plain JSON (the backup sent before wiping). */
+export interface ProfileExport {
+  profile: ProfileId;
+  exported_at: Timestamp;
+  plan: WipePlan;
+  memories: JsonObject[];
+  relationships: JsonObject[];
+  relationship_deltas: JsonObject[];
+  messages: JsonObject[];
+  decisions: JsonObject[];
+  settings: JsonObject;
+}
+
+/** Whole-profile data operations, each in one transaction. */
+export interface ProfileDataStore {
+  /** Everything `wipe(profile, plan)` would delete. */
+  export(profile: ProfileId, plan: WipePlan): Promise<ProfileExport>;
+  /** Deletes what `plan` lists for `profile`, all or nothing. */
+  wipe(profile: ProfileId, plan: WipePlan): Promise<WipeCounts>;
+}
+
 /**
  * One handle per storage area, all backed by the same backend. Areas are separate objects
  * (several of them have a `get` / `list` / `delete` with different signatures).
@@ -197,6 +249,7 @@ export interface Store {
   readonly identity: IdentityStore;
   readonly auth: AuthStore;
   readonly audit: AuditLog;
+  readonly profileData: ProfileDataStore;
   /** Releases the backend (closes the database). */
   close(): Promise<void>;
 }
@@ -213,4 +266,5 @@ export const RelationshipStoreKey = serviceKey<RelationshipStore>("RelationshipS
 export const IdentityStoreKey = serviceKey<IdentityStore>("IdentityStore");
 export const AuthStoreKey = serviceKey<AuthStore>("AuthStore");
 export const AuditLogKey = serviceKey<AuditLog>("AuditLog");
+export const ProfileDataStoreKey = serviceKey<ProfileDataStore>("ProfileDataStore");
 export const StoreKey = serviceKey<Store>("Store");

@@ -352,6 +352,7 @@ describe("consent", () => {
       get: () => Promise.reject(new Error("db down")),
       set: () => Promise.resolve(),
       list: () => Promise.resolve(new Map()),
+      deletePrefix: () => Promise.resolve(0),
     };
     expect(await new Consent("opt-out", broken).allowed(acc("1"))).toBe(false);
   });

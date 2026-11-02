@@ -31,4 +31,17 @@ export class MemorySettingsStore implements SettingsStore {
     const keys = [...entries.keys()].filter((k) => k.startsWith(prefix)).sort();
     return new Map(keys.map((k) => [k, structuredClone(entries.get(k) as JsonValue)]));
   }
+
+  async deletePrefix(profile: ProfileId, prefix: string): Promise<number> {
+    const entries = this.#data.get(profile);
+    if (!entries) return 0;
+    let n = 0;
+    for (const key of [...entries.keys()]) {
+      if (key.startsWith(prefix)) {
+        entries.delete(key);
+        n++;
+      }
+    }
+    return n;
+  }
 }

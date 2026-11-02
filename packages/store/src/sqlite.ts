@@ -54,6 +54,15 @@ import {
   toMicros,
   u32,
 } from "./common.js";
+import {
+  EXPORT_TABLES,
+  type ExportTable,
+  emptyCounts,
+  exportColumns,
+  exportRow,
+  planCoversKey,
+  planTables,
+} from "./profile-data.js";
 import type {
   Account,
   AuditEntry,
@@ -85,9 +94,13 @@ import type {
   ModuleStateStore,
   PeopleStore,
   PersonaOverrideStore,
+  ProfileDataStore,
+  ProfileExport,
   RelationshipStore,
   SettingsStore,
   Store,
+  WipeCounts,
+  WipePlan,
 } from "./stores.js";
 
 const log = getLogger("store.sqlite");
@@ -320,6 +333,10 @@ class SqliteMessageLog implements MessageLog {
       }
       throw new StoreError("cannot append log entry", { cause });
     }
+  }
+
+  async purge(profile: ProfileId): Promise<number> {
+    return this.db.run("DELETE FROM message_log WHERE profile_id = $profile", { profile });
   }
 
   async recent(profile: ProfileId, context: ContextKey, limit: number): Promise<LogEntry[]> {
@@ -671,6 +688,86 @@ class SqliteSettings implements SettingsStore {
       { profile, prefix },
     );
     return new Map(rows.map((r) => [str(r, "key"), json<JsonValue>(r, "value", "setting")]));
+  }
+
+  async deletePrefix(profile: ProfileId, prefix: string): Promise<number> {
+    return this.db.run(
+      "DELETE FROM profile_settings WHERE profile_id = $profile AND " +
+        "substr(key, 1, length($prefix)) = $prefix",
+      { profile, prefix },
+    );
+  }
+}
+
+// ---- whole-profile export / wipe ----------------------------------------------------------
+
+class SqliteProfileData implements ProfileDataStore {
+  constructor(private readonly db: Db) {}
+
+  async export(profile: ProfileId, plan: WipePlan): Promise<ProfileExport> {
+    const out: ProfileExport = {
+      profile,
+      exported_at: fromMicros(this.db.nowMicros()),
+      plan: structuredClone(plan),
+      memories: [],
+      relationships: [],
+      relationship_deltas: [],
+      messages: [],
+      decisions: [],
+      settings: {},
+    };
+    for (const field of planTables(plan)) {
+      const spec: ExportTable = EXPORT_TABLES[field];
+      out[field] = this.db
+        .all(
+          `SELECT ${exportColumns(spec)} FROM ${spec.table} WHERE profile_id = $profile ` +
+            `ORDER BY ${spec.order}`,
+          { profile },
+        )
+        .map((row) => exportRow(spec, row));
+    }
+    for (const row of this.db.all(
+      "SELECT key, value FROM profile_settings WHERE profile_id = $profile ORDER BY key",
+      { profile },
+    )) {
+      const key = str(row, "key");
+      if (planCoversKey(plan, key)) out.settings[key] = json<JsonValue>(row, "value", "setting");
+    }
+    return out;
+  }
+
+  async wipe(profile: ProfileId, plan: WipePlan): Promise<WipeCounts> {
+    try {
+      return this.db.tx(() => {
+        const counts = emptyCounts();
+        const del = (table: string) =>
+          this.db.run(`DELETE FROM ${table} WHERE profile_id = $profile`, { profile });
+        if (plan.memories) counts.memories = del("memory_records");
+        if (plan.relationships) {
+          counts.relationships = del("relationships");
+          counts.relationship_deltas = del("relationship_deltas");
+        }
+        if (plan.messages) counts.messages = del("message_log");
+        if (plan.decisions) counts.decisions = del("decision_log");
+        for (const key of plan.settings_keys) {
+          counts.settings += this.db.run(
+            "DELETE FROM profile_settings WHERE profile_id = $profile AND key = $key",
+            { profile, key },
+          );
+        }
+        for (const prefix of plan.settings_prefixes) {
+          counts.settings += this.db.run(
+            "DELETE FROM profile_settings WHERE profile_id = $profile AND " +
+              "substr(key, 1, length($prefix)) = $prefix",
+            { profile, prefix },
+          );
+        }
+        return counts;
+      });
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot wipe the profile data", { cause });
+    }
   }
 }
 
@@ -1267,6 +1364,7 @@ export class SqliteStore implements Store {
   readonly identity: IdentityStore;
   readonly auth: AuthStore;
   readonly audit: AuditLog;
+  readonly profileData: ProfileDataStore;
   readonly #db: Db;
 
   private constructor(db: Db, maxDecisions: number | null) {
@@ -1282,6 +1380,7 @@ export class SqliteStore implements Store {
     this.identity = new SqliteIdentity(db);
     this.auth = new SqliteAuth(db);
     this.audit = new SqliteAudit(db);
+    this.profileData = new SqliteProfileData(db);
   }
 
   /**

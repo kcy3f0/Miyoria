@@ -24,6 +24,7 @@ import {
   ModuleStateStoreKey,
   PeopleStoreKey,
   PersonaOverrideStoreKey,
+  ProfileDataStoreKey,
   RelationshipStoreKey,
   SettingsStoreKey,
   type Store,
@@ -184,6 +185,7 @@ export async function buildCoreWith(
   services.provide(k, AuthStoreKey, store.auth);
   services.provide(k, AuditLogKey, store.audit);
   services.provide(k, ModuleStateStoreKey, store.moduleState);
+  services.provide(k, ProfileDataStoreKey, store.profileData);
   // Registries other modules add to, independent of any one module's lifetime.
   services.provide(k, ToolRegistryKey, new ToolRegistry());
   services.provide(k, PromptContributorsKey, new PromptContributors());
