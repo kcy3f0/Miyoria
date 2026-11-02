@@ -131,6 +131,22 @@ export interface Thought {
   ms: number;
 }
 
+/** Older journal entries condensed into one record (the journal keeps a bounded number raw). */
+export interface ThoughtDigest {
+  id: string;
+  /** First and last thought it covers. */
+  from: Timestamp;
+  to: Timestamp;
+  /** Thoughts condensed. */
+  count: number;
+  /** What she was thinking about then (her voice, or a plain summary when no model ran). */
+  summary: string;
+  /** Intents of those thoughts by `capability:status`. */
+  intents: Record<string, number>;
+  /** `summarizer` or `rule` (no model available or allowed). */
+  by: "summarizer" | "rule";
+}
+
 /** A reason to think, offered by another module. */
 export interface MindSuggestion {
   /** Module, e.g. `initiative`. */
@@ -164,6 +180,8 @@ export interface Mind {
   suggest(suggestion: MindSuggestion): boolean;
   /** Newest first. */
   thoughts(limit?: number): Thought[];
+  /** Digests of older thoughts, newest first. */
+  digests?(limit?: number): ThoughtDigest[];
   stats(): MindStats;
 }
 
