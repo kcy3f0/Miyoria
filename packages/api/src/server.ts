@@ -4,6 +4,7 @@ import { errorMessage, getLogger } from "@miyoria/kernel";
 import { SettingsStoreKey } from "@miyoria/store";
 import { AuthorizerKey } from "@miyoria/types";
 import { Hono } from "hono";
+import { channelRoutes } from "./channels.js";
 import { coreRoutes } from "./core.js";
 import { dataRoutes } from "./data.js";
 import { ApiError, NO_SUCH_ENDPOINT } from "./errors.js";
@@ -99,6 +100,7 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...roleRoutes(state),
     ...opsRoutes(state),
     ...innerRoutes(state),
+    ...channelRoutes(state),
     ...dataRoutes(state),
     ...sandboxRoutes(state),
     ...mindRoutes(state),

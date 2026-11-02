@@ -11,6 +11,8 @@ import { isApiError } from "@/api/http";
 import type {
   AdjustPersonRequest,
   AssignRoleRequest,
+  ChannelLevelsView,
+  ContextKey,
   DataCategoryId,
   DecisionsQuery,
   MemoryQuery,
@@ -54,6 +56,7 @@ export const queryKeys = {
   voice: ["voice"] as const,
   self: ["self"] as const,
   world: ["world"] as const,
+  channelLevels: ["channels", "levels"] as const,
   data: ["data"] as const,
   mind: ["mind"] as const,
   thoughts: ["mind", "thoughts"] as const,
@@ -363,6 +366,38 @@ export function useSelf() {
 export function useWorld() {
   const api = useApi();
   return useQuery({ queryKey: queryKeys.world, queryFn: ({ signal }) => api.world({ signal }), refetchInterval: poll(5_000) });
+}
+
+export function useChannelLevels() {
+  const api = useApi();
+  return useQuery({
+    queryKey: queryKeys.channelLevels,
+    queryFn: ({ signal }) => api.channelLevels({ signal }),
+    refetchInterval: poll(15_000),
+  });
+}
+
+export function useSetChannelLevel() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ context, mode }: { context: ContextKey; mode: string | null }) => api.setChannelLevel(context, mode),
+    onSuccess: (row) =>
+      qc.setQueryData<ChannelLevelsView>(queryKeys.channelLevels, (old) =>
+        old
+          ? {
+              ...old,
+              channels: old.channels.map((c) =>
+                c.context.platform === row.context.platform &&
+                c.context.scope === row.context.scope &&
+                c.context.channel === row.context.channel
+                  ? row
+                  : c,
+              ),
+            }
+          : old,
+      ),
+  });
 }
 
 // --- data --------------------------------------------------------------------

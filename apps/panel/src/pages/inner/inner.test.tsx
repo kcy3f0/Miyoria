@@ -2,6 +2,7 @@ import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type {
+  ChannelLevelsView,
   ConversationNote,
   KnowledgeView,
   MindView,
@@ -203,13 +204,43 @@ function mindView(paused: boolean, approvals: number): MindView {
   };
 }
 
-function serve() {
+const LEVEL_INFO: ChannelLevelsView["levels"] = [
+  { mode: "off", label: "關閉", description: "完全不說話" },
+  { mode: "mention-only", label: "只回提及", description: "只在被提及時回覆" },
+  { mode: "quiet", label: "安靜", description: "很少插話" },
+  { mode: "normal", label: "一般", description: "有時會自己加入對話" },
+  { mode: "lively", label: "活躍", description: "比較常加入對話" },
+];
 
-  return mockFetch((_m, url) => {
+function levels(mode: string, custom: boolean): ChannelLevelsView {
+  return {
+    levels: LEVEL_INFO,
+    channels: [
+      {
+        context: { platform: "discord", scope: "g1", channel: "c1", kind: "channel" },
+        label: "Miyoria / 雜談",
+        mode,
+        custom,
+        default: "quiet",
+      },
+    ],
+  };
+}
+
+function serve() {
+  let level = levels("quiet", false);
+  const fetch = mockFetch((method, url, body) => {
     if (url.pathname === "/api/self") return { body: SELF };
     if (url.pathname === "/api/world") return { body: WORLD };
+    if (url.pathname === "/api/channels/levels") return { body: level };
+    if (method === "PUT" && url.pathname === "/api/channels/level") {
+      const mode = (body as { mode: string | null }).mode;
+      level = levels(mode ?? "quiet", mode !== null);
+      return { body: level.channels[0] };
+    }
     return undefined;
   });
+  return fetch;
 }
 
 describe("Inner", () => {
@@ -269,6 +300,24 @@ describe("Inner", () => {
     expect(within(channels).getByText("Miyoria / 雜談")).toBeInTheDocument();
     expect(within(channels).getByText("熱鬧")).toBeInTheDocument();
     expect(within(channels).getByText("鯨魚、minecraft")).toBeInTheDocument();
+  });
+
+  it("sets a text channel's level on the world tab", async () => {
+    const fetch = serve();
+    const user = userEvent.setup();
+    renderRoute("/inner?tab=world");
+    const level = await screen.findByRole("combobox", { name: "Miyoria / 雜談 的聊天等級" });
+    expect(level).toHaveTextContent("安靜");
+    expect(screen.getByText("很少插話 · 預設")).toBeInTheDocument();
+    await user.click(level);
+    await user.click(await screen.findByRole("option", { name: "活躍" }));
+    expect(await screen.findByText("已將 Miyoria / 雜談 設為「活躍」")).toBeInTheDocument();
+    const put = fetch.mock.calls.find(([, init]) => init?.method === "PUT");
+    expect(JSON.parse(String(put?.[1]?.body))).toEqual({
+      context: { platform: "discord", scope: "g1", channel: "c1", kind: "channel" },
+      mode: "lively",
+    });
+    expect(screen.getByText("比較常加入對話")).toBeInTheDocument();
   });
 
   it("says when the modules are not running", async () => {

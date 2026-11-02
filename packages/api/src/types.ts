@@ -465,6 +465,36 @@ export interface WorldView extends Omit<WorldSnapshot, "channels"> {
   channels: ChannelActivityView[];
 }
 
+/** One channel level (docs/design/autonomy.md §21). */
+export interface ChannelLevelInfo {
+  /** `off`, `mention-only`, `quiet`, `normal`, `lively` or `always`. */
+  mode: string;
+  /** In words (`安靜`). */
+  label: string;
+  description: string;
+}
+
+/** The level of one text channel. */
+export interface ChannelLevelView {
+  context: ContextKey;
+  /** The channel's name when the platform knows it. */
+  label: string | null;
+  mode: string;
+  /** Set at runtime (`/channel mode` or the panel); `false`: from config or the profile. */
+  custom: boolean;
+  /** The mode without the runtime setting (what resetting goes back to). */
+  default: string;
+}
+
+/**
+ * `GET /api/channels/levels`: the levels, and the text channels she has seen recently or that
+ * have their own level.
+ */
+export interface ChannelLevelsView {
+  levels: ChannelLevelInfo[];
+  channels: ChannelLevelView[];
+}
+
 /** `GET /api/mind` (and the answer of `POST /api/mind/pause|resume`). */
 export interface MindView {
   /** Her autonomy is paused (only commands and the panel act; her mind does not think). */

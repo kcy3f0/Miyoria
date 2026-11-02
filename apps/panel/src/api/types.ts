@@ -816,6 +816,32 @@ export interface WorldView {
   channels: ChannelActivity[];
 }
 
+/** `off` | `mention-only` | `quiet` | `normal` | `lively` | `always`. */
+export type ChannelMode = string;
+
+/** One channel level: a ceiling on how much she talks in a text channel. */
+export interface ChannelLevelInfo {
+  mode: ChannelMode;
+  label: string;
+  description: string;
+}
+
+export interface ChannelLevelView {
+  context: ContextKey;
+  label: string | null;
+  mode: ChannelMode;
+  /** Set with `/channel mode` or here; `false`: from config or the profile. */
+  custom: boolean;
+  /** What resetting goes back to. */
+  default: ChannelMode;
+}
+
+/** `GET /api/channels/levels`. */
+export interface ChannelLevelsView {
+  levels: ChannelLevelInfo[];
+  channels: ChannelLevelView[];
+}
+
 // --- data (`packages/api/src/data.ts`) ----------------------------------------
 
 export type DataCategoryId =

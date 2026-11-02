@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { accountString, contextShort, fmtDateTime, fmtRelative } from "@/lib/format";
+import { ChannelLevelsCard } from "./ChannelLevelsCard";
 import { activityText, PRESENCE_LABEL, PRESENCE_TONE } from "./labels";
 
 function PeopleCard({ world }: { world: WorldView }) {
@@ -156,6 +157,7 @@ export function WorldTab({ world }: { world: WorldView }) {
         <VoiceChannelsCard world={world} />
       </div>
       <ChannelsCard world={world} />
+      <ChannelLevelsCard />
     </div>
   );
 }

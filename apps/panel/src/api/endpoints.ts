@@ -6,6 +6,9 @@ import type {
   AdjustPersonRequest,
   AssignRoleRequest,
   AuthMethods,
+  ChannelLevelsView,
+  ChannelLevelView,
+  ContextKey,
   CostReport,
   DataCategoryId,
   DataInventory,
@@ -149,6 +152,10 @@ export function createApi(client: ApiClient) {
 
     self: (o?: Opts) => client.get<SelfView>("/api/self", o),
     world: (o?: Opts) => client.get<WorldView>("/api/world", o),
+    channelLevels: (o?: Opts) => client.get<ChannelLevelsView>("/api/channels/levels", o),
+    /** `mode` `null` goes back to the configured level. */
+    setChannelLevel: (context: ContextKey, mode: string | null) =>
+      client.put<ChannelLevelView>("/api/channels/level", { context, mode }),
 
     // her data
     dataInventory: (o?: Opts) => client.get<DataInventory>("/api/data", o),
