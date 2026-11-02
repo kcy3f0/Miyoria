@@ -22,6 +22,9 @@ import { RequestQueue, RequestQueueKey } from "@miyoria/queue";
 import { Social, SocialKey, socialConfig } from "@miyoria/social";
 import {
   defaultStageStatus,
+  SceneRoles,
+  SceneRolesKey,
+  ScenesConfigSchema,
   type StageLink,
   StageLinkKey,
   StageLinkModule,
@@ -712,6 +715,39 @@ describe("routes", () => {
 
     // Say checks the emotion against the avatar's.
     expect(await statusOf(c.stageSay("哼", "furious"))).toBe(400);
+  });
+
+  it("scene_roles_are_read_and_overridden", async () => {
+    const h = await harness();
+    const roles = new SceneRoles(ScenesConfigSchema.parse({ roles: { ending: "Bye" } }), {
+      settings: () => undefined,
+      router: () => undefined,
+      signal: new AbortController().signal,
+    });
+    roles.observe(["Just Chatting", "Gameplay", "Bye"]);
+    await roles.idle();
+    h.sup.services.provide("stage.link", SceneRolesKey, roles);
+    const c = h.client;
+    const view = await c.sceneRoles();
+    expect(view.scenes).toEqual(["Just Chatting", "Gameplay", "Bye"]);
+    expect(view.classified_by).toBe("heuristic");
+    expect(view.roles.find((r) => r.role === "game")).toMatchObject({
+      scene: "Gameplay",
+      source: "auto",
+    });
+
+    const set = await c.setSceneRole("chat", "Gameplay");
+    expect(set.roles.find((r) => r.role === "chat")).toMatchObject({
+      scene: "Gameplay",
+      source: "panel",
+      auto: "Just Chatting",
+    });
+    await audited(h, "stage.scene_role");
+    expect(await statusOf(c.setSceneRole("ending", "Gameplay")), "set in config").toBe(400);
+    expect(await statusOf(c.setSceneRole("chat", "Nope"))).toBe(400);
+    const cleared = await c.setSceneRole("chat", null);
+    expect(cleared.roles.find((r) => r.role === "chat")?.source).toBe("auto");
+    expect((await c.classifyScenes()).classified_by).toBe("heuristic");
   });
 
   it("mcp_servers_report_their_target", async () => {

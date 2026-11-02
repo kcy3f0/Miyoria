@@ -29,6 +29,7 @@ import type {
   QueueState,
   RemoveMappingRequest,
   SayResponse,
+  SceneRolesState,
   SelfView,
   SessionInfo,
   SetPersonaResponse,
@@ -401,6 +402,21 @@ export class ApiClient {
 
   stageStream(action: StreamAction, o?: CallOptions): Promise<StageState> {
     return this.#json("POST", ["stage", "stream"], { ...o, body: { action } });
+  }
+
+  /** Which OBS scene each scene role uses. */
+  sceneRoles(o?: CallOptions): Promise<SceneRolesState> {
+    return this.#json("GET", ["stage", "scenes"], o);
+  }
+
+  /** The panel's scene for `role`; `null` goes back to the automatic classification. */
+  setSceneRole(role: string, scene: string | null, o?: CallOptions): Promise<SceneRolesState> {
+    return this.#json("PUT", ["stage", "scenes"], { ...o, body: { role, scene } });
+  }
+
+  /** Classifies the OBS scenes again. */
+  classifyScenes(o?: CallOptions): Promise<SceneRolesState> {
+    return this.#json("POST", ["stage", "scenes", "classify"], o);
   }
 
   /** Speaks `text` in her voice channel without the LLM. */

@@ -610,6 +610,26 @@ export interface StageState {
 
 export type StreamAction = "start" | "stop";
 
+/** One scene role: which OBS scene the scene director uses for it. */
+export interface SceneRoleState {
+  role: string;
+  /** Label of a built-in role, `null` for the owner's own roles. */
+  label: string | null;
+  scene: string | null;
+  source: "config" | "panel" | "auto" | null;
+  /** What the automatic classification picked. */
+  auto: string | null;
+  /** Set in the config file; the panel cannot change it. */
+  locked: boolean;
+}
+
+export interface SceneRolesState {
+  scenes: string[];
+  roles: SceneRoleState[];
+  classified_by: "llm" | "heuristic" | null;
+  classifying: boolean;
+}
+
 export interface SayRequest {
   text: string;
   emotion?: string;

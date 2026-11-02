@@ -27,7 +27,8 @@
 // * `GET /api/extensions`, `POST /api/extensions/{id}/enable|disable|restart`
 // * `GET /api/mcp`, `POST /api/mcp/{name}/restart`
 // * `GET /api/queue`, `POST /api/queue/{id}/skip|move`, `POST /api/queue/pause|resume`
-// * `GET /api/stage`, `POST /api/stage/scene|expression|stream|say`
+// * `GET /api/stage`, `POST /api/stage/scene|expression|stream|say`,
+//   `GET|PUT /api/stage/scenes` (scene roles), `POST /api/stage/scenes/classify`
 // * `GET /api/voice`
 // * `GET /api/self` (her inner state), `GET /api/world` (what she perceives); read-only
 // * `GET /api/data`, `GET /api/data/export?categories=`, `POST /api/data/wipe`,
@@ -124,6 +125,9 @@ export type {
   SayRequest,
   SayResponse,
   SceneRequest,
+  SceneRoleRequest,
+  SceneRoleState,
+  SceneRolesState,
   SelfView,
   SessionInfo,
   SessionPermissions,

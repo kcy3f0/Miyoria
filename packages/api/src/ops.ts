@@ -7,7 +7,14 @@ import { type CatalogEntry, ExtensionCatalogKey, extensionModuleId } from "@miyo
 import { errorMessage, getLogger, type ModuleStatus, SupervisorKey } from "@miyoria/kernel";
 import { type ServerStatus as McpServerStatus, McpStatusKey } from "@miyoria/mcp";
 import { type RequestQueue, RequestQueueKey } from "@miyoria/queue";
-import { defaultStageStatus, type StageLink, StageLinkKey } from "@miyoria/stage";
+import {
+  defaultStageStatus,
+  SceneRoleError,
+  type SceneRoles,
+  SceneRolesKey,
+  type StageLink,
+  StageLinkKey,
+} from "@miyoria/stage";
 import { type ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
 import {
   contextKeyString,
@@ -30,6 +37,7 @@ import type {
   McpState,
   QueueState,
   SayResponse,
+  SceneRolesState,
   StageLinkState,
   StageState,
 } from "./types.js";
@@ -325,6 +333,47 @@ async function act(
   }
 }
 
+function sceneRoles(state: ApiState): SceneRoles {
+  return state.service(SceneRolesKey, "stage link");
+}
+
+function scenesState(roles: SceneRoles): SceneRolesState {
+  return roles.view();
+}
+
+const SceneRoleSchema = z.object({ role: z.string(), scene: z.string().nullable() });
+
+/** The panel's choice of scene for a role (`scene: null` = back to the classification). */
+async function setSceneRole(state: ApiState, c: ApiContext): Promise<Response> {
+  const request = await readJson(c, SceneRoleSchema);
+  const roles = sceneRoles(state);
+  const role = request.role.trim().toLowerCase();
+  let failure: unknown = null;
+  try {
+    await roles.set(role, request.scene === null ? null : request.scene.trim());
+  } catch (error) {
+    failure = error;
+  }
+  await state.audit(c, "stage.scene_role", role, { scene: request.scene }, failure === null);
+  if (failure instanceof SceneRoleError) throw ApiError.badRequest(failure.message);
+  if (failure !== null) throw ApiError.badGateway(failure);
+  return json(scenesState(roles));
+}
+
+async function classifyScenes(state: ApiState, c: ApiContext): Promise<Response> {
+  const roles = sceneRoles(state);
+  let failure: unknown = null;
+  try {
+    await roles.classify();
+  } catch (error) {
+    failure = error;
+  }
+  await state.audit(c, "stage.scene_classify", "scenes", {}, failure === null);
+  if (failure instanceof SceneRoleError) throw ApiError.conflict(failure.message);
+  if (failure !== null) throw ApiError.badGateway(failure);
+  return json(scenesState(roles));
+}
+
 const StreamSchema = z.object({ action: z.enum(["start", "stop"]) });
 
 async function stageStream(state: ApiState, c: ApiContext): Promise<Response> {
@@ -438,6 +487,17 @@ export function opsRoutes(state: ApiState): Route[] {
     { method: "POST", path: "/api/queue/:id/:action", handler: (c) => queueItemAction(state, c) },
     { method: "GET", path: "/api/stage", handler: () => stage(state) },
     { method: "POST", path: "/api/stage/scene", handler: (c) => stageScene(state, c) },
+    {
+      method: "GET",
+      path: "/api/stage/scenes",
+      handler: () => json(scenesState(sceneRoles(state))),
+    },
+    { method: "PUT", path: "/api/stage/scenes", handler: (c) => setSceneRole(state, c) },
+    {
+      method: "POST",
+      path: "/api/stage/scenes/classify",
+      handler: (c) => classifyScenes(state, c),
+    },
     { method: "POST", path: "/api/stage/expression", handler: (c) => stageExpression(state, c) },
     { method: "POST", path: "/api/stage/stream", handler: (c) => stageStream(state, c) },
     { method: "POST", path: "/api/stage/say", handler: (c) => stageSay(state, c) },

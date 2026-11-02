@@ -345,6 +345,38 @@ export interface StageState {
   streaming: boolean;
 }
 
+/** One scene role in `GET /api/stage/scenes`. */
+export interface SceneRoleState {
+  /** `chat`, `game`, `brb`, `starting`, `ending` or one of the owner's roles. */
+  role: string;
+  /** Label of a built-in role, `null` for the owner's own roles. */
+  label: string | null;
+  /** The OBS scene it switches to, `null` = none. */
+  scene: string | null;
+  /** Where that came from: the config file, the panel or the automatic classification. */
+  source: "config" | "panel" | "auto" | null;
+  /** What the classification picked. */
+  auto: string | null;
+  /** Set in the config file (the panel cannot change it). */
+  locked: boolean;
+}
+
+/** `GET /api/stage/scenes` and the response of its mutations. */
+export interface SceneRolesState {
+  /** OBS scene names the stage node reports. */
+  scenes: string[];
+  roles: SceneRoleState[];
+  /** `llm`, `heuristic` (keywords) or `null` (not classified yet). */
+  classified_by: "llm" | "heuristic" | null;
+  classifying: boolean;
+}
+
+/** Body of `PUT /api/stage/scenes`: `scene: null` goes back to the classification. */
+export interface SceneRoleRequest {
+  role: string;
+  scene: string | null;
+}
+
 /** Body of `POST /api/stage/scene`. */
 export interface SceneRequest {
   scene: string;

@@ -25,6 +25,7 @@ import type {
   RoleDefinition,
   RoleMapping,
   SayRequest,
+  SceneRolesState,
   StageState,
   StreamAction,
   UpdateMemoryRequest,
@@ -131,6 +132,10 @@ export function createApi(client: ApiClient) {
       client.post<StageState>("/api/stage/expression", { expression }),
     stageStream: (action: StreamAction) => client.post<StageState>("/api/stage/stream", { action }),
     stageSay: (req: SayRequest) => client.post<{ turn: string | null }>("/api/stage/say", req),
+    sceneRoles: (o?: Opts) => client.get<SceneRolesState>("/api/stage/scenes", o),
+    setSceneRole: (role: string, scene: string | null) =>
+      client.put<SceneRolesState>("/api/stage/scenes", { role, scene }),
+    classifyScenes: () => client.post<SceneRolesState>("/api/stage/scenes/classify"),
 
     voice: (o?: Opts) => client.get<VoiceState>("/api/voice", o),
 

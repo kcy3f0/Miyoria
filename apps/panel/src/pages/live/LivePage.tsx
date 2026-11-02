@@ -3,6 +3,7 @@ import { Page, PageHeader } from "@/components/page";
 import { StatusBadge } from "@/components/status";
 import { QueueCard } from "./QueueCard";
 import { SayCard } from "./SayCard";
+import { SceneRolesCard } from "./SceneRolesCard";
 import { StageCard } from "./StageCard";
 import { VoiceCard } from "./VoiceCard";
 
@@ -35,6 +36,7 @@ export function LivePage() {
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="grid min-w-0 gap-6">
           <StageCard />
+          <SceneRolesCard />
           <QueueCard />
         </div>
         <div className="grid min-w-0 gap-6">

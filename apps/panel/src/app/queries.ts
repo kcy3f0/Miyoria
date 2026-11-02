@@ -21,6 +21,7 @@ import type {
   RemoveMappingRequest,
   RoleMapping,
   SayRequest,
+  SceneRolesState,
   SetPersonaRequest,
   StageState,
   StreamAction,
@@ -49,6 +50,7 @@ export const queryKeys = {
   mcp: ["mcp"] as const,
   queue: ["queue"] as const,
   stage: ["stage"] as const,
+  sceneRoles: ["stage", "scenes"] as const,
   voice: ["voice"] as const,
   self: ["self"] as const,
   world: ["world"] as const,
@@ -314,6 +316,28 @@ export function useStageMutations() {
     expression: useMutation({ mutationFn: (name: string) => api.stageExpression(name), onSuccess: set }),
     stream: useMutation({ mutationFn: (action: StreamAction) => api.stageStream(action), onSuccess: set }),
     say: useMutation({ mutationFn: (req: SayRequest) => api.stageSay(req) }),
+  };
+}
+
+export function useSceneRoles() {
+  const api = useApi();
+  return useQuery({
+    queryKey: queryKeys.sceneRoles,
+    queryFn: ({ signal }) => api.sceneRoles({ signal }),
+    refetchInterval: poll(15_000),
+  });
+}
+
+export function useSceneRoleMutations() {
+  const api = useApi();
+  const qc = useQueryClient();
+  const set = (state: SceneRolesState) => qc.setQueryData(queryKeys.sceneRoles, state);
+  return {
+    set: useMutation({
+      mutationFn: ({ role, scene }: { role: string; scene: string | null }) => api.setSceneRole(role, scene),
+      onSuccess: set,
+    }),
+    classify: useMutation({ mutationFn: () => api.classifyScenes(), onSuccess: set }),
   };
 }
 
