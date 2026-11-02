@@ -301,6 +301,49 @@ describe("module", () => {
     expect(user).toContain("牠叫麻糬");
   });
 
+  it("consolidates right after a conversation fold, before the thresholds", async () => {
+    const reply = `{"facts": [{"subject_name": "Owen", "statement": "Owen 下週要搬家", "importance": 0.7, "confidence": 0.9, "global": false}]}`;
+    const llm = new MockProvider("sum").reply(reply);
+    const h = await harness(llm, {
+      tick_secs: 1,
+      consolidate_every_messages: 100,
+      consolidate_idle_secs: 3600,
+    });
+    const owen = acct("2");
+    const ctx = guildCtx("g1", "c1");
+    const msg: IncomingMessage = {
+      id: { context: ctx, id: "m1" },
+      author: { account: owen, display_name: "Owen", is_bot: false },
+      text: "我下週要搬家",
+      mentions_self: false,
+      reply_to_self: false,
+      attachments: [],
+      ts: toTimestamp(Date.now()),
+    };
+    await h.store.messages.append(logEntryFromIncoming(profile(), msg, false));
+    h.sup.bus.publish("test", { type: "platform_message_created", data: msg });
+    await pause(1500);
+    expect(llm.requests()).toHaveLength(0);
+    h.sup.bus.publish("conversation", {
+      type: "custom",
+      data: {
+        topic: "conversation.folded",
+        payload: {
+          context: { ...ctx },
+          folded_up_to: { id: "x", ts: msg.ts },
+          lines: 1,
+          session_lines: 1,
+        },
+      },
+    });
+    const deadline = Date.now() + 10_000;
+    while (llm.requests().length === 0) {
+      expect(Date.now() < deadline, "not consolidated").toBe(true);
+      await pause(100);
+    }
+    expect(llm.requests()[0]?.messages[1]?.content).toContain("我下週要搬家");
+  });
+
   it("is degraded without a message log and fails without a record store", async () => {
     const services = new ServiceRegistry();
     const sup = new Supervisor({ services });

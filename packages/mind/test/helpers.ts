@@ -219,6 +219,8 @@ export interface RigOptions {
   chatOnly?: boolean;
   store?: MemorySettingsStore;
   withIntents?: boolean;
+  /** Provides more app services before start. */
+  extra?: (sup: Supervisor) => void;
 }
 
 const running: Supervisor[] = [];
@@ -252,6 +254,7 @@ export async function rig(provider: MockProvider, options: RigOptions = {}): Pro
     );
   }
   sup.services.provide("app", ActuatorRegistryKey, registry);
+  options.extra?.(sup);
   const world = new FakeWorld();
   const social = new FakeSocial();
   const intents = new FakeIntents();

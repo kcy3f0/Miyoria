@@ -1,8 +1,11 @@
 import { MockProvider } from "@miyoria/llm";
 import { MemorySettingsStore } from "@miyoria/store";
 import {
+  ConversationStatesKey,
   customEvent,
   type JsonValue,
+  KnowledgeKey,
+  LessonsKey,
   SelfStateKey,
   type Thought,
   toTimestamp,
@@ -287,5 +290,89 @@ describe("mind module", () => {
     ).toEqual(["二"]);
     const saved = (await store.list("p", THOUGHT_PREFIX)).values().next().value as JsonValue;
     expect((saved as unknown as Thought).thought).toBe("二");
+  });
+
+  it("sees her documents, lessons and the recap, and changes documents as herself", async () => {
+    const applied: [unknown, unknown][] = [];
+    const reply = JSON.stringify({
+      thought: "Owen 好像很喜歡拉麵,記一下。",
+      documents: [
+        {
+          type: "create",
+          subject: "u1",
+          kind: "人物卡",
+          title: "Owen",
+          content: { 喜歡: ["拉麵"] },
+        },
+        { type: "explode", doc: "#x" },
+      ],
+    });
+    const provider = new MockProvider("p").reply(reply);
+    const r = await rig(provider, {
+      extra: (sup) => {
+        sup.services.provide("app", KnowledgeKey, {
+          docs: () => [],
+          get: () => null,
+          render: () => "#abc123 人物卡「Owen」\n  - 喜歡: 拉麵",
+          apply: async (change: unknown, writer: unknown) => {
+            applied.push([change, writer]);
+            return { ok: true, doc: null };
+          },
+        });
+        sup.services.provide("app", LessonsKey, {
+          all: () => [],
+          applicable: () => [
+            {
+              id: "l1",
+              text: "Owen 講話時不要插嘴",
+              person: "person-owen",
+              scope: null,
+              talk: -0.5,
+              created_at: "",
+              expires_at: null,
+              source: "daily",
+            },
+          ],
+          talkShift: () => -0.1,
+        });
+        sup.services.provide("app", ConversationStatesKey, {
+          get: () => ({
+            context: VOICE,
+            updated_at: "",
+            folded_up_to: null,
+            folds: 1,
+            lines: 3,
+            recap: "大家在聊拉麵",
+            notes: {},
+          }),
+          list: () => [],
+        });
+      },
+    });
+    r.publish(salient("Owen 進語音了"));
+    await wait(5000);
+    const data = dataText(provider);
+    expect(data).toContain("你整理的資料");
+    expect(data).toContain("#abc123 人物卡「Owen」");
+    expect(data).toContain("Owen 講話時不要插嘴");
+    expect(data).toContain("大家在聊拉麵");
+    expect(systemText(provider)).not.toContain("拉麵");
+    expect(applied).toHaveLength(1);
+    expect(applied[0]?.[0]).toMatchObject({
+      type: "create",
+      subject: { type: "person", person: "person-owen" },
+    });
+    expect(applied[0]?.[1]).toMatchObject({ kind: "self" });
+  });
+
+  it("asks once more when her reply has no JSON, then uses the fixed one", async () => {
+    const provider = new MockProvider("p")
+      .reply("我在想事情……")
+      .reply('好:\n```json\n{"thought": "還是想一下好了"}\n```');
+    const r = await rig(provider);
+    r.publish(salient("Owen 上線了"));
+    await wait(5000);
+    expect(provider.requests()).toHaveLength(2);
+    expect(r.mind().thoughts()[0]?.thought).toBe("還是想一下好了");
   });
 });
