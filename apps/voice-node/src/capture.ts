@@ -1,7 +1,7 @@
 // Voice capture: Discord Opus (per speaker) -> 16 kHz mono s16le frames for Core.
 import { type AudioReceiveStream, EndBehaviorType, type VoiceReceiver } from "@discordjs/voice";
-import OpusScript from "opusscript";
 import { SampleFifo } from "./audio/fifo.js";
+import { OpusCodec } from "./audio/opus.js";
 import { bytesToInt16, int16ToBuffer, Resampler, stereoToMono } from "./audio/resampler.js";
 import type { LinkSink } from "./link.js";
 import type { Logger } from "./log.js";
@@ -19,7 +19,7 @@ export interface OpusDecoderLike {
 }
 
 export function createOpusDecoder(): OpusDecoderLike {
-  return new OpusScript(DISCORD_RATE, 2, OpusScript.Application.AUDIO);
+  return new OpusCodec(DISCORD_RATE, 2);
 }
 
 /** Opus -> stereo 48k -> mono 48k -> mono 16k -> exact 20 ms frames. One per speaker stream. */
@@ -34,8 +34,7 @@ export class CapturePipeline {
   push(packet: Buffer): Buffer[] {
     let pcm: Buffer;
     try {
-      // OpusScript returns a view into the WASM heap; copy before the next call reuses it.
-      pcm = Buffer.from(this.decoder.decode(packet));
+      pcm = this.decoder.decode(packet); // already a copy out of the WASM heap
     } catch {
       this.decodeErrors++;
       return [];

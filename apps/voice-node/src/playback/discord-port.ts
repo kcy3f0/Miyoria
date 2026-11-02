@@ -11,8 +11,8 @@ import {
   StreamType,
   type AudioResource,
 } from "@discordjs/voice";
-import OpusScript from "opusscript";
 import { Readable } from "node:stream";
+import { OpusCodec } from "../audio/opus.js";
 import type { LevelPublisher, LevelTap } from "../levels/publisher.js";
 import type { Logger } from "../log.js";
 import { noopLogger } from "../log.js";
@@ -24,7 +24,7 @@ const OPUS_SILENCE = Buffer.from([0xf8, 0xff, 0xfe]);
 
 /** Object-mode Readable of Opus packets, pulled frame by frame from a {@link PlaybackSource}. */
 export class OpusFrameStream extends Readable {
-  private readonly encoder: OpusScript;
+  private readonly encoder: OpusCodec;
   private deleted = false;
 
   constructor(
@@ -33,7 +33,7 @@ export class OpusFrameStream extends Readable {
     private readonly tap?: LevelTap,
   ) {
     super({ objectMode: true, highWaterMark: 1 });
-    this.encoder = new OpusScript(OUT_RATE, 2, OpusScript.Application.AUDIO);
+    this.encoder = new OpusCodec(OUT_RATE, 2);
     this.encoder.setBitrate(96_000);
   }
 
@@ -42,8 +42,7 @@ export class OpusFrameStream extends Readable {
       const r = this.source.readFrame();
       if (r.kind === "audio") {
         this.tap?.frame(r.pcm);
-        // Buffer.from copies out of the WASM heap before the next encode reuses it.
-        this.push(Buffer.from(this.encoder.encode(r.pcm, FRAME_SAMPLES)));
+        this.push(this.encoder.encode(r.pcm, FRAME_SAMPLES)); // already a copy
       } else if (r.kind === "silence") {
         this.tap?.silence(FRAME_SAMPLES);
         this.push(OPUS_SILENCE);

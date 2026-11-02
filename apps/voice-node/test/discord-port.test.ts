@@ -1,4 +1,4 @@
-// Runs the real DiscordPlayerPort + @discordjs/voice AudioPlayer + opusscript (no network):
+// Runs the real DiscordPlayerPort + @discordjs/voice AudioPlayer + Opus encoder (no network):
 // with NoSubscriberBehavior.Play the player pulls Opus frames every 20 ms even without a voice connection.
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
 import { afterEach, describe, expect, it } from "vitest";
