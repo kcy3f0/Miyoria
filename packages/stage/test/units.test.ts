@@ -173,7 +173,9 @@ describe("protocol", () => {
 
 describe("config", () => {
   it("defaults_match_legacy", () => {
-    expect(StageLinkConfigSchema.parse({})).toStrictEqual({
+    const { scenes, ...legacy } = StageLinkConfigSchema.parse({});
+    expect(scenes).toMatchObject({ director: true, classify_purpose: "fast", roles: {} });
+    expect(legacy).toStrictEqual({
       bind: "127.0.0.1:7882",
       token: "",
       ping_interval_ms: 15_000,

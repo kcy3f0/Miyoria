@@ -693,6 +693,9 @@ importers:
       '@miyoria/queue':
         specifier: workspace:*
         version: link:../queue
+      '@miyoria/social':
+        specifier: workspace:*
+        version: link:../social
       '@miyoria/tools':
         specifier: workspace:*
         version: link:../tools
@@ -1075,6 +1078,12 @@ importers:
       '@miyoria/kernel':
         specifier: workspace:*
         version: link:../kernel
+      '@miyoria/llm':
+        specifier: workspace:*
+        version: link:../llm
+      '@miyoria/store':
+        specifier: workspace:*
+        version: link:../store
       '@miyoria/types':
         specifier: workspace:*
         version: link:../types

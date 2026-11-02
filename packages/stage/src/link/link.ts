@@ -17,6 +17,7 @@ import {
   defaultStageStatus,
   type GazeTarget,
   parseStageMessage,
+  type SceneTransition,
   type StageMessage,
   type StageStatus,
   type StreamAction,
@@ -25,6 +26,7 @@ import {
 } from "../protocol.js";
 import { type Unsubscribe, Watch } from "../watch.js";
 import { Conn, checkHello } from "./conn.js";
+import { ScenesConfigSchema } from "./scenes.js";
 
 const log = getLogger("stage.link");
 
@@ -61,6 +63,8 @@ export const StageLinkConfigSchema = z.object({
    * ffmpeg has to bind the RTMP listener first. Default 3 000.
    */
   golive_start_delay_ms: z.number().int().nonnegative().default(3_000),
+  /** Scene roles, transitions and the scene director (`[modules."stage.link".scenes]`). */
+  scenes: ScenesConfigSchema.prefault({}),
 });
 export type StageLinkConfig = z.output<typeof StageLinkConfigSchema>;
 
@@ -127,11 +131,21 @@ export class StageLink {
     return this.#status.subscribe(listener);
   }
 
-  /** Switches the OBS program scene. Returns the status after the switch. */
-  setScene(name: string): Promise<StageStatus> {
+  /**
+   * Switches the OBS program scene, with `transition` (when given) made OBS's current scene
+   * transition first. Returns the status after the switch.
+   */
+  setScene(name: string, transition: SceneTransition | null = null): Promise<StageStatus> {
     const n = name.trim();
     if (n === "") return Promise.reject(new StageLinkError("scene name is empty"));
-    return this.#request((id) => ({ type: "scene", name: n, id }));
+    return this.#request((id) => {
+      const msg: Extract<CoreMessage, { type: "scene" }> = { type: "scene", name: n, id };
+      if (transition !== null) {
+        msg.transition = transition.name;
+        if (transition.duration_ms !== null) msg.transition_ms = transition.duration_ms;
+      }
+      return msg;
+    });
   }
 
   /** Starts or stops streaming in OBS. */

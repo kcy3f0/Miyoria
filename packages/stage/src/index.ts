@@ -37,12 +37,23 @@ export { type BlinkConfig, BlinkConfigSchema, BlinkScheduler } from "./blink.js"
 export { EmotionController, type VtsCommand } from "./emotion.js";
 export { type GestureConfig, GestureConfigSchema, GestureController } from "./gesture.js";
 export {
+  type SceneCapabilityTarget,
+  sceneTarget,
+  stageCapabilities,
+} from "./link/actions.js";
+export {
   describeStatus,
   PATHS as STREAM_COMMAND_PATHS,
   registerStreamCommands,
   unregisterStreamCommands,
 } from "./link/commands.js";
 export { checkHello, type HelloOutcome, tokenMatches } from "./link/conn.js";
+export {
+  type GoLiveState,
+  type RoleSwitcher,
+  SceneDirector,
+  type SceneDirectorDeps,
+} from "./link/director.js";
 export { EMOTION_TOPIC, Forwarder } from "./link/forward.js";
 export { type GoLiveFollow, goliveFollow, VOICE_GOLIVE_TOPIC } from "./link/golive.js";
 export {
@@ -55,7 +66,29 @@ export {
   StageLinkError,
   StageLinkKey,
 } from "./link/link.js";
-export { StageLinkModule } from "./link/module.js";
+export { GAME_SESSION_TOPIC, StageLinkModule } from "./link/module.js";
+export {
+  BUILTIN_ROLES,
+  type BuiltinRole,
+  type ClassifiedBy,
+  classifyByKeywords,
+  classifyMessages,
+  matchScene,
+  parseClassification,
+  ROLE_LABELS,
+  ROLE_NAME,
+  type RoleSource,
+  type RoleView,
+  SCENE_ROLES_KEY,
+  SceneRoleError,
+  SceneRoles,
+  type SceneRolesDeps,
+  SceneRolesKey,
+  type SceneRolesView,
+  type ScenesConfig,
+  ScenesConfigSchema,
+  SceneTransitionSchema,
+} from "./link/scenes.js";
 export {
   DEFAULT_VOWEL_TEMPLATES,
   defaultLipSyncConfig,
@@ -122,11 +155,14 @@ export {
   parseGazeTarget,
   parseLevelFrame,
   parseStageMessage,
+  type SceneTransition,
   type SpeakingState,
   type StageMessage,
   type StageStatus,
   type StreamAction,
   sameStatus,
+  sceneTransitionOf,
+  TRANSITION_MAX_MS,
   VERSION,
 } from "./protocol.js";
 export { Drift, Random, SmoothNoise } from "./random.js";

@@ -466,3 +466,50 @@ describe("stage.link", () => {
     expect(pings).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("scene director on the link", () => {
+  const SCENES = { vts: true, obs: true, scenes: ["Talk", "Game", "Bye"] };
+  const scenes = {
+    roles: { chat: "Talk", game: "Game", ending: "Bye" },
+    transition: { name: "Fade", duration_ms: 300 },
+    transitions: { game: { name: "Stinger" } },
+    debounce_ms: 0,
+    min_switch_ms: 0,
+    ending_ms: 50,
+  };
+
+  it("switches to the game scene with its transition when a session starts", async () => {
+    const h = await Harness.start({ scenes });
+    const node = await h.node();
+    node.sendJson({ type: "status", ...SCENES, scene: "Talk", streaming: false });
+    await waitUntil(() => h.link().status()?.scene === "Talk");
+
+    h.publish(customEvent("game.director.session", { state: "started", game: "minecraft" }));
+    let req = await answer(node, { ...SCENES, scene: "Game", streaming: false });
+    expect(req).toMatchObject({ type: "scene", name: "Game", transition: "Stinger" });
+    expect(req.transition_ms).toBeUndefined();
+
+    h.publish(customEvent("game.director.session", { state: "stopped", game: "minecraft" }));
+    req = await answer(node, { ...SCENES, scene: "Talk", streaming: false });
+    expect(req).toMatchObject({
+      type: "scene",
+      name: "Talk",
+      transition: "Fade",
+      transition_ms: 300,
+    });
+  });
+
+  it("shows the ending scene before /stream stop stops OBS", async () => {
+    const h = await Harness.start({ scenes: { ...scenes, starting_ms: 0 } });
+    const node = await h.node();
+    node.sendJson({ type: "status", ...SCENES, scene: "Talk", streaming: true });
+    await waitUntil(() => h.link().status()?.streaming === true);
+
+    const call = h.registry().dispatch(invocation("stream stop"));
+    const ending = await answer(node, { ...SCENES, scene: "Bye", streaming: true });
+    expect(ending).toMatchObject({ type: "scene", name: "Bye" });
+    const stop = await answer(node, { ...SCENES, scene: "Bye", streaming: false });
+    expect(stop).toMatchObject({ type: "stream", action: "stop" });
+    expect((await call).text).toBe("已停止直播。");
+  });
+});

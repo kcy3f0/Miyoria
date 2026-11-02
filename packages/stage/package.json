@@ -25,6 +25,8 @@
     "@miyoria/actions": "workspace:*",
     "@miyoria/commands": "workspace:*",
     "@miyoria/kernel": "workspace:*",
+    "@miyoria/llm": "workspace:*",
+    "@miyoria/store": "workspace:*",
     "@miyoria/types": "workspace:*",
     "obs-websocket-js": "^5.0.6",
     "smol-toml": "^1.9.1",

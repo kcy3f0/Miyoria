@@ -10,11 +10,20 @@ import {
   type Module,
   type ModuleContext,
 } from "@miyoria/kernel";
-import { isJsonObject } from "@miyoria/types";
+import { LlmRouterKey } from "@miyoria/llm";
+import { SettingsStoreKey } from "@miyoria/store";
+import {
+  contextKeyString,
+  type Envelope,
+  isJsonObject,
+  Principals,
+  StreamCurtainKey,
+} from "@miyoria/types";
 import { type BoundAddress, formatAddress, HttpServer, isLoopback } from "../net.js";
 import { stageCapabilities } from "./actions.js";
 import { registerStreamCommands, unregisterStreamCommands } from "./commands.js";
 import { MAX_MESSAGE } from "./conn.js";
+import { type GoLiveState, SceneDirector } from "./director.js";
 import { EMOTION_TOPIC, Forwarder } from "./forward.js";
 import { goliveFollow, VOICE_GOLIVE_TOPIC } from "./golive.js";
 import {
@@ -24,6 +33,46 @@ import {
   StageLinkError,
   StageLinkKey,
 } from "./link.js";
+import { SceneRoles, SceneRolesKey } from "./scenes.js";
+
+/** Topic of the game director's session events (`{state: "started" | "stopped", game}`). */
+export const GAME_SESSION_TOPIC = "game.director.session";
+
+const GOLIVE_STATES: readonly GoLiveState[] = ["starting", "live", "stopped", "failed"];
+
+/** Feeds one bus event to the scene director. */
+function direct(director: SceneDirector, env: Envelope): void {
+  const event = env.event;
+  switch (event.type) {
+    case "voice_joined":
+    case "voice_participants":
+      director.onVoice(contextKeyString(event.data.context), true);
+      return;
+    case "voice_left":
+      director.onVoice(contextKeyString(event.data.context), false);
+      return;
+    case "voice_utterance":
+    case "agent_turn_completed":
+      director.onActivity();
+      return;
+    case "voice_playback":
+      if (event.data.state === "started") director.onActivity();
+      return;
+    case "custom": {
+      const { topic, payload } = event.data;
+      const data = isJsonObject(payload) ? payload : {};
+      if (topic === VOICE_GOLIVE_TOPIC) {
+        const state = GOLIVE_STATES.find((s) => s === data.state);
+        if (state) director.onGoLive(typeof data.guild === "string" ? data.guild : "", state);
+      } else if (topic === GAME_SESSION_TOPIC) {
+        director.onGame(data.state === "started");
+      }
+      return;
+    }
+    default:
+      return;
+  }
+}
 
 /** How long stop waits for the node to answer the close frame. */
 const CLOSE_GRACE_MS = 2_000;
@@ -36,6 +85,8 @@ interface Running {
   registry: CommandRegistry | null;
   /** Unregisters `stage.scene` / `stage.stream`. */
   capabilities: (() => void)[];
+  director: SceneDirector;
+  unsubscribe: () => void;
 }
 
 /**
@@ -86,11 +137,54 @@ export class StageLinkModule implements Module {
     ctx.log.info({ addr: formatAddress(addr) }, "stage link listening");
     ctx.provide(StageLinkKey, link);
 
+    // Scene roles and the director that switches between them (through the gate).
+    const actuators = actuatorsFor(ctx);
+    const roles = new SceneRoles(config.scenes, {
+      settings: () => ctx.services.get(SettingsStoreKey),
+      router: () => ctx.services.get(LlmRouterKey),
+      signal: ctx.signal,
+    });
+    await roles.load();
+    const director = new SceneDirector({
+      config: config.scenes,
+      roles,
+      clock: ctx.clock,
+      switchRole: async (role, why) => {
+        const outcome = await actuators.invoke({
+          principal: Principals.director(null),
+          capability: "stage.scene",
+          args: { role },
+          why,
+          turn: null,
+        });
+        if (outcome.status === "denied") {
+          ctx.log.debug(
+            { role, reason: outcome.decision.reason },
+            "the gate refused a scene switch",
+          );
+        } else if (outcome.status === "failed") {
+          ctx.log.warn({ role, err: outcome.error }, "scene switch failed");
+        }
+        return outcome.status === "done";
+      },
+    });
+    const unsubscribe = link.subscribeStatus((status) => {
+      if (status) roles.observe(status.scenes);
+      director.onStatus(status);
+    });
+    ctx.provide(SceneRolesKey, roles);
+    ctx.provide(StreamCurtainKey, director);
+
     const events = ctx.subscribe([
       EMOTION_TOPIC,
       "agent.turn.completed",
       "voice.playback",
       VOICE_GOLIVE_TOPIC,
+      GAME_SESSION_TOPIC,
+      "voice.joined",
+      "voice.left",
+      "voice.participants",
+      "voice.utterance",
     ]);
     const forwarder = new Forwarder(config.subtitle_text_turns);
     ctx.spawn("forward", async (signal) => {
@@ -157,6 +251,8 @@ export class StageLinkModule implements Module {
 
       try {
         for await (const env of events) {
+          direct(director, env);
+          if (env.event.type === "custom" && env.event.data.topic === GAME_SESSION_TOPIC) continue;
           if (env.event.type === "custom" && env.event.data.topic === VOICE_GOLIVE_TOPIC) {
             followGoLive(env.event.data.payload);
             continue;
@@ -173,17 +269,20 @@ export class StageLinkModule implements Module {
       }
     });
 
-    const actuators = actuatorsFor(ctx);
-    const capabilities = stageCapabilities(link).map((c) => actuators.register(c));
+    const capabilities = stageCapabilities(link, { roles, curtain: director }).map((c) =>
+      actuators.register(c),
+    );
     const registry = ctx.services.get(CommandRegistryKey) ?? null;
     try {
       if (registry) registerStreamCommands(registry, link, actuators);
     } catch (error) {
       for (const unregister of capabilities) unregister();
+      unsubscribe();
+      director.stop();
       await server.close();
       throw error;
     }
-    this.#running = { link, registry, capabilities };
+    this.#running = { link, registry, capabilities, director, unsubscribe };
 
     ctx.spawn("server", async (signal) => {
       await new Promise<void>((resolve, reject) => {
@@ -202,6 +301,8 @@ export class StageLinkModule implements Module {
     if (!running) return;
     if (running.registry) unregisterStreamCommands(running.registry);
     for (const unregister of running.capabilities) unregister();
+    running.unsubscribe();
+    running.director.stop();
     running.link.closeAll();
   }
 

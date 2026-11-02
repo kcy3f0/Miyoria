@@ -1,14 +1,22 @@
-// Capabilities of the Stage node: `stage.scene` (switch the OBS scene; she may do it herself)
-// and `stage.stream` (OBS start / stop streaming; commands and the panel only, her own tool is
+// Capabilities of the Stage node: `stage.scene` (switch the OBS scene by role or name, with the
+// role's transition; she may do it herself, the scene director does it as `director`) and
+// `stage.stream` (OBS start / stop streaming; commands and the panel only, her own tool is
 // `stream.start`, the Go Live that OBS follows).
 
 import { type Capability, CapabilityError, defineCapability } from "@miyoria/actions";
-import { actLane } from "@miyoria/types";
+import { actLane, type StreamCurtain } from "@miyoria/types";
 import { z } from "zod";
+import type { SceneTransition } from "../protocol.js";
 import { sceneNames } from "./commands.js";
 import type { StageLink } from "./link.js";
+import { BUILTIN_ROLES, matchScene, ROLE_LABELS, type SceneRoles } from "./scenes.js";
 
-const SceneArgs = z.object({ name: z.string().trim().min(1) });
+const SceneArgs = z
+  .object({
+    name: z.string().trim().min(1).nullish(),
+    role: z.string().trim().toLowerCase().min(1).nullish(),
+  })
+  .refine((a) => (a.name ?? a.role ?? null) !== null, { message: "give `role` or `name`" });
 const StreamArgs = z.object({ action: z.enum(["start", "stop"]) });
 type SceneArgs = z.output<typeof SceneArgs>;
 type StreamArgs = z.output<typeof StreamArgs>;
@@ -19,7 +27,53 @@ function requireNode(link: StageLink): void {
   if (!link.isConnected()) throw new CapabilityError("the stage node is not connected");
 }
 
-export function stageCapabilities(link: StageLink): Capability[] {
+/** Where a `stage.scene` request goes. */
+export type SceneCapabilityTarget =
+  | { ok: true; scene: string; role: string | null; transition: SceneTransition | null }
+  | { ok: false; why: string };
+
+/**
+ * Resolves `{role}` or `{name}` (a scene name, or a role name) against the roles and the scene
+ * list the node reported. Without a list any name is passed on.
+ */
+export function sceneTarget(
+  args: SceneArgs,
+  link: StageLink,
+  roles: SceneRoles | null,
+): SceneCapabilityTarget {
+  const known = sceneNames(link.status());
+  const listed = (link.status()?.scenes.length ?? 0) > 0;
+  const byRole = (role: string): SceneCapabilityTarget => {
+    const scene = roles?.resolve(role) ?? null;
+    if (scene === null) return { ok: false, why: `no scene is set for role \`${role}\`` };
+    return { ok: true, scene, role, transition: roles?.transition(role) ?? null };
+  };
+  if (args.role) return byRole(args.role);
+  const name = args.name ?? "";
+  const scene = listed ? matchScene(known, name) : name;
+  if (scene !== null) {
+    const role = roles?.roleOf(scene) ?? null;
+    return { ok: true, scene, role, transition: roles?.transition(role) ?? null };
+  }
+  const asRole = name.toLowerCase();
+  if (roles?.resolve(asRole)) return byRole(asRole);
+  return { ok: false, why: `unknown scene \`${name}\` (scenes: ${known.join(", ")})` };
+}
+
+const ROLE_HELP = BUILTIN_ROLES.map((r) => `${r}(${ROLE_LABELS[r]})`).join("、");
+
+export interface StageCapabilityOptions {
+  /** The role mapping (none: names only). */
+  roles?: SceneRoles | null;
+  /** Shows the ending scene before OBS stops streaming. */
+  curtain?: StreamCurtain | null;
+}
+
+export function stageCapabilities(
+  link: StageLink,
+  options: StageCapabilityOptions = {},
+): Capability[] {
+  const roles = options.roles ?? null;
   const scene = defineCapability<SceneArgs>({
     name: "stage.scene",
     summary: "切換 OBS 場景",
@@ -28,25 +82,30 @@ export function stageCapabilities(link: StageLink): Capability[] {
     permission: "stream.scene",
     tool: {
       name: "stage_scene",
-      description: "切換直播畫面(OBS)的場景,例如聊天、遊戲、暫離。只能用直播機回報的場景名稱。",
-      properties: { name: { type: "string", description: "場景名稱" } },
-      required: ["name"],
+      description:
+        `切換直播畫面(OBS)的場景。通常用 role 指定用途:${ROLE_HELP};` +
+        "也可以用 name 指定直播機回報的場景名稱。開台、玩遊戲、暫離時導演會自動切換,只有你自己想換時才用。",
+      properties: {
+        role: { type: "string", description: `場景用途,例如 ${BUILTIN_ROLES.join("、")}` },
+        name: { type: "string", description: "場景名稱(不知道就用 role)" },
+      },
     },
     lane: () => STAGE_LANE,
-    // Only scenes the node reported (when it reports a list at all).
+    // Only scenes the node reported (when it reports a list at all) or mapped roles.
     check(args) {
-      const status = link.status();
-      const listed = Array.isArray(status?.scenes) ? status.scenes : [];
-      const known = listed.length > 0 ? sceneNames(status) : [];
-      if (known.length > 0 && !known.includes(args.name)) {
-        return `unknown scene \`${args.name}\` (scenes: ${known.join(", ")})`;
-      }
-      return null;
+      const target = sceneTarget(args, link, roles);
+      return target.ok ? null : target.why;
     },
     async execute(args) {
       requireNode(link);
-      const status = await link.setScene(args.name);
-      return { text: `switched to scene ${args.name}`, data: { scene: status.scene } };
+      const target = sceneTarget(args, link, roles);
+      if (!target.ok) throw new CapabilityError(target.why);
+      const status = await link.setScene(target.scene, target.transition);
+      const what = target.role ? `${target.scene} (${target.role})` : target.scene;
+      return {
+        text: `switched to scene ${what}`,
+        data: { scene: status.scene, role: target.role },
+      };
     },
   });
 
@@ -57,8 +116,9 @@ export function stageCapabilities(link: StageLink): Capability[] {
     args: StreamArgs,
     permission: "stream.start",
     lane: () => STAGE_LANE,
-    async execute(args) {
+    async execute(args, ctx) {
       requireNode(link);
+      if (args.action === "stop") await options.curtain?.close(ctx.signal);
       const status = await link.stream(args.action);
       return {
         text: `OBS stream ${args.action}`,
