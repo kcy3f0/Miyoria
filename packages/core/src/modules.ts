@@ -2,12 +2,13 @@
 // (camelCased); if a package exported something else, fix it here and nowhere else.
 //
 // Boot order (legacy `boot.rs`): llm, speech, voice.link, voice, scheduler, agent, commands,
-// auth, social, mood, world, self, memory, initiative, queue, game, mcp, stage.link, sandbox
-// (opt-in), recorder, Discord bot, Admin API, terminal chat, then the extension host and one
-// `ext.<id>` per extension.
+// auth, actions, social, mood, world, self, memory, initiative, queue, game, mcp, stage.link,
+// sandbox (opt-in), recorder, Discord bot, Admin API, terminal chat, then the extension host and
+// one `ext.<id>` per extension.
 
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { ActionsModule } from "@miyoria/actions";
 import { AgentModule } from "@miyoria/agent";
 import { ApiModule, avatarEmotions } from "@miyoria/api";
 import { AuthConfigSchema, AuthModule } from "@miyoria/auth";
@@ -98,6 +99,7 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
     new AgentModule(profile),
     new CommandsModule({ owners: authOwners(config) }),
     new AuthModule(),
+    new ActionsModule(profile.displayName),
     SocialModule.fromProfile(profile),
     new MoodModule(profileId, profile.manifest.mood),
     new WorldModule({

@@ -1,5 +1,7 @@
-// `/stream start | stop | status | scene <name>` commands.
+// `/stream start | stop | status | scene <name>` commands. Starting, stopping and switching
+// scenes go through the actuator registry's gate (principal `command`, override).
 
+import { type ActuatorRegistry, deniedText } from "@miyoria/actions";
 import {
   type AnyComponentRoute,
   ArgKind,
@@ -16,6 +18,7 @@ import {
   notice,
 } from "@miyoria/commands";
 import { errorMessage, getLogger } from "@miyoria/kernel";
+import { isJsonObject, type JsonObject, Principals } from "@miyoria/types";
 import { defaultStageStatus, type StageStatus, type StreamAction } from "../protocol.js";
 import type { StageLink } from "./link.js";
 
@@ -98,36 +101,63 @@ function statusCard(status: StageStatus, note: string | null = null): CommandRep
 }
 
 /** Registers the stream commands. Undo with `unregisterStreamCommands`. */
-export function registerStreamCommands(registry: CommandRegistry, link: StageLink): void {
-  const stream = async (action: StreamAction): Promise<CommandReply> => {
+export function registerStreamCommands(
+  registry: CommandRegistry,
+  link: StageLink,
+  actuators: ActuatorRegistry,
+): void {
+  /** Runs a capability for the invoker, overriding her judgment (the gate still applies). */
+  const act = (inv: Invocation, capability: string, args: JsonObject) =>
+    actuators.invoke({
+      principal: Principals.command(inv.invoker, inv.context),
+      capability,
+      args,
+      why: `/${inv.path.join(" ")}`,
+      turn: null,
+    });
+
+  const stream = async (inv: Invocation, action: StreamAction): Promise<CommandReply> => {
     if (!link.isConnected()) return offline();
-    try {
-      const status = await link.stream(action);
-      if (status.streaming === (action === "start")) {
-        return notice("success", action === "start" ? "已開始直播。" : "已停止直播。");
-      }
-      return notice("warn", "已送出指令，但 OBS 尚未回報狀態變更。", describeStatus(status));
-    } catch (error) {
-      log.warn({ err: errorMessage(error), action }, "stream command failed");
+    const outcome = await act(inv, "stage.stream", { action });
+    if (outcome.status === "denied") {
+      return notice("warn", deniedText(outcome.decision.stage), outcome.decision.reason);
+    }
+    if (outcome.status === "failed") {
+      log.warn({ err: outcome.error, action }, "stream command failed");
       return notice(
         "error",
         action === "start" ? "無法開始直播。" : "無法停止直播。",
-        errorMessage(error),
+        outcome.error,
       );
     }
+    const status = link.status() ?? defaultStageStatus();
+    const data = outcome.result.data;
+    const streaming = isJsonObject(data) && data.streaming === true;
+    if (streaming === (action === "start")) {
+      return notice("success", action === "start" ? "已開始直播。" : "已停止直播。");
+    }
+    return notice("warn", "已送出指令，但 OBS 尚未回報狀態變更。", describeStatus(status));
   };
 
-  const setScene = async (raw: string): Promise<CommandReply> => {
+  const setScene = async (inv: Invocation, raw: string): Promise<CommandReply> => {
     if (!link.isConnected()) return offline();
     const name = raw.trim();
     if (name === "") return notice("warn", "請指定場景名稱。");
-    try {
-      await link.setScene(name);
-      return notice("success", `已切換到場景「${name}」。`);
-    } catch (error) {
-      log.warn({ err: errorMessage(error), name }, "scene switch failed");
-      return notice("error", `無法切換到場景「${name}」。`, errorMessage(error));
+    const outcome = await act(inv, "stage.scene", { name });
+    if (outcome.status === "denied") {
+      return notice(
+        "warn",
+        outcome.decision.stage === "args"
+          ? `沒有「${name}」這個場景。`
+          : deniedText(outcome.decision.stage),
+        outcome.decision.reason,
+      );
     }
+    if (outcome.status === "failed") {
+      log.warn({ err: outcome.error, name }, "scene switch failed");
+      return notice("error", `無法切換到場景「${name}」。`, outcome.error);
+    }
+    return notice("success", `已切換到場景「${name}」。`);
   };
 
   const currentStatus = async (): Promise<StageStatus> => {
@@ -149,17 +179,17 @@ export function registerStreamCommands(registry: CommandRegistry, link: StageLin
     {
       route: R.start,
       permission: "stream.start",
-      handle: async () => afterAction(await stream("start")),
+      handle: async (inv) => afterAction(await stream(inv, "start")),
     },
     {
       route: R.stop,
       permission: "stream.stop",
-      handle: async () => afterAction(await stream("stop")),
+      handle: async (inv) => afterAction(await stream(inv, "stop")),
     },
     {
       route: R.scene,
       permission: "stream.scene",
-      handle: async (inv) => afterAction(await setScene(inv.values[0] ?? "")),
+      handle: async (inv) => afterAction(await setScene(inv, inv.values[0] ?? "")),
     },
     {
       route: R.refresh,
@@ -172,11 +202,11 @@ export function registerStreamCommands(registry: CommandRegistry, link: StageLin
 
   registry.register(
     commandSpec("stream start", "讓直播機的 OBS 開始直播", { permission: "stream.start" }),
-    () => stream("start"),
+    (inv) => stream(inv, "start"),
   );
   registry.register(
     commandSpec("stream stop", "讓直播機的 OBS 停止直播", { permission: "stream.stop" }),
-    () => stream("stop"),
+    (inv) => stream(inv, "stop"),
   );
 
   const suggestScenes = (_inv: Invocation, value: string): Choice[] => {
@@ -191,7 +221,7 @@ export function registerStreamCommands(registry: CommandRegistry, link: StageLin
       permission: "stream.scene",
       ephemeral: true,
     }),
-    (inv) => setScene(inv.str("name") ?? ""),
+    (inv) => setScene(inv, inv.str("name") ?? ""),
     { autocomplete: { name: suggestScenes } },
   );
 

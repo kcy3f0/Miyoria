@@ -180,6 +180,7 @@ export class Env {
         importance,
         confidence: 0.8,
         source_context: null,
+        source: null,
         due: null,
       },
       at,

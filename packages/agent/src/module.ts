@@ -1,7 +1,9 @@
+import { actuatorsFor } from "@miyoria/actions";
 import { defineManifest, errorMessage, type Module, type ModuleContext } from "@miyoria/kernel";
 import type { Profile } from "@miyoria/profile";
 import { SettingsStoreKey } from "@miyoria/store";
 import { ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
+import { activenessCapability } from "./actions.js";
 import { type RandomSource, SeededRandom } from "./attention.js";
 import { AgentCommands } from "./commands.js";
 import { AgentConfigSchema } from "./config.js";
@@ -34,7 +36,8 @@ const SETTINGS_LOAD_TIMEOUT_MS = 5_000;
  * Provides `PersonaHandleKey` and `AgentHandleKey`. Uses the `ToolRegistryKey` service when the
  * app provides one at start; otherwise it provides its own (which keeps tools registered by
  * other modules across agent restarts). Either way the built-in `react` tool is registered
- * while running.
+ * while running, and the capability `channel.activeness` (her temporary activeness, offered as
+ * the `channel_activeness` tool) in the actuator registry.
  *
  * Uses the optional services `SettingsStoreKey` (persisting runtime settings), `AuthorizerKey`
  * (tool permissions), `CommandRegistryKey`, `PromptContributorsKey` (per-turn context),
@@ -61,6 +64,7 @@ export class AgentModule implements Module {
   readonly #overrides: Overrides = newOverrides();
   readonly #voiceRooms: VoiceRooms = new Map();
   readonly #commands = new AgentCommands();
+  #unregisterActiveness: (() => void) | null = null;
 
   constructor(profile: Profile) {
     this.#persona = new PersonaHandle(profile);
@@ -111,6 +115,7 @@ export class AgentModule implements Module {
       this.#voiceRooms,
       this.#budget,
       store,
+      ctx.clock,
     );
     try {
       const n = await timeout(SETTINGS_LOAD_TIMEOUT_MS, ctx.signal, () => handle.load());
@@ -123,6 +128,9 @@ export class AgentModule implements Module {
     if (!own) ctx.log.info("using the app's tool registry");
     this.#tools = tools;
     tools.register(new ReactTool(ctx));
+    this.#unregisterActiveness = actuatorsFor(ctx).register(
+      activenessCapability(handle, ctx.clock),
+    );
 
     const events = ctx.subscribe(Agent.topics());
     ctx.provide(PersonaHandleKey, this.#persona);
@@ -136,5 +144,7 @@ export class AgentModule implements Module {
   async stop(): Promise<void> {
     this.#commands.uninstall();
     this.#tools.unregister(ReactTool.NAME);
+    this.#unregisterActiveness?.();
+    this.#unregisterActiveness = null;
   }
 }

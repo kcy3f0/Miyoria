@@ -376,6 +376,7 @@ describe("social engine", () => {
         last_accessed: null,
         access_count: 0,
         source_context: null,
+        source: null,
         due: kind === "followup" ? at : null,
         done: false,
         superseded_by: null,

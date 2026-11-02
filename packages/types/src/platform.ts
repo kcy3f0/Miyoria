@@ -101,6 +101,11 @@ export interface PlatformSink {
    * `null` when unknown. Optional.
    */
   describe?(context: ContextKey, signal?: AbortSignal): Promise<string | null>;
+  /**
+   * The DM context with `account` (opening the DM channel if needed), for messages she sends to
+   * someone directly. Optional; platforms without DMs leave it out.
+   */
+  openDm?(account: AccountRef, signal?: AbortSignal): Promise<ContextKey>;
 }
 
 /**

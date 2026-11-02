@@ -122,6 +122,12 @@ export type MemoryScope =
   /** Anywhere this person is present (e.g. their name, how to address them). */
   | { type: "person"; person: PersonId };
 
+/** The account a memory came from, with the name it had then. */
+export interface MemorySource {
+  account: AccountRef;
+  name: string;
+}
+
 export interface MemoryRecord {
   /** ULID. */
   id: string;
@@ -144,6 +150,11 @@ export interface MemoryRecord {
   access_count: number;
   /** Where it was learned. */
   source_context: ContextKey | null;
+  /**
+   * Who told her, for notes she wrote because someone said so (`remember`); read back as
+   * "X said …", never as fact. `null` for memories she extracted herself (and old records).
+   */
+  source: MemorySource | null;
   /** Followups: earliest time to bring it up. */
   due: Timestamp | null;
   /** Followups: already brought up. */

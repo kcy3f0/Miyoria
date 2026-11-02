@@ -138,6 +138,11 @@ export class LlmRouter {
     return this.chain(purpose).length > 0;
   }
 
+  /** Whether `purpose` has a chain of its own (not just the `chat` fallback). */
+  configures(purpose: string): boolean {
+    return (this.#purposes.get(purpose)?.length ?? 0) > 0;
+  }
+
   /** The purpose whose chain a request for `purpose` uses (`chat` if unconfigured). */
   #effectivePurpose(purpose: string): string {
     return this.#purposes.has(purpose) ? purpose : "chat";

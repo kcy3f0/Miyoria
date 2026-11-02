@@ -426,12 +426,20 @@ describe("voice", () => {
     expect(registry.get(["voice", "join"])).toBeDefined();
     expect(registry.groupInfo(["voice"])?.guild_only).toBe(true);
 
+    const gate = e.h.sup.bus.subscribe("gate.decision");
     const joining = e.command("voice join", "u7", {}, "g2");
     expect(await e.node.recvType("join")).toEqual({ type: "join", guild: "g2", user_id: "u7" });
     e.node.sendJson({ type: "joined", guild: "g2", channel: "vc2" });
     const reply = await joining;
     expect(reply.ephemeral).toBe(false);
     expect(reply.text).toContain("/voice consent off");
+    // The command went through the gate as an overriding `command` principal.
+    const decision = gate.tryRecv()?.event;
+    expect(decision?.type === "custom" && decision.data.payload).toMatchObject({
+      capability: "voice.join",
+      allowed: true,
+      principal: { kind: "command", requester: { id: "u7" }, override: true },
+    });
 
     const left = await e.command("voice leave", "u7");
     expect(left.text).toBe("她已離開語音頻道。");

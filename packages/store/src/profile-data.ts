@@ -31,6 +31,7 @@ export const EXPORT_TABLES = {
       last_accessed: "ts",
       access_count: "num",
       source_context: "json",
+      source: "json",
       due: "ts",
       done: "bool",
       superseded_by: "text",

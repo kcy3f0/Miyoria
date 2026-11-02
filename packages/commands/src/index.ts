@@ -33,6 +33,7 @@ export {
   type SessionInfo,
   validateRoute,
 } from "./components.js";
+export { type ReplySink, ReplySinkKey } from "./direct.js";
 export { HELP_NODE, registerHelp } from "./help.js";
 export {
   type CommandsConfig,

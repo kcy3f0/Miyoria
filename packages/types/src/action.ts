@@ -48,16 +48,27 @@ export function comparePriority(a: Priority, b: Priority): number {
  * Internally tagged (`{"type": "send_message", ...}`), like the Rust serde shape.
  * `speak` says `text` in a voice channel (executed through `VoiceSink`); use a `voiceLane` so
  * her speech is serialized.
+ * `actuate` runs a capability call the gate already approved (`ticket`, executed through
+ * `ActuatorExecutor`), e.g. joining voice or switching a scene from inside a turn; `context` is
+ * where it happens (for the platform), `null` when it is not tied to one.
  */
 export type ActionPayload =
   | { type: "send_message"; context: ContextKey; message: OutgoingMessage }
   | { type: "react"; message: MessageRef; emoji: string }
   | { type: "typing"; context: ContextKey }
-  | { type: "speak"; context: ContextKey; text: string; emotion: string | null };
+  | { type: "speak"; context: ContextKey; text: string; emotion: string | null }
+  | { type: "actuate"; capability: string; ticket: string; context: ContextKey | null };
 
-/** Platform the payload goes to. */
+/** Platform the payload goes to (`core` for an `actuate` without a context). */
 export function actionPlatform(payload: ActionPayload): string {
-  return payload.type === "react" ? payload.message.context.platform : payload.context.platform;
+  if (payload.type === "react") return payload.message.context.platform;
+  if (payload.type === "actuate") return payload.context?.platform ?? "core";
+  return payload.context.platform;
+}
+
+/** `act:<name>`: lane of `actuate` actions (e.g. `act:voice:discord:<guild>`). */
+export function actLane(name: string): LaneKey {
+  return `act:${name}`;
 }
 
 export interface Action {

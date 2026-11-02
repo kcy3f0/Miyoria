@@ -27,6 +27,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@miyoria/actions": "workspace:*",
     "@miyoria/agent": "workspace:*",
     "@miyoria/api": "workspace:*",
     "@miyoria/auth": "workspace:*",

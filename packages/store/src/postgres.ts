@@ -30,6 +30,7 @@ import {
   fromMicros,
   memoryKind,
   memoryScopeKey,
+  memorySourceJson,
   normalizeTimestamp,
   parseJson,
   queryTokens,
@@ -59,6 +60,7 @@ import type {
   MemoryQuery,
   MemoryRecord,
   MemoryScope,
+  MemorySource,
   NodeOverride,
   Person,
   PersonaOverride,
@@ -846,11 +848,12 @@ class PgProfileData implements ProfileDataStore {
 const MEMORY_COLUMNS =
   "id, profile_id, kind, scope::text AS scope, subjects, content, tokens, " +
   "embedding::text AS embedding, importance, confidence, created_at, updated_at, " +
-  "last_accessed, access_count, source_context, due, done, superseded_by";
+  "last_accessed, access_count, source_context, source, due, done, superseded_by";
 
 function memoryFromRow(row: Row): MemoryRecord {
   const embedding = optStr(row, "embedding");
   const sourceContext = optStr(row, "source_context");
+  const source = optStr(row, "source");
   return {
     id: str(row, "id"),
     profile: str(row, "profile_id"),
@@ -868,6 +871,7 @@ function memoryFromRow(row: Row): MemoryRecord {
     access_count: u32(num(row, "access_count")),
     source_context:
       sourceContext === null ? null : parseJson<ContextKey>(sourceContext, "memory source context"),
+    source: source === null ? null : parseJson<MemorySource>(source, "memory source"),
     due: optTs(row, "due"),
     done: bool(row, "done"),
     superseded_by: optStr(row, "superseded_by"),
@@ -884,9 +888,9 @@ class PgMemories implements MemoryRecordStore {
       await this.db.execute(
         "INSERT INTO memory_records (id, profile_id, kind, scope, scope_key, subjects, " +
           "content, tokens, embedding, importance, confidence, created_at, updated_at, " +
-          "last_accessed, access_count, source_context, due, done, superseded_by) " +
+          "last_accessed, access_count, source_context, due, done, superseded_by, source) " +
           "VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9::vector, $10, $11, $12, $13, " +
-          "$14, $15, $16, $17, $18, $19) " +
+          "$14, $15, $16, $17, $18, $19, $20) " +
           "ON CONFLICT (id) DO UPDATE SET profile_id = EXCLUDED.profile_id, " +
           "kind = EXCLUDED.kind, scope = EXCLUDED.scope, scope_key = EXCLUDED.scope_key, " +
           "subjects = EXCLUDED.subjects, content = EXCLUDED.content, " +
@@ -895,7 +899,8 @@ class PgMemories implements MemoryRecordStore {
           "created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, " +
           "last_accessed = EXCLUDED.last_accessed, access_count = EXCLUDED.access_count, " +
           "source_context = EXCLUDED.source_context, due = EXCLUDED.due, " +
-          "done = EXCLUDED.done, superseded_by = EXCLUDED.superseded_by",
+          "done = EXCLUDED.done, superseded_by = EXCLUDED.superseded_by, " +
+          "source = EXCLUDED.source",
         [
           record.id,
           record.profile,
@@ -916,6 +921,7 @@ class PgMemories implements MemoryRecordStore {
           optTsParam(record.due),
           record.done,
           record.superseded_by,
+          memorySourceJson(record.source),
         ],
       );
     } catch (cause) {

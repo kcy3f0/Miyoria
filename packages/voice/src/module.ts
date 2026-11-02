@@ -1,5 +1,6 @@
 // Module `voice`: listening and speaking in voice channels.
 
+import { actuatorsFor } from "@miyoria/actions";
 import { CommandMount } from "@miyoria/commands";
 import {
   defineManifest,
@@ -12,6 +13,7 @@ import { LlmRouterKey } from "@miyoria/llm";
 import { SpeechServiceKey } from "@miyoria/speech";
 import { SettingsStoreKey } from "@miyoria/store";
 import { type JsonObject, type ProfileId, VoiceSinkKey } from "@miyoria/types";
+import { voiceCapabilities } from "./actions.js";
 import { BargeIn } from "./barge.js";
 import { registerCommands, unregisterCommands } from "./commands.js";
 import { VoiceConfigSchema, VoiceProfile } from "./config.js";
@@ -30,7 +32,8 @@ import { Semaphore } from "./util.js";
  *
  * Requires `voice.link` (`VoiceLinkKey`) and `speech` (`SpeechServiceKey`); uses the
  * `SettingsStore` for consent flags, the `CommandRegistry` for commands and the LLM router for
- * `tts_translate` when available.
+ * `tts_translate` when available. Registers the capabilities `voice.join`, `voice.leave`,
+ * `stream.start` and `stream.stop` in the actuator registry; the commands go through it too.
  */
 export class VoiceModule implements Module {
   static readonly ID = "voice";
@@ -44,6 +47,7 @@ export class VoiceModule implements Module {
   readonly #voice: JsonObject | null;
   #link: VoiceLink | null = null;
   #commands: CommandMount | null = null;
+  #capabilities: (() => void)[] = [];
 
   /** `voice` is the profile's `voice.toml` (`Profile.voice`). */
   constructor(profileId: ProfileId, voice: JsonObject | null) {
@@ -100,9 +104,13 @@ export class VoiceModule implements Module {
     }
 
     this.#link = link;
+    const actuators = actuatorsFor(ctx);
+    this.#capabilities = voiceCapabilities(link, () => config.golive_source).map((c) =>
+      actuators.register(c),
+    );
     const commands = new CommandMount(
       "voice",
-      (registry) => registerCommands(registry, link, consent, config.golive_source),
+      (registry) => registerCommands(registry, link, consent, config.golive_source, actuators),
       unregisterCommands,
     );
     this.#commands = commands;
@@ -116,6 +124,8 @@ export class VoiceModule implements Module {
   async stop(): Promise<void> {
     this.#commands?.detach();
     this.#commands = null;
+    for (const unregister of this.#capabilities) unregister();
+    this.#capabilities = [];
   }
 
   async health(): Promise<Health> {

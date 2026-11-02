@@ -4,6 +4,7 @@
 import { errorMessage, getLogger } from "@miyoria/kernel";
 import type { SettingsStore } from "@miyoria/store";
 import {
+  type Clock,
   type ContextKey,
   contextKeyEquals,
   contextKeyString,
@@ -11,6 +12,7 @@ import {
   type PlatformId,
   type ProfileId,
   serviceKey,
+  systemClock,
 } from "@miyoria/types";
 import {
   type Activeness,
@@ -36,10 +38,21 @@ export const ACTIVENESS_PREFIX = "activeness:";
 export interface Overrides {
   modes: Map<string, ChannelMode>;
   activeness: Map<string, Activeness>;
+  /**
+   * Activeness she set herself for a while (`channel.activeness`), with its end (clock ms).
+   * Wins over everything until it expires; kept in memory only.
+   */
+  temporary: Map<string, TemporaryActiveness>;
+}
+
+export interface TemporaryActiveness {
+  level: Activeness;
+  /** Clock ms. */
+  until: number;
 }
 
 export function newOverrides(): Overrides {
-  return { modes: new Map(), activeness: new Map() };
+  return { modes: new Map(), activeness: new Map(), temporary: new Map() };
 }
 
 /** The voice context she is in, keyed by `voiceScopeKey`. */
@@ -73,6 +86,7 @@ export class AgentHandle {
   readonly #voiceRooms: VoiceRooms;
   readonly #budget: BudgetBox;
   readonly #store: SettingsStore | null;
+  readonly #clock: Clock;
 
   /** @internal Created by the agent module. */
   constructor(
@@ -82,6 +96,7 @@ export class AgentHandle {
     voiceRooms: VoiceRooms,
     budget: BudgetBox,
     store: SettingsStore | null,
+    clock: Clock = systemClock,
   ) {
     this.#config = config;
     this.#persona = persona;
@@ -89,6 +104,7 @@ export class AgentHandle {
     this.#voiceRooms = voiceRooms;
     this.#budget = budget;
     this.#store = store;
+    this.#clock = clock;
   }
 
   /** The LLM budget state last reported on `llm.budget` (`ok` until then). */
@@ -168,9 +184,33 @@ export class AgentHandle {
     await this.#persist(AgentHandle.modeKey(context), mode);
   }
 
-  /** Effective activeness: runtime override, then config, then `behavior.initiative`. */
+  /**
+   * Effective activeness: her own temporary choice, then the runtime override, then config,
+   * then `behavior.initiative`.
+   */
   activeness(context: ContextKey): Activeness {
-    return this.activenessOverride(context) ?? this.configuredActiveness(context);
+    return (
+      this.temporaryActiveness(context)?.level ??
+      this.activenessOverride(context) ??
+      this.configuredActiveness(context)
+    );
+  }
+
+  /** Her temporary activeness in `context`, unless it expired (then it is forgotten). */
+  temporaryActiveness(context: ContextKey): TemporaryActiveness | null {
+    const key = contextKeyString(context);
+    const entry = this.#overrides.temporary.get(key);
+    if (!entry) return null;
+    if (this.#clock.now() >= entry.until) {
+      this.#overrides.temporary.delete(key);
+      return null;
+    }
+    return { ...entry };
+  }
+
+  /** Sets her own activeness in `context` until `until` (clock ms); then it reverts. */
+  setTemporaryActiveness(context: ContextKey, level: Activeness, until: number): void {
+    this.#overrides.temporary.set(contextKeyString(context), { level, until });
   }
 
   activenessOverride(context: ContextKey): Activeness | null {

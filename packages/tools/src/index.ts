@@ -11,6 +11,7 @@ import {
   type ContextKey,
   type JsonValue,
   type MessageRef,
+  type Principal,
   type Priority,
   serviceKey,
   type TurnId,
@@ -24,6 +25,11 @@ export interface ToolContext {
   context: ContextKey;
   /** Author of the message that triggered the turn. */
   account: AccountRef;
+  /**
+   * On whose behalf the call runs: `user` (the author asked) in reactive turns, `director` for
+   * the game director. Capability tools pass it to the gate.
+   */
+  principal: Principal;
   /** The message that triggered the turn (the latest one). */
   message: MessageRef;
   /** Priority for actions the tool submits (same as her reply). */

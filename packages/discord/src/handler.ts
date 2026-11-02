@@ -1,7 +1,7 @@
 // Gateway event handling: messages, typing, readiness, interactions, and presence / voice state /
 // member changes for the `world` module (presence.ts).
 
-import { type CommandRegistry, PanelSessions } from "@miyoria/commands";
+import { type CommandRegistry, PanelSessions, ReplySinkKey } from "@miyoria/commands";
 import { errorMessage, getLogger, type ModuleContext } from "@miyoria/kernel";
 import {
   type AccountRef,
@@ -254,7 +254,10 @@ export class GatewayBridge {
         data: { platform: PLATFORM, self_account: account(id) },
       });
     }
-    this.shared.sinks?.register(new DiscordSink(client.rest));
+    const sink = new DiscordSink(client.rest);
+    this.shared.sinks?.register(sink);
+    // Cards outside interactions (the gate's approval requests to the owners).
+    this.ctx.provide(ReplySinkKey, sink);
     this.shared.ready = true;
     for (const guild of client.guilds.cache.values()) {
       this.guard("guild snapshot", () => this.snapshotGuild(guild as unknown as GuildLike));

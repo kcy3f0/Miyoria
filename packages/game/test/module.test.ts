@@ -1,3 +1,4 @@
+import { ActuatorRegistry, ActuatorRegistryKey } from "@miyoria/actions";
 import {
   type ArgValue,
   CommandRegistry,
@@ -157,13 +158,18 @@ class Harness {
     );
   }
 
-  static async create(provider: ChatProvider, config: JsonValue | null = null): Promise<Harness> {
+  static async create(
+    provider: ChatProvider,
+    config: JsonValue | null = null,
+    actuators: ((h: Harness) => ActuatorRegistry) | null = null,
+  ): Promise<Harness> {
     const h = new Harness();
     const router = new LlmRouter(
       new Map([[provider.name, provider]]),
       new Map([["game", [parseModelRef(`${provider.name}:m`)]]]),
     );
     const services = h.sup.services;
+    if (actuators) services.provide("app", ActuatorRegistryKey, actuators(h));
     services.provide("app", ToolRegistryKey, h.tools);
     services.provide("app", CommandRegistryKey, h.commands);
     services.provide("app", RequestQueueKey, h.queue);
@@ -313,6 +319,47 @@ describe("game director", () => {
     h.observeText = IDLE;
     await secs(20);
     expect(h.acts()).toHaveLength(3);
+    await h.stop();
+  });
+
+  it("director_actions_and_commands_go_through_the_gate", async () => {
+    const llm = new MockProvider("mock").reply(
+      decision("挖鐵礦", { name: "mine", args: { block: "iron_ore" } }),
+    );
+    const gate: Record<string, JsonValue>[] = [];
+    let registry: ActuatorRegistry | null = null;
+    const h = await Harness.create(llm, null, (harness) => {
+      registry = new ActuatorRegistry({
+        services: harness.sup.services,
+        builtins: false,
+        publish: (e) => {
+          if (e.type === "custom" && e.data.topic === "gate.decision") {
+            gate.push(e.data.payload as Record<string, JsonValue>);
+          }
+        },
+      });
+      return registry;
+    });
+    await h.start();
+    expect(h.acts()).toHaveLength(1);
+    const who = (d: Record<string, JsonValue>) => [
+      d.capability,
+      (d.principal as Record<string, JsonValue>).kind,
+      d.allowed,
+    ];
+    expect(gate.map(who)).toEqual([
+      ["game.start", "command", true],
+      ["game.act", "director", true],
+    ]);
+
+    // Paused: the director may not act any more; commands still go through.
+    await (registry as unknown as ActuatorRegistry).setPaused(true);
+    expect(await h.command("game goal", { text: "砍樹" })).toContain("已設定新目標");
+    await secs(20);
+    expect(h.acts(), "no act while paused").toHaveLength(1);
+    const paused = gate.filter((d) => d.capability === "game.act").at(-1);
+    expect(paused).toMatchObject({ allowed: false, stage: "pause" });
+    expect(gate.some((d) => d.capability === "game.goal" && d.allowed === true)).toBe(true);
     await h.stop();
   });
 

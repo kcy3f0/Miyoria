@@ -1,20 +1,29 @@
 // Live operation: extensions, MCP servers, the request queue, the stage (VTube Studio / OBS) and
-// the voice monitor.
+// the voice monitor. Scene, stream and say go through the actuator registry's gate (principal
+// `panel`).
 
+import { ActuatorRegistryKey } from "@miyoria/actions";
 import { type CatalogEntry, ExtensionCatalogKey, extensionModuleId } from "@miyoria/ext-host";
 import { errorMessage, getLogger, type ModuleStatus, SupervisorKey } from "@miyoria/kernel";
 import { type ServerStatus as McpServerStatus, McpStatusKey } from "@miyoria/mcp";
 import { type RequestQueue, RequestQueueKey } from "@miyoria/queue";
 import { defaultStageStatus, type StageLink, StageLinkKey } from "@miyoria/stage";
 import { type ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
-import { contextKeyString, newId, PlatformSinksKey, VoiceSinkKey } from "@miyoria/types";
+import {
+  contextKeyString,
+  type JsonObject,
+  newId,
+  PlatformSinksKey,
+  Principals,
+  VoiceSinkKey,
+} from "@miyoria/types";
 import { z } from "zod";
 import { runModuleAction } from "./core.js";
 import { ApiError } from "./errors.js";
 import { readJson, usizeJson } from "./extract.js";
 import { json, param, type Route } from "./route.js";
 import { isQueueNotFound, MCP_MODULE_ID } from "./services.js";
-import { type ApiContext, type ApiState, toJson } from "./state.js";
+import { type ApiContext, type ApiState, actorOf, toJson } from "./state.js";
 import type {
   ExtensionInfo,
   McpServerInfo,
@@ -278,15 +287,42 @@ async function stageScene(state: ApiState, c: ApiContext): Promise<Response> {
   if (scene === "") throw ApiError.badRequest("`scene` must not be empty");
   const link = stageLink(state);
   requireObs(state, link);
-  let failure: unknown = null;
-  try {
-    await link.setScene(scene);
-  } catch (error) {
-    failure = error;
-  }
+  const failure = await act(state, c, "stage.scene", { name: scene });
   await state.audit(c, "stage.scene", scene, {}, failure === null);
-  if (failure !== null) throw ApiError.badGateway(failure);
+  if (failure !== null) throw failure;
   return json(stageState(state, link));
+}
+
+/**
+ * Runs a capability through the gate as the panel (principal `panel`, the request's actor).
+ * Returns the error to answer with, or `null` when it ran.
+ */
+async function act(
+  state: ApiState,
+  c: ApiContext,
+  capability: string,
+  args: JsonObject,
+): Promise<ApiError | null> {
+  const actuators = state.service(ActuatorRegistryKey, "actuator registry");
+  const outcome = await actuators.invoke({
+    principal: Principals.panel(actorOf(c)),
+    capability,
+    args,
+    why: "admin panel",
+    turn: null,
+  });
+  switch (outcome.status) {
+    case "done":
+      return null;
+    case "denied":
+      return outcome.decision.stage === "args"
+        ? ApiError.badRequest(outcome.decision.reason)
+        : outcome.decision.stage === "unknown"
+          ? ApiError.unavailable(`\`${capability}\` is not available`)
+          : ApiError.conflict(`refused by the gate: ${outcome.decision.reason}`);
+    case "failed":
+      return ApiError.badGateway(outcome.cause);
+  }
 }
 
 const StreamSchema = z.object({ action: z.enum(["start", "stop"]) });
@@ -295,14 +331,9 @@ async function stageStream(state: ApiState, c: ApiContext): Promise<Response> {
   const request = await readJson(c, StreamSchema);
   const link = stageLink(state);
   requireObs(state, link);
-  let failure: unknown = null;
-  try {
-    await link.stream(request.action);
-  } catch (error) {
-    failure = error;
-  }
+  const failure = await act(state, c, "stage.stream", { action: request.action });
   await state.audit(c, "stage.stream", request.action, {}, failure === null);
-  if (failure !== null) throw ApiError.badGateway(failure);
+  if (failure !== null) throw failure;
   return json(stageState(state, link));
 }
 
@@ -348,15 +379,28 @@ async function stageSay(state: ApiState, c: ApiContext): Promise<Response> {
       `unknown emotion \`${emotion}\` (the avatar knows ${state.emotions.join(", ")})`,
     );
   }
-  const sink = state.service(VoiceSinkKey, "voice module");
+  state.service(VoiceSinkKey, "voice module");
   const context = state.monitor.voiceContext();
   if (!context) throw ApiError.conflict("she is not in a voice channel");
   const turn = newId();
-  await state.audit(c, "stage.say", contextKeyString(context), { text, emotion, turn }, true);
-  // Fire and forget: the request answers as soon as speaking was handed to the voice module.
-  void sink.speak(context, text, emotion, turn, state.ctx.signal).catch((error: unknown) => {
-    log.warn({ error: errorMessage(error) }, "speaking from the API failed");
+  // `speak` returns as soon as speaking was handed to the voice module.
+  const failure = await act(state, c, "speak", {
+    context: { ...context },
+    text,
+    emotion,
+    turn,
   });
+  await state.audit(
+    c,
+    "stage.say",
+    contextKeyString(context),
+    { text, emotion, turn },
+    failure === null,
+  );
+  if (failure !== null) {
+    log.warn({ error: failure.message }, "speaking from the API failed");
+    throw failure;
+  }
   const body: SayResponse = { turn };
   return json(body);
 }

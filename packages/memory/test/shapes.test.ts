@@ -97,6 +97,7 @@ describe("shapes", () => {
           importance: 0.5,
           confidence: 1,
           source_context: null,
+          source: null,
           due: null,
         },
         t0(),

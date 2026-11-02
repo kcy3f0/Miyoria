@@ -22,6 +22,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@miyoria/actions": "workspace:*",
     "@hono/node-server": "^2.1.5",
     "@miyoria/agent": "workspace:*",
     "@miyoria/auth": "workspace:*",

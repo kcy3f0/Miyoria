@@ -45,6 +45,7 @@ import {
   MAX_DECISIONS,
   memoryKind,
   memoryScopeKey,
+  memorySourceJson,
   optionalMicros,
   optionalTimestamp,
   parseJson,
@@ -74,6 +75,7 @@ import type {
   MemoryQuery,
   MemoryRecord,
   MemoryScope,
+  MemorySource,
   NodeOverride,
   Person,
   PersonaOverride,
@@ -776,6 +778,7 @@ class SqliteProfileData implements ProfileDataStore {
 function memoryFromRow(row: Row): MemoryRecord {
   const embedding = row.embedding;
   const sourceContext = optStr(row, "source_context");
+  const source = optStr(row, "source");
   return {
     id: str(row, "id"),
     profile: str(row, "profile_id"),
@@ -794,6 +797,7 @@ function memoryFromRow(row: Row): MemoryRecord {
     access_count: u32(num(row, "access_count")),
     source_context:
       sourceContext === null ? null : parseJson<ContextKey>(sourceContext, "memory source context"),
+    source: source === null ? null : parseJson<MemorySource>(source, "memory source"),
     due: optTs(row, "due"),
     done: bool(row, "done"),
     superseded_by: optStr(row, "superseded_by"),
@@ -830,18 +834,19 @@ class SqliteMemories implements MemoryRecordStore {
       this.db.run(
         "INSERT INTO memory_records (id, profile_id, kind, scope, scope_key, subjects, " +
           "content, tokens, embedding, importance, confidence, created_at, updated_at, " +
-          "last_accessed, access_count, source_context, due, done, superseded_by) VALUES ($id, " +
-          "$profile, $kind, $scope, $scope_key, $subjects, $content, $tokens, $embedding, " +
-          "$importance, $confidence, $created_at, $updated_at, $last_accessed, $access_count, " +
-          "$source_context, $due, $done, $superseded_by) ON CONFLICT (id) DO UPDATE SET " +
+          "last_accessed, access_count, source_context, source, due, done, superseded_by) " +
+          "VALUES ($id, $profile, $kind, $scope, $scope_key, $subjects, $content, $tokens, " +
+          "$embedding, $importance, $confidence, $created_at, $updated_at, $last_accessed, " +
+          "$access_count, $source_context, $source, $due, $done, $superseded_by) " +
+          "ON CONFLICT (id) DO UPDATE SET " +
           "profile_id = excluded.profile_id, kind = excluded.kind, scope = excluded.scope, " +
           "scope_key = excluded.scope_key, subjects = excluded.subjects, content = " +
           "excluded.content, tokens = excluded.tokens, embedding = excluded.embedding, " +
           "importance = excluded.importance, confidence = excluded.confidence, created_at = " +
           "excluded.created_at, updated_at = excluded.updated_at, last_accessed = " +
           "excluded.last_accessed, access_count = excluded.access_count, source_context = " +
-          "excluded.source_context, due = excluded.due, done = excluded.done, superseded_by = " +
-          "excluded.superseded_by",
+          "excluded.source_context, source = excluded.source, due = excluded.due, " +
+          "done = excluded.done, superseded_by = excluded.superseded_by",
         {
           id: record.id,
           profile: record.profile,
@@ -860,6 +865,7 @@ class SqliteMemories implements MemoryRecordStore {
           access_count: u32(record.access_count),
           source_context:
             record.source_context === null ? null : contextLookupKey(record.source_context),
+          source: memorySourceJson(record.source),
           due: optionalMicros(record.due),
           done: record.done ? 1 : 0,
           superseded_by: record.superseded_by,

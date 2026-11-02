@@ -63,15 +63,19 @@ describe("agent module", () => {
     const requests = mock.requests();
     expect(requests.length).toBe(1);
     const msgs = requests[0]?.messages ?? [];
-    // Stable persona first, history next, per-turn situation last.
-    expect(msgs.length).toBe(3);
+    // Stable persona first, history next, then the per-turn data (user role) and situation.
+    expect(msgs.length).toBe(4);
     expect(msgs[0]?.role).toBe("system");
     expect(msgs[0]?.content).toBe("你是住在深海的鯨魚娘。");
     expect(msgs[1]?.role).toBe("user");
     expect(msgs[1]?.content).toBe("Owen: 早安\nOwen: DeepSeek 在嗎\n阿明: 安安");
-    expect(msgs[2]?.role).toBe("system");
-    expect(msgs[2]?.content).toContain("目前情境");
-    expect(msgs[2]?.content).toContain("阿明、Owen");
+    expect(msgs[2]?.role).toBe("user");
+    expect(msgs[2]?.content).toContain("標題=在場的人⟧\n阿明、Owen\n⟦/資料⟧");
+    expect(msgs[3]?.role).toBe("system");
+    expect(msgs[3]?.content).toContain("目前情境");
+    expect(msgs[3]?.content).not.toContain("阿明");
+    // Text replies think first.
+    expect(requests[0]?.thinking).toBe(true);
     expect(requests[0]?.tools?.map((t) => t.name)).toEqual(["react"]);
 
     expect(h.sink.sent()).toEqual([["現在都中午了好嗎……早啦。", "direct"]]);
@@ -216,7 +220,7 @@ describe("agent module", () => {
     const requests = mock.requests();
     expect(requests.length).toBe(2);
     const msgs = requests[1]?.messages ?? [];
-    expect(msgs.slice(1, -1).map((m) => [m.role, m.content])).toEqual([
+    expect(msgs.slice(1, -2).map((m) => [m.role, m.content])).toEqual([
       ["assistant", "我先說一句"],
       ["user", "Owen: 早安"],
       ["assistant", "早啦"],
@@ -246,7 +250,7 @@ describe("agent module", () => {
     await wait(3000);
     const requests = mock.requests();
     expect(requests[1]?.messages[1]?.content).toBe("Owen: 嗨\nOwen: 人呢");
-    expect(requests[1]?.messages.length).toBe(3);
+    expect(requests[1]?.messages.length).toBe(4);
   });
 
   it("silence_and_empty_replies_send_nothing", async () => {

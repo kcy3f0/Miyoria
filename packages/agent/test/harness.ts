@@ -1,6 +1,7 @@
 // Module-level test harness: a real supervisor with a stub `llm` module (mock providers) and a
 // fake `scheduler` that records actions. Tests run with Vitest fake timers.
 
+import { type ActuatorRegistry, ActuatorRegistryKey } from "@miyoria/actions";
 import { CommandsModule, type InvocationData, splitPath } from "@miyoria/commands";
 import {
   defineManifest,
@@ -180,6 +181,10 @@ export interface Setup {
   roll?: number;
   /** Provided by the "app" as the voice module's sink. */
   voiceSink?: VoiceSink;
+  /** Provided by the "app" as the actuator registry. */
+  actuators?: ActuatorRegistry;
+  /** `[llm.thinking]` of the router. */
+  thinking?: Map<string, boolean>;
 }
 
 export function profile(mode: string): Profile {
@@ -233,6 +238,7 @@ export class Harness {
     if (setup.store) sup.services.provide("app", SettingsStoreKey, setup.store);
     if (setup.appTools) sup.services.provide("app", ToolRegistryKey, setup.appTools);
     if (setup.voiceSink) sup.services.provide("app", VoiceSinkKey, setup.voiceSink);
+    if (setup.actuators) sup.services.provide("app", ActuatorRegistryKey, setup.actuators);
     if (setup.owners) {
       await sup.register(new CommandsModule(), { owners: setup.owners }, true);
     }
@@ -244,7 +250,11 @@ export class Harness {
       providers.set("fast", fast);
       purposes.set("fast", [parseModelRef("fast:m")]);
     }
-    const router = new LlmRouter(providers, purposes);
+    const router = new LlmRouter(
+      providers,
+      purposes,
+      setup.thinking ? { thinking: setup.thinking } : {},
+    );
     await sup.register(new Stub("llm", (ctx) => ctx.provide(LlmRouterKey, router)), null, true);
     const sink = new FakeSink();
     await sup.register(

@@ -51,6 +51,13 @@ function toolCtx(): ToolContext {
     turn: newId(),
     context,
     account: { platform: "test", id: "u" },
+    principal: {
+      kind: "user",
+      requester: { platform: "test", id: "u" },
+      context,
+      override: false,
+      actor: null,
+    },
     message: { context, id: "m" },
     priority: "direct",
     signal: new AbortController().signal,

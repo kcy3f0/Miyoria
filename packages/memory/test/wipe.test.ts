@@ -110,6 +110,7 @@ async function setup() {
       last_accessed: null,
       access_count: 0,
       source_context: null,
+      source: null,
       due: null,
       done: false,
       superseded_by: null,

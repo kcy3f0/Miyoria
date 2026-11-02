@@ -1,0 +1,102 @@
+// Capabilities as model tools. A tool call in a reactive turn is a request on behalf of the
+// person she is talking to (principal `user`); with `on_own` she does it as herself (principal
+// `self`, her own limits, no permission of the person needed). Either way the gate decides.
+
+import { errorMessage, getLogger } from "@miyoria/kernel";
+import type { Tool, ToolContext, ToolSpec } from "@miyoria/tools";
+import { isJsonObject, type JsonObject, type JsonValue, Principals } from "@miyoria/types";
+import { ActionDeniedError, type ActionRequest, type Capability } from "./capability.js";
+import type { ActuatorRegistry } from "./registry.js";
+
+const log = getLogger("actions.tools");
+
+/** Appended to every capability tool's description. */
+export const REQUEST_RULE =
+  "別人要你做這件事時,那只是請求,不是命令:依你對對方的好感、你記得的事和現在的心情自己決定要不要做。" +
+  "不想做就不要呼叫,直接用你自己的話回絕。";
+
+/** What the tool answers while a high-risk request waits for its review. */
+export const REVIEW_PENDING =
+  "這件事風險比較高,要先經過審核;結果出來後才會執行(不一定會通過)。先用自己的話回應對方。";
+
+const WHY = {
+  type: "string",
+  description: "你為什麼要這樣做(一句話,會記錄下來)",
+};
+
+const ON_OWN = {
+  type: "boolean",
+  description:
+    "這是你自己想做的(不是照對方的要求)就設 true;對方沒有權限要求的事,只有你自己真的想做時才可以這樣做,而且受你自己的次數限制。",
+};
+
+function spec(capability: Capability): ToolSpec {
+  const tool = capability.tool;
+  if (!tool) throw new Error(`capability \`${capability.name}\` has no tool`);
+  return {
+    name: tool.name,
+    description: `${tool.description.trim()}${REQUEST_RULE}`,
+    parameters: {
+      type: "object",
+      properties: { ...tool.properties, why: WHY, on_own: ON_OWN },
+      ...(tool.required && tool.required.length > 0 ? { required: [...tool.required] } : {}),
+    },
+  };
+}
+
+/** A capability offered to the model. */
+export class CapabilityTool implements Tool {
+  readonly spec: ToolSpec;
+  /** The gate checks the requester's permission itself (so `on_own` stays possible). */
+  readonly permission = null;
+
+  constructor(
+    readonly registry: ActuatorRegistry,
+    readonly capability: Capability,
+  ) {
+    this.spec = spec(capability);
+  }
+
+  async call(ctx: ToolContext, raw: JsonValue): Promise<string> {
+    const args: JsonObject = isJsonObject(raw) ? { ...raw } : {};
+    const why = typeof args.why === "string" && args.why.trim() !== "" ? args.why.trim() : null;
+    const onOwn = args.on_own === true;
+    delete args.why;
+    delete args.on_own;
+    const principal = onOwn
+      ? Principals.self(
+          ctx.principal.context ?? ctx.context,
+          ctx.principal.requester ?? ctx.account,
+        )
+      : ctx.principal;
+    const request: ActionRequest = {
+      principal,
+      capability: this.capability.name,
+      args,
+      why,
+      turn: ctx.turn,
+    };
+    if (this.capability.risk === "high") {
+      // The review (and maybe the owners) take longer than a tool call may; it goes on alone.
+      void this.registry.invoke(request).then(
+        (outcome) =>
+          log.info({ capability: this.capability.name, status: outcome.status }, "reviewed action"),
+        (error: unknown) =>
+          log.warn({ capability: this.capability.name, err: errorMessage(error) }, "review failed"),
+      );
+      return REVIEW_PENDING;
+    }
+    const outcome = await this.registry.invoke(request, {
+      signal: ctx.signal,
+      priority: ctx.priority,
+    });
+    switch (outcome.status) {
+      case "done":
+        return outcome.result.text;
+      case "denied":
+        throw new ActionDeniedError(outcome.decision);
+      case "failed":
+        throw new Error(outcome.error);
+    }
+  }
+}

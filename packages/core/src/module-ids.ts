@@ -13,6 +13,7 @@ export const MODULE_IDS: readonly string[] = [
   "agent",
   "commands",
   "auth",
+  "actions",
   "social",
   "mood",
   "world",

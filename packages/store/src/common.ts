@@ -1,7 +1,7 @@
 // Helpers shared by the backends: canonical lookup keys, microsecond timestamps, embeddings.
 
 import type { AccountRef, ContextKey, Timestamp } from "@miyoria/types";
-import type { AuthScope, MemoryKind, MemoryScope } from "./records.js";
+import type { AuthScope, MemoryKind, MemoryScope, MemorySource } from "./records.js";
 
 /** Every failure of a backend (bad input, constraint violations, broken rows). */
 export class StoreError extends Error {
@@ -36,6 +36,15 @@ function canonicalAccount(account: AccountRef): AccountRef {
 /** Canonical lookup key of a context. */
 export function contextLookupKey(context: ContextKey): string {
   return JSON.stringify(canonicalContext(context));
+}
+
+/** Column text of a memory's source (`null` stays `NULL`). */
+export function memorySourceJson(source: MemorySource | null): string | null {
+  if (source === null) return null;
+  return JSON.stringify({
+    account: { platform: source.account.platform, id: source.account.id },
+    name: source.name,
+  });
 }
 
 export function canonicalMemoryScope(scope: MemoryScope): MemoryScope {

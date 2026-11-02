@@ -3,6 +3,8 @@ import {
   type Action,
   type ActionPayload,
   type ActionSink,
+  type ActuatorExecutor,
+  ActuatorExecutorKey,
   actionPlatform,
   isActionExpired,
   type LaneKey,
@@ -65,7 +67,10 @@ interface Lane {
   wake: Wake;
 }
 
-type Target = { kind: "platform"; sink: PlatformSink } | { kind: "voice"; sink: VoiceSink };
+type Target =
+  | { kind: "platform"; sink: PlatformSink }
+  | { kind: "voice"; sink: VoiceSink }
+  | { kind: "actuator"; executor: ActuatorExecutor };
 
 interface Outcome {
   message: MessageRef | null;
@@ -120,7 +125,8 @@ export class SchedulerStoppedError extends Error {
 /**
  * Per-lane action queues. Each lane has its own worker task that runs the lane's actions one at
  * a time, most urgent first (priority, then `created_at`, then submission order), through the
- * `PlatformSinks` service (`VoiceSink` for `speak`). Idle workers exit.
+ * `PlatformSinks` service (`VoiceSink` for `speak`, `ActuatorExecutor` for `actuate`). Idle
+ * workers exit.
  */
 export class Scheduler implements ActionSink {
   readonly #ctx: ModuleContext;
@@ -269,12 +275,20 @@ export class Scheduler implements ActionSink {
       const voice = this.#ctx.services.get(VoiceSinkKey);
       return voice ? { kind: "voice", sink: voice } : "no voice sink";
     }
+    if (payload.type === "actuate") {
+      const executor = this.#ctx.services.get(ActuatorExecutorKey);
+      return executor ? { kind: "actuator", executor } : "no actuator executor";
+    }
     const platform = actionPlatform(payload);
     const sink = this.#ctx.services.get(PlatformSinksKey)?.get(platform);
     return sink ? { kind: "platform", sink } : `no sink for platform ${platform}`;
   }
 
   #complete(action: Action, result: Completion): void {
+    if (!result.ok && action.payload.type === "actuate") {
+      // Settles the gate's waiting caller; a no-op when the executor already answered it.
+      this.#ctx.services.get(ActuatorExecutorKey)?.dropped(action.payload.ticket, result.error);
+    }
     if (!result.ok) {
       const fields = { action: action.id, lane: action.lane, error: result.error };
       if (["expired", "cancelled", "coalesced"].includes(result.error)) {
@@ -335,7 +349,10 @@ async function run(target: Target, action: Action, signal: AbortSignal): Promise
       default:
         break;
     }
-  } else if (payload.type === "speak") {
+  } else if (target.kind === "actuator" && payload.type === "actuate") {
+    await target.executor.run(payload.ticket, signal);
+    return { message: null, interrupted: false };
+  } else if (target.kind === "voice" && payload.type === "speak") {
     const outcome = await target.sink.speak(
       payload.context,
       payload.text,

@@ -5,6 +5,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ActuatorRegistry, ActuatorRegistryKey } from "@miyoria/actions";
 import { AuthService, AuthServiceKey } from "@miyoria/auth";
 import { ExtensionCatalog, ExtensionCatalogKey, ExtensionManifest } from "@miyoria/ext-host";
 import { Supervisor, SupervisorKey } from "@miyoria/kernel";
@@ -119,6 +120,8 @@ async function harness(
   s.provide("extensions", ExtensionCatalogKey, catalog());
   const sink = new FakeSink();
   s.provide("voice", VoiceSinkKey, sink);
+  // The app's gate (with the built-in `speak`); the panel's say goes through it.
+  s.provide(k, ActuatorRegistryKey, new ActuatorRegistry({ services: s }));
 
   const api = new ApiModule({ env: () => undefined, ...options });
   await sup.register(api, { bind: "127.0.0.1:0", token: TOKEN, panel_dir: "", ...apiConfig }, true);
@@ -196,6 +199,7 @@ function memory(
     last_accessed: null,
     access_count: 0,
     source_context: null,
+    source: null,
     due: null,
     done: false,
     superseded_by: null,
@@ -792,6 +796,12 @@ describe("routes", () => {
     expect(spoken.text).toBe("哼,才不是特地為你唱的。");
     expect(spoken.turn).toBe(said.turn);
     await audited(h, "stage.say");
+    // It went through the gate as the panel.
+    const gate = (await h.store.audit.recent(100, "panel:api")).find(
+      (e) => e.action === "gate.speak",
+    );
+    expect(gate?.ok).toBe(true);
+    expect(gate?.detail).toMatchObject({ principal: { kind: "panel", actor: "api" } });
     expect(await statusOf(c.stageSay("   "))).toBe(400);
   });
 

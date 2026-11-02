@@ -84,7 +84,7 @@ describe("ts port", () => {
     await wait(3000);
     const requests = mock.requests();
     expect(requests.length).toBe(2);
-    expect(requests[1]?.messages.slice(1, -1).map((m) => m.content)).toEqual(["Owen: 新的話"]);
+    expect(requests[1]?.messages.slice(1, -2).map((m) => m.content)).toEqual(["Owen: 新的話"]);
   });
 
   it("reply_reference replies to the last input of direct turns", async () => {

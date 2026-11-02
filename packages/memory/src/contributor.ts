@@ -1,7 +1,13 @@
 // Prompt contributor `memory`: the section 「你記得的事」.
 
 import type { MemoryKind } from "@miyoria/store";
-import type { PromptContributor, PromptRequest, PromptSection, Timestamp } from "@miyoria/types";
+import {
+  type PromptContributor,
+  type PromptRequest,
+  type PromptSection,
+  safeName,
+  type Timestamp,
+} from "@miyoria/types";
 import type { MemoryEngine, Recalled } from "./engine.js";
 import { presentPeople, requestScopes } from "./scope.js";
 import { relativeDate } from "./score.js";
@@ -46,12 +52,18 @@ export class MemoryContributor implements PromptContributor {
   }
 }
 
-/** Bullet lines with relative dates, e.g. `- Owen 喜歡拉麵(三天前)`. */
+/**
+ * Bullet lines with relative dates, e.g. `- Owen 喜歡拉麵(三天前)`. Notes someone told her
+ * (`source`) read `- 「Owen」說過:下週三要考試(三天前)`: what they said, not a fact.
+ */
 export function formatLines(recalled: readonly Recalled[], now: Timestamp): string {
   return recalled
     .map((r) => {
-      const content = r.record.content.replaceAll("\n", " ");
-      return `- ${content.trim()}(${relativeDate(r.record.created_at, now)})`;
+      const content = r.record.content.replaceAll("\n", " ").trim();
+      const when = relativeDate(r.record.created_at, now);
+      const source = r.record.source;
+      if (source !== null) return `- 「${safeName(source.name)}」說過:${content}(${when})`;
+      return `- ${content}(${when})`;
     })
     .join("\n");
 }

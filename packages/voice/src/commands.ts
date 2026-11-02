@@ -1,6 +1,7 @@
 // `/voice join | leave | consent | golive start | stop | status`. The agent module adds
 // `/voice mode`.
 
+import { type ActuatorRegistry, deniedText } from "@miyoria/actions";
 import {
   type AnyComponentRoute,
   ArgKind,
@@ -16,7 +17,9 @@ import {
   MAX_SESSION_TTL_MS,
   notice,
 } from "@miyoria/commands";
-import { errorMessage, getLogger } from "@miyoria/kernel";
+import { getLogger } from "@miyoria/kernel";
+import { isJsonObject, type JsonObject, Principals } from "@miyoria/types";
+import { GoLiveJoinError } from "./actions.js";
 import type { Consent, ConsentPolicy } from "./consent.js";
 import type { GoLiveState } from "./link/conn.js";
 import type { VoiceLink } from "./link/link.js";
@@ -111,8 +114,19 @@ export function registerCommands(
   link: VoiceLink,
   consent: Consent,
   goliveSource: string,
+  actuators: ActuatorRegistry,
 ): void {
   const policy = consent.policy;
+
+  /** Runs a capability for the invoker, overriding her judgment (the gate still applies). */
+  const act = (inv: Invocation, capability: string, args: JsonObject) =>
+    actuators.invoke({
+      principal: Principals.command(inv.invoker, inv.context),
+      capability,
+      args: { guild: guildOf(inv), ...args },
+      why: `/${inv.path.join(" ")}`,
+      turn: null,
+    });
 
   const goliveStart = async (inv: Invocation, sourceArg: string | null): Promise<CommandReply> => {
     const guild = guildOf(inv);
@@ -127,25 +141,19 @@ export function registerCommands(
         "請提供 source，或設定 [modules.voice] golive_source。",
       );
     }
-    // Not in voice yet: join the invoker's channel first, so one command is enough.
-    let joined = false;
-    if (link.channel(guild) === null) {
-      try {
-        await link.join(guild, null, inv.invoker.id);
-        joined = true;
-      } catch (error) {
-        const e = errorMessage(error);
-        log.warn({ err: e, guild }, "join for go live failed");
-        return notice("error", "無法加入語音頻道。請先進入一個語音頻道。", e);
-      }
+    // Not in voice yet: the capability joins the invoker's channel first.
+    const outcome = await act(inv, "stream.start", { source });
+    if (outcome.status === "denied") {
+      return notice("warn", deniedText(outcome.decision.stage), outcome.decision.reason);
     }
-    try {
-      await link.goliveStart({ guild, source });
-    } catch (error) {
-      const e = errorMessage(error);
-      log.warn({ err: e, guild, source }, "go live start failed");
-      return notice("error", "無法開始 Go Live。", e);
+    if (outcome.status === "failed") {
+      log.warn({ err: outcome.error, guild, source }, "go live start failed");
+      return outcome.cause instanceof GoLiveJoinError
+        ? notice("error", "無法加入語音頻道。請先進入一個語音頻道。", outcome.error)
+        : notice("error", "無法開始 Go Live。", outcome.error);
     }
+    const data = outcome.result.data;
+    const joined = isJsonObject(data) && data.joined === true;
     const started = "已開始 Go Live，OBS 畫面連上後就會顯示。";
     return joined
       ? joinedCard(policy, started)
@@ -165,14 +173,15 @@ export function registerCommands(
     const guild = guildOf(inv);
     if (guild === null) return IN_GUILD_ONLY();
     if (!link.isStreaming(guild)) return notice("info", "目前沒有在 Go Live。");
-    try {
-      await link.goliveStop(guild);
-      return notice("success", "已結束 Go Live。");
-    } catch (error) {
-      const e = errorMessage(error);
-      log.warn({ err: e, guild }, "go live stop failed");
-      return notice("error", "無法結束 Go Live。", e);
+    const outcome = await act(inv, "stream.stop", {});
+    if (outcome.status === "denied") {
+      return notice("warn", deniedText(outcome.decision.stage), outcome.decision.reason);
     }
+    if (outcome.status === "failed") {
+      log.warn({ err: outcome.error, guild }, "go live stop failed");
+      return notice("error", "無法結束 Go Live。", outcome.error);
+    }
+    return notice("success", "已結束 Go Live。");
   };
 
   const goliveStatus = (inv: Invocation): CommandReply => {
@@ -220,14 +229,15 @@ export function registerCommands(
       const guild = guildOf(inv);
       if (guild === null) return IN_GUILD_ONLY();
       if (!nodeReady(link, inv)) return NODE_OFFLINE();
-      try {
-        await link.join(guild, null, inv.invoker.id);
-        return joinedCard(policy);
-      } catch (error) {
-        const e = errorMessage(error);
-        log.warn({ err: e, guild }, "join failed");
-        return notice("error", "無法加入語音頻道。請先進入一個語音頻道。", e);
+      const outcome = await act(inv, "voice.join", {});
+      if (outcome.status === "denied") {
+        return notice("warn", deniedText(outcome.decision.stage), outcome.decision.reason);
       }
+      if (outcome.status === "failed") {
+        log.warn({ err: outcome.error, guild }, "join failed");
+        return notice("error", "無法加入語音頻道。請先進入一個語音頻道。", outcome.error);
+      }
+      return joinedCard(policy);
     },
   );
 
@@ -237,7 +247,14 @@ export function registerCommands(
       const guild = guildOf(inv);
       if (guild === null) return IN_GUILD_ONLY();
       if (link.channel(guild) === null) return notice("info", "她目前不在語音頻道中。");
-      await link.leave(guild);
+      const outcome = await act(inv, "voice.leave", {});
+      if (outcome.status === "denied") {
+        return notice("warn", deniedText(outcome.decision.stage), outcome.decision.reason);
+      }
+      if (outcome.status === "failed") {
+        log.warn({ err: outcome.error, guild }, "leave failed");
+        return notice("error", "無法離開語音頻道。", outcome.error);
+      }
       return notice("success", "她已離開語音頻道。");
     },
   );

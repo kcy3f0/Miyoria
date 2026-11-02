@@ -42,9 +42,46 @@ describe("DiscordSink", () => {
     expect(rest.calls[0]?.route).toBe("/channels/200/messages");
     expect(rest.calls[0]?.options?.body).toEqual({
       content: "hello",
-      allowed_mentions: { parse: ["users"], replied_user: false },
+      allowed_mentions: { parse: ["users"], roles: [], replied_user: false },
       message_reference: { message_id: "999", channel_id: "200", fail_if_not_exists: false },
     });
+  });
+
+  test("never_mentions_roles_everyone_or_here_and_masks_secrets", async () => {
+    const rest = new FakeRest();
+    const sink = new DiscordSink(rest);
+    await sink.send(channel, {
+      text: "@everyone 開台囉 <@&42> @here,<@7> 快來 sk-abcdefghijklmnopqrstuvwx",
+      reply_to: null,
+    });
+    const body = rest.calls[0]?.options?.body as Record<string, unknown>;
+    expect(body.content).toBe("everyone 開台囉  here,<@7> 快來 [已遮蔽]");
+    expect(body.allowed_mentions).toEqual({ parse: ["users"], roles: [], replied_user: false });
+  });
+
+  test("opens_dms_and_sends_cards_without_pings", async () => {
+    const rest = new FakeRest();
+    const sink = new DiscordSink(rest);
+    const dm = await sink.openDm({ platform: "discord", id: "900" });
+    expect(dm).toEqual({ platform: "discord", scope: null, channel: "1", kind: "dm" });
+    expect(rest.calls[0]?.route).toBe("/users/@me/channels");
+    expect(rest.calls[0]?.options?.body).toEqual({ recipient_id: "900" });
+
+    const ref = await sink.sendDirect(
+      { platform: "discord", id: "900" },
+      {
+        text: "需要你的確認",
+        card: { accent: "warn", title: "需要你的確認", blocks: [{ type: "text", text: "x" }] },
+      },
+    );
+    expect(ref.context.kind).toBe("dm");
+    const card = rest.calls.at(-1);
+    expect(card?.route).toBe("/channels/2/messages");
+    const body = card?.options?.body as Record<string, unknown>;
+    expect(body.allowed_mentions).toEqual({ parse: [] });
+    expect(Array.isArray(body.components)).toBe(true);
+    expect(body.content).toBeUndefined();
+    await expect(sink.openDm({ platform: "cli", id: "1" })).rejects.toThrow(/not on Discord/);
   });
 
   test("long_text_is_split_and_only_the_first_chunk_replies", async () => {

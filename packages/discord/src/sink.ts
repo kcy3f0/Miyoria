@@ -1,8 +1,11 @@
 // `DiscordSink`: executes output actions through the bot account's REST client.
 
+import type { CommandReply, ReplySink } from "@miyoria/commands";
 import {
+  type AccountRef,
   type ContextKey,
   contextKeyString,
+  filterOutgoing,
   type MessageRef,
   type OutgoingMessage,
   type PlatformId,
@@ -10,6 +13,7 @@ import {
 } from "@miyoria/types";
 import { Routes } from "discord.js";
 import { PLATFORM, snowflake } from "./mapping.js";
+import { renderReply } from "./render.js";
 import { MAX_MESSAGE_LEN, splitMessage } from "./split.js";
 
 /** The slice of discord.js's `REST` the sink uses (so tests can fake it). */
@@ -54,7 +58,7 @@ async function inContext<T>(what: string, work: () => Promise<T>): Promise<T> {
   }
 }
 
-export class DiscordSink implements PlatformSink {
+export class DiscordSink implements PlatformSink, ReplySink {
   readonly platform: PlatformId = PLATFORM;
   readonly #rest: RestLike;
 
@@ -72,7 +76,8 @@ export class DiscordSink implements PlatformSink {
     signal?: AbortSignal,
   ): Promise<MessageRef> {
     const channel = channelOf(context);
-    const chunks = splitMessage(message.text, MAX_MESSAGE_LEN);
+    // Last line of defence: no role / everyone / here mentions, no secrets.
+    const chunks = splitMessage(filterOutgoing(message.text), MAX_MESSAGE_LEN);
     if (chunks.length === 0) throw new DiscordSendError("cannot send an empty message");
     let reference: Record<string, unknown> | null = null;
     if (message.reply_to) {
@@ -86,8 +91,9 @@ export class DiscordSink implements PlatformSink {
     for (const chunk of chunks) {
       const body: Record<string, unknown> = {
         content: chunk,
-        // Users may be pinged by name; replying must not ping the replied-to author.
-        allowed_mentions: { parse: ["users"], replied_user: false },
+        // Users may be pinged by name; never roles, @everyone or @here. Replying must not ping
+        // the replied-to author.
+        allowed_mentions: { parse: ["users"], roles: [], replied_user: false },
       };
       if (reference) {
         body.message_reference = reference;
@@ -120,6 +126,43 @@ export class DiscordSink implements PlatformSink {
     await inContext(`typing in ${contextKeyString(context)}`, async () => {
       await this.#rest.post(Routes.channelTyping(channel), { signal });
     });
+  }
+
+  /** The DM channel with `account` (Discord creates it on first use and returns it after). */
+  async openDm(account: AccountRef, signal?: AbortSignal): Promise<ContextKey> {
+    if (account.platform !== PLATFORM) {
+      throw new DiscordSendError(`account \`${account.platform}:${account.id}\` is not on Discord`);
+    }
+    const recipient = snowflake(account.id, "user");
+    const channel = await inContext(`opening a DM with ${recipient}`, () =>
+      this.#rest.post(Routes.userChannels(), { body: { recipient_id: recipient }, signal }),
+    );
+    return { platform: PLATFORM, scope: null, channel: messageId(channel), kind: "dm" };
+  }
+
+  /** `ReplySink`: a command-style card (Components V2, no pings) as a DM to `account`. */
+  async sendDirect(
+    account: AccountRef,
+    reply: CommandReply,
+    signal?: AbortSignal,
+  ): Promise<MessageRef> {
+    const context = await this.openDm(account, signal);
+    const channel = channelOf(context);
+    let first: string | null = null;
+    for (const payload of renderReply(reply, false)) {
+      const sent = await inContext(`sending a card to ${contextKeyString(context)}`, () =>
+        this.#rest.post(Routes.channelMessages(channel), {
+          body: {
+            components: payload.components,
+            flags: payload.flags,
+            allowed_mentions: { parse: [] },
+          },
+          signal,
+        }),
+      );
+      first ??= messageId(sent);
+    }
+    return { context, id: first as string };
   }
 
   /** `"<server> / <channel>"` (just the channel name in DMs); `null` when Discord won't say. */

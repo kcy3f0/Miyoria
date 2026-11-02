@@ -14,6 +14,7 @@ export {
   ActionSinkKey,
   AVATAR_LANE,
   actionPlatform,
+  actLane,
   comparePriority,
   DEFAULT_ACTION_TTL_MS,
   isActionExpired,
@@ -25,6 +26,16 @@ export {
   textLane,
   voiceLane,
 } from "./action.js";
+export {
+  type ActuatorExecutor,
+  ActuatorExecutorKey,
+  isAutonomous,
+  PRINCIPAL_KINDS,
+  type Principal,
+  type PrincipalKind,
+  Principals,
+  principalActor,
+} from "./actuator.js";
 export {
   type Authorizer,
   AuthorizerKey,
@@ -127,6 +138,17 @@ export {
   SocialSignalsKey,
 } from "./social.js";
 export { type Clock, systemClock, type Timestamp, timestampMs, toTimestamp } from "./time.js";
+export {
+  DATA_CLOSE,
+  DATA_OPEN,
+  dataBlock,
+  escapeData,
+  filterOutgoing,
+  MASKED,
+  maskSecrets,
+  neutralize,
+  safeName,
+} from "./untrusted.js";
 export {
   type PlaybackState,
   type SpeakOutcome,

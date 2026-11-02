@@ -1,6 +1,8 @@
+import { actuatorsFor } from "@miyoria/actions";
 import { CommandMount } from "@miyoria/commands";
 import { defineManifest, type Module, type ModuleContext } from "@miyoria/kernel";
 import type { Profile } from "@miyoria/profile";
+import { ToolRegistryKey } from "@miyoria/tools";
 import {
   type AccountRef,
   type ContextKey,
@@ -10,9 +12,10 @@ import {
   type PromptSection,
   serviceKey,
 } from "@miyoria/types";
+import { gameCapabilities } from "./actions.js";
 import { registerCommands } from "./commands.js";
 import { GameConfigSchema } from "./config.js";
-import { Director, type GameStatus, type Persona, View } from "./director.js";
+import { Director, type GameStatus, type Persona, type Placement, View } from "./director.js";
 
 /** Prompt contributor key. */
 export const PROMPT_KEY = "game";
@@ -46,9 +49,14 @@ export class GameControl {
     this.#director = director;
   }
 
-  /** Starts a session in `context` (used as-is), acting for `account`. */
-  async start(game: string, context: ContextKey, account: AccountRef): Promise<string> {
-    return this.#director.start(game, "here", context, account);
+  /** Starts a session in `context` (used as-is unless `placement` says otherwise), for `account`. */
+  async start(
+    game: string,
+    context: ContextKey,
+    account: AccountRef,
+    placement: Placement = "here",
+  ): Promise<string> {
+    return this.#director.start(game, placement, context, account);
   }
 
   async stop(): Promise<string> {
@@ -91,6 +99,8 @@ interface Running {
   director: Director;
   commands: CommandMount;
   prompts: PromptContributors | null;
+  /** Unregisters the `game.*` capabilities. */
+  capabilities: (() => void)[];
 }
 
 /**
@@ -138,13 +148,22 @@ export class GameModule implements Module {
       ...this.#persona,
       text: prefix(this.#persona.text, cfg.persona_chars),
     };
-    const director = new Director(cfg, ctx, persona, view);
+    const actuators = actuatorsFor(ctx);
+    const director = new Director(cfg, ctx, persona, view, actuators);
+    const control = new GameControl(director);
+    const capabilities = gameCapabilities({
+      control,
+      defaultGame: cfg.default_game,
+      permissions: cfg.permissions,
+      toolTimeoutMs: cfg.tool_timeout_secs * 1000,
+      tools: () => ctx.services.get(ToolRegistryKey),
+    }).map((c) => actuators.register(c));
 
     let paths: string[] = [];
     const commands = new CommandMount(
       "game",
       (registry) => {
-        paths = registerCommands(registry, cfg.permissions, cfg.default_game, director, view);
+        paths = registerCommands(registry, cfg.permissions, cfg.default_game, actuators, view);
       },
       (registry) => {
         for (const path of paths) registry.unregister(path);
@@ -154,7 +173,7 @@ export class GameModule implements Module {
     const prompts = ctx.services.get(PromptContributorsKey) ?? null;
     prompts?.register(new GamePrompt(view, cfg.prompt_summary_chars));
     ctx.provide(GameHandleKey, new GameHandle(view));
-    ctx.provide(GameControlKey, new GameControl(director));
+    ctx.provide(GameControlKey, control);
 
     const events = ctx.subscribe([
       "game.*",
@@ -170,7 +189,7 @@ export class GameModule implements Module {
         director.close();
       }
     });
-    this.#running = { director, commands, prompts };
+    this.#running = { director, commands, prompts, capabilities };
   }
 
   async stop(): Promise<void> {
@@ -180,5 +199,6 @@ export class GameModule implements Module {
     running.director.close();
     running.commands.detach();
     running.prompts?.unregister(PROMPT_KEY);
+    for (const unregister of running.capabilities) unregister();
   }
 }

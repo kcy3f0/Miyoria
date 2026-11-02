@@ -32,7 +32,10 @@ function requiredString(args: JsonValue, key: string): string {
   return s;
 }
 
-/** Saves a note about the current speaker or herself. */
+/**
+ * Saves a note about the current speaker or herself. The note records who said it
+ * (`source`), so it is recalled as something that person said, not as a fact.
+ */
 export class RememberTool implements Tool {
   readonly spec: ToolSpec = {
     name: REMEMBER,
@@ -68,6 +71,8 @@ export class RememberTool implements Tool {
     const global = arg(args, "global") === true;
 
     const person = await this.#engine.personOf(ctx.account);
+    // Who said it: read back as "X 說過…", never as a plain fact or an instruction.
+    const name = (await this.#engine.nameOf(ctx.account)) ?? ctx.account.id;
     const kind: MemoryKind = aboutSelf ? "self_note" : "fact";
     const subjects: PersonId[] = aboutSelf || person === null ? [] : [person];
     const globalPerson = global && !aboutSelf ? person : null;
@@ -81,6 +86,7 @@ export class RememberTool implements Tool {
         importance,
         confidence: 0.9,
         source_context: ctx.context,
+        source: { account: { ...ctx.account }, name },
         due: null,
       },
       toTimestamp(this.#clock.now()),

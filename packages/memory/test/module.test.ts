@@ -138,6 +138,7 @@ async function add(
       importance: 0.5,
       confidence: 0.8,
       source_context: null,
+      source: null,
       due: null,
     },
     toTimestamp(Date.now()),

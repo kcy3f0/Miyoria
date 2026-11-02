@@ -34,6 +34,7 @@ function toolCtx(context: ContextKey, account: AccountRef): ToolContext {
     message: { context, id: "m1" },
     context,
     account,
+    principal: { kind: "user", requester: account, context, override: false, actor: null },
     priority: "direct",
     signal: new AbortController().signal,
   };
@@ -184,12 +185,14 @@ describe.each(BACKENDS)("retrieval (%s store)", (backend) => {
     expect(find("Minecraft").scope).toEqual(G1);
     expect(find("蛋糕").kind).toBe("self_note");
     expect(find("蛋糕").scope).toEqual({ type: "global" });
+    // Who said it is recorded, and read back as what they said, not as a fact.
+    expect(find("牙醫").source).toEqual({ account: owenAcct, name: "Owen" });
 
     const inGuild = await recall.call(guild, { query: "牙醫 Minecraft" });
     expect(inGuild).toContain("Minecraft");
     expect(inGuild, "DM note leaked").not.toContain("牙醫");
     const inDm = await recall.call(dm, { query: "牙醫" });
-    expect(inDm).toContain("牙醫");
+    expect(inDm).toContain("「Owen」說過:Owen 下週三要看牙醫");
     const otherGuild = toolCtx(guildCtx("g2", "c1"), acct("9"));
     expect(await recall.call(otherGuild, { query: "Minecraft 牙醫" })).toBe("想不起來有關的事。");
   });

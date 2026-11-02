@@ -19,6 +19,7 @@ import {
   command,
   done,
   Harness,
+  incoming,
   nextTs,
   Paced,
   stopHarnesses,
@@ -120,11 +121,14 @@ describe("voice", () => {
     const requests = mock.requests();
     expect(requests.length).toBe(1);
     const msgs = requests[0]?.messages ?? [];
-    expect(msgs.length).toBe(3);
+    expect(msgs.length).toBe(4);
     expect(msgs[1]?.content).toBe("Owen(語音): 我跟你說\nOwen(語音): 今天考試考完了");
-    const situation = msgs[2]?.content ?? "";
-    expect(situation).toContain("語音頻道裡的人:Owen、阿明");
+    expect(msgs[2]?.role).toBe("user");
+    expect(msgs[2]?.content).toContain("標題=語音頻道裡的人⟧\nOwen、阿明");
+    const situation = msgs[3]?.content ?? "";
     expect(situation).toContain("一到兩句");
+    // Spoken replies start right away: no thinking.
+    expect(requests[0]?.thinking).toBe(false);
     expect(requests[0]?.tools, "no `react` in voice").toEqual([]);
 
     expect(h.sink.speeches()).toEqual([
@@ -204,7 +208,33 @@ describe("voice", () => {
     expect(h.decisions()).toEqual([true]);
     const last = mock.requests().at(-1);
     const msgs = last?.messages ?? [];
-    expect(msgs[msgs.length - 3]?.content).toBe("幹嘛啦。");
+    expect(msgs[msgs.length - 4]?.content).toBe("幹嘛啦。");
+  });
+
+  it("the_voice_gray_zone_check_never_thinks_text_checks_follow_config", async () => {
+    const chat = new MockProvider("chat").reply("鯨魚最大。");
+    const fast = new MockProvider("fast").reply('{"respond": true, "reason": "她的話題"}');
+    const config = {
+      attention: { keywords: ["鯨魚"], llm_yes_probability: 1.0, cooldown_ms: 0 },
+      voice: { default_mode: "ambient", cooldown_ms: 0, llm_check: true, gray_low: 0 },
+    };
+    const h = await Harness.build("ambient", config, chat, fast, {
+      thinking: new Map([
+        ["fast", true],
+        ["chat", true],
+      ]),
+    });
+    h.publish(joined());
+    h.publish(utterance("Owen", "你們看過鯨魚嗎?"));
+    await wait(3000);
+    expect(fast.requests().length).toBeGreaterThan(0);
+    expect(fast.requests()[0]?.thinking, "voice check").toBe(false);
+
+    h.say(incoming(channel("t"), "阿明", "鯨魚跟海豚哪個大?"));
+    await wait(3000);
+    const text = fast.requests().at(-1);
+    expect(fast.requests().length).toBeGreaterThan(1);
+    expect(text?.thinking, "text check uses [llm.thinking]").toBe(true);
   });
 
   it("sentences_are_spoken_while_the_model_still_streams", async () => {
@@ -334,7 +364,7 @@ describe("voice", () => {
     requests = mock.requests();
     expect(requests.length).toBe(3);
     const msgs = requests[2]?.messages ?? [];
-    expect(msgs.slice(1, -1).map((m) => [m.role, m.content])).toEqual([
+    expect(msgs.slice(1, -2).map((m) => [m.role, m.content])).toEqual([
       ["user", "Owen(語音): 一\nOwen(語音): 二"],
       ["assistant", "第二個回答。"],
       ["user", "Owen(語音): 三"],

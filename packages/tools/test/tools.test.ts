@@ -34,6 +34,13 @@ describe("ToolRegistry", () => {
       turn: "01JC0000000000000000000000",
       context: { platform: "cli", scope: null, channel: "c", kind: "dm" },
       account: { platform: "cli", id: "u" },
+      principal: {
+        kind: "user",
+        requester: { platform: "cli", id: "u" },
+        context: null,
+        override: false,
+        actor: null,
+      },
       message: { context: { platform: "cli", scope: null, channel: "c", kind: "dm" }, id: "m" },
       priority: "direct",
       signal: new AbortController().signal,

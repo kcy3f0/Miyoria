@@ -3,11 +3,12 @@
 //
 //   /voice    join · leave · mode · consent · golive start|stop|status
 //   /stream   start · stop · status · scene
-//   /me       profile · call · link · memory show|export|forget
+//   /me       profile · call · link · privacy · memory show|export|forget
 //   /queue    add · list · upvote · manage ... · vote start|end
 //   /game     start · stop · goal · status
 //   /channel  mode · activeness
-//   /admin    module ... · role ... · perm ... · person ... · persona show · memory wipe
+//   /admin    module ... · role ... · perm ... · person ... · persona show · memory wipe ·
+//             autonomy pause|resume|status
 //   /help
 
 import type { GroupInfo } from "./spec.js";
@@ -36,6 +37,7 @@ export const COMMAND_GROUPS: Readonly<Record<string, GroupInit>> = {
   "admin person": { description: "管理她認識的人" },
   "admin persona": { description: "她的人格設定" },
   "admin memory": { description: "她的記憶資料" },
+  "admin autonomy": { description: "她的自主行動：暫停、恢復與狀態" },
 };
 
 /** Display order of the top-level commands (e.g. in `/help`). */

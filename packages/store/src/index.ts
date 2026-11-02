@@ -31,6 +31,7 @@ export {
   type MemoryQuery,
   type MemoryRecord,
   type MemoryScope,
+  type MemorySource,
   type NodeOverride,
   type Person,
   type PersonaOverride,

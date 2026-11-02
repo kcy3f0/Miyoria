@@ -1,5 +1,7 @@
-// `/game start | stop | goal | status`.
+// `/game start | stop | goal | status`. Start, stop and goal go through the actuator registry's
+// gate (principal `command`, override).
 
+import { type ActuatorRegistry, deniedText } from "@miyoria/actions";
 import {
   ArgKind,
   argSpec,
@@ -14,18 +16,13 @@ import {
   commandName,
   commandSpec,
   componentId,
+  type Invocation,
   notice,
   type RegisterOptions,
 } from "@miyoria/commands";
-import { contextKeyString } from "@miyoria/types";
+import { contextKeyString, type JsonObject, Principals } from "@miyoria/types";
 import type { GamePermissions } from "./config.js";
-import {
-  type Director,
-  GameError,
-  type GameStatus,
-  type Placement,
-  type View,
-} from "./director.js";
+import { GameError, type GameStatus, type Placement, type View } from "./director.js";
 
 const R = { stop: "game:stop", refresh: "game:refresh" } as const;
 
@@ -68,13 +65,31 @@ function statusCard(status: GameStatus | null, note: string | null = null): Comm
   });
 }
 
-/** Runs a director call: its text is a success notice, a refusal a warning. */
-function ask(call: () => string): CommandReply {
-  try {
-    return notice("success", call());
-  } catch (error) {
-    if (error instanceof GameError) return notice("warn", error.message);
-    throw error;
+/**
+ * Runs a capability for the invoker through the gate (principal `command`, override): its text
+ * is a success notice, a refusal (the director's or the gate's) a warning.
+ */
+async function ask(
+  actuators: ActuatorRegistry,
+  inv: Invocation,
+  capability: string,
+  args: JsonObject,
+): Promise<CommandReply> {
+  const outcome = await actuators.invoke({
+    principal: Principals.command(inv.invoker, inv.context),
+    capability,
+    args,
+    why: `/${inv.path.join(" ")}`,
+    turn: null,
+  });
+  switch (outcome.status) {
+    case "done":
+      return notice("success", outcome.result.text);
+    case "denied":
+      return notice("warn", deniedText(outcome.decision.stage), outcome.decision.reason);
+    case "failed":
+      if (outcome.cause instanceof GameError) return notice("warn", outcome.error);
+      throw outcome.cause;
   }
 }
 
@@ -83,7 +98,7 @@ export function registerCommands(
   registry: CommandRegistry,
   perms: GamePermissions,
   defaultGame: string,
-  director: Director,
+  actuators: ActuatorRegistry,
   view: View,
 ): string[] {
   const paths: string[] = [];
@@ -111,12 +126,12 @@ export function registerCommands(
       const where = inv.str("where");
       const placement: Placement =
         where === "voice" || where === "here" || where === "stream" ? where : "auto";
-      return ask(() => director.start(game, placement, inv.context, inv.invoker));
+      return ask(actuators, inv, "game.start", { game, where: placement });
     },
   );
 
-  add(commandSpec("game stop", "讓她停止玩遊戲", { permission: perms.stop }), () =>
-    ask(() => director.stop()),
+  add(commandSpec("game stop", "讓她停止玩遊戲", { permission: perms.stop }), (inv) =>
+    ask(actuators, inv, "game.stop", {}),
   );
 
   add(
@@ -124,7 +139,11 @@ export function registerCommands(
       args: [argSpec("text", "目標，例如「去挖鐵礦」", ArgKind.string)],
       permission: perms.goal,
     }),
-    (inv) => ask(() => director.goal(inv.str("text") ?? "", inv.invoker_display_name)),
+    (inv) => {
+      const text = (inv.str("text") ?? "").trim();
+      if (text === "") return notice("warn", "請輸入目標。");
+      return ask(actuators, inv, "game.goal", { text, by: inv.invoker_display_name });
+    },
   );
 
   add(
@@ -139,8 +158,8 @@ export function registerCommands(
         {
           route: R.stop,
           permission: perms.stop,
-          handle: () => {
-            const result = ask(() => director.stop());
+          handle: async (inv) => {
+            const result = await ask(actuators, inv, "game.stop", {});
             if (result.tone === "warn") return ComponentResult.reply(result);
             return ComponentResult.update(statusCard(view.current, result.text));
           },

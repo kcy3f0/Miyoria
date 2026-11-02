@@ -1,6 +1,7 @@
 // The director: one game session at a time, a decision every `decide_secs` (sooner on important
 // events), goal tracking, queue goals, commentary and mood nudges.
 
+import type { ActuatorRegistry } from "@miyoria/actions";
 import { errorMessage, getLogger, type ModuleContext, withTimeout } from "@miyoria/kernel";
 import { type ChatRequest, type LlmRouter, LlmRouterKey, sessionId } from "@miyoria/llm";
 import { RequestQueueKey } from "@miyoria/queue";
@@ -15,9 +16,11 @@ import {
   type JsonObject,
   type JsonValue,
   newId,
+  Principals,
   type Timestamp,
   toTimestamp,
 } from "@miyoria/types";
+import { GAME_ACT } from "./actions.js";
 import type { GameConfig } from "./config.js";
 import {
   ActionCall,
@@ -148,10 +151,41 @@ function toolCtx(s: Session, signal: AbortSignal): ToolContext {
     turn: newId(),
     context: s.context,
     account: s.starter,
+    principal: Principals.director(s.context),
     message: { context: s.context, id: "game" },
     priority: "initiative",
     signal,
   };
+}
+
+/**
+ * Runs an adapter action through the gate (`game.act`, principal `director`); a refusal or
+ * failure throws, like a failing tool.
+ */
+async function actThroughGate(
+  actuators: ActuatorRegistry,
+  s: Session,
+  call: JsonObject,
+  signal: AbortSignal,
+): Promise<string> {
+  const outcome = await actuators.invoke(
+    {
+      principal: Principals.director(s.context),
+      capability: GAME_ACT,
+      args: { game: s.game, call },
+      why: null,
+      turn: null,
+    },
+    { signal },
+  );
+  switch (outcome.status) {
+    case "done":
+      return outcome.result.text;
+    case "denied":
+      throw new Error(`the gate refused: ${outcome.decision.reason}`);
+    case "failed":
+      throw new Error(outcome.error);
+  }
 }
 
 /** `anyhow::Result<T>` stand-in for background steps. */
@@ -309,6 +343,7 @@ export class Director {
   readonly #ctx: ModuleContext;
   readonly #persona: Persona;
   readonly #view: View;
+  readonly #actuators: ActuatorRegistry;
   #voices: ContextKey[] = [];
   #session: Session | null = null;
   #generation = 0;
@@ -317,11 +352,19 @@ export class Director {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #closed = false;
 
-  constructor(cfg: GameConfig, ctx: ModuleContext, persona: Persona, view: View) {
+  constructor(
+    cfg: GameConfig,
+    ctx: ModuleContext,
+    persona: Persona,
+    view: View,
+    /** Where its adapter actions go (`game.act`, through the gate). */
+    actuators: ActuatorRegistry,
+  ) {
     this.#cfg = cfg;
     this.#ctx = ctx;
     this.#persona = persona;
     this.#view = view;
+    this.#actuators = actuators;
   }
 
   get closed(): boolean {
@@ -525,13 +568,12 @@ export class Director {
     this.#generation += 1;
     log.info({ game: s.game }, "game session stopped");
     const tools = this.#ctx.services.get(ToolRegistryKey);
-    if (tools) {
-      const act = actTool(s);
-      const timeout = this.#secs(this.#cfg.tool_timeout_secs);
+    if (tools?.get(actTool(s))) {
+      const actuators = this.#actuators;
       this.#ctx.spawn("game-stop", async (signal) => {
         const args = new ActionCall("stop", {}).toolArgs();
         try {
-          await callTool(tools, act, toolCtx(s, signal), args, timeout);
+          await actThroughGate(actuators, s, args, signal);
         } catch (error) {
           log.debug({ error: errorMessage(error) }, "stopping the game bot failed");
         }
@@ -948,18 +990,14 @@ export class Director {
       log.debug({ action: decision.action.display(), why: verdict.why }, "kept the current goal");
       return null;
     }
-    const tools = this.#ctx.services.get(ToolRegistryKey);
-    if (!tools) return null;
+    if (!this.#ctx.services.get(ToolRegistryKey)) return null;
     const generation = cur.generation;
-    const act = actTool(cur);
-    const timeout = this.#secs(cfg.tool_timeout_secs);
+    const actuators = this.#actuators;
     const action = decision.action;
     const goal = decision.goal;
     const settled = verdict;
     return async (signal) => {
-      const result = await attempt(() =>
-        callTool(tools, act, toolCtx(cur, signal), action.toolArgs(), timeout),
-      );
+      const result = await attempt(() => actThroughGate(actuators, cur, action.toolArgs(), signal));
       return { type: "acted", generation, action, verdict: settled, goal, result };
     };
   }

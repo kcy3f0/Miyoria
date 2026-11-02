@@ -1,6 +1,8 @@
-// One turn: attention decision, prompt assembly (including the sections of prompt
-// contributors), generation (with the tool loop) and output. Text replies are sent once
-// complete; voice replies are spoken sentence by sentence while the model is still generating.
+// One turn: attention decision, prompt assembly (contributor sections and everything else
+// derived from other people go into the user-role data message, see prompt.ts), generation
+// (with the tool loop; tool calls run for the speaker as principal `user`) and output, filtered
+// by `filterOutgoing`. Text replies think first and are sent once complete; voice replies do
+// not think and are spoken sentence by sentence while the model is still generating.
 //
 // An initiative turn has no input and skips attention (the coordinator already checked the
 // context is quiet). While the LLM budget is exhausted nothing is generated: a turn she would
@@ -27,15 +29,18 @@ import {
   AuthorizerKey,
   type ContextKey,
   contextKeyString as contextKeyDisplay,
+  filterOutgoing,
   type IncomingMessage,
   type JsonValue,
   type LaneKey,
   newAction,
   type Participant,
+  Principals,
   type Priority,
   PromptContributorsKey,
   type PromptRequest,
   type SocialSignals,
+  safeName,
   sameAccount,
   type TurnId,
   textLane,
@@ -57,6 +62,7 @@ import {
   checkMessages,
   cleanReply,
   renderSections,
+  situationData,
   situationPrompt,
   splitMessage,
   transcriptLine,
@@ -116,11 +122,13 @@ interface Decision {
   reasons: string[];
 }
 
-/** Per-turn additions to the situation message. */
+/** Per-turn additions to the prompt. */
 interface Extras {
-  /** Mood and attitude lines. */
+  /** Her own state (mood): the situation (system) message. */
   notes: string[];
-  /** Rendered contributor sections. */
+  /** Her attitude towards the people of the turn (names them): the data message. */
+  people: string[];
+  /** Rendered contributor sections (data blocks): the data message. */
   sections: string | null;
   /** For the decision trace. */
   reasons: string[];
@@ -191,7 +199,7 @@ class Speech {
 
   async #say(sentence: string): Promise<void> {
     if (this.stopped()) return;
-    const text = cleanReply(sentence, this.names);
+    const text = filterOutgoing(cleanReply(sentence, this.names));
     if (!isSpeakable(text)) return;
     this.prepare?.(text);
     const action = newAction(
@@ -457,6 +465,9 @@ class Turn {
       json_mode: true,
       session: `${this.#llmSession()}-attention`,
     };
+    // The voice gray-zone check is on the reply's critical path: no thinking. Text checks use
+    // `[llm.thinking]` for the purpose.
+    if (this.voice) request.thinking = false;
     const response = await timeout(
       this.agent.config.attention.llm_check_timeout_ms,
       this.signal,
@@ -489,7 +500,7 @@ class Turn {
 
   /** Mood and attitude lines, plus the sections of prompt contributors. */
   async #extras(): Promise<Extras> {
-    const extras: Extras = { notes: [], sections: null, reasons: [] };
+    const extras: Extras = { notes: [], people: [], sections: null, reasons: [] };
     const mood = this.agent.mood();
     if (mood !== null) extras.notes.push(moodHint(mood));
     const focus = this.#focus();
@@ -502,9 +513,9 @@ class Turn {
         if (!attitude) continue;
         const name = this.#nameOf(account);
         if (name === null) continue;
-        hints.push(attitudeHint(name, attitude));
+        hints.push(attitudeHint(safeName(name), attitude));
       }
-      extras.notes.push(...hints);
+      extras.people.push(...hints);
     }
     const registry = this.agent.ctx.services.get(PromptContributorsKey);
     if (!registry || registry.all().length === 0) return extras;
@@ -588,21 +599,30 @@ class Turn {
             .participants()
             .slice(0, MAX_PEOPLE)
             .map((p) => p.displayName);
-    let situation = situationPrompt(
+    const situation = situationPrompt(
       {
         context: this.key,
-        present,
         direct,
         initiative: this.initiative?.hint ?? null,
         notes: extras.notes,
       },
       new Date(this.#now),
     );
-    if (extras.sections !== null) situation += `\n\n${extras.sections}`;
+    const data = situationData({
+      voice: this.voice,
+      present,
+      people: extras.people,
+      initiative:
+        this.initiative === null
+          ? null
+          : { reason: this.initiative.reason, hint: this.initiative.hint },
+      sections: extras.sections,
+    });
     const messages = buildMessages(
       persona,
       situation,
       this.session.recent(cfg.prompt_history).filter((e) => !this.#hidden(e)),
+      data,
     );
 
     const priority = this.#priority(direct);
@@ -644,7 +664,7 @@ class Turn {
       this.agent.log.debug({ turn: this.turn }, "she chose silence");
       return "";
     }
-    const text = cleanReply(expression.text, names);
+    const text = filterOutgoing(cleanReply(expression.text, names));
     if (text === "") return "";
     return await this.#sendText(sink, text, direct, priority);
   }
@@ -773,6 +793,8 @@ class Turn {
         tools,
         temperature: cfg.temperature,
         max_tokens: cfg.max_tokens,
+        // Text replies may think first; spoken ones must start talking right away.
+        thinking: !this.voice,
         session: this.#llmSession(),
       };
       const { expression, raw, calls } = await this.#streamStep(router, request, speech);
@@ -958,6 +980,8 @@ class Turn {
           turn: this.turn,
           context: this.key,
           account: last.author.account,
+          // The person she is answering asked: a request she may decline (see the gate).
+          principal: Principals.user(last.author.account, this.key),
           message: last.id,
           priority,
           signal,

@@ -63,6 +63,13 @@ function situation(mock: MockProvider, i: number): string {
   return msgs.at(-1)?.content ?? "";
 }
 
+/** The user-role data message right before the situation. */
+function data(mock: MockProvider, i: number): string {
+  const msgs = mock.requests()[i]?.messages ?? [];
+  expect(msgs.at(-2)?.role).toBe("user");
+  return msgs.at(-2)?.content ?? "";
+}
+
 // ---------------------------------------------------------------- tools
 
 describe("tool registry", () => {
@@ -77,7 +84,8 @@ describe("tool registry", () => {
     // The service is still the app's, and it got `react` and the tool registered on the module
     // before start.
     expect(h.sup.services.require(ToolRegistryKey)).toBe(appTools);
-    expect(appTools.names()).toEqual(["app_tool", "early", "react"]);
+    // `channel_activeness` is her capability tool (the gate decides when it is called).
+    expect(appTools.names()).toEqual(["app_tool", "channel_activeness", "early", "react"]);
 
     // Tools registered on the app's registry later are offered too.
     appTools.register(new Probe("later"));
@@ -85,6 +93,7 @@ describe("tool registry", () => {
     await wait(3000);
     expect(mock.requests()[0]?.tools?.map((t) => t.name)).toEqual([
       "app_tool",
+      "channel_activeness",
       "early",
       "later",
       "react",
@@ -158,11 +167,17 @@ describe("prompt contributors", () => {
     expect(mock.requests().length, "slow contributor skipped").toBe(before + 1);
     await wait(1000);
 
-    const s = situation(mock, before);
-    expect(s.endsWith("## 關係\nOwen 是你的朋友\n\n## 你記得的事\nOwen 明天要考數學"), s).toBe(
-      true,
-    );
-    expect(s).not.toContain("不該出現");
+    // Contributed sections are data blocks in the user-role data message, never system text.
+    const d = data(mock, before);
+    expect(
+      d.endsWith(
+        "⟦資料 來源=social 標題=關係⟧\nOwen 是你的朋友\n⟦/資料⟧\n\n" +
+          "⟦資料 來源=memory 標題=你記得的事⟧\nOwen 明天要考數學\n⟦/資料⟧",
+      ),
+      d,
+    ).toBe(true);
+    expect(d).not.toContain("不該出現");
+    expect(situation(mock, before)).not.toContain("Owen 明天要考數學");
 
     const trace = lastTrace(h);
     expect(trace.respond).toBe(true);
@@ -184,7 +199,7 @@ describe("prompt contributors", () => {
 
   it("contributed_context_is_capped", async () => {
     const mock = new MockProvider("chat").reply("嗯");
-    const config = { attention: { llm_check: false }, max_context_chars: 40 };
+    const config = { attention: { llm_check: false }, max_context_chars: 80 };
     const h = await Harness.create("always", config, mock);
     const registry = new PromptContributors();
     h.sup.services.provide(APP, PromptContributorsKey, registry);
@@ -196,10 +211,11 @@ describe("prompt contributors", () => {
     );
     h.say(incoming(channel("c"), "Owen", "嗨"));
     await wait(3000);
-    const s = situation(mock, 0);
-    const tail = s.slice(s.indexOf("## 短"));
-    expect([...tail].length, tail).toBe(40);
-    expect(tail.endsWith("…")).toBe(true);
+    const d = data(mock, 0);
+    const tail = d.slice(d.indexOf("⟦資料 來源=a"));
+    expect([...tail].length, tail).toBeLessThanOrEqual(80);
+    expect(tail).toContain("第一段");
+    expect(tail.endsWith("…\n⟦/資料⟧"), tail).toBe(true);
   });
 });
 
@@ -266,7 +282,7 @@ describe("social signals", () => {
     h.say(mention(c, "rude", "喂"));
     await wait(3000);
     expect(mock.requests().length).toBe(1);
-    expect(situation(mock, 0)).toContain("你對 rude 的態度:冷淡");
+    expect(data(mock, 0)).toContain("你對 rude 的態度:冷淡");
     let trace = lastTrace(h);
     expect(trace.respond).toBe(true);
     expect(hasReason(trace, "affinity -50"), trace.reasons.join("; ")).toBe(true);
@@ -282,7 +298,7 @@ describe("social signals", () => {
     // Friends get a warm tone and their call name.
     h.say(mention(channel("c3"), "Owen", "早"));
     await wait(3000);
-    expect(situation(mock, 1)).toContain("你對 Owen 的態度:親近,你都叫對方「歐文」");
+    expect(data(mock, 1)).toContain("你對 Owen 的態度:親近,你都叫對方「歐文」");
   });
 
   it("affinity_scales_ambient_probability", async () => {
@@ -378,8 +394,10 @@ describe("initiative", () => {
     expect(requests[0]?.tools, "no triggering message, no tools").toEqual([]);
     const s = situation(mock, 0);
     expect(s).toContain("是你自己想主動開啟話題");
-    expect(s).toContain("你想到可以聊的:問 Owen 考試考得怎樣。");
-    expect(s).toContain("你對 Owen 的態度:親近");
+    expect(s).toContain("你想到可以聊的事在參考資料「你想聊的事」裡。");
+    expect(data(mock, 0)).toContain("標題=你想聊的事⟧\n問 Owen 考試考得怎樣\n⟦/資料⟧");
+    expect(s).not.toContain("問 Owen 考試考得怎樣");
+    expect(data(mock, 0)).toContain("你對 Owen 的態度:親近");
     expect(h.sink.sent()).toEqual([["欸,Owen,考試考得怎樣?", "initiative"]]);
     const trace = lastTrace(h);
     expect(trace.respond).toBe(true);

@@ -1,5 +1,6 @@
 // Module `stage.link`.
 
+import { actuatorsFor } from "@miyoria/actions";
 import { type CommandRegistry, CommandRegistryKey } from "@miyoria/commands";
 import {
   defineManifest,
@@ -11,6 +12,7 @@ import {
 } from "@miyoria/kernel";
 import { isJsonObject } from "@miyoria/types";
 import { type BoundAddress, formatAddress, HttpServer, isLoopback } from "../net.js";
+import { stageCapabilities } from "./actions.js";
 import { registerStreamCommands, unregisterStreamCommands } from "./commands.js";
 import { MAX_MESSAGE } from "./conn.js";
 import { EMOTION_TOPIC, Forwarder } from "./forward.js";
@@ -32,13 +34,16 @@ const GOLIVE_OBS_ATTEMPTS = 3;
 interface Running {
   link: StageLink;
   registry: CommandRegistry | null;
+  /** Unregisters `stage.scene` / `stage.stream`. */
+  capabilities: (() => void)[];
 }
 
 /**
  * Module `stage.link`: serves the Stage Link WebSocket endpoint (`ws://<bind>/stage-link`),
  * forwards `agent.emotion`, `agent.turn.completed` and `voice.playback` to the Stage node and
- * provides `StageLinkKey`. Registers the `stream` commands when `CommandRegistryKey` is
- * available.
+ * provides `StageLinkKey`. Registers the capabilities `stage.scene` and `stage.stream` in the
+ * actuator registry, and the `stream` commands (which go through it) when `CommandRegistryKey`
+ * is available.
  */
 export class StageLinkModule implements Module {
   static readonly ID = "stage.link";
@@ -168,14 +173,17 @@ export class StageLinkModule implements Module {
       }
     });
 
+    const actuators = actuatorsFor(ctx);
+    const capabilities = stageCapabilities(link).map((c) => actuators.register(c));
     const registry = ctx.services.get(CommandRegistryKey) ?? null;
     try {
-      if (registry) registerStreamCommands(registry, link);
+      if (registry) registerStreamCommands(registry, link, actuators);
     } catch (error) {
+      for (const unregister of capabilities) unregister();
       await server.close();
       throw error;
     }
-    this.#running = { link, registry };
+    this.#running = { link, registry, capabilities };
 
     ctx.spawn("server", async (signal) => {
       await new Promise<void>((resolve, reject) => {
@@ -193,6 +201,7 @@ export class StageLinkModule implements Module {
     this.#running = null;
     if (!running) return;
     if (running.registry) unregisterStreamCommands(running.registry);
+    for (const unregister of running.capabilities) unregister();
     running.link.closeAll();
   }
 

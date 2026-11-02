@@ -3,6 +3,9 @@ import {
   type Action,
   type ActionSink,
   ActionSinkKey,
+  type ActuatorExecutor,
+  ActuatorExecutorKey,
+  actLane,
   type ContextKey,
   type JsonObject,
   type MessageRef,
@@ -325,6 +328,38 @@ describe("scheduler (TS specifics)", () => {
       }),
     );
     expect(await nextDone(h.completed)).toMatchObject({ ok: false, error: "no voice sink" });
+    await h.sup.stopAll();
+  });
+
+  it("actuate_actions_run_through_the_executor_or_are_dropped", async () => {
+    const h = await harness();
+    const ran: string[] = [];
+    const dropped: [string, string][] = [];
+    const executor: ActuatorExecutor = {
+      run: async (ticket) => {
+        ran.push(ticket);
+        return "ok";
+      },
+      dropped: (ticket, reason) => dropped.push([ticket, reason]),
+    };
+    const actuate = (ticket: string, options: Parameters<typeof newAction>[3] = {}) =>
+      newAction(
+        actLane("voice:fake:g"),
+        "direct",
+        { type: "actuate", capability: "voice.join", ticket, context: context("fake") },
+        options,
+      );
+    await h.actions.submit(actuate("t0"));
+    expect(await nextDone(h.completed)).toMatchObject({ ok: false, error: "no actuator executor" });
+    expect(dropped).toEqual([]);
+
+    h.sup.services.provide("app", ActuatorExecutorKey, executor);
+    await h.actions.submit(actuate("t1"));
+    expect(await nextDone(h.completed)).toMatchObject({ ok: true });
+    await h.actions.submit(actuate("t2", { ttl: 1000, now: Date.now() - 10_000 }));
+    expect(await nextDone(h.completed)).toMatchObject({ ok: false, error: "expired" });
+    expect(ran).toEqual(["t1"]);
+    expect(dropped).toEqual([["t2", "expired"]]);
     await h.sup.stopAll();
   });
 

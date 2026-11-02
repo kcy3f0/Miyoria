@@ -3,6 +3,7 @@
 // The module packages are reached only through a `ModuleCatalog` (see `modules.ts`), so this
 // file stays testable with fake modules and an in-memory store.
 
+import { ActionsModule, ActuatorRegistry, ActuatorRegistryKey } from "@miyoria/actions";
 import {
   type Config,
   EventBus,
@@ -32,6 +33,7 @@ import {
 } from "@miyoria/store";
 import { ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
 import {
+  ActuatorExecutorKey,
   type JsonValue,
   KERNEL_MODULE,
   PlatformSinks,
@@ -47,6 +49,9 @@ import { RecorderModule } from "./recorder.js";
 import { databaseUrl, loadProfile, resolveDatabaseUrl } from "./settings.js";
 
 const log = getLogger("core.boot");
+
+/** Source of the gate's `gate.decision` events. */
+const ACTIONS_MODULE = ActionsModule.ID;
 
 /** What the module factories get. */
 export interface ModuleDeps {
@@ -187,8 +192,17 @@ export async function buildCoreWith(
   services.provide(k, ModuleStateStoreKey, store.moduleState);
   services.provide(k, ProfileDataStoreKey, store.profileData);
   // Registries other modules add to, independent of any one module's lifetime.
-  services.provide(k, ToolRegistryKey, new ToolRegistry());
+  const tools = new ToolRegistry();
+  services.provide(k, ToolRegistryKey, tools);
   services.provide(k, PromptContributorsKey, new PromptContributors());
+  // Every action she takes goes through this registry's gate; the scheduler runs queued ones.
+  const actuators = new ActuatorRegistry({
+    services,
+    tools,
+    publish: (event) => bus.publish(ACTIONS_MODULE, event),
+  });
+  services.provide(k, ActuatorRegistryKey, actuators);
+  services.provide(k, ActuatorExecutorKey, actuators);
 
   const profile = await loadProfile(config, baseDir);
   for (const [key, body] of await store.personaOverrides.current(profile.id)) {

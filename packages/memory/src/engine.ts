@@ -17,6 +17,7 @@ import type {
   MemoryRecord,
   MemoryRecordStore,
   MemoryScope,
+  MemorySource,
   MessageLog,
   PeopleStore,
   SettingsStore,
@@ -80,6 +81,8 @@ export interface NewMemory {
   confidence: number;
   source_context: ContextKey | null;
   due: Timestamp | null;
+  /** Who told her (`remember`); omitted for memories she extracted herself. */
+  source?: MemorySource | null;
 }
 
 /** What `MemoryEngine.store` did. */
@@ -212,6 +215,22 @@ export class MemoryEngine implements FollowupSource {
     return this.#messages !== null && this.#router !== null;
   }
 
+  /** The name she knows an account by (its person's display name), when known. */
+  async nameOf(account: AccountRef): Promise<string | null> {
+    if (!this.#people) return null;
+    try {
+      const person = await this.#people.personByAccount(account);
+      if (!person) return null;
+      const own = person.accounts.find(
+        (a) => a.account.platform === account.platform && a.account.id === account.id,
+      );
+      return own?.display_name ?? person.display_name;
+    } catch (error) {
+      log.warn({ error: errorMessage(error) }, "person lookup failed");
+      return null;
+    }
+  }
+
   /** The person an account belongs to, when a people store is available. */
   async personOf(account: AccountRef): Promise<PersonId | null> {
     if (!this.#people) return null;
@@ -314,6 +333,7 @@ export class MemoryEngine implements FollowupSource {
       last_accessed: null,
       access_count: 0,
       source_context: memory.source_context,
+      source: memory.source ?? null,
       due: memory.due,
       done: false,
       superseded_by: null,

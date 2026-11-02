@@ -119,6 +119,7 @@ function memory(
     last_accessed: null,
     access_count: 0,
     source_context: null,
+    source: null,
     due: null,
     done: false,
     superseded_by: null,
@@ -481,6 +482,7 @@ function behaviour(open: () => Promise<Store>): void {
     r.last_accessed = at(t0 + 5 * SECOND);
     r.access_count = 3;
     r.source_context = channel("guild", unique("chan"), "voice");
+    r.source = { account: { platform: "discord", id: "1234" }, name: "Owen" };
     r.due = at(t0 + HOUR);
     await memories.upsert(r);
     expect(await memories.get(r.id)).toEqual(r);
