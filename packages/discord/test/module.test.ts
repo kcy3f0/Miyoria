@@ -14,7 +14,7 @@ describe("DiscordBotModule", () => {
     expect(JSON.stringify(json.config_schema)).toContain("command_guilds");
   });
 
-  test("intents_include_message_content_and_typing", () => {
+  test("intents_include_message_content_typing_and_voice_states", () => {
     const bits = intents();
     for (const intent of [
       GatewayIntentBits.Guilds,
@@ -23,12 +23,17 @@ describe("DiscordBotModule", () => {
       GatewayIntentBits.MessageContent,
       GatewayIntentBits.GuildMessageTyping,
       GatewayIntentBits.DirectMessageTyping,
+      GatewayIntentBits.GuildVoiceStates,
     ]) {
       expect(bits & intent, String(intent)).toBe(intent);
     }
-    // Presences and members are privileged and not needed.
+    // Presences and members are privileged: only with `presence_intents`.
     expect(bits & GatewayIntentBits.GuildPresences).toBe(0);
     expect(bits & GatewayIntentBits.GuildMembers).toBe(0);
+    const presence = intents({ presence: true });
+    expect(presence & GatewayIntentBits.GuildPresences).toBe(GatewayIntentBits.GuildPresences);
+    expect(presence & GatewayIntentBits.GuildMembers).toBe(GatewayIntentBits.GuildMembers);
+    expect(presence & bits).toBe(bits);
   });
 
   async function failureReason(config: unknown): Promise<string> {

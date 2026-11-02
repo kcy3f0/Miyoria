@@ -43,6 +43,13 @@ export const DiscordConfigSchema = z.object({
    * to them count as addressing her.
    */
   self_account_ids: z.array(z.string()).default([]),
+  /**
+   * Request the privileged Presence and Server Members intents, so she knows who is online,
+   * what they play or listen to, and who is in which voice channel. Both must also be enabled
+   * in the Developer Portal (Bot -> Privileged Gateway Intents), otherwise Discord refuses the
+   * connection; set `false` to run without them.
+   */
+  presence_intents: z.boolean().default(true),
 });
 
 export type DiscordConfig = z.output<typeof DiscordConfigSchema>;

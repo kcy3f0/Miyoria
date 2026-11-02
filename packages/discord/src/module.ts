@@ -6,8 +6,10 @@
 // 1. Create an application at https://discord.com/developers/applications and add a bot under
 //    **Bot**. Copy its token into the environment (e.g. `DISCORD_BOT_TOKEN`) and reference it
 //    as `token = "${DISCORD_BOT_TOKEN}"`.
-// 2. Under **Bot -> Privileged Gateway Intents**, enable **Message Content Intent**. Without it
-//    the gateway refuses to connect (disallowed intents) and the module keeps failing.
+// 2. Under **Bot -> Privileged Gateway Intents**, enable **Message Content Intent**, and (unless
+//    `presence_intents = false`) **Presence Intent** and **Server Members Intent**. Without them
+//    the gateway refuses to connect (disallowed intents, close code 4014) and the module keeps
+//    failing.
 // 3. Invite the bot with the `bot` and `applications.commands` scopes and the permissions View
 //    Channels, Send Messages, Send Messages in Threads, Read Message History and Add Reactions.
 // 4. For instant command updates during development, list your server ids in `command_guilds`;
@@ -38,26 +40,36 @@ export const SHUTDOWN_GRACE_MS = 3_000;
 /** Gateway close codes after which reconnecting is pointless. */
 const FATAL_CLOSE_CODES: ReadonlySet<number> = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
 
+/** Close code of a gateway refusing intents the application has not enabled. */
+const DISALLOWED_INTENTS = 4014;
+
 /**
  * Gateway intents the bot needs. `MessageContent` is privileged and must be enabled in the
- * Developer Portal.
+ * Developer Portal, as must `GuildPresences` and `GuildMembers` when `presence` is on.
+ * Voice states are not privileged.
  */
-export function intents(): number {
-  return (
+export function intents(options: { presence?: boolean } = {}): number {
+  const base =
     GatewayIntentBits.Guilds |
     GatewayIntentBits.GuildMessages |
     GatewayIntentBits.DirectMessages |
     GatewayIntentBits.MessageContent |
     GatewayIntentBits.GuildMessageTyping |
-    GatewayIntentBits.DirectMessageTyping
-  );
+    GatewayIntentBits.DirectMessageTyping |
+    GatewayIntentBits.GuildVoiceStates;
+  return options.presence
+    ? base | GatewayIntentBits.GuildPresences | GatewayIntentBits.GuildMembers
+    : base;
 }
 
-/** Creates the client. Channel and user partials are needed for DMs and typing events. */
-export function createClient(): Client {
+/**
+ * Creates the client. Channel and user partials are needed for DMs and typing events, the member
+ * partial for members leaving uncached.
+ */
+export function createClient(options: { presence?: boolean } = {}): Client {
   return new Client({
-    intents: intents(),
-    partials: [Partials.Channel, Partials.User],
+    intents: intents(options),
+    partials: [Partials.Channel, Partials.User, Partials.GuildMember],
     makeCache: Options.cacheWithLimits({
       ...Options.DefaultMakeCacheSettings,
       MessageManager: 100,
@@ -71,6 +83,8 @@ export class DiscordBotModule implements Module {
   readonly manifest: ModuleManifest = defineManifest(DiscordBotModule.ID, "Discord bot", {
     description: "Discord bot account: text messages and slash commands",
     requires: [CommandsModule.ID],
+    // Starts after `world`, whose `PresencePrivacy` decides whose presence may be published.
+    optional: ["world"],
     configSchema: DiscordConfigSchema,
   });
 
@@ -87,7 +101,7 @@ export class DiscordBotModule implements Module {
     }
     const shared = new Shared(config, selfIds, registry, sinks);
     this.#running = shared;
-    const client = createClient();
+    const client = createClient({ presence: config.presence_intents });
     new GatewayBridge(ctx, shared).attach(client);
     // The token stays in this closure; it is never logged or put in an error message.
     const token = config.token;
@@ -130,6 +144,11 @@ async function runGateway(
   const fatal = new Promise<never>((_, reject) => {
     client.on(Events.ShardDisconnect, (event) => {
       shared.ready = false;
+      if (event.code === DISALLOWED_INTENTS) {
+        ctx.log.error(
+          "Discord refused the gateway intents: enable Message Content, Presence and Server Members under Bot -> Privileged Gateway Intents, or set presence_intents = false",
+        );
+      }
       if (FATAL_CLOSE_CODES.has(event.code)) {
         reject(new Error(`Discord gateway closed with code ${event.code}`));
       }

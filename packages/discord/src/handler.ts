@@ -1,8 +1,14 @@
-// Gateway event handling: messages, typing, readiness and interactions.
+// Gateway event handling: messages, typing, readiness, interactions, and presence / voice state /
+// member changes for the `world` module (presence.ts).
 
 import { type CommandRegistry, PanelSessions } from "@miyoria/commands";
 import { errorMessage, getLogger, type ModuleContext } from "@miyoria/kernel";
-import type { ContextKind, PlatformSinks } from "@miyoria/types";
+import {
+  type AccountRef,
+  type ContextKind,
+  type PlatformSinks,
+  PresencePrivacyKey,
+} from "@miyoria/types";
 import {
   type ChannelType,
   type Client,
@@ -20,12 +26,34 @@ import {
   type InteractionEnv,
 } from "./interaction.js";
 import { account, contextKey, incomingMessage, kindOf, PLATFORM } from "./mapping.js";
+import {
+  type GuildMemberLike,
+  memberEvent,
+  memberUpdate,
+  type PresenceLike,
+  presenceEvent,
+  presenceUpdate,
+  type VoiceStateLike,
+  voiceStateEvent,
+  voiceStateUpdate,
+} from "./presence.js";
 import { DiscordSink } from "./sink.js";
 import { runSyncLoop, syncCommands } from "./sync.js";
 
 const log = getLogger("discord.handler");
 
 const MAX_KIND_CACHE = 10_000;
+
+/** The parts of a discord.js `Guild` the presence snapshot reads. */
+export interface GuildLike {
+  id: string;
+  members: {
+    fetch(): Promise<unknown>;
+    cache: { values(): Iterable<GuildMemberLike> };
+  };
+  presences: { cache: { values(): Iterable<PresenceLike> } };
+  voiceStates: { cache: { values(): Iterable<VoiceStateLike> } };
+}
 
 /** State shared by the gateway handler and the module. */
 export class Shared {
@@ -101,6 +129,61 @@ export class GatewayBridge {
     client.on(Events.InteractionCreate, (interaction) => {
       this.guard("interaction", () => this.onInteraction(client, interaction));
     });
+    client.on(Events.PresenceUpdate, (_old, presence) =>
+      this.guard("presence", () => this.onPresence(presence, false)),
+    );
+    client.on(Events.VoiceStateUpdate, (_old, state) =>
+      this.guard("voice state", () => this.onVoiceState(state, false)),
+    );
+    client.on(Events.GuildMemberAdd, (member) =>
+      this.guard("member", () => this.onMember(member, false)),
+    );
+    client.on(Events.GuildMemberUpdate, (_old, member) =>
+      this.guard("member", () => this.onMember(member, false)),
+    );
+    client.on(Events.GuildMemberRemove, (member) =>
+      this.guard("member", () => this.onMember(member, true)),
+    );
+    client.on(Events.GuildCreate, (guild) =>
+      this.guard("guild snapshot", () => this.snapshotGuild(guild as unknown as GuildLike)),
+    );
+  }
+
+  /**
+   * Publishes everyone the gateway cache knows in `guild` (members, presences, voice states) as
+   * `initial` updates, after fetching the member list when the members intent is on.
+   */
+  async snapshotGuild(guild: GuildLike): Promise<void> {
+    if (this.shared.config.presence_intents) {
+      try {
+        await guild.members.fetch();
+      } catch (error) {
+        log.debug({ guild: guild.id, error: errorMessage(error) }, "cannot fetch guild members");
+      }
+      for (const member of guild.members.cache.values()) this.onMember(member, false);
+      for (const presence of guild.presences.cache.values()) this.onPresence(presence, true);
+    }
+    for (const state of guild.voiceStates.cache.values()) this.onVoiceState(state, true);
+  }
+
+  /** Presence is only published for people who did not opt out (fails closed without `world`). */
+  presenceAllowed(who: AccountRef): boolean {
+    if (this.shared.selfIds.has(who.id)) return false;
+    return this.ctx.services.get(PresencePrivacyKey)?.presenceAllowed(who) ?? false;
+  }
+
+  onPresence(presence: PresenceLike, initial: boolean): void {
+    const update = presenceUpdate(presence, initial);
+    if (update === null || !this.presenceAllowed(update.account)) return;
+    this.ctx.publish(presenceEvent(update));
+  }
+
+  onVoiceState(state: VoiceStateLike, initial: boolean): void {
+    this.ctx.publish(voiceStateEvent(voiceStateUpdate(state, initial)));
+  }
+
+  onMember(member: GuildMemberLike, left: boolean): void {
+    this.ctx.publish(memberEvent(memberUpdate(member, left)));
   }
 
   /** The handlers' shared environment. */
@@ -173,6 +256,9 @@ export class GatewayBridge {
     }
     this.shared.sinks?.register(new DiscordSink(client.rest));
     this.shared.ready = true;
+    for (const guild of client.guilds.cache.values()) {
+      this.guard("guild snapshot", () => this.snapshotGuild(guild as unknown as GuildLike));
+    }
 
     if (this.shared.claimSync()) {
       const { registry, config } = this.shared;
