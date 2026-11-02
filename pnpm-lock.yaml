@@ -1114,6 +1114,9 @@ importers:
       '@miyoria/queue':
         specifier: workspace:*
         version: link:../queue
+      '@miyoria/store':
+        specifier: workspace:*
+        version: link:../store
       '@miyoria/types':
         specifier: workspace:*
         version: link:../types

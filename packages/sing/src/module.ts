@@ -42,7 +42,8 @@ interface Running {
  * Registers `sing.request` / `sing.play` / `sing.stop` (tools `sing_request` / `sing_start` /
  * `sing_stop`), `/queue song ...` and the prompt section `sing`; sings `[modules.queue]` items
  * of kind `song` when they are called. Services used (all optional): `VoicePlayer` (to sing),
- * `Mind`, `RequestQueue`, `CommandRegistry`, `PromptContributors`, `ActuatorRegistry`.
+ * `Mind`, `RequestQueue`, `CommandRegistry`, `PromptContributors`, `ActuatorRegistry`,
+ * `SettingsStore` (the set list survives a restart, key `_global` / `sing:setlist`).
  */
 export class SingModule implements Module {
   static readonly ID = "sing";
@@ -104,6 +105,7 @@ export class SingModule implements Module {
     ctx.spawn("events", async () => {
       for await (const env of events) singer.onEvent(env.event);
     });
+    await singer.restore();
     ctx.spawn("worker", (signal) => singer.run(signal));
     this.#running = { singer, worker, commands, prompts, capabilities };
   }
@@ -119,6 +121,7 @@ export class SingModule implements Module {
     const running = this.#running;
     this.#running = null;
     if (!running) return;
+    await running.singer.save();
     running.singer.close();
     running.commands.detach();
     running.prompts?.unregister(PROMPT_KEY);

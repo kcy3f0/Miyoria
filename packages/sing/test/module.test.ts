@@ -7,6 +7,7 @@ import { ActuatorRegistry, ActuatorRegistryKey } from "@miyoria/actions";
 import { CommandRegistry, CommandRegistryKey, Invocation, Permissions } from "@miyoria/commands";
 import { Supervisor } from "@miyoria/kernel";
 import { RequestQueue, RequestQueueKey } from "@miyoria/queue";
+import { MemorySettingsStore, SettingsStoreKey } from "@miyoria/store";
 import {
   type AccountRef,
   AuthorizerKey,
@@ -33,9 +34,11 @@ import {
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  SETLIST_KEY,
   SingerKey,
   SingModule,
   type SingWorker,
+  SingWorkerError,
   type SongMeta,
   type SongQuery,
   type SongTrack,
@@ -109,7 +112,7 @@ class FakeWorker implements SingWorker {
 
   async job(id: string): Promise<WorkerJob> {
     const job = this.jobs.get(id);
-    if (!job) throw new Error("no job");
+    if (!job) throw new SingWorkerError(`no job ${id}`, { status: 404 });
     return structuredClone(job);
   }
 
@@ -233,7 +236,7 @@ async function settle(ms = 5): Promise<void> {
 
 class Harness {
   readonly sup = new Supervisor();
-  readonly worker = new FakeWorker();
+  worker = new FakeWorker();
   readonly voice = new FakeVoice();
   readonly mind = new FakeMind();
   readonly prompts = new PromptContributors();
@@ -242,8 +245,9 @@ class Harness {
   readonly registry: ActuatorRegistry;
   readonly events: Event[] = [];
 
-  private constructor(withMind: boolean) {
+  private constructor(withMind: boolean, store: MemorySettingsStore | null) {
     const s = this.sup.services;
+    if (store) s.provide("store", SettingsStoreKey, store);
     this.registry = new ActuatorRegistry({ services: s, builtins: false });
     this.queue = new RequestQueue(undefined, {
       publisher: (event) => this.sup.bus.publish("queue", event),
@@ -261,8 +265,13 @@ class Harness {
     })();
   }
 
-  static async create(config: JsonValue = {}, withMind = true): Promise<Harness> {
-    const h = new Harness(withMind);
+  static async create(
+    config: JsonValue = {},
+    withMind = true,
+    restart: { store: MemorySettingsStore; worker?: FakeWorker } | null = null,
+  ): Promise<Harness> {
+    const h = new Harness(withMind, restart?.store ?? null);
+    if (restart?.worker) h.worker = restart.worker;
     await h.sup.register(
       new SingModule(() => h.worker),
       { poll_ms: 100, quiet_ms: 200, lead_ms: 300, announce_max_secs: 5, ...(config as object) },
@@ -441,6 +450,64 @@ describe("sing module", () => {
     await h.command("queue song request", { song: "Song MV" });
     await settle(6000 + 400 + 2000);
     expect(h.cues().find((c) => c.state === "started")).not.toHaveProperty("video");
+  });
+
+  it("the set list survives a restart and re-attaches to the worker's jobs", async () => {
+    const store = new MemorySettingsStore();
+    h = await Harness.create({}, true, { store });
+    await h.command("queue song request", { song: "Song A" }); // j1, forced
+    await h.invoke(Principals.user(AMY, TEXT), "sing.request", { query: "Song B" }); // j2
+    h.worker.finish("j2", "Song B");
+    await settle(200);
+    expect(h.singer.list.get(2)?.state).toBe("ready");
+    await h.stop();
+    expect(await store.get("_global", SETLIST_KEY)).toMatchObject({ version: 1, next: 3 });
+
+    // Core restarts; the worker kept going and finished the first song meanwhile.
+    const worker = h.worker;
+    worker.finish("j1", "Song A");
+    h = await Harness.create({}, true, { store, worker });
+    await settle(200);
+    expect(h.singer.list.get(1)).toMatchObject({ state: "ready", forced: true, job: "j1" });
+    expect(h.singer.list.get(2)).toMatchObject({ state: "ready", requester: AMY });
+    expect(h.singer.list.get(2)?.song?.title).toBe("Song B");
+    // Numbers go on where they were.
+    await h.invoke(Principals.user(OWEN, TEXT), "sing.request", { query: "Song C" });
+    expect(h.singer.list.all().map((e) => e.no)).toEqual([1, 2, 3]);
+    // The forced one is sung once she is in voice.
+    await h.join();
+    await settle(6000 + 400);
+    expect(h.voice.plays).toHaveLength(1);
+  });
+
+  it("asks a restarted worker again for a job it forgot", async () => {
+    const store = new MemorySettingsStore();
+    h = await Harness.create({}, true, { store });
+    await h.command("queue song request", { song: "Song A" });
+    await h.stop();
+    const fresh = new FakeWorker(); // knows no jobs
+    h = await Harness.create({}, true, { store, worker: fresh });
+    await settle(200);
+    expect(fresh.submitted.map((q) => q.query)).toEqual(["Song A"]);
+    expect(h.singer.list.get(1)?.job).toBe("j1");
+    fresh.finish("j1", "Song A");
+    await settle(200);
+    expect(h.singer.list.get(1)?.state).toBe("ready");
+  });
+
+  it("a song cut off by a restart is ready again, and she decides", async () => {
+    const store = new MemorySettingsStore();
+    h = await Harness.create({}, true, { store });
+    await h.join();
+    h.worker.cacheHit = true;
+    h.worker.cacheSeconds = 60;
+    await h.command("queue song request", { song: "Long song" });
+    await settle(6000 + 400 + 1000);
+    expect(h.singer.playing()?.no).toBe(1);
+    await h.stop();
+    h = await Harness.create({}, true, { store, worker: h.worker });
+    expect(h.singer.list.get(1)).toMatchObject({ state: "ready", forced: false });
+    expect(h.singer.playing()).toBeNull();
   });
 
   it("starts after her opening line instead of over it", async () => {

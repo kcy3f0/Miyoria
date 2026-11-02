@@ -1,14 +1,17 @@
 // Her set list: the songs requested, preparing on the worker, ready, playing and recently done.
-// In memory only: the worker keeps the converted songs, so a restart only forgets the list.
+// Kept in the settings store (`snapshot` / `restore`), so a Core restart picks up the songs it
+// had: preparing ones re-attach to their worker jobs, ready ones are still ready.
 
 import {
   type AccountRef,
   type ContextKey,
+  type JsonValue,
   safeName,
   sameAccount,
   type Timestamp,
 } from "@miyoria/types";
-import type { SongMeta } from "./client.js";
+import { z } from "zod";
+import { type SongMeta, SongMetaSchema } from "./client.js";
 
 /** Short number used in commands and by her tools (`#3`). */
 export type SongNo = number;
@@ -64,9 +67,76 @@ export function songLabel(e: SongEntry): string {
   return `「${safeName(title, 60)}」${artist ? ` - ${safeName(artist, 40)}` : ""}`;
 }
 
+const AccountSchema = z.object({ platform: z.string(), id: z.string() });
+const ContextSchema = z.object({
+  platform: z.string(),
+  scope: z.string().nullable(),
+  channel: z.string(),
+  kind: z.enum(["channel", "thread", "dm", "voice"]),
+});
+
+/** One stored entry; anything unreadable drops that entry, not the list. */
+const StoredEntrySchema = z.object({
+  no: z.number().int().positive(),
+  query: z.string().min(1),
+  key: z.number().int().catch(0),
+  requester: AccountSchema.nullable().catch(null),
+  requester_name: z.string().catch("觀眾"),
+  context: ContextSchema.nullable().catch(null),
+  forced: z.boolean().catch(false),
+  state: z.enum(["preparing", "ready", "playing", "done", "failed", "cancelled"]),
+  stage: z.string().catch(""),
+  progress: z.number().catch(0),
+  error: z.string().nullable().catch(null),
+  job: z.string().nullable().catch(null),
+  song: SongMetaSchema.nullable().catch(null),
+  queue_item: z.number().int().nullable().catch(null),
+  created_at: z.string(),
+  ready_at: z.string().nullable().catch(null),
+  reminders: z.number().int().nonnegative().catch(0),
+  last_reminder_ms: z.number().nullable().catch(null),
+});
+
+const StoredSetListSchema = z.object({
+  version: z.literal(1),
+  next: z.number().int().positive(),
+  entries: z.array(z.unknown()),
+});
+
 export class SetList {
   readonly #entries: SongEntry[] = [];
   #next = 1;
+
+  /** The list as JSON for the settings store. */
+  snapshot(): JsonValue {
+    return { version: 1, next: this.#next, entries: this.#entries } as unknown as JsonValue;
+  }
+
+  /**
+   * Replaces the list with a stored one; returns how many entries it read. A song that was
+   * playing when Core stopped is ready again (it was cut off), and she decides about it.
+   */
+  restore(stored: JsonValue): number {
+    const parsed = StoredSetListSchema.safeParse(stored);
+    if (!parsed.success) return 0;
+    const entries: SongEntry[] = [];
+    for (const raw of parsed.data.entries) {
+      const e = StoredEntrySchema.safeParse(raw);
+      if (!e.success || entries.some((x) => x.no === e.data.no)) continue;
+      const entry = e.data as SongEntry;
+      if (entry.state === "playing") {
+        entry.state = entry.song ? "ready" : "failed";
+        entry.forced = false;
+        entry.reminders = 0;
+        entry.last_reminder_ms = null;
+      }
+      if (entry.state === "ready" && entry.song === null) entry.state = "failed";
+      entries.push(entry);
+    }
+    this.#entries.splice(0, this.#entries.length, ...entries);
+    this.#next = Math.max(parsed.data.next, ...entries.map((e) => e.no + 1), 1);
+    return entries.length;
+  }
 
   constructor(
     private readonly limits: { max_pending: number; max_pending_per_user: number; history: number },

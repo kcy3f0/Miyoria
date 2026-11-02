@@ -35,4 +35,11 @@ export {
   type SongState,
   songLabel,
 } from "./setlist.js";
-export { REASONS, SingError, Singer, type SongRequest, workerQuery } from "./singer.js";
+export {
+  REASONS,
+  SETLIST_KEY,
+  SingError,
+  Singer,
+  type SongRequest,
+  workerQuery,
+} from "./singer.js";

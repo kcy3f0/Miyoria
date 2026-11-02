@@ -17,6 +17,7 @@
 import { CapabilityError } from "@miyoria/actions";
 import { errorMessage, getLogger, type ModuleContext } from "@miyoria/kernel";
 import { type RequestQueue, RequestQueueKey } from "@miyoria/queue";
+import { SettingsStoreKey } from "@miyoria/store";
 import {
   type AccountRef,
   type ContextKey,
@@ -35,7 +36,7 @@ import {
   type VoiceFloor,
   VoicePlayerKey,
 } from "@miyoria/types";
-import type { SingWorker, SongQuery, WorkerJob } from "./client.js";
+import { type SingWorker, SingWorkerError, type SongQuery, type WorkerJob } from "./client.js";
 import type { SingConfig } from "./config.js";
 import { singSong, sleep } from "./player.js";
 import { type NewSong, SetList, type SongEntry, type SongNo, songLabel } from "./setlist.js";
@@ -43,6 +44,9 @@ import { type NewSong, SetList, type SongEntry, type SongNo, songLabel } from ".
 const log = getLogger("sing");
 
 const TICK_MS = 100;
+/** Settings key (profile `_global`) of the stored set list. */
+export const SETLIST_KEY = "sing:setlist";
+const STORE_PROFILE = "_global";
 /** After a song is started without a turn, she gets this long to start an opening line. */
 const EXPECT_OPENING_MS = 6000;
 const TURNS_REMEMBERED = 64;
@@ -95,6 +99,10 @@ export class Singer implements VoiceFloor {
   readonly #speaking = new Map<string, number>();
   readonly #turnsDone: TurnId[] = [];
   #closed = false;
+  /** JSON of the set list last stored. */
+  #saved: string | null = null;
+  /** Restored songs that never reached the worker. */
+  readonly #orphans = new Set<SongNo>();
 
   /**
    * `videoDir`: the worker's cache dir (absolute) when song videos are shown on stream
@@ -501,17 +509,37 @@ export class Singer implements VoiceFloor {
 
   // ----- polling the worker -----
 
-  /** Checks every preparing song once. */
+  /**
+   * Checks every preparing song once. A job the worker does not know (it restarted, or forgot
+   * old jobs) is asked for again: a song it finished is in its cache and comes back at once.
+   */
   async poll(signal?: AbortSignal): Promise<void> {
     for (const entry of this.list.preparing()) {
-      if (entry.job === null) continue;
       try {
+        if (entry.job === null) {
+          // Restored before the worker took it (a request in flight is not ours to repeat).
+          if (this.#orphans.delete(entry.no)) await this.#resubmit(entry, signal);
+          continue;
+        }
         this.#apply(entry, await this.worker.job(entry.job, signal));
       } catch (error) {
         if (signal?.aborted) return;
+        if (error instanceof SingWorkerError && error.status === 404) {
+          log.info({ no: entry.no, job: entry.job }, "the song worker lost the job; asking again");
+          await this.#resubmit(entry, signal).catch((e: unknown) =>
+            log.debug({ no: entry.no, err: errorMessage(e) }, "could not ask again"),
+          );
+          continue;
+        }
         log.debug({ no: entry.no, err: errorMessage(error) }, "could not check a song job");
       }
     }
+  }
+
+  async #resubmit(entry: SongEntry, signal?: AbortSignal): Promise<void> {
+    const job = await this.worker.submit(workerQuery(entry.query, entry.key), signal);
+    entry.job = job.id;
+    this.#apply(entry, job);
   }
 
   async run(signal: AbortSignal): Promise<void> {
@@ -522,8 +550,50 @@ export class Singer implements VoiceFloor {
         last = now;
         await this.poll(signal);
         this.tick();
+        await this.save();
       }
       await sleep(Math.min(this.cfg.poll_ms, 500), signal);
+    }
+  }
+
+  // ----- the stored set list -----
+
+  /**
+   * Reads the set list Core had before it stopped (module start). Preparing songs re-attach to
+   * their worker jobs on the next poll; ready ones are offered or sung as usual.
+   */
+  async restore(): Promise<void> {
+    const store = this.ctx.services.get(SettingsStoreKey);
+    if (!store) return;
+    try {
+      const raw = await store.get(STORE_PROFILE, SETLIST_KEY);
+      if (raw === null) return;
+      const n = this.list.restore(raw);
+      this.#saved = JSON.stringify(this.list.snapshot());
+      for (const e of this.list.preparing()) if (e.job === null) this.#orphans.add(e.no);
+      if (n > 0) {
+        log.info(
+          { songs: n, open: this.list.open().length, preparing: this.list.preparing().length },
+          "restored the set list",
+        );
+      }
+    } catch (error) {
+      log.warn({ err: errorMessage(error) }, "cannot read the stored set list");
+    }
+  }
+
+  /** Writes the set list when it changed since the last write. */
+  async save(): Promise<void> {
+    const store = this.ctx.services.get(SettingsStoreKey);
+    if (!store) return;
+    const snapshot = this.list.snapshot();
+    const json = JSON.stringify(snapshot);
+    if (json === this.#saved) return;
+    try {
+      await store.set(STORE_PROFILE, SETLIST_KEY, snapshot);
+      this.#saved = json;
+    } catch (error) {
+      log.warn({ err: errorMessage(error) }, "cannot store the set list");
     }
   }
 

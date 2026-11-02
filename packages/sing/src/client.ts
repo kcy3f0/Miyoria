@@ -60,6 +60,14 @@ export type SongTrack = "play_mix.pcm" | "play_vocals.pcm";
 
 export class SingWorkerError extends Error {
   override readonly name = "SingWorkerError";
+
+  /** The worker's HTTP status (404: it does not know the job, e.g. after a restart). */
+  constructor(message: string, options?: ErrorOptions & { status?: number }) {
+    super(message, options);
+    this.status = options?.status ?? null;
+  }
+
+  readonly status: number | null;
 }
 
 /** The song worker as the module uses it (`HttpSingWorker`, or a fake in tests). */
@@ -102,7 +110,7 @@ export class HttpSingWorker implements SingWorker {
       } catch {
         // not JSON
       }
-      throw new SingWorkerError(message);
+      throw new SingWorkerError(message, { status: res.status });
     }
     return res;
   }
