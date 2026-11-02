@@ -129,6 +129,13 @@ export class DiscordSink implements PlatformSink, ReplySink {
   }
 
   /** The DM channel with `account` (Discord creates it on first use and returns it after). */
+  /** `<@id>` for Discord users (pinged: `allowed_mentions` lets users through). */
+  mention(account: AccountRef): string | null {
+    return account.platform === PLATFORM && /^[0-9]{1,20}$/.test(account.id)
+      ? `<@${account.id}>`
+      : null;
+  }
+
   async openDm(account: AccountRef, signal?: AbortSignal): Promise<ContextKey> {
     if (account.platform !== PLATFORM) {
       throw new DiscordSendError(`account \`${account.platform}:${account.id}\` is not on Discord`);

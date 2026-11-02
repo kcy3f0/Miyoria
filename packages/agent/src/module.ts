@@ -19,6 +19,7 @@ import { PersonaHandle, PersonaHandleKey } from "./persona.js";
 import { Agent } from "./runtime.js";
 import { ReactTool } from "./tools.js";
 import { TimeoutError, timeout } from "./util.js";
+import type { FetchLike } from "./vision.js";
 
 /** Loading persisted settings must not hold up startup for long. */
 const SETTINGS_LOAD_TIMEOUT_MS = 5_000;
@@ -42,7 +43,9 @@ const SETTINGS_LOAD_TIMEOUT_MS = 5_000;
  * Uses the optional services `SettingsStoreKey` (persisting runtime settings), `AuthorizerKey`
  * (tool permissions), `CommandRegistryKey`, `PromptContributorsKey` (per-turn context),
  * `SocialSignalsKey` and `MoodSignalsKey`; they are looked up per turn, so they may come and
- * go. `llm.budget` events make her save tokens (see `BudgetState`).
+ * go. `llm.budget` events make her save tokens (see `BudgetState`). `PlatformHistoriesKey`
+ * (else `MessageLogKey`) fills cold sessions and reply chains, `PlatformSinksKey` turns her
+ * `@name` into mentions; images are downloaded only when the chat model takes them.
  */
 export class AgentModule implements Module {
   static readonly ID = "agent";
@@ -56,6 +59,7 @@ export class AgentModule implements Module {
 
   readonly #persona: PersonaHandle;
   #random: RandomSource | null = null;
+  #fetchImage: FetchLike | undefined;
   /** Used when the app provides no registry. */
   readonly #ownTools = new ToolRegistry();
   /** The registry in use. */
@@ -74,6 +78,12 @@ export class AgentModule implements Module {
   /** Replaces the decision sampler (default: seeded from config or entropy). */
   withRandom(random: RandomSource): this {
     this.#random = random;
+    return this;
+  }
+
+  /** Replaces how images are downloaded (tests; default: `fetch`). */
+  withImageFetch(fetchImage: FetchLike): this {
+    this.#fetchImage = fetchImage;
     return this;
   }
 
@@ -137,7 +147,16 @@ export class AgentModule implements Module {
     ctx.provide(AgentHandleKey, handle);
     if (own) ctx.provide(ToolRegistryKey, tools);
     this.#commands.install(ctx.services, handle, this.#persona);
-    const agent = new Agent(ctx, config, this.#persona, random, handle, tools, this.#commands);
+    const agent = new Agent(
+      ctx,
+      config,
+      this.#persona,
+      random,
+      handle,
+      tools,
+      this.#commands,
+      this.#fetchImage,
+    );
     ctx.spawn("events", () => agent.run(events));
   }
 

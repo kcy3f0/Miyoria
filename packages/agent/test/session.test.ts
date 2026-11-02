@@ -100,7 +100,34 @@ describe("Session", () => {
     };
     s.recordMessage(withFile, false);
     s.recordMessage(tmsg("channel", "b", "嗯", { ts: 2000 }), false);
-    expect(s.history()[0]?.text).toBe("看這個 [附件: cat.png]");
+    expect(s.history()[0]?.text).toBe("看這個 [圖片: cat.png]");
     expect(s.participants().map((p) => p.displayName)).toEqual(["b", "a"]);
+  });
+
+  it("backfill_merges_by_time_dedupes_by_id_and_keeps_the_limit", () => {
+    const at = (id: string, who: string, text: string, ts: number) => ({
+      ...tmsg("channel", who, text, { ts }),
+      id: { context: tctx(), id },
+    });
+    const s = new Session(tctx(), 4);
+    s.recordMessage(at("10", "owen", "現在", 10_000), false);
+    const added = s.backfill([
+      [at("1", "amy", "最早", 1000), false],
+      [at("2", "her", "我說過", 2000), true],
+      [at("3", "bob", "然後", 3000), false],
+      [at("4", "cat", "再然後", 4000), false],
+      // Already in the history.
+      [at("10", "owen", "現在", 10_000), false],
+    ]);
+    expect(added).toBe(4);
+    // Oldest dropped to stay within the limit; live entries stay last.
+    expect(s.history().map((e) => e.id)).toEqual(["2", "3", "4", "10"]);
+    expect(s.history()[0]?.isSelf).toBe(true);
+    expect(s.lastSelfAt()).toBe(2000);
+    // Backfilled people never become more recent than the live speaker.
+    expect(s.participants()[0]?.displayName).toBe("owen");
+    expect(s.entry("3")?.text).toBe("然後");
+    s.setParents("3", [s.entry("2") as NonNullable<ReturnType<Session["entry"]>>]);
+    expect(s.entry("3")?.parents).toHaveLength(1);
   });
 });

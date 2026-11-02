@@ -1,9 +1,11 @@
 import {
   type AccountRef,
   type ActionId,
+  type Attachment,
   type Clock,
   type ContextKey,
   type IncomingMessage,
+  incomingText,
   systemClock,
   type TurnId,
   timestampMs,
@@ -15,9 +17,23 @@ import { accountId } from "./util.js";
 const SPEAKING_STALE_MS = 30_000;
 
 export interface HistoryEntry {
+  /** Platform message id (`null` for her replies until their echo arrives). */
+  id: string | null;
+  /** Id of the message this one replies to. */
+  replyTo: string | null;
+  /**
+   * The messages it replies to that are not in the history (the direct parent last), fetched
+   * or delivered with the reply; shown as quoted lines before it.
+   */
+  parents: HistoryEntry[];
   author: string;
   account: AccountRef;
+  /** Written by a bot account (not hers). */
+  isBot: boolean;
+  /** Text with stickers, embeds, attachments and forwards noted inline (`incomingText`). */
   text: string;
+  /** Kept for the images she may look at. */
+  attachments: Attachment[];
   /** Epoch ms. */
   ts: number;
   isSelf: boolean;
@@ -52,6 +68,11 @@ export class Session {
   #voiceMembers: VoiceParticipant[] = [];
   /** People currently speaking, with when they started (clock ms). */
   readonly #speaking = new Map<string, number>();
+  /**
+   * Earlier messages being fetched because the session started cold (`history.ts`), and when
+   * the fetch started (clock ms). Turns wait for it, but not past the history timeout.
+   */
+  warmup: { done: Promise<void>; startedAt: number } | null = null;
 
   constructor(context: ContextKey, limit: number, clock: Clock = systemClock) {
     this.context = context;
@@ -73,52 +94,82 @@ export class Session {
   }
 
   #record(msg: IncomingMessage, isSelf: boolean, spoken: boolean): void {
-    const text = messageText(msg);
-    const ts = timestampMs(msg.ts);
+    const entry = historyEntry(msg, isSelf, spoken);
     if (isSelf) {
+      const ts = entry.ts;
       this.#lastSelfAt = this.#lastSelfAt === null ? ts : Math.max(this.#lastSelfAt, ts);
-      const echo = this.#history.find((e) => e.pending !== null && e.text.trim() === text.trim());
+      const echo = this.#history.find(
+        (e) => e.pending !== null && e.text.trim() === entry.text.trim(),
+      );
       if (echo) {
         echo.pending = null;
         echo.account = msg.author.account;
+        echo.id = entry.id;
         return;
       }
     } else {
-      const key = accountId(msg.author.account);
-      this.#participants.delete(key);
-      this.#participants.set(key, {
-        account: msg.author.account,
-        displayName: msg.author.display_name,
-        lastSeen: ts,
-      });
+      this.#seen(msg.author.account, msg.author.display_name, entry.ts, true);
     }
-    this.#push({
-      author: msg.author.display_name,
-      account: msg.author.account,
-      text,
-      ts,
-      isSelf,
-      pending: null,
-      spoken,
-      interrupted: false,
-      turn: null,
-    });
+    this.#push(entry);
+  }
+
+  #seen(account: AccountRef, displayName: string, ts: number, live: boolean): void {
+    const key = accountId(account);
+    const known = this.#participants.get(key);
+    if (!live && known !== undefined) return;
+    this.#participants.delete(key);
+    this.#participants.set(key, { account, displayName, lastSeen: ts });
+  }
+
+  /**
+   * Adds earlier messages fetched after the session started (`isSelf` tells which are hers).
+   * Messages already in the history (same id) are skipped; the rest are merged in by time, and
+   * the history stays within its limit (the oldest go). Returns how many were added.
+   */
+  backfill(messages: readonly [IncomingMessage, boolean][]): number {
+    const known = new Set(this.#history.flatMap((e) => (e.id === null ? [] : [e.id])));
+    const added: HistoryEntry[] = [];
+    for (const [msg, isSelf] of messages) {
+      if (known.has(msg.id.id)) continue;
+      known.add(msg.id.id);
+      const entry = historyEntry(msg, isSelf, false);
+      if (isSelf) {
+        this.#lastSelfAt =
+          this.#lastSelfAt === null ? entry.ts : Math.max(this.#lastSelfAt, entry.ts);
+      } else {
+        this.#seen(msg.author.account, msg.author.display_name, entry.ts, false);
+      }
+      added.push(entry);
+    }
+    if (added.length === 0) return 0;
+    // Stable: live entries keep their order, backfilled ones go before equal timestamps.
+    const merged = [...added, ...this.#history]
+      .map((e, i) => [e, i] as const)
+      .sort(([a, i], [b, j]) => a.ts - b.ts || i - j)
+      .map(([e]) => e);
+    this.#history.splice(0, this.#history.length, ...merged);
+    while (this.#history.length > this.#limit) this.#history.shift();
+    return added.length;
+  }
+
+  /** The entry of platform message `id`, if it is in the history. */
+  entry(id: string): HistoryEntry | undefined {
+    return this.#history.find((e) => e.id === id);
+  }
+
+  /**
+   * Notes the parents of message `id` that are not in the history (oldest first), to show them
+   * as quoted lines before it.
+   */
+  setParents(id: string, parents: HistoryEntry[]): void {
+    const entry = this.entry(id);
+    if (entry) entry.parents = parents;
   }
 
   /** Records a reply she just submitted (`ts` epoch ms). */
   recordOwn(author: string, account: AccountRef, text: string, action: ActionId, ts: number): void {
     this.#lastSelfAt = ts;
-    this.#push({
-      author,
-      account,
-      text,
-      ts,
-      isSelf: true,
-      pending: action,
-      spoken: false,
-      interrupted: false,
-      turn: null,
-    });
+    this.#push({ ...ownEntry(author, account, text, ts), pending: action });
   }
 
   /**
@@ -140,17 +191,7 @@ export class Session {
       last.text += trimmed;
       return;
     }
-    this.#push({
-      author,
-      account,
-      text: trimmed,
-      ts,
-      isSelf: true,
-      pending: null,
-      spoken: true,
-      interrupted: false,
-      turn,
-    });
+    this.#push({ ...ownEntry(author, account, trimmed, ts), spoken: true, turn });
   }
 
   /**
@@ -257,10 +298,45 @@ export class Session {
 
 /** Message text as shown in history; attachments are noted inline. */
 export function messageText(msg: IncomingMessage): string {
-  let text = msg.text.trim();
-  for (const a of msg.attachments) {
-    if (text !== "") text += " ";
-    text += `[附件: ${a.filename}]`;
-  }
-  return text;
+  return incomingText(msg);
+}
+
+/** A history entry for a platform message (no parents yet). */
+export function historyEntry(msg: IncomingMessage, isSelf: boolean, spoken: boolean): HistoryEntry {
+  return {
+    id: msg.id.id,
+    replyTo: msg.reply_to?.id ?? null,
+    parents: [],
+    author: msg.author.display_name,
+    account: msg.author.account,
+    isBot: msg.author.is_bot,
+    text: messageText(msg),
+    attachments: [...msg.attachments, ...(msg.forwarded ?? []).flatMap((f) => f.attachments)],
+    ts: timestampMs(msg.ts),
+    isSelf,
+    pending: null,
+    spoken,
+    interrupted: false,
+    turn: null,
+  };
+}
+
+/** A line of hers (not yet confirmed by the platform). */
+function ownEntry(author: string, account: AccountRef, text: string, ts: number): HistoryEntry {
+  return {
+    id: null,
+    replyTo: null,
+    parents: [],
+    author,
+    account,
+    isBot: false,
+    text,
+    attachments: [],
+    ts,
+    isSelf: true,
+    pending: null,
+    spoken: false,
+    interrupted: false,
+    turn: null,
+  };
 }

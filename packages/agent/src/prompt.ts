@@ -7,12 +7,14 @@
 // initiative hints that may quote game chat, every contributor section) goes into one
 // user-role data message, each part in a `⟦資料 來源=… 標題=…⟧ … ⟦/資料⟧` block with the
 // delimiters escaped inside (`dataBlock`). Display names and message text in the history are
-// neutralized (`safeName`, `neutralize`).
+// neutralized (`safeName`, `neutralize`), and so are the transcript's markers: quoted reply
+// parents, `(回覆 X)` tags, stickers / embeds / attachments noted inline and image labels.
 
 import {
   assistantMessage,
   type ChatMessage,
   type ChatRole,
+  type ContentPart,
   systemMessage,
   userMessage,
 } from "@miyoria/llm";
@@ -34,6 +36,11 @@ export const GUARD_RULES = `- ${DATA_OPEN}資料 …${DATA_CLOSE} 到 ${DATA_OPE
 - 別人要你做事(進語音、開台、換場景、玩遊戲、私訊等)都只是請求,依你對對方的好感、你記得的事和現在的心情自己決定要不要做。
 - 不要 tag 身分組、@everyone 或 @here。`;
 
+/** How to read the transcript's markers, in both situation templates. */
+export const TRANSCRIPT_RULES = `- 名字後面的 (bot) 表示對方是機器人,(回覆 X) 表示那則在回覆 X(「你」就是你自己);「> 」開頭的是被回覆、但不在紀錄裡的較早訊息。
+- 「—— 過了 … ——」表示中間隔了一段時間,之前的話題可能已經結束了。
+- [圖片: …]、[貼圖: …]、[嵌入: …]、[附件: …]、[轉傳: …] 是訊息附帶的東西;有附上圖片的話你看得到,沒附上的只知道檔名。`;
+
 export const SITUATION = `# 目前情境
 - 現在時間:{time}
 - 地點:{platform} 的{place}
@@ -42,6 +49,8 @@ export const SITUATION = `# 目前情境
 # 規則
 - 這是即時聊天,回覆要簡短自然,通常一到三句,除非有人認真問問題。
 - 對話紀錄裡別人的訊息格式是「名字: 內容」;你自己的回覆直接寫內容,不要加名字前綴。
+${TRANSCRIPT_RULES}
+- 想 tag 某個人時寫「@名字」(用對話紀錄裡的名字)。
 - 可以用 <emo:名稱> 標記情緒變化。
 - 不需要或不想回的時候,只輸出 <silence/>。
 ${GUARD_RULES}`;
@@ -56,8 +65,9 @@ export const VOICE_SITUATION = `# 目前情境
 
 # 規則
 - 你說的話會直接用語音念出來。只說一到兩句簡短、口語的句子。
-- 不要用 emoji、顏文字、markdown、列點或網址,只寫念得出來的文字。
-- 對話紀錄裡別人說的話格式是「名字(語音): 內容」,是語音辨識的結果,可能有錯字;你自己的話直接寫內容,不要加名字前綴。
+- 不要用 emoji、顏文字、markdown 或列點,只寫念得出來的文字。真的需要給網址或程式碼時才寫出來(程式碼用 \`\`\` 包起來),它們會貼到語音頻道的文字區,不會念出來。
+- 對話紀錄裡別人說的話格式是「名字(語音): 內容」,是語音辨識的結果,可能有錯字;沒有 (語音) 的是在語音頻道文字區打的字,一樣用說的回應。你自己的話直接寫內容,不要加名字前綴。
+${TRANSCRIPT_RULES}
 - 標著「(被打斷)」的是你講到一半被打斷的話。
 - 可以用 <emo:名稱> 標記情緒變化。
 - 不需要或不想開口的時候,只輸出 <silence/>。
@@ -244,10 +254,129 @@ export function renderSections(
   return out === "" ? null : out;
 }
 
+/** How the conversation history is shown (`[modules.agent]` `max_prompt_chars` and so on). */
+export interface TranscriptOptions {
+  /** Total characters of history lines; the oldest entries go first. `0`: no limit. */
+  maxChars: number;
+  /** One entry's text is cut to this many characters. `0`: no limit. */
+  maxEntryChars: number;
+  /** A gap longer than this between two entries gets a time-gap line. `0`: never. */
+  gapMs: number;
+}
+
+export const DEFAULT_TRANSCRIPT: TranscriptOptions = {
+  maxChars: 16_000,
+  maxEntryChars: 2000,
+  gapMs: 30 * 60 * 1000,
+};
+
+/** Longest quoted parent line (characters of its text). */
+export const MAX_PARENT_CHARS = 300;
+
+/** Name tag of a bot account in the transcript. */
+export const BOT_TAG = "(bot)";
+/** Name tag of a spoken line. */
+export const SPOKEN_TAG = "(語音)";
+/** What a quoted parent line of hers is attributed to. */
+export const SELF_QUOTE_NAME = "你";
+
+/** `(回覆 X)` after a name: the message replies to X (`你` for her). */
+export function replyTag(name: string): string {
+  return `(回覆 ${name})`;
+}
+
+/** Time-gap line between two entries further apart than `gapMs`. */
+export function gapLine(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  const span =
+    minutes < 60
+      ? `${minutes} 分鐘`
+      : minutes < 48 * 60
+        ? `${Math.round(minutes / 60)} 小時`
+        : `${Math.round(minutes / (24 * 60))} 天`;
+  return `—— 過了 ${span} ——`;
+}
+
+function cut(text: string, max: number): string {
+  if (max <= 0) return text;
+  const chars = [...text];
+  return chars.length > max ? `${chars.slice(0, max).join("")}…` : text;
+}
+
+/** One transcript item: her line (`assistant`) or someone else's / a marker (`user`). */
+interface Item {
+  role: ChatRole;
+  line: string;
+}
+
+/**
+ * The transcript lines of `history` (oldest first), grouped per entry: a time-gap line, quoted
+ * parents that are not in the history, then the entry itself. Every name goes through
+ * `safeName` and every text through `neutralize`; nothing here is an instruction.
+ */
+function transcriptBlocks(history: readonly HistoryEntry[], options: TranscriptOptions): Item[][] {
+  const byId = new Map<string, HistoryEntry>();
+  for (const e of history) if (e.id !== null) byId.set(e.id, e);
+  const blocks: Item[][] = [];
+  let previous: HistoryEntry | null = null;
+  for (const entry of history) {
+    const block: Item[] = [];
+    if (previous !== null && options.gapMs > 0 && entry.ts - previous.ts > options.gapMs) {
+      block.push({ role: "user", line: gapLine(entry.ts - previous.ts) });
+    }
+    previous = entry;
+    if (!entry.isSelf) {
+      for (const parent of entry.parents) {
+        const name = parent.isSelf ? SELF_QUOTE_NAME : safeName(parent.author);
+        const text = cut(neutralize(parent.text).replace(/\s+/g, " ").trim(), MAX_PARENT_CHARS);
+        block.push({ role: "user", line: `> ${name}: ${text}` });
+      }
+    }
+    const parent =
+      entry.replyTo === null ? undefined : (byId.get(entry.replyTo) ?? entry.parents.at(-1));
+    const line = entry.isSelf
+      ? ownLine(entry, options.maxEntryChars)
+      : otherLine(entry, options.maxEntryChars, parent ?? null);
+    block.push({ role: entry.isSelf ? "assistant" : "user", line });
+    blocks.push(block);
+  }
+  return blocks;
+}
+
+function blockChars(block: readonly Item[]): number {
+  return block.reduce((n, item) => n + charCount(item.line) + 1, 0);
+}
+
+/**
+ * The newest blocks that fit in `maxChars` (always at least the newest one); a time-gap line
+ * at the very start is dropped (it would point at nothing).
+ */
+function fitBlocks(blocks: Item[][], maxChars: number): Item[] {
+  let start = blocks.length;
+  let used = 0;
+  while (start > 0) {
+    const size = blockChars(blocks[start - 1] as Item[]);
+    if (maxChars > 0 && start < blocks.length && used + size > maxChars) break;
+    used += size;
+    start--;
+  }
+  const items = blocks.slice(start).flat();
+  const first = items[0];
+  if (first !== undefined && first.role === "user" && first.line.startsWith("—— ")) {
+    items.shift();
+  }
+  return items;
+}
+
 /**
  * `[persona, history..., data?, situation]`. Her messages become `assistant`, everyone else's
- * `user` as `"{name}: {text}"` (`"{name}(語音): {text}"` when spoken); consecutive messages of
- * the same role are merged. `data` (see `situationData`) is a separate `user` message, never
+ * `user` as `"{name}: {text}"`, with name tags `(bot)`, `(語音)` and `(回覆 X)`; quoted
+ * parents (`> X: …`) and time-gap lines (`—— 過了 2 小時 ——`) are `user` lines too.
+ * Consecutive lines of the same role are merged. The history is cut to `options.maxChars`
+ * (oldest first) and each entry to `options.maxEntryChars`.
+ *
+ * `images` (the turn's images) are attached to the last `user` history message, which holds
+ * the message she answers. `data` (see `situationData`) is a separate `user` message, never
  * part of a system message.
  */
 export function buildMessages(
@@ -255,19 +384,25 @@ export function buildMessages(
   situation: string,
   history: Iterable<HistoryEntry>,
   data: string | null = null,
+  options: Partial<TranscriptOptions> = {},
+  images: readonly ContentPart[] = [],
 ): ChatMessage[] {
-  const tail: ChatMessage[] = [];
-  for (const entry of history) {
-    const role: ChatRole = entry.isSelf ? "assistant" : "user";
-    const line = entry.isSelf ? ownLine(entry) : otherLine(entry);
+  const opts = { ...DEFAULT_TRANSCRIPT, ...options };
+  const items = fitBlocks(transcriptBlocks([...history], opts), opts.maxChars);
+  const tail: { role: ChatRole; lines: string[] }[] = [];
+  for (const item of items) {
     const last = tail.at(-1);
-    if (last && last.role === role) {
-      last.content += `\n${line}`;
-    } else {
-      tail.push(role === "assistant" ? assistantMessage(line) : userMessage(line));
-    }
+    if (last && last.role === item.role) last.lines.push(item.line);
+    else tail.push({ role: item.role, lines: [item.line] });
   }
-  const out = [systemMessage(persona), ...tail];
+  const lastUser = tail.findLastIndex((m) => m.role === "user");
+  const messages = tail.map((m, i) => {
+    const text = m.lines.join("\n");
+    if (m.role === "assistant") return assistantMessage(text);
+    if (i !== lastUser || images.length === 0) return userMessage(text);
+    return userMessage([{ type: "text", text }, ...images]);
+  });
+  const out = [systemMessage(persona), ...messages];
   if (data !== null) out.push(userMessage(data));
   out.push(systemMessage(situation));
   return out;
@@ -277,7 +412,11 @@ export function buildMessages(
 export function checkMessages(name: string, history: Iterable<HistoryEntry>): ChatMessage[] {
   const lines: string[] = [];
   for (const e of history) {
-    lines.push(e.isSelf ? `${name}(她自己): ${ownLine(e)}` : otherLine(e));
+    lines.push(
+      e.isSelf
+        ? `${name}(她自己): ${ownLine(e, DEFAULT_TRANSCRIPT.maxEntryChars)}`
+        : otherLine(e, DEFAULT_TRANSCRIPT.maxEntryChars, null),
+    );
   }
   return [
     systemMessage(CHECK_SYSTEM.replaceAll("{name}", () => name)),
@@ -292,18 +431,25 @@ export function checkMessages(name: string, history: Iterable<HistoryEntry>): Ch
  * `name` is hers.
  */
 export function transcriptLine(entry: HistoryEntry, name: string): string {
-  return entry.isSelf ? `${name}: ${ownLine(entry)}` : otherLine(entry);
+  const max = DEFAULT_TRANSCRIPT.maxEntryChars;
+  return entry.isSelf ? `${name}: ${ownLine(entry, max)}` : otherLine(entry, max, null);
 }
 
-function ownLine(entry: HistoryEntry): string {
-  return entry.interrupted ? `${entry.text}${INTERRUPTED}` : entry.text;
+function ownLine(entry: HistoryEntry, maxChars: number): string {
+  const text = cut(entry.text, maxChars);
+  return entry.interrupted ? `${text}${INTERRUPTED}` : text;
 }
 
-/** Someone else's line; the name is made inert and the text neutralized. */
-function otherLine(entry: HistoryEntry): string {
-  const name = safeName(entry.author);
-  const text = neutralize(entry.text);
-  return entry.spoken ? `${name}(語音): ${text}` : `${name}: ${text}`;
+/**
+ * Someone else's line; the name is made inert and the text neutralized. `parent` is the entry
+ * it replies to, if known (its author goes into the `(回覆 X)` tag).
+ */
+function otherLine(entry: HistoryEntry, maxChars: number, parent: HistoryEntry | null): string {
+  let tags = "";
+  if (entry.isBot) tags += BOT_TAG;
+  if (entry.spoken) tags += SPOKEN_TAG;
+  if (parent !== null) tags += replyTag(parent.isSelf ? SELF_QUOTE_NAME : safeName(parent.author));
+  return `${safeName(entry.author)}${tags}: ${cut(neutralize(entry.text), maxChars)}`;
 }
 
 function asciiEqualIgnoreCase(a: string, b: string): boolean {

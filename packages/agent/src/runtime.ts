@@ -28,11 +28,13 @@ import type { AgentCommands } from "./commands.js";
 import { type AgentConfig, cooldownFactor } from "./config.js";
 import { Coordinator } from "./coordinator.js";
 import type { AgentHandle } from "./handle.js";
+import { startBackfill } from "./history.js";
 import { agentTurns } from "./metrics.js";
 import type { PersonaHandle } from "./persona.js";
 import { Session } from "./session.js";
 import { BUDGET_TOPIC, energyCooldownFactor, parseBudgetState } from "./signals.js";
 import { accountId, contextId } from "./util.js";
+import { type FetchLike, ImageLoader } from "./vision.js";
 
 /** Module whose restart means the agent commands must be registered again. */
 const COMMANDS_MODULE = "commands";
@@ -118,6 +120,8 @@ export class Agent {
   readonly #pendingActions = new Map<ActionId, Session>();
   /** When she last said she is out of energy (budget exhausted), per context (clock ms). */
   readonly #budgetNotices = new Map<string, number>();
+  /** Downloads the images she looks at (cached by attachment id). */
+  readonly images: ImageLoader;
 
   constructor(
     readonly ctx: ModuleContext,
@@ -127,7 +131,12 @@ export class Agent {
     readonly handle: AgentHandle,
     readonly tools: ToolRegistry,
     readonly commands: AgentCommands,
-  ) {}
+    fetchImage?: FetchLike,
+  ) {
+    this.images = new ImageLoader(fetchImage, (key, error) =>
+      this.log.debug({ image: key, error }, "could not download image"),
+    );
+  }
 
   get log(): Logger {
     return this.ctx.log;
@@ -254,7 +263,8 @@ export class Agent {
     return this.#contexts.get(contextId(key));
   }
 
-  #onMessage(msg: IncomingMessage): void {
+  #onMessage(incoming: IncomingMessage): void {
+    const msg = this.#voiceTextChat(incoming);
     if (this.isBlocked(msg.author.account)) {
       this.log.debug(
         { context: contextId(msg.id.context), account: msg.author.account.id },
@@ -264,9 +274,26 @@ export class Agent {
     }
     const isSelf = this.isSelf(msg.author.account);
     const ignored = isSelf || (msg.author.is_bot && !this.config.respond_to_bots);
+    const cold = this.#existing(msg.id.context) === undefined;
     const handle = this.#context(msg.id.context);
+    if (cold) startBackfill(this, handle.session, msg);
     handle.session.recordMessage(msg, isSelf);
     if (!ignored) handle.inbox.push({ type: "message", message: msg });
+  }
+
+  /**
+   * Text typed in the chat of the voice channel she is in belongs to the voice conversation
+   * (`voice.text_chat`): she answers it by speaking. On Discord a voice channel's text chat
+   * has the channel's own id, so the voice context is the same channel with kind `voice`.
+   */
+  #voiceTextChat(msg: IncomingMessage): IncomingMessage {
+    const context = msg.id.context;
+    if (!this.config.voice.text_chat || context.kind !== "channel" || context.scope === null) {
+      return msg;
+    }
+    const room = this.handle.voiceContext(context.platform, context.scope);
+    if (room === null || room.channel !== context.channel) return msg;
+    return { ...msg, id: { ...msg.id, context: room } };
   }
 
   #onVoiceMembers(context: ContextKey, members: readonly VoiceParticipant[]): void {

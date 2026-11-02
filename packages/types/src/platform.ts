@@ -223,6 +223,11 @@ export interface PlatformSink {
    * someone directly. Optional; platforms without DMs leave it out.
    */
   openDm?(account: AccountRef, signal?: AbortSignal): Promise<ContextKey>;
+  /**
+   * The markup that mentions `account` in a message (Discord: `<@id>`), or `null` when it
+   * cannot be mentioned. Optional; without it her `@name` stays plain text.
+   */
+  mention?(account: AccountRef): string | null;
 }
 
 /**

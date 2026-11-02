@@ -43,7 +43,7 @@ import {
   VoiceSinkKey,
 } from "@miyoria/types";
 import { vi } from "vitest";
-import { type AgentHandle, AgentHandleKey, AgentModule } from "../src/index.js";
+import { type AgentHandle, AgentHandleKey, AgentModule, type FetchLike } from "../src/index.js";
 
 export class FakeSink implements ActionSink {
   readonly actions: Action[] = [];
@@ -185,6 +185,12 @@ export interface Setup {
   actuators?: ActuatorRegistry;
   /** `[llm.thinking]` of the router. */
   thinking?: Map<string, boolean>;
+  /** `[llm.image_input]` of the router. */
+  imageInput?: Map<string, boolean>;
+  /** Image downloads of the agent (default: none allowed). */
+  fetchImage?: FetchLike;
+  /** Provides more "app" services before the agent starts. */
+  provide?: (services: Supervisor["services"]) => void;
 }
 
 export function profile(mode: string): Profile {
@@ -239,6 +245,7 @@ export class Harness {
     if (setup.appTools) sup.services.provide("app", ToolRegistryKey, setup.appTools);
     if (setup.voiceSink) sup.services.provide("app", VoiceSinkKey, setup.voiceSink);
     if (setup.actuators) sup.services.provide("app", ActuatorRegistryKey, setup.actuators);
+    setup.provide?.(sup.services);
     if (setup.owners) {
       await sup.register(new CommandsModule(), { owners: setup.owners }, true);
     }
@@ -250,11 +257,10 @@ export class Harness {
       providers.set("fast", fast);
       purposes.set("fast", [parseModelRef("fast:m")]);
     }
-    const router = new LlmRouter(
-      providers,
-      purposes,
-      setup.thinking ? { thinking: setup.thinking } : {},
-    );
+    const router = new LlmRouter(providers, purposes, {
+      ...(setup.thinking ? { thinking: setup.thinking } : {}),
+      ...(setup.imageInput ? { imageInput: setup.imageInput } : {}),
+    });
     await sup.register(new Stub("llm", (ctx) => ctx.provide(LlmRouterKey, router)), null, true);
     const sink = new FakeSink();
     await sup.register(
@@ -263,7 +269,12 @@ export class Harness {
       true,
     );
     const roll = setup.roll ?? 0;
-    const agent = new AgentModule(profile(mode)).withRandom({ nextF32: () => roll });
+    const agent = new AgentModule(profile(mode)).withRandom({ nextF32: () => roll }).withImageFetch(
+      setup.fetchImage ??
+        (async () => {
+          throw new Error("no network in tests");
+        }),
+    );
     for (const tool of setup.tools ?? []) agent.tools().register(tool);
     await sup.register(agent, config, true);
     await sup.startAll();

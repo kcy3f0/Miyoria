@@ -42,6 +42,8 @@ export {
   ChannelModeSchema,
   cooldownFactor,
   defaultAgentConfig,
+  type HistoryConfig,
+  HistoryConfigSchema,
   maxDebounceMs,
   modeFor,
   ParseError,
@@ -50,6 +52,8 @@ export {
   probabilityFactor,
   scaleByActiveness,
   typingRefreshMs,
+  type VisionConfig,
+  VisionConfigSchema,
   type VoiceConfig,
   VoiceConfigSchema,
   voiceMaxDebounceMs,
@@ -69,30 +73,41 @@ export {
   MODE_PREFIX,
   voiceScope,
 } from "./handle.js";
+export { awaitBackfill, backfillLimit, replyParents, startBackfill } from "./history.js";
+export { linkMentions, type MentionTarget } from "./mentions.js";
 export { AgentModule } from "./module.js";
 export { PersonaHandle, PersonaHandleKey } from "./persona.js";
 export {
   ADDRESSED,
   AMBIENT,
+  BOT_TAG,
   buildMessages,
   checkMessages,
   cleanReply,
   DATA_PREAMBLE,
+  DEFAULT_TRANSCRIPT,
   GUARD_RULES,
+  gapLine,
   INITIATIVE,
   INITIATIVE_HINT,
   INITIATIVE_SILENCE,
   INITIATIVE_TITLE,
   INTERRUPTED,
+  MAX_PARENT_CHARS,
   PEOPLE_TITLE,
   PRESENT_TITLE,
   renderSections,
+  replyTag,
+  SELF_QUOTE_NAME,
   SITUATION,
   type Situation,
   type SituationData,
+  SPOKEN_TAG,
   situationData,
   situationPrompt,
   splitMessage,
+  TRANSCRIPT_RULES,
+  type TranscriptOptions,
   transcriptLine,
   VOICE_ADDRESSED,
   VOICE_AMBIENT,
@@ -102,6 +117,7 @@ export {
 } from "./prompt.js";
 export {
   type HistoryEntry,
+  historyEntry,
   messageText,
   Session,
   type SessionParticipant,
@@ -120,6 +136,22 @@ export {
   parseBudgetState,
   tone,
 } from "./signals.js";
-export { isSpeakable, LONG_CLAUSE_CHARS, SentenceSplitter } from "./speech.js";
+export {
+  type FencedPiece,
+  FenceSplitter,
+  isSpeakable,
+  LinkSplitter,
+  LONG_CLAUSE_CHARS,
+  SentenceSplitter,
+} from "./speech.js";
 export { ReactTool, ToolArgumentError } from "./tools.js";
 export { CheckError, parseCheck, TurnError, truncate } from "./turn.js";
+export {
+  allowedUrl,
+  type FetchLike,
+  type ImageCandidate,
+  ImageLoader,
+  imageParts,
+  type LoadedImage,
+  selectImages,
+} from "./vision.js";

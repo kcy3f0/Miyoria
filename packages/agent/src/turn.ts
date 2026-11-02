@@ -2,7 +2,11 @@
 // derived from other people go into the user-role data message, see prompt.ts), generation
 // (with the tool loop; tool calls run for the speaker as principal `user`) and output, filtered
 // by `filterOutgoing`. Text replies think first and are sent once complete; voice replies do
-// not think and are spoken sentence by sentence while the model is still generating.
+// not think and are spoken sentence by sentence while the model is still generating (links and
+// code blocks go to the voice channel's text chat instead of being read out).
+//
+// Before generating, a turn waits (bounded) for a cold session's backfill, fetches reply
+// parents missing from the history and picks the images she looks at (history.ts, vision.ts).
 //
 // An initiative turn has no input and skips attention (the coordinator already checked the
 // context is quiet). While the LLM budget is exhausted nothing is generated: a turn she would
@@ -13,6 +17,7 @@ import {
   assistantMessage,
   type ChatMessage,
   type ChatRequest,
+  type ContentPart,
   contextSession,
   type LlmRouter,
   LlmRouterKey,
@@ -35,6 +40,7 @@ import {
   type LaneKey,
   newAction,
   type Participant,
+  PlatformSinksKey,
   Principals,
   type Priority,
   PromptContributorsKey,
@@ -56,6 +62,8 @@ import { gather } from "./contributors.js";
 import type { TurnFlags } from "./coordinator.js";
 import { Expression, ExpressionParser, type Segment } from "./expression.js";
 import { voiceScope } from "./handle.js";
+import { awaitBackfill, replyParents } from "./history.js";
+import { linkMentions, type MentionTarget } from "./mentions.js";
 import { agentTurns } from "./metrics.js";
 import {
   buildMessages,
@@ -70,9 +78,16 @@ import {
 import type { Agent, Initiative } from "./runtime.js";
 import { type HistoryEntry, messageText, type Session } from "./session.js";
 import { attitudeHint, type BudgetState, EXHAUSTED_LINE, moodHint } from "./signals.js";
-import { isSpeakable, SentenceSplitter } from "./speech.js";
+import {
+  type FencedPiece,
+  FenceSplitter,
+  isSpeakable,
+  LinkSplitter,
+  SentenceSplitter,
+} from "./speech.js";
 import { ReactTool } from "./tools.js";
 import { contextId, fixed, guard, TimeoutError, timeout } from "./util.js";
+import { imageParts, selectImages } from "./vision.js";
 
 const TYPING_TTL_MS = 10_000;
 /** History lines shown to the `fast` model. */
@@ -153,10 +168,15 @@ interface CheckReply {
  */
 class Speech {
   readonly #splitter = new SentenceSplitter();
+  /** Code blocks and links are never read out. */
+  readonly #fences = new FenceSplitter();
+  readonly #links = new LinkSplitter();
   /** Latest `<emo:...>`; sent with each sentence. */
   #emotion: string | null = null;
   /** Everything submitted so far. */
   spoken = "";
+  /** Links and code blocks she wrote, for the text chat instead of speech. */
+  readonly aside: string[] = [];
 
   constructor(
     readonly sink: ActionSink,
@@ -178,7 +198,24 @@ class Speech {
   }
 
   async text(text: string): Promise<void> {
-    for (const sentence of this.#splitter.push(text)) await this.#say(sentence);
+    for (const piece of this.#fences.push(text)) await this.#piece(piece);
+  }
+
+  async #piece(piece: FencedPiece): Promise<void> {
+    if (piece.code) {
+      if (piece.text.trim() !== "") this.aside.push(`\`\`\`${piece.text}\`\`\``);
+      return;
+    }
+    for (const part of this.#links.push(piece.text)) await this.#part(part);
+  }
+
+  /** Text outside code blocks: links aside, the rest cut into sentences. */
+  async #part(part: FencedPiece): Promise<void> {
+    if (part.code) {
+      this.aside.push(part.text);
+      return;
+    }
+    for (const sentence of this.#splitter.push(part.text)) await this.#say(sentence);
   }
 
   /**
@@ -197,9 +234,17 @@ class Speech {
     if (rest !== null) await this.#say(rest);
   }
 
+  /** End of a response: an unclosed code block ends here too. */
+  async finish(): Promise<void> {
+    for (const piece of this.#fences.flush()) await this.#piece(piece);
+    for (const part of this.#links.flush()) await this.#part(part);
+    await this.flush();
+  }
+
   async #say(sentence: string): Promise<void> {
     if (this.stopped()) return;
-    const text = filterOutgoing(cleanReply(sentence, this.names));
+    // Links taken out may leave double spaces behind.
+    const text = filterOutgoing(cleanReply(sentence, this.names)).replace(/[ \t]{2,}/g, " ");
     if (!isSpeakable(text)) return;
     this.prepare?.(text);
     const action = newAction(
@@ -293,6 +338,8 @@ class Turn {
   async respond(): Promise<string> {
     const names = this.agent.persona.names();
     const budget = this.agent.handle.llmBudget();
+    // A cold session's earlier messages (bounded by `history.timeout_ms` from their fetch).
+    await awaitBackfill(this.agent, this.session, this.signal);
     let decision: Decision;
     if (this.initiative !== null) {
       const reasons = [`initiative:${this.initiative.reason}`];
@@ -317,10 +364,53 @@ class Turn {
       this.#publishDecision(notice, score, reasons);
       return notice ? await this.#sayExhausted(direct) : "";
     }
-    const extras = await this.#extras();
+    const [extras, images] = await Promise.all([this.#extras(), this.#lookAround()]);
     reasons.push(...extras.reasons);
+    const seen = images.filter((p) => p.type === "image_url").length;
+    if (seen > 0) reasons.push(`looking at ${seen} image(s)`);
     this.#publishDecision(true, score, reasons);
-    return await this.#generate(direct, names, extras);
+    return await this.#generate(direct, names, extras, images);
+  }
+
+  /**
+   * Context of the messages she answers that she did not see: the reply parents missing from
+   * the history (noted on the session, so they stay quoted), then the images she looks at.
+   * Best effort: failures and timeouts only cost the context.
+   */
+  async #lookAround(): Promise<ContentPart[]> {
+    const cfg = this.agent.config;
+    // All inputs at once, so the wait is one `history.timeout_ms` at most.
+    const found = await Promise.all(
+      this.inputs.map(async (input): Promise<HistoryEntry | null> => {
+        const ref = input.reply_to ?? null;
+        if (ref === null) return null;
+        const known = this.session.entry(ref.id);
+        if (known) return known;
+        try {
+          const chain = await timeout(cfg.history.timeout_ms, this.signal, (signal) =>
+            replyParents(this.agent, this.session, input, signal),
+          );
+          this.session.setParents(input.id.id, chain);
+          return chain.at(-1) ?? null;
+        } catch (error) {
+          if (this.signal.aborted) throw error;
+          this.agent.log.debug(
+            { turn: this.turn, error: errorMessage(error) },
+            "could not fetch reply parents",
+          );
+          return null;
+        }
+      }),
+    );
+    const parents = found.filter((p): p is HistoryEntry => p !== null);
+    const vision = cfg.vision;
+    if (!vision.enabled || vision.max_images === 0 || this.inputs.length === 0) return [];
+    const router = this.agent.ctx.services.get(LlmRouterKey);
+    if (!router?.takesImages("chat")) return [];
+    const candidates = selectImages(this.inputs, this.session, parents, vision);
+    if (candidates.length === 0) return [];
+    const loaded = await this.agent.images.load(candidates, vision, this.signal);
+    return imageParts(loaded, vision.detail);
   }
 
   #publishDecision(respond: boolean, score: number, reasons: string[]): void {
@@ -584,7 +674,12 @@ class Turn {
     };
   }
 
-  async #generate(direct: boolean, names: readonly string[], extras: Extras): Promise<string> {
+  async #generate(
+    direct: boolean,
+    names: readonly string[],
+    extras: Extras,
+    images: readonly ContentPart[],
+  ): Promise<string> {
     const cfg = this.agent.config;
     const services = this.agent.ctx.services;
     const router = services.require(LlmRouterKey);
@@ -623,6 +718,12 @@ class Turn {
       situation,
       this.session.recent(cfg.prompt_history).filter((e) => !this.#hidden(e)),
       data,
+      {
+        maxChars: cfg.max_prompt_chars,
+        maxEntryChars: cfg.max_entry_chars,
+        gapMs: cfg.time_gap_ms,
+      },
+      images,
     );
 
     const priority = this.#priority(direct);
@@ -642,6 +743,7 @@ class Turn {
         voiceSink?.prepare ? (text) => voiceSink.prepare?.(this.key, text) : null,
       );
       await this.#produce(router, messages, priority, speech);
+      await this.#postAside(sink, speech.aside, priority);
       if (speech.spoken === "") this.agent.log.debug({ turn: this.turn }, "she stayed quiet");
       return speech.spoken;
     }
@@ -664,9 +766,54 @@ class Turn {
       this.agent.log.debug({ turn: this.turn }, "she chose silence");
       return "";
     }
-    const text = filterOutgoing(cleanReply(expression.text, names));
+    const text = this.#linkMentions(filterOutgoing(cleanReply(expression.text, names)));
     if (text === "") return "";
     return await this.#sendText(sink, text, direct, priority);
+  }
+
+  /** `@name` of people in this conversation as the platform's mentions (`mention_users`). */
+  #linkMentions(text: string): string {
+    if (!this.agent.config.mention_users) return text;
+    const sink = this.agent.ctx.services.get(PlatformSinksKey)?.get(this.key.platform);
+    const mention = sink?.mention?.bind(sink);
+    if (!mention) return text;
+    const people = new Map<string, AccountRef>();
+    for (const p of this.session.participants()) people.set(p.displayName, p.account);
+    for (const m of this.inputs) people.set(m.author.display_name, m.author.account);
+    const targets: MentionTarget[] = [];
+    for (const [name, account] of people) {
+      const markup = mention(account);
+      if (markup !== null && !this.#hiddenAccount(account)) targets.push({ name, markup });
+    }
+    return linkMentions(text, targets);
+  }
+
+  #hiddenAccount(account: AccountRef): boolean {
+    return this.social?.attitude(account)?.blocked ?? false;
+  }
+
+  /**
+   * Links and code from her spoken reply, posted to the voice channel's text chat (same channel
+   * id; `voice.text_aside`). Best effort: a failure is only logged.
+   */
+  async #postAside(sink: ActionSink, aside: readonly string[], priority: Priority): Promise<void> {
+    const cfg = this.agent.config;
+    if (!cfg.voice.text_aside || aside.length === 0 || this.flags.interrupted) return;
+    const text = truncate(filterOutgoing(aside.join("\n")), Math.max(cfg.max_message_chars, 1));
+    if (text === "") return;
+    const chat: ContextKey = { ...this.key, kind: "channel" };
+    const action = newAction(
+      textLane(chat),
+      priority,
+      { type: "send_message", context: chat, message: { text, reply_to: null } },
+      { ttl: cfg.reply_ttl_ms, turn: this.turn },
+    );
+    try {
+      await guard(sink.submit(action), this.signal);
+    } catch (error) {
+      if (this.signal.aborted) throw error;
+      this.agent.log.warn({ turn: this.turn, error: errorMessage(error) }, "could not post links");
+    }
   }
 
   /** Sends `text` (split into several messages if long) as her reply. */
@@ -870,7 +1017,7 @@ class Turn {
     }
     this.#reportLatency(stream.model, stream.firstTokenMs);
     for (const segment of parser.finish()) await this.#take(expression, segment, speech);
-    if (speech) await speech.flush();
+    if (speech) await speech.finish();
     const named = calls.filter((c) => c.name !== "");
     named.forEach((call, i) => {
       if (call.id === "") call.id = `call_${i}`;

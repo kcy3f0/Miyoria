@@ -352,7 +352,7 @@ describe("agent module", () => {
     expect(h.decisions()).toEqual([]);
     h.say(incoming(channel("c"), "Owen", "嗨"));
     await wait(3000);
-    expect(mock.requests()[0]?.messages[1]?.content).toBe("otherbot: beep\nOwen: 嗨");
+    expect(mock.requests()[0]?.messages[1]?.content).toBe("otherbot(bot): beep\nOwen: 嗨");
   });
 
   it("stops_cleanly_mid_generation", async () => {

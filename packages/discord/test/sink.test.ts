@@ -59,6 +59,13 @@ describe("DiscordSink", () => {
     expect(body.allowed_mentions).toEqual({ parse: ["users"], roles: [], replied_user: false });
   });
 
+  test("mention_markup_for_discord_users_only", () => {
+    const sink = new DiscordSink(new FakeRest());
+    expect(sink.mention({ platform: "discord", id: "1234" })).toBe("<@1234>");
+    expect(sink.mention({ platform: "discord", id: "<@&1>" })).toBeNull();
+    expect(sink.mention({ platform: "cli", id: "1234" })).toBeNull();
+  });
+
   test("opens_dms_and_sends_cards_without_pings", async () => {
     const rest = new FakeRest();
     const sink = new DiscordSink(rest);

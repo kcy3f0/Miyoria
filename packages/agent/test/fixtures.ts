@@ -41,9 +41,14 @@ export function tmsg(
 
 export function entry(author: string, text: string, isSelf: boolean): HistoryEntry {
   return {
+    id: null,
+    replyTo: null,
+    parents: [],
     author,
     account: tacc(author),
+    isBot: false,
     text,
+    attachments: [],
     ts: Date.now(),
     isSelf,
     pending: null,

@@ -145,8 +145,62 @@ export const VoiceConfigSchema = z.object({
   llm_check: z.boolean().default(false),
   /** Sentences that have not started playing within this time are dropped. */
   speak_ttl_ms: z.number().int().nonnegative().default(30_000),
+  /**
+   * While she is in a voice channel, messages typed in its text chat are part of the voice
+   * conversation and she answers them by speaking (Discord voice channels have a text chat
+   * with the channel's own id).
+   */
+  text_chat: z.boolean().default(true),
+  /**
+   * Links and code blocks in her spoken replies are posted to the voice channel's text chat
+   * instead of being read out.
+   */
+  text_aside: z.boolean().default(true),
 });
 export type VoiceConfig = z.output<typeof VoiceConfigSchema>;
+
+/** `[modules.agent.history]`: context she did not see live. */
+export const HistoryConfigSchema = z.object({
+  /**
+   * When a text session starts cold (after a restart, or a channel idle long enough to be
+   * forgotten), fetch up to this many earlier messages (at most `prompt_history`); 0 = off.
+   * Without a platform history reader the message log is used.
+   */
+  backfill: z.number().int().nonnegative().default(20),
+  /**
+   * Parents of a reply that are not in the history, fetched and quoted before it (0: only the
+   * direct parent, when the platform delivered it with the reply).
+   */
+  reply_chain: z.number().int().nonnegative().default(3),
+  /** A turn waits at most this long (from the start of the fetch) for missing context. */
+  timeout_ms: z.number().int().nonnegative().default(3000),
+});
+export type HistoryConfig = z.output<typeof HistoryConfigSchema>;
+
+/**
+ * `[modules.agent.vision]`: images she looks at with the chat model (when its model takes
+ * images, see `[llm.image_input]`).
+ */
+export const VisionConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Images per turn. */
+  max_images: z.number().int().nonnegative().default(3),
+  /** Larger images are skipped. */
+  max_image_bytes: z.number().int().nonnegative().default(5_000_000),
+  /** All images of one turn together. */
+  max_total_bytes: z.number().int().nonnegative().default(10_000_000),
+  /** Images the same person sent this long before the message she answers count too. */
+  same_author_window_ms: z.number().int().nonnegative().default(120_000),
+  /** How closely the model looks (`low` is cheapest). */
+  detail: z.enum(["auto", "low", "high"]).default("auto"),
+  /** Time limit for downloading one image. */
+  download_timeout_ms: z.number().int().nonnegative().default(5000),
+  /** Images are only downloaded from these hosts (the platform's CDN), over HTTPS. */
+  allowed_hosts: z.array(z.string()).default(["cdn.discordapp.com", "media.discordapp.net"]),
+  /** Downloaded images kept in memory (by attachment id). */
+  cache_entries: z.number().int().nonnegative().default(32),
+});
+export type VisionConfig = z.output<typeof VisionConfigSchema>;
 
 /** `[modules.agent]` config section. */
 export const AgentConfigSchema = z.object({
@@ -160,6 +214,21 @@ export const AgentConfigSchema = z.object({
   history_limit: z.number().int().nonnegative().default(50),
   /** Messages of history included in the prompt. */
   prompt_history: z.number().int().nonnegative().default(30),
+  /** The history in the prompt is cut to this many characters, oldest entries first. */
+  max_prompt_chars: z.number().int().nonnegative().default(16_000),
+  /** One history entry is cut to this many characters. */
+  max_entry_chars: z.number().int().nonnegative().default(2000),
+  /** Two messages further apart than this get a time-gap line between them. */
+  time_gap_ms: z
+    .number()
+    .int()
+    .nonnegative()
+    .default(30 * 60 * 1000),
+  /**
+   * `@name` of someone in the conversation in her text replies becomes a real mention (on
+   * platforms that have them). Role, `@everyone` and `@here` mentions are always removed.
+   */
+  mention_users: z.boolean().default(true),
   /** Overrides the profile's `behavior.default_channel_mode`. */
   default_mode: ChannelModeSchema.nullable().default(null),
   /**
@@ -214,6 +283,8 @@ export const AgentConfigSchema = z.object({
     .default(3600 * 1000),
   attention: AttentionConfigSchema.prefault({}),
   voice: VoiceConfigSchema.prefault({}),
+  history: HistoryConfigSchema.prefault({}),
+  vision: VisionConfigSchema.prefault({}),
 });
 export type AgentConfig = z.output<typeof AgentConfigSchema>;
 
