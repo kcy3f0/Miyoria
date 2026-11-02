@@ -56,7 +56,8 @@ export const ACTIONS: GameActionSpec[] = [
   },
   {
     name: "get",
-    description: "用 AltoClef 取得物品(自動砍樹、挖礦、合成…),例如 {item:\"iron_pickaxe\"}",
+    description:
+      "用 AltoClef 取得物品(自動砍樹、挖礦、合成…),例如 {item:\"iron_pickaxe\"};狀態的 capabilities.altoclef 為 true 才能用",
     parameters: obj({ item: str("物品 id"), count: int("數量,預設 1") }, ["item"]),
   },
   {

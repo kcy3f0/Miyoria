@@ -81,6 +81,7 @@ export function mapEvent(e: BridgeEvent, opts: EventOptions = {}): GameEvent | n
     case "goal_failed":
       return event("goal_failed", d, "找不到路,目標失敗");
     case "baritone_idle":
+      if (d.altoclef_done === true) return event("baritone_idle", d, "AltoClef 任務做完了,停下來");
       return event("baritone_idle", d, d.cancelled === true ? "Baritone 被叫停了" : "Baritone 做完了,停下來");
     default:
       return SEGMENT.test(e.name) ? { type: e.name, data: d } : null;
