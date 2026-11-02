@@ -259,6 +259,81 @@ def test_library_video_lookup(tmp_path):
     assert store.library_video("../x.mp3") is None
 
 
+@pytest.fixture
+def offload(sing, monkeypatch):
+    """The TTS / ASR workers as a recorder: (url, body, the job's state at that moment)."""
+    if not is_mock():
+        pytest.skip("mock offload")
+    server = sys.modules["sing_server"]
+    calls: list[tuple[str, str]] = []
+    fail: set[str] = set()
+
+    def post(url, body, timeout):
+        running = server.state.running
+        job = server.state.jobs.get(running) if running else None
+        calls.append((url, job.stage if job else "-"))
+        if url in fail:
+            raise RuntimeError("connection refused")
+        return {"offload_ms": 5} if url.endswith("/offload") else {"reload_ms": 9}
+
+    monkeypatch.setattr(server.state, "offload_post", post, raising=False)
+    monkeypatch.setenv("SING_OFFLOAD_URLS", "http://tts, http://asr/")
+    return calls, fail
+
+
+def test_the_gpu_is_exclusive_while_converting(sing, offload):
+    calls, _ = offload
+    done = wait(sing, sing.post("/jobs", json={"query": "exclusive song"}).json()["job"]["id"])
+    assert done["state"] == "done", done
+    assert [c[0] for c in calls] == ["http://tts/offload", "http://asr/offload", "http://tts/reload",
+                                     "http://asr/reload"]
+    assert calls[0][1] == "exclusive"  # before separating
+    assert calls[2][1] in ("mix", "lyrics", "video", "convert")  # right after converting
+    assert done["exclusive"] == "done"
+    assert done["exclusive_info"]["offloaded"] == ["http://tts", "http://asr"]
+    # A cached song needs no GPU.
+    calls.clear()
+    assert sing.post("/jobs", json={"query": "exclusive song"}).json()["job"]["exclusive"] is None
+    assert calls == []
+
+
+def test_exclusive_waits_for_cores_go(sing, offload):
+    calls, _ = offload
+    job = sing.post("/jobs", json={"query": "ack song", "exclusive_ack": True}).json()["job"]
+    t0 = time.time()
+    while sing.get(f"/jobs/{job['id']}").json()["job"]["exclusive"] != "waiting":
+        assert time.time() - t0 < 10
+        time.sleep(0.02)
+    assert sing.get(f"/jobs/{job['id']}").json()["job"]["stage"] == "exclusive"
+    time.sleep(0.2)
+    assert calls == []  # she is still talking
+    assert sing.post(f"/jobs/{job['id']}/exclusive").status_code == 200
+    done = wait(sing, job["id"])
+    assert done["state"] == "done" and len(calls) == 4
+    assert sing.post("/jobs/nope/exclusive").status_code == 404
+
+
+def test_the_gpu_comes_back_after_a_failure_or_a_cancel(sing, offload, monkeypatch):
+    calls, fail = offload
+    monkeypatch.setenv("SING_MOCK_CONVERT_FAIL", "1")
+    fail.add("http://asr/offload")  # one worker that cannot offload is skipped
+    done = wait(sing, sing.post("/jobs", json={"query": "failing conversion"}).json()["job"]["id"])
+    assert done["state"] == "failed" and "mock conversion failed" in done["error"]
+    assert [c[0] for c in calls] == ["http://tts/offload", "http://asr/offload", "http://tts/reload"]
+    assert done["exclusive"] == "done" and "offload http://asr" in done["exclusive_info"]["errors"][0]
+
+    calls.clear()
+    monkeypatch.delenv("SING_MOCK_CONVERT_FAIL")
+    job = sing.post("/jobs", json={"query": "cancelled while waiting", "exclusive_ack": True}).json()["job"]
+    t0 = time.time()
+    while sing.get(f"/jobs/{job['id']}").json()["job"]["exclusive"] != "waiting":
+        assert time.time() - t0 < 10
+        time.sleep(0.02)
+    sing.delete(f"/jobs/{job['id']}")
+    end = wait(sing, job["id"])
+    assert end["state"] == "cancelled" and calls == []
+
+
 def test_unknown_things_are_404(sing):
     assert sing.get("/jobs/nope").status_code == 404
     assert sing.get("/songs/nope").status_code == 404
@@ -303,3 +378,77 @@ def test_guess_artist_title(raw, uploader, expected):
     from lyrics import guess_artist_title
 
     assert guess_artist_title(raw, uploader) == expected
+
+
+# ── pitch: F0 cleanup and the auto key ───────────────────────────────────────
+
+
+def _midi(f):
+    import numpy as np
+
+    f = np.asarray(f, dtype=float)
+    return np.where(f > 1, 69 + 12 * np.log2(np.maximum(f, 1e-9) / 440), 0)
+
+
+def test_clean_f0_folds_octave_jumps_and_spikes():
+    import numpy as np
+    from pitch import clean_f0
+
+    f = np.full(200, 660.0)  # E5 held for 2 s
+    f[80:86] = 1320.0  # a 60 ms octave jump up (a tracking error at the top)
+    f[120:124] = 330.0  # and one down
+    f[150] = 900.0  # a spike
+    out = clean_f0(f)
+    assert np.allclose(_midi(out), _midi(660.0), atol=0.05)
+
+
+def test_clean_f0_keeps_real_leaps_and_bridges_short_gaps():
+    import numpy as np
+    from pitch import clean_f0
+
+    f = np.concatenate([np.full(100, 440.0), np.full(100, 880.0)])  # a held octave leap
+    out = clean_f0(f)
+    assert np.allclose(out[:95], 440.0, rtol=1e-3) and np.allclose(out[110:], 880.0, rtol=1e-3)
+
+    g = np.concatenate([np.full(50, 440.0), np.zeros(3), np.full(50, 494.0), np.zeros(30), np.full(50, 440.0)])
+    out = clean_f0(g)
+    assert (out[50:53] > 440).all() and (out[50:53] < 494).all()  # 30 ms dropout bridged
+    assert (out[103:133] == 0).all()  # a 300 ms rest stays a rest
+
+
+def test_choose_key_keeps_the_top_under_her_ceiling():
+    from pitch import choose_key, note_name, parse_note
+
+    assert parse_note("A5") == 81 and parse_note("C#6") == 85 and parse_note("Bb4") == 70
+    assert round(parse_note("440")) == 69 and parse_note("high") is None
+    ref = 220.0  # A3 speech: sings around B3, ceiling C#5 (A3 + 16)
+    # A song in her range: no change.
+    k = choose_key(247.0, 494.0, ref)
+    assert (k["octave_shift"], k["auto_key"]) == (0, 0)
+    # A low male song: up an octave as before.
+    k = choose_key(123.0, 247.0, ref)
+    assert (k["octave_shift"], k["auto_key"]) == (12, 0)
+    # A song whose top an octave up would be far over her ceiling.
+    k = choose_key(165.0, 440.0, ref)  # E3 median, A4 top
+    assert k["octave_shift"] == 0 or k["auto_key"] < 0
+    k = choose_key(262.0, 740.0, ref)  # a high female song: F#5 top
+    assert k["octave_shift"] == 0 and k["auto_key"] == -5  # capped at key_min
+    assert k["top_after_note"] == note_name(parse_note("F#5") - 5)
+    # Octave only (an explicit key): no transposition.
+    assert choose_key(262.0, 740.0, ref, key_min=0, key_max=0)["auto_key"] == 0
+    # A ceiling as a note.
+    assert choose_key(262.0, 739.0, ref, ceiling=parse_note("F5"))["auto_key"] == -1
+
+
+def test_auto_key_moves_the_whole_song(sing, monkeypatch):
+    if not is_mock():
+        pytest.skip("mock pitch")
+    monkeypatch.setenv("SING_MOCK_F0_HZ", "440")
+    monkeypatch.setenv("SING_MOCK_F0_TOP_HZ", "1400")  # far over A4 + 16
+    done = wait(sing, sing.post("/jobs", json={"query": "very high song"}).json()["job"]["id"])
+    p = done["song"]["pitch"]
+    assert p["auto_key"] == -5 and p["song_key"] == -5 and p["vocal_shift"] == p["octave_shift"] - 5
+    # An explicit key wins over the automatic one.
+    done = wait(sing, sing.post("/jobs", json={"query": "very high song", "key": 2}).json()["job"]["id"])
+    p = done["song"]["pitch"]
+    assert p["auto_key"] == 0 and p["song_key"] == 2

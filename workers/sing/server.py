@@ -1,6 +1,8 @@
 """Miyoria song worker: song requests → AI covers in her voice (docs/protocols/voice-link.md, 「歌曲 Worker」).
 
-    POST   /jobs                {query | url | path, title?, artist?, pitch?, key?, force?}  -> {"job"}
+    POST   /jobs                {query | url | path, title?, artist?, pitch?, key?, force?, exclusive_ack?}
+                                -> {"job"}
+    POST   /jobs/{id}/exclusive -> {"job"}                 go ahead and take the GPU (see exclusive.py)
     GET    /jobs                -> {"jobs": [...]}         newest first
     GET    /jobs/{id}           -> {"job"}                 state, stage, progress, song when done
     DELETE /jobs/{id}           -> {"job"}                 cancels a queued or running job
@@ -17,11 +19,14 @@ Pipeline per job (one job at a time; models load per stage and are freed after i
     download  bestaudio → 44.1 kHz stereo WAV (ffmpeg)
     separate  Demucs (SING_SEPARATOR_MODEL, default htdemucs) → vocals + instrumental; skipped for
               library folders that already have both stems, and for sources separated before
-    convert   Seed-VC singing model (F0-conditioned, 44.1 kHz) with her reference voice; the pitch
-              shift is ``pitch`` when given, else the octave that puts the song's median pitch
-              closest to hers (+ SING_TARGET_OFFSET semitones), plus ``key`` (whole-song transpose)
-    mix       converted vocal at the original vocal's level + instrumental (shifted by ``key``),
-              loudness-normalised to SING_TARGET_LUFS, peak ≤ -1 dBFS
+    convert   Seed-VC singing model (F0-conditioned, 44.1 kHz) with her reference voice, on a
+              cleaned F0 contour (octave errors, spikes, dropouts: pitch.py); the pitch shift is
+              ``pitch`` when given, else auto: the octave from the song's median and its top (95th
+              percentile) against her range, and when the top is still over her ceiling the whole
+              song goes down a few semitones (``auto_key``, SING_KEY_MIN..SING_KEY_MAX); plus
+              ``key`` (whole-song transpose, which turns the auto key off)
+    mix       converted vocal at the original vocal's level + instrumental (moved by the key with
+              Rubber Band when ffmpeg has it), loudness-normalised to SING_TARGET_LUFS, peak ≤ -1 dBFS
     lyrics    lrclib.net synced LRC by title / artist / duration (best effort)
     video     (in parallel, from the download on) the link's video, video only, H.264 <= 1080p
               preferred, into video.mp4 for the stream to show while she sings; library entries
@@ -29,6 +34,10 @@ Pipeline per job (one job at a time; models load per stage and are freed after i
               fails or is still not there SING_VIDEO_WAIT_S after the audio leaves the song
               ready without one (``has_video: false``, ``video_error``). Songs cached before
               videos existed get theirs on the next request.
+
+GPU: with SING_OFFLOAD_URLS (the TTS / ASR workers) the job has the GPU to itself from the first
+GPU stage (separate, else convert) to the end of the conversion: stage ``exclusive`` and the job's
+``exclusive`` field (waiting · offloading · active · reloading · done) tell Core; see exclusive.py.
 
 A finished song is cached under SING_DATA_DIR/<song id>; asking again (same query, link or file
 and the same pitch settings) answers at once with ``cached: true``.
@@ -46,6 +55,10 @@ Environment
     SING_DIFFUSION_STEPS   Seed-VC steps                          (default 30)
     SING_CFG_RATE          Seed-VC inference cfg rate             (default 0.7)
     SING_TARGET_OFFSET     her singing median vs her speaking median, semitones (default 2)
+    SING_MAX_NOTE          her ceiling: a note (A5) or Hz          (default: speech median + SING_CEILING_OFFSET)
+    SING_CEILING_OFFSET    her ceiling above her speaking median, semitones (default 16)
+    SING_KEY_MIN / MAX     range of the automatic whole-song key   (default -5 / 3; 0 / 0 = octave only)
+    SING_F0_CLEAN          0 = convert on the raw RMVPE contour    (default 1)
     SING_TARGET_LUFS       loudness of the mix                    (default -16)
     SING_MAX_SECONDS       longest song                           (default 480)
     SING_URL_HOSTS         hosts links may point to               (default youtube.com, youtu.be, music.youtube.com,
@@ -57,6 +70,10 @@ Environment
     SING_VIDEO_MAX_HEIGHT  tallest video                          (default 1080)
     SING_VIDEO_MAX_MB      largest video                          (default 300)
     SING_VIDEO_WAIT_S      wait for the video after the audio     (default 120)
+    SING_OFFLOAD_URLS      workers to offload while converting, comma separated (default none),
+                           e.g. http://127.0.0.1:8002,http://127.0.0.1:8003
+    SING_EXCLUSIVE_WAIT_S  wait this long for Core's go (exclusive_ack) (default 30)
+    SING_RELOAD_TIMEOUT_S  longest wait for a worker to reload    (default 300)
     SING_MOCK_SECONDS      mock: song length                      (default 3)
     SING_MOCK_STAGE_MS     mock: delay per stage                  (default 0)
     HOST / PORT            bind address                           (default 127.0.0.1 / 8005)
@@ -90,6 +107,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engine import Cancelled, JobError, allowed_url, env_float, env_int  # noqa: E402
+from exclusive import Exclusive, http_post, parse_urls  # noqa: E402
 from songs import (  # noqa: E402
     PLAY_RATE,
     SONG_FILES,
@@ -108,7 +126,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 MAX_JOBS_KEPT = 100
 # Share of the job's progress per stage.
-WEIGHTS = {"resolve": 0.04, "download": 0.12, "separate": 0.30, "convert": 0.44, "mix": 0.07, "lyrics": 0.03,
+WEIGHTS = {"resolve": 0.04, "download": 0.12, "exclusive": 0.0, "separate": 0.30, "convert": 0.44, "mix": 0.07, "lyrics": 0.03,
            "video": 0.0}
 # Sources whose link has a video to fetch (a library entry brings its own file).
 VIDEO_KINDS = ("youtube", "url", "mock")
@@ -188,13 +206,18 @@ class MockBackend:
         _write_wav(inst_out, _tone(self.seconds, 16_000, 220, 0.1), 16_000)
 
     def median_f0(self, path: Path) -> float | None:
-        return 440.0
+        return env_float("SING_MOCK_F0_HZ", 440.0)
+
+    def f0_stats(self, path: Path) -> tuple[float, float] | None:
+        return env_float("SING_MOCK_F0_HZ", 440.0), env_float("SING_MOCK_F0_TOP_HZ", 440.0)
 
     def ref_f0(self) -> float | None:
         return 440.0
 
     def convert(self, vocals_wav: Path, out_wav: Path, shift: int, progress: Callable[[float], None],
                 cancelled: Callable[[], bool]) -> None:
+        if os.environ.get("SING_MOCK_CONVERT_FAIL") == "1":
+            raise JobError("mock conversion failed")
         for i in range(4):
             if cancelled():
                 raise Cancelled()
@@ -253,6 +276,12 @@ class _RealAdapter:
         x, sr = read_audio(path)
         return self.b.median_f0(x.mean(axis=1), sr)
 
+    def f0_stats(self, path: Path) -> tuple[float, float] | None:
+        from engine import read_audio
+
+        x, sr = read_audio(path)
+        return self.b.f0_stats(x.mean(axis=1), sr)
+
     def mix(self, sdir: Path, converted: Path, key: int, out: Path) -> dict[str, Any]:
         from engine import mix_song
 
@@ -279,6 +308,8 @@ class JobRequest(BaseModel):
     pitch: int | None = Field(None, ge=-24, le=24)
     key: int = Field(0, ge=-12, le=12)
     force: bool = False
+    # Wait for POST /jobs/{id}/exclusive before taking the GPU (Core lets her speak first).
+    exclusive_ack: bool = False
 
 
 @dataclass
@@ -297,6 +328,8 @@ class Job:
     finished_at: str | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
     video: "VideoFetch | None" = None
+    exclusive: Exclusive | None = None
+    go: threading.Event = field(default_factory=threading.Event)
 
     def public(self, store: Store, position: int | None) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -315,6 +348,8 @@ class Job:
             "finished_at": self.finished_at,
             "song": None,
             "video": self.video.public() if self.video else None,
+            "exclusive": self.exclusive.state if self.exclusive else None,
+            "exclusive_info": self.exclusive.public() if self.exclusive else None,
         }
         if self.state == "done" and self.song_id:
             d["song"] = store.meta(self.song_id)
@@ -331,6 +366,7 @@ class State:
     running: str | None = None
     thread: threading.Thread | None = None
     stopping: threading.Event
+    offload_post = staticmethod(http_post)  # replaced in tests
 
 
 state = State()
@@ -388,18 +424,26 @@ def _source_from_request(job: Job) -> Source:
     return src
 
 
-def _auto_shift(sdir: Path) -> tuple[int, dict[str, Any]]:
-    """Octave (−12 / 0 / +12) that puts the song's median pitch closest to her singing median."""
+def _auto_shift(sdir: Path, auto_key: bool) -> tuple[int, int, dict[str, Any]]:
+    """(octave −12 / 0 / +12 for her voice, whole-song key, info): the octave whose median lands
+    closest to her singing median without the song's top going over her ceiling, and with
+    ``auto_key`` a transposition down (or a little up) when the top is still out of her range."""
+    from pitch import choose_key, parse_note
+
     b = state.backend
-    src_hz = b.median_f0(sdir / "vocals.wav")
+    stats = b.f0_stats(sdir / "vocals.wav")
     ref_hz = b.ref_f0()
-    info: dict[str, Any] = {"source_median_hz": src_hz, "ref_median_hz": ref_hz}
-    if not src_hz or not ref_hz:
-        return 0, info
-    target = ref_hz * 2 ** (env_float("SING_TARGET_OFFSET", 2.0) / 12)
-    info["target_hz"] = round(target, 1)
-    best = min((-12, 0, 12), key=lambda k: abs(12 * math.log2(src_hz * 2 ** (k / 12) / target)))
-    return best, info
+    info: dict[str, Any] = {"ref_median_hz": ref_hz}
+    if stats is None or not ref_hz:
+        return 0, 0, info
+    med, top = stats
+    info.update({"source_median_hz": round(med, 1), "source_top_hz": round(top, 1)})
+    lo, hi = (env_int("SING_KEY_MIN", -5), env_int("SING_KEY_MAX", 3)) if auto_key else (0, 0)
+    chosen = choose_key(med, top, ref_hz, target_offset=env_float("SING_TARGET_OFFSET", 2.0),
+                        ceiling=parse_note(os.environ.get("SING_MAX_NOTE", "")),
+                        ceiling_offset=env_float("SING_CEILING_OFFSET", 16.0), key_min=min(lo, 0), key_max=max(hi, 0))
+    info.update(chosen)
+    return chosen["octave_shift"], chosen["auto_key"], info
 
 
 def _peak_vram_reset() -> None:
@@ -537,12 +581,34 @@ def _attach_video(job: Job, src: Source, sdir: Path, out: Path, timings: dict[st
     return {"has_video": True, "video": {**info, "file": v.name}, "video_error": None}
 
 
+def _take_gpu(job: Job) -> None:
+    """Before the first GPU stage: the offload workers drop their models (once per job)."""
+    urls = parse_urls(os.environ.get("SING_OFFLOAD_URLS"))
+    if not urls or job.exclusive is not None:
+        return
+    job.exclusive = Exclusive(urls, state.offload_post, ack_wait_s=env_float("SING_EXCLUSIVE_WAIT_S", 30.0),
+                              reload_timeout_s=env_float("SING_RELOAD_TIMEOUT_S", 300.0))
+    stage = job.stage
+    _set(job, "exclusive")
+    job.exclusive.begin(job.cancel.is_set, job.go if job.request.exclusive_ack else None)
+    job.stage = stage
+
+
+def _give_gpu_back(job: Job) -> None:
+    if job.exclusive is not None:
+        job.exclusive.end()
+
+
 def run_job(job: Job) -> None:
     try:
         _run_job(job)
     finally:
         if job.video is not None:
             job.video.stop()
+        # Also after a failure or a cancel; the job is only over once they are back.
+        _give_gpu_back(job)
+        if job.exclusive is not None:
+            job.exclusive.join()
 
 
 def _run_job(job: Job) -> None:
@@ -594,6 +660,7 @@ def _run_job(job: Job) -> None:
         elif not (sdir / "source.wav").exists() or req.force:
             timed("download", lambda: b.fetch(src, sdir / "source.wav", lambda f: _set(job, "download", f)))
         if not (src.kind == "library" and src.split):
+            _take_gpu(job)
             timed("separate", lambda: b.separate(sdir / "source.wav", sdir / "vocals.wav", sdir / "instrumental.wav",
                                                  lambda f: _set(job, "separate", f)))
 
@@ -602,19 +669,29 @@ def _run_job(job: Job) -> None:
     converted = out / "_converted.wav"
 
     def convert() -> dict[str, Any]:
+        _take_gpu(job)
+        try:
+            return convert_on_gpu()
+        finally:
+            _give_gpu_back(job)
+
+    def convert_on_gpu() -> dict[str, Any]:
         if req.pitch is not None:
-            shift, info = req.pitch, {"auto": False}
+            shift, auto_key, info = req.pitch, 0, {"auto": False, "octave_shift": None}
         else:
-            shift, info = _auto_shift(sdir)
+            # An explicit key is the requester's choice: only the octave stays automatic.
+            shift, auto_key, info = _auto_shift(sdir, auto_key=req.key == 0)
             info["auto"] = True
-        info["octave_shift"] = shift if req.pitch is None else None
-        shift += req.key
-        info.update({"vocal_shift": shift, "key": req.key})
+        song_key = req.key + auto_key
+        shift += song_key
+        info.update({"vocal_shift": shift, "key": req.key, "auto_key": auto_key, "song_key": song_key,
+                     "f0_clean": os.environ.get("SING_F0_CLEAN", "1") != "0",
+                     "transposer": getattr(b, "transposer", None) if song_key else None})
         b.convert(sdir / "vocals.wav", converted, shift, lambda f: _set(job, "convert", f), check)
         return info
 
     pitch_info = timed("convert", convert)
-    mixed = timed("mix", lambda: b.mix(sdir, converted, req.key, out))
+    mixed = timed("mix", lambda: b.mix(sdir, converted, pitch_info["song_key"], out))
     converted.unlink(missing_ok=True)
     duration = mixed.get("duration_s") or src.duration_s
     found = timed("lyrics", lambda: b.lyrics(src, duration))
@@ -773,6 +850,15 @@ async def get_job(job_id: str) -> JSONResponse:
     job = state.jobs.get(job_id)
     if job is None:
         return _error(404, f"no job {job_id}")
+    return JSONResponse({"job": _public(job)})
+
+
+@app.post("/jobs/{job_id}/exclusive")
+async def exclusive_go(job_id: str) -> JSONResponse:
+    job = state.jobs.get(job_id)
+    if job is None:
+        return _error(404, f"no job {job_id}")
+    job.go.set()
     return JSONResponse({"job": _public(job)})
 
 
