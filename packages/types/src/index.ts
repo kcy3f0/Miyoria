@@ -149,6 +149,7 @@ export {
   type SocialSignals,
   SocialSignalsKey,
 } from "./social.js";
+export { type StreamCurtain, StreamCurtainKey } from "./stream.js";
 export { type Clock, systemClock, type Timestamp, timestampMs, toTimestamp } from "./time.js";
 export {
   DATA_CLOSE,
