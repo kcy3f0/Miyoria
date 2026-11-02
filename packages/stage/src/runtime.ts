@@ -1,22 +1,24 @@
 // The Stage node: `miyoria stage` on the streaming PC.
 
-import { errorMessage, getLogger, SerialQueue, sleep } from "@miyoria/kernel";
+import { errorMessage, getLogger, sleep } from "@miyoria/kernel";
 import { type Clock, systemClock } from "@miyoria/types";
 import WebSocket from "ws";
 import { z } from "zod";
 import { AvatarProfile } from "./avatar.js";
-import { EmotionController, type VtsCommand } from "./emotion.js";
-import { Levels, LipSyncConfigSchema, MouthShaper, serveLevels } from "./lipsync.js";
-import { GazeConfigSchema, IdleMotion, MOTION_PARAMS } from "./motion.js";
+import { AvatarLoop } from "./avatar-loop.js";
+import { BlinkConfigSchema } from "./blink.js";
+import { GestureConfigSchema } from "./gesture.js";
+import { Levels, LipSyncConfigSchema, serveLevels } from "./lipsync.js";
+import { GazeConfigSchema, MotionConfigSchema } from "./motion.js";
 import { type BoundAddress, formatAddress, parseBind } from "./net.js";
 import { ObsConfigSchema, type ObsConnector, ObsController, ObsWebSocketConnector } from "./obs.js";
 import { OverlayHub, serveOverlay } from "./overlay.js";
+import { EmotionConfigSchema } from "./pose.js";
 import {
   CLOSE,
   type CoreMessage,
   defaultStageStatus,
   encodeMessage,
-  type GazeTarget,
   parseCoreMessage,
   type StageMessage,
   type StageStatus,
@@ -58,6 +60,10 @@ export const StageConfigSchema = z.object({
   obs: ObsConfigSchema.prefault({}),
   lipsync: LipSyncConfigSchema.prefault({}),
   gaze: GazeConfigSchema.prefault({}),
+  motion: MotionConfigSchema.prefault({}),
+  blink: BlinkConfigSchema.prefault({}),
+  emotion: EmotionConfigSchema.prefault({}),
+  gesture: GestureConfigSchema.prefault({}),
 });
 export type StageConfigSection = z.output<typeof StageConfigSchema>;
 
@@ -163,7 +169,7 @@ export async function runStageWith(
     }
 
     const url = overlayUrl(overlayServer.addr);
-    const stage = new Stage(vts, obs, overlay, levels, avatar, url);
+    const stage = new Stage(vts, obs, overlay, avatar, url);
     stage.aggregateStatus(tasks.signal);
     await coreLink(config, stage, signal);
   } finally {
@@ -198,7 +204,6 @@ class Stage {
   readonly #overlayUrl: string | null;
   readonly #obs: ObsController | null;
   readonly #overlay: OverlayHub;
-  readonly #levels: Levels;
   readonly #avatar: AvatarLoop | null;
   readonly status = new Watch<StageStatus>(defaultStageStatus(), sameStatus);
   /** Connected to Core. */
@@ -210,14 +215,12 @@ class Stage {
     vts: Watch<VtsClient | null>,
     obs: ObsController | null,
     overlay: OverlayHub,
-    levels: Levels,
     avatar: AvatarLoop | null,
     overlayUrl: string | null = null,
   ) {
     this.#vts = vts;
     this.#obs = obs;
     this.#overlay = overlay;
-    this.#levels = levels;
     this.#avatar = avatar;
     this.#overlayUrl = overlayUrl;
   }
@@ -280,7 +283,7 @@ class Stage {
     switch (msg.type) {
       case "emotion":
         this.#overlay.emotion(msg.name, msg.intensity);
-        this.#avatar?.emotion(msg.name);
+        this.#avatar?.emotion(msg.name, msg.intensity);
         return;
       case "subtitle": {
         this.#overlay.subtitle(msg.turn, msg.text, msg.final);
@@ -288,8 +291,9 @@ class Stage {
         return;
       }
       case "speaking":
+        // The levels are not cleared: what is still queued was already played (the mouth
+        // closes after `stale_ms` without new levels).
         this.#overlay.speaking(msg.state);
-        if (msg.state === "stopped") this.#levels.clear();
         this.#avatar?.speaking(msg.state === "started");
         return;
       case "gaze":
@@ -652,131 +656,5 @@ async function checkModel(client: VtsClient, avatar: AvatarProfile): Promise<voi
     }
   } catch {
     // As above.
-  }
-}
-
-/** Emotion, lip sync and idle motion, injected at `inject_hz`. */
-class AvatarLoop {
-  readonly #config: StageConfig;
-  readonly #levels: Levels;
-  readonly #vts: Watch<VtsClient | null>;
-  readonly #clock: Clock;
-  readonly #emotion: EmotionController;
-  readonly #mouth: MouthShaper;
-  readonly #motion: IdleMotion;
-  /** Expression / hotkey requests run in order. */
-  readonly #commands = new SerialQueue();
-  readonly #names: string[] = [];
-  #known: Set<string> | null = null;
-
-  constructor(config: StageConfig, levels: Levels, vts: Watch<VtsClient | null>, clock: Clock) {
-    this.#config = config;
-    this.#levels = levels;
-    this.#vts = vts;
-    this.#clock = clock;
-    this.#emotion = new EmotionController(
-      config.avatar,
-      config.vts.emotion_hold_ms,
-      config.vts.after_speech_ms,
-    );
-    this.#mouth = new MouthShaper(config.lipsync);
-    this.#motion = new IdleMotion(config.gaze);
-    if (config.avatar.lipsync === "inject") {
-      this.#names.push(config.avatar.mouthOpen);
-      if (config.avatar.mouthForm !== null) this.#names.push(config.avatar.mouthForm);
-    }
-    if (config.vts.idle_motion) this.#names.push(...MOTION_PARAMS);
-  }
-
-  emotion(name: string): void {
-    this.#send(this.#emotion.onEmotion(name, this.#clock.now()));
-  }
-
-  speaking(speaking: boolean): void {
-    this.#emotion.setSpeaking(speaking, this.#clock.now());
-    if (!speaking) this.#mouth.reset();
-  }
-
-  gaze(target: GazeTarget): void {
-    this.#motion.setTarget(target);
-  }
-
-  #send(commands: VtsCommand[]): void {
-    const fade = this.#config.vts.expression_fade;
-    for (const cmd of commands) {
-      void this.#commands.run(async () => {
-        const client = this.#vts.get();
-        if (!client || client.isClosed()) return;
-        try {
-          if (cmd.type === "expression") await client.setExpression(cmd.file, cmd.active, fade);
-          else await client.triggerHotkey(cmd.name);
-        } catch (error) {
-          log.warn({ err: errorMessage(error), cmd }, "VTube Studio request failed");
-        }
-      });
-    }
-  }
-
-  #onClient(client: VtsClient | null): void {
-    this.#known = null;
-    if (!client) return;
-    this.#send(this.#emotion.rest());
-    const wanted = [...this.#names];
-    void client.inputParameters().then(
-      (params) => {
-        for (const name of wanted) {
-          if (!params.has(name)) {
-            log.warn(
-              { parameter: name },
-              "VTube Studio has no such input parameter; not injecting it",
-            );
-          }
-        }
-        if (this.#vts.get() === client) this.#known = params;
-      },
-      (error: unknown) =>
-        log.debug({ err: errorMessage(error) }, "cannot list VTS input parameters"),
-    );
-  }
-
-  run(signal: AbortSignal): Promise<void> {
-    const hz = Math.min(Math.max(this.#config.vts.inject_hz, 1), 120);
-    const injectMouth = this.#config.avatar.lipsync === "inject";
-    const hasForm = this.#config.avatar.mouthForm !== null;
-    let last = this.#clock.now();
-    const unsubscribe = this.#vts.subscribe((client) => this.#onClient(client));
-    this.#onClient(this.#vts.get());
-    const tick = () => {
-      const now = this.#clock.now();
-      const dt = Math.min(Math.max(now - last, 0), 200);
-      last = now;
-      this.#send(this.#emotion.tick(now));
-      const values: number[] = [];
-      if (injectMouth) {
-        const m = this.#mouth.update(this.#levels.current(now), dt);
-        values.push(m.open);
-        if (hasForm) values.push(m.form);
-      }
-      if (this.#config.vts.idle_motion) values.push(...this.#motion.update(dt));
-      const client = this.#vts.get();
-      if (!client || client.isClosed()) return;
-      const known = this.#known;
-      const batch: [string, number][] = [];
-      this.#names.forEach((name, i) => {
-        const v = values[i];
-        if (v !== undefined && (known === null || known.has(name))) batch.push([name, v]);
-      });
-      client.inject(batch, this.#config.vts.face_found);
-    };
-    const timer = setInterval(tick, 1000 / hz);
-    return new Promise<void>((resolve) => {
-      const stop = () => {
-        clearInterval(timer);
-        unsubscribe();
-        resolve();
-      };
-      if (signal.aborted) stop();
-      else signal.addEventListener("abort", stop, { once: true });
-    });
   }
 }

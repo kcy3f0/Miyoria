@@ -13,18 +13,29 @@
 //   ```
 //
 // * `runStage` (Stage side, `miyoria stage`) connects to Core and drives VTube Studio (`vts`:
-//   expressions, hotkeys, lip sync and idle motion by parameter injection), OBS (`obs`) and the
-//   overlay (`overlay`). The voice node streams playback levels to its lip-sync endpoint
-//   (`lipsync`).
+//   accent expressions, emotion poses, gestures, blinking, lip sync with vowels and procedural
+//   motion by parameter injection), OBS (`obs`) and the overlay (`overlay`). The voice node
+//   streams playback levels to its lip-sync endpoint (`lipsync`).
 
 export {
   type AvatarAction,
   AvatarProfile,
   AvatarProfileError,
+  type EmotionPose,
+  type Gesture,
+  type IdleGestures,
   type LipSyncMode,
   parseAvatarAction,
 } from "./avatar.js";
+export {
+  AvatarLoop,
+  type AvatarLoopConfig,
+  SILENCE_PARAM,
+  VOWEL_PARAMS,
+} from "./avatar-loop.js";
+export { type BlinkConfig, BlinkConfigSchema, BlinkScheduler } from "./blink.js";
 export { EmotionController, type VtsCommand } from "./emotion.js";
+export { type GestureConfig, GestureConfigSchema, GestureController } from "./gesture.js";
 export {
   describeStatus,
   PATHS as STREAM_COMMAND_PATHS,
@@ -46,8 +57,11 @@ export {
 } from "./link/link.js";
 export { StageLinkModule } from "./link/module.js";
 export {
+  DEFAULT_VOWEL_TEMPLATES,
   defaultLipSyncConfig,
+  dominantVowel,
   Envelope,
+  type LevelSample,
   Levels,
   type LipSyncConfig,
   LipSyncConfigSchema,
@@ -55,6 +69,10 @@ export {
   MouthShaper,
   type ServeResult,
   serveLevels,
+  VOWELS,
+  type Vowel,
+  VowelClassifier,
+  type VowelWeights,
 } from "./lipsync.js";
 export {
   type GazeConfig,
@@ -64,6 +82,10 @@ export {
   gazePose,
   IdleMotion,
   MOTION_PARAMS,
+  type MotionConfig,
+  MotionConfigSchema,
+  type MotionFrame,
+  type MotionInput,
 } from "./motion.js";
 export { BindError, type BoundAddress, formatAddress, parseBind } from "./net.js";
 export {
@@ -78,6 +100,17 @@ export {
   ObsWebSocketConnector,
 } from "./obs.js";
 export { OverlayHub, serveOverlay } from "./overlay.js";
+export {
+  BODY_PARAMS,
+  clampParam,
+  DEFAULT_REST,
+  type EmotionConfig,
+  EmotionConfigSchema,
+  OFFSET_PARAMS,
+  PoseBlender,
+  type PoseFrame,
+  paramRange,
+} from "./pose.js";
 export {
   CLOSE,
   type CoreMessage,
@@ -96,6 +129,7 @@ export {
   sameStatus,
   VERSION,
 } from "./protocol.js";
+export { Drift, Random, SmoothNoise } from "./random.js";
 export {
   overlayUrl,
   parseStageConfig,

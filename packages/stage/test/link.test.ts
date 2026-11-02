@@ -268,12 +268,21 @@ describe("stage.link", () => {
     const node = await h.node();
     const turn = newId();
 
-    h.publish(customEvent(EMOTION_TOPIC, { turn, context: { ...voiceCtx() }, emotion: "annoyed" }));
-    expect(await node.recvJson()).toStrictEqual({ type: "emotion", name: "annoyed", intensity: 1 });
-
+    // A text turn's emotion goes out at once.
+    h.publish(customEvent(EMOTION_TOPIC, { emotion: "smug" }));
+    expect(await node.recvJson()).toStrictEqual({ type: "emotion", name: "smug", intensity: 1 });
+    // A voice turn's emotion waits for the sentence spoken with it.
+    h.publish(
+      customEvent(EMOTION_TOPIC, {
+        turn,
+        context: { ...voiceCtx() },
+        emotion: "annoyed",
+        intensity: 0.6,
+      }),
+    );
     h.publish({
       type: "voice_playback",
-      data: { context: voiceCtx(), turn, state: "started", text: "哼," },
+      data: { context: voiceCtx(), turn, state: "started", text: "哼,", emotion: "annoyed" },
     });
     expect(await node.recvJson()).toStrictEqual({ type: "speaking", state: "started" });
     expect(await node.recvJson()).toStrictEqual({
@@ -281,6 +290,11 @@ describe("stage.link", () => {
       turn,
       text: "哼,",
       final: false,
+    });
+    expect(await node.recvJson()).toStrictEqual({
+      type: "emotion",
+      name: "annoyed",
+      intensity: 0.6,
     });
     h.publish({ type: "agent_turn_completed", data: { turn, context: voiceCtx(), text: "哼," } });
     h.publish({

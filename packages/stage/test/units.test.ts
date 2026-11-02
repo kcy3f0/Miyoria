@@ -9,7 +9,9 @@ import {
   AvatarProfile,
   type CoreMessage,
   checkHello,
+  DEFAULT_VOWEL_TEMPLATES,
   defaultLipSyncConfig,
+  dominantVowel,
   EMOTION_TOPIC,
   EmotionController,
   Envelope,
@@ -20,6 +22,7 @@ import {
   IdleMotion,
   Levels,
   type LipSyncConfig,
+  MotionConfigSchema,
   MouthShaper,
   overlayUrl,
   parseAvatarAction,
@@ -28,10 +31,12 @@ import {
   parseLevelFrame,
   parseStageConfig,
   parseStageMessage,
+  Random,
   StageLinkConfigSchema,
   type StageMessage,
   tokenMatches,
   VOICE_GOLIVE_TOPIC,
+  type Vowel,
   type VtsCommand,
 } from "../src/index.js";
 
@@ -120,9 +125,13 @@ describe("protocol", () => {
 
   it("level_frames", () => {
     const f = parseLevelFrame(JSON.parse(`{"t": 120, "rms": 0.25}`));
-    expect(f.t).toBe(120);
-    expect(f.rms).toBe(0.25);
-    expect(parseLevelFrame({ rms: 0.5 }).t).toBe(0);
+    expect(f).toStrictEqual({ t: 120, rms: 0.25 });
+    expect(parseLevelFrame({ rms: 0.5 })).toStrictEqual({ rms: 0.5 });
+    expect(parseLevelFrame({ t: 0, rms: 0.1, bands: [0.01, 0.2] })).toStrictEqual({
+      t: 0,
+      rms: 0.1,
+      bands: [0.01, 0.2],
+    });
     expect(() => parseLevelFrame({ t: 1 })).toThrow();
   });
 
@@ -192,7 +201,7 @@ describe("config", () => {
       after_speech_ms: 1_500,
       expression_fade: 0.3,
       inject_hz: 30,
-      face_found: false,
+      face_found: true,
       idle_motion: true,
       request_timeout_ms: 5_000,
       approval_timeout_ms: 120_000,
@@ -220,6 +229,13 @@ describe("config", () => {
     });
     expect(c.gaze.idle_amount).toBe(1);
     expect(c.gaze.turn_ms).toBe(600);
+    expect(c.vts.custom_params).toContain("MiyoriaEyeSmile");
+    expect(c.vts.custom_params).toContain("JawOpen");
+    expect(c.motion.seed).toBeNull();
+    expect(c.motion.speech_motion).toBe(1.5);
+    expect(c.blink).toMatchObject({ enabled: true, min_ms: 2_000, max_ms: 6_000, close_ms: 120 });
+    expect(c.emotion.ease_in_ms).toBe(250);
+    expect(c.gesture).toMatchObject({ enabled: true, min_gap_ms: 8_000 });
     expect(c.avatar).toStrictEqual(new AvatarProfile());
   });
 });
@@ -239,6 +255,41 @@ describe("avatar", () => {
     expect(p.lipsync).toBe("inject");
     expect(p.mouthOpen).toBe("MouthOpen");
     expect(p.mouthForm).toBe("MouthSmile");
+    expect(p.jaw).toBe("JawOpen");
+    expect(p.vowels).toBe(true);
+    expect(p.shapes.get("o")?.get("MouthFunnel")).toBeGreaterThan(0);
+    // Every emotion has a pose; neutral holds the rest values.
+    expect([...p.poses.keys()]).toStrictEqual(
+      [
+        "angry",
+        "annoyed",
+        "embarrassed",
+        "happy",
+        "neutral",
+        "sad",
+        "smug",
+        "surprised",
+        "thinking",
+      ].sort(),
+    );
+    expect(p.poseFor("neutral").params.get("EyeOpenLeft")).toBeCloseTo(0.55, 5);
+    expect(p.poseFor("happy").params.get("MiyoriaEyeSmile")).toBeGreaterThan(0.5);
+    // Nothing drives the eye smile through `MouthSmile` any more.
+    for (const pose of p.poses.values()) expect(pose.params.has("EyeSmile")).toBe(false);
+    // Gestures refer to the model's open / close hotkeys or expressions.
+    expect(p.gestures.get("finger")).toMatchObject({
+      open: { type: "hotkey", name: "竖手指打开" },
+      close: { type: "hotkey", name: "竖手指关闭" },
+      group: "hands",
+    });
+    expect(p.gestures.get("sweat")).toMatchObject({
+      open: { type: "expression", file: "流冷汗.exp3.json" },
+      close: null,
+    });
+    for (const pose of p.poses.values()) {
+      for (const g of pose.gestures) expect(p.gestures.has(g), g).toBe(true);
+    }
+    expect(p.idle.gestures).toStrictEqual(["grass"]);
   });
 
   it("maps_expressions_and_hotkeys", () => {
@@ -359,30 +410,115 @@ describe("emotion", () => {
 
 describe("motion", () => {
   const TICK = 16.667;
+  const motion = (seed = 7) =>
+    new IdleMotion(
+      GazeConfigSchema.parse({}),
+      MotionConfigSchema.parse({ seed }),
+      new Random(seed),
+    );
 
   it("turns_towards_the_target_and_stays_gentle", () => {
-    const m = new IdleMotion(GazeConfigSchema.parse({}));
+    const m = motion();
     let maxDx = 0;
     let prev = m.update(TICK);
     for (let i = 0; i < 600; i++) {
       const v = m.update(TICK);
-      expect(Math.abs(v[0] as number)).toBeLessThanOrEqual(30);
-      expect(Math.abs(v[3] as number)).toBeLessThanOrEqual(1);
-      maxDx = Math.max(maxDx, Math.abs((v[0] as number) - (prev[0] as number)));
+      expect(Math.abs(v.FaceAngleX)).toBeLessThanOrEqual(30);
+      expect(Math.abs(v.EyeRightX)).toBeLessThanOrEqual(1);
+      maxDx = Math.max(maxDx, Math.abs(v.FaceAngleX - prev.FaceAngleX));
       prev = v;
     }
     expect(maxDx, "smooth").toBeLessThan(0.5);
-    expect(Math.abs(prev[0] as number), "near the camera pose").toBeLessThan(5);
+    expect(Math.abs(prev.FaceAngleX), "near the camera pose").toBeLessThan(8);
 
     m.setTarget("chat");
     for (let i = 0; i < 240; i++) prev = m.update(TICK);
     // Within the noise of the chat pose.
-    expect(Math.abs((prev[0] as number) - -12)).toBeLessThan(5);
-    expect(Math.abs((prev[3] as number) - -0.6)).toBeLessThan(0.2);
-    expect(prev[3]).toBe(prev[5]);
+    expect(Math.abs(prev.FaceAngleX - -12)).toBeLessThan(8);
+    expect(Math.abs(prev.EyeRightX - -0.6)).toBeLessThan(0.35);
+    expect(prev.EyeRightX).toBe(prev.EyeLeftX);
 
     const still = new IdleMotion(GazeConfigSchema.parse({ idle_amount: 0 }));
-    expect(still.update(TICK)).toStrictEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(Object.values(still.update(TICK)).every((v) => v === 0)).toBe(true);
+  });
+
+  it("is_not_a_loop_and_depends_on_the_seed", () => {
+    const run = (seed: number) => {
+      const m = motion(seed);
+      const xs: number[] = [];
+      for (let i = 0; i < 60 * 40; i++) xs.push(m.update(TICK).FaceAngleX);
+      return xs;
+    };
+    const a = run(1);
+    expect(run(1)).toStrictEqual(a);
+    expect(run(2)).not.toStrictEqual(a);
+    // No short repeat (like the old 13 s tracking-lost loop): the second half does not replay
+    // the first.
+    const half = a.length / 2;
+    let same = 0;
+    for (let i = 0; i < half; i++) {
+      if (Math.abs((a[i] as number) - (a[i + half] as number)) < 0.05) same++;
+    }
+    expect(same / half).toBeLessThan(0.2);
+  });
+
+  it("saccades_jump_quickly_and_settle", () => {
+    const m = motion(3);
+    let jumps = 0;
+    let prev = m.update(TICK).EyeRightX;
+    for (let i = 0; i < 60 * 30; i++) {
+      const x = m.update(TICK).EyeRightX;
+      if (Math.abs(x - prev) > 0.02) jumps++;
+      prev = x;
+    }
+    // A saccade every ~1.6 s, each crossing a couple of frames.
+    expect(jumps).toBeGreaterThan(10);
+    expect(jumps).toBeLessThan(150);
+  });
+
+  it("speech_moves_the_head_more_and_nods_on_onsets", () => {
+    // Mean head speed over several performances.
+    const speed = (speaking: boolean) => {
+      let sum = 0;
+      for (let seed = 1; seed <= 6; seed++) {
+        const m = motion(seed);
+        let prev = m.update(TICK).FaceAngleY;
+        for (let i = 0; i < 60 * 20; i++) {
+          // Syllables: the mouth opens and closes four times a second.
+          const open = speaking && i % 15 < 7 ? 0.7 : 0;
+          const y = m.update(TICK, { speaking, open }).FaceAngleY;
+          sum += Math.abs(y - prev);
+          prev = y;
+        }
+      }
+      return sum;
+    };
+    expect(speed(true)).toBeGreaterThan(speed(false) * 1.3);
+
+    // One onset: the head dips (nods) and comes back.
+    const cfg = MotionConfigSchema.parse({});
+    const m = new IdleMotion(GazeConfigSchema.parse({}), cfg, new Random(5));
+    const quiet = new IdleMotion(GazeConfigSchema.parse({}), cfg, new Random(5));
+    let dip = 0;
+    for (let i = 0; i < 30; i++) {
+      const open = i >= 5 ? 0.8 : 0;
+      const a = m.update(TICK, { speaking: true, open }).FaceAngleY;
+      const b = quiet.update(TICK, { speaking: true, open: 0 }).FaceAngleY;
+      dip = Math.min(dip, a - b);
+    }
+    expect(dip).toBeLessThan(-0.5);
+  });
+
+  it("body_is_a_lagged_smaller_copy_of_the_head", () => {
+    const gaze = GazeConfigSchema.parse({ camera: { face_x: 20 } });
+    const m = new IdleMotion(gaze, MotionConfigSchema.parse({ body_drift: 0 }), new Random(1));
+    let v = m.update(TICK);
+    const early = v.MiyoriaBodyX;
+    for (let i = 0; i < 300; i++) v = m.update(TICK);
+    expect(Math.abs(early)).toBeLessThan(Math.abs(v.MiyoriaBodyX));
+    // About `body_follow` (0.35) of the head.
+    expect(v.MiyoriaBodyX / v.FaceAngleX).toBeGreaterThan(0.2);
+    expect(v.MiyoriaBodyX / v.FaceAngleX).toBeLessThan(0.5);
   });
 });
 
@@ -392,74 +528,140 @@ describe("lipsync", () => {
     ...defaultLipSyncConfig(),
     ...over,
   });
+  const db = (d: number) => 10 ** (d / 20);
 
-  it("gate_and_gain", () => {
+  it("defaults", () => {
+    const c = defaultLipSyncConfig();
+    expect(c.latency_ms).toBe(180);
+    expect(c.attack_ms).toBeGreaterThanOrEqual(20);
+    expect(c.attack_ms).toBeLessThanOrEqual(25);
+    expect(c.release_ms).toBeGreaterThanOrEqual(70);
+    expect(c.release_ms).toBeLessThanOrEqual(90);
+  });
+
+  it("gate_and_db_curve", () => {
     const e = new Envelope(config());
     expect(e.target(0)).toBe(0);
-    expect(e.target(0.01)).toBe(0);
-    expect(Math.abs(e.target(0.115) - 0.5)).toBeLessThan(1e-5);
-    expect(e.target(0.9)).toBe(1);
+    expect(e.target(db(-60))).toBe(0);
     expect(e.target(Number.NaN)).toBe(0);
+    // At the reference: fully open; 13 dB down is about half, not linear in RMS.
+    const ref = e.reference();
+    expect(e.target(db(ref))).toBeCloseTo(1, 5);
+    const half = e.target(db(ref - 13));
+    expect(half).toBeGreaterThan(0.4);
+    expect(half).toBeLessThan(0.7);
+    // Normal speech (RMS ~0.06, -24 dBFS) opens the mouth well past the old 0.18.
+    expect(e.target(0.06)).toBeGreaterThan(0.5);
+  });
+
+  it("agc_lets_quiet_lines_open_the_mouth", () => {
+    const e = new Envelope(config());
+    const quiet = db(-34);
+    const before = e.target(quiet);
+    // Four seconds of quiet speech (syllables).
+    let peak = 0;
+    for (let i = 0; i < 60 * 4; i++) {
+      const v = e.update(i % 15 < 8 ? quiet : db(-45), TICK);
+      if (i > 60 * 3) peak = Math.max(peak, v);
+    }
+    expect(e.reference()).toBeLessThan(-26);
+    expect(e.target(quiet)).toBeGreaterThan(before + 0.3);
+    expect(peak).toBeGreaterThan(0.6);
+    // A loud line pulls the reference up quickly.
+    for (let i = 0; i < 30; i++) e.update(db(-10), TICK);
+    expect(e.reference()).toBeGreaterThan(-14);
+    // Silence does not move it.
+    const r = e.reference();
+    for (let i = 0; i < 300; i++) e.update(null, TICK);
+    expect(e.reference()).toBe(r);
+    expect(e.value()).toBe(0);
   });
 
   it("attack_is_faster_than_release", () => {
-    const e = new Envelope(config());
+    const e = new Envelope(config({ curve: 1 }));
+    const loud = db(e.reference());
     // One attack time constant reaches ~63% of the target.
-    let v = 0;
-    for (let i = 0; i < 2; i++) v = e.update(0.5, 17.5);
-    expect(Math.abs(v - (1 - Math.exp(-1)))).toBeLessThan(0.01);
-    for (let i = 0; i < 30; i++) e.update(0.5, TICK);
-    expect(e.value()).toBeGreaterThan(0.99);
+    const v = e.update(loud, 22);
+    expect(Math.abs(v - (1 - Math.exp(-1)))).toBeLessThan(0.03);
+    for (let i = 0; i < 30; i++) e.update(loud, TICK);
+    expect(e.value()).toBeGreaterThan(0.95);
     // After one attack time constant of silence the mouth is still mostly open.
-    v = e.update(0, 35);
-    expect(v).toBeGreaterThan(0.7);
-    for (let i = 0; i < 60; i++) e.update(0, TICK);
+    expect(e.update(null, 22)).toBeGreaterThan(0.7);
+    for (let i = 0; i < 60; i++) e.update(null, TICK);
     expect(e.value(), "fully closed after silence").toBe(0);
   });
 
-  it("mouth_form_varies_only_while_open", () => {
+  it("vowels_follow_the_band_shape", () => {
     const m = new MouthShaper(config());
-    const forms: number[] = [];
-    for (let i = 0; i < 120; i++) {
-      const mouth = m.update(0.15, TICK);
-      expect(mouth.open).toBeGreaterThanOrEqual(0);
-      expect(mouth.open).toBeLessThanOrEqual(1);
-      // VTS `MouthSmile` range.
-      expect(mouth.form).toBeGreaterThanOrEqual(0);
-      expect(mouth.form).toBeLessThanOrEqual(1);
-      forms.push(mouth.form);
-    }
-    const min = Math.min(...forms);
-    const max = Math.max(...forms);
-    expect(max - min, "form varies").toBeGreaterThan(0.05);
-    expect(max - min).toBeLessThanOrEqual(0.36);
-    for (let i = 0; i < 120; i++) m.update(0, TICK);
-    // At rest the mouth goes back to neutral (0.5).
-    expect(m.update(0, TICK)).toStrictEqual({ open: 0, form: 0.5 });
-    expect(m.reset()).toStrictEqual({ open: 0, form: 0.5 });
+    const bands = (v: Vowel) => DEFAULT_VOWEL_TEMPLATES[v].map((d) => 0.01 * 10 ** (d / 20));
+    // Without bands (an older voice node) the vowel inputs are not driven.
+    expect(m.update({ rms: 0.1, bands: null }, TICK).vowels).toBeNull();
+    let mouth = m.update({ rms: 0.1, bands: bands("o") }, TICK);
+    for (let i = 0; i < 20; i++) mouth = m.update({ rms: 0.1, bands: bands("o") }, TICK);
+    expect(mouth.vowels).not.toBeNull();
+    expect(dominantVowel(mouth.weights)).toBe("o");
+    expect(mouth.vowels?.o).toBeGreaterThan(0.5);
+    expect(mouth.silence).toBe(0);
+    expect(mouth.jaw).toBeCloseTo(mouth.open * 0.8, 5);
+    for (let i = 0; i < 20; i++) mouth = m.update({ rms: 0.1, bands: bands("i") }, TICK);
+    expect(dominantVowel(mouth.weights)).toBe("i");
+    // Closing: vowel inputs fall with the opening, silence rises.
+    for (let i = 0; i < 60; i++) mouth = m.update(null, TICK);
+    expect(mouth.open).toBe(0);
+    expect(mouth.silence).toBe(1);
+    expect(Math.max(...Object.values(mouth.vowels ?? {}))).toBe(0);
+    expect(m.reset().open).toBe(0);
   });
 
-  it("levels_go_stale_and_respect_latency", () => {
+  it("levels_use_the_frame_timeline_latency_and_aggregate", () => {
     const t0 = 50_000;
-    const levels = new Levels(config());
-    expect(levels.current(t0)).toBe(0);
-    levels.push(0.3, t0);
-    levels.push(0.4, t0 + 10);
-    expect(levels.current(t0 + 5)).toBe(0.3);
-    expect(levels.current(t0 + 20)).toBe(0.4);
-    expect(levels.current(t0 + 150)).toBe(0.4);
-    expect(levels.current(t0 + 200)).toBe(0);
-    levels.push(2.0, t0);
-    expect(levels.current(t0 + 201)).toBe(0);
-    levels.clear();
+    const levels = new Levels(config({ latency_ms: 100 }));
+    expect(levels.take(t0)).toBeNull();
+    // Frames 10 ms apart that arrive in a burst are spread by their own `t`; the least delayed
+    // one (the last, t = 40) anchors the timeline: t = 0 at t0 - 38.
+    for (let i = 0; i < 5; i++) levels.push({ t: i * 10, rms: 0.1 * (i + 1) }, t0 + 2);
+    expect(levels.take(t0 + 61)).toBeNull();
+    expect(levels.take(t0 + 62)?.rms).toBeCloseTo(0.1, 5);
+    // Both frames due by now are combined (RMS), none dropped.
+    const two = Math.sqrt((0.2 ** 2 + 0.3 ** 2) / 2);
+    expect(levels.take(t0 + 82)?.rms).toBeCloseTo(two, 5);
+    // Nothing new: the last sample is held until stale.
+    expect(levels.take(t0 + 90)?.rms).toBeCloseTo(two, 5);
+    expect(levels.take(t0 + 102)?.rms).toBeCloseTo(Math.sqrt((0.4 ** 2 + 0.5 ** 2) / 2), 5);
+    expect(levels.take(t0 + 400)).toBeNull();
 
-    const delayed = new Levels(config({ latency_ms: 100 }));
-    delayed.push(0.5, t0);
-    expect(delayed.current(t0 + 50)).toBe(0);
-    expect(delayed.current(t0 + 100)).toBe(0.5);
-    delayed.push(0.7, t0 + 100);
-    delayed.clear();
-    expect(delayed.current(t0 + 300)).toBe(0);
+    // Jitter: a late frame does not move later frames.
+    const j = new Levels(config({ latency_ms: 0 }));
+    j.push({ t: 0, rms: 0.5 }, 1_000);
+    j.push({ t: 10, rms: 0.5 }, 1_040);
+    j.push({ t: 20, rms: 0.6 }, 1_020);
+    expect(j.take(1_019)?.rms).toBeCloseTo(0.5, 5);
+    expect(j.take(1_020)?.rms).toBeCloseTo(0.6, 5);
+    // A stall (a frame arrives much later than its timeline) re-anchors.
+    j.push({ t: 30, rms: 0.7 }, 1_500);
+    expect(j.take(1_100)?.rms ?? 0).not.toBeCloseTo(0.7, 5);
+    expect(j.take(1_500)?.rms).toBeCloseTo(0.7, 5);
+    // A new playback (t back to 0) anchors again.
+    j.push({ t: 0, rms: 0.2 }, 2_000);
+    expect(j.take(2_000)?.rms).toBeCloseTo(0.2, 5);
+    // Frames without `t` are placed by arrival; `clear` forgets.
+    j.push({ rms: 0.9 }, 3_000);
+    expect(j.current(3_000)).toBeCloseTo(0.9, 5);
+    j.push(2.0, 3_010);
+    expect(j.current(3_010)).toBe(1);
+    j.clear();
+    expect(j.take(3_020)).toBeNull();
+
+    const max = new Levels(config({ latency_ms: 0, aggregate: "max" }));
+    max.push({ t: 0, rms: 0.1 }, 0);
+    max.push({ t: 10, rms: 0.4 }, 10);
+    expect(max.take(20)?.rms).toBe(0.4);
+    const banded = new Levels(config({ latency_ms: 0 }));
+    banded.push({ t: 0, rms: 0.1, bands: [0.3, 0.4] }, 0);
+    banded.push({ t: 10, rms: 0.1, bands: [0.4, 0.3] }, 10);
+    const b = banded.take(10)?.bands ?? [];
+    expect(b[0]).toBeCloseTo(Math.sqrt((0.09 + 0.16) / 2), 5);
+    expect(b[1]).toBeCloseTo(Math.sqrt((0.16 + 0.09) / 2), 5);
   });
 });
 
@@ -480,6 +682,53 @@ describe("forward", () => {
   });
   const subs = (msgs: CoreMessage[]): [string, boolean][] =>
     msgs.flatMap((m) => (m.type === "subtitle" ? [[m.text, m.final] as [string, boolean]] : []));
+
+  it("voice_turn_emotions_wait_for_their_sentence", () => {
+    const f = new Forwarder(false);
+    const turn = newId();
+    const marker = (emotion: string, intensity?: number) =>
+      customEvent(EMOTION_TOPIC, {
+        turn,
+        context: { ...ctx("voice") },
+        emotion,
+        ...(intensity === undefined ? {} : { intensity }),
+      });
+    const emotions = (msgs: CoreMessage[]) => msgs.filter((m) => m.type === "emotion");
+    const spoken = (state: PlaybackState, text: string, emotion?: string | null): Event => ({
+      type: "voice_playback",
+      data: {
+        context: ctx("voice"),
+        turn,
+        state,
+        text,
+        ...(emotion === undefined ? {} : { emotion }),
+      },
+    });
+    // Parsed while the previous sentence is still playing: nothing yet.
+    expect(f.onEvent(marker("happy", 0.5))).toStrictEqual([]);
+    expect(f.onEvent(marker("smug"))).toStrictEqual([]);
+    // The sentence spoken with it starts: now, with the marker's intensity.
+    expect(emotions(f.onEvent(spoken("started", "欸!", "happy")))).toStrictEqual([
+      { type: "emotion", name: "happy", intensity: 0.5 },
+    ]);
+    expect(emotions(f.onEvent(spoken("finished", "欸!", "happy")))).toStrictEqual([]);
+    expect(emotions(f.onEvent(spoken("started", "哼。", "smug")))).toStrictEqual([
+      { type: "emotion", name: "smug", intensity: 1 },
+    ]);
+    expect(emotions(f.onEvent(spoken("started", "嗯。", null)))).toStrictEqual([]);
+    // An older voice module (no `emotion` field): the latest marker, once.
+    f.onEvent(marker("sad", 0.3));
+    expect(emotions(f.onEvent(spoken("started", "唉。")))).toStrictEqual([
+      { type: "emotion", name: "sad", intensity: 0.3 },
+    ]);
+    expect(emotions(f.onEvent(spoken("started", "唉。")))).toStrictEqual([]);
+    // Text turns are not deferred.
+    expect(
+      f.onEvent(
+        customEvent(EMOTION_TOPIC, { turn, context: { ...ctx("channel") }, emotion: "sad" }),
+      ),
+    ).toStrictEqual([{ type: "emotion", name: "sad", intensity: 1 }]);
+  });
 
   it("emotions", () => {
     const f = new Forwarder(false);

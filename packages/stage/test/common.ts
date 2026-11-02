@@ -35,6 +35,8 @@ export interface VtsState {
   tokensIssued: number;
   /** Answer `AuthenticationTokenRequest` with "user denied". */
   deny: boolean;
+  /** Custom parameters created with `ParameterCreationRequest`. */
+  custom: string[];
 }
 
 const DEFAULT_PARAMS = [
@@ -99,8 +101,17 @@ function respond(st: VtsState, req: Json): Json {
     case "InputParameterListRequest":
       out = {
         defaultParameters: DEFAULT_PARAMS.map((name) => ({ name })),
-        customParameters: [{ name: "MouthSmile" }],
+        customParameters: ["MouthSmile", ...st.custom].map((name) => ({ name })),
       };
+      break;
+    case "ParameterCreationRequest":
+      if (DEFAULT_PARAMS.includes(data.parameterName)) {
+        messageType = "APIError";
+        out = { errorID: 352, message: "default parameter" };
+      } else {
+        if (!st.custom.includes(data.parameterName)) st.custom.push(data.parameterName);
+        out = { parameterName: data.parameterName };
+      }
       break;
     default:
       messageType = "APIError";
@@ -118,7 +129,13 @@ function respond(st: VtsState, req: Json): Json {
 
 /** Speaks the VTS Public API envelope on a local port. */
 export class FakeVts {
-  readonly state: VtsState = { requests: [], validToken: null, tokensIssued: 0, deny: false };
+  readonly state: VtsState = {
+    requests: [],
+    validToken: null,
+    tokensIssued: 0,
+    deny: false,
+    custom: [],
+  };
 
   private constructor(
     readonly wss: WebSocketServer,

@@ -172,6 +172,18 @@ describe("stage", () => {
         );
       }),
     );
+    // Custom parameters are created on connect and then driven; VTS is told a face is found
+    // (no tracking-lost idle animation).
+    expect(vts.state.custom).toContain("MiyoriaEyeSmile");
+    expect(vts.state.custom).toContain("JawOpen");
+    await waitUntil(() =>
+      vts
+        .injections()
+        .some((d: Json) => d.parameterValues.some((p: Json) => p.id === "MiyoriaBodyX")),
+    );
+    expect(vts.injections().every((d: Json) => d.faceFound === true && d.mode === "set")).toBe(
+      true,
+    );
     const first = vts.injections().length;
     await delay(500);
     const rate = vts.injections().length - first;

@@ -1,0 +1,291 @@
+// The avatar loop: emotion accents and poses, gestures, blinking, lip sync and procedural
+// motion, composed into one `InjectParameterDataRequest` per tick.
+//
+// Cues from Core (emotion, speaking) are applied `latency_ms` late, like the lip-sync levels,
+// so the face changes when viewers hear the sentence rather than when the player takes it.
+
+import { errorMessage, getLogger, SerialQueue } from "@miyoria/kernel";
+import type { Clock } from "@miyoria/types";
+import type { AvatarProfile } from "./avatar.js";
+import { type BlinkConfig, BlinkScheduler } from "./blink.js";
+import { EmotionController, type VtsCommand } from "./emotion.js";
+import { type GestureConfig, GestureController } from "./gesture.js";
+import { type Levels, type LipSyncConfig, type Mouth, MouthShaper, VOWELS } from "./lipsync.js";
+import { type GazeConfig, IdleMotion, MOTION_PARAMS, type MotionConfig } from "./motion.js";
+import { clampParam, type EmotionConfig, PoseBlender, paramRange } from "./pose.js";
+import type { GazeTarget } from "./protocol.js";
+import { Random } from "./random.js";
+import type { VtsClient, VtsConfig } from "./vts.js";
+import type { Watch } from "./watch.js";
+
+const log = getLogger("stage.avatar");
+
+/** VTS inputs for the vowel estimate (the model maps them to `ParamA..ParamO`). */
+export const VOWEL_PARAMS = {
+  a: "VoiceA",
+  i: "VoiceI",
+  u: "VoiceU",
+  e: "VoiceE",
+  o: "VoiceO",
+} as const;
+export const SILENCE_PARAM = "VoiceSilence";
+const EYE_PARAMS = ["EyeOpenLeft", "EyeOpenRight"] as const;
+
+/** The parts of the Stage config the avatar loop uses. */
+export interface AvatarLoopConfig {
+  vts: VtsConfig;
+  lipsync: LipSyncConfig;
+  gaze: GazeConfig;
+  motion: MotionConfig;
+  blink: BlinkConfig;
+  emotion: EmotionConfig;
+  gesture: GestureConfig;
+  avatar: AvatarProfile;
+}
+
+interface Cue {
+  at: number;
+  run: (now: number) => void;
+}
+
+/** Emotion, gestures, blinking, lip sync and motion, injected at `inject_hz`. */
+export class AvatarLoop {
+  readonly #config: AvatarLoopConfig;
+  readonly #levels: Levels;
+  readonly #vts: Watch<VtsClient | null>;
+  readonly #clock: Clock;
+  readonly #emotion: EmotionController;
+  readonly #poser: PoseBlender;
+  readonly #gestures: GestureController;
+  readonly #blink: BlinkScheduler;
+  readonly #mouth: MouthShaper;
+  readonly #motion: IdleMotion;
+  /** Expression / hotkey requests run in order. */
+  readonly #commands = new SerialQueue();
+  #cues: Cue[] = [];
+  #speaking = false;
+  #intensity = 1;
+  #known: Set<string> | null = null;
+
+  constructor(
+    config: AvatarLoopConfig,
+    levels: Levels,
+    vts: Watch<VtsClient | null>,
+    clock: Clock,
+    random: Random = new Random(config.motion.seed ?? undefined),
+  ) {
+    this.#config = config;
+    this.#levels = levels;
+    this.#vts = vts;
+    this.#clock = clock;
+    const now = clock.now();
+    this.#emotion = new EmotionController(
+      config.avatar,
+      config.vts.emotion_hold_ms,
+      config.vts.after_speech_ms,
+    );
+    this.#poser = new PoseBlender(config.avatar, config.emotion);
+    this.#gestures = new GestureController(config.avatar, config.gesture, random.fork(), now);
+    this.#blink = new BlinkScheduler(config.blink, random.fork());
+    this.#mouth = new MouthShaper(config.lipsync);
+    this.#motion = new IdleMotion(config.gaze, config.motion, random.fork());
+  }
+
+  /** Every input parameter the loop may inject. */
+  parameters(): string[] {
+    const c = this.#config;
+    const names = new Set<string>();
+    if (c.vts.idle_motion) for (const p of MOTION_PARAMS) names.add(p);
+    for (const p of this.#poser.params()) names.add(p);
+    if (c.blink.enabled) for (const p of EYE_PARAMS) names.add(p);
+    if (c.avatar.lipsync === "inject") {
+      names.add(c.avatar.mouthOpen);
+      if (c.avatar.mouthForm !== null) names.add(c.avatar.mouthForm);
+      if (c.avatar.jaw !== null) names.add(c.avatar.jaw);
+      if (c.avatar.vowels) {
+        for (const v of VOWELS) names.add(VOWEL_PARAMS[v]);
+        names.add(SILENCE_PARAM);
+      }
+      for (const shape of c.avatar.shapes.values()) for (const p of shape.keys()) names.add(p);
+    }
+    return [...names].sort();
+  }
+
+  #later(run: (now: number) => void): void {
+    const now = this.#clock.now();
+    const at = now + this.#config.lipsync.latency_ms;
+    if (at <= now) run(now);
+    else this.#cues.push({ at, run });
+  }
+
+  /** An emotion marker (applied `latency_ms` later). */
+  emotion(name: string, intensity = 1): void {
+    this.#later((now) => this.#applyEmotion(name, intensity, now));
+  }
+
+  #applyEmotion(name: string, intensity: number, now: number): void {
+    const strength = Math.min(Math.max(Number.isFinite(intensity) ? intensity : 1, 0), 1);
+    this.#send(this.#emotion.onEmotion(name, now, strength));
+    this.#intensity = strength;
+    this.#poser.set(this.#emotion.current(), strength, now);
+    this.#send(this.#gestures.onEmotion(name, strength, now));
+  }
+
+  /** She started / stopped speaking a sentence (applied `latency_ms` later). */
+  speaking(speaking: boolean): void {
+    this.#later((now) => {
+      this.#speaking = speaking;
+      this.#emotion.setSpeaking(speaking, now);
+      this.#gestures.setSpeaking(speaking, now);
+      if (speaking) {
+        this.#motion.sentenceStart();
+        this.#blink.onSpeech();
+      }
+    });
+  }
+
+  gaze(target: GazeTarget): void {
+    this.#motion.setTarget(target);
+  }
+
+  #send(commands: VtsCommand[]): void {
+    const fade = this.#config.vts.expression_fade;
+    for (const cmd of commands) {
+      void this.#commands.run(async () => {
+        const client = this.#vts.get();
+        if (!client || client.isClosed()) return;
+        try {
+          if (cmd.type === "expression") await client.setExpression(cmd.file, cmd.active, fade);
+          else await client.triggerHotkey(cmd.name);
+        } catch (error) {
+          log.warn({ err: errorMessage(error), cmd }, "VTube Studio request failed");
+        }
+      });
+    }
+  }
+
+  #onClient(client: VtsClient | null): void {
+    this.#known = null;
+    if (!client) return;
+    this.#send([...this.#gestures.reset(), ...this.#emotion.rest()]);
+    this.#poser.set(null, 0, this.#clock.now());
+    void this.#prepare(client).catch((error: unknown) =>
+      log.debug({ err: errorMessage(error) }, "cannot prepare the VTS input parameters"),
+    );
+  }
+
+  /** Creates the custom parameters, then learns which inputs exist. */
+  async #prepare(client: VtsClient): Promise<void> {
+    const before = await client.inputParameterLists();
+    for (const name of this.#config.vts.custom_params) {
+      if (before.defaults.has(name)) continue;
+      const [lo, hi] = paramRange(name);
+      try {
+        await client.createParameter(
+          name,
+          lo,
+          hi,
+          clampParam(name, this.#poser.rest(name)),
+          "Miyoria avatar control",
+        );
+      } catch (error) {
+        log.debug({ parameter: name, err: errorMessage(error) }, "cannot create a VTS parameter");
+      }
+    }
+    const params = await client.inputParameters();
+    for (const name of this.parameters()) {
+      if (!params.has(name)) {
+        log.warn({ parameter: name }, "VTube Studio has no such input parameter; not injecting it");
+      }
+    }
+    if (this.#vts.get() === client) this.#known = params;
+  }
+
+  /** Mouth opening the motion reacts to. */
+  #mouthFrame(dt: number, now: number): Mouth | null {
+    if (this.#config.avatar.lipsync !== "inject") return null;
+    return this.#mouth.update(this.#levels.take(now), dt);
+  }
+
+  /** One frame of parameter values (clamped, unfiltered). */
+  frame(dt: number, now: number): Map<string, number> {
+    const c = this.#config;
+    const a = c.avatar;
+    for (const cue of this.#cues.filter((q) => q.at <= now)) cue.run(now);
+    this.#cues = this.#cues.filter((q) => q.at > now);
+    this.#send(this.#emotion.tick(now));
+    if (this.#poser.current() !== this.#emotion.current()) {
+      this.#poser.set(this.#emotion.current(), this.#intensity, now);
+    }
+    this.#send(this.#gestures.tick(now));
+
+    const mouth = this.#mouthFrame(dt, now);
+    const values = new Map<string, number>();
+    const pose = this.#poser.update(dt, now);
+    if (c.vts.idle_motion) {
+      const motion = this.#motion.update(dt, { speaking: this.#speaking, open: mouth?.open ?? 0 });
+      for (const [name, v] of Object.entries(motion)) {
+        values.set(name, v + (pose.offsets.get(name) ?? 0));
+      }
+    }
+    for (const [name, v] of pose.values) values.set(name, v);
+    if (c.blink.enabled) {
+      this.#blink.setRate(pose.blink);
+      const open = this.#blink.update(dt);
+      for (const name of EYE_PARAMS)
+        values.set(name, (values.get(name) ?? this.#poser.rest(name)) * open);
+    }
+    if (mouth) {
+      values.set(a.mouthOpen, mouth.open);
+      if (a.mouthForm !== null && !values.has(a.mouthForm)) {
+        values.set(a.mouthForm, this.#poser.rest(a.mouthForm));
+      }
+      if (a.jaw !== null) values.set(a.jaw, mouth.jaw);
+      if (a.vowels && mouth.vowels) {
+        for (const v of VOWELS) values.set(VOWEL_PARAMS[v], mouth.vowels[v]);
+        values.set(SILENCE_PARAM, mouth.silence);
+      }
+      // Vowel shapes: offsets weighted by the vowel and how open the mouth is. The shaped
+      // parameters are always sent, so they settle back when the mouth closes.
+      const shaped = new Map<string, number>();
+      for (const [vowel, shape] of a.shapes) {
+        const w = mouth.weights[vowel] * mouth.open;
+        for (const [name, offset] of shape) shaped.set(name, (shaped.get(name) ?? 0) + offset * w);
+      }
+      for (const [name, offset] of shaped) {
+        values.set(name, (values.get(name) ?? this.#poser.rest(name)) + offset);
+      }
+    }
+    for (const [name, v] of values) values.set(name, clampParam(name, v));
+    return values;
+  }
+
+  run(signal: AbortSignal): Promise<void> {
+    const hz = Math.min(Math.max(this.#config.vts.inject_hz, 1), 120);
+    let last = this.#clock.now();
+    const unsubscribe = this.#vts.subscribe((client) => this.#onClient(client));
+    this.#onClient(this.#vts.get());
+    const tick = () => {
+      const now = this.#clock.now();
+      const dt = Math.min(Math.max(now - last, 0), 200);
+      last = now;
+      const values = this.frame(dt, now);
+      const client = this.#vts.get();
+      const known = this.#known;
+      if (!client || client.isClosed() || known === null) return;
+      const batch: [string, number][] = [];
+      for (const [name, v] of values) if (known.has(name)) batch.push([name, v]);
+      client.inject(batch, this.#config.vts.face_found);
+    };
+    const timer = setInterval(tick, 1000 / hz);
+    return new Promise<void>((resolve) => {
+      const stop = () => {
+        clearInterval(timer);
+        unsubscribe();
+        resolve();
+      };
+      if (signal.aborted) stop();
+      else signal.addEventListener("abort", stop, { once: true });
+    });
+  }
+}

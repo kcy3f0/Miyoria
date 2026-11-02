@@ -191,14 +191,27 @@ export function statusOf(msg: StageStatus): StageStatus {
  * (`ws://127.0.0.1:7883/levels`).
  */
 export interface LevelFrame {
-  /** Playback position in milliseconds. */
-  t: number;
+  /**
+   * Playback position in milliseconds (start of the window, 0 at the start of each playback).
+   * Frames without it are placed by arrival time.
+   */
+  t?: number;
   /** RMS of the audio being played, 0..1. */
   rms: number;
+  /** RMS per analysis band, lowest first (vowel shapes); optional. */
+  bands?: number[];
 }
 
-const LevelFrameSchema = z.object({ t: z.number().default(0), rms: z.number() });
+const LevelFrameSchema = z.object({
+  t: z.number().optional(),
+  rms: z.number(),
+  bands: z.array(z.number()).max(32).optional(),
+});
 
 export function parseLevelFrame(value: unknown): LevelFrame {
-  return LevelFrameSchema.parse(value);
+  const f = LevelFrameSchema.parse(value);
+  const out: LevelFrame = { rms: f.rms };
+  if (f.t !== undefined) out.t = f.t;
+  if (f.bands !== undefined) out.bands = f.bands;
+  return out;
 }

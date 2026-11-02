@@ -34,10 +34,33 @@ export const VtsConfigSchema = z.object({
   after_speech_ms: z.number().int().nonnegative().default(1_500),
   /** Expression fade, in seconds. */
   expression_fade: z.number().default(0.3),
-  /** Injection rate. */
+  /** Injection rate (frame times come from the clock, so any rate works). */
   inject_hz: z.number().int().nonnegative().default(60),
-  /** Tell VTS a face is tracked while injecting. */
-  face_found: z.boolean().default(false),
+  /**
+   * Tell VTS a face is tracked while injecting. Keeps the model's "tracking lost" idle
+   * animation from playing (and taking over eyes, jaw and head) while Miyoria drives it.
+   */
+  face_found: z.boolean().default(true),
+  /**
+   * Custom input parameters created on connect (`ParameterCreationRequest`), so the model's
+   * mappings that expect them come alive. Default parameters of VTS are skipped.
+   */
+  custom_params: z
+    .array(z.string())
+    .default([
+      "JawOpen",
+      "BrowInnerUp",
+      "MouthFunnel",
+      "MouthPucker",
+      "REyeSquint",
+      "LEyeSquint",
+      "mouthSmileL",
+      "mouthSmileR",
+      "MiyoriaEyeSmile",
+      "MiyoriaBodyX",
+      "MiyoriaBodyY",
+      "MiyoriaBodyZ",
+    ]),
   /** Inject idle head / eye motion. */
   idle_motion: z.boolean().default(true),
   /** Timeout of ordinary requests. */
@@ -390,15 +413,42 @@ export class VtsClient {
 
   /** Names of the input parameters (default and custom) VTS knows. */
   async inputParameters(): Promise<Set<string>> {
+    const { defaults, custom } = await this.inputParameterLists();
+    return new Set([...defaults, ...custom]);
+  }
+
+  /** VTS's own input parameters and the custom ones plugins created. */
+  async inputParameterLists(): Promise<{ defaults: Set<string>; custom: Set<string> }> {
     const d = await this.request("InputParameterListRequest", {});
-    const names = new Set<string>();
-    for (const key of ["defaultParameters", "customParameters"]) {
+    const read = (key: string) => {
+      const names = new Set<string>();
       for (const p of list(d[key])) {
         const name = obj(p).name;
         if (typeof name === "string") names.add(name);
       }
-    }
-    return names;
+      return names;
+    };
+    return { defaults: read("defaultParameters"), custom: read("customParameters") };
+  }
+
+  /**
+   * Creates (or updates, when this plugin made it) a custom input parameter. Names are 4–32
+   * letters / digits.
+   */
+  async createParameter(
+    name: string,
+    min: number,
+    max: number,
+    defaultValue: number,
+    explanation = "",
+  ): Promise<void> {
+    await this.request("ParameterCreationRequest", {
+      parameterName: name,
+      explanation: explanation.slice(0, 255),
+      min,
+      max,
+      defaultValue,
+    });
   }
 
   /**

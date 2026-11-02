@@ -5,26 +5,269 @@
 # 授權:個人直播、影片(含平台收益)可用;不可原樣再散佈或轉售模型檔 / PSD;公開分享要標註來源
 #   → 模型檔放在 VTube Studio 的模型資料夾(StreamingAssets/Live2DModels/DeepSeek-chan),不放進這個 repo
 #
-# 下面的 expression 檔名對應官方模型的 Exp3/ 資料夾(VTS 裡的模型名稱是「大肥鱼」)
+# 下面的 expression 檔名對應官方模型的 Exp3/ 資料夾,hotkey 名稱對應模型裡的 hotkey(VTS 裡的模型名稱是「大肥鱼」)
+#
+# 每個情緒:
+#   expression     重點貼圖(.exp3.json 或 hotkey 名稱),強度 >= accent_min 才開
+#   params         VTS 輸入參數的姿勢;FaceAngle* / EyeRight* / EyeLeft* / MiyoriaBody* 是「加在動作上的偏移」,
+#                  其他是絕對值(從 neutral 的值漸變過去,強度越低越接近 neutral)
+#   blink          眨眼頻率倍數
+#   gesture        可能觸發的手勢(下面 [gesture.*]),每次隨機挑一個;gesture_chance 是強度 1 時的機率
+#
+# 這個模型的輸入範圍(VTS 端的對應,見 大肥鱼.vtube.json):
+#   EyeOpenLeft/Right 0..0.8 → 眼睛 0..1.5(0.53 ≈ 正常張開)
+#   Brows 0.3..0.6 → 眉毛高度 -1..1(0.45 = 正中),同一個輸入 0..1 也推眉毛角度
+#   MouthSmile 0..1 → 嘴型 ParamMouthForm -1..1(0.5 = 平);**VTS 預設也把 MouthSmile 接到 EyeSmile,
+#                     要在 VTS 把「微笑」那條改成吃 MiyoriaEyeSmile(見 docs/protocols/stage-link.md)**
+#   BrowInnerUp 0..0.5、MouthFunnel 0..0.4、MouthPucker -0.7..0.7、R/LEyeSquint、mouthSmileL/R 0..1
+#   這些(和 JawOpen、MiyoriaEyeSmile、MiyoriaBodyX/Y/Z)是 Stage 連上時自己建立的自訂參數
 
 vts_model = "大肥鱼"
 
-[emotion]   # 情緒標記 → VTS expression 檔或 hotkey
-neutral     = ""
-happy       = "爱心眼.exp3.json"
-smug        = "屑屑眼.exp3.json"
-annoyed     = "黑脸.exp3.json"
-angry       = "＞＜.exp3.json"
-embarrassed = "脸红.exp3.json"
-sad         = "流泪.exp3.json"
-surprised   = "圈圈眼.exp3.json"
-thinking    = "单片眼镜.exp3.json"
+# ---- 情緒 ----
+
+[emotion.neutral]          # 休息姿勢:其他情緒的 params 都從這裡漸變過去
+expression = ""
+[emotion.neutral.params]
+EyeOpenLeft = 0.55
+EyeOpenRight = 0.55
+Brows = 0.45
+MouthSmile = 0.58
+MiyoriaEyeSmile = 0.0
+BrowInnerUp = 0.0
+mouthSmileL = 0.1
+mouthSmileR = 0.1
+REyeSquint = 0.0
+LEyeSquint = 0.0
+CheekPuff = 0.0
+MouthX = 0.0
+
+[emotion.happy]
+expression = "爱心眼.exp3.json"
+accent_min = 0.7
+blink = 1.0
+gesture = ["chest", "teeth"]
+gesture_chance = 0.3
+[emotion.happy.params]
+EyeOpenLeft = 0.5
+EyeOpenRight = 0.5
+Brows = 0.53
+MouthSmile = 0.92
+MiyoriaEyeSmile = 0.75
+mouthSmileL = 0.55
+mouthSmileR = 0.55
+FaceAngleZ = 3
+FaceAngleY = 2
+
+[emotion.smug]
+expression = "屑屑眼.exp3.json"
+accent_min = 0.5
+blink = 0.8
+gesture = ["finger", "teeth", "chest"]
+gesture_chance = 0.5
+[emotion.smug.params]
+EyeOpenLeft = 0.38
+EyeOpenRight = 0.4
+Brows = 0.5
+MouthSmile = 0.78
+MiyoriaEyeSmile = 0.3
+mouthSmileL = 0.6
+mouthSmileR = 0.1
+MouthX = 0.25
+REyeSquint = 0.2
+LEyeSquint = 0.2
+FaceAngleZ = -3
+FaceAngleY = 3
+
+[emotion.annoyed]
+expression = "黑脸.exp3.json"
+accent_min = 0.6
+blink = 1.2
+gesture = ["sweat"]
+gesture_chance = 0.4
+[emotion.annoyed.params]
+EyeOpenLeft = 0.42
+EyeOpenRight = 0.42
+Brows = 0.37
+MouthSmile = 0.3
+REyeSquint = 0.4
+LEyeSquint = 0.4
+CheekPuff = 0.35
+MouthPucker = -0.25
+FaceAngleX = 5
+FaceAngleY = -1
+
+[emotion.angry]
+expression = "＞＜.exp3.json"
+accent_min = 0.5
+blink = 1.0
+gesture = ["lean"]
+gesture_chance = 0.3
+[emotion.angry.params]
+EyeOpenLeft = 0.5
+EyeOpenRight = 0.5
+Brows = 0.32
+MouthSmile = 0.15
+REyeSquint = 0.3
+LEyeSquint = 0.3
+CheekPuff = 0.55
+FaceAngleY = -3
+
+[emotion.embarrassed]
+expression = "脸红.exp3.json"
+accent_min = 0.0
+blink = 1.6
+gesture = ["sweat", "chest"]
+gesture_chance = 0.6
+[emotion.embarrassed.params]
+EyeOpenLeft = 0.47
+EyeOpenRight = 0.47
+Brows = 0.47
+BrowInnerUp = 0.3
+MouthSmile = 0.66
+MiyoriaEyeSmile = 0.35
+FaceAngleX = -6
+FaceAngleY = -4
+EyeRightX = -0.25
+EyeLeftX = -0.25
+
+[emotion.sad]
+expression = "流泪.exp3.json"
+accent_min = 0.6
+blink = 0.8
+gesture = ["chest"]
+gesture_chance = 0.25
+[emotion.sad.params]
+EyeOpenLeft = 0.45
+EyeOpenRight = 0.45
+Brows = 0.4
+BrowInnerUp = 0.45
+MouthSmile = 0.25
+mouthSmileL = 0.0
+mouthSmileR = 0.0
+FaceAngleY = -5
+FaceAngleZ = -2
+EyeRightY = -0.2
+EyeLeftY = -0.2
+
+[emotion.surprised]
+expression = "圈圈眼.exp3.json"
+accent_min = 0.85
+blink = 0.4
+gesture = ["lean", "basin"]
+gesture_chance = 0.35
+[emotion.surprised.params]
+EyeOpenLeft = 0.72
+EyeOpenRight = 0.72
+Brows = 0.6
+BrowInnerUp = 0.2
+MouthSmile = 0.45
+FaceAngleY = 3
+
+[emotion.thinking]
+expression = "单片眼镜.exp3.json"
+accent_min = 0.6
+blink = 0.7
+gesture = ["finger", "loading"]
+gesture_chance = 0.7
+[emotion.thinking.params]
+EyeOpenLeft = 0.5
+EyeOpenRight = 0.46
+Brows = 0.43
+BrowInnerUp = 0.15
+LEyeSquint = 0.25
+MouthSmile = 0.45
+MouthX = -0.15
+FaceAngleZ = 5
+FaceAngleX = 4
+EyeRightX = 0.2
+EyeLeftX = 0.2
+EyeRightY = 0.3
+EyeLeftY = 0.3
+
+# ---- 手勢(模型自帶的動畫 / 貼圖)----
+# open / close:hotkey 名稱或 .exp3.json(表情檔:顯示後再關掉,不用寫 close)
+# group:同一組同時只會有一個(手只有兩隻);hold_ms 停留時間範圍;cooldown_ms 同一個手勢再次觸發的最短間隔
+
+[gesture.finger]           # 竖手指:「我跟你說喔」
+open = "竖手指打开"
+close = "竖手指关闭"
+group = "hands"
+hold_ms = [2500, 5000]
+cooldown_ms = 30000
+
+[gesture.chest]            # 抚胸
+open = "抚胸手打开"
+close = "抚胸手关闭"
+group = "hands"
+hold_ms = [2000, 4500]
+cooldown_ms = 30000
+
+[gesture.grass]            # 狗尾巴草(發呆時)
+open = "狗尾巴草打开"
+close = "狗尾巴草关闭"
+group = "hands"
+hold_ms = [8000, 20000]
+cooldown_ms = 90000
+
+[gesture.sweat]            # 流冷汗
+open = "流冷汗.exp3.json"
+group = "face"
+hold_ms = [2500, 4500]
+cooldown_ms = 25000
+
+[gesture.teeth]            # 兔牙
+open = "兔牙.exp3.json"
+group = "mouth"
+hold_ms = [1500, 3000]
+cooldown_ms = 40000
+
+[gesture.loading]          # 加载中
+open = "加载.exp3.json"
+group = "face"
+hold_ms = [2000, 4000]
+cooldown_ms = 45000
+
+[gesture.basin]            # 钢盆砸頭(很少)
+open = "钢盆.exp3.json"
+group = "head"
+hold_ms = [1500, 2500]
+cooldown_ms = 120000
+
+[gesture.lean]             # 前倾
+open = "前倾.exp3.json"
+group = "body"
+hold_ms = [2000, 4000]
+cooldown_ms = 40000
+
+[idle]                     # 安靜一陣子之後偶爾拿狗尾巴草
+gesture = ["grass"]
+every_ms = [60000, 150000]
+after_ms = 15000
+
+# ---- 嘴型 ----
 
 [lipsync]
 mode = "inject"        # inject:由 TTS 音訊算出嘴型注入;mic:VTS 用虛擬音源線自己做
 # VTS 的追蹤參數(0..1);這個模型把它們對應到 ParamMouthOpenY / ParamMouthForm
 mouth_open = "MouthOpen"
 mouth_form = "MouthSmile"
+jaw = "JawOpen"        # 自訂參數,模型的「Jaw Open」吃它
+vowels = true          # 依音色估計 A/I/U/E/O,注入 VoiceA..VoiceO / VoiceSilence(模型對應到 ParamA..ParamO)
+
+# 每個母音的嘴型偏移(乘上張嘴程度與該母音的權重)
+[lipsync.shape.i]
+MouthSmile = 0.12
+MouthPucker = 0.25
+[lipsync.shape.e]
+MouthSmile = 0.08
+MouthPucker = 0.15
+[lipsync.shape.u]
+MouthPucker = -0.35
+MouthFunnel = 0.12
+[lipsync.shape.o]
+MouthPucker = -0.2
+MouthFunnel = 0.25
 
 [credit]
 text = "\"DeepSeek-chan Live2D Model + Layered PSD\" by Kamiya_Ryoko"
