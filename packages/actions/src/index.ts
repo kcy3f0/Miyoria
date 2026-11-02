@@ -86,9 +86,11 @@ export {
 export {
   type Answer,
   APPROVE_ROUTE,
+  type ApprovalInfo,
   approvalCard,
   DENY_ROUTE,
   Escalations,
+  type PendingApproval,
   parseReview,
   ReviewError,
   type ReviewInput,

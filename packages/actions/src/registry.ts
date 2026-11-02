@@ -175,7 +175,7 @@ export class ActuatorRegistry implements ActuatorExecutor {
   #reviewFallbackLogged = false;
   readonly rate = new RateLimiter();
   readonly privacy: Privacy;
-  readonly escalations = new Escalations();
+  readonly escalations: Escalations;
   /** Late outcomes of `followup` tools, delivered as follow-up turns. */
   readonly followups: Followups;
 
@@ -185,6 +185,7 @@ export class ActuatorRegistry implements ActuatorExecutor {
     this.#publish = options.publish ?? (() => {});
     this.#clock = options.clock ?? systemClock;
     this.privacy = new Privacy(options.services);
+    this.escalations = new Escalations(this.#clock);
     this.followups = new Followups(
       (event) => this.#publish(event),
       () => this.#clock.now(),
@@ -532,7 +533,8 @@ export class ActuatorRegistry implements ActuatorExecutor {
 
   /** The person a medium / high action involves, for per-person limits. */
   #person(capability: Capability, args: unknown, request: ActionRequest): string | null {
-    const who = capability.target?.(args, request.principal) ?? request.principal.requester;
+    const who =
+      capability.target?.(args, request.principal) ?? request.about ?? request.principal.requester;
     return who === null ? null : `${who.platform}:${who.id}`;
   }
 
@@ -568,7 +570,9 @@ export class ActuatorRegistry implements ActuatorExecutor {
         return deny("prohibition", "not across servers");
       }
     }
-    const target = capability.target?.(args, p) ?? null;
+    // An autonomous request may name who it is about when the capability names nobody.
+    const target =
+      capability.target?.(args, p) ?? (isAutonomous(p) ? (request.about ?? null) : null);
     const askedForThemselves =
       target !== null && p.requester !== null && sameAccount(target, p.requester);
     const social = this.#services.get(SocialSignalsKey);
@@ -624,7 +628,11 @@ export class ActuatorRegistry implements ActuatorExecutor {
 
     // 6. Risk tier.
     if (capability.risk === "low") return allow("risk", "low risk");
-    let limits = effectiveLimits(cfg.limits[capability.name], cfg.medium);
+    let limits = effectiveLimits(
+      cfg.limits[capability.name],
+      cfg.medium,
+      capability.limits ?? null,
+    );
     if (budget === "degraded") limits = tightened(limits);
     const person = this.#person(capability, args, request);
     const exceeded = this.rate.check(capability.name, person, limits, this.#clock.now());
@@ -743,6 +751,14 @@ export class ActuatorRegistry implements ActuatorExecutor {
       `${capability.name} (${principalActor(request.principal)})`,
       this.#config.escalation_timeout_ms,
       signal,
+      {
+        capability: capability.name,
+        summary: capability.summary,
+        principal: principalActor(request.principal),
+        args: request.args,
+        why: request.why,
+        review,
+      },
     );
     const card = approvalCard(
       id,

@@ -14,6 +14,7 @@ import type {
   TurnId,
 } from "@miyoria/types";
 import type { z } from "zod";
+import type { Limit } from "./config.js";
 
 /**
  * `low`: allowed once the hard rules pass. `medium`: rate limits and cooldowns. `high`: her own
@@ -97,6 +98,11 @@ export interface Capability<A = unknown> {
   readonly guidance?: string;
   /** How long a run queued from a turn may wait in its lane (ms). Default 60 000. */
   readonly ttlMs?: number;
+  /**
+   * Default rate limits (medium / high risk) when `[modules.actions.limits."<name>"]` does not
+   * set them; unset fields fall back to the tier defaults.
+   */
+  readonly limits?: Partial<Limit> | null;
   /** Guild the action happens in, for the cross-guild prohibition. */
   scope?(args: A, principal: Principal): string | null;
   /** Person the action is directed at (consent, strangers). */
@@ -127,6 +133,11 @@ export interface ActionRequest {
   /** Why she (or whoever) wants it, for the audit and the review. */
   why: string | null;
   turn: TurnId | null;
+  /**
+   * Who an autonomous request is about when the capability itself names nobody (e.g. she joins
+   * a voice channel because someone is there): their consent and per-person limits apply.
+   */
+  about?: AccountRef | null;
 }
 
 /** Where the gate decided. */

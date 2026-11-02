@@ -142,15 +142,18 @@ export function baseChange(kind: EventKind, scale: number): [number, number] {
   }
 }
 
-/** Where a capped change came from; part of the delta `reason`. */
-export type Source = "rule" | "appraisal";
+/**
+ * Where a capped change came from; part of the delta `reason`. `mind`: a hint from her own
+ * mind loop (how she feels about someone after thinking about them).
+ */
+export type Source = "rule" | "appraisal" | "mind";
 
-/** `"rule: praise"` → `praise`. Only rule / appraisal reasons count toward caps. */
+/** `"rule: praise"` → `praise`. Only rule / appraisal / mind reasons count toward caps. */
 export function cappedKind(reason: string): EventKind | null {
   const i = reason.indexOf(":");
   if (i < 0) return null;
   const source = reason.slice(0, i).trim();
-  if (source !== "rule" && source !== "appraisal") return null;
+  if (source !== "rule" && source !== "appraisal" && source !== "mind") return null;
   return parseEventKind(reason.slice(i + 1));
 }
 

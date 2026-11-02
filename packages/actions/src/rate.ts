@@ -12,11 +12,17 @@ export interface Limits {
   cooldownMs: number;
 }
 
-export function effectiveLimits(own: Limit | undefined, tier: TierLimit): Limits {
+/** Configured limits first, then the capability's own defaults, then the tier's. */
+export function effectiveLimits(
+  own: Limit | undefined,
+  tier: TierLimit,
+  defaults: Partial<Limit> | null = null,
+): Limits {
   return {
-    perDay: own?.per_day ?? tier.per_day,
-    perPersonPerDay: own?.per_person_per_day ?? tier.per_person_per_day,
-    cooldownMs: own?.cooldown_ms ?? tier.cooldown_ms,
+    perDay: own?.per_day ?? defaults?.per_day ?? tier.per_day,
+    perPersonPerDay:
+      own?.per_person_per_day ?? defaults?.per_person_per_day ?? tier.per_person_per_day,
+    cooldownMs: own?.cooldown_ms ?? defaults?.cooldown_ms ?? tier.cooldown_ms,
   };
 }
 

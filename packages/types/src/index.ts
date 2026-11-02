@@ -74,6 +74,25 @@ export {
 } from "./ids.js";
 export { isJsonObject, type JsonObject, type JsonPrimitive, type JsonValue } from "./json.js";
 export {
+  CHAT_DM,
+  CHAT_START,
+  type Intent,
+  type IntentOutcome,
+  type IntentSink,
+  IntentSinkKey,
+  type IntentStatus,
+  MIND_THOUGHT_TOPIC,
+  type Mind,
+  MindKey,
+  type MindStats,
+  type MindSuggestion,
+  type Thought,
+  type ThoughtDecision,
+  type ThoughtIntent,
+  type ThoughtTrigger,
+  type ThoughtTriggerKind,
+} from "./mind.js";
+export {
   type AccountRef,
   type Attachment,
   type Author,

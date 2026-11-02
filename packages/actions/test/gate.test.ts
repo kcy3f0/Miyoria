@@ -9,11 +9,13 @@ import {
   type TurnId,
 } from "@miyoria/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import {
   ActionDeniedError,
   type ActionRequest,
   APPROVE_ROUTE,
   CapabilityTool,
+  defineCapability,
   messageDm,
   parseReview,
   REVIEW_PENDING,
@@ -460,5 +462,60 @@ describe("message.dm", () => {
       message: { text: "嗨 everyone", reply_to: null },
     });
     expect(scheduler.actions[0]?.priority).toBe("initiative");
+  });
+});
+
+describe("autonomous requests", () => {
+  it("apply the consent and per-person limits of whom they are about", async () => {
+    const g = await gate();
+    g.registry.register(
+      defineCapability({
+        name: "t.join",
+        summary: "test join",
+        risk: "medium",
+        args: z.object({}),
+        permission: null,
+        limits: { per_day: 10, per_person_per_day: 1, cooldown_ms: 0 },
+        async execute() {
+          return "joined";
+        },
+      }),
+    );
+    const about = (who: typeof OWEN) => ({ ...request("t.join", self()), about: who });
+    await g.registry.privacy.set(OWEN, { approach: false });
+    const out = await g.registry.invoke(about(OWEN));
+    expect(out.decision).toMatchObject({ allowed: false, stage: "consent" });
+    // Someone asking for it themselves is not being approached.
+    const asked = await g.registry.invoke({ ...request("t.join", user(OWEN)), about: OWEN });
+    expect(asked.status).toBe("done");
+
+    expect((await g.registry.invoke(about(AMY))).status).toBe("done");
+    // The capability's own default: one per person per day.
+    const again = await g.registry.invoke(about(AMY));
+    expect(again.decision).toMatchObject({ stage: "rate" });
+    expect(again.decision.reason).toContain("this person");
+  });
+
+  it("list pending approvals with what they ask for, answerable by a panel actor", async () => {
+    const g = await gate();
+    g.router.replies.push('{"verdict": "uncertain", "reason": "要問主人"}');
+    const pending = g.registry.invoke(request("t.high", self(), { note: "x" }, "想試試看"));
+    await vi.waitFor(() => expect(g.registry.escalations.pending().length).toBe(1));
+    const [item] = g.registry.escalations.pending();
+    expect(item).toMatchObject({
+      capability: "t.high",
+      summary: "test high",
+      principal: "self",
+      args: { note: "x" },
+      why: "想試試看",
+      review: "要問主人",
+    });
+    expect(Date.parse(item?.expires_at ?? "")).toBeGreaterThan(
+      Date.parse(item?.requested_at ?? ""),
+    );
+    expect(g.registry.escalations.resolve(item?.id ?? "", false, "panel:api")).toBe(true);
+    const out = await pending;
+    expect(out.decision).toMatchObject({ allowed: false, stage: "escalation" });
+    expect(out.decision.reason).toContain("denied by panel:api");
   });
 });

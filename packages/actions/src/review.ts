@@ -15,10 +15,14 @@ import {
   type AccountRef,
   type Attitude,
   accountRefString,
+  type Clock,
   escapeData,
   type JsonValue,
   type Principal,
   principalActor,
+  systemClock,
+  type Timestamp,
+  toTimestamp,
 } from "@miyoria/types";
 import type { ApprovalDetail, Capability, Risk } from "./capability.js";
 
@@ -125,21 +129,52 @@ export const DENY_ROUTE = "autonomy:deny";
 /** The owners' answer. */
 export interface Answer {
   approved: boolean;
-  by: AccountRef | null;
+  /** The owner's account, or the panel actor (`panel:api`, ...). */
+  by: AccountRef | string | null;
   reason: string;
+}
+
+/** What the owners are asked about (the panel's approvals list). */
+export interface ApprovalInfo {
+  capability: string;
+  summary: string;
+  /** Audit actor of the principal (`self`, `user:discord:1`, ...). */
+  principal: string;
+  args: JsonValue;
+  why: string | null;
+  /** The self-review's reason for being uncertain. */
+  review: string;
+}
+
+/** A request waiting for an owner. */
+export interface PendingApproval extends ApprovalInfo {
+  id: string;
+  requested_at: Timestamp;
+  expires_at: Timestamp;
 }
 
 interface Pending {
   resolve: (answer: Answer) => void;
   summary: string;
+  info: ApprovalInfo | null;
+  requestedAt: number;
+  expiresAt: number;
 }
 
 /** Approval requests waiting for an owner. */
 export class Escalations {
   readonly #pending = new Map<string, Pending>();
 
+  constructor(private readonly clock: Clock = systemClock) {}
+
   /** Waits for `resolve(id, ...)`; `timeoutMs` or `signal` without an answer = denied. */
-  wait(id: string, summary: string, timeoutMs: number, signal?: AbortSignal): Promise<Answer> {
+  wait(
+    id: string,
+    summary: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+    info: ApprovalInfo | null = null,
+  ): Promise<Answer> {
     return new Promise<Answer>((resolve) => {
       const finish = (answer: Answer) => {
         clearTimeout(timer);
@@ -152,22 +187,31 @@ export class Escalations {
         () => finish({ approved: false, by: null, reason: "no owner answered in time" }),
         timeoutMs,
       );
-      this.#pending.set(id, { resolve: finish, summary });
+      const now = this.clock.now();
+      this.#pending.set(id, {
+        resolve: finish,
+        summary,
+        info,
+        requestedAt: now,
+        expiresAt: now + timeoutMs,
+      });
       if (signal?.aborted) onAbort();
       else signal?.addEventListener("abort", onAbort, { once: true });
     });
   }
 
-  /** Answers a pending request; `false` when it is unknown or already answered. */
-  resolve(id: string, approved: boolean, by: AccountRef): boolean {
+  /**
+   * Answers a pending request (`by`: the owner's account, or the panel actor); `false` when it
+   * is unknown or already answered.
+   */
+  resolve(id: string, approved: boolean, by: AccountRef | string): boolean {
     const pending = this.#pending.get(id);
     if (!pending) return false;
+    const who = typeof by === "string" ? by : accountRefString(by);
     pending.resolve({
       approved,
       by,
-      reason: approved
-        ? `approved by ${accountRefString(by)}`
-        : `denied by ${accountRefString(by)}`,
+      reason: approved ? `approved by ${who}` : `denied by ${who}`,
     });
     return true;
   }
@@ -184,6 +228,21 @@ export class Escalations {
   /** `[id, summary]` of every pending request. */
   list(): [string, string][] {
     return [...this.#pending].map(([id, p]) => [id, p.summary]);
+  }
+
+  /** Every pending request with what it asks for, oldest first. */
+  pending(): PendingApproval[] {
+    return [...this.#pending].map(([id, p]) => ({
+      id,
+      capability: p.info?.capability ?? p.summary,
+      summary: p.info?.summary ?? p.summary,
+      principal: p.info?.principal ?? "",
+      args: p.info?.args ?? null,
+      why: p.info?.why ?? null,
+      review: p.info?.review ?? "",
+      requested_at: toTimestamp(p.requestedAt),
+      expires_at: toTimestamp(p.expiresAt),
+    }));
   }
 }
 
