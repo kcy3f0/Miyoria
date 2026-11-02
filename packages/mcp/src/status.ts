@@ -16,6 +16,11 @@ export interface ServerStatus {
   name: string;
   /** `"stdio"` or `"http"`. */
   transport: string;
+  /**
+   * What it connects to: the command line (`stdio`) or the URL without credentials and query
+   * (`http`). Never env values or headers.
+   */
+  target: string | null;
   state: ServerState;
   connected: boolean;
   /** Registry names of the tools currently registered from this server. */
@@ -33,10 +38,12 @@ export function newServerStatus(
   name: string,
   transport: string,
   permission: string | null,
+  target: string | null = null,
 ): ServerStatus {
   return {
     name,
     transport,
+    target,
     state: "connecting",
     connected: false,
     tools: [],

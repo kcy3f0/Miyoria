@@ -104,6 +104,29 @@ export class ServerConfig implements ServerConfigData {
     return this.url !== null && this.command === null ? "http" : "stdio";
   }
 
+  /**
+   * What the server connects to, safe to show: the command line for `stdio`, the URL without
+   * user info, query or fragment for `http`. `null` when not configured.
+   */
+  displayTarget(): string | null {
+    if (this.effectiveTransport() === "stdio") {
+      const command = this.command?.trim() ?? "";
+      return command === "" ? null : [command, ...this.args].join(" ");
+    }
+    const raw = this.url?.trim() ?? "";
+    if (raw === "") return null;
+    try {
+      const url = new URL(raw);
+      url.username = "";
+      url.password = "";
+      url.search = "";
+      url.hash = "";
+      return url.toString();
+    } catch {
+      return null;
+    }
+  }
+
   /** The permission node required from the triggering user, if any. */
   permissionNode(server: string): string | null {
     if (this.permission === null) return `tools.mcp.${server}`;

@@ -58,6 +58,20 @@ describe("config", () => {
     expect(() => http.validate("a")).toThrow(/http:\/\//);
   });
 
+  it("display_target_hides_credentials", () => {
+    expect(
+      new ServerConfig({ command: "npx", args: ["-y", "srv", "C:/data"] }).displayTarget(),
+    ).toBe("npx -y srv C:/data");
+    expect(
+      new ServerConfig({
+        url: "https://user:pw@example.com/mcp?key=sekrit#x",
+        headers: { Authorization: "Bearer sekrit" },
+      }).displayTarget(),
+    ).toBe("https://example.com/mcp");
+    expect(new ServerConfig({ transport: "http", url: "not a url" }).displayTarget()).toBeNull();
+    expect(new ServerConfig().displayTarget()).toBeNull();
+  });
+
   it("debug_hides_secrets", () => {
     const s = new ServerConfig({
       headers: { Authorization: "Bearer sekrit" },

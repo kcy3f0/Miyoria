@@ -61,7 +61,12 @@ export class McpModule implements Module {
 
     for (const [name, server] of this.config.servers) {
       status.insert(
-        newServerStatus(name, server.effectiveTransport(), server.permissionNode(name)),
+        newServerStatus(
+          name,
+          server.effectiveTransport(),
+          server.permissionNode(name),
+          server.displayTarget(),
+        ),
       );
       if (!server.enabled) {
         status.update(name, (s) => {
