@@ -1,6 +1,6 @@
 # 自主層設計(草案)
 
-> 狀態:**已確認方向**(2026-11-02),第 12 節的決定已定案。**階段 A、B 已完成**(實作紀錄與偏差見第 13、14 節);下一步是階段 C。這份文件描述把 DeepSeek-chan 從「被叫才醒來的聊天機器人」改成「有自己內心、自己決定做事的角色」的架構改動。終極目標是 Neuro-sama 等級的自主 AI VTuber。現有架構見 [ARCHITECTURE.md](../ARCHITECTURE.md)。
+> 狀態:**已確認方向**(2026-11-02),第 12 節的決定已定案。**階段 A、B、E 已完成**(實作紀錄與偏差見第 13、14、15 節);下一步是階段 C。這份文件描述把 DeepSeek-chan 從「被叫才醒來的聊天機器人」改成「有自己內心、自己決定做事的角色」的架構改動。終極目標是 Neuro-sama 等級的自主 AI VTuber。現有架構見 [ARCHITECTURE.md](../ARCHITECTURE.md)。
 
 ## 0. 原則
 
@@ -235,7 +235,7 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 | **B. 感知與自我**(✅ 已完成,見第 14 節) | WorldState(presence、voice states)、SelfState(慾望、方針、議程、感情描述)、面板「內心」頁雛形 | 她知道誰在線、在做什麼;有自己的狀態 |
 | **C. 心智迴圈** | Mind 模組、內心獨白、意圖、自己發起的回合;talkativeness 取代 attention 數字;initiative 併入 | 會自己找人聊天、偷偷進語音、自己調活躍度、冷場時開話題 |
 | **D. OBS 智慧場景 + Minecraft** | 場景分類與自動轉場;Minecraft 端到端(adapter 準備與模組建置已完成,見 `extensions/minecraft/SETUP.md`);**遊戲內聊天變成獨立對話情境**(有自己的歷史,玩家名稱可用 `/me link` 綁 Discord 帳號以共用好感與記憶,回覆管道由她選:遊戲內打字、直播語音 + 字幕或兩者) | 「去玩 Minecraft」→ 她自己開遊戲、切場景、開台 |
-| **E. 聊天上下文與圖片** | 冷啟動補抓歷史、回覆鏈、看圖(deepseek-v4.1-flash 已支援視覺,直接把圖片當多模態內容送給聊天模型;先實測 OpenCode 端是否接受圖片)、語音頻道文字區改用語音回 | 對話更連貫、看得懂圖片 |
+| **E. 聊天上下文與圖片**(✅ 已完成,見第 16 節) | 冷啟動補抓歷史、回覆鏈、看圖(deepseek-v4.1-flash 已支援視覺,直接把圖片當多模態內容送給聊天模型;先實測 OpenCode 端是否接受圖片)、語音頻道文字區改用語音回 | 對話更連貫、看得懂圖片 |
 | **F. 沙箱程式**(✅ 已完成,見 8.3 與第 15 節) | 沙箱、`code.run`、自寫工具與核准流程;外掛環境變數白名單 | 她能自己寫小工具 |
 | **G. 反思與學習** | 每日反思(從反應中學:誰喜歡什麼)、長期目標 | 越相處越懂大家 |
 | **最後** | 人設重寫 | — |
@@ -311,3 +311,32 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 6. **沒有面板頁面**:面板的資料 / 內心頁由其他人在改,自寫工具的審核介面先只有 API 與 Discord 確認卡,面板頁留待後續。
 7. **工具工作區沒有開放給模型**(她不能自己 `save` 腳本);要的話之後再加一個低 / 中風險能力。
 8. **MCP server 的環境變數**(`[modules.mcp]` 的 stdio server)仍繼承完整 `process.env`,不在這次範圍,待修。
+
+## 16. 階段 E 實作紀錄(2026-11-02)
+
+完成的內容(細節見 [ARCHITECTURE.md](../ARCHITECTURE.md) §4.1、§4.4、§11.1、§13):
+
+- **更完整的訊息**:`IncomingMessage` 多了 `reply_to`、`referenced`(被回覆那則的作者與文字)、`stickers`、`embeds`(標題 / 說明 / 網址)、`forwarded`(轉傳內容),附件多了 `id`、`size`、`description`(替代文字)。Discord 進來時就把 `<@id>`、`<#id>`、`<@&id>` 換成名字、`<:x:id>` 換成 `:x:`;只有貼圖、embed 或轉傳的訊息不再被丟掉。`incomingText()` 把附帶的東西寫成一行,session、`message_log` 與記憶都用它。
+- **補抓上下文**:新服務 `PlatformHistories`(`PlatformHistoriesKey`,app 開機時建立,跟 `PlatformSinks` 並列),Discord 登記 `DiscordHistory`(`channel.messages.fetch`)。冷啟動的文字 session 補抓之前最多 `min(history.backfill = 20, prompt_history)` 則(沒有歷史讀取器就用 `message_log.recent`);回覆鏈往上抓最多 `history.reply_chain = 3` 則不在 session 裡的訊息,以 `> 名字: 內容` 引用。`HistoryEntry` 有 `id`、`replyTo`、`parents`,補抓依 id 去重。
+- **看圖**:`ChatMessage.content` 可以是 `string | ContentPart[]`(`text`、`image_url` + `detail`),`wire.ts` 照 Chat Completions 格式送出。選圖規則照 Avocados(她要回的訊息 → 它回覆的那則 → 同一人 2 分鐘內的圖),只收 png / jpeg / webp / gif,每回合 3 張、單張 5 MB、合計 10 MB,下載後用 base64 data URL 送,依附件 id 快取 32 張。
+- **對話紀錄**:`max_prompt_chars = 16000`(舊的先丟)、`max_entry_chars = 2000`、`(bot)`、`(回覆 X)`、引用行、超過 30 分鐘的時間間隔行;全部經過 `safeName` / `neutralize`,規則段落 `TRANSCRIPT_RULES` 說明這些標記。
+- **語音頻道文字區 → 語音**:見下面第 4 點。
+- **mention**:她寫的 `@名字` 會變成真的 mention;身分組、`@everyone`、`@here` 仍由 `filterOutgoing` 與 Discord sink 擋掉。
+
+跟設計或任務描述不同、或要注意的地方:
+
+1. **新欄位是 optional**(`reply_to?`、`stickers?`…),不是 TS 慣例的「`T | null` 而且一定有 key」。`IncomingMessage` 是事件 payload,擴充(`@miyoria/sdk`)、CLI 平台與測試都會自己組;Discord mapper 一律填滿,讀的一方把沒有當成 `null` / 空陣列。
+2. **能力旗標是 `[llm.image_input]`**(key 是 `provider:model` 或 `provider`,沒列 = 收圖片),不是放在 provider 設定裡,這樣同一個 provider 底下的不同模型也能分開標。被拒絕時(400 / 413 / 415 / 422)router 同一個模型改送文字重試一次,**成功才記住**(這次執行期間都送文字,重開會再試一次);其他錯誤照舊換下一個模型,不攤平。舊文件裡的 `vision` 用途沒有實作,她用 `chat` 的模型看圖。
+3. **圖片說明不另外產生**(不夠便宜):紀錄留 `[圖片: 檔名(替代文字)]`。同一個人 2 分鐘內接著講話時圖片會再送一次(從快取),之後的回合只剩文字。圖片只從 `allowed_hosts`(預設 `cdn.discordapp.com`、`media.discordapp.net`)以 HTTPS 下載、不跟隨轉址,回應不是圖片(例如 HTML 錯誤頁)就跳過。
+4. **語音頻道文字區的做法**:在 agent 的事件入口(`runtime.ts`)把訊息的情境換成語音情境——她在 `(platform, guild)` 的語音頻道剛好是這個頻道 id 時(Discord 語音頻道的文字區跟語音頻道同一個 id)。這樣這則訊息進語音 session、走語音的 attention、debounce 與回覆路徑(TTS + 字幕),也跟語音裡的對話共用同一段紀錄;不用在輸出端另外改路由。語音回覆裡的網址與 ` ``` ` 程式碼不念,回合結束後以文字貼到同一個文字區(`voice.text_aside`)。`voice.text_chat = false` 可以關掉。
+5. **「不要卡住直接回覆」的意思**:補抓在 session 建立時就開始跑(大多在 debounce 的 1.5 秒內完成),回合最多等到抓取開始後 3 秒;回覆鏈的抓取每回合也最多 3 秒(多則訊息並行)。逾時或失敗都只是少了上下文,不會讓回覆失敗。語音 session 不補抓。
+6. **時間間隔行**:放在 user role(在她自己的話前面時自成一則 user 訊息),被預算截掉後落在最前面的間隔行會一起拿掉。
+7. **mention 的做法**:`PlatformSink` 多了 optional 的 `mention(account)`(Discord 回傳 `<@id>`);agent 在 `filterOutgoing` 之後,把對話裡出現過的人的 `@名字`(完全符合、長名字優先、被她封鎖的人除外)換成 mention。`mention_users = false` 關掉。
+8. **Discord 的 architecture 測試**:「不准用 embeds」的檢查改成只看 Discord 套件的輸出端(`mapping.ts` 讀別人傳的 embed 不算)。
+
+還沒實測(需要真的 Discord / API):
+
+- **OpenCode 端收不收圖片**:沒有實際打過。收不收都能動(不收的話第一次會被拒絕、改送文字並記住),但要確認它用的是哪個狀態碼;如果它用 4xx 以外的方式拒絕,就要在 `[llm.image_input]` 手動標 `false`。
+- deepseek-v4.1-flash 實際看圖的效果與費用(`detail` 預設 `auto`)。
+- Discord 的 Read Message History 權限、`messageSnapshots`(轉傳)與 `referenced_message` 快取在真實 gateway 上的樣子;CDN 下載是否會轉址。
+- 語音頻道文字區的訊息在 gateway 上確實是 `GuildVoice` 頻道、id 跟語音頻道相同(依 Discord 文件)。
