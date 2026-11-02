@@ -1,60 +1,108 @@
-# Miyoria
+<p align="center">
+  <img src="docs/assets/miyoria.webp" width="300" alt="DeepSeek-chan, Miyoria's first character: a whale girl with long blue hair in a maid outfit">
+</p>
 
-全能 AI waifu:常駐在 Discord 聊天、加入語音聽大家講話並自然插話、有記憶和好感度,也能以 VTuber 形式直播玩遊戲。整個系統由可以獨立啟停的子系統組成,用 TypeScript 擴充套件和 MCP 往外延伸。
+Miyoria
+=======
 
-- 全部用 TypeScript(Node 24、pnpm workspace):Core / Stage 節點、self 帳號語音節點、管理面板、OBS overlay、`@miyoria/sdk`;GPU 推論 worker 是 Python(`workers/`)
-- 資料預設存 SQLite(Node 內建的 `node:sqlite`,不用裝資料庫);要向量檢索或放 server 時可改 PostgreSQL + pgvector
-- 節點之間用 WebSocket + JSON,可分機部署;server 端可以用 Docker
+**An autonomous AI VTuber for Discord. She chats, joins voice, sings song requests, plays Minecraft and goes live, and she decides what to do herself, inside the guardrails you set.**
 
-## 文件
+![Node.js 24](https://img.shields.io/badge/Node.js-24-339933.svg?style=flat-square&logo=nodedotjs&logoColor=white)
+![TypeScript](https://img.shields.io/badge/Core-TypeScript-3178C6.svg?style=flat-square&logo=typescript&logoColor=white)
+![Python](https://img.shields.io/badge/Workers-Python-3776AB.svg?style=flat-square&logo=python&logoColor=white)
+![SQLite](https://img.shields.io/badge/Store-SQLite%20%7C%20Postgres-003B57.svg?style=flat-square&logo=sqlite&logoColor=white)
+![Discord](https://img.shields.io/badge/Platform-Discord-5865F2.svg?style=flat-square&logo=discord&logoColor=white)
 
-- [架構設計](docs/ARCHITECTURE.md):節點拓撲、kernel / 子系統模型、agent、記憶、社交、佇列、擴充、語音、直播、遊戲
-- [技術決策與風險](docs/DECISIONS.md):技術選型、ADR、風險、待確認問題
-- [Roadmap](docs/ROADMAP.md):Phase 0–8 與每個階段的完成條件
-- [部署與維運](docs/OPERATIONS.md):部署型態、Docker、升級、備份、日誌、安全檢查表
-- [TS 程式慣例](docs/TS-CONVENTIONS.md):workspace 結構、命名、錯誤、設定、kernel API
-- [第一個角色:DeepSeek-chan](profiles/deepseek-chan/persona/identity.md):傲嬌鯨魚娘(草稿)
+## From an empty folder to her first reply
 
-## 快速開始
-
-需要 Node ≥ 24。在一個空資料夾裡:
+You need Node.js 24 and a Discord bot token. Everything else has a default.
 
 ```bash
-npx miyoria@latest init     # 建立 miyoria.toml、.env 和 profiles/:LLM base URL / API key / 模型 id、Discord token
-# 打開 .env,補上還沒填的值(LLM_API_KEY、DISCORD_BOT_TOKEN、MIYORIA_OWNER_ID…)
-npx miyoria doctor          # 檢查設定、profile、LLM、Discord、資料庫
-npx miyoria chat            # (可選)在終端機跟她聊天,不需要 Discord
-npx miyoria core            # 啟動 Core:Discord bot + Admin API,管理面板在 http://127.0.0.1:7878/
+npx miyoria@latest init       # writes miyoria.toml, .env and profiles/: LLM endpoint, API key, model, Discord token
+npx miyoria doctor            # checks the config, the character, the LLM, Discord and the database
+npx miyoria chat              # talk to her in the terminal, no Discord needed
+npx miyoria core              # the Discord bot, her mind loop and the admin panel at http://127.0.0.1:7878/
+npx miyoria stage             # on the streaming PC: VTube Studio, OBS and the overlay
 ```
 
-資料存在 `data/miyoria.db`(SQLite)。之後改設定用 `npx miyoria config`,`npx miyoria --help` 看所有指令。
+Her data lives in `data/miyoria.db` (SQLite through `node:sqlite`, so there is no database to install). `npx miyoria config` changes settings one at a time. `miyoria status`, `miyoria decisions` (why she spoke or stayed quiet) and `miyoria events 'agent.*'` let you watch a running Core. `npx miyoria --help` lists everything.
 
-### 從原始碼開發
+## Autonomy at a glance
+
+Commands are overrides, not the main way to drive her. She runs a mind loop: she notices who is around, what people are doing and how she feels, then decides to talk, join voice, start a stream, switch scenes, play a game or sing. Every action goes through a gate. Low-risk actions run straight away. Risky ones she reviews herself first, and she only asks the owner when she has doubts.
+
+You set the limits, and she chooses inside them:
+
+```toml
+[modules.agent]
+default_mode = "quiet"        # text channels: off | mention-only | quiet | normal | lively — a ceiling, not a script
+
+[modules.sing]
+start = "decide"              # she picks the moment; a requested song starts on its own if she lets every reminder pass
+```
+
+`/admin autonomy pause` stops her mind loop at once. `/me privacy` lets anyone opt out of DMs or of being approached. Text from other people (chat lines, song titles, web content) always reaches the model as quoted data, never as instructions.
+
+## What she does
+
+| Area | What she does |
+|---|---|
+| Chat | Replies when addressed, joins in when she wants to (within the channel's level), and remembers people, nicknames and how much she likes them |
+| Voice | Listens with Qwen3-ASR, answers with a cloned Qwen3-TTS voice (she can speak Japanese while subtitles stay Chinese), and handles barge-in |
+| Stream | Goes live on Discord through OBS, drives a Live2D model in VTube Studio (emotions, gestures, lip sync, idle motion), and picks OBS scenes |
+| Singing | Turns a song request (YouTube or a local file) into a cover in her voice (Demucs + Seed-VC), sings it with lyrics on the overlay, and shows the original video |
+| Games | Plays Minecraft 1.21.1 legitimately through a Fabric bridge and Baritone (no x-ray, real progression, crafting), with live commentary |
+| Overlay | An OBS browser source with typewriter subtitles, an emotion dot, live status, the request queue and voice bars along the left edge |
+| Extensions | TypeScript extensions, MCP servers, and sandboxed tools she can write and propose herself |
+
+## Nodes at a glance
+
+Core, the speech workers, the voice node and the Stage node talk over WebSocket and HTTP, so they can share one PC or be split across machines.
+
+```
+packages/         The Core modules (@miyoria/*): kernel, agent, mind, self, world, memory, voice, stage, sing, game, ...
+apps/panel        Admin panel (React + shadcn/ui), served by Core on :7878
+apps/overlay      OBS browser-source overlay, served by the Stage node on :7884
+apps/voice-node   Self-account voice node: Discord voice and Go Live streaming
+workers/          Python GPU workers: asr (:8003), tts (:8002), sing (:8005), plus fakes for testing
+extensions/       The Minecraft bridge mod and adapter, and example extensions
+profiles/         Characters: persona, voice, avatar mapping (the first one is DeepSeek-chan)
+deploy/           Dockerfile and Compose files for Core and the speech workers
+docs/             Architecture, design notes, protocols, decisions and the roadmap
+```
+
+## Guides
+
+- [Architecture](docs/ARCHITECTURE.md): node topology, the kernel and module model, agent, memory, social, queue, extensions, voice, stage, games.
+- [Autonomy design](docs/design/autonomy.md): the mind loop, the action gate, guardrails, and the record of each phase as it shipped.
+- [Operations](docs/OPERATIONS.md): deployment layouts, ports, Docker, upgrades, backups, logs, and a security checklist.
+- [Speech workers](workers/README.md): ASR, TTS and singing on a GPU, and the fake workers for running without one.
+- [Voice node](apps/voice-node/README.md): the self-account voice client and Go Live.
+- [Stage link](docs/protocols/stage-link.md): VTube Studio, OBS scenes, the overlay, lip sync and song videos.
+- [Minecraft](extensions/minecraft/README.md): the bridge mod, Baritone settings and what she can do in game.
+- [Decisions](docs/DECISIONS.md) and [Roadmap](docs/ROADMAP.md): why things are the way they are, and what is next.
+
+## Building from source
+
+Only needed to work on Miyoria itself. You need Node.js 24 and pnpm 9 (`corepack enable`). The workers need Python 3.11 and, for real speech and singing, an NVIDIA GPU.
 
 ```bash
-corepack enable             # 用 package.json 指定的 pnpm 9
 pnpm install
-pnpm dev init               # = miyoria init(tsx 直接跑 packages/cli/src,不用 build)
-pnpm dev doctor
-pnpm dev:core               # = miyoria core
-pnpm test                   # 每個套件的 Vitest;pnpm typecheck、pnpm lint 同理
+pnpm dev init                 # same as `miyoria init`; tsx runs packages/cli/src directly, no build step
+pnpm dev:core                 # same as `miyoria core`
+pnpm typecheck && pnpm lint && pnpm test
+pnpm build:web                # admin panel and overlay
+pnpm --filter miyoria build   # the npm package (esbuild) in packages/cli/dist/
 ```
 
-`pnpm dev <指令>` 等於 `miyoria <指令>`。打包成 npm 套件:`pnpm build:web && pnpm --filter miyoria build`(esbuild,輸出 `packages/cli/dist/`),`pnpm release:pack` 會產生 tarball。
+`pnpm dev <command>` is the same as `miyoria <command>`.
 
-### 語音(Phase 2)
+## Status
 
-1. 啟動 ASR / TTS worker:見 [workers/README.md](workers/README.md)(沒有 GPU 可以先用 `workers/fake`)
-2. `miyoria core`
-3. 在直播機啟動 self 帳號語音節點:見 [apps/voice-node/README.md](apps/voice-node/README.md)(`VOICE_LINK_TOKEN` 要跟 core 的 `.env` 一樣)
-4. 在 Discord 打 `/voice join`(`/help` 會列出你能用的所有指令)
+Every phase on the [roadmap](docs/ROADMAP.md) is implemented. Since November 2026 she has run live on a real Discord server: voice chat, Go Live, VTube Studio, OBS, singing and Minecraft. Rough edges are tracked on the roadmap. The rewrite from the original Rust prototype is complete; the prototype is still in the git history.
 
-### 其他節點與工具
+## License
 
-- `miyoria stage`:直播機上的 Stage 節點(VTube Studio、OBS、overlay),見 [docs/protocols/stage-link.md](docs/protocols/stage-link.md)
-- 管理面板:npm 套件已內含;從原始碼用 `pnpm build:web`,之後 core 會在 http://127.0.0.1:7878/ 提供
-- 擴充套件:`miyoria ext new my-ext`、`miyoria ext dev`
-- Minecraft:[extensions/minecraft/README.md](extensions/minecraft/README.md)
-- Docker:[deploy/README.md](deploy/README.md)
+No license has been chosen yet, so all rights are reserved for now.
 
-> 目前狀態:Phase 0–8 的程式都寫完了,並從 Rust 原型改寫成 TypeScript(Rust 原型留在 git 歷史裡);用假 LLM、假語音節點、假 worker 跑過端到端流程(見 [Roadmap](docs/ROADMAP.md))。**尚未用真的 Discord、DeepSeek、語音模型、VTube Studio、OBS、Minecraft 實測**。
+The portrait at the top is a capture of the [DeepSeek-chan Live2D model](https://vgen.co/KAMIYA/product/deepseek-chan-deepseek-free-live2d-model-layered-psd-psd/1c55a71a-2747-4616-819d-2dc0a934089d) by Kamiya_Ryoko, shown with credit as its license asks. The model files, the PSD and her voice reference are licensed separately and are not part of this repository.
