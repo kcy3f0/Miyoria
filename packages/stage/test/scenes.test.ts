@@ -13,12 +13,13 @@ import {
 } from "@miyoria/llm";
 import { MemorySettingsStore } from "@miyoria/store";
 import { ToolRegistry } from "@miyoria/tools";
-import { Principals } from "@miyoria/types";
+import { type JsonObject, Principals } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   classifyByKeywords,
   defaultStageStatus,
   encodeMessage,
+  type Obs,
   ObsConfigSchema,
   ObsController,
   parseClassification,
@@ -269,7 +270,7 @@ describe("stage.scene through the gate", () => {
       builtins: false,
     });
     for (const c of stageCapabilities(link, { roles: r })) registry.register(c);
-    const invoke = (principal: ReturnType<typeof Principals.director>, args: object) =>
+    const invoke = (principal: ReturnType<typeof Principals.director>, args: JsonObject) =>
       registry.invoke({ principal, capability: "stage.scene", args, why: "test", turn: null });
 
     const out = await invoke(Principals.director(null), { role: "game" });
@@ -407,6 +408,17 @@ describe("scene director", () => {
     t.director.stop();
   });
 
+  it("going live while playing without a starting scene keeps the game scene", async () => {
+    const t = await rig({}, ["Talk", "Game"]);
+    t.director.onGame(true);
+    await ms(2_000);
+    expect(t.switches).toEqual(["game"]);
+    t.director.onGoLive("g1", "starting");
+    await ms(60_000);
+    expect(t.switches).toEqual(["game"]);
+    t.director.stop();
+  });
+
   it("stays out of the way after a manual switch", async () => {
     const t = await rig({ manual_hold_ms: 60_000 });
     t.show("Camera");
@@ -526,7 +538,7 @@ describe("transitions on the stage node", () => {
   });
 
   it("ObsController sets the transition before switching", async () => {
-    const obs = new FakeObs("Talk");
+    const obs: FakeObs & { setTransition?: Obs["setTransition"] } = new FakeObs("Talk");
     const transitions: [string, number | null][] = [];
     let fail = false;
     obs.setTransition = async (name: string, durationMs: number | null) => {

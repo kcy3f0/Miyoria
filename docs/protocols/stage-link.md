@@ -113,7 +113,7 @@ only_while_live = false         # true:只在直播中切
 - **用途(role)**:內建 `chat`(聊天)、`game`(遊戲)、`brb`(暫離)、`starting`(開場)、`ending`(結尾);`roles` 裡可以加自己的(小寫英數與 `_`)。每個用途的場景依序取自:設定檔 `roles` → 面板(`PUT /api/stage/scenes`,存在 settings `_global` / `stage:scene_roles`)→ 自動分類。自動分類在節點第一次回報 `scenes`、以及場景清單改變時跑一次:`fast` 用途、JSON 模式,場景名稱放在不可信的資料區塊裡,答案只認清單裡一字不差(不分大小寫)的名稱;沒有 LLM、呼叫失敗或答案不是 JSON 時改用關鍵字(`chat` / `talk` / `雜談`、`game` / `遊戲`、`brb` / `afk` / `暫離`、`start` / `soon` / `開場`、`end` / `outro` / `下播`…)。服務 `SceneRolesKey`。
 - **能力 `stage.scene`** 收 `{role}` 或 `{name}`(場景名稱;不是場景名稱但是用途名稱時當用途):用途會帶上它的轉場送 `scene`。她的工具 `stage_scene` 一樣可以給 `role`。
 - **導演**(principal `director`,每次切換都是 `stage.scene {role}` 過閘門,所以自主暫停時導演也停):
-  - 開台(Go Live `starting` / `live`,或 OBS 開始直播)→ `starting`(沒有開場場景就 `chat`),`starting_ms` 後 → `chat`(或 `game`);
+  - 開台(Go Live `starting` / `live`,或 OBS 開始直播)→ `starting`,`starting_ms` 後 → `chat`(在玩遊戲就 `game`)。沒有場景的用途會跳過、換下一個符合的(沒有開場場景就直接聊天;正在玩遊戲就維持遊戲場景);
   - `game.director.session` `started` → `game`,`stopped` → `chat`;
   - 直播中、沒在玩遊戲:`brb_after_ms` 沒有任何人講話(她的語音、別人的語音、回合完成)或她離開了語音頻道 → `brb`,有人講話 / 回到語音 → 回來;
   - 停播:Go Live `stopped` / `failed`,或 OBS 停止直播 → `ending`,並停在結尾畫面直到有新的變化(開台、開始 / 停止遊戲)。

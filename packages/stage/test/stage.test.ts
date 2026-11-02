@@ -39,7 +39,12 @@ async function core() {
   const bus = new EventBus();
   const sup = new Supervisor({ bus, services });
   const module = new StageLinkModule();
-  await sup.register(module, { bind: "127.0.0.1:0", token: TOKEN }, true);
+  // The scene director would switch scenes on its own when the stream starts; these tests drive OBS.
+  await sup.register(
+    module,
+    { bind: "127.0.0.1:0", token: TOKEN, scenes: { director: false } },
+    true,
+  );
   await sup.startAll();
   cleanup.push(() => sup.stopAll());
   return { sup, services, bus, module };

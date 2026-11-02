@@ -5,6 +5,9 @@
 //   live, nobody talking for `brb_after_ms`, or she left voice → brb (back when it ends)
 //   the stream is ending → ending (held `ending_ms` before the stream stops, see `close`)
 //
+// A role without a scene is skipped for the next one that fits (going live without a starting
+// scene goes to chat, or stays on the game scene while she plays).
+//
 // It only reacts to changes (it never "corrects" the scene at boot), coalesces changes within
 // `debounce_ms`, keeps `min_switch_ms` between switches and stays out of the way for
 // `manual_hold_ms` after someone else switched (the owner in OBS, a command, the panel or her own
@@ -38,9 +41,6 @@ interface Want {
   /** Skips the debounce, the minimum interval and the manual hold. */
   urgent: boolean;
 }
-
-/** Roles that fall back to another one when they have no scene. */
-const FALLBACK: Readonly<Record<string, string>> = { starting: "chat" };
 
 export class SceneDirector implements StreamCurtain {
   readonly #config: ScenesConfig;
@@ -93,19 +93,35 @@ export class SceneDirector implements StreamCurtain {
     return false;
   }
 
-  /** The role she should be in now, `null` = leave the scene alone. */
-  desired(): Want | null {
+  /**
+   * The roles that fit her situation, most specific first; the first one with a scene wins (so
+   * going live without a starting scene keeps the game scene while she plays).
+   */
+  #wants(): Want[] {
     const now = this.#now();
     const live = this.live();
+    const out: Want[] = [];
     if (this.#ended && (!live || now < this.#endingUntil)) {
-      return { role: "ending", why: "直播結束", urgent: true };
+      out.push({ role: "ending", why: "直播結束", urgent: true });
     }
-    if (!live && this.#config.only_while_live) return null;
-    if (live && now < this.#startingUntil) return { role: "starting", why: "開台", urgent: true };
-    if (this.#away(now))
-      return { role: "brb", why: "暫時沒有人在講話或她離開了語音", urgent: false };
-    if (this.#playing) return { role: "game", why: "開始玩遊戲", urgent: false };
-    return { role: "chat", why: "回到聊天", urgent: false };
+    if (!live && this.#config.only_while_live) return out;
+    if (live && now < this.#startingUntil)
+      out.push({ role: "starting", why: "開台", urgent: true });
+    if (this.#away(now)) {
+      out.push({ role: "brb", why: "暫時沒有人在講話或她離開了語音", urgent: false });
+    }
+    if (this.#playing) out.push({ role: "game", why: "開始玩遊戲", urgent: false });
+    out.push({ role: "chat", why: "回到聊天", urgent: false });
+    return out;
+  }
+
+  /** The role she should be in now and its scene, `null` = leave the scene alone. */
+  desired(): (Want & { scene: string }) | null {
+    for (const want of this.#wants()) {
+      const scene = this.#roles.resolve(want.role);
+      if (scene !== null) return { ...want, scene };
+    }
+    return null;
   }
 
   #away(now: number): boolean {
@@ -288,15 +304,8 @@ export class SceneDirector implements StreamCurtain {
     const urgentRequest = this.#urgent;
     this.#urgent = false;
     const want = this.desired();
-    if (want === null) return;
-    let role = want.role;
-    let scene = this.#roles.resolve(role);
-    const fallback = FALLBACK[role];
-    if (scene === null && fallback !== undefined) {
-      role = fallback;
-      scene = this.#roles.resolve(role);
-    }
-    if (scene === null || scene === this.#scene) return;
+    if (want === null || want.scene === this.#scene) return;
+    const { role, scene } = want;
     const now = this.#now();
     const urgent = want.urgent && urgentRequest;
     if (!urgent && now < this.#manualUntil) {
