@@ -94,6 +94,9 @@ async function seed(store: Store) {
       "self:state",
       "self:feeling:p",
       "channel_mode:x",
+      "knowledge:doc:x",
+      "reflect:lesson:x",
+      "conversation:state:x",
       "zzz:unknown",
     ]) {
       await store.settings.set(p, key, 1);
@@ -164,6 +167,8 @@ describe("data categories", () => {
       "relationships",
       "call_names",
       "inner",
+      "knowledge",
+      "learning",
       "people",
     ]);
     expect(categoryModules(resolveCategories(["people"]))).toEqual([
@@ -171,9 +176,13 @@ describe("data categories", () => {
       "agent",
       "self",
       "mind",
+      "knowledge",
+      "reflect",
       "world",
       "memory",
     ]);
+    // Her conversation notes are made from the log and go with it.
+    expect(resolveCategories(["messages"])).toEqual(["conversation", "messages"]);
   });
 
   it("factory reset leaves a fresh install: audit, LLM usage and sessions kept", async () => {
@@ -234,7 +243,7 @@ describe("data categories", () => {
     // The other profile keeps its own data (people are shared and gone).
     expect(await store.messages.recent(OTHER, ctx, 9)).toHaveLength(1);
     expect((await store.relationships.get(OTHER, owen))?.call_name).toBe("歐文");
-    expect((await store.settings.list(OTHER, "")).size).toBe(6);
+    expect((await store.settings.list(OTHER, "")).size).toBe(9);
     expect((await store.personaOverrides.current(OTHER)).size).toBe(1);
   });
 

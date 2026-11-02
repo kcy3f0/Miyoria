@@ -1363,7 +1363,7 @@ function behaviour(open: () => Promise<Store>): void {
 
     // Each category alone, then nothing of it is left and the rest is untouched.
     const counts = await store.profileData.wipe(profile, ["messages"]);
-    expect(counts).toEqual({ message_log: 1, memory_watermarks: 2 });
+    expect(counts).toEqual({ message_log: 1, memory_watermarks: 2, conversation_states: 0 });
     expect(await store.messages.recent(profile, ctx, 9)).toEqual([]);
     expect((await store.settings.list(profile, "memory_watermark:")).size).toBe(0);
     expect(await store.memories.list(profile, { ...baseFilter, limit: 9 })).toHaveLength(2);
@@ -1388,6 +1388,7 @@ function behaviour(open: () => Promise<Store>): void {
       self_state: 1,
       self_feelings: 1,
       mind_thoughts: 0,
+      mind_digests: 0,
       mood: 1,
       decision_log: 1,
       channel_modes: 1,

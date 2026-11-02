@@ -26,6 +26,9 @@ export type DataCategoryId =
   | "relationships"
   | "call_names"
   | "inner"
+  | "knowledge"
+  | "learning"
+  | "conversation"
   | "mood"
   | "messages"
   | "decisions"
@@ -206,13 +209,38 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
   }),
   category(
     "inner",
-    // @miyoria/self `STATE_KEY`, `FEELING_PREFIX`; @miyoria/mind's thought journal
+    // @miyoria/self `STATE_KEY`, `FEELING_PREFIX`; @miyoria/mind's thought journal and its
+    // digests (`THOUGHT_PREFIX`, `DIGEST_PREFIX`)
     [
       settings("self_state", "active", ["self:state"]),
       settings("self_feelings", "active", [], ["self:feeling:"]),
       settings("mind_thoughts", "active", [], ["mind:thought:"]),
+      settings("mind_digests", "active", [], ["mind:digest:"]),
     ],
     { modules: ["self", "mind"] },
+  ),
+  // @miyoria/learning `DOC_PREFIX`: her self-organized documents, whatever their shape.
+  category("knowledge", [settings("knowledge_docs", "active", [], ["knowledge:doc:"])], {
+    modules: ["knowledge"],
+  }),
+  // @miyoria/learning `LESSON_PREFIX`, `RUN_PREFIX`, `REFLECT_STATE_KEY`, `FEEDBACK_PREFIX`
+  category(
+    "learning",
+    [
+      settings("lessons", "active", [], ["reflect:lesson:"]),
+      settings("reflections", "active", ["reflect:state"], ["reflect:run:"]),
+      settings("feedback", "active", [], ["feedback:day:"]),
+    ],
+    { modules: ["reflect"], confirm: "simple" },
+  ),
+  // @miyoria/learning `STATE_PREFIX`: her running notes on each conversation (from the log).
+  category(
+    "conversation",
+    [settings("conversation_states", "active", [], ["conversation:state:"])],
+    {
+      modules: ["conversation"],
+      confirm: "simple",
+    },
   ),
   // @miyoria/social `mood.ts` `SETTINGS_KEY`
   category("mood", [settings("mood", "active", ["mood:last"])], {
@@ -239,7 +267,8 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
       // @miyoria/memory `WATERMARK_PREFIX`: only ever together with the log.
       settings("memory_watermarks", "active", [], ["memory_watermark:"]),
     ],
-    { modules: ["memory", "agent"] },
+    // Her conversation notes are made from the log: they go with it.
+    { requires: ["conversation"], modules: ["memory", "agent"] },
   ),
   category(
     "decisions",
@@ -281,8 +310,8 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
       }),
     ],
     {
-      // Relationships and feelings are keyed by person.
-      requires: ["relationships", "call_names", "inner"],
+      // Relationships, feelings, documents, lessons and feedback are keyed by person.
+      requires: ["relationships", "call_names", "inner", "knowledge", "learning"],
       modules: ["social", "agent", "world", "memory"],
       shared: true,
     },
