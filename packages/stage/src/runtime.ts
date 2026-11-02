@@ -26,6 +26,7 @@ import {
   sceneTransitionOf,
   VERSION,
 } from "./protocol.js";
+import { SongVideo } from "./song-video.js";
 import {
   ApiError,
   ERROR_USER_DENIED,
@@ -180,8 +181,21 @@ export async function runStageWith(
       obs = controller;
     }
 
+    const controller = obs;
+    const songVideo =
+      controller === null
+        ? null
+        : new SongVideo({
+            obs: () => controller.connection(),
+            currentScene: () => controller.state().scene,
+            config: config.obs,
+            latencyMs: config.lipsync.latency_ms,
+            clock,
+          });
+    if (songVideo) tasks.signal.addEventListener("abort", () => songVideo.close(), { once: true });
+
     const url = overlayUrl(overlayServer.addr);
-    const stage = new Stage(vts, obs, overlay, avatar, url);
+    const stage = new Stage(vts, obs, overlay, avatar, url, songVideo);
     stage.aggregateStatus(tasks.signal);
     await coreLink(config, stage, signal);
   } finally {
@@ -217,6 +231,7 @@ class Stage {
   readonly #obs: ObsController | null;
   readonly #overlay: OverlayHub;
   readonly #avatar: AvatarLoop | null;
+  readonly #songVideo: SongVideo | null;
   readonly status = new Watch<StageStatus>(defaultStageStatus(), sameStatus);
   /** Connected to Core. */
   readonly core = new Watch<boolean>(false);
@@ -229,12 +244,14 @@ class Stage {
     overlay: OverlayHub,
     avatar: AvatarLoop | null,
     overlayUrl: string | null = null,
+    songVideo: SongVideo | null = null,
   ) {
     this.#vts = vts;
     this.#obs = obs;
     this.#overlay = overlay;
     this.#avatar = avatar;
     this.#overlayUrl = overlayUrl;
+    this.#songVideo = songVideo;
   }
 
   /** Re-reads the hotkey list of the current VTS model. */
@@ -310,6 +327,10 @@ class Stage {
         return;
       case "gaze":
         this.#avatar?.gaze(msg.target);
+        return;
+      case "song_video":
+        if (msg.action === "play") this.#songVideo?.play(msg);
+        else this.#songVideo?.stop(msg.song);
         return;
       case "scene":
         this.#answer(msg.id, async () =>

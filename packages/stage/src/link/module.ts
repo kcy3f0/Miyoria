@@ -16,7 +16,9 @@ import {
   contextKeyString,
   type Envelope,
   isJsonObject,
+  type JsonObject,
   Principals,
+  parseSongCue,
   SONG_TOPIC,
   StreamCurtainKey,
 } from "@miyoria/types";
@@ -67,6 +69,10 @@ function direct(director: SceneDirector, env: Envelope): void {
         if (state) director.onGoLive(typeof data.guild === "string" ? data.guild : "", state);
       } else if (topic === GAME_SESSION_TOPIC) {
         director.onGame(data.state === "started");
+      } else if (topic === SONG_TOPIC) {
+        const cue = parseSongCue(payload);
+        if (cue?.state === "started") director.onSong(true);
+        else if (cue?.state === "ended") director.onSong(false);
       }
       return;
     }
@@ -146,32 +152,46 @@ export class StageLinkModule implements Module {
       signal: ctx.signal,
     });
     await roles.load();
+    const switchTo = async (args: JsonObject, why: string): Promise<boolean> => {
+      const outcome = await actuators.invoke({
+        principal: Principals.director(null),
+        capability: "stage.scene",
+        args,
+        why,
+        turn: null,
+      });
+      if (outcome.status === "denied") {
+        ctx.log.debug(
+          { ...args, reason: outcome.decision.reason },
+          "the gate refused a scene switch",
+        );
+      } else if (outcome.status === "failed") {
+        ctx.log.warn({ ...args, err: outcome.error }, "scene switch failed");
+      }
+      return outcome.status === "done";
+    };
     const director = new SceneDirector({
       config: config.scenes,
       roles,
       clock: ctx.clock,
-      switchRole: async (role, why) => {
-        const outcome = await actuators.invoke({
-          principal: Principals.director(null),
-          capability: "stage.scene",
-          args: { role },
-          why,
-          turn: null,
-        });
-        if (outcome.status === "denied") {
-          ctx.log.debug(
-            { role, reason: outcome.decision.reason },
-            "the gate refused a scene switch",
-          );
-        } else if (outcome.status === "failed") {
-          ctx.log.warn({ role, err: outcome.error }, "scene switch failed");
-        }
-        return outcome.status === "done";
-      },
+      switchRole: (role, why) => switchTo({ role }, why),
+      switchScene: (name, why) => switchTo({ name }, why),
     });
+    // A song's video plays in the sing scene when the director goes there, else in the current one.
+    const forwarder = new Forwarder(config.subtitle_text_turns, {
+      singScene: () => (config.scenes.director ? roles.resolve("sing") : null),
+      now: () => ctx.clock.now(),
+    });
+    let nodeUp = false;
     const unsubscribe = link.subscribeStatus((status) => {
       if (status) roles.observe(status.scenes);
       director.onStatus(status);
+      // A node that (re)connects mid-song picks the video up where the song is.
+      if (status && !nodeUp) {
+        const resume = forwarder.resumeSongVideo();
+        if (resume) link.send(resume);
+      }
+      nodeUp = status !== null;
     });
     ctx.provide(SceneRolesKey, roles);
     ctx.provide(StreamCurtainKey, director);
@@ -188,7 +208,6 @@ export class StageLinkModule implements Module {
       "voice.participants",
       "voice.utterance",
     ]);
-    const forwarder = new Forwarder(config.subtitle_text_turns);
     ctx.spawn("forward", async (signal) => {
       // Follow the voice node's Go Live with OBS (see golive.ts). Timers are cleared on stop.
       let goliveTimer: ReturnType<typeof setTimeout> | undefined;

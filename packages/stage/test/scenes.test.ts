@@ -167,7 +167,15 @@ describe("scene roles", () => {
     await r.idle();
     expect(r.resolve("ending")).toBe("Camera");
     expect(r.resolve("intermission")).toBe("BRB");
-    expect(r.roles()).toEqual(["chat", "game", "brb", "starting", "ending", "intermission"]);
+    expect(r.roles()).toEqual([
+      "chat",
+      "game",
+      "brb",
+      "starting",
+      "ending",
+      "sing",
+      "intermission",
+    ]);
 
     await r.set("chat", "camera");
     expect(r.resolve("chat")).toBe("Camera");

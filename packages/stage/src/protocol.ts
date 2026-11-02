@@ -49,6 +49,10 @@ export function sceneTransitionOf(msg: {
   return msg.transition ? { name: msg.transition, duration_ms: msg.transition_ms ?? null } : null;
 }
 
+/** `song_video` actions. */
+export type SongVideoAction = "play" | "stop";
+export const SongVideoActionSchema = z.enum(["play", "stop"]);
+
 /** `speaking` states. */
 export type SpeakingState = "started" | "stopped";
 export const SpeakingStateSchema = z.enum(["started", "stopped"]);
@@ -155,6 +159,20 @@ export type CoreMessage =
   | { type: "stream"; action: StreamAction; id?: number }
   | { type: "avatar_hotkey"; name: string; id?: number }
   | { type: "gaze"; target: GazeTarget }
+  /**
+   * The song she sings has a video: `play` shows `path` (a file in the song worker's cache on
+   * the streaming PC) in the media source, muted, `offset_ms` into the song at the moment the
+   * message was sent, in `scene` when the scene director switches to a `sing` scene (else the
+   * current one); `stop` stops and clears it.
+   */
+  | {
+      type: "song_video";
+      action: SongVideoAction;
+      song: string;
+      path?: string;
+      offset_ms?: number;
+      scene?: string;
+    }
   /** Asks for a `status` (with the same `id`). */
   | { type: "status_request"; id?: number }
   | { type: "ping" }
@@ -185,13 +203,33 @@ const CoreMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("stream"), action: StreamActionSchema, id: requestId }),
   z.object({ type: z.literal("avatar_hotkey"), name: z.string(), id: requestId }),
   z.object({ type: z.literal("gaze"), target: GazeTargetSchema }),
+  z.object({
+    type: z.literal("song_video"),
+    action: SongVideoActionSchema,
+    song: z.string().max(128),
+    path: z
+      .string()
+      .max(1024)
+      .nullish()
+      .transform((v) => v || undefined),
+    offset_ms: z
+      .number()
+      .min(0)
+      .max(86_400_000)
+      .nullish()
+      .transform((v) => v ?? undefined),
+    scene: z
+      .string()
+      .nullish()
+      .transform((v) => (v?.trim() ? v.trim() : undefined)),
+  }),
   z.object({ type: z.literal("status_request"), id: requestId }),
   z.object({ type: z.literal("ping") }),
   z.object({ type: z.literal("pong") }),
 ]);
 
 /** Optional keys that are left out when missing. */
-const OPTIONAL_KEYS = ["id", "transition", "transition_ms"] as const;
+const OPTIONAL_KEYS = ["id", "transition", "transition_ms", "path", "offset_ms", "scene"] as const;
 
 /** Drops missing optional keys, like serde's `skip_serializing_if = "Option::is_none"`. */
 function dropMissingId<T extends object>(msg: T): T {

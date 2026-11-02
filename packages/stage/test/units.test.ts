@@ -217,6 +217,10 @@ describe("config", () => {
       subtitle_clear_ms: 6_000,
       poll_ms: 2_000,
       stream_wait_ms: 15_000,
+      song_video_source: "Miyoria 歌曲影片",
+      song_video_dir: "data/songs",
+      song_video_lead_ms: 0,
+      song_video_resync_ms: 300,
     });
     expect(c.lipsync).toStrictEqual(defaultLipSyncConfig());
     expect(c.lipsync.bind).toBe("127.0.0.1:7883");

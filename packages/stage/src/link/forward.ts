@@ -39,6 +39,19 @@ interface TurnEmotions {
   latest: PendingEmotion;
 }
 
+export interface ForwarderOptions {
+  /** The scene a song's video plays in (the `sing` scene the director switches to), if any. */
+  singScene?: () => string | null;
+  /** Clock of `resumeSongVideo` (ms). */
+  now?: () => number;
+}
+
+/** The song video playing: its `play` message, and when that was sent. */
+interface SongVideo {
+  msg: Extract<CoreMessage, { type: "song_video" }>;
+  sentAt: number;
+}
+
 const clampIntensity = (i: unknown): number =>
   typeof i === "number" && Number.isFinite(i) ? Math.min(Math.max(i, 0), 1) : 1;
 
@@ -55,14 +68,30 @@ const clampIntensity = (i: unknown): number =>
  * the sentence's emotion, and the marker's intensity is remembered until then. Playbacks from
  * older voice modules (no `emotion` field) show the turn's latest marker instead. Emotions of
  * other turns are sent at once.
+ *
+ * Songs (`SONG_TOPIC`) with a video also send `song_video` `play` when they start and `stop`
+ * when they end; a node that connects mid-song gets the `play` again (`resumeSongVideo`).
  */
 export class Forwarder {
   readonly #textTurns: boolean;
   readonly #turns: TurnSubtitle[] = [];
   readonly #emotions = new Map<TurnId, TurnEmotions>();
+  readonly #singScene: () => string | null;
+  readonly #now: () => number;
+  #video: SongVideo | null = null;
 
-  constructor(textTurns: boolean) {
+  constructor(textTurns: boolean, options: ForwarderOptions = {}) {
     this.#textTurns = textTurns;
+    this.#singScene = options.singScene ?? (() => null);
+    this.#now = options.now ?? Date.now;
+  }
+
+  /** The `play` of the song video still playing, for a node that just connected. */
+  resumeSongVideo(): CoreMessage | null {
+    const v = this.#video;
+    if (v === null) return null;
+    const offset = (v.msg.offset_ms ?? 0) + Math.max(this.#now() - v.sentAt, 0);
+    return { ...v.msg, offset_ms: Math.round(offset) };
   }
 
   #entry(turn: TurnId): TurnSubtitle {
@@ -115,7 +144,7 @@ export class Forwarder {
   onEvent(event: Event): CoreMessage[] {
     switch (event.type) {
       case "custom":
-        if (event.data.topic === SONG_TOPIC) return songMessages(event.data.payload);
+        if (event.data.topic === SONG_TOPIC) return this.#onSong(event.data.payload);
         return event.data.topic === EMOTION_TOPIC ? this.#onEmotion(event.data.payload) : [];
       case "voice_playback": {
         const { turn, state, text, emotion } = event.data;
@@ -173,27 +202,52 @@ export class Forwarder {
     }
     return out;
   }
+
+  /**
+   * A song she sings: she is speaking while it plays, each lyrics line is its own final
+   * subtitle (an empty line clears it), the end clears it; its video plays from start to end.
+   */
+  #onSong(payload: JsonValue): CoreMessage[] {
+    const cue = parseSongCue(payload);
+    if (cue === null) return [];
+    switch (cue.state) {
+      case "started": {
+        const out: CoreMessage[] = [{ type: "speaking", state: "started" }];
+        this.#video = null;
+        if (cue.video !== undefined) {
+          const scene = this.#singScene();
+          const msg: SongVideo["msg"] = {
+            type: "song_video",
+            action: "play",
+            song: cue.song,
+            path: cue.video,
+            offset_ms: cue.offset_ms ?? 0,
+            ...(scene === null ? {} : { scene }),
+          };
+          this.#video = { msg, sentAt: this.#now() };
+          out.push(msg);
+        }
+        return out;
+      }
+      case "line":
+        return [subtitle(`song:${cue.song}:${cue.index}`, cue.text.trim(), true)];
+      case "ended": {
+        const out: CoreMessage[] = [
+          { type: "speaking", state: "stopped" },
+          subtitle(`song:${cue.song}:end`, "", true),
+        ];
+        if (this.#video?.msg.song === cue.song) {
+          this.#video = null;
+          out.push({ type: "song_video", action: "stop", song: cue.song });
+        }
+        return out;
+      }
+    }
+  }
 }
 
 function subtitle(turn: TurnId, text: string, final: boolean): CoreMessage {
   return { type: "subtitle", turn, text, final };
-}
-
-/**
- * A song she sings (`SONG_TOPIC`): she is speaking while it plays, each lyrics line is its own
- * final subtitle (an empty line clears it), and the end clears it.
- */
-function songMessages(payload: JsonValue): CoreMessage[] {
-  const cue = parseSongCue(payload);
-  if (cue === null) return [];
-  switch (cue.state) {
-    case "started":
-      return [{ type: "speaking", state: "started" }];
-    case "line":
-      return [subtitle(`song:${cue.song}:${cue.index}`, cue.text.trim(), true)];
-    case "ended":
-      return [{ type: "speaking", state: "stopped" }, subtitle(`song:${cue.song}:end`, "", true)];
-  }
 }
 
 const ASCII_ALNUM = /^[A-Za-z0-9]$/;

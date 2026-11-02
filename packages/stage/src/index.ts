@@ -53,8 +53,9 @@ export {
   type RoleSwitcher,
   SceneDirector,
   type SceneDirectorDeps,
+  type SceneSwitcher,
 } from "./link/director.js";
-export { EMOTION_TOPIC, Forwarder } from "./link/forward.js";
+export { EMOTION_TOPIC, Forwarder, type ForwarderOptions } from "./link/forward.js";
 export { type GoLiveFollow, goliveFollow, VOICE_GOLIVE_TOPIC } from "./link/golive.js";
 export {
   DEFAULT_BIND,
@@ -123,6 +124,7 @@ export {
 export { BindError, type BoundAddress, formatAddress, parseBind } from "./net.js";
 export {
   defaultObsState,
+  type MediaAction,
   type Obs,
   type ObsConfig,
   ObsConfigSchema,
@@ -131,6 +133,7 @@ export {
   ObsError,
   type ObsState,
   ObsWebSocketConnector,
+  type SceneItem,
 } from "./obs.js";
 export { OverlayHub, serveOverlay } from "./overlay.js";
 export {
@@ -156,6 +159,8 @@ export {
   parseLevelFrame,
   parseStageMessage,
   type SceneTransition,
+  type SongVideoAction,
+  SongVideoActionSchema,
   type SpeakingState,
   type StageMessage,
   type StageStatus,
@@ -177,6 +182,7 @@ export {
   type StageConfigSection,
   StageError,
 } from "./runtime.js";
+export { SongVideo, type SongVideoDeps, type SongVideoPlay, songVideoFile } from "./song-video.js";
 export {
   API_NAME,
   API_VERSION,

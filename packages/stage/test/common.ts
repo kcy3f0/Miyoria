@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer } from "ws";
-import type { Obs, ObsConnector } from "../src/index.js";
+import type { MediaAction, Obs, ObsConnector, SceneItem } from "../src/index.js";
 
 export const WAIT_MS = 5_000;
 
@@ -247,6 +247,49 @@ export class FakeObs implements Obs, ObsConnector {
   async ensureTextSource(source: string): Promise<boolean> {
     this.state.calls.push(`ensure ${source}`);
     return true;
+  }
+
+  /** Scene → its items (the song video tests). */
+  readonly items = new Map<string, SceneItem[]>();
+  /** Media source → its file, playing state and position (ms at `startedAt`). */
+  readonly media = new Map<string, { file: string; muted: boolean; startedAt: number | null }>();
+
+  async sceneItems(scene: string): Promise<SceneItem[]> {
+    const items = this.items.get(scene);
+    if (!items) throw new Error(`No source was found by the name of \`${scene}\`.`);
+    return items.map((i) => ({ ...i }));
+  }
+
+  async setSceneItemEnabled(scene: string, id: number, enabled: boolean): Promise<void> {
+    this.state.calls.push(`${enabled ? "show" : "hide"} ${scene}#${id}`);
+    const item = this.items.get(scene)?.find((i) => i.id === id);
+    if (item) item.enabled = enabled;
+  }
+
+  async setMediaFile(source: string, file: string): Promise<void> {
+    this.state.calls.push(`media ${source} = ${file}`);
+    this.media.set(source, { file, muted: true, startedAt: null });
+  }
+
+  async mediaAction(source: string, action: MediaAction): Promise<void> {
+    this.state.calls.push(`media ${source} ${action}`);
+    const m = this.media.get(source);
+    if (m) m.startedAt = action === "restart" ? Date.now() : null;
+  }
+
+  /** Added to the reported position (a video that lags or runs ahead). */
+  cursorSkew = 0;
+
+  async mediaCursor(source: string): Promise<number | null> {
+    const m = this.media.get(source);
+    return m?.startedAt == null ? null : Date.now() - m.startedAt + this.cursorSkew;
+  }
+
+  async seekMedia(source: string, ms: number): Promise<void> {
+    this.state.calls.push(`media ${source} seek ${Math.round(ms)}`);
+    const m = this.media.get(source);
+    if (m) m.startedAt = Date.now() - ms;
+    this.cursorSkew = 0;
   }
 
   async connect(): Promise<Obs> {

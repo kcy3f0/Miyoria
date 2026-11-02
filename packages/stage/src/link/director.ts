@@ -3,6 +3,8 @@
 //   going live           → starting (for `starting_ms`), then chat
 //   a game starts        → game;  the game stops → chat
 //   live, nobody talking for `brb_after_ms`, or she left voice → brb (back when it ends)
+//   she sings a song     → sing (its video plays there); the song ends → back to the scene
+//                          before it, unless her situation changed meanwhile (then what fits)
 //   the stream is ending → ending (held `ending_ms` before the stream stops, see `close`)
 //
 // A role without a scene is skipped for the next one that fits (going live without a starting
@@ -11,7 +13,7 @@
 // It only reacts to changes (it never "corrects" the scene at boot), coalesces changes within
 // `debounce_ms`, keeps `min_switch_ms` between switches and stays out of the way for
 // `manual_hold_ms` after someone else switched (the owner in OBS, a command, the panel or her own
-// `stage_scene`). Starting and ending are urgent: they skip the waits. Every switch is a
+// `stage_scene`). Starting, ending and songs are urgent: they skip the waits. Every switch is a
 // `stage.scene` request through the gate (principal `director`), so pausing her autonomy also
 // pauses the director.
 
@@ -27,16 +29,24 @@ export type GoLiveState = "starting" | "live" | "stopped" | "failed";
 /** Asks the gate to switch to `role`'s scene; resolves whether it switched. */
 export type RoleSwitcher = (role: string, why: string) => Promise<boolean>;
 
+/** Asks the gate to switch to scene `name`; resolves whether it switched. */
+export type SceneSwitcher = (name: string, why: string) => Promise<boolean>;
+
 export interface SceneDirectorDeps {
   config: ScenesConfig;
   roles: SceneRoles;
   switchRole: RoleSwitcher;
+  /** Going back to the scene before a song (without it: that scene's role, if it has one). */
+  switchScene?: SceneSwitcher;
   clock?: Clock;
 }
 
-/** Why a role is wanted (for the log and the audit `why`). */
+/** Why a role (or a scene) is wanted (for the log and the audit `why`). */
 interface Want {
-  role: string;
+  /** `null`: a scene without a role (going back after a song). */
+  role: string | null;
+  /** A scene of its own instead of the role's. */
+  scene?: string;
   why: string;
   /** Skips the debounce, the minimum interval and the manual hold. */
   urgent: boolean;
@@ -46,11 +56,21 @@ export class SceneDirector implements StreamCurtain {
   readonly #config: ScenesConfig;
   readonly #roles: SceneRoles;
   readonly #switchRole: RoleSwitcher;
+  readonly #switchScene: SceneSwitcher | null;
   readonly #clock: Clock;
 
   readonly #golive = new Map<string, GoLiveState>();
   #obsStreaming = false;
   #playing = false;
+  /** Bumped when her situation changes (a game, going live or off); see `onSong`. */
+  #situation = 0;
+  #singing = false;
+  /** When the song started: the scene shown and the situation. */
+  #beforeSong: { scene: string | null; situation: number } | null = null;
+  /** The sing scene the director switched to for the current song. */
+  #singScene: string | null = null;
+  /** After a song: the scene to go back to. */
+  #returnTo: string | null = null;
   readonly #voices = new Set<string>();
   /** She was in voice at some point of this live session. */
   #voiceThisLive = false;
@@ -77,6 +97,7 @@ export class SceneDirector implements StreamCurtain {
     this.#config = deps.config;
     this.#roles = deps.roles;
     this.#switchRole = deps.switchRole;
+    this.#switchScene = deps.switchScene ?? null;
     this.#clock = deps.clock ?? systemClock;
     this.#lastActivity = this.#now();
   }
@@ -105,6 +126,16 @@ export class SceneDirector implements StreamCurtain {
       out.push({ role: "ending", why: "直播結束", urgent: true });
     }
     if (!live && this.#config.only_while_live) return out;
+    if (this.#returnTo !== null) {
+      const scene = this.#returnTo;
+      out.push({
+        role: this.#roles.roleOf(scene),
+        scene,
+        why: "唱完歌,回到原本的畫面",
+        urgent: true,
+      });
+    }
+    if (this.#singing) out.push({ role: "sing", why: "唱歌", urgent: true });
     if (live && now < this.#startingUntil)
       out.push({ role: "starting", why: "開台", urgent: true });
     if (this.#away(now)) {
@@ -118,14 +149,14 @@ export class SceneDirector implements StreamCurtain {
   /** The role she should be in now and its scene, `null` = leave the scene alone. */
   desired(): (Want & { scene: string }) | null {
     for (const want of this.#wants()) {
-      const scene = this.#roles.resolve(want.role);
+      const scene = want.scene ?? (want.role === null ? null : this.#roles.resolve(want.role));
       if (scene !== null) return { ...want, scene };
     }
     return null;
   }
 
   #away(now: number): boolean {
-    if (!this.live() || this.#playing) return false;
+    if (!this.live() || this.#playing || this.#singing) return false;
     if (this.#config.brb_on_voice_leave && this.#voiceThisLive && this.#voices.size === 0)
       return true;
     const after = this.#config.brb_after_ms;
@@ -175,6 +206,8 @@ export class SceneDirector implements StreamCurtain {
   onGame(playing: boolean): void {
     if (this.#playing === playing) return;
     this.#playing = playing;
+    this.#situation += 1;
+    this.#returnTo = null;
     this.#ended = false;
     this.#activity();
     this.#schedule(false);
@@ -192,6 +225,34 @@ export class SceneDirector implements StreamCurtain {
     }
   }
 
+  /**
+   * She started (`true`) or finished (`false`) singing a song. With a `sing` scene she goes
+   * there at once; afterwards back to the scene she was on, when the director put her on the
+   * sing scene, she is still there and her situation did not change during the song (else to
+   * whatever fits now). Without a `sing` scene nothing switches.
+   */
+  onSong(singing: boolean): void {
+    if (this.#singing === singing) return;
+    this.#singing = singing;
+    this.#activity();
+    if (singing) {
+      this.#beforeSong = { scene: this.#scene, situation: this.#situation };
+      this.#singScene = null;
+      this.#returnTo = null;
+      if (this.#roles.resolve("sing") !== null) this.#schedule(true);
+      return;
+    }
+    const sang = this.#singScene;
+    const before = this.#beforeSong;
+    this.#singScene = null;
+    this.#beforeSong = null;
+    if (sang === null || this.#scene !== sang) return;
+    if (before?.scene && before.scene !== sang && before.situation === this.#situation) {
+      this.#returnTo = before.scene;
+    }
+    this.#schedule(true);
+  }
+
   /** Someone talked (her speech, an utterance, a finished turn). */
   onActivity(): void {
     const wasAway = this.#away(this.#now());
@@ -206,6 +267,8 @@ export class SceneDirector implements StreamCurtain {
   #liveChanged(was: boolean): void {
     const live = this.live();
     if (was === live) return;
+    this.#situation += 1;
+    this.#returnTo = null;
     const now = this.#now();
     if (live) {
       log.info("stream went live");
@@ -304,6 +367,9 @@ export class SceneDirector implements StreamCurtain {
     const urgentRequest = this.#urgent;
     this.#urgent = false;
     const want = this.desired();
+    // Going back after a song is tried once.
+    const back = want !== null && want.scene === this.#returnTo;
+    if (back) this.#returnTo = null;
     if (want === null || want.scene === this.#scene) return;
     const { role, scene } = want;
     const now = this.#now();
@@ -321,13 +387,15 @@ export class SceneDirector implements StreamCurtain {
     this.#lastSwitch = now;
     let switched = false;
     try {
-      switched = await this.#switchRole(role, want.why);
+      if (back && this.#switchScene) switched = await this.#switchScene(scene, want.why);
+      else if (role !== null) switched = await this.#switchRole(role, want.why);
     } catch (error) {
-      log.warn({ err: String(error), role }, "scene switch failed");
+      log.warn({ err: String(error), role, scene }, "scene switch failed");
     }
     if (switched) {
       log.info({ role, scene, why: want.why }, "switched the scene");
       this.#scene = scene;
+      if (role === "sing" && this.#singing) this.#singScene = scene;
     } else {
       this.#expect = null;
     }

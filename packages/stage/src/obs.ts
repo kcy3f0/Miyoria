@@ -27,6 +27,21 @@ export const ObsConfigSchema = z.object({
   poll_ms: z.number().int().nonnegative().default(2_000),
   /** How long `stream start / stop` waits for OBS to change state. */
   stream_wait_ms: z.number().int().nonnegative().default(15_000),
+  /**
+   * Media source (`ffmpeg_source`) that shows the song's original video, muted, while she
+   * sings (`null` = off). The owner creates it; the Stage sets its file and plays it only when
+   * it is an item of the scene it plays in (the `sing` scene, else the current one).
+   */
+  song_video_source: z.string().trim().min(1).nullable().default("Miyoria 歌曲影片"),
+  /** The song worker's cache (`SING_DATA_DIR`): video paths outside it are refused. */
+  song_video_dir: z.string().default("data/songs"),
+  /**
+   * Start the video this much early (OBS takes a moment from restart to the first frame). It
+   * already waits `[stage.lipsync] latency_ms` like her mouth, so it shows what viewers hear.
+   */
+  song_video_lead_ms: z.number().int().min(0).max(5_000).default(0),
+  /** Re-seek the video when it drifts this far from the song (checked now and then); 0 = never. */
+  song_video_resync_ms: z.number().int().nonnegative().default(300),
 });
 export type ObsConfig = z.output<typeof ObsConfigSchema>;
 
@@ -51,9 +66,35 @@ export interface Obs {
    * Returns whether it created one (optional).
    */
   ensureTextSource?(source: string): Promise<boolean>;
+  /** Items of `scene` (top level), for the song video (optional, like the media calls below). */
+  sceneItems?(scene: string): Promise<SceneItem[]>;
+  setSceneItemEnabled?(scene: string, id: number, enabled: boolean): Promise<void>;
+  /**
+   * Points media source `source` at `file` (`""` clears it): local, no loop, no restart on
+   * activate (the Stage starts it on time itself), muted.
+   */
+  setMediaFile?(source: string, file: string): Promise<void>;
+  mediaAction?(source: string, action: MediaAction): Promise<void>;
+  /** Playback position in ms, `null` when nothing plays. */
+  mediaCursor?(source: string): Promise<number | null>;
+  seekMedia?(source: string, ms: number): Promise<void>;
   /** Drops the connection (optional). */
   close?(): Promise<void>;
 }
+
+/** One item of a scene. */
+export interface SceneItem {
+  id: number;
+  source: string;
+  enabled: boolean;
+}
+
+export type MediaAction = "restart" | "stop";
+
+const MEDIA_ACTIONS: Record<MediaAction, string> = {
+  restart: "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART",
+  stop: "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP",
+};
 
 /** Opens `Obs` connections. */
 export interface ObsConnector {
@@ -206,6 +247,60 @@ class ObsWebSocketObs implements Obs {
     return true;
   }
 
+  async sceneItems(scene: string): Promise<SceneItem[]> {
+    const { sceneItems } = await this.#client.call("GetSceneItemList", { sceneName: scene });
+    return sceneItems.map((i) => ({
+      id: Number(i.sceneItemId),
+      source: String(i.sourceName ?? ""),
+      enabled: Boolean(i.sceneItemEnabled),
+    }));
+  }
+
+  async setSceneItemEnabled(scene: string, id: number, enabled: boolean): Promise<void> {
+    await this.#client.call("SetSceneItemEnabled", {
+      sceneName: scene,
+      sceneItemId: id,
+      sceneItemEnabled: enabled,
+    });
+  }
+
+  async setMediaFile(source: string, file: string): Promise<void> {
+    await this.#client.call("SetInputSettings", {
+      inputName: source,
+      inputSettings: {
+        is_local_file: true,
+        local_file: file,
+        looping: false,
+        restart_on_activate: false,
+        close_when_inactive: false,
+        clear_on_media_end: true,
+      },
+      overlay: true,
+    });
+    await this.#client.call("SetInputMute", { inputName: source, inputMuted: true });
+  }
+
+  async mediaAction(source: string, action: MediaAction): Promise<void> {
+    await this.#client.call("TriggerMediaInputAction", {
+      inputName: source,
+      mediaAction: MEDIA_ACTIONS[action],
+    });
+  }
+
+  async mediaCursor(source: string): Promise<number | null> {
+    const r = await this.#client.call("GetMediaInputStatus", { inputName: source });
+    return r.mediaState === "OBS_MEDIA_STATE_PLAYING" && typeof r.mediaCursor === "number"
+      ? r.mediaCursor
+      : null;
+  }
+
+  async seekMedia(source: string, ms: number): Promise<void> {
+    await this.#client.call("SetMediaInputCursor", {
+      inputName: source,
+      mediaCursor: Math.max(0, Math.round(ms)),
+    });
+  }
+
   async close(): Promise<void> {
     await this.#client.disconnect();
   }
@@ -250,6 +345,11 @@ export class ObsController {
 
   state(): ObsState {
     return this.#state.get();
+  }
+
+  /** The OBS connection, `null` while disconnected. */
+  connection(): Obs | null {
+    return this.#current;
   }
 
   /** Calls `listener` whenever the state changes; returns the unsubscribe function. */
