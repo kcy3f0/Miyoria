@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "url": {
+      "type": "string",
+      "description": "osu_rl live.service 的網址(環境變數 MIYORIA_OSU_URL)",
+      "default": "http://127.0.0.1:8765"
+    },
+    "token": {
+      "type": "string",
+      "description": "live.service 的 OSU_RL_CONTROL_TOKEN(環境變數 MIYORIA_OSU_TOKEN)"
+    },
+    "public_url": {
+      "type": "string",
+      "description": "replay 下載連結用的對外網址;沒設就用 url(127.0.0.1 的連結別人點不開)"
+    },
+    "request_timeout_ms": {
+      "type": "integer",
+      "description": "一次呼叫最多等多久;打一張沒打過的譜要 10–30 秒以上",
+      "minimum": 1000,
+      "default": 120000
+    }
+  }
+}
