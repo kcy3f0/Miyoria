@@ -77,6 +77,11 @@
       "assist": {
         "enabled": false
       },
+      "css": {
+        "parser": {
+          "tailwindDirectives": true
+        }
+      },
       "linter": {
         "rules": {
           "a11y": "off",
