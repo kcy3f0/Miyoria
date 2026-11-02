@@ -3,7 +3,7 @@
 
 import { fileURLToPath } from "node:url";
 import type { ContextKey, ContextKind, Event, PlaybackState } from "@miyoria/types";
-import { customEvent, newId } from "@miyoria/types";
+import { customEvent, newId, SONG_TOPIC } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import {
   AvatarProfile,
@@ -745,6 +745,23 @@ describe("forward", () => {
       { type: "emotion", name: "smug", intensity: 1 },
     ]);
     expect(f.onEvent(customEvent("other", { emotion: "sad" }))).toStrictEqual([]);
+  });
+
+  it("songs_show_their_lyrics_and_make_her_speak", () => {
+    const f = new Forwarder(false);
+    const cue = (payload: Record<string, string | number>) =>
+      f.onEvent(customEvent(SONG_TOPIC, { song: "yt-x", ...payload }));
+    expect(cue({ state: "started", title: "On & On" })).toStrictEqual([
+      { type: "speaking", state: "started" },
+    ]);
+    expect(cue({ state: "line", index: 0, text: " Hold me close " })).toStrictEqual([
+      { type: "subtitle", turn: "song:yt-x:0", text: "Hold me close", final: true },
+    ]);
+    expect(cue({ state: "ended", outcome: "finished" })).toStrictEqual([
+      { type: "speaking", state: "stopped" },
+      { type: "subtitle", turn: "song:yt-x:end", text: "", final: true },
+    ]);
+    expect(f.onEvent(customEvent(SONG_TOPIC, { state: "line" }))).toStrictEqual([]);
   });
 
   it("voice_turn_subtitles_follow_playback", () => {

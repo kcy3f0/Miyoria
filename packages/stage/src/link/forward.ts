@@ -5,6 +5,8 @@ import {
   isJsonObject,
   type JsonValue,
   type PlaybackState,
+  parseSongCue,
+  SONG_TOPIC,
   type TurnId,
 } from "@miyoria/types";
 import type { CoreMessage } from "../protocol.js";
@@ -113,6 +115,7 @@ export class Forwarder {
   onEvent(event: Event): CoreMessage[] {
     switch (event.type) {
       case "custom":
+        if (event.data.topic === SONG_TOPIC) return songMessages(event.data.payload);
         return event.data.topic === EMOTION_TOPIC ? this.#onEmotion(event.data.payload) : [];
       case "voice_playback": {
         const { turn, state, text, emotion } = event.data;
@@ -174,6 +177,23 @@ export class Forwarder {
 
 function subtitle(turn: TurnId, text: string, final: boolean): CoreMessage {
   return { type: "subtitle", turn, text, final };
+}
+
+/**
+ * A song she sings (`SONG_TOPIC`): she is speaking while it plays, each lyrics line is its own
+ * final subtitle (an empty line clears it), and the end clears it.
+ */
+function songMessages(payload: JsonValue): CoreMessage[] {
+  const cue = parseSongCue(payload);
+  if (cue === null) return [];
+  switch (cue.state) {
+    case "started":
+      return [{ type: "speaking", state: "started" }];
+    case "line":
+      return [subtitle(`song:${cue.song}:${cue.index}`, cue.text.trim(), true)];
+    case "ended":
+      return [{ type: "speaking", state: "stopped" }, subtitle(`song:${cue.song}:end`, "", true)];
+  }
 }
 
 const ASCII_ALNUM = /^[A-Za-z0-9]$/;
