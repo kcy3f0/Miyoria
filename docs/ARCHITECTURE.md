@@ -205,7 +205,7 @@ interface Stimulus {
 
 1. **硬規則**(不花錢)
    - 被封鎖或冷處理名單 → 忽略
-   - 頻道模式:`off` / `mention-only` / `ambient`(會主動插話)/ `always`
+   - 頻道的聊天等級:`off`(關閉)/ `mention-only`(只回提及)/ `quiet`(安靜)/ `normal`(一般,舊的 `ambient`)/ `lively`(活躍)/ `always`(每則都回,測試用)。文字頻道的 `quiet` / `normal` / `lively` 是上限,見下面與 [design/autonomy.md](design/autonomy.md) §21
    - 直接叫她(@、回覆、DM、叫名字)→ 一定進候選,而且優先
    - 冷卻時間;她在近期訊息的佔比上限(例如最近 20 則最多 30% 是她,避免洗版)
 2. **Salience 評分**(特徵加權,不花錢):被叫到、問句、話題跟她的興趣或記憶相關、說話者的好感與熟悉度、目前 mood/energy、她正在做的事(玩遊戲時比較不會插話)
@@ -213,7 +213,17 @@ interface Stimulus {
 
 最後由 `respond_probability = f(score, affinity, mood, budget)` 抽樣,讓她的行為不會死板。生成階段的 LLM 也可以輸出 `<silence/>` 主動選擇不回。
 
-**多話程度是她自己的**([design/autonomy.md](design/autonomy.md) §6):她在 `SelfState` 給這個情境(或伺服器、`voice` / `text`、`*`)定了 talkativeness L 時,attention 用它取代 activeness 與語音的 `ambient_factor` / `interrupt_scale`:插話機率 ×4^(2L−1)、冷卻 ×4^(1−2L)(不低於 `min_cooldown_ms`:文字 2 秒、語音 5 秒)、灰色地帶門檻 ×2^(1−2L)、語音裡別人還在講時 ×(0.2 + 0.6L),L ≤ 0.05 不插話。她沒定時照舊用設定的數字。近期佔比上限與最小冷卻是人設的底線;`interrupt_scale = 0` 仍代表永遠不壓過別人。`channel_activeness` 工具(有人說「活躍點」)會設定該情境的 talkativeness。
+**多話程度是她自己的**([design/autonomy.md](design/autonomy.md) §6):她在 `SelfState` 給這個情境(或伺服器、`voice` / `text`、`*`)定了 talkativeness L 時,attention 用它取代 activeness 與語音的 `ambient_factor` / `interrupt_scale`:插話機率 ×4^(2L−1)、冷卻 ×4^(1−2L)(不低於 `min_cooldown_ms`:文字 2 秒、語音 5 秒)、灰色地帶門檻 ×2^(1−2L)、語音裡別人還在講時 ×(0.2 + 0.6L),L ≤ 0.05 不插話。她沒定時照舊用設定的數字。近期佔比上限與最小冷卻是人設的底線;`interrupt_scale = 0` 仍代表永遠不壓過別人。`channel_activeness` 工具(有人說「活躍點」「安靜點」,`silent` / `low` / `medium` / `high`,最多一天)會設定該情境的 talkativeness。
+
+**聊天等級是上限**(`agent/src/levels.ts`,只用在文字頻道,語音不變):她的 talkativeness(含學到的事的調整)被限制在等級的上限內,整個插話倍率也不超過上限;她沒定時用等級的預設。等級另外加上最低分數、較長的冷卻(接著她剛說的話不算)、較低的佔比上限,以及她自己開話題(心智迴圈的 `chat.start` 與其他在那裡開口的意圖、initiative 回合;遊戲實況與動作結果不算)的最小間隔:
+
+| 等級 | talkativeness 上限 / 沒定時 | 插話倍率 | 最低分數 | 冷卻下限 | 佔比上限 | 自己開話題間隔 |
+|---|---|---|---|---|---|---|
+| `quiet` 安靜 | 0.5 / 0.25 | ×0.5,最多 ×1 | 0.45 | 10 分鐘 | 15% | 3 小時 |
+| `normal` 一般 | 0.75 / 0.5 | ×1,最多 ×2 | (`gray_low`) | (`cooldown_ms`) | (profile) | (mind / initiative 自己的) |
+| `lively` 活躍 | 1 / 0.65 | ×1.5,最多 ×4 | (`gray_low`) | (`cooldown_ms`) | (profile) | (mind / initiative 自己的) |
+
+沒設定的頻道預設 `quiet`(profile 的 `behavior.default_channel_mode`)。她的回合情境(system)會寫這個頻道的等級;心智迴圈的地點也會標出等級與「現在不能主動開口」。
 
 ### 4.3 主動發話(Initiative Engine)
 
@@ -332,7 +342,7 @@ export interface Attitude {
   - prompt 段落 `world`(「周遭的狀況」):純資料文字,標明名字與狀態是別人設定的、不是指令。
 - **`self` 模組**(`@miyoria/self`,`SelfStateKey`):無聊、慾望(social / play / attention / rest / curiosity,自然上升、被滿足下降;rest 跟著 mood 的 energy)、她自己設的方針(各範圍的 talkativeness:level / until / why,`initiative`)、議程(新增 / 完成 / 放棄 / 到期)、對每個人的感情描述(`self:feeling:<person>`)。持久化在 `SettingsStore` 的 `self:state`;mood 沿用 `mood` 模組,只出現在快照裡。範圍字串由 `talkativenessScopes(context)` 由細到粗:情境 → 伺服器 → `voice` / `text` → `*`。
   - prompt 段落 `self`(「你的內在」):明顯的慾望、這裡的方針、到期的議程、對在場的人的感覺。
-- Admin API:`GET /api/self`、`GET /api/world`(唯讀);面板「內心」頁(狀態 · 感情 · 世界 · 想法)。
+- Admin API:`GET /api/self`、`GET /api/world`(唯讀);`GET /api/channels/levels`、`PUT /api/channels/level`(文字頻道的聊天等級,改要 `admin.channel.mode`);面板「內心」頁(狀態 · 感情 · 世界 · 想法;「世界」底下可以改聊天等級)。
 
 ### 6.5 心智迴圈(自主層階段 C,見 [design/autonomy.md](design/autonomy.md) §5、§15)
 
