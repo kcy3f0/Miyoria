@@ -88,6 +88,43 @@ describe("completeJson", () => {
     expect(p.requests()).toHaveLength(2);
   });
 
+  it("asks a cut-off reply again with twice the budget, without feeding the fragment back", async () => {
+    const cut = (text: string) =>
+      new MockProvider("p").events([
+        { type: "text_delta", text },
+        { type: "done", finish_reason: "length", usage: null },
+      ]);
+    // The inner object of a cut-off reply must not be taken for the answer.
+    const p = cut('{"recap": "大家在聊海豚", "notes": {"topic": "海豚"}, "cou').reply(
+      '{"recap": "大家在聊海豚", "count": 3}',
+    );
+    const out = await completeJson(
+      router(p),
+      "summarizer",
+      { ...request(), max_tokens: 500 },
+      Schema,
+    );
+    expect(out.value.count).toBe(3);
+    const [first, retry] = p.requests();
+    expect(first?.max_tokens).toBe(500);
+    expect(retry?.max_tokens).toBe(1000);
+    expect(retry?.messages.some((m) => m.role === "assistant")).toBe(false);
+    expect(retry?.messages.at(-1)?.content as string).toContain("截斷");
+  });
+
+  it("names the budget when a reply is still cut off after the repair", async () => {
+    const p = new MockProvider("p");
+    for (let i = 0; i < 2; i++) {
+      p.events([
+        { type: "text_delta", text: '{"recap": "很長' },
+        { type: "done", finish_reason: "length", usage: null },
+      ]);
+    }
+    await expect(
+      completeJson(router(p), "summarizer", { ...request(), max_tokens: 500 }, Schema),
+    ).rejects.toThrow(/截斷.*max_tokens=1000/);
+  });
+
   it("asks a provider without JSON mode again without the hint", async () => {
     const p = new NoJsonMode('結果如下 {"recap": "沒問題", "count": 1}');
     const out = await completeJson(router(p), "summarizer", request(), Schema);

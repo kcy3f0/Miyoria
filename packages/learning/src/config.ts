@@ -39,7 +39,11 @@ export const ConversationConfigSchema = z.object({
   /** How often contexts are checked. */
   tick_secs: z.number().positive().default(5),
   timeout_ms: count().default(60_000),
-  max_tokens: count().default(2000),
+  /**
+   * Budget of one fold reply. It has to hold the whole JSON (notes + recap + documents, Chinese
+   * runs about a token per character) plus her thinking; 2000 cut most folds off mid-JSON.
+   */
+  max_tokens: count().default(6000),
   /** Characters of the state in a turn's prompt. */
   prompt_chars: count().default(1500),
   /**

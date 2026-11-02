@@ -7,7 +7,9 @@
 //    blocks, then balanced `{ … }` spans in the surrounding prose);
 // 3. validates it with a zod schema;
 // 4. on failure asks once more, feeding back the concrete problems, then gives up
-//    (`StructuredOutputError`) so the caller applies nothing.
+//    (`StructuredOutputError`) so the caller applies nothing. A reply cut off at `max_tokens`
+//    (`finish_reason: "length"`) is not fed back (any `{ … }` found in it is a fragment); the
+//    request is asked again with twice the token budget and a request to keep it short.
 
 import type { z } from "zod";
 import {
@@ -21,6 +23,7 @@ import {
 /** Statuses a provider answers with when it does not support `json_mode`. */
 const JSON_MODE_REJECTED: ReadonlySet<number> = new Set([400, 415, 422]);
 const MAX_ISSUES = 8;
+const TRUNCATED = "回覆太長,還沒寫完就被截斷了;請寫得更精簡。";
 
 export class StructuredOutputError extends Error {
   override readonly name = "StructuredOutputError";
@@ -157,25 +160,37 @@ export async function completeJson<S extends z.ZodType>(
 ): Promise<StructuredResult<z.output<S>>> {
   const repairs = Math.max(0, options.repairs ?? 1);
   let messages = request.messages;
+  let maxTokens = request.max_tokens;
   let tokens = 0;
   let issues: string[] = [];
   for (let attempt = 1; attempt <= repairs + 1; attempt++) {
-    const response = await call(router, purpose, { ...request, messages }, options.signal);
+    const response = await call(
+      router,
+      purpose,
+      { ...request, messages, max_tokens: maxTokens },
+      options.signal,
+    );
     if (response.usage) tokens += response.usage.prompt_tokens + response.usage.completion_tokens;
+    const cut = response.finish_reason === "length";
     const raw = extractJsonObject(response.text);
     if (raw === null) {
-      issues = ["回覆裡沒有 JSON 物件(或 JSON 格式錯誤)"];
+      issues = [cut ? TRUNCATED : "回覆裡沒有 JSON 物件(或 JSON 格式錯誤)"];
     } else {
       const parsed = schema.safeParse(raw);
       if (parsed.success) return { value: parsed.data, response, attempts: attempt, tokens };
-      issues = issueLines(parsed.error);
+      issues = cut ? [TRUNCATED] : issueLines(parsed.error);
     }
     if (attempt > repairs) {
       throw new StructuredOutputError(
-        `unusable structured reply: ${issues.join("; ")}`,
+        `unusable structured reply: ${issues.join("; ")}${cut ? ` (max_tokens=${maxTokens ?? "default"})` : ""}`,
         issues,
         attempt,
       );
+    }
+    if (cut) {
+      if (typeof maxTokens === "number") maxTokens *= 2;
+      messages = [...request.messages, userMessage(`${TRUNCATED}\n只回傳一個 JSON 物件。`)];
+      continue;
     }
     messages = [
       ...messages,
