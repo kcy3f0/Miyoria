@@ -676,6 +676,10 @@ describe("routes", () => {
       emotion: { Neutral: "", happy: "a.exp3.json", smug: "<placeholder>", angry: "b.exp3.json" },
     });
     expect(emotions).toEqual(["angry", "happy", "neutral"]);
+    // Emotions written as tables (pose params, decals, gestures) count too.
+    expect(
+      avatarEmotions({ emotion: { sad: { expression: "c.exp3.json", params: {} }, odd: [] } }),
+    ).toEqual(["sad"]);
     const h = await harness({}, { emotions });
     const status: StageStatus = {
       ...defaultStageStatus(),

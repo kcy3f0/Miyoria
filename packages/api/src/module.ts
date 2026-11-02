@@ -91,7 +91,9 @@ export function avatarEmotions(avatar: Record<string, unknown> | null | undefine
   if (typeof table !== "object" || table === null || Array.isArray(table)) return [];
   const names = new Set<string>();
   for (const [name, value] of Object.entries(table)) {
-    if (typeof value !== "string" || value.trim().startsWith("<")) continue;
+    // `name = "file.exp3.json"`, or a table (`[emotion.<name>]` with a pose, decals, gestures).
+    const isTable = typeof value === "object" && value !== null && !Array.isArray(value);
+    if (!isTable && (typeof value !== "string" || value.trim().startsWith("<"))) continue;
     const key = name.trim().toLowerCase();
     if (key !== "") names.add(key);
   }
