@@ -4,7 +4,7 @@
 
 import { ActuatorRegistryKey } from "@miyoria/actions";
 import { errorMessage, type Logger, type ServiceLookup, sleep } from "@miyoria/kernel";
-import { LlmRouterKey } from "@miyoria/llm";
+import { assistantMessage, type ChatMessage, LlmRouterKey, userMessage } from "@miyoria/llm";
 import { SocialKey } from "@miyoria/social";
 import {
   type AccountRef,
@@ -21,11 +21,15 @@ import {
   IntentSinkKey,
   isJsonObject,
   type JsonValue,
+  type KnowledgeChange,
+  KnowledgeKey,
+  type KnowledgeSubject,
   MIND_THOUGHT_TOPIC,
   type Mind,
   type MindStats,
   type MindSuggestion,
   newId,
+  type PatchOp,
   Principals,
   type ProfileId,
   SALIENT_TOPIC,
@@ -34,6 +38,7 @@ import {
   SelfStateKey,
   type Thought,
   type ThoughtDecision,
+  type ThoughtDigest,
   type ThoughtIntent,
   type ThoughtTrigger,
   type TurnId,
@@ -44,7 +49,7 @@ import type { MindConfig } from "./config.js";
 import type { Journal } from "./journal.js";
 import { type BudgetState, CallLog, heartbeatMs, inQuietHours } from "./pace.js";
 import { type MindInput, mindMessages, type PersonRef, type PlaceRef } from "./prompt.js";
-import { type MindReply, parseMindReply } from "./reply.js";
+import { type DocDraft, type MindReply, MindReplyError, parseMindReply } from "./reply.js";
 import { capabilityInfo, gather, NOT_FOR_HER } from "./snapshot.js";
 
 const MINUTE_MS = 60_000;
@@ -180,6 +185,10 @@ export class MindLoop implements Mind {
 
   thoughts(limit = 50): Thought[] {
     return this.#d.journal.list(limit);
+  }
+
+  digests(limit = 20): ThoughtDigest[] {
+    return this.#d.journal.digests(limit);
   }
 
   stats(): MindStats {
@@ -515,6 +524,10 @@ export class MindLoop implements Mind {
         agenda: snap.agenda,
         recent: d.journal.recent(RECENT_THOUGHTS),
         memories: snap.memories,
+        documents: snap.documents,
+        lessons: snap.lessons,
+        recap: snap.recap,
+        digest: d.journal.digests(1)[0]?.summary ?? null,
       };
       this.#calls.record(started);
       const thought: Thought = {
@@ -534,23 +547,41 @@ export class MindLoop implements Mind {
       signal?.addEventListener("abort", onAbort, { once: true });
       const timer = setTimeout(() => controller.abort(), cfg.timeout_ms);
       try {
-        const response = await router.complete(
-          cfg.purpose,
-          {
-            messages: mindMessages(input),
-            json_mode: true,
-            thinking: true,
-            max_tokens: cfg.max_tokens,
-            session: `mind-${d.profile}`,
-          },
-          controller.signal,
-        );
-        const usage = response.usage;
-        if (usage) {
-          thought.tokens = usage.prompt_tokens + usage.completion_tokens;
-          this.#tokens += thought.tokens;
+        // `json_mode` is a hint; the reply is extracted and validated either way, and one
+        // unusable reply gets one repair try with the problem spelled out.
+        let messages: ChatMessage[] = mindMessages(input);
+        for (let attempt = 1; ; attempt++) {
+          const response = await router.complete(
+            cfg.purpose,
+            {
+              messages,
+              json_mode: true,
+              thinking: true,
+              max_tokens: cfg.max_tokens,
+              session: `mind-${d.profile}`,
+            },
+            controller.signal,
+          );
+          const usage = response.usage;
+          if (usage) {
+            const used = usage.prompt_tokens + usage.completion_tokens;
+            thought.tokens = (thought.tokens ?? 0) + used;
+            this.#tokens += used;
+          }
+          try {
+            reply = parseMindReply(response.text, cfg.max_intents);
+            break;
+          } catch (error) {
+            if (!(error instanceof MindReplyError) || attempt >= 2) throw error;
+            messages = [
+              ...messages,
+              assistantMessage(response.text.slice(0, 4000)),
+              userMessage(
+                `上面的回覆不能用:${error.message}。請只回傳一個符合格式的 JSON 物件,不要加其他文字。`,
+              ),
+            ];
+          }
         }
-        reply = parseMindReply(response.text, cfg.max_intents);
       } catch (error) {
         if (signal?.aborted) return null;
         thought.error = controller.signal.aborted ? "timed out" : errorMessage(error);
@@ -665,7 +696,82 @@ export class MindLoop implements Mind {
       const item = byRef(ref);
       if (item && self.dropAgenda(item.id)) changes.push(`放棄議程「${item.text}」`);
     }
+    changes.push(...(await this.#documents(reply.documents, people, focus)));
     return changes;
+  }
+
+  /** Her document changes (her own judgment, privileged), each all or nothing. */
+  async #documents(
+    drafts: readonly DocDraft[],
+    people: PersonRef[],
+    focus: ContextKey | null,
+  ): Promise<string[]> {
+    const kb = this.#d.services.get(KnowledgeKey);
+    if (!kb || drafts.length === 0) return [];
+    const out: string[] = [];
+    const subjectOf = (ref: string | null): KnowledgeSubject | null => {
+      const r = ref?.trim() ?? "";
+      if (r === "self") return { type: "self" };
+      if (r === "server") {
+        return focus?.scope && focus.kind !== "dm"
+          ? { type: "guild", platform: focus.platform, guild: focus.scope }
+          : null;
+      }
+      if (r.startsWith("topic:") && r.length > 6) return { type: "topic", name: r.slice(6) };
+      const person = people.find((p) => p.ref === r)?.person ?? null;
+      return person === null ? null : { type: "person", person };
+    };
+    for (const d of drafts) {
+      let change: KnowledgeChange | null = null;
+      switch (d.type) {
+        case "create": {
+          const subject = subjectOf(d.subject);
+          if (subject && d.kind && d.title) {
+            change = {
+              type: "create",
+              subject,
+              kind: d.kind,
+              title: d.title,
+              content: d.content,
+              why: d.why,
+            };
+          }
+          break;
+        }
+        case "patch":
+          if (d.doc)
+            change = { type: "patch", doc: d.doc, ops: d.ops as unknown as PatchOp[], why: d.why };
+          break;
+        case "retitle":
+          if (d.doc)
+            change = { type: "retitle", doc: d.doc, kind: d.kind, title: d.title, why: d.why };
+          break;
+        case "delete":
+          if (d.doc) change = { type: "delete", doc: d.doc, why: d.why };
+          break;
+        case "merge":
+          if (d.doc && d.into) {
+            change = { type: "merge", doc: d.doc, into: d.into, path: d.path, why: d.why };
+          }
+          break;
+      }
+      if (change === null) continue;
+      try {
+        const result = await kb.apply(change, {
+          kind: "self",
+          account: null,
+          person: null,
+          name: null,
+          context: focus,
+        });
+        if (result.ok) {
+          out.push(result.doc ? `資料 ${d.type}「${result.doc.title}」` : `資料 ${d.type}`);
+        } else this.#d.log.debug({ err: result.error }, "her document change was refused");
+      } catch (error) {
+        this.#d.log.warn({ err: errorMessage(error) }, "cannot change her documents");
+      }
+    }
+    return out;
   }
 
   /** A talkativeness scope from her reply: a place ref, `here`, `server` or a kind. */

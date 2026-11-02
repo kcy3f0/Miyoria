@@ -11,7 +11,17 @@
 // Provides `MindKey`.
 
 export { type MindConfig, MindConfigSchema, mindConfig } from "./config.js";
-export { Journal, THOUGHT_PREFIX, thoughtKey } from "./journal.js";
+export {
+  type Condense,
+  DIGEST_PREFIX,
+  type DigestOptions,
+  digestKey,
+  intentCounts,
+  Journal,
+  ruleDigest,
+  THOUGHT_PREFIX,
+  thoughtKey,
+} from "./journal.js";
 export { applyTurnEvent, type MindDeps, MindLoop } from "./mind.js";
 export { MIND_TOPICS, MindModule, type MindModuleOptions } from "./module.js";
 export { type BudgetState, CallLog, heartbeatMs, inQuietHours, type Pace } from "./pace.js";
@@ -29,6 +39,7 @@ export {
 export {
   type AffinityHint,
   type AgendaAdd,
+  type DocDraft,
   type FeelingChange,
   type IntentDraft,
   MAX_DRIVE_NUDGE,

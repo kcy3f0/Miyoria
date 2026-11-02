@@ -9,8 +9,12 @@ import {
   CHAT_DM,
   CHAT_START,
   type ContextKey,
+  ConversationStatesKey,
   contextKeyString,
   dataBlock,
+  KnowledgeKey,
+  type KnowledgeSubject,
+  LessonsKey,
   type MindSuggestion,
   newId,
   PlatformSinksKey,
@@ -41,6 +45,8 @@ const MAX_AGENDA = 8;
 const CONTRIBUTOR_TIMEOUT_MS = 1500;
 const LABEL_TIMEOUT_MS = 500;
 const MAX_MEMORY_CHARS = 2500;
+const MAX_DOCUMENT_CHARS = 1500;
+const MAX_LESSONS = 8;
 
 export interface Gathered {
   focus: ContextKey | null;
@@ -49,6 +55,12 @@ export interface Gathered {
   people: PersonRef[];
   agenda: AgendaRef[];
   memories: string | null;
+  /** Her documents about the people and place involved and herself (rendered outline). */
+  documents: string | null;
+  /** Lessons that apply here. */
+  lessons: string[];
+  /** Her notes' recap of the conversation in focus. */
+  recap: string | null;
 }
 
 export interface GatherInput {
@@ -270,7 +282,35 @@ export async function gather(input: GatherInput): Promise<Gathered> {
     memories = rendered === "" ? null : rendered;
   }
 
-  return { focus, world: summary, places, people, agenda, memories };
+  // ---- her own notes: documents, lessons, the conversation's recap
+  const persons = people.flatMap((p) => (p.person === null ? [] : [p.person]));
+  let documents: string | null = null;
+  const kb = services.get(KnowledgeKey);
+  if (kb) {
+    const subjects: KnowledgeSubject[] = persons.map((person) => ({ type: "person", person }));
+    if (focus?.scope && focus.kind !== "dm") {
+      subjects.push({ type: "guild", platform: focus.platform, guild: focus.scope });
+    }
+    subjects.push({ type: "self" });
+    const text = kb.render(subjects, { context: focus, maxChars: MAX_DOCUMENT_CHARS });
+    documents = text === "" ? null : text;
+  }
+  const lessons = (services.get(LessonsKey)?.applicable(focus, persons) ?? [])
+    .slice(0, MAX_LESSONS)
+    .map((l) => l.text);
+  const recap = focus ? (services.get(ConversationStatesKey)?.get(focus)?.recap ?? null) : null;
+
+  return {
+    focus,
+    world: summary,
+    places,
+    people,
+    agenda,
+    memories,
+    documents,
+    lessons,
+    recap: recap === null || recap.trim() === "" ? null : recap,
+  };
 }
 
 /** The capabilities she may start, besides `chat.start` / `chat.dm` (described separately). */

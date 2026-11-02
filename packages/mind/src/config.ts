@@ -28,8 +28,17 @@ export const MindConfigSchema = z.object({
   max_tokens: count().default(3000),
   /** Intents acted on per thought; more are dropped. */
   max_intents: count().default(2),
-  /** Thoughts kept in her journal (the panel's timeline). */
-  journal_keep: count().default(300),
+  /** Thoughts kept raw in her journal (the panel's timeline). */
+  journal_keep: count().default(200),
+  /**
+   * Once this many more have piled up, the oldest beyond `journal_keep` are condensed into one
+   * digest (LLM purpose `digest_purpose`, or a plain summary when no model may run), so the
+   * journal never grows unbounded.
+   */
+  digest_batch: z.number().int().min(1).default(50),
+  /** Digests kept (oldest dropped). */
+  digests_keep: count().default(60),
+  digest_purpose: z.string().default("summarizer"),
   /** Her local time zone as a UTC offset (quiet hours). */
   utc_offset_minutes: z
     .number()

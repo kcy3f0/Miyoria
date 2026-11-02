@@ -268,7 +268,10 @@ describe("mind module", () => {
   it("keeps her journal across restarts, the newest `journal_keep`", async () => {
     const store = new MemorySettingsStore();
     const provider = new MockProvider("p").reply('{"thought": "一"}').reply('{"thought": "二"}');
-    const r = await rig(provider, { store, config: { journal_keep: 1, min_interval_secs: 0 } });
+    const r = await rig(provider, {
+      store,
+      config: { journal_keep: 1, digest_batch: 1, min_interval_secs: 0 },
+    });
     r.publish(salient("a"));
     await wait(5000);
     r.publish(salient("b"));

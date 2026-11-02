@@ -3,7 +3,8 @@
 // drive nudges, levels, durations); references to people, places and agenda items are still
 // the prompt's short refs (`u1`, `p1`, `g1`) and are resolved against the snapshot later.
 
-import { DRIVE_NAMES, type DriveName, type JsonObject } from "@miyoria/types";
+import { extractJsonObject } from "@miyoria/llm";
+import { DRIVE_NAMES, type DriveName, type JsonObject, type JsonValue } from "@miyoria/types";
 import { z } from "zod";
 
 export class MindReplyError extends Error {
@@ -18,6 +19,7 @@ export const MAX_FEELINGS = 3;
 export const MAX_FEELING_NOTE = 300;
 export const MAX_TALKATIVENESS = 3;
 export const MAX_AGENDA_ADD = 3;
+export const MAX_DOCUMENTS = 3;
 /** Talkativeness settings last 5 minutes to a day. */
 export const MIN_TALK_MINUTES = 5;
 export const MAX_TALK_MINUTES = 24 * 60;
@@ -66,6 +68,20 @@ export interface IntentDraft {
   expiresInS: number;
 }
 
+/** A change of her documents (refs still unresolved; the knowledge base re-validates it). */
+export interface DocDraft {
+  type: "create" | "patch" | "retitle" | "delete" | "merge";
+  subject: string | null;
+  kind: string | null;
+  title: string | null;
+  content: JsonObject;
+  doc: string | null;
+  into: string | null;
+  path: string;
+  ops: JsonValue[];
+  why: string;
+}
+
 export interface MindReply {
   thought: string;
   feelings: FeelingChange[];
@@ -76,6 +92,7 @@ export interface MindReply {
   agendaDone: string[];
   agendaDrop: string[];
   intents: IntentDraft[];
+  documents: DocDraft[];
 }
 
 function cut(text: string, max: number): string {
@@ -153,6 +170,19 @@ const Intent = z.object({
   expires_in_s: optNum,
 });
 
+const Doc = z.object({
+  type: z.enum(["create", "patch", "retitle", "delete", "merge"]),
+  subject: ref,
+  kind: optText(40),
+  title: optText(80),
+  content: z.record(z.string(), z.json()).optional(),
+  doc: ref,
+  into: ref,
+  path: z.string().optional(),
+  ops: z.array(z.json()).max(30).optional(),
+  why: optText(200),
+});
+
 /** Each item of `value` that parses; the rest are dropped. */
 function items<T>(value: unknown, schema: z.ZodType<T>, max: number): T[] {
   if (!Array.isArray(value)) return [];
@@ -172,16 +202,9 @@ function refs(value: unknown): string[] {
 
 /** Extracts and validates her reply (tolerates text around the JSON object). */
 export function parseMindReply(raw: string, maxIntents: number): MindReply {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new MindReplyError("no JSON object in her thought");
-  let value: unknown;
-  try {
-    value = JSON.parse(raw.slice(start, end + 1));
-  } catch (error) {
-    throw new MindReplyError(`invalid JSON in her thought: ${(error as Error).message}`);
-  }
-  if (!isRecord(value)) throw new MindReplyError("her thought is not a JSON object");
+  // Whole text, fenced blocks or a balanced object in prose (models without a JSON mode).
+  const value = extractJsonObject(raw);
+  if (value === null) throw new MindReplyError("no JSON object in her thought");
   const obj = value as Record<string, unknown>;
 
   const thought = typeof obj.thought === "string" ? cut(obj.thought, MAX_THOUGHT) : "";
@@ -237,6 +260,19 @@ export function parseMindReply(raw: string, maxIntents: number): MindReply {
     ),
   }));
 
+  const documents = items(obj.documents, Doc, MAX_DOCUMENTS).map((d) => ({
+    type: d.type,
+    subject: d.subject,
+    kind: d.kind,
+    title: d.title,
+    content: (d.content ?? {}) as JsonObject,
+    doc: d.doc,
+    into: d.into,
+    path: d.path ?? "",
+    ops: (d.ops ?? []) as JsonValue[],
+    why: d.why ?? "",
+  }));
+
   return {
     thought,
     feelings,
@@ -247,5 +283,6 @@ export function parseMindReply(raw: string, maxIntents: number): MindReply {
     agendaDone: refs(agenda.complete),
     agendaDrop: refs(agenda.drop),
     intents,
+    documents,
   };
 }
