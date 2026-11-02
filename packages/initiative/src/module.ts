@@ -14,6 +14,7 @@ import {
   type Event,
   FollowupSourceKey,
   type JsonValue,
+  MindKey,
   MoodSignalsKey,
   type ProfileId,
   SocialSignalsKey,
@@ -48,7 +49,7 @@ export class InitiativeModule implements Module {
   static readonly ID = "initiative";
   readonly manifest = defineManifest(InitiativeModule.ID, "Initiative", {
     description: "Decides when she starts a conversation on her own",
-    optional: ["memory", "social", "mood"],
+    optional: ["memory", "social", "mood", "mind"],
     configSchema: InitiativeConfigSchema,
   });
   readonly #profile: ProfileId;
@@ -85,7 +86,14 @@ export class InitiativeModule implements Module {
       "voice.utterance",
       "voice.playback",
     ]);
-    const runner = new Runner(ctx, engine, this.#profile, this.#clock ?? ctx.clock, store);
+    const runner = new Runner(
+      ctx,
+      engine,
+      this.#profile,
+      this.#clock ?? ctx.clock,
+      store,
+      config.to_mind,
+    );
     // Engine access is serialized: events and ticks never interleave.
     ctx.spawn("initiative.events", async () => {
       for await (const env of events) await runner.onEvent(env.event);
@@ -116,6 +124,7 @@ class Runner {
     private readonly profile: ProfileId,
     private readonly clock: Clock,
     private readonly store: SettingsStore | undefined,
+    private readonly toMind: boolean,
   ) {}
 
   #signals(): Signals {
@@ -125,7 +134,27 @@ class Runner {
     };
   }
 
+  /**
+   * With her mind loop running (and `to_mind`), an initiative is a reason for her to think, not
+   * a turn: she decides. While the mind is there but not accepting (autonomy paused, budget
+   * exhausted) nothing happens; without it, the `agent.initiative` turn starts as before.
+   */
   #publish(emission: Emission): void {
+    const mind = this.toMind ? this.ctx.services.get(MindKey) : undefined;
+    if (mind) {
+      const accepted = mind.suggest({
+        source: InitiativeModule.ID,
+        reason: emission.reason,
+        context: emission.context,
+        hint: emission.hint,
+        about: emission.about,
+      });
+      log.debug(
+        { reason: emission.reason, accepted },
+        accepted ? "initiative handed to her mind" : "initiative dropped: her mind is idle",
+      );
+      return;
+    }
     this.ctx.publish(emissionEvent(emission));
   }
 

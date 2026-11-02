@@ -6,6 +6,9 @@ import {
   type Event,
   FollowupSourceKey,
   type JsonValue,
+  type Mind,
+  MindKey,
+  type MindSuggestion,
   SocialSignalsKey,
 } from "@miyoria/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -127,6 +130,68 @@ describe("InitiativeModule", () => {
     await h.say(ctx, "a");
     expect(h.next()).toBeNull();
     await h.sup.stopAll();
+  });
+
+  it("hands initiatives to her mind loop when it runs, keeping the caps", async () => {
+    await start();
+    const suggestions: MindSuggestion[] = [];
+    let accepting = true;
+    const mind: Mind = {
+      get accepting() {
+        return accepting;
+      },
+      suggest: (s) => {
+        if (!accepting) return false;
+        suggestions.push(s);
+        return true;
+      },
+      thoughts: () => [],
+      stats: () => ({
+        calls_last_hour: 0,
+        max_calls_per_hour: 0,
+        calls_total: 0,
+        tokens_total: 0,
+        last_at: null,
+        next_heartbeat_at: null,
+        idle_reason: null,
+      }),
+    };
+    const store = new MemorySettingsStore();
+    const sup = new Supervisor();
+    const social = new FakeSocial();
+    sup.services.provide("app", SocialSignalsKey, social);
+    sup.services.provide("app", SettingsStoreKey, store);
+    sup.services.provide("mind", MindKey, mind);
+    const turns = sup.bus.subscribe("agent.initiative");
+    await sup.register(new InitiativeModule("p"), { max_per_context_per_day: 1 }, true);
+    await sup.startAll();
+    sup.bus.publish("test", ready());
+    social.set("a", "朋友", 70);
+    social.set("b", "朋友", 70);
+    const ctx = textCtx("c1");
+    sup.bus.publish("test", message(ctx, "a", false, Date.now()));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(suggestions).toEqual([
+      {
+        source: "initiative",
+        reason: "greeting",
+        context: ctx,
+        hint: "跟他打招呼",
+        about: [acct("a")],
+      },
+    ]);
+    expect(turns.tryRecv(), "no direct turn").toBeNull();
+    // The per-context cap still applies before anything reaches her mind.
+    sup.bus.publish("test", message(ctx, "b", false, Date.now()));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(suggestions.length).toBe(1);
+    // Paused: nothing, not even a direct turn.
+    accepting = false;
+    sup.bus.publish("test", message(textCtx("c2"), "b", false, Date.now()));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(suggestions.length).toBe(1);
+    expect(turns.tryRecv()).toBeNull();
+    await sup.stopAll();
   });
 
   it("module_voice_join", async () => {
@@ -254,7 +319,7 @@ describe("InitiativeModule", () => {
   it("module_manifest_lists_optional_dependencies", () => {
     const m = new InitiativeModule("p").manifest;
     expect(m.id).toBe("initiative");
-    expect(m.optional).toEqual(["memory", "social", "mood"]);
+    expect(m.optional).toEqual(["memory", "social", "mood", "mind"]);
     expect(m.requires).toEqual([]);
   });
 

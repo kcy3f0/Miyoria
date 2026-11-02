@@ -3,6 +3,13 @@ import { z } from "zod";
 
 /** Configuration of module `initiative` (`[modules.initiative]`); durations are in seconds. */
 export const InitiativeConfigSchema = z.object({
+  /**
+   * While her mind loop (`mind` module) runs, hand every initiative to it as a reason to think
+   * (she decides whether and how to act) instead of starting an `agent.initiative` turn. The
+   * caps, quiet hours and cooldowns below still apply before anything reaches her mind.
+   */
+  to_mind: z.boolean().default(true),
+
   // --- triggers ---
   /** Nudge a channel that went quiet after a lively conversation. */
   idle_channel: z.boolean().default(true),
