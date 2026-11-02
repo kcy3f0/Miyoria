@@ -27,6 +27,7 @@ export const MODULE_IDS: readonly string[] = [
   "queue",
   "game",
   "game.chat",
+  "sing",
   "mcp",
   "stage.link",
   "sandbox",

@@ -1,0 +1,72 @@
+// The song is streamed close to real time (the voice node buffers about a minute), with the
+// vocal stem as a same-length levels track.
+
+import { systemClock } from "@miyoria/types";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { paced } from "../src/index.js";
+
+describe("paced", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("sends each 100 ms chunk lead_ms before it is due", async () => {
+    const rate = 1000;
+    const mix = new Int16Array(rate * 2).fill(1);
+    const vocals = new Int16Array(rate * 2 - 50).fill(2); // a little shorter: padded with silence
+    const t0 = Date.now();
+    const sent: { at: number; samples: number; levels: number | undefined; last: number }[] = [];
+    const done = (async () => {
+      for await (const c of paced(
+        mix,
+        vocals,
+        rate,
+        500,
+        systemClock,
+        new AbortController().signal,
+      )) {
+        sent.push({
+          at: Date.now() - t0,
+          samples: c.samples.length,
+          levels: c.levels?.length,
+          last: c.levels?.at(-1) ?? -1,
+        });
+      }
+    })();
+    await vi.advanceTimersByTimeAsync(3000);
+    await done;
+    expect(sent).toHaveLength(20);
+    expect(sent.slice(0, 6).every((c) => c.at === 0)).toBe(true);
+    expect(sent[6]?.at).toBe(100);
+    expect(sent[19]?.at).toBe(1400);
+    expect(sent.every((c) => c.samples === 100 && c.levels === 100)).toBe(true);
+    expect(sent[18]?.last).toBe(2);
+    expect(sent[19]?.last).toBe(0);
+  });
+
+  it("stops when aborted", async () => {
+    const stop = new AbortController();
+    const got: number[] = [];
+    const done = (async () => {
+      for await (const c of paced(
+        new Int16Array(10_000),
+        null,
+        1000,
+        0,
+        systemClock,
+        stop.signal,
+      )) {
+        got.push(c.samples.length);
+        expect(c.levels).toBeUndefined();
+      }
+    })();
+    await vi.advanceTimersByTimeAsync(250);
+    stop.abort();
+    await vi.advanceTimersByTimeAsync(10);
+    await done;
+    expect(got.length).toBe(3);
+  });
+});

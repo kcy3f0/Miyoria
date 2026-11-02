@@ -3,7 +3,7 @@
 //
 // Boot order (legacy `boot.rs`): llm, speech, voice.link, voice, scheduler, agent, commands,
 // auth, actions, social, mood, world, self, memory, initiative, mind, knowledge, conversation,
-// reflect, queue, game, game.chat, mcp,
+// reflect, queue, game, game.chat, sing, mcp,
 // stage.link, sandbox (opt-in), recorder, Discord bot, Admin API, terminal chat, then the
 // extension host and one `ext.<id>` per extension.
 
@@ -36,6 +36,7 @@ import { QueueModule } from "@miyoria/queue";
 import { SandboxModule } from "@miyoria/sandbox";
 import { SchedulerModule } from "@miyoria/scheduler";
 import { SelfModule } from "@miyoria/self";
+import { SingModule } from "@miyoria/sing";
 import { MoodModule, SocialModule } from "@miyoria/social";
 import { SpeechConfigSchema, SpeechModule } from "@miyoria/speech";
 import { AvatarProfile, parseStageConfig, runStage, StageLinkModule } from "@miyoria/stage";
@@ -128,6 +129,7 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
     new QueueModule(),
     GameModule.fromProfile(profile),
     new GameChatModule(),
+    new SingModule(),
     McpModule.fromAppConfig(config),
     new StageLinkModule(),
     new SandboxModule(profileId, { baseDir }),

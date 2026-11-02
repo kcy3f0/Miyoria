@@ -35,7 +35,13 @@ describe("permissions", () => {
     const user = inv("x", "3", {}, guildContext);
     const admin = inv("x", "2", {}, guildContext);
     admin.invoker_is_guild_admin = true;
-    for (const node of ["voice.golive", "queue.manage", "game.start", "stream.start"]) {
+    for (const node of [
+      "voice.golive",
+      "queue.manage",
+      "queue.song.skip",
+      "game.start",
+      "stream.start",
+    ]) {
       expect(perms.allowsInvocation(user, node), node).toBe(false);
       expect(perms.allowsInvocation(admin, node), node).toBe(true);
     }
@@ -48,6 +54,7 @@ describe("permissions", () => {
       "voice.mode.view",
       "channel.mode.view",
       "queue.vote",
+      "queue.song.request",
     ]) {
       expect(perms.allowsInvocation(user, node), node).toBe(true);
     }

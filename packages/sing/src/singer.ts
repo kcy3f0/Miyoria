@@ -1,0 +1,575 @@
+// The singing flow (docs/design/autonomy.md §22):
+//
+//   request ── worker job ──► preparing ──► ready ──► (she decides / forced) ──► playing ──► done
+//
+// * A request (her `sing_request` tool, `/queue song request`, a called `[modules.queue]` item
+//   of kind `song`) adds a set list entry and submits a worker job; she keeps talking meanwhile.
+// * Ready: songs asked for by command or the queue are sung as soon as she is in voice and free
+//   (forced). Others are offered to her mind (`MindKey.suggest`), which picks the moment with a
+//   `sing.play` intent and an opening line; she is reminded a couple of times, and her turns see
+//   the set list (prompt section `sing`). Without a mind, ready songs start on their own.
+// * Before a song starts she finishes what she is saying (the turn that started it, then a quiet
+//   moment). While it plays the module holds her voice channel (`VoiceFloorKey`: her speech there
+//   is dropped instead of queueing behind the song), barge-in does not apply (it is not her
+//   speech), and only `sing.stop` (skip / stop) ends it early.
+// * After a song that played to the end she is told, so she can say something about it.
+
+import { CapabilityError } from "@miyoria/actions";
+import { errorMessage, getLogger, type ModuleContext } from "@miyoria/kernel";
+import { type RequestQueue, RequestQueueKey } from "@miyoria/queue";
+import {
+  type AccountRef,
+  type ContextKey,
+  contextKeyEquals,
+  customEvent,
+  type Event,
+  isJsonObject,
+  type JsonValue,
+  MindKey,
+  type PlaybackState,
+  SONG_TOPIC,
+  type SongCue,
+  safeName,
+  type TurnId,
+  toTimestamp,
+  type VoiceFloor,
+  VoicePlayerKey,
+} from "@miyoria/types";
+import type { SingWorker, SongQuery, WorkerJob } from "./client.js";
+import type { SingConfig } from "./config.js";
+import { singSong, sleep } from "./player.js";
+import { type NewSong, SetList, type SongEntry, type SongNo, songLabel } from "./setlist.js";
+
+const log = getLogger("sing");
+
+const TICK_MS = 100;
+/** After a song is started without a turn, she gets this long to start an opening line. */
+const EXPECT_OPENING_MS = 6000;
+const TURNS_REMEMBERED = 64;
+
+/** Initiative / mind suggestion reasons. */
+export const REASONS = {
+  ready: "song_ready",
+  start: "song_start",
+  done: "song_done",
+  failed: "song_failed",
+} as const;
+
+export class SingError extends CapabilityError {
+  override readonly name = "SingError";
+}
+
+/** A request: what to look for, and who asked. */
+export interface SongRequest extends Omit<NewSong, "query"> {
+  query: string;
+}
+
+const LINK = /^https?:\/\/\S+$/i;
+
+/** The worker request for a set list query: a link, `library:<path>`, or a search. */
+export function workerQuery(query: string, key: number): SongQuery {
+  const q = query.trim();
+  if (LINK.test(q)) return { url: q, key };
+  if (q.toLowerCase().startsWith("library:")) return { path: q.slice(8).trim(), key };
+  return { query: q, key };
+}
+
+interface Playing {
+  entry: SongEntry;
+  guild: string;
+  stop: AbortController;
+  /** The song itself started streaming (before that she is still saying her opening). */
+  audible: boolean;
+}
+
+export class Singer implements VoiceFloor {
+  readonly list: SetList;
+  #playing: Playing | null = null;
+  /** Voice channels she is in. */
+  #voices: ContextKey[] = [];
+  /** Her speech playbacks running per guild. */
+  readonly #speaking = new Map<string, number>();
+  readonly #turnsDone: TurnId[] = [];
+  #closed = false;
+
+  constructor(
+    private readonly cfg: SingConfig,
+    private readonly ctx: ModuleContext,
+    private readonly worker: SingWorker,
+  ) {
+    this.list = new SetList(cfg);
+  }
+
+  // ----- views -----
+
+  holder(guild: string): string | null {
+    const p = this.#playing;
+    return p?.audible && p.guild === guild ? "song" : null;
+  }
+
+  playing(): SongEntry | null {
+    return this.#playing?.entry ?? null;
+  }
+
+  /** The song started is waiting for her to finish talking. */
+  starting(): boolean {
+    return this.#playing !== null && !this.#playing.audible;
+  }
+
+  /** A voice channel she is in (in `guild` when given). */
+  voiceContext(guild: string | null = null): ContextKey | null {
+    return this.#voices.find((v) => guild === null || v.scope === guild) ?? null;
+  }
+
+  // ----- requests -----
+
+  /** Adds a song and starts preparing it; resolves once the worker took the job. */
+  async request(req: SongRequest, signal?: AbortSignal): Promise<SongEntry> {
+    const query = req.query.trim();
+    if (query === "") throw new SingError("no song name given");
+    if ([...query].length > this.cfg.max_query_chars) {
+      throw new SingError(`the song name is longer than ${this.cfg.max_query_chars} characters`);
+    }
+    const same = this.list.findOpen(query, req.key);
+    if (same) {
+      if (req.forced) same.forced = true;
+      return same;
+    }
+    let entry: SongEntry;
+    try {
+      entry = this.list.add({ ...req, query }, toTimestamp(this.ctx.clock.now()));
+    } catch (error) {
+      throw new SingError(errorMessage(error), { cause: error });
+    }
+    try {
+      const job = await this.worker.submit(workerQuery(query, req.key), signal);
+      entry.job = job.id;
+      this.#apply(entry, job);
+    } catch (error) {
+      // The caller hears about it from the error; no separate notice.
+      this.#fail(entry, errorMessage(error), false);
+      throw new SingError(`could not ask the song worker: ${errorMessage(error)}`, {
+        cause: error,
+      });
+    }
+    return entry;
+  }
+
+  /** Worker job state → entry. */
+  #apply(entry: SongEntry, job: WorkerJob): void {
+    if (entry.state !== "preparing") return;
+    entry.stage = job.stage;
+    entry.progress = job.progress;
+    switch (job.state) {
+      case "done":
+        if (!job.song) {
+          this.#fail(entry, "the worker finished without a song");
+          return;
+        }
+        entry.song = job.song;
+        entry.state = "ready";
+        entry.progress = 1;
+        entry.ready_at = toTimestamp(this.ctx.clock.now());
+        log.info({ no: entry.no, song: job.song.id, cached: job.cached }, "song ready");
+        this.#onReady(entry);
+        return;
+      case "failed":
+      case "cancelled":
+        this.#fail(entry, job.error ?? job.state);
+        return;
+      default:
+        return;
+    }
+  }
+
+  #fail(entry: SongEntry, why: string, tell = true): void {
+    if (entry.state !== "preparing" && entry.state !== "ready") return;
+    log.info({ no: entry.no, why }, "song failed");
+    this.list.finish(entry, "failed", why);
+    this.#finishQueueItem(entry, false);
+    const where = entry.context ?? this.voiceContext();
+    if (tell && where !== null && entry.requester !== null) {
+      this.#tell(
+        where,
+        REASONS.failed,
+        `${entry.requester_name} 點的${songLabel(entry)}沒有準備成功(${safeName(why, 120)})。跟對方說一聲。`,
+        entry,
+      );
+    }
+  }
+
+  // ----- the moment to sing -----
+
+  #mindDecides(entry: SongEntry): boolean {
+    if (entry.forced || this.cfg.start === "auto") return false;
+    return this.ctx.services.get(MindKey)?.accepting === true;
+  }
+
+  #onReady(entry: SongEntry): void {
+    if (!this.#mindDecides(entry)) {
+      this.#autoStart();
+      return;
+    }
+    this.#remind(entry);
+  }
+
+  /** Tells her mind the song is ready (again). */
+  #remind(entry: SongEntry): void {
+    const mind = this.ctx.services.get(MindKey);
+    const where = this.voiceContext(entry.context?.scope ?? null) ?? entry.context;
+    entry.reminders += 1;
+    entry.last_reminder_ms = this.ctx.clock.now();
+    const voice = this.voiceContext() === null ? "你現在不在語音頻道,要唱得先進語音。" : "";
+    const hint =
+      `${entry.requester_name} 點的${songLabel(entry)}已經準備好了(#${entry.no})。` +
+      `想唱就用 sing.play(song = ${entry.no}),opening 寫一句開場;現在不想唱也可以晚點再唱。${voice}`;
+    const ok = mind?.suggest({
+      source: "sing",
+      reason: REASONS.ready,
+      context: where,
+      hint,
+      about: entry.requester ? [entry.requester] : [],
+    });
+    if (!ok) this.#autoStart();
+  }
+
+  /** Starts the next song that should start on its own, when she is in voice and free. */
+  #autoStart(): void {
+    if (this.#playing || this.#closed) return;
+    const next = this.list.ready().find((e) => !this.#mindDecides(e));
+    if (!next) return;
+    const where = this.voiceContext(next.context?.scope ?? null) ?? this.voiceContext();
+    if (where === null || where.scope === null) return;
+    this.#tell(
+      where,
+      REASONS.start,
+      `你要開始唱${songLabel(next)}了(${next.requester_name} 點的)。用一句話開場,說完就開始。`,
+      next,
+    );
+    this.#begin(next, where.scope, null, EXPECT_OPENING_MS);
+  }
+
+  /** Periodic work: reminders and songs that should start on their own. */
+  tick(): void {
+    const now = this.ctx.clock.now();
+    for (const e of this.list.ready()) {
+      if (!this.#mindDecides(e)) continue;
+      const due = (e.last_reminder_ms ?? now) + this.cfg.remind_secs * 1000;
+      // The first notice plus `max_reminders`, only while she is in voice (she can sing then).
+      if (e.reminders <= this.cfg.max_reminders && now >= due && this.voiceContext() !== null) {
+        this.#remind(e);
+      }
+    }
+    this.#autoStart();
+  }
+
+  /**
+   * Sings `no` (or the first ready song) in the voice channel of `context`'s guild. Returns the
+   * entry once it is scheduled: it starts after `turn` (the turn asking for it) and a quiet moment.
+   */
+  play(no: SongNo | null, context: ContextKey | null, turn: TurnId | null): SongEntry {
+    if (this.#playing) throw new SingError(`already singing ${songLabel(this.#playing.entry)}`);
+    const entry = no === null ? (this.list.ready()[0] ?? null) : this.list.get(no);
+    if (entry === null) {
+      const preparing = this.list.preparing();
+      throw new SingError(
+        no === null
+          ? preparing.length > 0
+            ? `no song is ready yet (${preparing.length} preparing)`
+            : "no song is ready; request one first"
+          : `there is no song #${no}`,
+      );
+    }
+    if (entry.state === "preparing") {
+      throw new SingError(`song #${entry.no} is still being prepared (${pct(entry.progress)})`);
+    }
+    if (entry.state !== "ready") throw new SingError(`song #${entry.no} is ${entry.state}`);
+    const guild = this.#guildFor(context);
+    if (guild === null) throw new SingError("she is not in a voice channel");
+    this.#begin(entry, guild, turn, 0);
+    return entry;
+  }
+
+  #guildFor(context: ContextKey | null): string | null {
+    const scope = context?.scope ?? null;
+    const voice = this.ctx.services.get(VoicePlayerKey);
+    if (!voice) throw new SingError("voice is not running");
+    if (scope !== null && voice.channel(scope) !== null) return scope;
+    const any = this.voiceContext();
+    return any?.scope != null && voice.channel(any.scope) !== null ? any.scope : null;
+  }
+
+  #begin(entry: SongEntry, guild: string, turn: TurnId | null, expectMs: number): void {
+    const stop = new AbortController();
+    entry.state = "playing";
+    this.#playing = { entry, guild, stop, audible: false };
+    this.ctx.spawn(`song-${entry.no}`, async (signal) => {
+      const both = AbortSignal.any([signal, stop.signal]);
+      let outcome: PlaybackState | "error" = "interrupted";
+      try {
+        await this.#waitQuiet(guild, turn, expectMs, both);
+        if (!both.aborted) outcome = await this.#sing(entry, guild, both);
+      } catch (error) {
+        log.warn({ no: entry.no, err: errorMessage(error) }, "could not sing");
+        outcome = "error";
+        entry.error = errorMessage(error);
+      }
+      this.#ended(entry, guild, outcome);
+    });
+  }
+
+  async #sing(entry: SongEntry, guild: string, signal: AbortSignal): Promise<PlaybackState> {
+    const voice = this.ctx.services.get(VoicePlayerKey);
+    if (!voice) throw new SingError("voice is not running");
+    const song = entry.song;
+    if (!song) throw new SingError("the song has no audio");
+    log.info({ no: entry.no, song: song.id, guild }, "singing");
+    if (this.#playing?.entry === entry) this.#playing.audible = true;
+    return singSong(
+      {
+        worker: this.worker,
+        voice,
+        clock: this.ctx.clock,
+        cue: (cue) => this.#cue(cue),
+        leadMs: this.cfg.lead_ms,
+        fadeMs: this.cfg.fade_ms,
+        lyrics: this.cfg.lyrics,
+        lipSyncVocals: this.cfg.lip_sync_vocals,
+      },
+      song,
+      guild,
+      signal,
+    );
+  }
+
+  #ended(entry: SongEntry, guild: string, outcome: PlaybackState | "error"): void {
+    if (this.#playing?.entry === entry) this.#playing = null;
+    if (entry.song) this.#cue({ state: "ended", song: entry.song.id, outcome });
+    const finished = outcome === "finished";
+    this.list.finish(entry, finished || outcome === "interrupted" ? "done" : "failed", entry.error);
+    this.#finishQueueItem(entry, finished);
+    log.info({ no: entry.no, outcome }, "song ended");
+    const where = this.voiceContext(guild);
+    if (finished && where !== null && !this.#closed) {
+      this.#tell(
+        where,
+        REASONS.done,
+        `你剛唱完${songLabel(entry)}(${entry.requester_name} 點的)。想說的話可以說一句感想。`,
+        entry,
+      );
+    }
+    if (!this.#closed) this.#autoStart();
+  }
+
+  /** Stops the song she is singing; `all` also drops every other song in the list. */
+  async stop(all: boolean): Promise<{ stopped: SongEntry | null; dropped: number }> {
+    const current = this.#playing;
+    current?.stop.abort();
+    let dropped = 0;
+    if (all) {
+      for (const e of this.list.open()) {
+        if (e === current?.entry) continue;
+        if (e.job !== null && e.state === "preparing") {
+          await this.worker.cancel(e.job).catch(() => undefined);
+        }
+        this.list.finish(e, "cancelled");
+        this.#finishQueueItem(e, false);
+        dropped += 1;
+      }
+    }
+    return { stopped: current?.entry ?? null, dropped };
+  }
+
+  // ----- her speech, so a song starts after she finished talking -----
+
+  async #waitQuiet(
+    guild: string,
+    turn: TurnId | null,
+    expectMs: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const clock = this.ctx.clock;
+    const deadline = clock.now() + this.cfg.announce_max_secs * 1000;
+    while (turn !== null && !this.#turnsDone.includes(turn) && clock.now() < deadline) {
+      await sleep(TICK_MS, signal);
+      if (signal.aborted) return;
+    }
+    const t0 = clock.now();
+    let spoke = false;
+    let quietSince: number | null = null;
+    while (clock.now() < deadline && !signal.aborted) {
+      const now = clock.now();
+      if ((this.#speaking.get(guild) ?? 0) > 0) {
+        spoke = true;
+        quietSince = null;
+      } else if (spoke || now - t0 >= expectMs) {
+        quietSince ??= now;
+        if (now - quietSince >= this.cfg.quiet_ms) return;
+      }
+      await sleep(TICK_MS, signal);
+    }
+  }
+
+  // ----- events -----
+
+  onEvent(event: Event): void {
+    switch (event.type) {
+      case "voice_joined": {
+        const c = event.data.context;
+        this.#voices = [c, ...this.#voices.filter((v) => !contextKeyEquals(v, c))];
+        // Now she can sing: ready songs she decides about are brought up again.
+        for (const e of this.list.ready()) {
+          if (this.#mindDecides(e) && e.reminders <= this.cfg.max_reminders) this.#remind(e);
+        }
+        this.#autoStart();
+        return;
+      }
+      case "voice_left": {
+        const c = event.data.context;
+        this.#voices = this.#voices.filter((v) => !contextKeyEquals(v, c));
+        if (c.scope !== null) this.#speaking.delete(c.scope);
+        return;
+      }
+      case "voice_playback": {
+        const guild = event.data.context.scope;
+        if (guild === null) return;
+        const n = this.#speaking.get(guild) ?? 0;
+        if (event.data.state === "started") this.#speaking.set(guild, n + 1);
+        else this.#speaking.set(guild, Math.max(0, n - 1));
+        return;
+      }
+      case "agent_turn_completed":
+        this.#turnsDone.push(event.data.turn);
+        if (this.#turnsDone.length > TURNS_REMEMBERED) this.#turnsDone.shift();
+        return;
+      case "custom":
+        if (event.data.topic === "queue.item_activated") this.#onQueueItem(event.data.payload);
+        return;
+      default:
+        return;
+    }
+  }
+
+  #onQueueItem(payload: JsonValue): void {
+    if (!isJsonObject(payload) || payload.kind !== this.cfg.queue_kind) return;
+    const item = payload.id;
+    const text = payload.text;
+    if (typeof item !== "number" || typeof text !== "string") return;
+    const requester = accountOf(payload.requester);
+    const name = typeof payload.requester_name === "string" ? payload.requester_name : "觀眾";
+    const context = contextOf(payload.context);
+    void this.request({
+      query: text,
+      key: 0,
+      requester,
+      requester_name: name,
+      context,
+      forced: true,
+      queue_item: item,
+    }).catch((error: unknown) => {
+      log.warn({ item, err: errorMessage(error) }, "could not prepare a queued song");
+      this.#queue((q) => q.skip(item));
+    });
+  }
+
+  #finishQueueItem(entry: SongEntry, done: boolean): void {
+    const item = entry.queue_item;
+    if (item === null) return;
+    entry.queue_item = null;
+    this.#queue((q) => (done ? q.complete(item) : q.skip(item)));
+  }
+
+  #queue(fn: (q: RequestQueue) => unknown): void {
+    const q = this.ctx.services.get(RequestQueueKey);
+    if (!q) return;
+    try {
+      fn(q);
+    } catch (error) {
+      log.debug({ err: errorMessage(error) }, "could not finish the queue item");
+    }
+  }
+
+  // ----- polling the worker -----
+
+  /** Checks every preparing song once. */
+  async poll(signal?: AbortSignal): Promise<void> {
+    for (const entry of this.list.preparing()) {
+      if (entry.job === null) continue;
+      try {
+        this.#apply(entry, await this.worker.job(entry.job, signal));
+      } catch (error) {
+        if (signal?.aborted) return;
+        log.debug({ no: entry.no, err: errorMessage(error) }, "could not check a song job");
+      }
+    }
+  }
+
+  async run(signal: AbortSignal): Promise<void> {
+    let last = 0;
+    while (!signal.aborted) {
+      const now = this.ctx.clock.now();
+      if (now - last >= this.cfg.poll_ms) {
+        last = now;
+        await this.poll(signal);
+        this.tick();
+      }
+      await sleep(Math.min(this.cfg.poll_ms, 500), signal);
+    }
+  }
+
+  close(): void {
+    this.#closed = true;
+    this.#playing?.stop.abort();
+  }
+
+  // ----- talking to her -----
+
+  #tell(where: ContextKey, reason: string, hint: string, entry: SongEntry): void {
+    const about: AccountRef[] = entry.requester ? [entry.requester] : [];
+    const mind = this.ctx.services.get(MindKey);
+    // A song that is about to start needs her words now, not after her next thought.
+    if (
+      reason !== REASONS.start &&
+      mind?.accepting &&
+      mind.suggest({ source: "sing", reason, context: where, hint, about })
+    ) {
+      return;
+    }
+    this.ctx.publish({ type: "agent_initiative", data: { context: where, reason, hint, about } });
+  }
+
+  #cue(cue: SongCue): void {
+    this.ctx.publish(customEvent(SONG_TOPIC, cue as unknown as JsonValue));
+  }
+}
+
+function pct(p: number): string {
+  return `${Math.round(Math.max(0, Math.min(1, p)) * 100)}%`;
+}
+
+function accountOf(v: JsonValue | undefined): AccountRef | null {
+  if (!isJsonObject(v ?? null)) return null;
+  const o = v as Record<string, JsonValue>;
+  return typeof o.platform === "string" && typeof o.id === "string"
+    ? { platform: o.platform, id: o.id }
+    : null;
+}
+
+function contextOf(v: JsonValue | undefined): ContextKey | null {
+  if (!isJsonObject(v ?? null)) return null;
+  const o = v as Record<string, JsonValue>;
+  const kind = o.kind;
+  if (
+    typeof o.platform !== "string" ||
+    typeof o.channel !== "string" ||
+    (kind !== "channel" && kind !== "thread" && kind !== "dm" && kind !== "voice")
+  ) {
+    return null;
+  }
+  return {
+    platform: o.platform,
+    scope: typeof o.scope === "string" ? o.scope : null,
+    channel: o.channel,
+    kind,
+  };
+}

@@ -4,7 +4,7 @@
 //   /voice    join · leave · mode · consent · golive start|stop|status
 //   /stream   start · stop · status · scene
 //   /me       profile · call · link · privacy · memory show|export|forget
-//   /queue    add · list · upvote · manage ... · vote start|end
+//   /queue    add · list · upvote · manage ... · vote start|end · song request|list|skip|stop
 //   /game     start · stop · goal · status
 //   /channel  mode · activeness
 //   /admin    module ... · role ... · perm ... · person ... · persona show · memory wipe ·
@@ -24,6 +24,7 @@ export const COMMAND_GROUPS: Readonly<Record<string, GroupInit>> = {
   queue: { description: "請求佇列與投票", guild_only: true },
   "queue manage": { description: "管理佇列（叫號、跳過、清空等）" },
   "queue vote": { description: "投票" },
+  "queue song": { description: "點歌：她用自己的聲音唱" },
   game: { description: "遊戲：讓她開始或停止玩遊戲", guild_only: true },
   channel: { description: "頻道設定：她在這個頻道的聊天模式與主動程度", guild_only: true },
   admin: {

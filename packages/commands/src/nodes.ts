@@ -65,6 +65,9 @@ const EVERYDAY: readonly string[] = [
   "queue.request",
   "queue.list",
   "queue.vote",
+  "queue.song.request",
+  "queue.song.list",
+  "queue.song.play",
   "game.status",
   "stream.status",
 ];

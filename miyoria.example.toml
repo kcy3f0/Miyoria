@@ -166,6 +166,16 @@ dirs = ["extensions"]
 # default_game = "minecraft"
 # require_connected = true
 
+# 唱歌(點歌):歌曲 worker(workers/sing,見 workers/README.md 第 9 節)用她的聲音翻唱。
+# 有人點歌她自己決定要不要唱、什麼時候唱;/queue song request 是強制(好了、她有空就唱)。
+# 唱的時候插話不會打斷,/queue song skip | stop 才會。Go Live 要讓觀眾聽到歌,voice node 要 GOLIVE_AUDIO=true
+# [modules.sing]
+# url = "http://127.0.0.1:8005"
+# start = "decide"           # decide:準備好了她挑時機唱;auto:好了就唱
+# max_pending_per_user = 2   # 每個人同時最多幾首在歌單上
+# lyrics = true              # 同步歌詞變成 overlay 字幕
+# lip_sync_vocals = true     # 嘴型跟轉換後的人聲走(不是整首混音)
+
 # 遊戲內聊天變成獨立的對話(每個世界 / 伺服器一段歷史)。玩家在 Discord 用 /me link 拿代碼,
 # 在遊戲聊天室打 `!link <代碼>` 就跟 Discord 帳號連在一起;沒連的玩家是陌生人。
 # 她在遊戲裡的回話很短、不會下指令;直播中又在語音裡時也用語音說(她可以用 game_chat_reply 自己改)
