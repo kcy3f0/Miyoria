@@ -28,6 +28,12 @@ review = true        # 高風險動作的自我審核
 summarizer = true    # 記憶整理
 fast = false         # 要不要插話的快速判斷(語音裡一律不思考)
 
+# 看圖:聊天模型支援圖片時,她直接用它看圖(deepseek-v4.1-flash 可以)。
+# 不收圖片的模型或 provider 標 false(沒列的 = 收);被 API 拒絕時也會自動改送文字並記住
+# [llm.image_input]
+# "ollama" = false
+# "opencode:some-text-model" = false
+
 # 價格(USD / 百萬 token)與預算;不設就不限制
 # [llm.pricing."deepseek:deepseek-chat"]
 # input_per_mtok = 0.27
@@ -165,6 +171,10 @@ barge_in = "stop"          # 有人插話時停止說話:stop | ignore
 # 頻道模式:off | mention-only | ambient | always。也可以在 Discord 用 /channel mode 即時切換
 # default_mode = "ambient"
 # channels = { "<channel id>" = "always", "discord:<guild id>" = "mention-only" }
+# 對話紀錄:最多幾個字進 prompt(舊的先丟)、單則上限;她寫 @名字 會變成真的 tag
+# max_prompt_chars = 16000
+# max_entry_chars = 2000
+# mention_users = true
 
 # 語音聊天:比文字更保守,偶爾才插話。也可以用 /voice mode 即時切換
 [modules.agent.voice]
@@ -172,6 +182,23 @@ default_mode = "ambient"
 ambient_factor = 0.5       # 主動插話機率的倍率
 cooldown_ms = 20000        # 她講完後至少隔多久才會再主動開口
 debounce_ms = 700          # 對方講完後等多久(看他是不是還要繼續講)
+text_chat = true           # 她在語音頻道裡時,那個頻道文字區打的字她也用說的回
+text_aside = true          # 用說的回時,網址和程式碼改貼到語音頻道的文字區
+
+# 她沒親眼看到的上下文:重開後(或很久沒人講話後)補抓頻道之前的訊息、回覆鏈。
+# 需要 Bot 的「讀取訊息歷史」權限;抓不到就用自己的訊息紀錄
+[modules.agent.history]
+backfill = 20              # 冷啟動補抓幾則(0 = 不補抓)
+reply_chain = 3            # 回覆的訊息不在紀錄裡時,最多往上抓幾則
+timeout_ms = 3000          # 最多等多久,逾時就不等了直接回
+
+# 看圖(聊天模型要收圖片,見 [llm.image_input]):她回的訊息、它回覆的訊息、
+# 同一個人兩分鐘內傳的圖
+[modules.agent.vision]
+enabled = true
+max_images = 3             # 每回合最多幾張
+max_image_bytes = 5000000  # 單張上限
+# detail = "auto"          # auto | low | high(low 最便宜)
 
 # 她的感知:誰在線、在玩什麼、誰在哪個語音頻道、各頻道熱不熱鬧。
 # 每個人都能用 /me privacy presence:off 不讓她讀自己的狀態
