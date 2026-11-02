@@ -394,10 +394,13 @@ export class MindLoop implements Mind {
           continue;
         }
         const nap = Math.min(delay, this.#rooms.size > 0 ? VOICE_CHECK_MS : 60_000);
-        await new Promise<void>((resolve) => {
-          this.#wake = resolve;
-          sleep(nap, signal).then(resolve, resolve);
-        });
+        // A trigger ends the nap early (and its timer with it).
+        const napping = new AbortController();
+        const stop = () => napping.abort();
+        signal.addEventListener("abort", stop, { once: true });
+        this.#wake = stop;
+        await sleep(nap, napping.signal).catch(() => undefined);
+        signal.removeEventListener("abort", stop);
         this.#wake = null;
       }
     } finally {
