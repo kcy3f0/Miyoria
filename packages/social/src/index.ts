@@ -2,7 +2,7 @@
 //
 // * Module `SocialModule` (`social`): relationships of the active profile, appraisal of
 //   conversations (keyword rules plus a batched LLM pass), her impression notes, the `在場的人`
-//   prompt section, `/link`, `/me` and `/admin person ...`. Provides `SocialSignalsKey` and
+//   prompt section, `/me profile | call | link` and `/admin person ...`. Provides `SocialSignalsKey` and
 //   `SocialKey`.
 // * Module `MoodModule` (`mood`): her global mood (valence / arousal / energy) drifting back to
 //   the profile baseline. Provides `MoodSignalsKey`, `MoodStateKey` and the `mood` prompt

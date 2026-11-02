@@ -1,4 +1,4 @@
-import { type CommandRegistry, CommandRegistryKey } from "@miyoria/commands";
+import { CommandMount } from "@miyoria/commands";
 import {
   defineManifest,
   errorMessage,
@@ -18,7 +18,7 @@ export const RequestQueueKey = serviceKey<RequestQueue>("RequestQueue");
 
 interface Running {
   queue: RequestQueue;
-  commands: { registry: CommandRegistry; paths: string[] } | null;
+  commands: CommandMount;
 }
 
 /**
@@ -54,8 +54,17 @@ export class QueueModule implements Module {
       );
     }
 
-    const registry = ctx.services.get(CommandRegistryKey);
-    const commands = registry ? { registry, paths: registerCommands(registry, queue) } : null;
+    let paths: string[] = [];
+    const commands = new CommandMount(
+      "queue",
+      (registry) => {
+        paths = registerCommands(registry, queue);
+      },
+      (registry) => {
+        for (const path of paths) registry.unregister(path);
+      },
+    );
+    commands.attach(ctx);
 
     ctx.provide(RequestQueueKey, queue);
     ctx.spawn("queue", (signal) => queue.run(signal));
@@ -66,9 +75,7 @@ export class QueueModule implements Module {
     const running = this.#running;
     this.#running = null;
     if (!running) return;
-    if (running.commands) {
-      for (const path of running.commands.paths) running.commands.registry.unregister(path);
-    }
+    running.commands.detach();
     await running.queue.persist();
   }
 }

@@ -23,7 +23,6 @@ import {
 } from "@miyoria/store";
 import { type ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
 import {
-  AuthorizerKey,
   type ContextKey,
   contextKeyString,
   type Envelope,
@@ -66,7 +65,8 @@ export interface MemoryModuleOptions {
  *
  * Services used: `LlmRouterKey`, `MemoryRecordStoreKey` (else `StoreKey.memories`), and
  * optionally `MessageLogKey`, `PeopleStoreKey`, `SettingsStoreKey` (each else the `Store`
- * field), `PromptContributorsKey`, `ToolRegistryKey`, `CommandRegistryKey`, `AuthorizerKey`.
+ * field), `PromptContributorsKey`, `ToolRegistryKey`, `CommandRegistryKey`, and for
+ * `/admin memory wipe` `ProfileDataStoreKey`, `SupervisorKey` and `AuditLogKey`.
  *
  * Provides `MemoryEngineKey` and `FollowupSourceKey`; registers the prompt contributor `memory`,
  * the tools `remember` / `recall` and the `memory` commands (re-checked periodically, so start
@@ -178,7 +178,7 @@ class Installer {
     }
     const commands = services.get(CommandRegistryKey);
     if (commands) {
-      this.#commands.install(commands, engine, () => ctx.services.get(AuthorizerKey), ctx.clock);
+      this.#commands.install(commands, engine, { services: ctx.services, clock: ctx.clock });
     }
   }
 

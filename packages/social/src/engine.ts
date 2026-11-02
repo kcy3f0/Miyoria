@@ -78,9 +78,9 @@ export type Publisher = (event: Event) => void;
 export interface SocialStores {
   people: PeopleStore;
   relationships: RelationshipStore;
-  /** Needed for `/link` and to know people's accounts right after start. */
+  /** Needed for `/me link` and to know people's accounts right after start. */
   identity: IdentityStore | null;
-  /** When set, `/link` moves the absorbed person's memories to the surviving person. */
+  /** When set, `/me link` moves the absorbed person's memories to the surviving person. */
   memories?: MemoryRecordStore | null;
 }
 
@@ -96,7 +96,7 @@ export interface Observed {
   ts: number;
 }
 
-/** Result of `/link <code>`. */
+/** Result of `/me link <code>`. */
 export type LinkOutcome =
   | { type: "linked"; keep: PersonId; absorbed: PersonId }
   | { type: "already_linked" }
@@ -848,7 +848,7 @@ export class Social implements SocialSignals {
   }
 
   /**
-   * Issues a one-time `/link` code for `account` (valid 10 minutes). `null` when no identity
+   * Issues a one-time `/me link` code for `account` (valid 10 minutes). `null` when no identity
    * store is configured.
    */
   async issueLinkCode(

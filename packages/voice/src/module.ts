@@ -1,6 +1,6 @@
 // Module `voice`: listening and speaking in voice channels.
 
-import { type CommandRegistry, CommandRegistryKey } from "@miyoria/commands";
+import { CommandMount } from "@miyoria/commands";
 import {
   defineManifest,
   HEALTHY,
@@ -26,7 +26,7 @@ import { Semaphore } from "./util.js";
 /**
  * Module `voice`: listens in voice channels (VAD → ASR → `voice_utterance`) and speaks
  * (`VoiceSink` → TTS → playback), with consent, barge-in and the `join` / `leave` /
- * `voice consent` / `golive` commands.
+ * `/voice join | leave | consent | golive ...` commands.
  *
  * Requires `voice.link` (`VoiceLinkKey`) and `speech` (`SpeechServiceKey`); uses the
  * `SettingsStore` for consent flags, the `CommandRegistry` for commands and the LLM router for
@@ -43,7 +43,7 @@ export class VoiceModule implements Module {
   readonly #profileId: ProfileId;
   readonly #voice: JsonObject | null;
   #link: VoiceLink | null = null;
-  #registry: CommandRegistry | null = null;
+  #commands: CommandMount | null = null;
 
   /** `voice` is the profile's `voice.toml` (`Profile.voice`). */
   constructor(profileId: ProfileId, voice: JsonObject | null) {
@@ -99,10 +99,14 @@ export class VoiceModule implements Module {
       ctx.log.warn("no ASR provider configured: she cannot listen");
     }
 
-    const registry = ctx.services.get(CommandRegistryKey) ?? null;
     this.#link = link;
-    this.#registry = registry;
-    if (registry) registerCommands(registry, link, consent, config.golive_source);
+    const commands = new CommandMount(
+      "voice",
+      (registry) => registerCommands(registry, link, consent, config.golive_source),
+      unregisterCommands,
+    );
+    this.#commands = commands;
+    commands.attach(ctx);
     ctx.log.info(
       { voice: profile.voice, consent: config.consent, speaks: translator?.language ?? null },
       "voice module running",
@@ -110,9 +114,8 @@ export class VoiceModule implements Module {
   }
 
   async stop(): Promise<void> {
-    const registry = this.#registry;
-    this.#registry = null;
-    if (registry) unregisterCommands(registry);
+    this.#commands?.detach();
+    this.#commands = null;
   }
 
   async health(): Promise<Health> {

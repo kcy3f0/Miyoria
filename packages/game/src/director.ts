@@ -465,14 +465,14 @@ export class Director {
         return voice() ?? stream() ?? here;
       case "voice": {
         const v = voice();
-        if (!v) throw new GameError("我又不在語音頻道裡,要講給誰聽啦。");
+        if (!v) throw new GameError("她目前不在語音頻道中，無法在語音裡實況。");
         return v;
       }
       case "here":
         return here;
       case "stream": {
         const s = stream();
-        if (!s) throw new GameError("沒有設定直播頻道([modules.game] stream_context)。");
+        if (!s) throw new GameError("沒有設定直播頻道（[modules.game] stream_context）。");
         return s;
       }
     }
@@ -480,20 +480,22 @@ export class Director {
 
   #start(game: string, placement: Placement, here: ContextKey, invoker: AccountRef): string {
     if (this.#session) {
-      throw new GameError(`已經在玩 ${this.#session.gameName} 了啦,要換先 \`game stop\`。`);
+      throw new GameError(`她已經在玩 ${this.#session.gameName}，要換遊戲請先使用 /game stop。`);
     }
     const tools = this.#ctx.services.get(ToolRegistryKey);
-    if (!tools) throw new GameError("工具系統沒開,沒辦法玩。");
+    if (!tools) throw new GameError("工具系統沒有啟用，無法玩遊戲。");
     const observe = `game_${game}_observe`;
     const act = tools.get(`game_${game}_act`);
     if (!tools.get(observe) || !act) {
-      throw new GameError(`找不到 ${game} 的遊戲 adapter(工具 \`${observe}\`),擴充有開嗎?`);
+      throw new GameError(
+        `找不到 ${game} 的遊戲 adapter（工具 \`${observe}\`），請確認擴充套件已啟用。`,
+      );
     }
     const context = this.#resolveContext(placement, here);
     const name = gameName(act.spec.description, game);
     this.#generation += 1;
     log.info({ game, context: contextKeyString(context) }, "game session started");
-    const where = context.kind === "voice" ? "語音頻道" : "這邊";
+    const where = context.kind === "voice" ? "語音頻道" : "這個頻道";
     const now = this.#now();
     this.#session = {
       generation: this.#generation,
@@ -513,12 +515,12 @@ export class Director {
       trigger: { text: ["剛開始玩"], important: true },
       lastComment: null,
     };
-    return `好啦,開始玩 ${name}……才不是因為想玩才玩的喔。實況會在${where}講。`;
+    return `她開始玩 ${name} 了，實況會在${where}進行。`;
   }
 
   #stop(): string {
     const s = this.#session;
-    if (!s) throw new GameError("本來就沒在玩啊。");
+    if (!s) throw new GameError("她目前沒有在玩遊戲。");
     this.#session = null;
     this.#generation += 1;
     log.info({ game: s.game }, "game session stopped");
@@ -537,18 +539,18 @@ export class Director {
     }
     const open: number[] = s.backlog.map((q) => q.item);
     if (s.goal?.source.type === "queue") open.unshift(s.goal.source.item);
-    let text = `收工!${s.gameName} 今天就玩到這裡。`;
+    let text = `她已停止玩 ${s.gameName}。`;
     if (open.length > 0) {
-      text += `觀眾的請求 ${open.map((i) => `#${i}`).join("、")} 還沒做完,先放著。`;
+      text += `觀眾請求 ${open.map((i) => `#${i}`).join("、")} 尚未完成，已保留在佇列中。`;
     }
     return text;
   }
 
   #commandGoal(rawText: string, by: string): string {
     const s = this.#session;
-    if (!s) throw new GameError("又沒在玩,要我做什麼啦。");
+    if (!s) throw new GameError("她目前沒有在玩遊戲。");
     const text = rawText.trim();
-    if (text === "") throw new GameError("目標是什麼?講清楚啦。");
+    if (text === "") throw new GameError("請輸入目標。");
     const old = s.goal;
     s.goal = null;
     if (old?.source.type === "queue") {
@@ -557,7 +559,7 @@ export class Director {
     }
     s.goal = newGoal(text, { type: "command", by }, this.#now());
     this.#trigger(`新目標:${text}`, true);
-    return `知道了啦,${text}。`;
+    return `已設定新目標：${text}。`;
   }
 
   // ----- events -----

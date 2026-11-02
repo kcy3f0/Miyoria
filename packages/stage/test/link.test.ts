@@ -191,11 +191,14 @@ const voiceCtx = (): ContextKey => ({
 });
 
 function invocation(path: string): Invocation {
-  return Invocation.create(
+  const inv = Invocation.create(
     path,
     { platform: "discord", id: "7" },
     { platform: "discord", scope: "g1", channel: "c1", kind: "channel" },
   );
+  // Starting and stopping the stream needs `stream.start` / `stream.stop` (admin).
+  inv.invoker_is_guild_admin = true;
+  return inv;
 }
 
 /** Answers the next request with `status`; returns the request. */
@@ -381,7 +384,7 @@ describe("stage.link", () => {
     const h = await Harness.start();
     const registry = h.registry();
     let reply = await registry.dispatch(invocation("stream status"));
-    expect(reply.text).toContain("沒連上");
+    expect(reply.text).toContain("直播機目前沒有連線");
 
     const node = await h.node();
 
@@ -389,8 +392,8 @@ describe("stage.link", () => {
     let req = await answer(node, { vts: true, obs: true, scene: "Talk", streaming: true });
     expect(req.action).toBe("start");
     reply = await call;
-    expect(reply.ephemeral).toBe(false);
-    expect(reply.text).toContain("開台");
+    expect(registry.get(["stream", "start"])?.ephemeral).toBe(false);
+    expect(reply.text).toBe("已開始直播。");
 
     call = registry.dispatch(invocation("stream scene").withArg("name", "Game"));
     req = await answer(node, { vts: true, obs: true, scene: "Game", streaming: true });
@@ -401,14 +404,18 @@ describe("stage.link", () => {
     req = await answer(node, { vts: false, obs: true, scene: "Game", streaming: true });
     expect(req.type).toBe("status_request");
     reply = await call;
-    expect(reply.ephemeral).toBe(true);
+    expect(registry.get(["stream", "status"])?.ephemeral).toBe(true);
     expect(reply.text).toContain("直播中");
     expect(reply.text).toContain("Game");
 
     const paths = registry.specs().map((s) => commandName(s));
     for (const p of STREAM_COMMAND_PATHS) expect(paths, `${p} registered`).toContain(p);
     expect(registry.get(["stream", "start"])?.permission).toBe("stream.start");
-    expect(registry.groupDescription("stream")).toBe("直播控制(OBS)");
+    expect(registry.groupDescription("stream")).toContain("OBS");
+    expect(registry.get(["stream", "scene"])?.args[0]?.autocomplete).toBe(true);
+    expect(await registry.autocomplete(invocation("stream scene"), "name", "ga")).toEqual([
+      { name: "Game", value: "Game" },
+    ]);
 
     await h.sup.stopAll();
     for (const p of STREAM_COMMAND_PATHS) {

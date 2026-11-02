@@ -1,4 +1,4 @@
-import { type CommandRegistry, CommandRegistryKey } from "@miyoria/commands";
+import { CommandMount } from "@miyoria/commands";
 import {
   defineManifest,
   errorMessage,
@@ -37,7 +37,7 @@ export class SocialError extends Error {
 
 interface Running {
   social: Social;
-  registry: CommandRegistry | undefined;
+  commands: CommandMount;
   contributors: PromptContributors | undefined;
 }
 
@@ -49,10 +49,10 @@ function stores(ctx: ModuleContext): SocialStores {
   const relationships = services.get(RelationshipStoreKey) ?? bundle?.relationships;
   if (!relationships) throw new SocialError("social needs a `dyn RelationshipStore` service");
   const identity = services.get(IdentityStoreKey) ?? bundle?.identity ?? null;
-  if (!identity) ctx.log.warn("no identity store: `/link` is unavailable");
+  if (!identity) ctx.log.warn("no identity store: `/me link` is unavailable");
   const memories = services.get(MemoryRecordStoreKey) ?? bundle?.memories ?? null;
   if (identity && !memories) {
-    ctx.log.warn("no memory record store: `/link` does not move memories");
+    ctx.log.warn("no memory record store: `/me link` does not move memories");
   }
   return { people, relationships, identity, memories };
 }
@@ -61,8 +61,8 @@ function stores(ctx: ModuleContext): SocialStores {
  * Module `social`. Requires `llm`; `commands` is optional.
  *
  * Services used: `RelationshipStoreKey` (required), `PeopleStoreKey` (or the `StoreKey`
- * bundle), `IdentityStoreKey` (optional, for `/link`), `MemoryRecordStoreKey` (optional, so
- * `/link` moves memories too), `PromptContributorsKey`, `CommandRegistryKey` and
+ * bundle), `IdentityStoreKey` (optional, for `/me link`), `MemoryRecordStoreKey` (optional, so
+ * `/me link` moves memories too), `PromptContributorsKey`, `CommandRegistryKey` and
  * `AuthorizerKey` (optional). Provides `SocialSignalsKey` and `SocialKey`.
  */
 export class SocialModule implements Module {
@@ -110,9 +110,13 @@ export class SocialModule implements Module {
 
     const contributors = ctx.services.get(PromptContributorsKey);
     contributors?.register(new SocialPrompt(social));
-    const registry = ctx.services.get(CommandRegistryKey);
-    if (registry) registerCommands(registry, social);
-    this.#running = { social, registry, contributors };
+    const commands = new CommandMount(
+      "social",
+      (registry) => registerCommands(registry, social),
+      unregisterCommands,
+    );
+    commands.attach(ctx);
+    this.#running = { social, commands, contributors };
 
     // Subscribe before returning so no event published after start is missed.
     const sub = ctx.subscribe([
@@ -200,7 +204,7 @@ export class SocialModule implements Module {
     const running = this.#running;
     this.#running = null;
     if (!running) return;
-    if (running.registry) unregisterCommands(running.registry);
+    running.commands.detach();
     running.contributors?.unregister(SocialPrompt.KEY);
     await running.social.flush();
   }

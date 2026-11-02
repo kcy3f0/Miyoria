@@ -1,7 +1,12 @@
 // `voice` module tests: listening, consent, speaking, barge-in and commands, with a fake voice
 // node and fake ASR / TTS providers (port of `tests/voice.rs`).
 
-import { type CommandRegistry, CommandRegistryKey, CommandsModule } from "@miyoria/commands";
+import {
+  type CommandRegistry,
+  CommandRegistryKey,
+  CommandsModule,
+  replyEphemeral,
+} from "@miyoria/commands";
 import {
   defineManifest,
   type Module,
@@ -150,14 +155,17 @@ class Env {
     args: Record<string, string> = {},
     guild = "g1",
   ): Promise<{ text: string; ephemeral: boolean }> {
-    return this.registry().dispatch({
+    const reply = await this.registry().dispatch({
       path: path.split(/\s+/),
       args,
       invoker: account(invoker),
       invoker_display_name: invoker,
       context: { platform: "discord", scope: guild, channel: "text1", kind: "channel" },
-      invoker_is_guild_admin: false,
+      // Go Live needs moderator+; guild admins have it.
+      invoker_is_guild_admin: invoker.startsWith("admin"),
     });
+    const declared = this.registry().get(path.split(/\s+/))?.ephemeral ?? true;
+    return { text: reply.text, ephemeral: replyEphemeral(declared, reply) };
   }
 }
 
@@ -279,7 +287,11 @@ describe("voice", () => {
     const events = e.h.subscribe(["voice.utterance"]);
 
     const reply = await e.command("voice consent", "u2", { state: "off" });
-    expect(reply.text).toContain("不會聽");
+    expect(reply.text).toBe("已更新：她在語音頻道中不會聽你說話。");
+    expect(reply.ephemeral).toBe(true);
+    expect((await e.command("voice consent", "u2")).text).toBe(
+      "目前設定：她在語音頻道中不會聽你說話。",
+    );
     expect(await e.settings.get("_global", "voice_consent:discord:u2")).toBe(false);
 
     e.speakStream(1, "u2", utteranceAudio());
@@ -411,69 +423,75 @@ describe("voice", () => {
   it("join_and_leave_commands", async () => {
     const e = await boot();
     const registry = e.registry();
-    expect(registry.get(["join"])).toBeDefined();
-    expect(registry.groupDescription(["voice"])).toBe("語音設定");
+    expect(registry.get(["voice", "join"])).toBeDefined();
+    expect(registry.groupInfo(["voice"])?.guild_only).toBe(true);
 
-    const joining = e.command("join", "u7", {}, "g2");
+    const joining = e.command("voice join", "u7", {}, "g2");
     expect(await e.node.recvType("join")).toEqual({ type: "join", guild: "g2", user_id: "u7" });
     e.node.sendJson({ type: "joined", guild: "g2", channel: "vc2" });
     const reply = await joining;
     expect(reply.ephemeral).toBe(false);
     expect(reply.text).toContain("/voice consent off");
 
-    const left = await e.command("leave", "u7");
-    expect(left.text).toContain("我走");
+    const left = await e.command("voice leave", "u7");
+    expect(left.text).toBe("她已離開語音頻道。");
     expect((await e.node.recvType("leave")).guild).toBe("g1");
 
     // Stopping the module removes its commands.
     await e.h.sup.disable("voice");
-    expect(registry.get(["join"])).toBeUndefined();
+    expect(registry.get(["voice", "join"])).toBeUndefined();
     expect(registry.get(["voice", "consent"])).toBeUndefined();
   });
 
   it("golive_commands", async () => {
     const e = await boot();
     const registry = e.registry();
-    expect(registry.get(["golive", "start"])).toBeDefined();
-    expect(registry.groupDescription(["golive"])).toContain("Go Live");
+    expect(registry.get(["voice", "golive", "start"])).toBeDefined();
+    expect(registry.groupDescription(["voice", "golive"])).toContain("Go Live");
+    // Plain users may look, not start.
+    expect((await e.command("voice golive start", "u7")).text).toContain("voice.golive");
 
     // Not in a voice channel: joins the invoker's channel first, then goes live.
-    const joining = e.command("golive start", "u7", {}, "g2");
-    expect(await e.node.recvType("join")).toEqual({ type: "join", guild: "g2", user_id: "u7" });
+    const joining = e.command("voice golive start", "admin7", {}, "g2");
+    expect(await e.node.recvType("join")).toEqual({
+      type: "join",
+      guild: "g2",
+      user_id: "admin7",
+    });
     e.node.sendJson({ type: "joined", guild: "g2", channel: "vc2" });
     expect((await e.node.recvType("golive_start")).guild).toBe("g2");
     const joined = await joining;
     expect(joined.ephemeral).toBe(false);
     expect(joined.text).toContain("/voice consent off");
-    expect(joined.text).toContain("開台");
+    expect(joined.text).toContain("已開始 Go Live");
 
-    const starting = e.command("golive start", "u7");
+    const starting = e.command("voice golive start", "admin7");
     const req = await e.node.recvType("golive_start");
     expect(req.guild).toBe("g1");
     expect(req.source).toBe("rtmp://127.0.0.1:1935/live/miyoria");
-    expect((await starting).text).toContain("開台");
+    expect((await starting).text).toContain("已開始 Go Live");
 
     // The node reports progress; `/golive status` mirrors it.
     e.node.sendJson({ type: "golive", guild: "g1", state: "live" });
     await waitUntil(() => e.h.link().golive("g1")?.state === "live");
-    const live = await e.command("golive status", "u7");
+    const live = await e.command("voice golive status", "u7");
     expect(live.ephemeral).toBe(true);
     expect(live.text).toContain("直播中");
 
     // A second start is refused while it runs.
-    expect((await e.command("golive start", "u7")).text).toContain("已經在直播");
+    expect((await e.command("voice golive start", "admin7")).text).toContain("已經在進行中");
 
-    const stopping = e.command("golive stop", "u7");
+    const stopping = e.command("voice golive stop", "admin7");
     expect((await e.node.recvType("golive_stop")).guild).toBe("g1");
     e.node.sendJson({ type: "golive", guild: "g1", state: "stopped", reason: "stop requested" });
     await waitUntil(() => e.h.link().golive("g1")?.state === "stopped");
-    expect((await stopping).text).toContain("收台");
-    expect((await e.command("golive status", "u7")).text).toContain("沒在直播");
+    expect((await stopping).text).toBe("已結束 Go Live。");
+    expect((await e.command("voice golive status", "u7")).text).toContain("未直播");
   });
 
   it("golive_start_takes_a_source_override", async () => {
     const e = await boot();
-    const starting = e.command("golive start", "u7", { source: "srt://127.0.0.1:9999" });
+    const starting = e.command("voice golive start", "admin7", { source: "srt://127.0.0.1:9999" });
     expect((await e.node.recvType("golive_start")).source).toBe("srt://127.0.0.1:9999");
     await starting;
   });

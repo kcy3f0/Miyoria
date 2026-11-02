@@ -107,7 +107,7 @@ class Harness {
   actContexts: ContextKey[] = [];
   actReply = "成功:開始了";
   readonly tools = new ToolRegistry();
-  readonly commands = new CommandRegistry(Permissions.fromStrings([]));
+  readonly commands = new CommandRegistry(Permissions.fromStrings(["discord:1"]));
   readonly prompts = new PromptContributors();
   readonly queue: RequestQueue;
   readonly hintLog: Log<string>;
@@ -442,7 +442,7 @@ describe("game director", () => {
 
     // A commanded goal survives the death and is re-issued.
     const reply = await h.command("game goal", { text: "去挖鐵礦" });
-    expect(reply).toContain("知道了啦");
+    expect(reply).toContain("已設定新目標");
     await secs(4);
     expect(h.acts()).toHaveLength(3);
     const goal = h.status()?.goal;
@@ -473,12 +473,12 @@ describe("game director", () => {
   it("stop_ends_the_session", async () => {
     const llm = new MockProvider("mock").reply(decision("閒晃", null));
     const h = await Harness.create(llm);
-    expect(await h.command("game stop")).toContain("本來就沒在玩");
-    expect(await h.command("game status")).toContain("沒在玩");
+    expect(await h.command("game stop")).toContain("她目前沒有在玩遊戲");
+    expect(await h.command("game status")).toContain("她目前沒有在玩遊戲");
     await h.start();
-    expect(await h.start()).toContain("已經在玩");
+    expect(await h.start()).toContain("她已經在玩");
     const status = await h.command("game status");
-    expect(status).toContain("正在玩 Minecraft");
+    expect(status).toContain("正在玩：Minecraft");
 
     // While playing the chat prompt knows about the game.
     const section = await h.prompts.all()[0]?.contribute(promptRequest());
@@ -490,7 +490,7 @@ describe("game director", () => {
     expect(section?.[0]?.body).toContain("血量 20/20");
 
     const reply = await h.command("game stop");
-    expect(reply).toContain("收工");
+    expect(reply).toContain("她已停止玩");
     expect(h.actNames()).toEqual(["stop"]);
     expect(h.status()).toBeNull();
     expect(await h.prompts.all()[0]?.contribute(promptRequest())).toEqual([]);
@@ -527,7 +527,7 @@ describe("game director", () => {
 
     await h.publish({ type: "voice_left", data: { context: voiceCtx(), reason: null } });
     const reply = await h.command("game start", { where: "voice" });
-    expect(reply).toContain("不在語音頻道");
+    expect(reply).toContain("不在語音頻道中");
     await h.stop();
   });
 
@@ -634,7 +634,7 @@ describe("game director details", () => {
     await vi.advanceTimersByTimeAsync(10);
     await restart;
     expect(h.status()).toBeNull();
-    expect(await h.command("game status")).toBe("現在沒在玩遊戲。");
+    expect(await h.command("game status")).toContain("她目前沒有在玩遊戲。");
     await h.stop();
   });
 });
@@ -650,11 +650,12 @@ describe("game status command", () => {
     const out = await h.command("game status");
     expect(out).toBe(
       [
-        "正在玩 Minecraft(實況送到 discord:g1:text1)",
-        "目標:挖鐵礦(已 0 秒)",
-        '動作:mine {"block":"iron_ore"}',
-        "bot:忙碌中",
-        "狀況:血量 20/20 / 位置 (5, 64, 5) / Baritone 執行中(Mine)",
+        "遊戲狀態",
+        "正在玩：Minecraft（實況送到 discord:g1:text1）",
+        "目標：挖鐵礦（已進行 0 秒）",
+        '動作：mine {"block":"iron_ore"}',
+        "遊戲 bot：忙碌中",
+        "狀況：血量 20/20／位置 (5, 64, 5)／Baritone 執行中(Mine)",
       ].join("\n"),
     );
     await h.stop();
@@ -672,15 +673,15 @@ describe("GameModule", () => {
     expect(handle.status()).toBeNull();
 
     await expect(control.stop()).rejects.toBeInstanceOf(GameError);
-    await expect(control.stop()).rejects.toThrow("本來就沒在玩啊。");
+    await expect(control.stop()).rejects.toThrow("她目前沒有在玩遊戲。");
     await expect(control.start("terraria", textCtx(), owner())).rejects.toThrow("找不到 terraria");
-    expect(await control.start("minecraft", textCtx(), owner())).toContain("實況會在這邊講");
+    expect(await control.start("minecraft", textCtx(), owner())).toContain("實況會在這個頻道進行");
     expect(handle.status()?.context).toEqual(textCtx());
-    expect(await control.goal(" 去蓋房子 ", "Panel")).toBe("知道了啦,去蓋房子。");
-    await expect(control.goal("  ", "Panel")).rejects.toThrow("目標是什麼?講清楚啦。");
+    expect(await control.goal(" 去蓋房子 ", "Panel")).toBe("已設定新目標：去蓋房子。");
+    await expect(control.goal("  ", "Panel")).rejects.toThrow("請輸入目標。");
     await settle();
     expect(handle.status()?.goal?.note).toBe("(Panel 指定的)");
-    expect(await control.stop()).toContain("收工!Minecraft 今天就玩到這裡。");
+    expect(await control.stop()).toContain("她已停止玩 Minecraft。");
     await h.stop();
   });
 
@@ -719,7 +720,7 @@ describe("GameModule", () => {
     h.queue.next();
     await settle();
     expect(await h.command("game stop")).toBe(
-      `收工!Minecraft 今天就玩到這裡。觀眾的請求 #${a}、#${b} 還沒做完,先放著。`,
+      `她已停止玩 Minecraft。觀眾請求 #${a}、#${b} 尚未完成，已保留在佇列中。`,
     );
     await h.stop();
   });
@@ -735,7 +736,7 @@ describe("GameModule", () => {
     await sup.startAll();
     const control = sup.services.require(GameControlKey);
     await expect(control.start("minecraft", textCtx(), owner())).rejects.toThrow(
-      "工具系統沒開,沒辦法玩。",
+      "工具系統沒有啟用，無法玩遊戲。",
     );
     const stopping = sup.stopAll();
     await vi.advanceTimersByTimeAsync(10);

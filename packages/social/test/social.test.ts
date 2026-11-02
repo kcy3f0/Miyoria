@@ -465,26 +465,40 @@ describe("social engine", () => {
     const run = async (inv: InvocationData) => (await registry.dispatch(inv)).text;
     const s = (v: string): ArgValue => v;
 
-    let me = await run(inv("discord:2", "me", {}, false));
-    expect(me.includes("陌生人") && me.includes("/me call"), me).toBe(true);
+    let me = await run(inv("discord:2", "me profile", {}, false));
+    expect(me.includes("關係：陌生人") && me.includes("尚未設定"), me).toBe(true);
     expect(me.includes("."), `no exact numbers: ${me}`).toBe(false);
-    const refused = await run(inv("discord:2", "me", { call: s("笨蛋") }, false));
-    expect(refused).toContain("才不要");
-    const set = await run(inv("discord:2", "me", { call: s("小明") }, false));
-    expect(set).toContain("小明");
-    me = await run(inv("discord:2", "me", {}, false));
-    expect(me).toContain("我都叫你「小明」");
+    const refused = await run(inv("discord:2", "me call", { name: s("笨蛋") }, false));
+    expect(refused).toBe("這個稱呼不適合，請換一個。");
+    const set = await run(inv("discord:2", "me call", { name: s("小明") }, false));
+    expect(set).toBe("已設定：她會稱呼你「小明」。");
+    me = await run(inv("discord:2", "me profile", {}, false));
+    expect(me).toContain("她怎麼稱呼你：「小明」");
+    // The profile's "set" button opens a modal; its submission updates the card.
+    const click = (who: string, id: string, fields: Record<string, string> = {}) =>
+      registry.dispatchComponent({
+        ...inv(who, "x", {}, false),
+        custom_id: id,
+        fields,
+        message_id: "m1",
+      });
+    const modal = await click("discord:2", "mi:me:call:edit");
+    expect(modal?.result.type).toBe("modal");
+    const submitted = await click("discord:2", "mi:me:call:submit", { call: " 阿明 " });
+    expect(submitted?.result.type).toBe("update");
+    expect(h.rel("discord:2").call_name).toBe("阿明");
+    await run(inv("discord:2", "me call", { name: s("小明") }, false));
 
     const denied = await run(inv("discord:2", "admin person show", { user: s("<@2>") }, false));
     expect(denied).toContain("權限");
     const shown = await run(inv("discord:3", "admin person show", { user: s("<@!2>") }, true));
     expect(shown.includes("好感 0.0") && shown.includes("小明"), shown).toBe(true);
     const byName = await run(inv("discord:3", "admin person show", { user: s("user2") }, true));
-    expect(byName).toContain("**user2**");
+    expect(byName).toContain("user2\n好感");
     const unknown = await run(
       inv("discord:3", "admin person show", { user: s("discord:404") }, true),
     );
-    expect(unknown).toContain("不認識");
+    expect(unknown).toBe("找不到「discord:404」這個人。");
 
     const tag = await run(
       inv("discord:3", "admin person tag", { user: s("2"), tag: s("Regular") }, true),
@@ -493,7 +507,7 @@ describe("social engine", () => {
     const ownerTag = await run(
       inv("discord:3", "admin person tag", { user: s("2"), tag: s("owner") }, true),
     );
-    expect(ownerTag).toContain("只有我的主人");
+    expect(ownerTag).toContain("owner.person.tag");
     const badTag = await run(
       inv("discord:3", "admin person tag", { user: s("2"), tag: s("壞 人") }, true),
     );
@@ -501,28 +515,40 @@ describe("social engine", () => {
 
     const adjustArgs = { user: s("2"), affinity: 25 };
     const notOwner = await run(inv("discord:3", "admin person adjust", adjustArgs, true));
-    expect(notOwner).toContain("只有我的主人");
+    expect(notOwner).toContain("owner.person.adjust");
     const adjusted = await run(inv("discord:1", "admin person adjust", adjustArgs, false));
     expect(adjusted.includes("+25") && adjusted.includes("朋友"), adjusted).toBe(true);
-    me = await run(inv("discord:2", "me", {}, false));
+    me = await run(inv("discord:2", "me profile", {}, false));
     expect(me).toContain("朋友");
 
     const blocked = await run(inv("discord:3", "admin person block", { user: s("2") }, true));
-    expect(blocked).toContain("不會再理");
-    me = await run(inv("discord:2", "me", {}, false));
-    expect(me).toContain("不想跟你說話");
+    expect(blocked).toContain("她不會再回應這個人");
+    me = await run(inv("discord:2", "me profile", {}, false));
+    expect(me).toBe("她目前不會回應你。");
     await run(inv("discord:3", "admin person unblock", { user: s("2") }, true));
 
-    const reset = await run(inv("discord:3", "admin person reset", { user: s("2") }, true));
-    expect(reset).toContain("歸零");
+    // Resetting asks first (a red confirm card); the confirm button does it.
+    const ask = await registry.dispatch(
+      inv("discord:3", "admin person reset", { user: s("2") }, true),
+    );
+    expect(ask.card?.accent).toBe("danger");
+    expect(close(h.rel("discord:2").affinity, 0)).toBe(false);
+    const confirmId = ask.card?.blocks.flatMap((b) =>
+      b.type === "buttons" ? b.buttons.map((x) => x.id) : [],
+    )[0] as string;
+    const reset = await registry.dispatchComponent({
+      ...inv("discord:3", "x", {}, true),
+      custom_id: confirmId,
+    });
+    expect(reset?.result.type === "update" && reset.result.reply.text).toContain("已重置");
     const r = h.rel("discord:2");
     expect(close(r.affinity, 0) && r.call_name === null).toBe(true);
     expect(r.tags, "tags survive a reset").toEqual(["regular"]);
 
-    const issued = await run(inv("discord:2", "link", {}, false));
+    const issued = await run(inv("discord:2", "me link", {}, false));
     const code = issued.split("`")[1] ?? "";
-    const linked = await run(inv("discord:7", "link", { code: s(code) }, false));
-    expect(linked).toContain("都是你");
+    const linked = await run(inv("discord:7", "me link", { code: s(code) }, false));
+    expect(linked).toBe("已連結：這兩個帳號現在屬於同一個人。");
     expect(h.social.personOf(acc("discord:7"))).toBe(h.social.personOf(acc("discord:2")));
   });
 

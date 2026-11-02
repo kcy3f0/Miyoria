@@ -1,12 +1,20 @@
-// `join`, `leave`, `voice consent` and `golive` commands.
+// `/voice join | leave | consent | golive start | stop | status`. The agent module adds
+// `/voice mode`.
 
 import {
+  type AnyComponentRoute,
   ArgKind,
   argSpec,
+  type CardBlock,
   type CommandRegistry,
-  CommandReply,
+  type CommandReply,
+  ComponentResult,
+  cardReply,
   commandSpec,
+  componentId,
   type Invocation,
+  MAX_SESSION_TTL_MS,
+  notice,
 } from "@miyoria/commands";
 import { errorMessage, getLogger } from "@miyoria/kernel";
 import type { Consent, ConsentPolicy } from "./consent.js";
@@ -17,39 +25,84 @@ const log = getLogger("voice.commands");
 
 /** Paths registered by `registerCommands`. */
 export const PATHS = [
-  "join",
-  "leave",
+  "voice join",
+  "voice leave",
   "voice consent",
-  "golive start",
-  "golive stop",
-  "golive status",
+  "voice golive start",
+  "voice golive stop",
+  "voice golive status",
 ] as const;
 
+const NODE_GOLIVE = "voice.golive";
+
 const GOLIVE_STATE_TEXT: Record<GoLiveState, string> = {
-  starting: "正在連線",
+  starting: "連線中",
   live: "直播中",
-  stopped: "沒在直播",
-  failed: "失敗了",
+  stopped: "未直播",
+  failed: "失敗",
 };
 
-/** The announcement she makes after joining a voice channel. */
+const R = {
+  consentOn: "voice:consent:on",
+  consentOff: "voice:consent:off",
+  goliveStart: "voice:golive:start",
+  goliveStop: "voice:golive:stop",
+} as const;
+
+/** The privacy notice shown when she joins a voice channel. */
 export function joinAnnouncement(policy: ConsentPolicy): string {
   switch (policy) {
     case "opt-out":
       return (
-        "哼,我進來了。先說好,我會聽你們講話喔……" +
-        "不想被我聽到的話就用 `/voice consent off`,我、我才不會在意呢!"
+        "她會聽這個語音頻道裡的對話。不想被收音的話，請使用 `/voice consent off` " +
+        "或下方的按鈕。"
       );
     case "opt-in":
       return (
-        "哼,我進來了。想讓我聽到你說話的話,要先用 " +
-        "`/voice consent on` 喔……不、不是我想聽啦!(`/voice consent off` 可以隨時取消)"
+        "她只會聽已同意的人說話。要讓她聽到你，請使用 `/voice consent on` 或下方的按鈕" +
+        "（可隨時用 `/voice consent off` 取消）。"
       );
   }
 }
 
+function consentButtons(): CardBlock {
+  return {
+    type: "buttons",
+    buttons: [
+      { id: componentId(R.consentOn), label: "允許收音", style: "success" },
+      { id: componentId(R.consentOff), label: "停止收音", style: "secondary" },
+    ],
+  };
+}
+
+function joinedCard(policy: ConsentPolicy, extra: string | null = null): CommandReply {
+  const blocks: CardBlock[] = [{ type: "text", text: joinAnnouncement(policy) }];
+  if (extra) blocks.push({ type: "text", text: extra });
+  blocks.push(consentButtons());
+  // Everyone may press the consent buttons (each sets their own choice) until they expire.
+  return cardReply(blocks, {
+    title: "她已加入語音頻道",
+    accent: "success",
+    session: { initiatorOnly: false, ttlMs: MAX_SESSION_TTL_MS },
+  });
+}
+
+function consentReply(allowed: boolean, changed: boolean): CommandReply {
+  const text = allowed ? "她在語音頻道中會聽你說話。" : "她在語音頻道中不會聽你說話。";
+  return notice(changed ? "success" : "info", changed ? `已更新：${text}` : `目前設定：${text}`);
+}
+
 function guildOf(inv: Invocation): string | null {
   return inv.context.scope;
+}
+
+const IN_GUILD_ONLY = () => notice("warn", "這個指令只能在伺服器中使用。");
+const NODE_OFFLINE = () =>
+  notice("warn", "她的語音帳號目前不在線上。", "請確認直播機上的 voice node 已啟動。");
+
+function nodeReady(link: VoiceLink, inv: Invocation): boolean {
+  const self = link.selfAccount();
+  return link.isConnected() && self !== null && self.platform === inv.invoker.platform;
 }
 
 /** Registers the voice commands. Undo with `unregisterCommands`. */
@@ -59,144 +112,209 @@ export function registerCommands(
   consent: Consent,
   goliveSource: string,
 ): void {
-  registry.setGroupDescription("voice", "語音設定");
-  registry.setGroupDescription("golive", "Discord Go Live 推流");
-
   const policy = consent.policy;
-  registry.register(
-    commandSpec("join", "叫她進你現在所在的語音頻道", { permission: "voice.join" }),
-    async (inv) => {
-      const guild = guildOf(inv);
-      if (guild === null) {
-        return CommandReply.ephemeral("要在伺服器裡叫我啦,私訊是要我進哪裡?");
-      }
-      const self = link.selfAccount();
-      const samePlatform = self !== null && self.platform === inv.invoker.platform;
-      if (!link.isConnected() || !samePlatform) {
-        return CommandReply.ephemeral("我的語音帳號現在不在線上……等一下再叫我啦。");
-      }
+
+  const goliveStart = async (inv: Invocation, sourceArg: string | null): Promise<CommandReply> => {
+    const guild = guildOf(inv);
+    if (guild === null) return IN_GUILD_ONLY();
+    if (!nodeReady(link, inv)) return NODE_OFFLINE();
+    if (link.isStreaming(guild)) return notice("warn", "Go Live 已經在進行中。");
+    const source = (sourceArg ?? goliveSource).trim();
+    if (source === "") {
+      return notice(
+        "warn",
+        "沒有推流來源。",
+        "請提供 source，或設定 [modules.voice] golive_source。",
+      );
+    }
+    // Not in voice yet: join the invoker's channel first, so one command is enough.
+    let joined = false;
+    if (link.channel(guild) === null) {
       try {
         await link.join(guild, null, inv.invoker.id);
-        return CommandReply.public(joinAnnouncement(policy));
+        joined = true;
+      } catch (error) {
+        const e = errorMessage(error);
+        log.warn({ err: e, guild }, "join for go live failed");
+        return notice("error", "無法加入語音頻道。請先進入一個語音頻道。", e);
+      }
+    }
+    try {
+      await link.goliveStart({ guild, source });
+    } catch (error) {
+      const e = errorMessage(error);
+      log.warn({ err: e, guild, source }, "go live start failed");
+      return notice("error", "無法開始 Go Live。", e);
+    }
+    const started = "已開始 Go Live，OBS 畫面連上後就會顯示。";
+    return joined
+      ? joinedCard(policy, started)
+      : cardReply(
+          [
+            { type: "text", text: started },
+            {
+              type: "buttons",
+              buttons: [{ id: componentId(R.goliveStop), label: "結束 Go Live", style: "danger" }],
+            },
+          ],
+          { title: "Go Live", accent: "success" },
+        );
+  };
+
+  const goliveStop = async (inv: Invocation): Promise<CommandReply> => {
+    const guild = guildOf(inv);
+    if (guild === null) return IN_GUILD_ONLY();
+    if (!link.isStreaming(guild)) return notice("info", "目前沒有在 Go Live。");
+    try {
+      await link.goliveStop(guild);
+      return notice("success", "已結束 Go Live。");
+    } catch (error) {
+      const e = errorMessage(error);
+      log.warn({ err: e, guild }, "go live stop failed");
+      return notice("error", "無法結束 Go Live。", e);
+    }
+  };
+
+  const goliveStatus = (inv: Invocation): CommandReply => {
+    const guild = guildOf(inv);
+    if (guild === null) return IN_GUILD_ONLY();
+    const status = link.golive(guild);
+    const state = status?.state ?? "stopped";
+    const detail = status ? (status.error ?? status.reason) : null;
+    const running = state === "starting" || state === "live";
+    const blocks: CardBlock[] = [{ type: "text", text: `狀態：${GOLIVE_STATE_TEXT[state]}` }];
+    if (detail) blocks.push({ type: "muted", text: detail });
+    blocks.push({
+      type: "buttons",
+      buttons: running
+        ? [{ id: componentId(R.goliveStop), label: "結束 Go Live", style: "danger" }]
+        : [{ id: componentId(R.goliveStart), label: "開始 Go Live", style: "primary" }],
+    });
+    return cardReply(blocks, {
+      title: "Go Live",
+      accent: running ? "success" : "neutral",
+      session: {},
+    });
+  };
+
+  const consentRoutes: AnyComponentRoute[] = [
+    {
+      route: R.consentOn,
+      handle: async (inv) => {
+        await consent.set(inv.invoker, true);
+        return ComponentResult.reply(consentReply(true, true));
+      },
+    },
+    {
+      route: R.consentOff,
+      handle: async (inv) => {
+        await consent.set(inv.invoker, false);
+        return ComponentResult.reply(consentReply(false, true));
+      },
+    },
+  ];
+
+  registry.register(
+    commandSpec("voice join", "讓她加入你所在的語音頻道", { permission: "voice.join" }),
+    async (inv) => {
+      const guild = guildOf(inv);
+      if (guild === null) return IN_GUILD_ONLY();
+      if (!nodeReady(link, inv)) return NODE_OFFLINE();
+      try {
+        await link.join(guild, null, inv.invoker.id);
+        return joinedCard(policy);
       } catch (error) {
         const e = errorMessage(error);
         log.warn({ err: e, guild }, "join failed");
-        return CommandReply.ephemeral(`進不去欸……你有在語音頻道裡嗎?(${e})`);
+        return notice("error", "無法加入語音頻道。請先進入一個語音頻道。", e);
       }
     },
   );
 
   registry.register(
-    commandSpec("leave", "叫她離開語音頻道", { permission: "voice.leave" }),
+    commandSpec("voice leave", "讓她離開語音頻道", { permission: "voice.leave" }),
     async (inv) => {
       const guild = guildOf(inv);
-      if (guild === null) return CommandReply.ephemeral("要在伺服器裡用啦。");
-      if (link.channel(guild) === null) return CommandReply.ephemeral("我本來就不在語音裡啊。");
+      if (guild === null) return IN_GUILD_ONLY();
+      if (link.channel(guild) === null) return notice("info", "她目前不在語音頻道中。");
       await link.leave(guild);
-      return CommandReply.public("好啦好啦,我走就是了。");
+      return notice("success", "她已離開語音頻道。");
     },
   );
 
   registry.register(
-    commandSpec("voice consent", "設定她在語音頻道裡能不能聽你說話", {
-      args: [argSpec("state", "on = 可以聽,off = 不要聽", ArgKind.choice(["on", "off"]))],
+    commandSpec("voice consent", "查看或設定她在語音頻道中能不能聽你說話", {
+      args: [
+        argSpec(
+          "state",
+          "on = 可以聽，off = 不要聽（省略 = 查看目前設定）",
+          ArgKind.choice(["on", "off"]),
+          {
+            required: false,
+          },
+        ),
+      ],
       permission: "voice.consent",
       ephemeral: true,
     }),
     async (inv) => {
-      const allowed = inv.str("state") === "on";
+      const state = inv.str("state");
+      if (state === null) {
+        const allowed = await consent.allowed(inv.invoker);
+        const reply = consentReply(allowed, false);
+        reply.card?.blocks.push(consentButtons());
+        return reply;
+      }
+      const allowed = state === "on";
       await consent.set(inv.invoker, allowed);
-      return CommandReply.ephemeral(
-        allowed
-          ? "知道了,我會聽你說話的。哼,別講無聊的事喔。"
-          : "好,我不會聽你說話了。……也不是說我很想聽啦。",
-      );
+      return consentReply(allowed, true);
     },
+    { components: consentRoutes },
   );
 
   registry.register(
-    commandSpec("golive start", "把直播畫面送進語音頻道(Discord Go Live)", {
+    commandSpec("voice golive start", "把直播畫面送進語音頻道（Discord Go Live）", {
       args: [
         argSpec(
           "source",
-          "RTMP / SRT 來源;預設用設定檔的 [modules.voice] golive_source",
+          "RTMP / SRT 來源（預設為 [modules.voice] golive_source）",
           ArgKind.string,
           {
             required: false,
           },
         ),
       ],
-      permission: "voice.golive",
+      permission: NODE_GOLIVE,
     }),
-    async (inv) => {
-      const guild = guildOf(inv);
-      if (guild === null) return CommandReply.ephemeral("要在伺服器裡用啦。");
-      const self = link.selfAccount();
-      const samePlatform = self !== null && self.platform === inv.invoker.platform;
-      if (!link.isConnected() || !samePlatform) {
-        return CommandReply.ephemeral("我的語音帳號現在不在線上……等一下再叫我啦。");
-      }
-      if (link.isStreaming(guild)) return CommandReply.ephemeral("我已經在直播了喔。");
-      const source = (inv.str("source") ?? goliveSource).trim();
-      if (source === "")
-        return CommandReply.ephemeral("沒給來源,設定檔的 `golive_source` 也是空的。");
-      // Not in voice yet: join the invoker's channel first, so one command is enough.
-      let joined = false;
-      if (link.channel(guild) === null) {
-        try {
-          await link.join(guild, null, inv.invoker.id);
-          joined = true;
-        } catch (error) {
-          const e = errorMessage(error);
-          log.warn({ err: e, guild }, "join for go live failed");
-          return CommandReply.ephemeral(`進不去語音頻道……你有在語音頻道裡嗎?(${e})`);
-        }
-      }
-      try {
-        await link.goliveStart({ guild, source });
-        const opening = "好,開台!等 OBS 的畫面連上就開始了。";
-        return CommandReply.public(joined ? `${joinAnnouncement(policy)}\n${opening}` : opening);
-      } catch (error) {
-        const e = errorMessage(error);
-        log.warn({ err: e, guild, source }, "go live start failed");
-        return CommandReply.ephemeral(`開不了台……(${e})`);
-      }
-    },
+    (inv) => goliveStart(inv, inv.str("source")),
   );
 
   registry.register(
-    commandSpec("golive stop", "結束 Discord Go Live 推流", {
-      permission: "voice.golive",
-    }),
-    async (inv) => {
-      const guild = guildOf(inv);
-      if (guild === null) return CommandReply.ephemeral("要在伺服器裡用啦。");
-      if (!link.isStreaming(guild)) return CommandReply.ephemeral("我本來就沒在直播啊。");
-      try {
-        await link.goliveStop(guild);
-        return CommandReply.public("收台了。今天就到這裡,哼。");
-      } catch (error) {
-        const e = errorMessage(error);
-        log.warn({ err: e, guild }, "go live stop failed");
-        return CommandReply.ephemeral(`收不了台……(${e})`);
-      }
-    },
+    commandSpec("voice golive stop", "結束 Discord Go Live 推流", { permission: NODE_GOLIVE }),
+    goliveStop,
   );
 
   registry.register(
-    commandSpec("golive status", "看 Go Live 的狀態", {
-      permission: "voice.golive",
+    commandSpec("voice golive status", "查看 Go Live 的狀態", {
+      permission: "voice.golive.view",
       ephemeral: true,
     }),
-    async (inv) => {
-      const guild = guildOf(inv);
-      if (guild === null) return CommandReply.ephemeral("要在伺服器裡用啦。");
-      const status = link.golive(guild);
-      if (status === null) return CommandReply.ephemeral("沒在直播。");
-      const detail = status.error ?? status.reason;
-      return CommandReply.ephemeral(
-        `Go Live:${GOLIVE_STATE_TEXT[status.state]}${detail ? `(${detail})` : ""}`,
-      );
+    goliveStatus,
+    {
+      components: [
+        {
+          route: R.goliveStart,
+          permission: NODE_GOLIVE,
+          ephemeral: false,
+          handle: async (inv) => ComponentResult.reply(await goliveStart(inv, null)),
+        },
+        {
+          route: R.goliveStop,
+          permission: NODE_GOLIVE,
+          ephemeral: false,
+          handle: async (inv) => ComponentResult.reply(await goliveStop(inv)),
+        },
+      ],
     },
   );
 }

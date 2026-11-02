@@ -6,6 +6,7 @@ import {
   CommandRegistryKey,
   CommandsModule,
   type InvocationData,
+  replyEphemeral,
 } from "@miyoria/commands";
 import {
   defineManifest,
@@ -117,7 +118,7 @@ function engine(h: Harness): MemoryEngine {
 async function run(h: Harness, invocation: InvocationData): Promise<string> {
   const reg = h.sup.services.require(CommandRegistryKey);
   const reply = await reg.dispatch(invocation);
-  expect(reply.ephemeral).toBe(true);
+  expect(replyEphemeral(reg.get(invocation.path)?.ephemeral ?? false, reply)).toBe(true);
   return reply.text;
 }
 
@@ -162,7 +163,9 @@ describe("module", () => {
     for (const path of PATHS) {
       const spec = reg.get(path.split(" "));
       if (!spec) throw new Error(`${path} not registered`);
-      expect(spec.permission.startsWith("memory.self.")).toBe(true);
+      expect(
+        spec.permission.startsWith("memory.self.") || spec.permission === "owner.memory.wipe",
+      ).toBe(true);
       expect(spec.ephemeral).toBe(true);
     }
     const memoryStatus = h.sup.list().find((m) => m.id === "memory");
@@ -171,16 +174,16 @@ describe("module", () => {
     await h.sup.disable("memory");
     expect(h.contributors.all()).toEqual([]);
     expect(h.tools.isEmpty).toBe(true);
-    expect(reg.get(["memory", "show"])).toBeUndefined();
+    expect(reg.get(["me", "memory", "show"])).toBeUndefined();
     expect(h.sup.services.get(FollowupSourceKey)).toBeUndefined();
 
-    // Restarting the commands module re-registers the commands.
+    // After a restart of the commands module the commands are (still) there.
     await h.sup.enable("memory");
     await h.sup.restart("commands");
-    const fresh = h.sup.services.require(CommandRegistryKey);
-    expect(fresh).not.toBe(reg);
+    const after = h.sup.services.require(CommandRegistryKey);
+    expect(after).toBe(reg);
     const deadline = Date.now() + 5000;
-    while (fresh.get(["memory", "show"]) === undefined) {
+    while (after.get(["me", "memory", "show"]) === undefined) {
       expect(Date.now() < deadline, "not re-registered").toBe(true);
       await pause(50);
     }
@@ -201,49 +204,55 @@ describe("module", () => {
     const guild = guildCtx("g1", "c1");
     const dm = dmCtx("d-owen");
 
-    let shown = await run(h, inv("memory show", "2", guild));
+    let shown = await run(h, inv("me memory show", "2", guild));
     expect(shown).toContain("拉麵");
     expect(shown).toContain("歐文");
     expect(shown, "DM memory shown in a guild").not.toContain("牙醫");
     expect(shown).not.toContain("Amy");
-    shown = await run(h, inv("memory show", "2", dm));
+    shown = await run(h, inv("me memory show", "2", dm));
     expect(shown).toContain("牙醫");
     expect(shown, "guild memory shown in a DM").not.toContain("拉麵");
-    const otherGuild = await run(h, inv("memory show", "2", guildCtx("g2", "c1")));
+    const otherGuild = await run(h, inv("me memory show", "2", guildCtx("g2", "c1")));
     expect(otherGuild).toContain("歐文");
     expect(otherGuild).not.toContain("拉麵");
+    // There is no way to look at someone else's memories here.
+    const reg = h.sup.services.require(CommandRegistryKey);
+    expect(reg.get(["me", "memory", "show"])?.args).toEqual([]);
 
-    const exported = await run(h, inv("memory export", "2", guild));
-    const jsonText = exported.replace(/^```json\n/, "").replace(/\n```$/, "");
-    const items = JSON.parse(jsonText) as { kind: string; created_at: string }[];
-    expect(items, exported).toHaveLength(2);
+    // The export is a file, not a code block.
+    const exported = await reg.dispatch(inv("me memory export", "2", guild));
+    const file = exported.files?.[0];
+    expect(file?.name).toMatch(/^memories-\d{4}-\d{2}-\d{2}\.json$/);
+    const items = JSON.parse(String(file?.data)) as { kind: string; created_at: string }[];
+    expect(items).toHaveLength(2);
     expect(items.every((i) => i.kind === "fact")).toBe(true);
     expect(items[0]?.created_at).toMatch(/\+00:00$/);
+    expect(exported.text).toContain("已匯出 2 筆記憶");
 
-    // Someone else's memories need memory.admin.*.
-    const denied = await run(h, inv("memory show", "3", guild, [["user", "<@2>"]]));
-    expect(denied).toContain("管理員");
-    const asAdmin = { ...inv("memory show", "3", guild, [["user", "<@2>"]]) };
-    asAdmin.invoker_is_guild_admin = true;
-    expect(await run(h, asAdmin)).toContain("拉麵");
-    const owner = await run(h, inv("memory show", "1", guild, [["user", "discord:2"]]));
-    expect(owner).toContain("拉麵");
-    expect(owner).not.toContain("牙醫");
-    const bad = await run(h, inv("memory show", "1", guild, [["user", "a b"]]));
-    expect(bad).toContain("使用者");
-
-    // Forget by keyword (everywhere, including the DM), then everything.
-    const forgot = await run(h, inv("memory forget", "2", guild, [["target", "牙醫"]]));
-    expect(forgot).toContain("1");
-    const none = await run(h, inv("memory forget", "2", guild, [["target", "火星"]]));
-    expect(none).toContain("不記得");
-    const all = await run(h, inv("memory forget", "2", dm, [["target", "all"]]));
-    expect(all).toContain("全部忘掉");
+    // Forgetting asks first; the confirm button does it (the keyword rides in the session).
+    const ask = await reg.dispatch(inv("me memory forget", "2", guild, [["target", "牙醫"]]));
+    expect(ask.card?.accent).toBe("danger");
+    expect(ask.session?.data).toEqual({ keyword: "牙醫" });
+    const click = (id: string, data: JsonValue | null) =>
+      reg.dispatchComponent({
+        ...inv("x", "2", guild),
+        custom_id: id,
+        message_id: "m",
+        session: data === null ? null : { initiator: acct("2"), initiator_only: true, data },
+      });
+    const expired = await click("mi:me:memory:forget:keyword", null);
+    expect(expired?.result.type).toBe("reply");
+    const forgot = await click("mi:me:memory:forget:keyword", { keyword: "牙醫" });
+    expect(forgot?.result.type === "update" && forgot.result.reply.text).toContain("1 件事");
+    const none = await click("mi:me:memory:forget:keyword", { keyword: "火星" });
+    expect(none?.result.type === "update" && none.result.reply.text).toContain("沒有記得");
+    const all = await click("mi:me:memory:forget:all", null);
+    expect(all?.result.type === "update" && all.result.reply.text).toContain("已讓她忘記");
     const e = engine(h);
     expect(await e.memoriesOf(owen, owenAcct, true)).toEqual([]);
     expect(await e.memoriesOf(amy, acct("3"), false), "Amy's memories untouched").toHaveLength(1);
-    const empty = await run(h, inv("memory show", "2", guild));
-    expect(empty).toContain("還沒記得");
+    const empty = await run(h, inv("me memory show", "2", guild));
+    expect(empty).toContain("還沒有記得");
   });
 
   it("consolidates_after_enough_messages", async () => {

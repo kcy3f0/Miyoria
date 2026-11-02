@@ -405,16 +405,16 @@ describe("voice", () => {
     const run = (inv: ReturnType<typeof command>) => reg.dispatch(inv);
     // Sent from a text channel of the guild.
     const notIn = await run(command("voice mode", "Owen"));
-    expect(notIn.ephemeral && notIn.text.includes("語音"), notIn.text).toBe(true);
+    expect(notIn.tone === "warn" && notIn.text.includes("語音"), notIn.text).toBe(true);
 
     h.publish(joined());
     await wait(10);
     const shown = await run(command("voice mode", "Owen"));
     expect(shown.text).toContain("`ambient`");
-    expect(shown.text).toContain("預設");
+    expect(shown.text).toContain("（預設）");
 
     const denied = await run(command("voice mode", "阿明", { mode: "off" }));
-    expect(denied.text).toContain("權限");
+    expect(denied.text).toContain("admin.voice.mode");
 
     await run(command("voice mode", "Owen", { mode: "mention-only" }));
     const v = voiceCtx();
@@ -431,6 +431,6 @@ describe("voice", () => {
 
     h.publish({ type: "voice_left", data: { context: v, reason: "kicked" } });
     await wait(10);
-    expect((await run(command("voice mode", "Owen"))).ephemeral).toBe(true);
+    expect((await run(command("voice mode", "Owen"))).tone).toBe("warn");
   });
 });

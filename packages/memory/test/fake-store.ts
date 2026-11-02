@@ -63,6 +63,17 @@ export class FakeStore implements MessageLog, PeopleStore, MemoryRecordStore {
     return structuredClone(list.slice(Math.max(0, list.length - limit)));
   }
 
+  async purge(profile: ProfileId): Promise<number> {
+    let n = 0;
+    for (const [key, list] of [...this.#messages]) {
+      if (key.startsWith(`${profile}\u0001`)) {
+        n += list.length;
+        this.#messages.delete(key);
+      }
+    }
+    return n;
+  }
+
   // ---- PeopleStore -----------------------------------------------------------------------
 
   async upsertAccount(account: AccountRef, displayName: string): Promise<PersonId> {

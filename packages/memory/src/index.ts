@@ -8,9 +8,19 @@
 //   Embeddings are optional.
 // * Privacy: what is learned in a DM stays in that DM.
 // * Prompt contributor `memory`, tools `remember` / `recall`, commands
-//   `memory show | forget | export`, a `FollowupSource` and daily forgetting.
+//   `/me memory show | forget | export`, `/admin memory wipe`, a `FollowupSource` and daily
+//   forgetting.
 
-export { type AuthorizerLookup, MemoryCommands, PATHS } from "./commands.js";
+export {
+  type MemoryCommandDeps,
+  MemoryCommands,
+  NODE_WIPE,
+  PATHS,
+  WIPE_RESTARTS,
+  WIPE_SCOPE_LABEL,
+  type WipeScope,
+  wipePlan,
+} from "./commands.js";
 export {
   type DedupeConfig,
   DedupeConfigSchema,

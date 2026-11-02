@@ -1,173 +1,415 @@
-// `memory show | forget | export`, registered in the command registry when the `commands`
-// module is running.
+// `/me memory show | export | forget` (your own memories) and `/admin memory wipe` (everything
+// she remembers, owner only).
 //
-// Everyone may manage their own memories (`memory.self.*`); the optional `user` argument
-// (someone else) needs `memory.admin.*`.
+// The wipe deletes per profile in one transaction (see `WipePlan`), after sending a JSON backup
+// of exactly what it deletes, and then restarts the modules that cache that data. Chat history
+// and the consolidation watermarks always go together: without the log, a watermark is
+// harmless; without the watermark, the log would be extracted into memories again.
 
+import { gzipSync } from "node:zlib";
 import {
+  type AnyComponentRoute,
   ArgKind,
   argSpec,
+  type CardBlock,
   type CommandRegistry,
-  CommandReply,
+  type CommandReply,
+  type ComponentInvocation,
+  ComponentResult,
+  cancelled,
+  cardReply,
   commandSpec,
+  componentId,
+  confirm,
+  defineRoute,
   type Invocation,
-  type Permissions,
-  ROLE_RANK,
+  intParam,
+  notice,
+  pageButtons,
+  pageOf,
 } from "@miyoria/commands";
-import { errorMessage, getLogger } from "@miyoria/kernel";
-import type { MemoryKind, MemoryRecord } from "@miyoria/store";
+import { errorMessage, getLogger, type ServiceLookup, SupervisorKey } from "@miyoria/kernel";
 import {
-  type AccountRef,
-  type Authorizer,
-  accountSubject,
+  AuditLogKey,
+  type MemoryKind,
+  type MemoryRecord,
+  ProfileDataStoreKey,
+  type WipeCounts,
+  type WipePlan,
+} from "@miyoria/store";
+import {
   type Clock,
+  newId,
   type PersonId,
-  sameAccount,
+  type ProfileId,
   systemClock,
   toTimestamp,
 } from "@miyoria/types";
-import type { MemoryEngine } from "./engine.js";
+import { MAINTENANCE_KEY, type MemoryEngine, WATERMARK_PREFIX } from "./engine.js";
 import { hasScope, scopeLabel, visibleScopes } from "./scope.js";
 import { relativeDate } from "./score.js";
 
 const log = getLogger("memory.commands");
 
-export const PATHS = ["memory show", "memory forget", "memory export"] as const;
-/** Replies stay below Discord's 2000-character message limit. */
-const MAX_REPLY_CHARS = 1900;
+export const PATHS = [
+  "me memory show",
+  "me memory export",
+  "me memory forget",
+  "admin memory wipe",
+] as const;
 
-/** Looks up the current `Authorizer` service, if any. */
-export type AuthorizerLookup = () => Authorizer | undefined;
+export const NODE_WIPE = "owner.memory.wipe";
+const PAGE_SIZE = 10;
 
-type Op = "show" | "forget" | "export";
+/** Settings keys of other modules that hold memory-derived state (see their packages). */
+const MOOD_KEY = "mood:last"; // @miyoria/social `mood.ts`
+const INITIATIVE_KEY = "initiative:state"; // @miyoria/initiative `module.ts`
 
-const charCount = (s: string) => [...s].length;
+/** Modules whose in-memory caches a wipe invalidates, restarted afterwards in this order. */
+export const WIPE_RESTARTS = ["memory", "social", "mood", "agent", "initiative"] as const;
+
+/** Largest backup sent as is; bigger ones are gzipped. */
+const MAX_PLAIN_BACKUP = 8 * 1024 * 1024;
+/** Largest (gzipped) backup a bot may attach. */
+const MAX_BACKUP = 9.5 * 1024 * 1024;
+
+export type WipeScope = "memories" | "relationships" | "history" | "everything";
+
+const SCOPES: readonly WipeScope[] = ["memories", "relationships", "history", "everything"];
+
+export const WIPE_SCOPE_LABEL: Record<WipeScope, string> = {
+  memories: "記憶",
+  relationships: "記憶與關係",
+  history: "記憶、關係與聊天紀錄",
+  everything: "全部",
+};
+
+const WIPE_SCOPE_DETAIL: Record<WipeScope, string> = {
+  memories: "她記得的所有事（經歷、事實、筆記、之後要問的事）。",
+  relationships: "記憶，加上她對每個人的好感、信任、熟悉度、印象與變化紀錄，以及心情狀態。",
+  history: "記憶與關係，加上聊天紀錄、決策紀錄與記憶整理進度。",
+  everything: "以上全部，加上主動發話的狀態。",
+};
+
+/** What each scope deletes. Every later scope includes the earlier ones. */
+export function wipePlan(scope: WipeScope): WipePlan {
+  const level = SCOPES.indexOf(scope);
+  const plan: WipePlan = {
+    memories: true,
+    relationships: level >= 1,
+    messages: level >= 2,
+    decisions: level >= 2,
+    settings_keys: [MAINTENANCE_KEY],
+    settings_prefixes: [],
+  };
+  if (level >= 1) plan.settings_keys.push(MOOD_KEY);
+  // Watermarks go only together with the log they point into.
+  if (plan.messages) plan.settings_prefixes.push(WATERMARK_PREFIX);
+  if (level >= 3) plan.settings_keys.push(INITIATIVE_KEY);
+  return plan;
+}
+
+const R = {
+  showPage: "me:memory:page",
+  show: "me:memory:show",
+  forgetAsk: "me:memory:forget:ask",
+  forgetAll: "me:memory:forget:all",
+  forgetKeyword: "me:memory:forget:keyword",
+  forgetNo: "me:memory:forget:no",
+  wipeScope: "admin:memory:wipe:scope",
+  wipeAsk: "admin:memory:wipe:ask",
+  wipeGo: "admin:memory:wipe:go",
+  wipeNo: "admin:memory:wipe:no",
+} as const;
+
+export interface MemoryCommandDeps {
+  services: ServiceLookup;
+  clock?: Clock;
+}
 
 class Handler {
+  readonly clock: Clock;
+
   constructor(
     readonly engine: MemoryEngine,
-    readonly perms: Permissions,
-    readonly authorizer: AuthorizerLookup,
-    readonly clock: Clock,
-  ) {}
-
-  async run(op: Op, inv: Invocation): Promise<CommandReply> {
-    const requested = inv.account("user");
-    const other = requested && !sameAccount(requested, inv.invoker) ? requested : null;
-    if (other !== null && !this.adminAllowed(inv, `memory.admin.${op}`)) {
-      return CommandReply.ephemeral("別人的記憶不能隨便看啦,這要管理員才行。");
-    }
-    const target = other ?? inv.invoker;
-    const person = await this.engine.personOf(target);
-    const who = other !== null ? `${target.id} ` : "你";
-    let text: string;
-    switch (op) {
-      case "show":
-        text = await this.show(inv, target, person, who);
-        break;
-      case "export":
-        text = await this.export(inv, target, person, who);
-        break;
-      case "forget":
-        text = await this.forget(target, person, (inv.str("target") ?? "").trim(), who);
-        break;
-    }
-    return CommandReply.ephemeral(text);
+    readonly deps: MemoryCommandDeps,
+  ) {
+    this.clock = deps.clock ?? systemClock;
   }
 
-  /**
-   * `memory.admin.*` check. A node the authorizer grants to an unknown account is no real gate
-   * (the phase-1 role scheme opens every node outside `admin.` / `owner.`), so then guild
-   * admins and owners decide.
-   */
-  adminAllowed(inv: Invocation, node: string): boolean {
-    const auth = this.authorizer();
-    if (auth) {
-      const nobody = accountSubject({ platform: inv.invoker.platform, id: "\u0000nobody" });
-      if (!auth.allowsSubject(nobody, node)) return auth.allowsSubject(inv.subject(), node);
-    }
-    return ROLE_RANK[this.perms.roleOf(inv)] >= ROLE_RANK.admin;
+  get profile(): ProfileId {
+    return this.engine.profile;
   }
 
-  /** Records about `target` that may be shown in the invocation's context. */
-  async visible(
-    inv: Invocation,
-    target: AccountRef,
-    person: PersonId | null,
-  ): Promise<MemoryRecord[]> {
+  /** Records about the invoker that may be shown in the invocation's context. */
+  async visible(inv: Invocation): Promise<{ records: MemoryRecord[]; person: PersonId | null }> {
+    const person = await this.engine.personOf(inv.invoker);
     // Only the invoker is "in" the context of the reply, so DM memories show up only in the
     // invoker's own DM.
     const scopes = visibleScopes(inv.context, [inv.invoker], person === null ? [] : [person]);
-    return (await this.engine.memoriesOf(person, target, false)).filter((r) =>
+    const records = (await this.engine.memoriesOf(person, inv.invoker, false)).filter((r) =>
       hasScope(scopes, r.scope),
+    );
+    return { records, person };
+  }
+
+  async show(inv: Invocation, page: number): Promise<CommandReply> {
+    const { records } = await this.visible(inv);
+    if (records.length === 0) return notice("info", "在這裡，她還沒有記得關於你的事。");
+    const now = toTimestamp(this.clock.now());
+    const view = pageOf(records, page, PAGE_SIZE);
+    const lines = view.items.map(
+      (r) =>
+        `〔${kindLabel(r.kind)}〕${truncate(r.content.replaceAll("\n", " "), 160)}\n-# ${relativeDate(r.created_at, now)}`,
+    );
+    const blocks: CardBlock[] = [
+      { type: "text", text: lines.join("\n") },
+      ...pageButtons(view, (p) => componentId(R.showPage, p)),
+      {
+        type: "buttons",
+        buttons: [{ id: componentId(R.forgetAsk), label: "全部忘記", style: "danger" }],
+      },
+      { type: "muted", text: "匯出完整內容請使用 /me memory export。" },
+    ];
+    return cardReply(blocks, {
+      title: `她記得的事（${records.length}）`,
+      accent: "brand",
+      session: {},
+    });
+  }
+
+  async export(inv: Invocation): Promise<CommandReply> {
+    const { records } = await this.visible(inv);
+    if (records.length === 0) return notice("info", "在這裡沒有關於你的記憶可以匯出。");
+    const json = `${JSON.stringify(records.map(exportItem), null, 2)}\n`;
+    const name = `memories-${toTimestamp(this.clock.now()).slice(0, 10)}.json`;
+    return cardReply([{ type: "text", text: `已匯出 ${records.length} 筆記憶。` }], {
+      title: "匯出記憶",
+      accent: "success",
+      files: [{ name, data: json, contentType: "application/json" }],
+    });
+  }
+
+  async forget(inv: Invocation, keyword: string | null): Promise<CommandReply> {
+    const person = await this.engine.personOf(inv.invoker);
+    const n = await this.engine.forget(person, inv.invoker, keyword);
+    if (keyword === null) {
+      return n === 0
+        ? notice("info", "她本來就沒有記得關於你的事。")
+        : notice("success", `已讓她忘記關於你的 ${n} 件事。`);
+    }
+    return n === 0
+      ? notice("info", `她沒有記得和「${keyword}」有關的事。`)
+      : notice("success", `已讓她忘記和「${keyword}」有關的 ${n} 件事。`);
+  }
+
+  askForget(raw: string): CommandReply {
+    const target = raw.trim();
+    if (target === "") return notice("warn", "請輸入要忘記的關鍵字，或輸入 all 忘記全部。");
+    if (target.toLowerCase() === "all") {
+      return confirm({
+        title: "忘記全部",
+        text: "確定要讓她忘記關於你的所有事嗎？這無法復原。",
+        detail: "需要備份的話，請先使用 /me memory export。",
+        confirmId: componentId(R.forgetAll),
+        cancelId: componentId(R.forgetNo),
+        confirmLabel: "全部忘記",
+      });
+    }
+    const reply = confirm({
+      title: "忘記",
+      text: `確定要讓她忘記和「${truncate(target, 50)}」有關的事嗎？這無法復原。`,
+      confirmId: componentId(R.forgetKeyword),
+      cancelId: componentId(R.forgetNo),
+      confirmLabel: "忘記",
+    });
+    // The keyword may hold any text, so it travels in the panel session, not the id.
+    reply.session = { data: { keyword: target } };
+    return reply;
+  }
+
+  // ---- wipe -----------------------------------------------------------------------------------
+
+  wipeStart(): CommandReply {
+    return cardReply(
+      [
+        {
+          type: "text",
+          text:
+            `這會刪除 profile \`${this.profile}\` 的資料，選擇範圍後會再確認一次。\n` +
+            "人物、帳號連結、權限、稽核紀錄與人格設定不受影響。",
+        },
+        {
+          type: "select",
+          select: {
+            id: componentId(R.wipeScope),
+            placeholder: "選擇清除範圍…",
+            options: SCOPES.map((s) => ({
+              label: WIPE_SCOPE_LABEL[s],
+              value: s,
+              description: truncate(WIPE_SCOPE_DETAIL[s], 100),
+            })),
+          },
+        },
+      ],
+      { title: "清除記憶", accent: "danger", session: {} },
     );
   }
 
-  async show(
-    inv: Invocation,
-    target: AccountRef,
-    person: PersonId | null,
-    who: string,
-  ): Promise<string> {
-    const records = await this.visible(inv, target, person);
-    if (records.length === 0) return `在這裡,我好像還沒記得關於${who}的什麼事……`;
-    const now = toTimestamp(this.clock.now());
-    let out = `我記得關於${who}的事:\n`;
-    for (const [i, r] of records.entries()) {
-      const line = `- 〔${kindLabel(r.kind)}〕${r.content.replaceAll("\n", " ")}(${relativeDate(
-        r.created_at,
-        now,
-      )})\n`;
-      if (charCount(out) + charCount(line) > MAX_REPLY_CHARS - 40) {
-        out += `……還有 ${records.length - i} 件沒列出來。`;
-        break;
-      }
-      out += line;
-    }
-    return out.trimEnd();
+  async wipeConfirm(scope: WipeScope): Promise<CommandReply> {
+    const store = this.deps.services.get(ProfileDataStoreKey);
+    if (!store) return notice("error", "目前無法清除資料。", "找不到 ProfileDataStore 服務。");
+    const preview = await store.export(this.profile, wipePlan(scope));
+    const counts = [
+      `記憶 ${preview.memories.length} 筆`,
+      ...(preview.relationships.length + preview.relationship_deltas.length > 0 ||
+      scope !== "memories"
+        ? [
+            `關係 ${preview.relationships.length} 筆（變化紀錄 ${preview.relationship_deltas.length} 筆）`,
+          ]
+        : []),
+      ...(scope === "history" || scope === "everything"
+        ? [`聊天紀錄 ${preview.messages.length} 則、決策紀錄 ${preview.decisions.length} 筆`]
+        : []),
+    ];
+    return confirm({
+      title: `清除：${WIPE_SCOPE_LABEL[scope]}`,
+      text:
+        `${WIPE_SCOPE_DETAIL[scope]}\n將刪除：${counts.join("、")}。\n` +
+        "刪除前會先傳送一份 JSON 備份檔。按下確認後，請輸入 profile id。",
+      detail: "刪除後無法復原。",
+      confirmId: componentId(R.wipeAsk, scope),
+      cancelId: componentId(R.wipeNo),
+      confirmLabel: "確認並輸入 profile id",
+    });
   }
 
-  async export(
-    inv: Invocation,
-    target: AccountRef,
-    person: PersonId | null,
-    who: string,
-  ): Promise<string> {
-    const records = await this.visible(inv, target, person);
-    if (records.length === 0) return `在這裡沒有關於${who}的記憶可以匯出。`;
-    const items: Record<string, unknown>[] = [];
-    let truncated = 0;
-    for (const [i, r] of records.entries()) {
-      items.push(exportItem(r));
-      if (charCount(JSON.stringify(items, null, 2)) > MAX_REPLY_CHARS - 80) {
-        items.pop();
-        truncated = records.length - i;
-        break;
-      }
+  async wipe(inv: ComponentInvocation, scope: WipeScope): Promise<CommandReply> {
+    const typed = inv.field("profile");
+    if (typed !== this.profile) {
+      return notice("warn", "輸入的 profile id 不正確，沒有刪除任何資料。");
     }
-    let out = `\`\`\`json\n${JSON.stringify(items, null, 2)}\n\`\`\``;
-    if (truncated > 0) out += `\n(太長了,還有 ${truncated} 筆沒放進來。)`;
-    return out;
+    const store = this.deps.services.get(ProfileDataStoreKey);
+    if (!store) return notice("error", "目前無法清除資料。", "找不到 ProfileDataStore 服務。");
+    if (!inv.canFollowUp()) {
+      return notice("error", "這個平台無法傳送備份檔，已取消清除。");
+    }
+    const plan = wipePlan(scope);
+    const at = toTimestamp(this.clock.now());
+
+    // 1. The backup, sent before anything is deleted.
+    let file: { name: string; data: Uint8Array | string; contentType: string };
+    try {
+      const backup = await store.export(this.profile, plan);
+      const json = `${JSON.stringify(backup, null, 2)}\n`;
+      const base = `${this.profile}-${scope}-${at.slice(0, 19).replaceAll(":", "")}`;
+      file =
+        Buffer.byteLength(json) <= MAX_PLAIN_BACKUP
+          ? { name: `${base}.json`, data: json, contentType: "application/json" }
+          : { name: `${base}.json.gz`, data: gzipSync(json), contentType: "application/gzip" };
+      const size = typeof file.data === "string" ? Buffer.byteLength(file.data) : file.data.length;
+      if (size > MAX_BACKUP) {
+        return notice(
+          "error",
+          `備份檔太大（${(size / 1024 / 1024).toFixed(1)} MB），已取消清除。`,
+          "請先用 scripts/backup 備份資料庫，再改用較小的範圍或直接操作資料庫。",
+        );
+      }
+      await inv.followUp(
+        cardReply([{ type: "text", text: "這是清除前的備份檔，請妥善保存。" }], {
+          title: "記憶備份",
+          accent: "info",
+          ephemeral: true,
+          files: [file],
+        }),
+      );
+    } catch (error) {
+      log.warn({ error: errorMessage(error) }, "memory wipe backup failed");
+      return notice("error", "無法建立或傳送備份檔，沒有刪除任何資料。", errorMessage(error));
+    }
+
+    // 2. One transaction.
+    let counts: WipeCounts;
+    try {
+      counts = await store.wipe(this.profile, plan);
+    } catch (error) {
+      log.warn({ error: errorMessage(error) }, "memory wipe failed");
+      await this.audit(inv, scope, null, false);
+      return notice("error", "清除失敗，資料沒有變更。", errorMessage(error));
+    }
+    log.info({ profile: this.profile, scope, counts }, "memory wiped");
+    await this.audit(inv, scope, counts, true);
+
+    // 3. Drop what the running modules cached.
+    const failed = await this.restartModules();
+    const lines = [
+      `記憶 ${counts.memories} 筆`,
+      `關係 ${counts.relationships} 筆、變化紀錄 ${counts.relationship_deltas} 筆`,
+      `聊天紀錄 ${counts.messages} 則、決策紀錄 ${counts.decisions} 筆`,
+      `設定 ${counts.settings} 項`,
+    ];
+    const blocks: CardBlock[] = [
+      { type: "text", text: `已刪除：\n${lines.join("\n")}` },
+      { type: "muted", text: `備份檔：${file.name}` },
+    ];
+    if (failed.length > 0) {
+      blocks.push({
+        type: "muted",
+        text: `下列模組無法重新啟動，請手動重新啟動：${failed.join("、")}`,
+      });
+    }
+    return cardReply(blocks, {
+      title: `已清除：${WIPE_SCOPE_LABEL[scope]}`,
+      accent: failed.length > 0 ? "warn" : "success",
+    });
   }
 
-  async forget(
-    target: AccountRef,
-    person: PersonId | null,
-    raw: string,
-    who: string,
-  ): Promise<string> {
-    if (raw === "") return "要忘掉什麼?給我一個關鍵字,或是 all。";
-    if (raw.toLowerCase() === "all") {
-      const n = await this.engine.forget(person, target, null);
-      return n === 0
-        ? `我本來就沒記得關於${who}的事。`
-        : `……好啦,關於${who}的事我全部忘掉了(${n} 件)。`;
+  async audit(
+    inv: Invocation,
+    scope: WipeScope,
+    counts: WipeCounts | null,
+    ok: boolean,
+  ): Promise<void> {
+    const audit = this.deps.services.get(AuditLogKey);
+    if (!audit) return;
+    try {
+      await audit.append({
+        id: newId(),
+        at: toTimestamp(this.clock.now()),
+        actor: `${inv.invoker.platform}:${inv.invoker.id}`,
+        action: "memory.wipe",
+        target: this.profile,
+        detail: { scope, counts: counts === null ? null : { ...counts } },
+        ok,
+      });
+    } catch (error) {
+      log.warn({ error: errorMessage(error) }, "cannot write audit entry");
     }
-    const n = await this.engine.forget(person, target, raw);
-    return n === 0
-      ? `我不記得關於${who}跟「${raw}」有關的事耶。`
-      : `好,關於${who}跟「${raw}」有關的 ${n} 件事,我忘掉了。`;
   }
+
+  /** Restarts the modules that cache wiped data; returns the ids that failed. */
+  async restartModules(): Promise<string[]> {
+    const sup = this.deps.services.get(SupervisorKey);
+    if (!sup) return [];
+    const present = new Map(sup.list().map((m) => [m.id, m]));
+    const failed: string[] = [];
+    for (const id of WIPE_RESTARTS) {
+      const status = present.get(id);
+      if (!status?.enabled) continue;
+      try {
+        await sup.restart(id);
+      } catch (error) {
+        log.warn({ module: id, error: errorMessage(error) }, "restart after memory wipe failed");
+        failed.push(id);
+      }
+    }
+    return failed;
+  }
+}
+
+function truncate(s: string, max: number): string {
+  const chars = [...s];
+  return chars.length <= max ? s : `${chars.slice(0, max - 1).join("")}…`;
 }
 
 const round2 = (x: number) => Math.round(x * 100) / 100;
@@ -199,7 +441,7 @@ function kindLabel(kind: MemoryKind): string {
     case "fact":
       return "事實";
     case "self_note":
-      return "我的筆記";
+      return "她的筆記";
     case "followup":
       return "之後要問";
   }
@@ -209,52 +451,140 @@ function unregister(registry: CommandRegistry): void {
   for (const path of PATHS) registry.unregister(path);
 }
 
-const userArg = () => argSpec("user", "(管理員)要查看的其他人", ArgKind.user, { required: false });
+function isScope(raw: string | undefined): WipeScope | null {
+  return SCOPES.includes(raw as WipeScope) ? (raw as WipeScope) : null;
+}
 
 function register(registry: CommandRegistry, handler: Handler): void {
-  registry.setGroupDescription("memory", "我記得的關於你的事");
-  const specs: [Op, string, string, ReturnType<typeof userArg>[]][] = [
-    ["show", "memory show", "看看我記得關於你的哪些事(只有你看得到)", [userArg()]],
-    [
-      "forget",
-      "memory forget",
-      "讓我忘掉關於你的事",
-      [argSpec("target", "要忘掉的關鍵字,或 all 忘掉全部", ArgKind.string), userArg()],
-    ],
-    ["export", "memory export", "匯出我記得的關於你的事(JSON)", [userArg()]],
+  const showRoutes: AnyComponentRoute[] = [
+    defineRoute<number>({
+      route: R.showPage,
+      parse: (p) => intParam(p[0]),
+      handle: async (inv, page) => ComponentResult.update(await handler.show(inv, page)),
+    }),
+    {
+      route: R.show,
+      handle: async (inv) => ComponentResult.reply(await handler.show(inv, 0)),
+    },
   ];
-  for (const [op, path, description, args] of specs) {
-    registry.register(
-      commandSpec(path, description, {
-        args,
-        permission: `memory.self.${op}`,
-        ephemeral: true,
-      }),
-      (inv) => handler.run(op, inv),
-    );
-  }
+  registry.register(
+    commandSpec("me memory show", "查看她記得的關於你的事（只有你看得到）", {
+      permission: "memory.self.show",
+      ephemeral: true,
+    }),
+    (inv) => handler.show(inv, 0),
+    { components: showRoutes },
+  );
+
+  registry.register(
+    commandSpec("me memory export", "把她記得的關於你的事匯出成 JSON 檔", {
+      permission: "memory.self.export",
+      ephemeral: true,
+    }),
+    (inv) => handler.export(inv),
+  );
+
+  const forgetRoutes: AnyComponentRoute[] = [
+    { route: R.forgetAsk, handle: () => ComponentResult.update(handler.askForget("all")) },
+    {
+      route: R.forgetAll,
+      handle: async (inv: ComponentInvocation) =>
+        ComponentResult.update(await handler.forget(inv, null)),
+    },
+    {
+      route: R.forgetKeyword,
+      requiresSession: true,
+      handle: async (inv: ComponentInvocation) => {
+        const data = inv.session?.data;
+        const keyword =
+          data &&
+          typeof data === "object" &&
+          !Array.isArray(data) &&
+          typeof data.keyword === "string"
+            ? data.keyword
+            : null;
+        if (keyword === null)
+          return ComponentResult.reply(notice("warn", "這個面板已過期，請重新執行指令。"));
+        return ComponentResult.update(await handler.forget(inv, keyword));
+      },
+    },
+    { route: R.forgetNo, handle: () => ComponentResult.update(cancelled()) },
+  ];
+  registry.register(
+    commandSpec("me memory forget", "讓她忘記關於你的事（關鍵字，或 all 忘記全部）", {
+      args: [argSpec("target", "要忘記的關鍵字，或輸入 all 忘記全部", ArgKind.string)],
+      permission: "memory.self.forget",
+      ephemeral: true,
+    }),
+    (inv) => handler.askForget(inv.str("target") ?? ""),
+    { components: forgetRoutes },
+  );
+
+  const wipeRoutes: AnyComponentRoute[] = [
+    {
+      route: R.wipeScope,
+      handle: async (inv: ComponentInvocation) => {
+        const scope = isScope(inv.values[0]);
+        if (scope === null) return ComponentResult.update(handler.wipeStart());
+        return ComponentResult.update(await handler.wipeConfirm(scope));
+      },
+    },
+    defineRoute<WipeScope>({
+      route: R.wipeAsk,
+      parse: (p) => isScope(p[0]),
+      handle: (_inv, scope) =>
+        ComponentResult.modal({
+          id: componentId(R.wipeGo, scope),
+          title: `確認清除：${WIPE_SCOPE_LABEL[scope]}`,
+          fields: [
+            {
+              id: "profile",
+              label: "請輸入 profile id 以確認",
+              placeholder: handler.profile,
+              maxLength: 100,
+            },
+          ],
+        }),
+    }),
+    defineRoute<WipeScope>({
+      route: R.wipeGo,
+      parse: (p) => isScope(p[0]),
+      handle: async (inv, scope) => {
+        const result = await handler.wipe(inv, scope);
+        if (result.tone === "warn" || result.tone === "error") return ComponentResult.reply(result);
+        return ComponentResult.update(result);
+      },
+    }),
+    {
+      route: R.wipeNo,
+      handle: () => ComponentResult.update(cancelled("已取消，沒有刪除任何資料。")),
+    },
+  ];
+  registry.register(
+    commandSpec("admin memory wipe", "清除她的記憶資料（限擁有者，刪除前會先備份）", {
+      permission: NODE_WIPE,
+      ephemeral: true,
+    }),
+    () => handler.wipeStart(),
+    { components: wipeRoutes },
+  );
 }
 
 /**
  * Remembers which registry the commands went into, so they can be removed on stop and
- * re-registered when the `commands` module restarts.
+ * re-registered when the `commands` module provides a different registry.
  */
 export class MemoryCommands {
   #installed: CommandRegistry | null = null;
 
   /** Registers the commands in `registry` unless already there. */
-  install(
-    registry: CommandRegistry,
-    engine: MemoryEngine,
-    authorizer: AuthorizerLookup,
-    clock: Clock = systemClock,
-  ): void {
+  install(registry: CommandRegistry, engine: MemoryEngine, deps: MemoryCommandDeps): void {
     if (this.#installed === registry) return;
     if (this.#installed !== null) {
       unregister(this.#installed);
       this.#installed = null;
     }
-    const handler = new Handler(engine, registry.permissions(), authorizer, clock);
+    const handler = new Handler(engine, deps);
     try {
       register(registry, handler);
       this.#installed = registry;

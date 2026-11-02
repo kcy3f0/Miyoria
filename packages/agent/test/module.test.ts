@@ -645,50 +645,71 @@ describe("agent module", () => {
     const c = channel("c");
     const run = (inv: ReturnType<typeof command>) => reg.dispatch(inv);
 
-    let shown = await run(command("mode", "Owen"));
+    // Everyone may look at the setting (view node); the card carries a select to change it.
+    let shown = await run(command("channel mode", "阿明"));
     expect(shown.text).toContain("`ambient`");
-    expect(shown.text).toContain("預設");
+    expect(shown.text).toContain("（預設）");
+    expect(reg.get(["channel", "mode"])?.ephemeral).toBe(true);
+    const select = shown.card?.blocks.find((b) => b.type === "select");
+    expect(select?.type === "select" && select.select.id).toBe("mi:channel:mode:set");
 
-    const denied = await run(command("mode", "阿明", { mode: "off" }));
-    expect(denied.text).toContain("權限");
+    // Changing needs the change node, by argument or by the select.
+    const denied = await run(command("channel mode", "阿明", { mode: "off" }));
+    expect(denied.text).toContain("admin.channel.mode");
+    const viaSelect = await reg.dispatchComponent({
+      ...command("x", "阿明"),
+      custom_id: "mi:channel:mode:set",
+      values: ["off"],
+    });
+    expect(viaSelect?.result.type).toBe("reply");
     expect(handle.channelMode(c)).toBe("ambient");
 
-    const bad = await run(command("mode", "Owen", { mode: "loud" }));
-    expect(bad.ephemeral).toBe(true);
+    const bad = await run(command("channel mode", "Owen", { mode: "loud" }));
+    expect(bad.tone).toBe("warn");
 
-    await run(command("mode", "Owen", { mode: "mention-only" }));
+    await run(command("channel mode", "Owen", { mode: "mention-only" }));
     expect(handle.channelMode(c)).toBe("mention-only");
-    shown = await run(command("mode", "Owen"));
+    shown = await run(command("channel mode", "Owen"));
     expect(shown.text).toContain("`mention-only`");
-    expect(shown.text).toContain("特別設定");
-    const reset = await run(command("mode", "Owen", { mode: "reset" }));
-    expect(reset.text).toContain("`ambient`");
+    expect(shown.text).toContain("（已自訂）");
+    const reset = await run(command("channel mode", "Owen", { mode: "reset" }));
+    expect(reset.text).toContain("恢復為預設：`ambient`");
     expect(handle.channelModeOverride(c)).toBeNull();
+    const picked = await reg.dispatchComponent({
+      ...command("x", "Owen"),
+      custom_id: "mi:channel:mode:set",
+      values: ["always"],
+    });
+    expect(picked?.result.type).toBe("update");
+    expect(handle.channelMode(c)).toBe("always");
 
-    await run(command("activeness", "Owen", { level: "high" }));
+    await run(command("channel activeness", "Owen", { level: "high" }));
     expect(handle.activeness(c)).toBe("high");
-    shown = await run(command("activeness", "Owen"));
+    shown = await run(command("channel activeness", "Owen"));
     expect(shown.text).toContain("`high`");
-    await run(command("activeness", "Owen", { level: "reset" }));
+    await run(command("channel activeness", "Owen", { level: "reset" }));
     expect(handle.activenessOverride(c)).toBeNull();
 
-    const persona = await run(command("persona show", "Owen"));
-    expect(persona.ephemeral).toBe(true);
-    expect(persona.text).toContain("`identity`:11 字");
-    expect((await run(command("persona show", "阿明"))).text).toContain("權限");
+    const voice = await run(command("voice mode", "Owen"));
+    expect(voice.tone).toBe("warn");
 
-    // A restarted `commands` module gets the agent commands again.
+    const persona = await run(command("admin persona show", "Owen"));
+    expect(reg.get(["admin", "persona", "show"])?.ephemeral).toBe(true);
+    expect(persona.text).toContain("`identity`　11 字");
+    expect((await run(command("admin persona show", "阿明"))).text).toContain("權限");
+
+    // A restarted `commands` module keeps the same registry, so the agent commands stay.
     await h.sup.restart("commands");
     await wait(10);
-    const fresh = h.sup.services.require(CommandRegistryKey);
-    expect(fresh).not.toBe(reg);
-    expect(fresh.get(["mode"])).toBeDefined();
+    const after = h.sup.services.require(CommandRegistryKey);
+    expect(after).toBe(reg);
+    expect(after.get(["channel", "mode"])).toBeDefined();
 
     // Stopping the agent removes them.
     await h.sup.disable("agent");
-    expect(fresh.get(["mode"])).toBeUndefined();
-    expect(fresh.get(["persona", "show"])).toBeUndefined();
-    expect(fresh.get(["ping"])).toBeDefined();
+    expect(after.get(["channel", "mode"])).toBeUndefined();
+    expect(after.get(["admin", "persona", "show"])).toBeUndefined();
+    expect(after.get(["help"])).toBeDefined();
   });
 });
 

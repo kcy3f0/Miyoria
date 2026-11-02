@@ -1,4 +1,4 @@
-import { type CommandRegistry, CommandRegistryKey } from "@miyoria/commands";
+import { CommandMount } from "@miyoria/commands";
 import { defineManifest, type Module, type ModuleContext } from "@miyoria/kernel";
 import type { Profile } from "@miyoria/profile";
 import {
@@ -89,7 +89,7 @@ class GamePrompt implements PromptContributor {
 
 interface Running {
   director: Director;
-  commands: { registry: CommandRegistry; paths: string[] } | null;
+  commands: CommandMount;
   prompts: PromptContributors | null;
 }
 
@@ -140,13 +140,17 @@ export class GameModule implements Module {
     };
     const director = new Director(cfg, ctx, persona, view);
 
-    const registry = ctx.services.get(CommandRegistryKey);
-    const commands = registry
-      ? {
-          registry,
-          paths: registerCommands(registry, cfg.permissions, cfg.default_game, director, view),
-        }
-      : null;
+    let paths: string[] = [];
+    const commands = new CommandMount(
+      "game",
+      (registry) => {
+        paths = registerCommands(registry, cfg.permissions, cfg.default_game, director, view);
+      },
+      (registry) => {
+        for (const path of paths) registry.unregister(path);
+      },
+    );
+    commands.attach(ctx);
     const prompts = ctx.services.get(PromptContributorsKey) ?? null;
     prompts?.register(new GamePrompt(view, cfg.prompt_summary_chars));
     ctx.provide(GameHandleKey, new GameHandle(view));
@@ -174,9 +178,7 @@ export class GameModule implements Module {
     this.#running = null;
     if (!running) return;
     running.director.close();
-    if (running.commands) {
-      for (const path of running.commands.paths) running.commands.registry.unregister(path);
-    }
+    running.commands.detach();
     running.prompts?.unregister(PROMPT_KEY);
   }
 }
