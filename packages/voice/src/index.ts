@@ -65,6 +65,7 @@ export {
 export { DEFAULT_SEGMENTER, Segmenter, type SegmenterConfig, type Utterance } from "./segment.js";
 export {
   cleanTranscript,
+  echoesHint,
   isHallucination,
   isPunctuationOnly,
   stripTags,

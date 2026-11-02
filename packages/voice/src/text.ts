@@ -120,3 +120,33 @@ function looksLikeTag(body: string): boolean {
   const b = body.replace(/^\/+/, "");
   return /^[A-Za-z]/.test(b) && !b.includes("<") && TAG_CHAR.test(b);
 }
+
+/** Separators of an ASR hint's terms (`Miyo、米優、Minecraft`, names after a space). */
+const HINT_SEPARATORS = /[、,，;；\s]+/u;
+
+/**
+ * The transcript only repeats the ASR hint (her names, game terms, the people in the channel):
+ * some models (Qwen3-ASR) print their context back when the audio holds no clear speech. True
+ * when it has at least three terms and most of them are hint terms.
+ */
+export function echoesHint(text: string, prompt: string | null): boolean {
+  if (prompt === null || prompt.trim() === "") return false;
+  const norm = (s: string) =>
+    s
+      .replace(/[。.!！?？]+$/u, "")
+      .trim()
+      .toLowerCase();
+  const hint = new Set(
+    prompt
+      .split(HINT_SEPARATORS)
+      .map(norm)
+      .filter((t) => t !== ""),
+  );
+  const terms = text
+    .split(HINT_SEPARATORS)
+    .map(norm)
+    .filter((t) => t !== "");
+  if (terms.length < 3) return false;
+  const known = terms.filter((t) => hint.has(t)).length;
+  return known / terms.length >= 0.6;
+}

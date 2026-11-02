@@ -42,7 +42,8 @@ export const SingConfigSchema = z.object({
    */
   start: z.enum(["decide", "auto"]).default("decide"),
   /** A ready song she has not started is brought up to her again after this long. */
-  remind_secs: z.number().nonnegative().default(300),
+  remind_secs: z.number().nonnegative().default(60),
+  /** After this many reminders (while she is in voice) the song starts on its own. */
   max_reminders: z.number().int().nonnegative().default(2),
   /**
    * Before a song starts she finishes what she is saying (the turn that started it, then a

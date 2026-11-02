@@ -12,6 +12,7 @@ import {
   coreMessageJson,
   decodeAudio,
   EnergyVad,
+  echoesHint,
   encodeAudio,
   energyDb,
   isHallucination,
@@ -291,6 +292,21 @@ describe("text", () => {
       expect(isHallucination(ok, []), ok).toBe(false);
     }
     expect(isHallucination("嗯嗯请关注频道", ["關注頻道"])).toBe(true);
+  });
+
+  it("drops_transcripts_that_only_repeat_the_asr_hint", () => {
+    const prompt =
+      "Miyo、Miyoria、米優、DeepSeek、Minecraft、麥塊、Baritone、鑽石、苦力怕、Discord、直播 Brian0901、IMR、Aquatf";
+    expect(
+      echoesHint(
+        "米優、米優、DeepSeek、Minecraft、麥塊、Baritone、鑽石、苦力怕、Discord、直播 Brian0901、IMR、小黃",
+        prompt,
+      ),
+    ).toBe(true);
+    expect(echoesHint("Miyo,你覺得 Minecraft 好玩嗎?", prompt)).toBe(false);
+    expect(echoesHint("米優、米優", prompt)).toBe(false);
+    expect(echoesHint("我們來玩 Minecraft 還是 Discord 聊天", prompt)).toBe(false);
+    expect(echoesHint("米優、DeepSeek、Minecraft", null)).toBe(false);
   });
 
   it("cleans_transcripts", () => {

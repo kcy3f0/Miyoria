@@ -8,7 +8,7 @@ import { segmenterConfig, type VoiceConfig } from "./config.js";
 import type { Consent } from "./consent.js";
 import type { AudioEvent, StreamInfo, VoiceLink } from "./link/link.js";
 import { Segmenter, type Utterance } from "./segment.js";
-import { cleanTranscript } from "./text.js";
+import { cleanTranscript, echoesHint } from "./text.js";
 import { LATENCY_TOPIC } from "./topics.js";
 import type { Semaphore } from "./util.js";
 import { EnergyVad } from "./vad.js";
@@ -200,6 +200,13 @@ export class Listener {
       const text = cleanTranscript(transcript.text, config.to_traditional, config.hallucinations);
       if (text === null) {
         ctx.log.debug({ raw: transcript.text }, "dropped empty or hallucinated transcript");
+        return;
+      }
+      if (echoesHint(text, hint.prompt)) {
+        ctx.log.debug(
+          { raw: transcript.text },
+          "dropped a transcript that only repeats the ASR hint",
+        );
         return;
       }
       const displayName =

@@ -346,6 +346,8 @@ export class Singer implements VoiceFloor, SpeechPause {
 
   #mindDecides(entry: SongEntry): boolean {
     if (entry.forced || this.cfg.start === "auto") return false;
+    // She let every reminder pass: someone is still waiting for it, so it starts on its own.
+    if (entry.reminders > this.cfg.max_reminders) return false;
     return this.ctx.services.get(MindKey)?.accepting === true;
   }
 

@@ -439,6 +439,20 @@ describe("sing module", () => {
     expect(h.mind.suggestions.at(-1)?.reason).toBe("song_done");
   });
 
+  it("starts a requested song on its own once she let every reminder pass", async () => {
+    h = await Harness.create({ remind_secs: 0.2, max_reminders: 1 });
+    await h.join();
+    await h.invoke(Principals.user(AMY, TEXT), "sing.request", { query: "Lemon", by: "Amy" });
+    h.worker.finish("j1", "Lemon", 1);
+    await settle(150);
+    expect(h.mind.suggestions.filter((s) => s.reason === "song_ready")).toHaveLength(1);
+    expect(h.voice.plays).toHaveLength(0);
+    // One more reminder, then nobody waits any longer: it starts after an opening line.
+    await settle(2500);
+    expect(h.mind.suggestions.filter((s) => s.reason === "song_ready")).toHaveLength(2);
+    expect(["preparing", "ready"]).not.toContain(h.singer.list.get(1)?.state);
+  });
+
   it("sings a commanded song as soon as it is ready and she is in voice", async () => {
     h = await Harness.create();
     expect(await h.command("queue song request", { song: "Song A" })).toContain("好了她就會唱");
