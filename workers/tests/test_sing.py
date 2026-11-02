@@ -32,6 +32,7 @@ def sing(tmp_path_factory):
     (lib / "Owner - Split Song").mkdir(parents=True)
     for name in ("vocals.wav", "instrumental.wav"):
         (lib / "Owner - Split Song" / name).write_bytes(b"")
+    (lib / "Owner - Split Song" / "video.mkv").write_bytes(b"video")
     (lib / "Someone - Local Tune.mp3").write_bytes(b"")
     os.environ.update({"SING_BACKEND": "mock", "SING_DATA_DIR": str(root), "SING_MOCK_SECONDS": "2"})
     # By path: the TTS and ASR workers have a `server` module too.
@@ -156,6 +157,106 @@ def test_library(sing):
     # A query that matches a library entry uses it instead of searching.
     job = wait(sing, sing.post("/jobs", json={"query": "local tune"}).json()["job"]["id"])
     assert job["state"] == "done" and job["source"]["kind"] == "library"
+
+
+def test_the_video_comes_with_the_song(sing):
+    if not is_mock():
+        pytest.skip("mock video")
+    done = wait(sing, sing.post("/jobs", json={"query": "with a video"}).json()["job"]["id"])
+    assert done["state"] == "done", done
+    song = done["song"]
+    assert song["has_video"] is True and song["video_error"] is None
+    assert song["video"]["file"] == "video.mp4"
+    assert song["video"]["height"] == 1080 and song["video"]["source"] == "mock"
+    assert "video_s" in song["timings"]
+    assert done["video"]["state"] == "done"
+    r = sing.get(f"/songs/{song['id']}/files/video.mp4")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "video/mp4"
+    assert r.content.startswith(b"\x00\x00\x00\x18ftyp")
+    # A key change of the same source reuses the downloaded video.
+    keyed = wait(sing, sing.post("/jobs", json={"query": "with a video", "key": 1}).json()["job"]["id"])
+    assert keyed["song"]["has_video"] is True and keyed["video"] is None
+
+
+def test_a_song_without_a_video_is_still_ready(sing):
+    if not is_mock():
+        pytest.skip("mock video")
+    done = wait(sing, sing.post("/jobs", json={"query": "novideo tune"}).json()["job"]["id"])
+    assert done["state"] == "done", done
+    song = done["song"]
+    assert song["has_video"] is False and song["video"] is None
+    assert "no video" in song["video_error"]
+    assert done["video"]["state"] == "failed"
+    assert sing.get(f"/songs/{song['id']}/files/video.mp4").status_code == 404
+
+
+def test_videos_can_be_turned_off(sing, monkeypatch):
+    if not is_mock():
+        pytest.skip("mock video")
+    monkeypatch.setenv("SING_VIDEO", "0")
+    done = wait(sing, sing.post("/jobs", json={"query": "videos off"}).json()["job"]["id"])
+    assert done["song"]["has_video"] is False and "SING_VIDEO" in done["song"]["video_error"]
+    assert done["video"] is None
+
+
+def test_a_song_cached_before_videos_gets_its_video(sing, tmp_path):
+    if not is_mock():
+        pytest.skip("edits the cache")
+    import json
+
+    first = wait(sing, sing.post("/jobs", json={"query": "old song"}).json()["job"]["id"])
+    sid = first["song_id"]
+    root = Path(os.environ["SING_DATA_DIR"])
+    # As the worker wrote it before videos existed.
+    meta_path = root / sid / "meta.json"
+    meta = json.loads(meta_path.read_text("utf-8"))
+    for k in ("has_video", "video", "video_error"):
+        meta.pop(k)
+    meta_path.write_text(json.dumps(meta), "utf-8")
+    for p in [root / sid / "video.mp4", *(root / "_sources").glob("*/video.*")]:
+        p.unlink(missing_ok=True)
+
+    again = sing.post("/jobs", json={"query": "old song"}).json()["job"]
+    assert again["state"] in ("queued", "running")  # not answered from the cache at once
+    done = wait(sing, again["id"])
+    assert done["state"] == "done" and done["cached"] is True
+    assert done["song"]["has_video"] is True
+    assert (root / sid / "video.mp4").exists()
+    # Now it is a plain cache hit.
+    assert sing.post("/jobs", json={"query": "old song"}).json()["job"]["state"] == "done"
+
+
+def test_library_videos(sing):
+    if not is_mock():
+        pytest.skip("depends on the local library")
+    done = wait(sing, sing.post("/jobs", json={"path": "Owner - Split Song"}).json()["job"]["id"])
+    assert done["state"] == "done", done
+    assert done["song"]["has_video"] is True
+    assert done["song"]["video"] == {"source": "library", "bytes": 5, "file": "video.mkv"}
+    r = sing.get(f"/songs/{done['song_id']}/files/video.mkv")
+    assert r.status_code == 200 and r.content == b"video"
+    plain = wait(sing, sing.post("/jobs", json={"path": "Someone - Local Tune.mp3"}).json()["job"]["id"])
+    assert plain["song"]["has_video"] is False
+    assert plain["song"]["video_error"] == "no video next to the library entry"
+
+
+def test_library_video_lookup(tmp_path):
+    from songs import Store
+
+    store = Store(tmp_path, tmp_path / "lib")
+    lib = tmp_path / "lib"
+    (lib / "Folder").mkdir(parents=True)
+    (lib / "Folder" / "vocals.wav").write_bytes(b"")
+    (lib / "Folder" / "instrumental.wav").write_bytes(b"")
+    (lib / "Folder" / "video.webm").write_bytes(b"")
+    (lib / "A - B.mp3").write_bytes(b"")
+    (lib / "A - B.mp4").write_bytes(b"")
+    (lib / "C - D.webm").write_bytes(b"")
+    assert store.library_video("Folder") == lib / "Folder" / "video.webm"
+    assert store.library_video("A - B.mp3") == lib / "A - B.mp4"
+    assert store.library_video("C - D.webm") is None  # the audio itself is not its video
+    assert store.library_video("../x.mp3") is None
 
 
 def test_unknown_things_are_404(sing):

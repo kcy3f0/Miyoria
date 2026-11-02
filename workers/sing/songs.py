@@ -3,11 +3,15 @@
     <root>/<song_id>/            one converted song (a source + its pitch settings)
         meta.json  mix.wav  vocals.wav  instrumental.wav  lyrics.lrc?
         play_mix.pcm  play_vocals.pcm      s16le mono 48 kHz, what Core streams to voice
+        video.mp4?                         the original video, muted on stream (a hard link of
+                                           the source's when the volume allows; library: video.<ext>)
     <root>/_sources/<source_key>/  downloaded audio and its stems, reused when only the key changes
-        source.wav  vocals.wav  instrumental.wav  info.json
+        source.wav  vocals.wav  instrumental.wav  info.json  video.mp4?  video.json?
     <root>/queries.json          normalised query → source key (so repeated requests skip the search)
     <root>/library/              the owner's own files: full songs, or a folder with
-                                 vocals.* + instrumental.* (+ lyrics.lrc, info.json {title, artist})
+                                 vocals.* + instrumental.* (+ lyrics.lrc, info.json {title, artist});
+                                 a video next to the audio (``video.*`` in a folder, the same name
+                                 with a video extension for a file) is shown while she sings it
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import threading
 import unicodedata
 from dataclasses import asdict, dataclass, field
@@ -24,6 +29,8 @@ from typing import Any
 
 PLAY_RATE = 48_000
 AUDIO_EXTS = (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".webm")
+# Videos OBS's media source plays; a song's video is ``video<ext>``.
+VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 # Files a client may fetch from a song directory.
 SONG_FILES = {
     "mix.wav": "audio/wav",
@@ -33,6 +40,11 @@ SONG_FILES = {
     "play_mix.pcm": "audio/L16",
     "play_vocals.pcm": "audio/L16",
     "meta.json": "application/json",
+    "video.mp4": "video/mp4",
+    "video.m4v": "video/mp4",
+    "video.mkv": "video/x-matroska",
+    "video.webm": "video/webm",
+    "video.mov": "video/quicktime",
 }
 _SAFE = re.compile(r"[^A-Za-z0-9_-]+")
 
@@ -190,6 +202,21 @@ class Store:
             raise ValueError(f"no such library entry: {rel}")
         return p
 
+    def library_video(self, rel: str) -> Path | None:
+        """The video of a library entry: ``video.*`` in its folder, or a file with the same name
+        and a video extension next to it."""
+        try:
+            p = self.library_path(rel)
+        except ValueError:
+            return None
+        if p.is_dir():
+            return find_video(p)
+        for ext in VIDEO_EXTS:
+            v = p.with_suffix(ext)
+            if ext != p.suffix.lower() and v.is_file():
+                return v
+        return None
+
     def match_library(self, query: str) -> dict[str, Any] | None:
         """A library entry whose ``artist title`` contains every word of the query."""
         words = [w for w in normalize_query(query).split(" ") if w]
@@ -200,6 +227,25 @@ class Store:
             if all(w in hay for w in words):
                 return e
         return None
+
+
+def find_video(d: Path) -> Path | None:
+    """``video<ext>`` in ``d`` (the first video extension that exists)."""
+    for ext in VIDEO_EXTS:
+        p = d / f"video{ext}"
+        if p.is_file():
+            return p
+    return None
+
+
+def link_or_copy(src: Path, dst: Path) -> None:
+    """``dst`` becomes ``src``'s content: a hard link (no copy of a 100 MB video) when the volume
+    allows, else a copy."""
+    dst.unlink(missing_ok=True)
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copyfile(src, dst)
 
 
 def _stem_file(d: Path, stem: str) -> Path | None:

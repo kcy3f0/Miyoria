@@ -282,6 +282,59 @@ class RealBackend:
                 raise JobError("download produced no audio file")
             ffmpeg_to_wav(files[0], dest, max_s=self.max_s)
 
+    def fetch_video(self, src: Source, dest: Path, progress: Progress, cancelled: Callable[[], bool]) -> dict[str, Any]:
+        """The source's video, video only (the stream hears her cover), into ``dest`` (mp4).
+
+        H.264 up to SING_VIDEO_MAX_HEIGHT first (every OBS build decodes it, cheaply), then any
+        codec at that height (remuxed into mp4), then a combined format; nothing over
+        SING_VIDEO_MAX_MB. Runs next to the audio pipeline, on its own YoutubeDL.
+        """
+        if not src.url:
+            raise JobError("the song has no link to a video")
+        h = env_int("SING_VIDEO_MAX_HEIGHT", 1080)
+        mb = env_int("SING_VIDEO_MAX_MB", 300)
+        size = f"[filesize<?{mb}M]"
+        fmt = "/".join([
+            f"bv[height<={h}][vcodec^=avc1]{size}",
+            f"bv[height<={h}]{size}",
+            f"b[height<={h}]{size}",
+        ])
+        with tempfile.TemporaryDirectory(prefix="sing-video-", dir=dest.parent) as tmp:
+
+            def hook(d: dict[str, Any]) -> None:
+                if cancelled():
+                    raise Cancelled()
+                total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                if d.get("status") == "downloading" and total:
+                    progress(min(0.99, float(d.get("downloaded_bytes", 0)) / float(total)))
+
+            with self._ydl({
+                "format": fmt,
+                "outtmpl": str(Path(tmp) / "video.%(ext)s"),
+                "progress_hooks": [hook],
+                "noprogress": True,
+                "max_filesize": mb * 1024 * 1024,
+                "postprocessors": [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}],
+            }) as ydl:
+                try:
+                    info = ydl.extract_info(src.url, download=True) or {}
+                except Exception as e:
+                    if cancelled():
+                        raise Cancelled() from e
+                    raise JobError(f"no video: {str(e).strip()[:200]}") from e
+            out = Path(tmp) / "video.mp4"
+            if not out.is_file():
+                raise JobError("the video download produced no mp4 (over SING_VIDEO_MAX_MB?)")
+            os.replace(out, dest)
+        progress(1.0)
+        return {
+            "width": info.get("width"),
+            "height": info.get("height"),
+            "vcodec": info.get("vcodec"),
+            "fps": info.get("fps"),
+            "format_id": info.get("format_id"),
+        }
+
     def fetch_library(self, src: Source, sdir: Path) -> None:
         p = self.store.library_path(src.path or "")
         if src.split:

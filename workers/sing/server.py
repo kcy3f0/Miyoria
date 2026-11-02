@@ -7,7 +7,8 @@
     GET    /songs               -> {"songs": [meta...]}    cached covers, newest first
     GET    /songs/{id}          -> {"song": meta}
     GET    /songs/{id}/files/{name}   mix.wav · vocals.wav · instrumental.wav · lyrics.lrc ·
-                                      play_mix.pcm · play_vocals.pcm (s16le mono 48 kHz) · meta.json
+                                      play_mix.pcm · play_vocals.pcm (s16le mono 48 kHz) · meta.json ·
+                                      video.mp4 (library: video.<ext>) when ``has_video``
     GET    /library             -> {"entries": [...]}      the owner's local song folder
     GET    /health
 
@@ -22,6 +23,12 @@ Pipeline per job (one job at a time; models load per stage and are freed after i
     mix       converted vocal at the original vocal's level + instrumental (shifted by ``key``),
               loudness-normalised to SING_TARGET_LUFS, peak ≤ -1 dBFS
     lyrics    lrclib.net synced LRC by title / artist / duration (best effort)
+    video     (in parallel, from the download on) the link's video, video only, H.264 <= 1080p
+              preferred, into video.mp4 for the stream to show while she sings; library entries
+              use a video next to the audio. The song is ready once both are done; a video that
+              fails or is still not there SING_VIDEO_WAIT_S after the audio leaves the song
+              ready without one (``has_video: false``, ``video_error``). Songs cached before
+              videos existed get theirs on the next request.
 
 A finished song is cached under SING_DATA_DIR/<song id>; asking again (same query, link or file
 and the same pitch settings) answers at once with ``cached: true``.
@@ -46,6 +53,10 @@ Environment
     SING_JS_RUNTIMES       yt-dlp JavaScript runtimes for YouTube (default deno,node)
     SING_LYRICS            0 = no lrclib lookup                   (default 1)
     SING_KEEP_MODELS       1 = keep models in VRAM between jobs   (default 0)
+    SING_VIDEO             0 = no videos                          (default 1)
+    SING_VIDEO_MAX_HEIGHT  tallest video                          (default 1080)
+    SING_VIDEO_MAX_MB      largest video                          (default 300)
+    SING_VIDEO_WAIT_S      wait for the video after the audio     (default 120)
     SING_MOCK_SECONDS      mock: song length                      (default 3)
     SING_MOCK_STAGE_MS     mock: delay per stage                  (default 0)
     HOST / PORT            bind address                           (default 127.0.0.1 / 8005)
@@ -53,6 +64,7 @@ Environment
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -78,7 +90,17 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engine import Cancelled, JobError, allowed_url, env_float, env_int  # noqa: E402
-from songs import PLAY_RATE, SONG_FILES, Source, Store, safe_id, short_hash, song_id  # noqa: E402
+from songs import (  # noqa: E402
+    PLAY_RATE,
+    SONG_FILES,
+    Source,
+    Store,
+    find_video,
+    link_or_copy,
+    safe_id,
+    short_hash,
+    song_id,
+)
 
 log = logging.getLogger("miyoria.sing")
 
@@ -86,7 +108,10 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 MAX_JOBS_KEPT = 100
 # Share of the job's progress per stage.
-WEIGHTS = {"resolve": 0.04, "download": 0.12, "separate": 0.30, "convert": 0.44, "mix": 0.07, "lyrics": 0.03}
+WEIGHTS = {"resolve": 0.04, "download": 0.12, "separate": 0.30, "convert": 0.44, "mix": 0.07, "lyrics": 0.03,
+           "video": 0.0}
+# Sources whose link has a video to fetch (a library entry brings its own file).
+VIDEO_KINDS = ("youtube", "url", "mock")
 
 
 def now_iso() -> str:
@@ -141,6 +166,18 @@ class MockBackend:
     def fetch(self, src: Source, dest: Path, progress: Callable[[float], None]) -> None:
         self._wait()
         _write_wav(dest, _tone(self.seconds, 16_000, 330), 16_000)
+
+    def fetch_video(self, src: Source, dest: Path, progress: Callable[[float], None],
+                    cancelled: Callable[[], bool]) -> dict[str, Any]:
+        """A few bytes named video.mp4; titles with "novideo" have none (like a SoundCloud link)."""
+        self._wait()
+        if cancelled():
+            raise Cancelled()
+        if "novideo" in src.title.lower():
+            raise JobError("no video: Requested format is not available")
+        dest.write_bytes(b"\x00\x00\x00\x18ftypmp42mock video")
+        progress(1.0)
+        return {"width": 1920, "height": 1080, "vcodec": "avc1.mock", "fps": 30, "format_id": "mock"}
 
     def fetch_library(self, src: Source, sdir: Path) -> None:
         self.fetch(src, sdir / "source.wav", lambda _: None)
@@ -259,6 +296,7 @@ class Job:
     started_at: str | None = None
     finished_at: str | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
+    video: "VideoFetch | None" = None
 
     def public(self, store: Store, position: int | None) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -276,6 +314,7 @@ class Job:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "song": None,
+            "video": self.video.public() if self.video else None,
         }
         if self.state == "done" and self.song_id:
             d["song"] = store.meta(self.song_id)
@@ -376,7 +415,137 @@ def _peak_vram_mb() -> int | None:
     return None
 
 
+def _video_on() -> bool:
+    return os.environ.get("SING_VIDEO", "1") != "0"
+
+
+def _needs_video(meta: dict[str, Any], kind: str | None) -> bool:
+    """A cached song made before videos existed (no ``has_video`` at all) whose source has one."""
+    return _video_on() and "has_video" not in meta and (kind in VIDEO_KINDS or kind == "library")
+
+
+class VideoFetch:
+    """A source's video, fetched on its own thread while the audio pipeline runs."""
+
+    def __init__(self, src: Source, sdir: Path, job_cancel: threading.Event) -> None:
+        self.src, self.sdir = src, sdir
+        self.state = "running"  # running | done | failed | cancelled
+        self.progress = 0.0
+        self.error: str | None = None
+        self.seconds: float | None = None
+        self._stop = threading.Event()
+        self._job_cancel = job_cancel
+        self._thread = threading.Thread(target=self._run, name="sing-video", daemon=True)
+
+    def start(self) -> "VideoFetch":
+        self._thread.start()
+        return self
+
+    def cancelled(self) -> bool:
+        return self._stop.is_set() or self._job_cancel.is_set()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def running(self) -> bool:
+        return self._thread.is_alive()
+
+    def _run(self) -> None:
+        t0 = time.perf_counter()
+        dest = self.sdir / "video.mp4"
+        try:
+            info = state.backend.fetch_video(self.src, dest, self._progressed, self.cancelled)
+            info = {**info, "source": self.src.kind, "bytes": dest.stat().st_size}
+            (self.sdir / "video.json").write_text(json.dumps(info, ensure_ascii=False, indent=2), "utf-8")
+            self.state, self.progress = "done", 1.0
+        except Cancelled:
+            self.state, self.error = "cancelled", "cancelled"
+        except JobError as e:
+            self.state, self.error = "failed", str(e)
+            log.info("no video for %s: %s", self.src.key, e)
+        except Exception as e:  # noqa: BLE001
+            log.exception("video download of %s crashed", self.src.key)
+            self.state, self.error = "failed", f"{type(e).__name__}: {e}"[:300]
+        finally:
+            self.seconds = round(time.perf_counter() - t0, 2)
+            if self.state != "done":
+                dest.unlink(missing_ok=True)
+
+    def _progressed(self, f: float) -> None:
+        self.progress = max(0.0, min(1.0, f))
+
+    def wait(self, timeout_s: float, job_cancel: threading.Event) -> None:
+        """Until it ends, at most ``timeout_s`` (then it is stopped); raises Cancelled with the job."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while self._thread.is_alive():
+            if job_cancel.is_set():
+                self.stop()
+                raise Cancelled()
+            if time.monotonic() >= deadline:
+                self.stop()
+                self._thread.join(5)
+                if self.state != "done":
+                    self.state = "failed"
+                    self.error = f"the video took longer than {timeout_s:.0f} s after the audio"
+                return
+            self._thread.join(0.1)
+
+    def public(self) -> dict[str, Any]:
+        return {"state": self.state, "progress": round(self.progress, 3), "error": self.error}
+
+
+def _start_video(job: Job, src: Source, sdir: Path) -> None:
+    """Gets the source's video under way: a library entry's own file at once, a link's on a thread
+    (unless an earlier job already fetched it)."""
+    if not _video_on() or find_video(sdir) is not None:
+        return
+    if src.kind == "library":
+        v = state.store.library_video(src.path or "")
+        if v is not None:
+            link_or_copy(v, sdir / f"video{v.suffix.lower()}")
+            info = {"source": "library", "bytes": v.stat().st_size}
+            (sdir / "video.json").write_text(json.dumps(info, indent=2), "utf-8")
+    elif src.kind in VIDEO_KINDS:
+        job.video = VideoFetch(src, sdir, job.cancel).start()
+
+
+def _attach_video(job: Job, src: Source, sdir: Path, out: Path, timings: dict[str, float]) -> dict[str, Any]:
+    """Waits for the video (stage ``video``), links it into the song and returns the meta fields."""
+    if not _video_on():
+        return {"has_video": False, "video": None, "video_error": "videos are off (SING_VIDEO=0)"}
+    vf = job.video
+    if vf is not None:
+        if vf.running():
+            _set(job, "video")
+            t0 = time.perf_counter()
+            vf.wait(env_float("SING_VIDEO_WAIT_S", 120.0), job.cancel)
+            timings["video_wait_s"] = round(time.perf_counter() - t0, 2)
+        if vf.seconds is not None:
+            timings["video_s"] = vf.seconds
+    for old in out.glob("video.*"):
+        old.unlink(missing_ok=True)
+    v = find_video(sdir)
+    if v is None:
+        why = vf.error if vf is not None else (
+            "no video next to the library entry" if src.kind == "library" else "the source has no video")
+        return {"has_video": False, "video": None, "video_error": why}
+    link_or_copy(v, out / v.name)
+    try:
+        info = json.loads((sdir / "video.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        info = {}
+    return {"has_video": True, "video": {**info, "file": v.name}, "video_error": None}
+
+
 def run_job(job: Job) -> None:
+    try:
+        _run_job(job)
+    finally:
+        if job.video is not None:
+            job.video.stop()
+
+
+def _run_job(job: Job) -> None:
     store, b, req = state.store, state.backend, job.request
     check = job.cancel.is_set
     timings: dict[str, float] = {}
@@ -399,14 +568,25 @@ def run_job(job: Job) -> None:
     job.source = src.public()
     sid = song_id(src.key, req.pitch, req.key)
     job.song_id = sid
-    if not req.force and store.meta(sid) is not None:
+    sdir = store.source_dir(src.key)
+    cached = None if req.force else store.meta(sid)
+    if cached is not None:
         job.cached = True
+        if _needs_video(cached, src.kind):
+            # Made before videos existed: fetch just the video.
+            sdir.mkdir(parents=True, exist_ok=True)
+            _start_video(job, src, sdir)
+            cached.update(_attach_video(job, src, sdir, store.song_dir(sid), cached.setdefault("timings", {})))
+            store.write_meta(sid, cached)
         return
 
     _peak_vram_reset()
-    sdir = store.source_dir(src.key)
     sdir.mkdir(parents=True, exist_ok=True)
     store.write_source_info(src)
+    if req.force:
+        for old in list(sdir.glob("video.*")):
+            old.unlink(missing_ok=True)
+    _start_video(job, src, sdir)
     have_stems = (sdir / "vocals.wav").exists() and (sdir / "instrumental.wav").exists()
     if not have_stems or req.force:
         if src.kind == "library":
@@ -448,6 +628,7 @@ def run_job(job: Job) -> None:
         lyrics_meta = {"provider": found["provider"], "synced": bool(lines), "track": found.get("track"),
                        "artist": found.get("artist"), "lines": lines,
                        "plain": None if lines else (found.get("plain") or "")[:4000]}
+    video = _attach_video(job, src, sdir, out, timings)
     timings["total_s"] = round(time.perf_counter() - t_job, 2)
     meta = {
         "id": sid,
@@ -457,6 +638,7 @@ def run_job(job: Job) -> None:
         "source": src.public(),
         "pitch": pitch_info,
         "lyrics": lyrics_meta,
+        **video,
         "play": {"sample_rate": PLAY_RATE, "samples": mixed.get("samples"), "format": "s16le", "channels": 1},
         "mix": mixed,
         "engine": {"backend": b.name, "model": b.model_name, "device": b.device,
@@ -564,8 +746,10 @@ async def submit(req: JobRequest) -> JSONResponse:
         if req.query:
             key = state.store.query_source(req.query)
         sid = song_id(key, req.pitch, req.key) if key else None
-        if sid and state.store.meta(sid) is not None:
-            info = state.store.source_info(key or "")
+        meta = state.store.meta(sid) if sid else None
+        info = state.store.source_info(key or "") if meta is not None else None
+        # (A song from before videos existed goes through the queue to get its video.)
+        if meta is not None and not _needs_video(meta, (info or {}).get("kind")):
             job.state, job.stage, job.progress, job.cached = "done", "done", 1.0, True
             job.song_id, job.source, job.finished_at = sid, info, now_iso()
     with state.lock:
