@@ -197,6 +197,7 @@ describe("attention", () => {
     session: Session,
     inputs: IncomingMessage[],
     someoneSpeaking: boolean,
+    interruptScale = 0,
   ): Assessment {
     return assess({
       config: cfg,
@@ -208,7 +209,7 @@ describe("attention", () => {
       session,
       inputs,
       now: Date.now(),
-      voice: { someoneSpeaking, ambientFactor: 0.5, questionWindowMs: 8000 },
+      voice: { someoneSpeaking, ambientFactor: 0.5, questionWindowMs: 8000, interruptScale },
       affinity: null,
       mood: null,
     });
@@ -221,10 +222,15 @@ describe("attention", () => {
     const text = sample(run(cfg, "ambient", s, q));
     const voice = sample(voiceRun(cfg, s, q, false));
     expect(Math.abs(voice - text * 0.5)).toBeLessThan(1e-6);
-    // Never joins in while someone speaks, but direct address still counts.
+    // With interrupt_scale 0 she never joins in while someone speaks...
     let a = voiceRun(cfg, s, q, true);
     expect(a.gate).toEqual({ kind: "ignore" });
     expect(a.reasons).toContain("someone is speaking");
+    // ...otherwise the chance is scaled down, not zero.
+    a = voiceRun(cfg, s, q, true, 0.4);
+    expect(Math.abs(sample(a) - voice * 0.4)).toBeLessThan(1e-6);
+    expect(a.reasons).toContain("someone is speaking ×0.40");
+    // Direct address still counts either way.
     const named = [msg("voice", "a", "deep seek chan 妳覺得呢")];
     a = voiceRun(cfg, s, named, true);
     expect(a.direct, a.reasons.join("; ")).toBe(true);
@@ -241,6 +247,23 @@ describe("attention", () => {
     expect(run(cfg, "ambient", s, follow).direct).toBe(false);
     const late = { ...(follow[0] as IncomingMessage), ts: toTimestamp(Date.now() + 30_000) };
     expect(voiceRun(cfg, s, [late], false).direct).toBe(false);
+
+    // In voice, a reply to what she just said is not held back by her cooldown; in text it is.
+    const slow = config({ llm_check: false, cooldown_ms: 60_000 });
+    s = sessionWith([]);
+    s.recordSpeech("Her", me, "我最喜歡深海了。", null, Date.now());
+    const reply = [msg("voice", "a", "我也是耶")];
+    s.recordUtterance(reply[0] as IncomingMessage);
+    a = voiceRun(slow, s, reply, false);
+    expect(
+      a.reasons.some((r) => r.startsWith("cooldown")),
+      a.reasons.join("; "),
+    ).toBe(false);
+    expect(a.reasons).toContain("follow-up to her +0.35");
+    const inText = [msg("channel", "a", "我也是耶")];
+    expect(run(slow, "ambient", s, inText).reasons.some((r) => r.startsWith("cooldown"))).toBe(
+      true,
+    );
   });
 
   it("affinity_and_energy_scale_ambient_turns", () => {

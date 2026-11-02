@@ -95,6 +95,8 @@ export interface VoiceAttention {
   ambientFactor: number;
   /** A question this soon (ms) after she spoke addresses her. */
   questionWindowMs: number;
+  /** Multiplies the ambient probability while someone speaks; 0 = never join in over them. */
+  interruptScale: number;
 }
 
 export interface AttentionInput {
@@ -125,7 +127,9 @@ function clamp01(x: number): number {
 
 /** Multiplier for ambient probabilities: activeness, the voice factor, affinity and energy. */
 export function ambientScale(input: AttentionInput): number {
-  const voice = input.voice?.ambientFactor ?? 1;
+  const voice = input.voice
+    ? input.voice.ambientFactor * (input.voice.someoneSpeaking ? input.voice.interruptScale : 1)
+    : 1;
   const affinity = input.affinity === null ? 1 : affinityAmbientFactor(input.affinity);
   const energy = input.mood === null ? 1 : energyProbabilityFactor(input.mood);
   return probabilityFactor(input.activeness) * voice * affinity * energy;
@@ -220,8 +224,11 @@ export function assess(input: AttentionInput): Assessment {
   }
 
   if (input.voice?.someoneSpeaking) {
-    reasons.push("someone is speaking");
-    return done({ kind: "ignore" });
+    if (input.voice.interruptScale <= 0) {
+      reasons.push("someone is speaking");
+      return done({ kind: "ignore" });
+    }
+    reasons.push(`someone is speaking ×${fixed(input.voice.interruptScale, 2)}`);
   }
   const activeness = input.activeness;
   if (activeness !== "medium") reasons.push(`activeness ${activeness}`);
@@ -229,7 +236,9 @@ export function assess(input: AttentionInput): Assessment {
   if (input.mood !== null) reasons.push(`energy ${fixed(input.mood.energy, 2)}`);
   const cooldownMs = Math.trunc(cfg.cooldown_ms * cooldownFactor(activeness) * energy);
   const last = input.session.lastSelfAt();
-  if (last !== null) {
+  // In voice, someone answering what she just said is a conversation, not her butting in.
+  const answeringHer = input.voice !== null && followsHer(input);
+  if (last !== null && !answeringHer) {
     const since = input.now - last;
     if (since < cooldownMs) {
       reasons.push(`cooldown (${since}ms since she spoke)`);
@@ -255,6 +264,18 @@ export function assess(input: AttentionInput): Assessment {
   return done({ kind: "sample", probability: ambientProbability(input, score) });
 }
 
+/** She spoke among the last three entries before this turn, within the last 3 minutes. */
+function followsHer(input: AttentionInput): boolean {
+  const history = input.session.history();
+  const before = Math.max(history.length - input.inputs.length, 0);
+  const her = history
+    .slice(0, before)
+    .reverse()
+    .slice(0, 3)
+    .find((e) => e.isSelf);
+  return her !== undefined && Math.trunc((input.now - her.ts) / 1000) < 180;
+}
+
 function salience(input: AttentionInput, direct: boolean, reasons: string[]): number {
   let score = 0.05;
   const add = (weight: number, why: string): void => {
@@ -269,17 +290,7 @@ function salience(input: AttentionInput, direct: boolean, reasons: string[]): nu
   );
   if (keyword !== undefined) add(0.2, `topic \`${keyword}\``);
 
-  // Was she part of the conversation right before this turn?
-  const history = input.session.history();
-  const before = Math.max(history.length - input.inputs.length, 0);
-  const followUp = history
-    .slice(0, before)
-    .reverse()
-    .slice(0, 3)
-    .find((e) => e.isSelf);
-  if (followUp !== undefined && Math.trunc((input.now - followUp.ts) / 1000) < 180) {
-    add(0.35, "follow-up to her");
-  }
+  if (followsHer(input)) add(0.35, "follow-up to her");
   const last = input.session.lastSelfAt();
   if (last === null) add(0.05, "has not spoken yet");
   else if (Math.trunc((input.now - last) / 60_000) >= 30) add(0.05, "quiet for a while");

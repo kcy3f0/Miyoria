@@ -41,6 +41,7 @@ import {
   textLane,
   timestampMs,
   toTimestamp,
+  VoiceSinkKey,
   voiceLane,
 } from "@miyoria/types";
 import { assess, decide as sample, type VoiceAttention } from "./attention.js";
@@ -159,6 +160,8 @@ class Speech {
     readonly priority: Priority,
     readonly ttlMs: number,
     readonly signal: AbortSignal,
+    /** Tells the voice sink a sentence is coming (`VoiceSink.prepare`). */
+    readonly prepare: ((text: string) => void) | null = null,
   ) {}
 
   /** Her speech was interrupted: nothing more is said. */
@@ -190,6 +193,7 @@ class Speech {
     if (this.stopped()) return;
     const text = cleanReply(sentence, this.names);
     if (!isSpeakable(text)) return;
+    this.prepare?.(text);
     const action = newAction(
       this.lane,
       this.priority,
@@ -365,6 +369,7 @@ class Turn {
         ...cfg.attention,
         cooldown_ms: voiceCfg.cooldown_ms,
         llm_check: voiceCfg.llm_check,
+        gray_low: voiceCfg.gray_low,
       };
       maxShare = voiceCfg.max_share_of_recent;
     } else {
@@ -376,6 +381,7 @@ class Turn {
           someoneSpeaking: this.session.someoneSpeaking(),
           ambientFactor: voiceCfg.ambient_factor,
           questionWindowMs: voiceCfg.question_window_ms,
+          interruptScale: voiceCfg.interrupt_scale,
         }
       : null;
     const assessment = assess({
@@ -447,7 +453,7 @@ class Turn {
     const request: ChatRequest = {
       messages,
       temperature: 0,
-      max_tokens: 120,
+      max_tokens: 1000, // reasoning models spend part of this on thinking
       json_mode: true,
       session: `${this.#llmSession()}-attention`,
     };
@@ -602,6 +608,7 @@ class Turn {
     const priority = this.#priority(direct);
     if (this.voice) {
       const [platform, scope] = voiceScope(this.key);
+      const voiceSink = this.agent.ctx.services.get(VoiceSinkKey);
       const speech = new Speech(
         sink,
         this.flags,
@@ -612,6 +619,7 @@ class Turn {
         priority,
         cfg.voice.speak_ttl_ms,
         this.signal,
+        voiceSink?.prepare ? (text) => voiceSink.prepare?.(this.key, text) : null,
       );
       await this.#produce(router, messages, priority, speech);
       if (speech.spoken === "") this.agent.log.debug({ turn: this.turn }, "she stayed quiet");

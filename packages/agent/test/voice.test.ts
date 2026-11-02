@@ -142,7 +142,13 @@ describe("voice", () => {
 
   it("no_reply_while_someone_is_speaking", async () => {
     const mock = new MockProvider("chat").reply("我看過喔。");
-    const h = await Harness.create("off", voiceConfig("ambient"), mock);
+    const cfg = voiceConfig("ambient");
+    // interrupt_scale 0: never join in over someone (the default only lowers the chance).
+    const h = await Harness.create(
+      "off",
+      { ...cfg, voice: { ...cfg.voice, interrupt_scale: 0 } },
+      mock,
+    );
     h.publish(joined());
 
     // Speaking extends the debounce: the turn waits for the transcript.
@@ -230,6 +236,22 @@ describe("voice", () => {
     expect(all[2]).toEqual(["好啦好啦。", "happy"]);
     const turns = h.sink.speakActions().map((a) => a.turn);
     expect(turns.every((t) => t === turns[0])).toBe(true);
+  });
+
+  it("queued_sentences_are_announced_to_the_voice_sink", async () => {
+    const prepared: [ContextKey, string][] = [];
+    const voiceSink = {
+      prepare: (context: ContextKey, text: string) => prepared.push([context, text]),
+      speak: async () => "completed" as const,
+    };
+    const mock = new MockProvider("chat").reply("<emo:smug>哼,才不是在等你呢。你回來啦?");
+    const h = await Harness.build("off", voiceConfig("always"), mock, null, { voiceSink });
+    h.publish(joined());
+    h.publish(utterance("Owen", "我回來了"));
+    await wait(3000);
+    expect(texts(h)).toEqual(["哼,才不是在等你呢。", "你回來啦?"]);
+    expect(prepared.map(([, t]) => t)).toEqual(texts(h));
+    expect(prepared[0]?.[0]).toEqual(voiceCtx());
   });
 
   it("first_token_latency_is_published_for_the_monitor", async () => {

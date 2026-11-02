@@ -78,7 +78,7 @@ describe("config", () => {
     expect(cfg.budget_notice_interval_ms).toBe(3_600_000);
   });
 
-  it("defaults match the Rust Default impls", () => {
+  it("defaults", () => {
     expect(defaultAgentConfig()).toEqual({
       debounce_ms: 1500,
       typing_extend_ms: 2500,
@@ -125,6 +125,8 @@ describe("config", () => {
         cooldown_ms: 20_000,
         max_share_of_recent: 0.2,
         question_window_ms: 8000,
+        interrupt_scale: 0.35,
+        gray_low: 0.15,
         llm_check: false,
         speak_ttl_ms: 30_000,
       },

@@ -130,6 +130,17 @@ export const VoiceConfigSchema = z.object({
   max_share_of_recent: z.number().default(0.2),
   /** A question this soon after she spoke counts as addressed to her. */
   question_window_ms: z.number().int().nonnegative().default(8000),
+  /**
+   * Multiplies the ambient reply probability while someone else is still talking (in a busy
+   * channel someone nearly always is). 0 = never join in over someone; direct address and
+   * questions to her are not affected.
+   */
+  interrupt_scale: z.number().min(0).max(1).default(0.35),
+  /**
+   * Below this salience an ambient voice turn is ignored (text uses `attention.gray_low`).
+   * Lower than in text: spoken chatter rarely carries the cues that raise the score.
+   */
+  gray_low: z.number().default(0.15),
   /** Ask the `fast` model about gray-zone ambient voice turns (adds latency). */
   llm_check: z.boolean().default(false),
   /** Sentences that have not started playing within this time are dropped. */

@@ -38,6 +38,8 @@ import {
   type Priority,
   type TurnId,
   toTimestamp,
+  type VoiceSink,
+  VoiceSinkKey,
 } from "@miyoria/types";
 import { vi } from "vitest";
 import { type AgentHandle, AgentHandleKey, AgentModule } from "../src/index.js";
@@ -176,6 +178,8 @@ export interface Setup {
   appTools?: ToolRegistry;
   /** Fixed decision roll (default 0: every positive probability passes). */
   roll?: number;
+  /** Provided by the "app" as the voice module's sink. */
+  voiceSink?: VoiceSink;
 }
 
 export function profile(mode: string): Profile {
@@ -228,6 +232,7 @@ export class Harness {
     const sup = new Supervisor();
     if (setup.store) sup.services.provide("app", SettingsStoreKey, setup.store);
     if (setup.appTools) sup.services.provide("app", ToolRegistryKey, setup.appTools);
+    if (setup.voiceSink) sup.services.provide("app", VoiceSinkKey, setup.voiceSink);
     if (setup.owners) {
       await sup.register(new CommandsModule(), { owners: setup.owners }, true);
     }
