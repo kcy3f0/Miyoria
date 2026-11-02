@@ -226,7 +226,7 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 | **A. 閘門與行動工具** | ActuatorRegistry、Gate、principal;防 injection 第一步(不可信內容移出 system、輸出過濾、記憶來源);包裝 voice / stream / scene / game 成工具,反應回合可用;指令與面板改走閘門 | 「姐姐可以來語音嗎」「開台吧」她會自己判斷要不要做 |
 | **B. 感知與自我** | WorldState(presence、voice states)、SelfState(慾望、方針、議程、感情描述)、面板「內心」頁雛形 | 她知道誰在線、在做什麼;有自己的狀態 |
 | **C. 心智迴圈** | Mind 模組、內心獨白、意圖、自己發起的回合;talkativeness 取代 attention 數字;initiative 併入 | 會自己找人聊天、偷偷進語音、自己調活躍度、冷場時開話題 |
-| **D. OBS 智慧場景 + Minecraft** | 場景分類與自動轉場;Minecraft 端到端(檢查 adapter 完成度、安裝模組) | 「去玩 Minecraft」→ 她自己開遊戲、切場景、開台 |
+| **D. OBS 智慧場景 + Minecraft** | 場景分類與自動轉場;Minecraft 端到端(adapter 準備與模組建置已完成,見 `extensions/minecraft/SETUP.md`);**遊戲內聊天變成獨立對話情境**(有自己的歷史,玩家名稱可用 `/me link` 綁 Discord 帳號以共用好感與記憶,回覆管道由她選:遊戲內打字、直播語音 + 字幕或兩者) | 「去玩 Minecraft」→ 她自己開遊戲、切場景、開台 |
 | **E. 聊天上下文與圖片** | 冷啟動補抓歷史、回覆鏈、看圖(deepseek-v4.1-flash 已支援視覺,直接把圖片當多模態內容送給聊天模型;先實測 OpenCode 端是否接受圖片)、語音頻道文字區改用語音回 | 對話更連貫、看得懂圖片 |
 | **F. 沙箱程式** | 沙箱、`code.run`、自寫工具與核准流程 | 她能自己寫小工具 |
 | **G. 反思與學習** | 每日反思(從反應中學:誰喜歡什麼)、長期目標 | 越相處越懂大家 |

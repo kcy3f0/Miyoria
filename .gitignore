@@ -34,3 +34,6 @@ coverage/
 # 本機執行資料與 Python 虛擬環境
 /data/
 workers/.venv-*/
+
+# Claude Code 子代理的暫存 worktree
+/.claude/worktrees/
