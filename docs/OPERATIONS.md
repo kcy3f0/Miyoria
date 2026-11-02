@@ -378,6 +378,25 @@ scripts\restore.ps1 -Latest
 - 換新機器:裝好 Docker、`up -d postgres`、複製 `deploy/.env` 與根目錄 `.env`、還原備份、再啟動 Core。
 - **還原演練**:至少做過一次(例如在另一台機器或另一個 compose 專案名稱下還原),才算有備份。
 
+### 資料管理(面板「資料」頁)
+
+管理面板的「資料」頁列出她的每一類資料(資料表與設定 key 的對應見 [ARCHITECTURE.md](ARCHITECTURE.md) §16「資料類別」),分成三張表:
+
+| 表 | 類別 |
+|---|---|
+| 她的資料(只屬於目前的 profile) | 記憶(含整理時間)、關係(含變化紀錄)、稱呼、內在狀態與感情、心情、聊天紀錄(含記憶整理進度 watermark)、決策紀錄、頻道設定(模式 / 活躍度)、Persona 修改、她提議的工具、擴充套件資料、其他設定、工具工作區(有 sandbox 模組時) |
+| 共用資料(同一個節點的所有角色共用) | 主動發話狀態、人物與帳號連結(含連結代碼)、語音同意、隱私設定、點播佇列、角色與權限(角色、指派、Discord 角色對應、節點覆寫)、模組開關 |
+| 保留的資料(只能看與匯出) | 稽核紀錄、LLM 用量、面板登入(不匯出) |
+
+每一列可以「檢視」(跳到對應頁面)、「匯出 JSON」與「刪除」。匯出與刪除需要 `owner.data.manage`(只有擁有者與 admin token 有);唯讀帳號(沒有 `admin.panel.write`)看不到刪除與危險區。
+
+- **刪除**:對話框會列出連帶刪除的類別(例如刪人物會一起刪關係、稱呼與感情)。記憶、聊天紀錄、人物、權限、隱私、語音同意等重要類別要輸入 profile id 才能刪;心情、決策紀錄、頻道設定、佇列、模組開關按一次確認即可。聊天紀錄一定連同記憶整理進度一起刪(只刪進度會讓舊聊天被重新萃取成記憶,所以不能單獨刪)。
+- **刪除時會發生什麼**:快取這份資料的模組(memory、social、mood、self、agent、initiative、world、queue、sandbox 中相關的)先停下來,同一個交易裡刪除,再把模組啟動;頻道設定同時從 agent 的記憶體裡清掉,權限刪除後 auth 會重新載入。少數東西要重新啟動 Core 才完全生效:Persona 修改刪除後,執行中的人格要等 Core 重啟才回到 profile 檔案的內容;模組開關刪除後,下次啟動才回到設定檔的預設。語音同意有最多一分鐘的快取。
+- **回到初始狀態**(危險區):刪除上表「她的資料」與「共用資料」的所有內容,回到剛安裝的狀態。流程:按「下載備份」→ Core 產生完整備份(含稽核紀錄)並下載到瀏覽器,同時發一個 15 分鐘內有效、只能用一次的憑證 → 輸入 profile id → 確認。沒有這個憑證 Core 會拒絕重設,所以不可能跳過備份。重設會保留稽核紀錄(並新增 `data.backup`、`data.reset` 兩筆)、LLM 用量與面板登入;角色與權限回到內建角色,設定檔 `[modules.commands] owners` 的擁有者仍是擁有者。
+- **API**:`GET /api/data`、`GET /api/data/export?categories=a,b`、`POST /api/data/wipe`(`{ categories, confirm }`)、`POST /api/data/backup`(回應標頭 `x-miyoria-backup-token`)、`POST /api/data/reset`(`{ confirm, backup_token }`)。每次匯出、刪除與重設都寫進稽核紀錄。
+- **從備份還原尚未支援**:面板的 JSON 備份是給人看與留存的(不含記憶的 embedding 與搜尋 token);要整個復原,請用上面的資料庫備份(SQLite 檔案或 `scripts/backup`)。重設前先做一次資料庫備份最保險。
+- 這個頁面只處理目前的 profile;共用資料會影響同一個資料庫裡的其他角色(多角色的節點要注意)。
+
 ## 8. 日誌
 
 Core 用 pino:預設每行一筆 JSON(在終端機會自動改成好讀的單行格式),層級由環境變數 `MIYORIA_LOG_LEVEL`(`fatal|error|warn|info|debug|trace|silent`)控制;沒設時用 `miyoria.toml` 的 `[core] log` 的第一個層級(預設 `info,miyoria=debug` → `info`)。`MIYORIA_LOG_FORMAT=json` / `pretty` 可以強制格式。

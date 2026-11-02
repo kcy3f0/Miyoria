@@ -612,7 +612,7 @@ registry.register(
 
 **同步**:指令只存在一個範圍——`command_guilds` 為空時全域,否則在列出的伺服器。每次啟動的第一次同步會順便清掉另一個範圍(伺服器模式清全域與其他伺服器,全域模式清每個伺服器),所以切換模式不會在清單裡留下重複的舊指令;每個指令在整批覆寫前先驗證(名稱、說明長度、選項數、必填順序、總字數),不合格的會記錄錯誤並略過,不會讓整批失敗。手動全部清除:`miyoria discord commands reset`。`commands` 模組重啟時沿用同一個 registry,其他模組註冊的指令不會消失(模組用 `CommandMount` 掛指令,registry 換新時會自動重新註冊)。
 
-**清除記憶**(`/admin memory wipe`,節點 `owner.memory.wipe`):選範圍(記憶 / + 關係 / + 聊天紀錄 / 全部)→ 紅色確認卡(列出筆數)→ 表單輸入 profile id → 先把要刪的資料匯出成 JSON 附件傳出 → 同一個交易裡依 `profile_id` 刪除(`memory_records`、`relationships` + `relationship_deltas`、`message_log`、`decision_log`、設定 `memory_watermark:*`、`memory_maintenance_last`、`mood:last`、`self:state`、`self:feeling:*`、`initiative:state`;人物、帳號、連結代碼、權限、稽核紀錄、人格不動)→ 寫稽核紀錄 → 重啟 memory、social、mood、self、agent、initiative 清掉快取。聊天紀錄與整理進度(watermark)永遠一起刪,避免舊紀錄被重新萃取成記憶。
+**清除記憶**(`/admin memory wipe`,節點 `owner.memory.wipe`):選範圍(記憶 / + 關係 / + 聊天紀錄 / 全部)→ 紅色確認卡(列出筆數)→ 表單輸入 profile id → 先把要刪的資料匯出成 JSON 附件傳出 → 同一個交易裡刪除對應的資料類別(§16 的 `DATA_CATEGORIES`:記憶 → + 關係、內在狀態與感情、心情 → + 聊天紀錄、決策紀錄 → + 主動發話狀態;人物、帳號、連結代碼、權限、稽核紀錄、人格不動)→ 寫稽核紀錄。快取這些資料的 module 在交易前先停、交易後再啟動(`Supervisor.pause`),不是事後重啟:mood、self 等 module 停止時會把記憶體裡的狀態存回去,事後重啟會把剛刪的狀態寫回來。聊天紀錄與整理進度(watermark)永遠一起刪,避免舊紀錄被重新萃取成記憶。更細的刪除與「回到初始狀態」在管理面板的「資料」頁(§15.1)。
 
 ---
 
@@ -753,7 +753,7 @@ extensions/minecraft/
 
 套件:`@miyoria/auth`。
 
-- **RBAC + 權限節點**:角色 `owner > admin > moderator > trusted > user > restricted > blocked`;權限節點像 `admin.module.toggle`、`voice.join`、`queue.manage`、`memory.self.forget`、`owner.memory.wipe`、`tools.mcp.<server>.<tool>`。角色可以自訂。
+- **RBAC + 權限節點**:角色 `owner > admin > moderator > trusted > user > restricted > blocked`;權限節點像 `admin.module.toggle`、`voice.join`、`queue.manage`、`memory.self.forget`、`owner.memory.wipe`、`owner.data.manage`(面板的資料匯出、刪除與回到初始狀態)、`tools.mcp.<server>.<tool>`。角色可以自訂。
 - **一套語意**:內建角色的節點清單只定義一次(`@miyoria/commands` 的 `nodes.ts`);`auth` 模組用它建立內建角色,沒有 `auth` 時的備援權限也套用同一份清單(設定檔的擁有者 = owner、伺服器管理員 = admin、其他人 = user),所以同一個節點有沒有 `auth` 意思都一樣。資料庫裡沒被改過的舊版內建角色會自動升級到新的節點清單;改過的保留原樣(日誌會列出缺少的新節點)。
 - **查看與變更分開**:設定類指令用「查看」節點(`channel.mode.view`、`channel.activeness.view`、`voice.mode.view`、`voice.golive.view`,user 以上)顯示目前值,變更另外需要 `admin.channel.mode`、`admin.channel.activeness`、`admin.voice.mode`、`voice.golive`(moderator 以上)。跟參數有關的額外限制也是宣告好的節點(例如改 `owner` 標籤要 `owner.person.tag`、調好感要 `owner.person.adjust`),不在 handler 裡偷偷判斷是不是擁有者。
 - **擁有者**:只在 `[modules.commands] owners` 設定;舊設定檔的 `[modules.auth] owners` 仍會讀取並合併。
@@ -809,6 +809,7 @@ extensions/minecraft/
 - **人與關係**:身分綁定、好感曲線、標籤
 - **內心**:她的心情、慾望、無聊、方針、議程、對每個人的感情描述,以及世界快照(誰在線、在哪個語音頻道、在做什麼)
 - **權限**:角色、權限節點、Discord 角色對應
+- **資料**:她的每一類資料(§16 資料類別)的筆數與最後更新,逐類匯出 JSON、刪除(重要的要輸入 profile id),以及「危險區」的回到初始狀態(先下載完整備份才能執行)。匯出與刪除要 `owner.data.manage`(只有擁有者有);唯讀帳號看不到刪除
 - **佇列**:即時檢視、排序、跳過
 - **擴充套件**:安裝、權限、設定、日誌
 - **語音監控**:誰在講話、即時轉錄、各階段延遲
@@ -845,6 +846,7 @@ CLI 透過 Admin API 操作正在跑的 Core,跟 Panel 用同一套權限。
 - **設定分層**:`miyoria.toml`(檔案,`${VAR}` / `${VAR:-預設}` 引用環境變數)→ `.env` 與環境變數 → DB 中的執行期設定(頻道模式、人格覆寫等由 Panel / 指令改的)。每個 module 的設定都有 zod schema(轉成 JSON Schema 給 Panel)。
 - **Secrets**:放 `.env`(`miyoria init` 產生,不進 git)或環境變數,`miyoria.toml` 只用 `${VAR}` 引用。
 - **資料庫**:預設 SQLite(`node:sqlite`,WAL,`data/miyoria.db`);選用 PostgreSQL 16+ 與 pgvector(`pg`)。兩邊各有一套 migrations(`packages/store/migrations/{sqlite,postgres}`),Core 啟動時自動套用。不另外加 Redis 或 message broker(事件匯流排在程序內,跨節點走 WebSocket)。
+- **資料類別**(`@miyoria/store` 的 `data.ts`,`DATA_CATEGORIES`):把她的每一類資料對應到資料表、設定 key 與前綴(角色本身的 profile 或節點共用的 `_global`),標出相依(刪人物會一起刪關係、稱呼與感情)、快取它的 module、是否所有角色共用、刪除要不要輸入 profile id、是否保留不刪。`ProfileDataStore` 依類別計數(`inventory`)、匯出 JSON(`export`)、在一個交易裡刪除(`wipe`),兩個資料庫共用同一份 SQL。不變式寫在結構裡:watermark 只屬於「聊天紀錄」類別,所以永遠和 `message_log` 一起刪;稽核紀錄、LLM 用量、面板登入是保留類別,任何刪除與重設都不碰;「角色與權限」是重設而不是清空,同一個交易裡寫回內建角色,設定檔的擁有者不存在資料庫裡,所以永遠不會被鎖在外面。`/admin memory wipe` 與面板的 `/api/data/*` 都走這份定義。新增會存資料的 module 時,要把它的資料表或設定 key 加進來(沒被任何類別認領的設定會出現在「其他設定」)。
 - **可觀測性**:pino 結構化日誌(`MIYORIA_LOG_LEVEL`);Admin API 的 `GET /metrics` 提供 Prometheus metrics(事件數、LLM 首 token 延遲、用量等),可以接 Grafana;每個回合有 Decision Trace,Panel 內建檢視。OpenTelemetry 之後再加。
 - **Docker**:Core 映像檔(`deploy/Dockerfile.core`,Node 24)+ 可選的 Postgres 用 compose;Stage 在 Windows 原生跑;GPU workers 可以用 Docker(WSL2 + NVIDIA container toolkit)或原生。
 
