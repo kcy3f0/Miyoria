@@ -1,0 +1,25 @@
+# Song worker (workers/sing/server.py). Install the CUDA build of torch FIRST, otherwise pip on
+# Windows pulls the CPU-only wheel:
+#   pip install torch==2.11.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+# Seed-VC itself is not a package: download github.com/Plachtaa/seed-vc into ../models/seed-vc
+# (or point SING_SEEDVC_DIR at it). Its model weights download from Hugging Face on first use.
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
+numpy>=1.26,<2.3
+scipy>=1.13
+soundfile>=0.12
+librosa>=0.10.2
+pyloudnorm>=0.1.1
+# [default] brings yt-dlp-ejs; YouTube also needs a JS runtime (Node, already installed for Miyoria,
+# or deno; SING_JS_RUNTIMES)
+yt-dlp[default]>=2026.10.26
+# vocal separation
+demucs==4.0.1
+# Seed-VC inference dependencies (a subset of its requirements.txt: no GUI, training or ASR)
+huggingface-hub>=0.28.1
+transformers==4.46.3
+munch==4.0.0
+einops>=0.8.0
+descript-audio-codec==1.0.0
+pyyaml

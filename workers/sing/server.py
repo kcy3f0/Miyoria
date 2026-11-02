@@ -1,0 +1,657 @@
+"""Miyoria song worker: song requests → AI covers in her voice (docs/protocols/voice-link.md, 「歌曲 Worker」).
+
+    POST   /jobs                {query | url | path, title?, artist?, pitch?, key?, force?}  -> {"job"}
+    GET    /jobs                -> {"jobs": [...]}         newest first
+    GET    /jobs/{id}           -> {"job"}                 state, stage, progress, song when done
+    DELETE /jobs/{id}           -> {"job"}                 cancels a queued or running job
+    GET    /songs               -> {"songs": [meta...]}    cached covers, newest first
+    GET    /songs/{id}          -> {"song": meta}
+    GET    /songs/{id}/files/{name}   mix.wav · vocals.wav · instrumental.wav · lyrics.lrc ·
+                                      play_mix.pcm · play_vocals.pcm (s16le mono 48 kHz) · meta.json
+    GET    /library             -> {"entries": [...]}      the owner's local song folder
+    GET    /health
+
+Pipeline per job (one job at a time; models load per stage and are freed after it):
+    resolve   library match / yt-dlp search (``ytsearch1:``) / link (allowed hosts only), ≤ SING_MAX_SECONDS
+    download  bestaudio → 44.1 kHz stereo WAV (ffmpeg)
+    separate  Demucs (SING_SEPARATOR_MODEL, default htdemucs) → vocals + instrumental; skipped for
+              library folders that already have both stems, and for sources separated before
+    convert   Seed-VC singing model (F0-conditioned, 44.1 kHz) with her reference voice; the pitch
+              shift is ``pitch`` when given, else the octave that puts the song's median pitch
+              closest to hers (+ SING_TARGET_OFFSET semitones), plus ``key`` (whole-song transpose)
+    mix       converted vocal at the original vocal's level + instrumental (shifted by ``key``),
+              loudness-normalised to SING_TARGET_LUFS, peak ≤ -1 dBFS
+    lyrics    lrclib.net synced LRC by title / artist / duration (best effort)
+
+A finished song is cached under SING_DATA_DIR/<song id>; asking again (same query, link or file
+and the same pitch settings) answers at once with ``cached: true``.
+
+Environment
+    SING_BACKEND           seed-vc | mock                         (default seed-vc)
+    SING_DATA_DIR          cache root                             (default <repo>/data/songs)
+    SING_LIBRARY_DIR       local songs                            (default <data dir>/library)
+    SING_LIBRARY_FIRST     1 = a query that matches a library entry uses it (default 1)
+    SING_REF               her reference voice                    (default ../voices/deepseek-chan/ref.wav)
+    SING_SEEDVC_DIR        Seed-VC checkout                       (default ../models/seed-vc)
+    SING_DEVICE            cuda | cpu                             (default cuda when available)
+    SING_SEPARATE_DEVICE   device of the separator                (default SING_DEVICE; VRAM OOM → CPU)
+    SING_SEPARATOR_MODEL   Demucs model                           (default htdemucs; htdemucs_ft = better, 4x slower)
+    SING_DIFFUSION_STEPS   Seed-VC steps                          (default 30)
+    SING_CFG_RATE          Seed-VC inference cfg rate             (default 0.7)
+    SING_TARGET_OFFSET     her singing median vs her speaking median, semitones (default 2)
+    SING_TARGET_LUFS       loudness of the mix                    (default -16)
+    SING_MAX_SECONDS       longest song                           (default 480)
+    SING_URL_HOSTS         hosts links may point to               (default youtube.com, youtu.be, music.youtube.com,
+                                                                   soundcloud.com, bilibili.com, nicovideo.jp)
+    SING_JS_RUNTIMES       yt-dlp JavaScript runtimes for YouTube (default deno,node)
+    SING_LYRICS            0 = no lrclib lookup                   (default 1)
+    SING_KEEP_MODELS       1 = keep models in VRAM between jobs   (default 0)
+    SING_MOCK_SECONDS      mock: song length                      (default 3)
+    SING_MOCK_STAGE_MS     mock: delay per stage                  (default 0)
+    HOST / PORT            bind address                           (default 127.0.0.1 / 8005)
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import os
+import queue
+import secrets
+import sys
+import threading
+import time
+import wave
+from array import array
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from engine import Cancelled, JobError, allowed_url, env_float, env_int  # noqa: E402
+from songs import PLAY_RATE, SONG_FILES, Source, Store, safe_id, short_hash, song_id  # noqa: E402
+
+log = logging.getLogger("miyoria.sing")
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parent.parent
+MAX_JOBS_KEPT = 100
+# Share of the job's progress per stage.
+WEIGHTS = {"resolve": 0.04, "download": 0.12, "separate": 0.30, "convert": 0.44, "mix": 0.07, "lyrics": 0.03}
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+# ── mock backend (pure Python: CI and Core tests) ────────────────────────────
+
+
+def _tone(seconds: float, rate: int, freq: float, amp: float = 0.25) -> array:
+    n = int(seconds * rate)
+    return array("h", (int(32767 * amp * math.sin(2 * math.pi * freq * i / rate)) for i in range(n)))
+
+
+def _write_wav(p: Path, samples: array, rate: int) -> None:
+    with wave.open(str(p), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(samples.tobytes())
+
+
+class MockBackend:
+    """Sine waves instead of songs: same files, same metadata, no GPU, no network."""
+
+    name = "mock"
+    device = "cpu"
+    model_name = "mock"
+
+    def __init__(self, store: Store) -> None:
+        self.store = store
+        self.seconds = env_float("SING_MOCK_SECONDS", 3.0)
+        self.delay = env_int("SING_MOCK_STAGE_MS", 0) / 1000
+
+    def _wait(self) -> None:
+        if self.delay:
+            time.sleep(self.delay)
+
+    def resolve_search(self, query: str) -> Source:
+        self._wait()
+        if query.strip().lower() == "fail":
+            raise JobError("no search result for 'fail'")
+        return Source(key=f"mock-{short_hash(query, 10)}", kind="mock", title=query.strip(), artist="Mock Artist",
+                      duration_s=self.seconds, url=f"https://www.youtube.com/watch?v=mock{short_hash(query, 6)}")
+
+    def resolve_url(self, url: str) -> Source:
+        if not allowed_url(url):
+            raise JobError("that link is not on an allowed host (SING_URL_HOSTS)")
+        return Source(key=f"mock-{short_hash(url, 10)}", kind="url", title="Mock Link", artist=None,
+                      duration_s=self.seconds, url=url)
+
+    def fetch(self, src: Source, dest: Path, progress: Callable[[float], None]) -> None:
+        self._wait()
+        _write_wav(dest, _tone(self.seconds, 16_000, 330), 16_000)
+
+    def fetch_library(self, src: Source, sdir: Path) -> None:
+        self.fetch(src, sdir / "source.wav", lambda _: None)
+
+    def separate(self, source_wav: Path, vocals_out: Path, inst_out: Path, progress: Callable[[float], None]) -> None:
+        self._wait()
+        _write_wav(vocals_out, _tone(self.seconds, 16_000, 440), 16_000)
+        _write_wav(inst_out, _tone(self.seconds, 16_000, 220, 0.1), 16_000)
+
+    def median_f0(self, path: Path) -> float | None:
+        return 440.0
+
+    def ref_f0(self) -> float | None:
+        return 440.0
+
+    def convert(self, vocals_wav: Path, out_wav: Path, shift: int, progress: Callable[[float], None],
+                cancelled: Callable[[], bool]) -> None:
+        for i in range(4):
+            if cancelled():
+                raise Cancelled()
+            self._wait()
+            progress((i + 1) / 4)
+        _write_wav(out_wav, _tone(self.seconds, 16_000, 440 * 2 ** (shift / 12)), 16_000)
+
+    def mix(self, sdir: Path, converted: Path, key: int, out: Path) -> dict[str, Any]:
+        self._wait()
+        mix = _tone(self.seconds, PLAY_RATE, 440)
+        vocals = _tone(self.seconds, PLAY_RATE, 440, 0.2)
+        _write_wav(out / "mix.wav", mix, PLAY_RATE)
+        _write_wav(out / "vocals.wav", vocals, PLAY_RATE)
+        _write_wav(out / "instrumental.wav", _tone(self.seconds, PLAY_RATE, 220, 0.1), PLAY_RATE)
+        (out / "play_mix.pcm").write_bytes(mix.tobytes())
+        (out / "play_vocals.pcm").write_bytes(vocals.tobytes())
+        return {"vocal_gain": 1.0, "lufs": -16.0, "samples": len(mix), "duration_s": round(len(mix) / PLAY_RATE, 2)}
+
+    def lyrics(self, src: Source, duration: float | None) -> dict[str, Any] | None:
+        if os.environ.get("SING_LYRICS", "1") == "0":
+            return None
+        lines = [f"[00:{i:02d}.00]mock line {i + 1}" for i in range(max(1, int(self.seconds)))]
+        return {"provider": "mock", "synced": True, "lrc": "\n".join(lines), "plain": None,
+                "track": src.title, "artist": src.artist}
+
+    def unload(self) -> None:
+        return None
+
+
+def make_backend(store: Store) -> Any:
+    name = os.environ.get("SING_BACKEND", "seed-vc").lower()
+    if name == "mock":
+        return MockBackend(store)
+    if name in ("seed-vc", "seedvc", "real"):
+        from engine import RealBackend
+
+        return _RealAdapter(RealBackend(store))
+    raise RuntimeError(f"unknown SING_BACKEND={name!r} (expected seed-vc | mock)")
+
+
+class _RealAdapter:
+    """Gives ``RealBackend`` the same method shapes as the mock (paths in, files out)."""
+
+    def __init__(self, b: Any) -> None:
+        self.b = b
+        self.name = b.name
+        self.device = b.device
+        self.model_name = b.model_name
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self.b, item)
+
+    def median_f0(self, path: Path) -> float | None:
+        from engine import read_audio
+
+        x, sr = read_audio(path)
+        return self.b.median_f0(x.mean(axis=1), sr)
+
+    def mix(self, sdir: Path, converted: Path, key: int, out: Path) -> dict[str, Any]:
+        from engine import mix_song
+
+        return mix_song(sdir / "vocals.wav", converted, sdir / "instrumental.wav", key, out, self.b,
+                        env_float("SING_TARGET_LUFS", -16.0))
+
+    def lyrics(self, src: Source, duration: float | None) -> dict[str, Any] | None:
+        if os.environ.get("SING_LYRICS", "1") == "0":
+            return None
+        from lyrics import lookup
+
+        return lookup(src.title, src.artist, duration)
+
+
+# ── jobs ─────────────────────────────────────────────────────────────────────
+
+
+class JobRequest(BaseModel):
+    query: str | None = Field(None, max_length=200)
+    url: str | None = Field(None, max_length=500)
+    path: str | None = Field(None, max_length=300)
+    title: str | None = Field(None, max_length=120)
+    artist: str | None = Field(None, max_length=120)
+    pitch: int | None = Field(None, ge=-24, le=24)
+    key: int = Field(0, ge=-12, le=12)
+    force: bool = False
+
+
+@dataclass
+class Job:
+    id: str
+    request: JobRequest
+    state: str = "queued"  # queued | running | done | failed | cancelled
+    stage: str = "queued"
+    progress: float = 0.0
+    error: str | None = None
+    song_id: str | None = None
+    source: dict[str, Any] | None = None
+    cached: bool = False
+    created_at: str = field(default_factory=now_iso)
+    started_at: str | None = None
+    finished_at: str | None = None
+    cancel: threading.Event = field(default_factory=threading.Event)
+
+    def public(self, store: Store, position: int | None) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "id": self.id,
+            "state": self.state,
+            "stage": self.stage,
+            "progress": round(self.progress, 3),
+            "error": self.error,
+            "song_id": self.song_id,
+            "source": self.source,
+            "cached": self.cached,
+            "request": self.request.model_dump(exclude_none=True),
+            "position": position,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "song": None,
+        }
+        if self.state == "done" and self.song_id:
+            d["song"] = store.meta(self.song_id)
+        return d
+
+
+class State:
+    store: Store
+    backend: Any = None
+    jobs: dict[str, Job]
+    order: list[str]
+    pending: "queue.Queue[str]"
+    lock: threading.Lock
+    running: str | None = None
+    thread: threading.Thread | None = None
+    stopping: threading.Event
+
+
+state = State()
+
+
+def _position(job_id: str) -> int | None:
+    with state.lock:
+        waiting = [j for j in state.order if state.jobs[j].state == "queued"]
+    return waiting.index(job_id) if job_id in waiting else None
+
+
+def _public(job: Job) -> dict[str, Any]:
+    return job.public(state.store, _position(job.id))
+
+
+def _set(job: Job, stage: str, within: float = 0.0) -> None:
+    before = 0.0
+    for name, w in WEIGHTS.items():
+        if name == stage:
+            job.progress = min(0.999, before + w * max(0.0, min(1.0, within)))
+            break
+        before += w
+    job.stage = stage
+
+
+def _source_from_request(job: Job) -> Source:
+    req, store, b = job.request, state.store, state.backend
+    if req.path:
+        rel = req.path.strip().replace("\\", "/")
+        try:
+            p = store.library_path(rel)
+        except ValueError as e:
+            raise JobError(str(e)) from e
+        entry = next((e for e in store.library_entries() if e["path"] == rel), None)
+        if entry is None:
+            raise JobError(f"not a song in the library: {rel}")
+        return Source(key=f"lib-{short_hash(str(p))}", kind="library", title=entry["title"],
+                      artist=entry.get("artist"), path=rel, split=bool(entry["split"]))
+    if req.url:
+        return b.resolve_url(req.url.strip())
+    q = (req.query or "").strip()
+    known = store.query_source(q)
+    if known and not req.force:
+        info = store.source_info(known)
+        if info:
+            return Source(**info)
+    if os.environ.get("SING_LIBRARY_FIRST", "1") != "0":
+        entry = store.match_library(q)
+        if entry:
+            p = store.library_path(entry["path"])
+            return Source(key=f"lib-{short_hash(str(p))}", kind="library", title=entry["title"],
+                          artist=entry.get("artist"), path=entry["path"], split=bool(entry["split"]))
+    src = b.resolve_search(q)
+    store.remember_query(q, src.key)
+    return src
+
+
+def _auto_shift(sdir: Path) -> tuple[int, dict[str, Any]]:
+    """Octave (−12 / 0 / +12) that puts the song's median pitch closest to her singing median."""
+    b = state.backend
+    src_hz = b.median_f0(sdir / "vocals.wav")
+    ref_hz = b.ref_f0()
+    info: dict[str, Any] = {"source_median_hz": src_hz, "ref_median_hz": ref_hz}
+    if not src_hz or not ref_hz:
+        return 0, info
+    target = ref_hz * 2 ** (env_float("SING_TARGET_OFFSET", 2.0) / 12)
+    info["target_hz"] = round(target, 1)
+    best = min((-12, 0, 12), key=lambda k: abs(12 * math.log2(src_hz * 2 ** (k / 12) / target)))
+    return best, info
+
+
+def _peak_vram_reset() -> None:
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
+
+def _peak_vram_mb() -> int | None:
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        return round(torch.cuda.max_memory_allocated() / 2**20)
+    return None
+
+
+def run_job(job: Job) -> None:
+    store, b, req = state.store, state.backend, job.request
+    check = job.cancel.is_set
+    timings: dict[str, float] = {}
+    t_job = time.perf_counter()
+
+    def timed(name: str, fn: Callable[[], Any]) -> Any:
+        if check():
+            raise Cancelled()
+        _set(job, name)
+        t0 = time.perf_counter()
+        out = fn()
+        timings[f"{name}_s"] = round(time.perf_counter() - t0, 2)
+        return out
+
+    src: Source = timed("resolve", lambda: _source_from_request(job))
+    if req.title:
+        src.title = req.title.strip()
+    if req.artist:
+        src.artist = req.artist.strip()
+    job.source = src.public()
+    sid = song_id(src.key, req.pitch, req.key)
+    job.song_id = sid
+    if not req.force and store.meta(sid) is not None:
+        job.cached = True
+        return
+
+    _peak_vram_reset()
+    sdir = store.source_dir(src.key)
+    sdir.mkdir(parents=True, exist_ok=True)
+    store.write_source_info(src)
+    have_stems = (sdir / "vocals.wav").exists() and (sdir / "instrumental.wav").exists()
+    if not have_stems or req.force:
+        if src.kind == "library":
+            timed("download", lambda: b.fetch_library(src, sdir))
+        elif not (sdir / "source.wav").exists() or req.force:
+            timed("download", lambda: b.fetch(src, sdir / "source.wav", lambda f: _set(job, "download", f)))
+        if not (src.kind == "library" and src.split):
+            timed("separate", lambda: b.separate(sdir / "source.wav", sdir / "vocals.wav", sdir / "instrumental.wav",
+                                                 lambda f: _set(job, "separate", f)))
+
+    out = store.song_dir(sid)
+    out.mkdir(parents=True, exist_ok=True)
+    converted = out / "_converted.wav"
+
+    def convert() -> dict[str, Any]:
+        if req.pitch is not None:
+            shift, info = req.pitch, {"auto": False}
+        else:
+            shift, info = _auto_shift(sdir)
+            info["auto"] = True
+        info["octave_shift"] = shift if req.pitch is None else None
+        shift += req.key
+        info.update({"vocal_shift": shift, "key": req.key})
+        b.convert(sdir / "vocals.wav", converted, shift, lambda f: _set(job, "convert", f), check)
+        return info
+
+    pitch_info = timed("convert", convert)
+    mixed = timed("mix", lambda: b.mix(sdir, converted, req.key, out))
+    converted.unlink(missing_ok=True)
+    duration = mixed.get("duration_s") or src.duration_s
+    found = timed("lyrics", lambda: b.lyrics(src, duration))
+    lyrics_meta: dict[str, Any] | None = None
+    if found:
+        from lyrics import parse_lrc
+
+        lines = parse_lrc(found["lrc"]) if found.get("lrc") else []
+        if found.get("lrc"):
+            (out / "lyrics.lrc").write_text(found["lrc"], "utf-8")
+        lyrics_meta = {"provider": found["provider"], "synced": bool(lines), "track": found.get("track"),
+                       "artist": found.get("artist"), "lines": lines,
+                       "plain": None if lines else (found.get("plain") or "")[:4000]}
+    timings["total_s"] = round(time.perf_counter() - t_job, 2)
+    meta = {
+        "id": sid,
+        "title": src.title,
+        "artist": src.artist,
+        "duration_s": duration,
+        "source": src.public(),
+        "pitch": pitch_info,
+        "lyrics": lyrics_meta,
+        "play": {"sample_rate": PLAY_RATE, "samples": mixed.get("samples"), "format": "s16le", "channels": 1},
+        "mix": mixed,
+        "engine": {"backend": b.name, "model": b.model_name, "device": b.device,
+                   "diffusion_steps": env_int("SING_DIFFUSION_STEPS", 30)},
+        "timings": timings,
+        "peak_vram_mb": _peak_vram_mb(),
+        "created_at": now_iso(),
+    }
+    store.write_meta(sid, meta)
+    log.info("song %s ready: %s (%s)", sid, src.title, timings)
+
+
+def worker_loop() -> None:
+    while not state.stopping.is_set():
+        try:
+            job_id = state.pending.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        job = state.jobs.get(job_id)
+        if job is None or job.state != "queued":
+            continue
+        job.state, job.started_at = "running", now_iso()
+        state.running = job.id
+        try:
+            run_job(job)
+            job.state, job.progress, job.stage = "done", 1.0, "done"
+        except Cancelled:
+            job.state, job.error = "cancelled", "cancelled"
+        except JobError as e:
+            job.state, job.error = "failed", str(e)
+            log.info("job %s failed: %s", job.id, e)
+        except Exception as e:  # noqa: BLE001
+            log.exception("job %s crashed", job.id)
+            job.state, job.error = "failed", f"{type(e).__name__}: {e}"[:500]
+            try:
+                state.backend.unload()
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            job.finished_at = now_iso()
+            state.running = None
+
+
+def _prune() -> None:
+    with state.lock:
+        while len(state.order) > MAX_JOBS_KEPT:
+            old = next((j for j in state.order if state.jobs[j].state not in ("queued", "running")), None)
+            if old is None:
+                break
+            state.order.remove(old)
+            state.jobs.pop(old, None)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    root = Path(os.environ.get("SING_DATA_DIR", REPO / "data" / "songs"))
+    lib = os.environ.get("SING_LIBRARY_DIR")
+    state.store = Store(root, Path(lib) if lib else None)
+    state.jobs, state.order = {}, []
+    state.pending = queue.Queue()
+    state.lock = threading.Lock()
+    state.stopping = threading.Event()
+    t0 = time.perf_counter()
+    state.backend = make_backend(state.store)
+    log.info("backend %s ready in %.1fs (%s on %s), songs in %s", state.backend.name, time.perf_counter() - t0,
+             state.backend.model_name, state.backend.device, root)
+    state.thread = threading.Thread(target=worker_loop, name="sing-worker", daemon=True)
+    state.thread.start()
+    yield
+    state.stopping.set()
+    for j in state.jobs.values():
+        j.cancel.set()
+
+
+app = FastAPI(title="Miyoria song worker", lifespan=lifespan)
+
+
+def _error(status: int, message: str) -> JSONResponse:
+    return JSONResponse({"error": message}, status_code=status)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_exc(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+    return _error(exc.status_code, str(exc.detail))
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exc(_: Request, exc: RequestValidationError) -> JSONResponse:
+    first = exc.errors()[0] if exc.errors() else {}
+    where = ".".join(str(p) for p in first.get("loc", ()) if p != "body")
+    return _error(400, f"invalid request: {where or 'body'}: {first.get('msg', 'bad value')}")
+
+
+@app.post("/jobs")
+async def submit(req: JobRequest) -> JSONResponse:
+    given = [v for v in (req.query, req.url, req.path) if v and v.strip()]
+    if len(given) != 1:
+        return _error(400, "give exactly one of query, url or path")
+    if req.url and not allowed_url(req.url.strip()):
+        return _error(400, "that link is not on an allowed host (SING_URL_HOSTS)")
+    job = Job(id=secrets.token_hex(6), request=req)
+    # Cache hit without resolving: a known query / library path with the same pitch settings.
+    if not req.force:
+        key = None
+        if req.query:
+            key = state.store.query_source(req.query)
+        sid = song_id(key, req.pitch, req.key) if key else None
+        if sid and state.store.meta(sid) is not None:
+            info = state.store.source_info(key or "")
+            job.state, job.stage, job.progress, job.cached = "done", "done", 1.0, True
+            job.song_id, job.source, job.finished_at = sid, info, now_iso()
+    with state.lock:
+        state.jobs[job.id] = job
+        state.order.append(job.id)
+    if job.state == "queued":
+        state.pending.put(job.id)
+    _prune()
+    return JSONResponse({"job": _public(job)})
+
+
+@app.get("/jobs")
+async def list_jobs() -> dict[str, Any]:
+    with state.lock:
+        ids = list(reversed(state.order))
+    return {"jobs": [_public(state.jobs[i]) for i in ids if i in state.jobs]}
+
+
+@app.get("/jobs/{job_id}")
+async def get_job(job_id: str) -> JSONResponse:
+    job = state.jobs.get(job_id)
+    if job is None:
+        return _error(404, f"no job {job_id}")
+    return JSONResponse({"job": _public(job)})
+
+
+@app.delete("/jobs/{job_id}")
+async def cancel_job(job_id: str) -> JSONResponse:
+    job = state.jobs.get(job_id)
+    if job is None:
+        return _error(404, f"no job {job_id}")
+    if job.state == "queued":
+        job.state, job.error, job.finished_at = "cancelled", "cancelled", now_iso()
+    elif job.state == "running":
+        job.cancel.set()
+    return JSONResponse({"job": _public(job)})
+
+
+@app.get("/songs")
+async def list_songs() -> dict[str, Any]:
+    return {"songs": state.store.songs()}
+
+
+@app.get("/songs/{sid}")
+async def get_song(sid: str) -> JSONResponse:
+    meta = state.store.meta(safe_id(sid, 96))
+    if meta is None:
+        return _error(404, f"no song {sid}")
+    return JSONResponse({"song": meta})
+
+
+@app.get("/songs/{sid}/files/{name}")
+async def get_file(sid: str, name: str):
+    if name not in SONG_FILES:
+        return _error(404, f"no file {name}")
+    p = state.store.song_dir(safe_id(sid, 96)) / name
+    if not p.exists():
+        return _error(404, f"song {sid} has no {name}")
+    headers = {"X-Sample-Rate": str(PLAY_RATE)} if name.endswith(".pcm") else {}
+    media = SONG_FILES[name] + (f"; rate={PLAY_RATE}; channels=1" if name.endswith(".pcm") else "")
+    return FileResponse(p, media_type=media, headers=headers)
+
+
+@app.get("/library")
+async def library() -> dict[str, Any]:
+    return {"entries": state.store.library_entries()}
+
+
+@app.get("/health")
+async def health() -> dict[str, Any]:
+    b = state.backend
+    queued = sum(1 for j in state.jobs.values() if j.state == "queued")
+    info: dict[str, Any] = {"status": "ok", "model": b.model_name, "device": b.device, "backend": b.name,
+                            "busy": state.running is not None, "queued": queued}
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        info["vram_allocated_mb"] = round(torch.cuda.memory_allocated() / 2**20)
+    return info
+
+
+def main() -> None:
+    import uvicorn
+
+    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    uvicorn.run(app, host=os.environ.get("HOST", "127.0.0.1"), port=int(os.environ.get("PORT", "8005")), log_level="info")
+
+
+if __name__ == "__main__":
+    main()

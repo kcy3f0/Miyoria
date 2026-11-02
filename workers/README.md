@@ -1,4 +1,4 @@
-# Miyoria 推論 Worker(ASR / TTS)
+# Miyoria 推論 Worker(ASR / TTS / 唱歌)
 
 `@miyoria/speech` 的 `http-worker` provider 對應的 GPU 推論服務。協定在 [`docs/protocols/voice-link.md`](../docs/protocols/voice-link.md)「推論 Worker HTTP 介面」,這裡的三個服務都照那份契約實作。
 
@@ -6,6 +6,7 @@
 |---|---|---|---|
 | `asr/` | `POST /asr`、`GET /health` | 8001 | `ASR_BACKEND=sensevoice`(sherpa-onnx,CPU,附情緒 / 事件標記)或 `qwen3`(Qwen3-ASR,GPU) |
 | `tts/` | `POST /tts`、`GET /health`、`GET /voices`、`POST /voices/reload` | 8002 | Qwen3-TTS,聲音由 `VOICES_DIR` 註冊;後端 `faster-qwen3-tts`(真串流,推薦)或官方 `qwen-tts`(句子級,備案) |
+| `sing/` | `POST /jobs`、`GET /jobs/{id}`、`GET /songs`、`GET /songs/{id}/files/{name}`、`GET /library`、`GET /health` | 8005 | 點歌翻唱:yt-dlp / 本機歌庫 → Demucs 人聲分離 → Seed-VC 歌聲轉換(她的聲音)→ 混音 + lrclib 歌詞;見第 9 節 |
 | `fake/` | 兩個端點都有 | 8000 | 不需要 GPU 的假 worker(固定文字 / 正弦波「聲音」),用來做端對端測試 |
 | `tests/` | pytest | | 契約測試(預設打 fake,也可以打真的 worker) |
 
@@ -13,10 +14,11 @@
 workers/
 ├── asr/   server.py  tags.py  requirements*.txt  Dockerfile
 ├── tts/   server.py  text_split.py  design_voice.py  requirements.txt  requirements-faster.txt  Dockerfile
+├── sing/  server.py  engine.py  seedvc_runtime.py  songs.py  lyrics.py  requirements.txt
 ├── fake/  fake_server.py  requirements.txt
-├── tests/ conftest.py  test_contract.py  test_text_split.py  test_asr_tags.py  test_tts_backends.py
+├── tests/ conftest.py  test_contract.py  test_text_split.py  test_asr_tags.py  test_tts_backends.py  test_sing.py
 ├── voices/   # 你的聲音:<name>/ref.wav + ref.txt(不進 git)
-├── models/   # SenseVoice 模型目錄(不進 git)
+├── models/   # SenseVoice 模型目錄、seed-vc/ 原始碼與權重(不進 git)
 └── docker-compose.yml
 ```
 
@@ -162,6 +164,7 @@ ASR_BACKEND=qwen3 docker compose up --build            # 換成 Qwen3-ASR(也可
 | TTS Qwen3-TTS-1.7B-Base(bf16) | 約 4–5 GB | 約 5–7 GB | 長句 / 同時多個請求會再多 |
 | TTS Qwen3-TTS-0.6B-Base | 約 2 GB | 約 3–4 GB | 品質要實測 |
 | `design_voice.py`(1.7B VoiceDesign) | 約 4–5 GB | 約 5–7 GB | **只在挑聲音時跑**;跑之前先停 TTS worker |
+| 唱歌 `sing/`(Demucs htdemucs + Seed-VC 44 kHz 歌聲模型) | 約 1 GB | **實測峰值約 3.2 GB**,只在做歌時 | 一次一首、每階段用完就釋放,閒置時 0;分離 OOM 時自動改用 CPU |
 
 DECISIONS 的預算:遊戲 + OBS baseline + ASR + TTS ≤ 約 11 GB。1.7B TTS + Qwen3-ASR-0.6B 大約 8–10 GB,遊戲很吃 VRAM 時改用 SenseVoice(CPU)或 TTS 0.6B。
 
@@ -389,3 +392,71 @@ curl -sS -X POST http://127.0.0.1:8001/asr -F "audio=@out.wav" -F "language=zh"
 | TTS 回 404 `unknown voice` | `voice` 要等於 `VOICES_DIR` 底下的資料夾名稱(`*-candidates` 資料夾不會被註冊) |
 | OOM | 換 `TTS_MODEL=…-0.6B-Base`、ASR 換 SenseVoice;或先關掉遊戲量 baseline;不要同時跑 `design_voice.py` |
 | 聲音在句子之間有小爆音或停頓 | 兩個後端都是逐句生成,句子之間各自有開頭 / 結尾;qwen-tts 後端尤其明顯,這是它句子級串流的已知限制:模型每次輸出各自帶開頭 / 結尾;停頓太明顯就調大 `TTS_MIN_SENTENCE_CHARS` 讓句子長一點 |
+
+---
+
+## 9. 唱歌:歌曲 worker(`sing/`)
+
+點歌 → 她用自己的聲音翻唱(像 Neuro-sama)。Core 的 `sing` 模組送工作過來,做好的歌由 Core 串流到語音頻道(見 [design/autonomy.md](../docs/design/autonomy.md) §22)。
+
+**流程**(一次一首;模型每個階段載入、用完就釋放 VRAM,所以平常不佔 GPU):
+
+1. **找歌**:`query` 先比對本機歌庫(`data/songs/library/`,檔名 `歌手 - 歌名.mp3`;或一個資料夾放 `vocals.*` + `instrumental.*`,已經分好就不用再分離),沒有就用 yt-dlp `ytsearch1:` 搜 YouTube;`url` 只接受 `SING_URL_HOSTS` 的網域。最長 `SING_MAX_SECONDS`(480 秒)。
+2. **分離**:Demucs `htdemucs`(`SING_SEPARATOR_MODEL=htdemucs_ft` 比較乾淨、慢 4 倍)→ 人聲 + 伴奏;同一個來源只分一次(`data/songs/_sources/`)。
+3. **轉換**:Seed-VC 的歌聲模型(F0 條件、44.1 kHz、Whisper-small 內容編碼、BigVGAN v2 44 kHz、RMVPE 音高),參考音是 `voices/deepseek-chan/ref.wav`。自動挑八度:歌的人聲中位音高跟她的(說話中位數 + `SING_TARGET_OFFSET` 半音)比,選 -12 / 0 / +12,伴奏不動;`pitch` 可以直接指定人聲移調,`key` 是整首轉調(伴奏一起移)。原人聲靜音的地方,轉換後的人聲會被閘掉(去掉轉換的雜音)。
+4. **混音**:轉換後的人聲恢復成原人聲的響度,加上伴奏,整體正規化到 `SING_TARGET_LUFS`(-16),峰值 ≤ -1 dBFS。輸出 `mix.wav`、`vocals.wav`、`instrumental.wav`,以及 Core 串流用的 48 kHz 單聲道 `play_mix.pcm` / `play_vocals.pcm`(人聲那條給嘴型用)。
+5. **歌詞**:lrclib.net 依歌名 / 歌手 / 長度找同步 LRC(找不到就沒有字幕)。
+
+做好的歌快取在 `data/songs/<id>/`(`meta.json` 有來源、音高、歌詞、各階段耗時與 VRAM 峰值);同一個查詢 / 連結 / 檔案 + 同樣的音高設定再點一次是馬上好。`data/` 是本機資料:下載的歌、模型權重、參考音都不要提交。
+
+**安裝(原生 Windows,Git Bash)**
+
+```bash
+cd workers
+python -m venv .venv-sing
+.venv-sing/Scripts/pip install torch==2.11.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128   # 先裝 CUDA 版
+.venv-sing/Scripts/pip install -r sing/requirements.txt
+
+# Seed-VC 不是 pip 套件:把原始碼放到 models/seed-vc(GPL-3.0,只放本機)
+mkdir -p models/seed-vc
+curl -L https://codeload.github.com/Plachtaa/seed-vc/tar.gz/refs/heads/main | tar -xz -C models/seed-vc --strip-components=1
+
+cd sing
+../.venv-sing/Scripts/python server.py      # http://127.0.0.1:8005;第一首歌會先下載約 2 GB 的模型
+```
+
+YouTube 需要 JavaScript runtime 解 player challenge:yt-dlp 會用 Node(Miyoria 本來就要裝)或 deno(`SING_JS_RUNTIMES`);requirements 已經帶 `yt-dlp[default]`(含 `yt-dlp-ejs`)。ffmpeg 要在 PATH 上。
+
+**接上 Miyoria**
+
+```toml
+[modules.sing]
+url = "http://127.0.0.1:8005"
+# start = "decide"         # 她決定什麼時候唱;"auto" = 好了就唱
+```
+
+**冒煙測試**
+
+```bash
+curl -s -X POST http://127.0.0.1:8005/jobs -H 'content-type: application/json' -d '{"query":"Cartoon On & On NCS"}'
+curl -s http://127.0.0.1:8005/jobs/<id>          # state / stage / progress;done 時 song.timings、peak_vram_mb
+.venv/Scripts/python -m pytest tests/test_sing.py  # mock 模式(SING_BACKEND=mock),不需要 GPU / 網路
+```
+
+**實測**(2026-11-02,4070 SUPER,TTS / ASR / OBS 同時開著、GPU 已用約 10 GB):NCS 的〈On & On〉(3 分 28 秒)從 YouTube 搜尋到做好 **61.9 秒**:找歌 3.3 秒、下載 8.1 秒、分離 4.6 秒、轉換 42.3 秒(30 steps)、混音 1.6 秒、歌詞 2.0 秒;本行程 PyTorch VRAM 峰值 **3.2 GB**。同一首再點是快取。
+
+| 環境變數 | 預設 | 說明 |
+|---|---|---|
+| `SING_BACKEND` | `seed-vc` | `mock` = 正弦波假歌(測試用) |
+| `SING_DATA_DIR` / `SING_LIBRARY_DIR` | `<repo>/data/songs` / `<data>/library` | 快取與本機歌庫 |
+| `SING_REF` / `SING_SEEDVC_DIR` | `../voices/deepseek-chan/ref.wav` / `../models/seed-vc` | 參考音、Seed-VC 原始碼 |
+| `SING_DEVICE` / `SING_SEPARATE_DEVICE` | `cuda` | 分離 OOM 時自動退到 CPU |
+| `SING_DIFFUSION_STEPS` / `SING_CFG_RATE` | 30 / 0.7 | 步數越多越穩、越慢 |
+| `SING_TARGET_OFFSET` | 2 | 她唱歌的音高比說話高幾個半音(自動挑八度用) |
+| `SING_TARGET_LUFS` | -16 | 混音響度 |
+| `SING_MAX_SECONDS` | 480 | 最長的歌 |
+| `SING_URL_HOSTS` | YouTube、SoundCloud、Bilibili、Niconico | 連結允許的網域(逗號分隔,子網域也算) |
+| `SING_LIBRARY_FIRST` / `SING_LYRICS` / `SING_KEEP_MODELS` | 1 / 1 / 0 | 先比對本機歌庫 / 抓歌詞 / 模型留在 VRAM |
+| `HOST` / `PORT` | `127.0.0.1` / `8005` | 只聽本機 |
+
+Go Live 直播要讓觀眾聽到歌,voice node 的 `GOLIVE_AUDIO` 要開(`true`);語音頻道裡的人不受影響。

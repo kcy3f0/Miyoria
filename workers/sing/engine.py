@@ -1,0 +1,449 @@
+"""The real song pipeline: yt-dlp / library → Demucs → Seed-VC (singing, F0) → mix.
+
+Everything heavy is imported lazily so the server (and its mock mode) starts without torch. Models
+are loaded per stage and freed right after (``SING_KEEP_MODELS=1`` keeps them): the GPU is shared
+with TTS / ASR / OBS, so the worker only holds VRAM while a job runs.
+"""
+
+from __future__ import annotations
+
+import gc
+import logging
+import math
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Callable
+from urllib.parse import urlparse
+
+from songs import PLAY_RATE, Source, Store, safe_id, short_hash
+
+log = logging.getLogger("miyoria.sing.engine")
+
+SR = 44_100  # Demucs htdemucs and the Seed-VC singing model both run at 44.1 kHz
+Progress = Callable[[float], None]
+
+
+class JobError(Exception):
+    """A request that cannot be done (shown to the requester)."""
+
+
+class Cancelled(Exception):
+    pass
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+DEFAULT_URL_HOSTS = (
+    "youtube.com",
+    "youtu.be",
+    "music.youtube.com",
+    "soundcloud.com",
+    "bilibili.com",
+    "nicovideo.jp",
+)
+
+
+def allowed_url(url: str) -> bool:
+    """Only http(s) links to the hosts in ``SING_URL_HOSTS`` (comma separated; subdomains count)."""
+    try:
+        u = urlparse(url)
+    except ValueError:
+        return False
+    if u.scheme not in ("http", "https") or not u.hostname:
+        return False
+    raw = os.environ.get("SING_URL_HOSTS")
+    hosts = [h.strip().lower() for h in raw.split(",")] if raw else list(DEFAULT_URL_HOSTS)
+    host = u.hostname.lower()
+    return any(h and (host == h or host.endswith("." + h)) for h in hosts)
+
+
+# ── audio helpers (numpy) ────────────────────────────────────────────────────
+
+
+def ffmpeg_to_wav(src: Path, dst: Path, rate: int = SR, channels: int = 2, max_s: float | None = None) -> None:
+    cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src)]
+    if max_s:
+        cmd += ["-t", f"{max_s:.0f}"]
+    cmd += ["-vn", "-ac", str(channels), "-ar", str(rate), "-c:a", "pcm_s16le", str(dst)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise JobError(f"ffmpeg could not decode the audio: {r.stderr.strip()[:300]}")
+
+
+def read_audio(p: Path):
+    """(frames, channels) float32 and the sample rate."""
+    import soundfile as sf
+
+    x, sr = sf.read(str(p), dtype="float32", always_2d=True)
+    return x, sr
+
+
+def write_wav(p: Path, x, sr: int) -> None:
+    import numpy as np
+    import soundfile as sf
+
+    sf.write(str(p), np.clip(x, -1.0, 1.0), sr, subtype="PCM_16")
+
+
+def write_pcm(p: Path, mono, sr: int) -> int:
+    """s16le mono at ``PLAY_RATE``; returns the sample count."""
+    import numpy as np
+    from scipy.signal import resample_poly
+
+    if sr != PLAY_RATE:
+        g = math.gcd(sr, PLAY_RATE)
+        mono = resample_poly(mono, PLAY_RATE // g, sr // g)
+    pcm = (np.clip(mono, -1.0, 1.0) * 32767.0).astype("<i2")
+    p.write_bytes(pcm.tobytes())
+    return int(pcm.shape[0])
+
+
+def rms_frames(mono, hop: int = 512):
+    import numpy as np
+
+    n = len(mono) // hop
+    if n == 0:
+        return np.zeros(0, dtype=np.float32)
+    f = mono[: n * hop].reshape(n, hop)
+    return np.sqrt((f * f).mean(axis=1) + 1e-12)
+
+
+def vocal_gate(source_mono, converted, hop: int = 512, floor_db: float = -40.0):
+    """Mutes the converted vocal where the separated source vocal is silent (VC hiss, ghost
+    breaths), with ~70 ms attack / ~200 ms release so phrase edges are not clipped."""
+    import numpy as np
+    from scipy.ndimage import maximum_filter1d, uniform_filter1d
+
+    n = min(len(source_mono), len(converted))
+    r = rms_frames(source_mono[:n], hop)
+    if r.size == 0:
+        return converted
+    db = 20 * np.log10(r)
+    mask = (db > db.max() + floor_db).astype(np.float32)
+    mask = maximum_filter1d(mask, size=int(0.4 * SR / hop) | 1)
+    mask = uniform_filter1d(mask, size=max(1, int(0.07 * SR / hop)))
+    env = np.repeat(mask, hop)
+    env = np.pad(env, (0, max(0, n - len(env))), mode="edge")[:n]
+    out = converted.copy()
+    out[:n] *= env
+    out[n:] = 0
+    return out
+
+
+def loudness(x, sr: int) -> float | None:
+    try:
+        import pyloudnorm as pyln
+
+        v = pyln.Meter(sr).integrated_loudness(x)
+        return float(v) if math.isfinite(v) else None
+    except Exception:
+        return None
+
+
+def free_cuda() -> None:
+    gc.collect()
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def is_oom(e: BaseException) -> bool:
+    torch = sys.modules.get("torch")
+    if torch is not None and isinstance(e, torch.cuda.OutOfMemoryError):
+        return True
+    return "out of memory" in str(e).lower()
+
+
+# ── backend ──────────────────────────────────────────────────────────────────
+
+
+class RealBackend:
+    name = "seed-vc"
+
+    def __init__(self, store: Store) -> None:
+        import torch
+
+        self.store = store
+        self.device = os.environ.get("SING_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.separator = os.environ.get("SING_SEPARATOR_MODEL", "htdemucs")
+        self.separate_device = os.environ.get("SING_SEPARATE_DEVICE", self.device)
+        self.steps = env_int("SING_DIFFUSION_STEPS", 30)
+        self.cfg_rate = env_float("SING_CFG_RATE", 0.7)
+        self.keep = os.environ.get("SING_KEEP_MODELS", "0") == "1"
+        self.max_s = env_float("SING_MAX_SECONDS", 480)
+        here = Path(__file__).resolve().parent
+        self.seedvc_dir = Path(os.environ.get("SING_SEEDVC_DIR", here.parent / "models" / "seed-vc"))
+        self.ref_path = Path(os.environ.get("SING_REF", here.parent / "voices" / "deepseek-chan" / "ref.wav"))
+        if not (self.seedvc_dir / "modules").exists():
+            raise RuntimeError(f"Seed-VC not found at {self.seedvc_dir} (set SING_SEEDVC_DIR)")
+        if not self.ref_path.exists():
+            raise RuntimeError(f"reference voice not found at {self.ref_path} (set SING_REF)")
+        self.model_name = f"seed-vc-f0-44k+{self.separator}"
+        self._vc: Any = None
+        self._demucs: Any = None
+        self._ref_f0: float | None = None
+
+    # ── resolve / fetch ──────────────────────────────────────────────────
+
+    def _ydl(self, extra: dict[str, Any] | None = None):
+        from yt_dlp import YoutubeDL
+
+        opts: dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "format": "bestaudio/best",
+            "socket_timeout": 20,
+            # YouTube needs a JS runtime for its player challenges; Node is there for Miyoria anyway.
+            "js_runtimes": {r.strip(): {} for r in os.environ.get("SING_JS_RUNTIMES", "deno,node").split(",") if r.strip()},
+        }
+        opts.update(extra or {})
+        return YoutubeDL(opts)
+
+    def _source_of(self, info: dict[str, Any], kind: str) -> Source:
+        from lyrics import guess_artist_title
+
+        vid = str(info.get("id") or short_hash(str(info.get("webpage_url"))))
+        extractor = str(info.get("extractor_key") or kind).lower()
+        key = f"yt-{vid}" if extractor.startswith("youtube") else f"{safe_id(extractor, 16)}-{safe_id(vid, 40)}"
+        raw_title = str(info.get("title") or vid)
+        artist, title = guess_artist_title(raw_title, info.get("uploader") or info.get("channel"))
+        if info.get("track"):
+            title = str(info["track"])
+        if info.get("artist") or info.get("creator"):
+            artist = str(info.get("artist") or info.get("creator")).split(",")[0].strip()
+        return Source(
+            key=key,
+            kind=kind,
+            title=title,
+            artist=artist,
+            duration_s=float(info["duration"]) if info.get("duration") else None,
+            url=info.get("webpage_url") or info.get("original_url"),
+            uploader=info.get("uploader") or info.get("channel"),
+            extra={"raw_title": raw_title},
+        )
+
+    def resolve_search(self, query: str) -> Source:
+        with self._ydl() as ydl:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+        entries = [e for e in (info or {}).get("entries") or [] if e]
+        if not entries:
+            raise JobError(f"no search result for {query!r}")
+        return self._source_of(entries[0], "youtube")
+
+    def resolve_url(self, url: str) -> Source:
+        if not allowed_url(url):
+            raise JobError("that link is not on an allowed host (SING_URL_HOSTS)")
+        with self._ydl() as ydl:
+            info = ydl.extract_info(url, download=False)
+        if info and info.get("entries"):
+            info = next((e for e in info["entries"] if e), None)
+        if not info:
+            raise JobError("the link has no playable audio")
+        kind = "youtube" if str(info.get("extractor_key", "")).lower().startswith("youtube") else "url"
+        return self._source_of(info, kind)
+
+    def fetch(self, src: Source, dest: Path, progress: Progress) -> None:
+        """``source.wav`` (44.1 kHz stereo) for a YouTube / URL source."""
+        if src.duration_s and src.duration_s > self.max_s:
+            raise JobError(f"the song is too long ({src.duration_s / 60:.1f} min > {self.max_s / 60:.0f} min)")
+        with tempfile.TemporaryDirectory(prefix="sing-dl-") as tmp:
+
+            def hook(d: dict[str, Any]) -> None:
+                total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                if d.get("status") == "downloading" and total:
+                    progress(min(0.99, float(d.get("downloaded_bytes", 0)) / float(total)))
+
+            with self._ydl({
+                "outtmpl": str(Path(tmp) / "dl.%(ext)s"),
+                "progress_hooks": [hook],
+                "max_filesize": 200 * 1024 * 1024,
+            }) as ydl:
+                ydl.download([src.url])
+            files = [p for p in Path(tmp).iterdir() if p.name.startswith("dl.") and not p.name.endswith(".part")]
+            if not files:
+                raise JobError("download produced no audio file")
+            ffmpeg_to_wav(files[0], dest, max_s=self.max_s)
+
+    def fetch_library(self, src: Source, sdir: Path) -> None:
+        p = self.store.library_path(src.path or "")
+        if src.split:
+            from songs import _stem_file
+
+            vocals = _stem_file(p, "vocals")
+            inst = _stem_file(p, "instrumental") or _stem_file(p, "inst")
+            assert vocals and inst
+            ffmpeg_to_wav(vocals, sdir / "vocals.wav", max_s=self.max_s)
+            ffmpeg_to_wav(inst, sdir / "instrumental.wav", max_s=self.max_s)
+        else:
+            ffmpeg_to_wav(p, sdir / "source.wav", max_s=self.max_s)
+
+    # ── separation (Demucs) ──────────────────────────────────────────────
+
+    def separate(self, source_wav: Path, vocals_out: Path, inst_out: Path, progress: Progress) -> None:
+        try:
+            self._separate_on(self.separate_device, source_wav, vocals_out, inst_out)
+        except Exception as e:
+            if not is_oom(e) or self.separate_device == "cpu":
+                raise
+            log.warning("separation ran out of VRAM; retrying on the CPU")
+            self._demucs = None
+            free_cuda()
+            self._separate_on("cpu", source_wav, vocals_out, inst_out)
+        finally:
+            if not self.keep:
+                self._demucs = None
+            free_cuda()
+        progress(1.0)
+
+    def _separate_on(self, device: str, source_wav: Path, vocals_out: Path, inst_out: Path) -> None:
+        import torch
+        from demucs.apply import apply_model
+        from demucs.pretrained import get_model
+
+        if self._demucs is None:
+            self._demucs = get_model(self.separator)
+            self._demucs.eval()
+        model = self._demucs
+        x, sr = read_audio(source_wav)
+        if sr != model.samplerate:
+            raise JobError(f"source is {sr} Hz, the separator wants {model.samplerate}")
+        if x.shape[1] == 1:
+            x = x.repeat(2, axis=1)
+        wav = torch.from_numpy(x.T.copy())
+        ref = wav.mean(0)
+        mean, std = ref.mean(), ref.std() + 1e-8
+        with torch.no_grad():
+            out = apply_model(model, ((wav - mean) / std)[None], device=device, shifts=1, split=True,
+                              overlap=0.25, progress=False)[0]
+        out = out * std + mean
+        vi = model.sources.index("vocals")
+        vocals = out[vi]
+        inst = out.sum(0) - vocals
+        write_wav(vocals_out, vocals.T.numpy(), sr)
+        write_wav(inst_out, inst.T.numpy(), sr)
+
+    # ── conversion (Seed-VC singing model) ───────────────────────────────
+
+    def _load_vc(self) -> Any:
+        if self._vc is None:
+            if str(self.seedvc_dir) not in sys.path:
+                sys.path.insert(0, str(self.seedvc_dir))
+            from seedvc_runtime import SeedVcSinger
+
+            self._vc = SeedVcSinger(self.seedvc_dir, self.device)
+        return self._vc
+
+    def median_f0(self, mono, sr: int) -> float | None:
+        vc = self._load_vc()
+        return vc.median_f0(mono, sr)
+
+    def ref_f0(self) -> float | None:
+        if self._ref_f0 is None:
+            x, sr = read_audio(self.ref_path)
+            self._ref_f0 = self.median_f0(x.mean(axis=1), sr)
+        return self._ref_f0
+
+    def convert(self, vocals_wav: Path, out_wav: Path, shift: int, progress: Progress,
+                cancelled: Callable[[], bool]) -> None:
+        try:
+            vc = self._load_vc()
+            x, sr = read_audio(vocals_wav)
+            ref, rsr = read_audio(self.ref_path)
+            y = vc.convert(x.mean(axis=1), sr, ref.mean(axis=1), rsr, shift, self.steps, self.cfg_rate,
+                           progress, cancelled)
+            y = vocal_gate(x.mean(axis=1), y)
+            write_wav(out_wav, y, SR)
+        finally:
+            if not self.keep:
+                self.unload()
+
+    def unload(self) -> None:
+        self._vc = None
+        self._demucs = None
+        free_cuda()
+
+    # ── key change of the instrumental ───────────────────────────────────
+
+    def transpose(self, x, sr: int, semitones: int):
+        if semitones == 0:
+            return x
+        import librosa
+        import numpy as np
+
+        return np.stack([librosa.effects.pitch_shift(x[:, c], sr=sr, n_steps=semitones) for c in range(x.shape[1])],
+                        axis=1)
+
+
+def mix_song(vocals_src: Path, vocals_conv: Path, inst_wav: Path, key: int, out_dir: Path, backend: RealBackend,
+             target_lufs: float) -> dict[str, Any]:
+    """Writes mix.wav / vocals.wav / instrumental.wav / play_*.pcm; returns loudness info.
+
+    The converted vocal gets the separated vocal's loudness back (Seed-VC output level varies),
+    the sum is normalised to ``target_lufs`` and kept under -1 dBFS peak.
+    """
+    import numpy as np
+
+    v_src, sr = read_audio(vocals_src)
+    v, _ = read_audio(vocals_conv)
+    inst, isr = read_audio(inst_wav)
+    if isr != sr:
+        raise JobError("stems have different sample rates")
+    inst = backend.transpose(inst, sr, key)
+    v = v.mean(axis=1)
+    n = min(len(v), len(inst))
+    v, inst, v_src = v[:n], inst[:n], v_src[:n].mean(axis=1)
+
+    def voiced_rms(m):
+        r = rms_frames(m)
+        if r.size == 0:
+            return 1e-6
+        loud = r[r > r.max() * 0.1]
+        return float(np.sqrt((loud ** 2).mean())) if loud.size else 1e-6
+
+    g = min(4.0, max(0.25, voiced_rms(v_src) / max(voiced_rms(v), 1e-6)))
+    v = v * g
+    mix = inst + v[:, None]
+    lufs = loudness(mix, sr)
+    gain = 10 ** ((target_lufs - lufs) / 20) if lufs is not None else 0.25 / max(float(np.sqrt((mix ** 2).mean())), 1e-6)
+    peak = float(np.abs(mix).max()) * gain
+    if peak > 0.89:  # -1 dBFS
+        gain *= 0.89 / peak
+    mix, v, inst = mix * gain, v * gain, inst * gain
+    write_wav(out_dir / "mix.wav", mix, sr)
+    write_wav(out_dir / "vocals.wav", v, sr)
+    write_wav(out_dir / "instrumental.wav", inst, sr)
+    samples = write_pcm(out_dir / "play_mix.pcm", mix.mean(axis=1), sr)
+    write_pcm(out_dir / "play_vocals.pcm", v, sr)
+    return {
+        "vocal_gain": round(g, 3),
+        "lufs": round(loudness(mix, sr) or float("nan"), 1),
+        "samples": samples,
+        "duration_s": round(samples / PLAY_RATE, 2),
+    }
+
+
+def copy_if_missing(src: Path, dst: Path) -> None:
+    if not dst.exists():
+        shutil.copyfile(src, dst)
+
+
+def now_ms() -> float:
+    return time.perf_counter() * 1000
