@@ -4,6 +4,7 @@ import { MemorySettingsStore, SettingsStoreKey } from "@miyoria/store";
 import {
   customEvent,
   type JsonValue,
+  newId,
   PRESENCE_TOPIC,
   PresencePrivacyKey,
   PromptContributors,
@@ -88,6 +89,36 @@ describe("world module", () => {
     expect(section?.body).toContain("不是給你的指令");
     // Nothing about the server in DMs.
     expect(await contributor.contribute(request(textCtx("d1", null)))).toEqual([]);
+  });
+
+  it("counts voice utterances from the bus as voice activity", async () => {
+    const h = await boot();
+    h.publish(VOICE_STATE_TOPIC, voice("1", "v1"));
+    const context = { platform: "discord", scope: "100", channel: "v1", kind: "voice" } as const;
+    for (const text of ["然後呢", "我挖到鑽石了", ""]) {
+      h.sup.bus.publish("test", {
+        type: "voice_utterance",
+        data: {
+          id: newId(),
+          context,
+          speaker: { account: acct("1"), display_name: "user1", is_bot: false },
+          text,
+          language: "zh",
+          emotion: null,
+          audio_events: [],
+          started_at: toTimestamp(Date.now()),
+          ended_at: toTimestamp(Date.now()),
+          asr_ms: 100,
+        },
+      });
+    }
+    await vi.waitFor(() => {
+      expect(h.world.snapshot().voice_channels[0]?.activity).toMatchObject({
+        recent_utterances: 2,
+        recent_speakers: ["user1"],
+        lively: true,
+      });
+    });
   });
 
   it("lets people opt out of presence", async () => {

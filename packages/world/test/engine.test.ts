@@ -257,6 +257,57 @@ describe("channels", () => {
   });
 });
 
+describe("voice conversation", () => {
+  const room = { platform: "discord", scope: G, channel: "v1", kind: "voice" } as const;
+  const speaker = (id: string) => ({ account: acct(id), display_name: `user${id}`, is_bot: false });
+
+  it("counts utterances as activity, so a busy voice channel is never quiet", () => {
+    const social = new FakeSocial();
+    const w = engine();
+    w.addSelf(acct("7"));
+    w.voiceState(voice("7", "v1"), T0, social);
+    w.voiceState(voice("1", "v1"), T0, social);
+    w.voiceState(voice("2", "v1"), T0, social);
+    // She listens there: silence is known.
+    expect(w.voiceActivity(room, T0)).toMatchObject({ recent_utterances: 0, lively: false });
+    for (let i = 0; i < 12; i++) {
+      w.utterance(room, speaker(i % 2 === 0 ? "1" : "2"), T0 + i * 20_000);
+    }
+    // Her own lines and bots are not conversation.
+    w.utterance(room, speaker("7"), T0 + 230_000);
+    w.utterance(room, { ...speaker("9"), is_bot: true }, T0 + 231_000);
+    const now = T0 + 235_000;
+    const a = w.voiceActivity(room, now);
+    expect(a).toMatchObject({
+      recent_utterances: 12,
+      secs_since_last: 15,
+      recent_speakers: ["user2", "user1"],
+      lively: true,
+      her_last_at: new Date(T0 + 230_000).toISOString(),
+    });
+    const snap = w.snapshot(now, social, null);
+    expect(snap.voice_channels[0]?.activity).toEqual(a);
+    expect(w.summary(snap, { context: room })).toContain(
+      ";正在聊天:最近 5 分鐘 12 句(user2、user1),最後一句 15 秒前",
+    );
+    // Out of the window: quiet again (and said so).
+    const later = w.snapshot(T0 + minutes(20), social, null);
+    expect(later.voice_channels[0]?.activity).toMatchObject({
+      recent_utterances: 0,
+      lively: false,
+    });
+    expect(w.summary(later, { context: room })).toContain("最近 5 分鐘沒人說話");
+  });
+
+  it("knows nothing about channels she does not listen to", () => {
+    const social = new FakeSocial();
+    const w = engine();
+    w.voiceState(voice("1", "v2"), T0, social);
+    expect(w.voiceActivity({ ...room, channel: "v2" }, T0)).toBeNull();
+    expect(w.summary(w.snapshot(T0, social, null), { context: room })).not.toContain("說話");
+  });
+});
+
 describe("snapshot and summary", () => {
   it("summarizes only the server of the conversation", () => {
     const social = new FakeSocial().set("1", 60);

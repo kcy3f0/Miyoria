@@ -30,6 +30,15 @@ export const WorldConfigSchema = z.object({
   lively_messages: secs().default(8),
   /** ...from at least this many people. */
   lively_authors: secs().default(2),
+  /** Voice conversation (transcribed utterances) is measured over this window. */
+  voice_activity_window_secs: secs().default(300),
+  /**
+   * A voice channel counts as lively (people are talking: never "quiet") with this many
+   * utterances in the window, or with anyone speaking within the last `voice_quiet_secs`.
+   */
+  voice_lively_lines: secs().default(6),
+  /** No utterance for this long and a voice channel is not lively from that alone. */
+  voice_quiet_secs: secs().default(40),
   /** A lively channel without messages for this long went quiet. */
   quiet_after_secs: secs().default(300),
   /** A mention counts as salient when she has not spoken in that context for this long. */

@@ -99,7 +99,8 @@ interface Running {
 
 /**
  * Module `world`: what she perceives. Consumes platform presence / voice state / member events,
- * messages, her turns, voice, Stage and Go Live state; provides `WorldStateKey` and
+ * messages, voice utterances (voice conversation counts as activity), her turns, voice, Stage
+ * and Go Live state; provides `WorldStateKey` and
  * `PresencePrivacyKey` (which `/me privacy presence` writes), the `world` prompt section; publishes
  * `world.salient`.
  */
@@ -175,6 +176,8 @@ export class WorldModule implements Module {
       "agent.turn.completed",
       "voice.joined",
       "voice.left",
+      "voice.utterance",
+      "voice.playback",
       STAGE_STATUS_TOPIC,
       GOLIVE_TOPIC,
     ]);
@@ -223,6 +226,15 @@ export function handle(engine: WorldEngine, event: Event, now: number, sig: Sign
       return [];
     case "voice_left":
       engine.voiceLeft(event.data.context);
+      return [];
+    case "voice_utterance":
+      if (event.data.text.trim() !== "") {
+        engine.utterance(event.data.context, event.data.speaker, now);
+      }
+      return [];
+    case "voice_playback":
+      // Her own speech: when she last spoke there, not conversation.
+      if (event.data.state === "started") engine.herSpoke(event.data.context, now);
       return [];
     case "custom":
       break;

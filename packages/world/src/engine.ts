@@ -16,6 +16,7 @@
 import {
   type AccountRef,
   type Attitude,
+  type Author,
   accountRefString,
   type ChannelActivity,
   type ContextKey,
@@ -30,6 +31,7 @@ import {
   type PresenceUpdate,
   type TimeContext,
   toTimestamp,
+  type VoiceActivity,
   type VoiceChannelState,
   type VoiceMember,
   type VoiceStateUpdate,
@@ -93,6 +95,13 @@ interface Line {
   text: string;
 }
 
+/** Utterances and her own lines in one voice channel (`platform:guild:channel`). */
+interface VoiceLines {
+  lines: { at: number; speaker: string }[];
+  her_last_at: number | null;
+  touched: number;
+}
+
 interface ChannelRec {
   context: ContextKey;
   lines: Line[];
@@ -145,6 +154,8 @@ export class WorldEngine {
   /** By `account|guild`. */
   readonly #voice = new Map<string, VoiceRec>();
   readonly #channels = new Map<string, ChannelRec>();
+  /** Voice conversation by `platform:guild:channel`. */
+  readonly #voiceTalk = new Map<string, VoiceLines>();
   readonly #selfIds = new Set<string>();
   readonly #interesting: (name: string) => boolean;
   readonly #golive = new Map<string, string>();
@@ -342,7 +353,61 @@ export class WorldEngine {
   /** She said something in `context` (her own message or a finished turn). */
   herSpoke(context: ContextKey, now: number): void {
     if (context.kind === "dm" || !this.follows(context.scope)) return;
+    if (context.kind === "voice") {
+      this.#voiceLines(context, now).her_last_at = now;
+      return;
+    }
     this.#channel(context, now).her_last_at = now;
+  }
+
+  /**
+   * Someone said something in a voice channel (a transcribed utterance). Her own and bots'
+   * lines are not conversation; hers only update `her_last_at`.
+   */
+  utterance(context: ContextKey, speaker: Author, now: number): void {
+    if (context.kind !== "voice" || !this.follows(context.scope)) return;
+    if (this.#selfIds.has(accKey(speaker.account))) {
+      this.herSpoke(context, now);
+      return;
+    }
+    if (speaker.is_bot) return;
+    const rec = this.#voiceLines(context, now);
+    rec.lines.push({ at: now, speaker: speaker.display_name });
+    if (rec.lines.length > MAX_LINES) rec.lines.splice(0, rec.lines.length - MAX_LINES);
+    this.#pruneVoice(rec, now);
+  }
+
+  /** Recent conversation in the voice channel `context`, if anything is known about it. */
+  voiceActivity(context: ContextKey, now: number): VoiceActivity | null {
+    const key = voiceKey(context.platform, context.scope ?? "", context.channel);
+    const rec = this.#voiceTalk.get(key);
+    const hers =
+      this.#herVoice !== null &&
+      this.#herVoice.scope === context.scope &&
+      this.#herVoice.channel === context.channel;
+    // Only where she listens is silence a fact; elsewhere nothing is known.
+    if (!rec && !hers) return null;
+    const windowMs = this.config.voice_activity_window_secs * 1000;
+    const lines = (rec?.lines ?? []).filter((l) => now - l.at < windowMs);
+    const speakers: string[] = [];
+    for (const l of [...lines].reverse()) {
+      if (!speakers.includes(l.speaker)) speakers.push(l.speaker);
+    }
+    const last = lines.at(-1)?.at ?? null;
+    const sinceLast = last === null ? null : Math.max(0, Math.round((now - last) / 1000));
+    const minutes = Math.max(windowMs / 60_000, 1);
+    const herLast = rec?.her_last_at ?? null;
+    return {
+      recent_utterances: lines.length,
+      per_minute: Math.round((lines.length / minutes) * 100) / 100,
+      last_at: last === null ? null : toTimestamp(last),
+      secs_since_last: sinceLast,
+      recent_speakers: speakers.slice(0, 8),
+      lively:
+        lines.length >= Math.max(this.config.voice_lively_lines, 1) ||
+        (sinceLast !== null && sinceLast < this.config.voice_quiet_secs),
+      her_last_at: herLast === null ? null : toTimestamp(herLast),
+    };
   }
 
   voiceJoined(context: ContextKey): void {
@@ -387,6 +452,13 @@ export class WorldEngine {
       this.#prune(rec, now);
       if (rec.lines.length === 0 && now - rec.touched >= forgetMs) this.#channels.delete(key);
     }
+    const voiceForgetMs = this.config.voice_activity_window_secs * 1000 * 6;
+    for (const [key, rec] of this.#voiceTalk) {
+      this.#pruneVoice(rec, now);
+      if (rec.lines.length === 0 && now - rec.touched >= voiceForgetMs) {
+        this.#voiceTalk.delete(key);
+      }
+    }
     return out;
   }
 
@@ -398,7 +470,7 @@ export class WorldEngine {
       time: this.time(now),
       her: this.her(game),
       people: this.people(sig),
-      voice_channels: this.voiceChannels(sig),
+      voice_channels: this.voiceChannels(sig, now),
       channels: this.channels(now),
     };
   }
@@ -500,7 +572,7 @@ export class WorldEngine {
     return out.map((x) => x.p);
   }
 
-  voiceChannels(sig: Signals): VoiceChannelState[] {
+  voiceChannels(sig: Signals, now = 0): VoiceChannelState[] {
     const byChannel = new Map<string, VoiceChannelState>();
     const recs = [...this.#voice.values()].sort((a, b) => a.since - b.since);
     for (const v of recs) {
@@ -513,6 +585,10 @@ export class WorldEngine {
           channel: v.channel,
           name: v.channel_name,
           members: [],
+          activity: this.voiceActivity(
+            { platform: v.platform, scope: v.guild, channel: v.channel, kind: "voice" },
+            now,
+          ),
         };
         byChannel.set(key, channel);
       }
@@ -591,7 +667,9 @@ export class WorldEngine {
             return `${oneLine(m.display_name, 24)}${flags.length ? `(${flags.join("、")})` : ""}`;
           })
           .join("、");
-        lines.push(`- 「${oneLine(c.name ?? c.channel, 24)}」:${names}`);
+        const windowMins = Math.max(Math.round(this.config.voice_activity_window_secs / 60), 1);
+        const talk = c.activity ? `;${describeVoice(c.activity, windowMins)}` : "";
+        lines.push(`- 「${oneLine(c.name ?? c.channel, 24)}」:${names}${talk}`);
       }
     }
 
@@ -698,6 +776,29 @@ export class WorldEngine {
     else if (keep > 0) rec.lines.splice(0, keep);
   }
 
+  #voiceLines(context: ContextKey, now: number): VoiceLines {
+    const key = voiceKey(context.platform, context.scope ?? "", context.channel);
+    let rec = this.#voiceTalk.get(key);
+    if (!rec) {
+      rec = { lines: [], her_last_at: null, touched: now };
+      this.#voiceTalk.set(key, rec);
+      const max = Math.max(this.config.max_channels, 1);
+      if (this.#voiceTalk.size > max) {
+        const oldest = [...this.#voiceTalk.entries()].sort((a, b) => a[1].touched - b[1].touched);
+        for (const [k] of oldest.slice(0, this.#voiceTalk.size - max)) this.#voiceTalk.delete(k);
+      }
+    }
+    rec.touched = now;
+    return rec;
+  }
+
+  #pruneVoice(rec: VoiceLines, now: number): void {
+    const windowMs = this.config.voice_activity_window_secs * 1000;
+    const keep = rec.lines.findIndex((l) => now - l.at < windowMs);
+    if (keep === -1) rec.lines = [];
+    else if (keep > 0) rec.lines.splice(0, keep);
+  }
+
   #isLively(rec: ChannelRec): boolean {
     const authors = new Set(rec.lines.map((l) => l.author));
     return (
@@ -767,6 +868,24 @@ function describePerson(p: PersonPresence, now: number): string {
     if (text) parts.push(text);
   }
   return `${oneLine(p.display_name, 24)}(${parts.join(",")})`;
+}
+
+const voiceKey = (platform: string, guild: string, channel: string) =>
+  `${platform}:${guild}:${channel}`;
+
+/** `正在聊天:最近 5 分鐘 12 句(Owen、阿明),最後一句 8 秒前` / `最近 5 分鐘沒人說話`. */
+export function describeVoice(a: VoiceActivity, windowMins = 5): string {
+  if (a.recent_utterances === 0 || a.secs_since_last === null) {
+    return `最近 ${windowMins} 分鐘沒人說話`;
+  }
+  const names = a.recent_speakers.slice(0, 4).map((n) => oneLine(n, 16));
+  const who = names.length > 0 ? `(${names.join("、")})` : "";
+  const last =
+    a.secs_since_last < 60
+      ? `${a.secs_since_last} 秒前`
+      : `${Math.round(a.secs_since_last / 60)} 分鐘前`;
+  const head = a.lively ? "正在聊天:" : "";
+  return `${head}最近 ${windowMins} 分鐘 ${a.recent_utterances} 句${who},最後一句 ${last}`;
 }
 
 function describeChannel(c: ChannelActivity): string {
