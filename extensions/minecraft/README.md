@@ -115,7 +115,7 @@ replantCrops true
 avoidance true
 mobAvoidanceRadius 8
 smoothLook true
-smoothLookTicks 5
+smoothLookTicks 10
 chatControl false
 prefixControl false
 antiCheatCompatibility true
@@ -125,7 +125,7 @@ notificationOnPathComplete false
 echoCommands false
 ```
 
-- `smoothLook` 讓視角轉動像人在轉頭,直播畫面比較自然。
+- `smoothLook` 讓視角轉動像人在轉頭,直播畫面比較自然。**模組進入世界時會強制設定** `legitMine true`、`freeLook false`、`smoothLook true`、`smoothLookTicks 10`、`renderPath` / `renderGoal` / `renderSelectionBoxes false`(不作弊、看起來像人在玩;理由見 `PROTOCOL.md` §8),這裡寫相反的值會被蓋掉。
 - `chatControl false` / `prefixControl false`:不讓 Baritone 攔截聊天輸入裡的 `#` 指令(我們走 API,不需要)。
 - `allowParkour false`:直播時別讓她太冒險;想要更像玩家再開。
 - `allowInventory false`:避免 Baritone 自己開背包整理物品。
@@ -158,16 +158,16 @@ Core 的擴充套件主機從 `[modules.extensions] dirs`(預設 `["extensions"]
 
 | GameAdapter | miyoria-bridge |
 |---|---|
-| `describe()` | 14 個動作(`goto`、`mine`、`follow`、`explore`、`farm`、`build`、`get`、`chat`、`stop`、`look`、`attack`、`use`、`select`、`respawn`)與參數 schema |
-| `observe()` | `observe` → 繁中摘要 + 精簡狀態(`busy`、`capabilities`、背包、附近生物 / 方塊…);沒連上或在主選單時回 `connected:false` / `in_game:false`,導演就不會叫 LLM |
-| `act(action)` | 對應到 `baritone` / `altoclef` / `chat` / `look` / `use` / `attack` / `select_slot` / `respawn` / `stop`;`hello_ack.capabilities` 說沒有的模組直接回失敗 |
+| `describe()` | 17 個動作(`goto`、`mine`、`follow`、`explore`、`farm`、`build`、`get`、`craft`、`smelt`、`place`、`chat`、`stop`、`look`、`attack`、`use`、`select`、`respawn`)與參數 schema,加上生存進度指南 `guide`(`adapter/src/guide.ts`,附在 act 工具描述後面,所以導演的 prompt 看得到) |
+| `observe()` | `observe` → 繁中摘要 + 精簡狀態(`busy`、`capabilities`、背包、最好的鎬能挖什麼(`pickaxe_tier`)、食物、離天黑 / 天亮幾分鐘、附近生物、看得到的方塊、合成中…);沒連上或在主選單時回 `connected:false` / `in_game:false`,導演就不會叫 LLM |
+| `act(action)` | 對應到 `baritone` / `altoclef` / `craft` / `smelt` / `place` / `chat` / `look` / `use` / `attack` / `select_slot` / `respawn` / `stop`;`hello_ack.capabilities` 說沒有的模組直接回失敗。`mine` 先 `observe` 看背包,鎬不夠挖不到東西的方塊直接拒絕並說要先做什麼(表在 `adapter/src/harvest.ts`:石頭 / 煤要木鎬、鐵 / 銅 / 青金石要石鎬、金 / 鑽石 / 紅石 / 綠寶石要鐵鎬、黑曜石 / 遠古殘骸要鑽石鎬)。模組的拒絕(`not_visible`、`too_far`、`missing_items`、`needs_station`、`busy`)轉成告訴她下一步的繁中句子 |
 | `events()` | 推送事件 → `game.minecraft.<事件>`,`data.text` 是給實況用的一句話,`important` 標出值得馬上反應的(死亡、低血量、危險生物、稀有物品、別人講話、成就);另外有 `connected` / `disconnected` |
 
 工具名稱:`game.minecraft.observe` / `game.minecraft.act`(registry 裡是 `game_minecraft_observe` / `game_minecraft_act`),導演(`packages/game`)和聊天中的她都用這兩個。
 
-**目標什麼時候算完成**:Baritone 每走完一段路就送 `goal_reached`(挖礦是一顆礦接一顆、`follow` 一直重新追上、AltoClef 在子任務之間尋路),所以 adapter 記住上一個動作開始的是什麼工作:只有 `goto` 會轉送 `goal_reached` / `goal_failed`;`mine` / `follow` / `explore` / `farm` / `build` 以 `baritone_idle` 結束;AltoClef 的 `get` 期間 Baritone 也會在子任務之間閒置,adapter 收到 `baritone_idle` 時先 `observe`,AltoClef 自己也閒下來才轉送(文字「AltoClef 任務做完了」)。
+**目標什麼時候算完成**:Baritone 每走完一段路就送 `goal_reached`(挖礦是一顆礦接一顆、`follow` 一直重新追上、AltoClef 在子任務之間尋路),所以 adapter 記住上一個動作開始的是什麼工作:只有 `goto` 會轉送 `goal_reached` / `goal_failed`;`mine` / `follow` / `explore` / `farm` / `build` 以 `baritone_idle` 結束;`craft` / `smelt` 以 `craft_finished` / `smelt_finished`(或 `*_failed`)結束;AltoClef 的 `get` 期間 Baritone 也會在子任務之間閒置,adapter 收到 `baritone_idle` 時先 `observe`,AltoClef 自己也閒下來才轉送(文字「AltoClef 任務做完了」)。
 
-雙速控制的分工:快迴路(逐幀)完全在 Baritone / AltoClef;慢迴路(導演 + LLM)每 `decide_secs`(預設 20 秒)或遇到事件(`death`、`low_health`、`hostile_near`、`goal_reached`、`goal_failed`、`baritone_idle`、`advancement`、`chat`、`connected`)時才 `observe` 一次,下高階目標並產生實況評論。
+雙速控制的分工:快迴路(逐幀)完全在 Baritone / AltoClef;慢迴路(導演 + LLM)每 `decide_secs`(預設 20 秒)或遇到事件(`death`、`low_health`、`hostile_near`、`goal_reached`、`goal_failed`、`baritone_idle`、`craft_finished`、`craft_failed`、`smelt_finished`、`smelt_failed`、`advancement`、`chat`、`connected`)時才 `observe` 一次,下高階目標並產生實況評論。
 
 ## 8. 疑難排解
 
@@ -189,3 +189,5 @@ Core 的擴充套件主機從 `[modules.extensions] dirs`(預設 `["extensions"]
 已驗證:Gradle 建置(Windows、Temurin JDK 21)、JUnit 48 項(協定、快照、事件偵測、設定、WebSocket 驗證與請求回覆 round trip)、對真實 Baritone 1.11.3 API jar 的編譯、缺 jar 時的失敗訊息與 stub 測試路徑;adapter 的 Vitest(對假 mod 的連線、重連、token、動作對應、事件與目標完成判斷,以及透過 SDK runtime 的整個擴充)與擴充探索(`miyoria ext list` 找得到 `miyoria.minecraft`)。
 
 **尚未在真實遊戲裡驗證**(需要 Minecraft 帳號與圖形環境):所有與遊戲互動的行為,包含 `observe` 的實際內容、Baritone / AltoClef 動作、`use` / `attack` 按鍵模擬、`screenshot` 擷取、`advancement` / `chat` 事件解析,以及 AltoClef 的反射呼叫(已對照 `altoclef-1.21.1-0.19.jar` 的方法簽名撰寫,未實跑)。第一次實機測試請從 `observe` 與 `baritone goto` 開始。
+
+**不作弊與生存進度(`craft` / `smelt` / `place`、可見性、Baritone legit 設定)**:可見性判斷(JUnit)、快照欄位、adapter 的對應 / 鎬等級拒絕 / 錯誤與事件文字(Vitest)、對真實 Baritone 1.11.3 API jar 與 Minecraft 1.21.1 的編譯與建置已驗證;遊戲裡的實際行為還沒實跑。實機要看:新世界 `observe` 不再列出埋在地下的礦、`mine diamond_ore` 沒鐵鎬被拒、`mine oak_log` 只砍看得到的樹且砍完會停(`reason:"nothing_visible"`)而不是往下挖、`craft oak_planks` / `crafting_table` 打開背包合成、`place crafting_table` 後 `craft wooden_pickaxe` 會轉頭打開工作台、`smelt raw_iron` 放進熔爐再 `smelt` 拿出鐵錠、Baritone 走路時鏡頭跟著轉而且轉得平順、畫面上沒有路線線條。

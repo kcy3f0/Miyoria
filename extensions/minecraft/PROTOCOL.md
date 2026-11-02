@@ -117,7 +117,12 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 | `unknown_type` | 不認得的請求 `type` |
 | `invalid_args` | 參數缺漏或型別 / 範圍錯誤 |
 | `not_in_game` | 還在主選單或載入中,沒有玩家 / 世界 |
-| `game_paused` | 單人遊戲在暫停選單中;`mine` 與 `goto {block}` 會被拒絕(Baritone 查方塊掉落物要等內建伺服器,暫停時會讓整個遊戲卡死) |
+| `game_paused` | 單人遊戲在暫停選單中;`mine`、`craft`、`smelt` 會被拒絕(Baritone 查方塊掉落物要等內建伺服器,暫停時會讓整個遊戲卡死) |
+| `not_visible` | 附近沒有她**看得到**的那種方塊(`goto {block}`、`mine`;不會透視)。訊息:`no <id>[/<id>…] in sight within <N> blocks` |
+| `too_far` | 看得到,但太遠(`mine` 要 10 格內,工作台 / 熔爐要伸手搆得到)。訊息:`nearest <id> in sight is <N> blocks away at <x>,<y>,<z>` |
+| `missing_items` | 背包裡的東西不夠(`craft`、`smelt`、`place`)。訊息:`missing <item> x<n>[, …]`,`<item>+` 表示「或同類」(例如任何木材),`fuel` 表示燃料;配方另外要工作台時後面接 `; also needs a crafting_table within reach` |
+| `needs_station` | 要工作台(3x3 配方)或熔爐,但附近看不到。訊息:`needs a <crafting_table\|furnace> within reach; none in sight` |
+| `busy` | 上一個 `craft` / `smelt` 還在做 |
 | `baritone_unavailable` | 沒有安裝 Baritone |
 | `altoclef_unavailable` | 沒有安裝 AltoClef(或還沒初始化 / API 不符) |
 | `screenshot_failed` | 擷取或編碼失敗 |
@@ -172,7 +177,8 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
     { "block": "chest", "count": 1, "nearest": { "x": 1, "y": 64, "z": 1 }, "distance": 5.0 }
   ],
   "baritone": { "available": true, "busy": true, "process": "Mine", "goal": "GoalBlock{x=1,y=2,z=3}" },
-  "altoclef": { "available": false, "busy": null }
+  "altoclef": { "available": false, "busy": null },
+  "crafting": null
 }
 ```
 
@@ -184,7 +190,8 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 - `inventory`:物品 id → 總數(整個背包 + 快捷列加總,依 id 排序);`hotbar` 是 9 格,空格為 `null`;`armor` / `offhand` 空的為 `null`。
 - `looking_at`:準心指到的東西。`kind` 為 `block` / `entity` / `none`。方塊有 `block`、`position`、`face`、`distance`;生物有 `entity`(型別)、`name`(玩家或有自訂名稱時)、`position`、`distance`。
 - `nearby_entities`:只含活的生物(不含自己、盔甲架),依距離排序,最多 `maxEntities` 個;`hostile` 為 Minecraft 的 `Monster` 分類(殭屍、骷髏、苦力怕、史萊姆、幻翼……)。`nearby_entities_total` 是截斷前的總數。`name` 只在玩家或有自訂名稱時出現。
-- `nearby_blocks`:`blockScanRadius` 內「值得注意的方塊」(礦石、箱子 / 桶 / 終界箱 / 界伏盒、工作台 / 熔爐 / 鐵砧等工作站、床、地獄 / 終界傳送門、刷怪磚、岩漿、可收成作物等),依方塊種類分組,每種給出數量與最近一個的座標。排序:鑽石 / 遠古殘骸 → 其他礦石 / 刷怪磚 → 箱子 / 岩漿 / 傳送門 → 其他;同級依距離。最多 `maxBlockKinds` 種。
+- `nearby_blocks`:`blockScanRadius` 內**她看得到的**「值得注意的方塊」(礦石、原木、石頭 / 沙子 / 礫石 / 黏土、箱子 / 桶 / 終界箱 / 界伏盒、工作台 / 熔爐 / 鐵砧等工作站、床、地獄 / 終界傳送門、刷怪磚、岩漿、可收成作物等),依方塊種類分組,每種給出數量與最近一個的座標。「看得到」= 有一面朝向她、旁邊不是不透明的完整方塊,而且從她眼睛到那一面中心的直線沒有被不透明的完整方塊擋住(樹葉、玻璃、水不擋);埋在石頭裡的礦**不會**出現(不透視)。每種只檢查最近的 24 個,所以 `count` 是「最近的那些裡看得到幾個」。排序:鑽石 / 遠古殘骸 → 其他礦石 / 原木 / 刷怪磚 → 箱子 / 岩漿 / 傳送門 → 其他;同級依距離。最多 `maxBlockKinds` 種。
+- `crafting`:`craft` / `smelt` 工作進行中時是 `{"kind":"craft"|"smelt","item":<成品 / 要燒的東西,只拿東西時為 null>}`,沒有時為 `null`。
 - `baritone.busy`:Baritone 目前有沒有在執行(尋路或某個流程在控制);`process` 是流程名稱(例如 `Mine`、`Follow`、`Explore`、`Farm`、`Custom Goal`),`goal` 是目前目標的字串表示。沒有安裝 Baritone 時 `available:false`。
 - `altoclef.busy`:AltoClef 使用者任務是否在跑;無法判斷時為 `null`。
 
@@ -202,8 +209,8 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 
 | command | 參數 | 說明 |
 |---|---|---|
-| `goto` | `{x,y,z}` 或 `{x,z}` 或 `{block}`;可選 `near`(搭配 xyz,走到該點 `near` 格內) | 走到座標 / 只管水平座標 / 走到最近的某種方塊旁 |
-| `mine` | `blocks`: 方塊 id 陣列(或單一 `block`);可選 `count`(預設 0 = 一直挖到停止) | 蒐集 / 挖掘 |
+| `goto` | `{x,y,z}` 或 `{x,z}` 或 `{block}`;可選 `near`(搭配 xyz,走到該點 `near` 格內) | 走到座標 / 只管水平座標 / 走到 `blockScanRadius` 內最近一個**她看得到的**某種方塊旁(`GoalGetToBlock`;不是 Baritone 的 GetToBlock 流程,那個會查區塊快取 = 透視)。沒有回 `not_visible` |
+| `mine` | `blocks`: 方塊 id 陣列(或單一 `block`);可選 `count`(預設 0 = 一直挖到停止) | 蒐集 / 挖掘,Baritone `legitMine` 模式:只挖看到過的方塊,挖的途中看到新的會加進來。開始前 10 格內(Baritone legit 模式看得到的範圍)要至少看得到一個,否則回 `too_far`(更遠處看得到)或 `not_visible`。看得到的都挖完時 Baritone 原本會往下挖到 `legitMineYLevel` 盲挖礦道,模組會把它停掉(`baritone_idle` 帶 `reason:"nothing_visible"`) |
 | `follow` | `player`: 玩家名稱,或 `entity`: 生物型別 | 跟隨 |
 | `explore` | 可選 `x`,`z`(預設目前位置) | 以該點為中心探索未探索的區域 |
 | `farm` | 可選 `range`(預設 0) | 自動收割並重新種植附近作物 |
@@ -222,7 +229,7 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 {"id":"7","type":"baritone","command":"stop"}
 ```
 
-回覆 `data` 會回顯 `command`,以及 `goal`(goto)、`blocks`/`count`(mine)等。參數錯誤回 `invalid_args`。
+回覆 `data` 會回顯 `command`,以及 `goal`(goto;`goto {block}` 另有目標方塊的 `position`)、`blocks`/`count`/`first`(mine;`first` 是看得到的最近一個)等。參數錯誤回 `invalid_args`。
 
 ### 5.3 `altoclef`
 
@@ -279,7 +286,7 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 
 ### 5.9 `stop`
 
-`{"id":"21","type":"stop"}` → 取消 Baritone、停止 AltoClef 任務(`@stop`)、放開所有按住的按鍵、取消進行中的轉頭。`data: {"baritone": bool, "altoclef": bool}`(表示對應模組有沒有裝)。
+`{"id":"21","type":"stop"}` → 取消 Baritone、停止 AltoClef 任務(`@stop`)、中止進行中的 `craft` / `smelt`(關掉畫面,送 `craft_failed` / `smelt_failed`,`cancelled:true`)、放開所有按住的按鍵、取消進行中的轉頭。`data: {"baritone": bool, "altoclef": bool}`(表示對應模組有沒有裝)。
 
 ### 5.10 `screenshot`
 
@@ -297,6 +304,37 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 }}
 ```
 
+### 5.11 `craft`
+
+```json
+{"id":"23","type":"craft","item":"oak_planks","count":4}
+{"id":"24","type":"craft","item":"wooden_pickaxe"}
+```
+
+像玩家一樣合成:2x2 能做的配方在背包的合成格做(會打開背包畫面,觀眾看得到),3x3 配方要她**伸手搆得到、看得到**的工作台(先轉頭看它、右鍵打開)。用格子點擊把材料一格一格放上去、shift 點成品拿走,做完關掉畫面;每一下都由伺服器檢查,不會無中生有。`count` 是想要的成品數(1–64,預設 1),會做 `ceil(count / 每次產量)` 次,材料不夠時只做得到的次數。只處理一般的有形 / 無形配方(不含煙火、地圖複製這類特殊配方)。開始前會先停下 Baritone、放開按鍵。
+
+`data: {"item","count","crafts","table": bool}`(預計做出的數量)。工作在之後的 tick 進行,結束時送 `craft_finished` / `craft_failed`(§6)。拒絕:`invalid_args`(未知物品、沒有任何配方做得出來、已開著別的畫面)、`missing_items`、`needs_station` / `too_far`(要工作台)、`busy`、`game_paused`。
+
+### 5.12 `smelt`
+
+```json
+{"id":"25","type":"smelt","item":"raw_iron","count":3}
+{"id":"26","type":"smelt","item":"oak_log","count":4,"fuel":"oak_planks"}
+{"id":"27","type":"smelt"}
+```
+
+用她搆得到、看得到的熔爐(`furnace`):打開、先把輸出格燒好的東西 shift 點出來、把 `item`(`count` 預設背包裡全部,最多 64)放進輸入格、放燃料、關掉。熔爐關著也會繼續燒(每個 10 秒),燒好要再送一次 `smelt`(不帶 `item` = 只拿東西)。燃料沒指定時依序挑:煤炭 / 木炭 → 煤炭磚 → 木材 → 原木 → 木棒(不會拿要燒的那個東西),數量剛好夠燒完。輸入格裡有別的東西還沒燒完時會失敗。
+
+`data: {"furnace":{x,y,z},"item","count","fuel","fuel_count"}`(只拿東西時只有 `furnace`)。結束時送 `smelt_finished` / `smelt_failed`。拒絕同 `craft`(`needs_station` / `too_far` 指熔爐;沒有燃料是 `missing_items` 的 `fuel x1`)。
+
+### 5.13 `place`
+
+```json
+{"id":"28","type":"place","item":"crafting_table"}
+```
+
+把背包裡的一個方塊放在她腳邊:先找面向的那一格,再左右、後面,然後兩格外;要是空的(或可取代,例如草)、下面是實心而且點了不會開畫面的方塊、不和她的身體重疊。物品在快捷列就直接選那一格,在背包上半部就用快捷列交換點擊換到目前選的格子。會轉頭看那裡、揮手。`data: {"item","position":{x,y,z}}`。拒絕:`invalid_args`(不是方塊、旁邊沒有空位、遊戲不讓放)、`missing_items`。
+
 ## 6. 事件
 
 | name | 何時送出 | `data` |
@@ -311,7 +349,11 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 | `advancement` | 她自己達成成就(解析聊天裡的成就公告,所以伺服器要開 `announceAdvancements`) | `{"kind":"task"\|"goal"\|"challenge","title"}` |
 | `goal_reached` | Baritone 抵達路徑目標 | `{"goal"}` |
 | `goal_failed` | Baritone 找不到路徑 | `{"reason":"no_path","goal"}` |
-| `baritone_idle` | (額外)Baritone 從忙碌變成閒置(連續閒置 10 tick 才送,過濾路段切換的抖動)。挖礦做完、跟隨目標消失這類沒有 `goal_reached` 的流程用它判斷結束 | `{"process","goal","cancelled": bool}`;`cancelled` 表示是我們送了 `stop` |
+| `baritone_idle` | (額外)Baritone 從忙碌變成閒置(連續閒置 10 tick 才送,過濾路段切換的抖動)。挖礦做完、跟隨目標消失這類沒有 `goal_reached` 的流程用它判斷結束 | `{"process","goal","cancelled": bool,"reason"?}`;`cancelled` 表示是我們送了 `stop`(或 `craft` / `smelt` 開始前停下);`reason:"nothing_visible"` 表示 `mine` 看得到的都挖完了,模組停掉了 Baritone 的盲挖 |
+| `craft_finished` | `craft` 做完(材料中途用完也算,做多少算多少) | `{"item","crafted","requested"}` |
+| `craft_failed` | `craft` 做不下去 | `{"item","crafted","requested","error","cancelled"?}`;`error` 例如 `ran out of <item>`、`inventory full`、`could not open the crafting_table`、`the screen was closed`、`stopped` |
+| `smelt_finished` | `smelt` 放好 / 拿好了(熔爐之後繼續燒) | `{"collected"?:{item:n},"item"?,"count"?,"fuel"?,"fuel_count"?,"ready_in_secs"?}` |
+| `smelt_failed` | `smelt` 做不下去 | `{"error","collected"?,"cancelled"?}`;例如 `the furnace is still smelting <item>` |
 
 `goal_reached` 對應 `goto` 類目標;`mine` / `follow` / `explore` / `farm` 沒有「到達」的概念,結束時只會有 `baritone_idle`。注意 `goal_reached` / `goal_failed` 來自 Baritone 的 `PathEvent`(`AT_GOAL` / `CALC_FAILED`),**每一段路**都會送:挖礦時每走到一顆礦、`follow` 每次追上、AltoClef 子任務之間都會出現。client 要自己記得目前下的是哪種工作再解讀(adapter 只在 `goto` 時把它當成完成,見 `README.md` §7)。
 
@@ -326,3 +368,16 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 ## 7. 反射(reflex)放哪裡
 
 LLM 不碰逐幀控制。吃東西、躲怪、水中求生這類反射交給 Baritone / AltoClef 的設定;模組本身只提供狀態與事件。建議的 Baritone 設定見 `README.md` §5。
+
+## 8. 不作弊:模組強制的 Baritone 設定
+
+Baritone 只當她的腳和手,不替她「知道」看不到的東西。模組在進入世界後的第一個 tick(Baritone 已讀完自己的 `settings.txt`)設定下面這些,所以 `settings.txt` 裡相反的值會被蓋掉(`legitMine` 每次 `mine` 前還會再設一次):
+
+| 設定 | 值 | 為什麼 |
+|---|---|---|
+| `legitMine` | `true` | 挖礦只挖從她眼睛射線看得到的礦(Baritone 的 `addNearby`:腳邊 10 格內、看得到),不用區塊快取的透視清單。看不到時 Baritone 會往下盲挖到 `legitMineYLevel`,模組把那一步停掉(§5.2) |
+| `freeLook` | `false` | 鏡頭跟著走路方向轉;`true` 時畫面不動、身體橫著走,直播看起來像外掛 |
+| `smoothLook` / `smoothLookTicks` | `true` / `10` | 鏡頭水平角度取 Baritone 最近 10 tick 目標角度的平均,轉頭是漸進的而不是瞬間甩過去 |
+| `renderPath` / `renderGoal` / `renderSelectionBoxes` | `false` | 不在她(被直播)的畫面裡畫路線和目標框 |
+
+另外 `goto {block}` 與 `observe` 的 `nearby_blocks` 都只用她看得到的方塊(§4、§5.2),不碰 Baritone 的快取搜尋。`farm`、`explore`、`follow` 沒有透視問題(作物在地表、探索看的是沒去過的區塊、跟隨的是看得到的生物),照舊。
