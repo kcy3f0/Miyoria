@@ -8,11 +8,13 @@ import {
   checkMessages,
   cleanReply,
   DATA_PREAMBLE,
+  FOCUS_HEAD,
   GUARD_RULES,
   type HistoryEntry,
   INITIATIVE,
   INITIATIVE_HINT,
   INITIATIVE_SILENCE,
+  markCurrent,
   renderSections,
   situationData,
   situationPrompt,
@@ -146,6 +148,21 @@ describe("prompt", () => {
     );
     expect(s).toContain(VOICE_INITIATIVE);
     expect(s).not.toContain(INITIATIVE_HINT);
+  });
+
+  it("repeats_the_message_she_answers_after_the_data", () => {
+    const old = { ...entry("貓", "永遠不會忘記的人會很痛苦", false), id: "1" };
+    const now = { ...entry("Sakana", "@Miyoria 要怎麼攻略你?", false), id: "2" };
+    const history = markCurrent([old, now], [{ id: { id: "2" } } as never]);
+    const msgs = buildMessages("P", "S", history, "DATA");
+    expect(msgs.map((m) => m.role)).toEqual(["system", "user", "user", "system"]);
+    const last = msgs[2]?.content as string;
+    expect(last.startsWith("DATA\n\n")).toBe(true);
+    expect(last.endsWith(`${FOCUS_HEAD}\nSakana: @Miyoria 要怎麼攻略你?`)).toBe(true);
+    expect(last).not.toContain("永遠不會忘記");
+    // Without data the repeated message is its own block; without a current message, nothing.
+    expect(buildMessages("P", "S", history).at(-2)?.content).toContain(FOCUS_HEAD);
+    expect(buildMessages("P", "S", [old, now], "DATA")[2]).toEqual(userMessage("DATA"));
   });
 
   it("puts_derived_content_in_a_user_data_message", () => {

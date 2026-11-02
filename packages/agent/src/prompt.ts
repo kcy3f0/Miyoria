@@ -61,7 +61,8 @@ ${TRANSCRIPT_RULES}
 - 不需要或不想回的時候,只輸出 <silence/>。
 ${GUARD_RULES}`;
 
-export const ADDRESSED = "有人直接叫你、回覆你或私訊你,請回應對方。";
+export const ADDRESSED =
+  "有人直接叫你、回覆你或私訊你,請回應最後附上的那則訊息。更早的訊息和你的筆記只是背景:除非那則訊息提到,不要去接之前別人聊的話題。";
 export const AMBIENT = "沒有人直接叫你。只有在你真的想插話時才開口,否則只輸出 <silence/>。";
 
 export const VOICE_SITUATION = `# 目前情境
@@ -338,6 +339,21 @@ export const MAX_PARENT_CHARS = 300;
 export const BOT_TAG = "(bot)";
 /** Name tag of a spoken line. */
 export const SPOKEN_TAG = "(語音)";
+/** Heading of the block that repeats the message(s) the turn answers. */
+export const FOCUS_HEAD = "(你這次要回應的是下面這則;前面的對話、筆記和記憶只是背景。)";
+/** At most this many answered messages are repeated (the newest). */
+const MAX_FOCUS = 3;
+
+/**
+ * The messages of `history` marked `current`, repeated as the last user block (`null` when
+ * none). Names are made inert and the text neutralized like the transcript.
+ */
+export function focusMessage(history: readonly HistoryEntry[]): string | null {
+  const current = history.filter((e) => e.current === true && !e.isSelf).slice(-MAX_FOCUS);
+  if (current.length === 0) return null;
+  const lines = current.map((e) => otherLine(e, DEFAULT_TRANSCRIPT.maxEntryChars, null));
+  return `${FOCUS_HEAD}\n${lines.join("\n")}`;
+}
 /** What a quoted parent line of hers is attributed to. */
 export const SELF_QUOTE_NAME = "你";
 
@@ -464,7 +480,11 @@ export function buildMessages(
     return userMessage([{ type: "text", text }, ...images]);
   });
   const out = [systemMessage(persona), ...messages];
-  if (data !== null) out.push(userMessage(data));
+  // Last before the rules: the message(s) this turn answers, so the notes and memories in the
+  // data block (often about an older topic) are not what she replies to.
+  const focus = focusMessage([...history]);
+  const extra = [data, focus].filter((t): t is string => t !== null);
+  if (extra.length > 0) out.push(userMessage(extra.join("\n\n")));
   out.push(systemMessage(situation));
   return out;
 }

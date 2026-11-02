@@ -357,6 +357,15 @@ class Speech {
 }
 
 /** Cuts `text` to `maxChars` characters (plus `…`). */
+/** `history` with the messages this turn answers marked `current` (copies; the session is untouched). */
+export function markCurrent(
+  history: readonly HistoryEntry[],
+  inputs: readonly IncomingMessage[],
+): HistoryEntry[] {
+  const ids = new Set(inputs.map((m) => m.id.id));
+  return history.map((e) => (e.id !== null && ids.has(e.id) ? { ...e, current: true } : e));
+}
+
 export function truncate(text: string, maxChars: number): string {
   const chars = [...text];
   return chars.length > maxChars ? `${chars.slice(0, maxChars).join("")}…` : text;
@@ -873,10 +882,13 @@ class Turn {
     const messages = buildMessages(
       persona,
       situation,
-      afterFold(
-        this.session.recent(cfg.prompt_history).filter((e) => !this.#hidden(e)),
-        folded?.folded_up_to ?? null,
-        cfg.history_after_fold,
+      markCurrent(
+        afterFold(
+          this.session.recent(cfg.prompt_history).filter((e) => !this.#hidden(e)),
+          folded?.folded_up_to ?? null,
+          cfg.history_after_fold,
+        ),
+        this.inputs,
       ),
       data,
       {

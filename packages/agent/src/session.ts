@@ -45,6 +45,8 @@ export interface HistoryEntry {
   interrupted: boolean;
   /** The turn her speech belongs to. */
   turn: TurnId | null;
+  /** One of the messages the current turn answers (set on a copy while building the prompt). */
+  current?: boolean;
 }
 
 /** Someone else seen in a context (Rust `session::Participant`). */

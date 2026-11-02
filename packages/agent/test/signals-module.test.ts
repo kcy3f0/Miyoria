@@ -20,7 +20,7 @@ import {
   type VoiceParticipant,
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EXHAUSTED_LINE } from "../src/index.js";
+import { EXHAUSTED_LINE, FOCUS_HEAD } from "../src/index.js";
 import {
   account,
   channel,
@@ -67,7 +67,10 @@ function situation(mock: MockProvider, i: number): string {
 function data(mock: MockProvider, i: number): string {
   const msgs = mock.requests()[i]?.messages ?? [];
   expect(msgs.at(-2)?.role).toBe("user");
-  return contentText(msgs.at(-2)?.content ?? "");
+  // The data block, without the message(s) the turn answers that follow it.
+  const text = contentText(msgs.at(-2)?.content ?? "");
+  const focus = text.indexOf(`\n\n${FOCUS_HEAD}`);
+  return focus < 0 ? text : text.slice(0, focus);
 }
 
 // ---------------------------------------------------------------- tools

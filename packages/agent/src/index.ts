@@ -114,6 +114,8 @@ export {
   cleanReply,
   DATA_PREAMBLE,
   DEFAULT_TRANSCRIPT,
+  FOCUS_HEAD,
+  focusMessage,
   GUARD_RULES,
   gapLine,
   INITIATIVE,
@@ -179,7 +181,7 @@ export {
   SentenceSplitter,
 } from "./speech.js";
 export { ReactTool, ToolArgumentError } from "./tools.js";
-export { CheckError, parseCheck, TurnError, truncate } from "./turn.js";
+export { CheckError, markCurrent, parseCheck, TurnError, truncate } from "./turn.js";
 export {
   allowedUrl,
   type FetchLike,
