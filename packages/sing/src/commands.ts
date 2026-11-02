@@ -1,4 +1,4 @@
-// `/queue song request | list | skip | stop`. Request, skip and stop go through the actuator
+// `/queue song request | list | skip | voteskip | stop`. Request, skip and stop go through the actuator
 // registry's gate (principal `command`, override: a commanded song is sung once it is ready).
 
 import { type ActuatorRegistry, deniedText } from "@miyoria/actions";
@@ -25,7 +25,11 @@ import type { SingPermissions } from "./config.js";
 import { type SongEntry, songLabel } from "./setlist.js";
 import type { Singer } from "./singer.js";
 
-const R = { skip: "sing:list:skip", refresh: "sing:list:refresh" } as const;
+const R = {
+  skip: "sing:list:skip",
+  voteskip: "sing:list:voteskip",
+  refresh: "sing:list:refresh",
+} as const;
 
 /** Song titles come from YouTube: no Markdown in them. */
 function md(text: string): string {
@@ -64,14 +68,30 @@ export function listCard(singer: Singer, note: string | null = null): CommandRep
   const buttons: CardButton[] = [
     { id: componentId(R.refresh), label: "重新整理", style: "secondary" },
   ];
-  if (singer.playing())
-    buttons.unshift({ id: componentId(R.skip), label: "跳過", style: "danger" });
+  if (singer.playing()) {
+    buttons.unshift(
+      { id: componentId(R.voteskip), label: "投票跳過", style: "primary" },
+      { id: componentId(R.skip), label: "跳過", style: "danger" },
+    );
+  }
   blocks.push({ type: "buttons", buttons });
   return cardReply(blocks, {
     title: "歌單",
     accent: singer.playing() ? "success" : "neutral",
     session: {},
   });
+}
+
+/** One person's vote to skip the song she is singing, as a public notice. */
+async function voteSkip(singer: Singer, inv: Invocation): Promise<CommandReply> {
+  const vote = await singer.voteSkip(inv.invoker);
+  if (vote === null) return { ...notice("info", "她現在沒有在唱歌。"), ephemeral: true };
+  const song = md(songLabel(vote.entry));
+  if (vote.skipped) return notice("success", `已跳過 ${song}。`);
+  const tally = `${vote.votes}/${vote.needed}`;
+  return vote.counted
+    ? notice("info", `${md(inv.invoker_display_name)} 投票跳過 ${song}（${tally}）。`)
+    : { ...notice("info", `你已經投過了（${tally}）。`), ephemeral: true };
 }
 
 /** Runs a capability for the invoker through the gate (principal `command`, override). */
@@ -138,6 +158,16 @@ export function registerCommands(
       components: [
         { route: R.refresh, handle: () => ComponentResult.update(listCard(singer)) },
         {
+          route: R.voteskip,
+          permission: perms.list,
+          handle: async (inv) => {
+            const result = await voteSkip(singer, inv);
+            return result.tone === "success"
+              ? ComponentResult.update(listCard(singer, result.text))
+              : ComponentResult.reply(result);
+          },
+        },
+        {
           route: R.skip,
           permission: perms.skip,
           handle: async (inv) => {
@@ -152,6 +182,13 @@ export function registerCommands(
 
   add(commandSpec("queue song skip", "跳過她正在唱的歌", { permission: perms.skip }), (inv) =>
     ask(actuators, inv, "sing.stop", {}),
+  );
+
+  add(
+    commandSpec("queue song voteskip", "投票跳過她正在唱的歌（語音裡四分之一的人投了就跳過）", {
+      permission: perms.list,
+    }),
+    (inv) => voteSkip(singer, inv),
   );
 
   add(commandSpec("queue song stop", "停止唱歌並清空歌單", { permission: perms.stop }), (inv) =>

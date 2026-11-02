@@ -44,6 +44,7 @@ import {
   type SongMeta,
   type SongQuery,
   type SongTrack,
+  skipVotesNeeded,
   type WorkerJob,
   workerQuery,
 } from "../src/index.js";
@@ -53,6 +54,7 @@ const VOICE: ContextKey = { platform: "discord", scope: "g1", channel: "voice1",
 const TEXT: ContextKey = { platform: "discord", scope: "g1", channel: "text1", kind: "channel" };
 const OWEN: AccountRef = { platform: "discord", id: "7" };
 const AMY: AccountRef = { platform: "discord", id: "8" };
+const BOB: AccountRef = { platform: "discord", id: "9" };
 
 class AllowAll extends BaseAuthorizer {
   allowsSubject(): boolean {
@@ -451,6 +453,30 @@ describe("sing module", () => {
     await settle(2500);
     expect(h.mind.suggestions.filter((s) => s.reason === "song_ready")).toHaveLength(2);
     expect(["preparing", "ready"]).not.toContain(h.singer.list.get(1)?.state);
+  });
+
+  it("skips the song once a quarter of the listeners voted, or its requester alone", async () => {
+    expect(skipVotesNeeded(1, 0.25, 1)).toBe(1);
+    expect(skipVotesNeeded(4, 0.25, 1)).toBe(1);
+    expect(skipVotesNeeded(5, 0.25, 1)).toBe(2);
+    expect(skipVotesNeeded(12, 0.25, 1)).toBe(3);
+    expect(skipVotesNeeded(2, 0.25, 3)).toBe(2);
+
+    h = await Harness.create({ vote_skip_min: 2 });
+    expect(await h.command("queue song voteskip", {})).toContain("沒有在唱歌");
+    await h.join();
+    await h.invoke(Principals.user(AMY, TEXT), "sing.request", { query: "Long", by: "Amy" });
+    h.worker.finish("j1", "Long", 30);
+    await settle(150);
+    await h.invoke(Principals.self(VOICE), "sing.play", { song: 1 });
+    await settle(1200);
+    expect(h.singer.playing()?.no).toBe(1);
+    // Without a world model she counts one listener: the minimum of 2 never exceeds that.
+    const first = await h.singer.voteSkip(BOB);
+    expect(first).toMatchObject({ votes: 1, needed: 1, counted: true, skipped: true });
+    await settle(1800); // the fade-out
+    expect(h.singer.playing()).toBeNull();
+    expect(await h.singer.voteSkip(BOB)).toBeNull();
   });
 
   it("sings a commanded song as soon as it is ready and she is in voice", async () => {

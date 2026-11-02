@@ -46,6 +46,12 @@ export const SingConfigSchema = z.object({
   /** After this many reminders (while she is in voice) the song starts on its own. */
   max_reminders: z.number().int().nonnegative().default(2),
   /**
+   * `/queue song voteskip`: the song she is singing is skipped once this share of the people
+   * listening in her voice channel voted (rounded up), and at least `vote_skip_min` votes.
+   */
+  vote_skip_ratio: z.number().min(0).max(1).default(0.25),
+  vote_skip_min: z.number().int().min(1).default(1),
+  /**
    * Before a song starts she finishes what she is saying (the turn that started it, then a
    * quiet moment of `quiet_ms`), at most this long.
    */

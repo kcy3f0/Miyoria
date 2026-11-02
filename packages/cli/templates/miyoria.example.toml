@@ -175,6 +175,8 @@ dirs = ["extensions"]
 # max_pending_per_user = 2   # 每個人同時最多幾首在歌單上
 # lyrics = true              # 同步歌詞變成 overlay 字幕
 # lip_sync_vocals = true     # 嘴型跟轉換後的人聲走(不是整首混音)
+# vote_skip_ratio = 0.25     # /queue song voteskip:語音裡這個比例的人投了就跳過(無條件進位)
+# vote_skip_min = 1          # 至少幾票;點歌的人自己投一票就跳過
 
 # 遊戲內聊天變成獨立的對話(每個世界 / 伺服器一段歷史)。玩家在 Discord 用 /me link 拿代碼,
 # 在遊戲聊天室打 `!link <代碼>` 就跟 Discord 帳號連在一起;沒連的玩家是陌生人。

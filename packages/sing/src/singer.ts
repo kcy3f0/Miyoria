@@ -37,10 +37,12 @@ import {
   SPEECH_PAUSE_TOPIC,
   type SpeechPause,
   safeName,
+  sameAccount,
   type TurnId,
   toTimestamp,
   type VoiceFloor,
   VoicePlayerKey,
+  WorldStateKey,
 } from "@miyoria/types";
 import { type SingWorker, SingWorkerError, type SongQuery, type WorkerJob } from "./client.js";
 import type { SingConfig } from "./config.js";
@@ -112,9 +114,30 @@ const EXPECT_NOTICE_MS = 8000;
 /** Worker `exclusive` states during which speech is off. */
 const GPU_TAKEN = new Set(["offloading", "active", "reloading"]);
 
+/**
+ * Votes needed to skip with `listeners` people listening: `ratio` of them rounded up, at least
+ * `min`, but never more than everyone listening (someone alone with her skips with one vote).
+ */
+export function skipVotesNeeded(listeners: number, ratio: number, min: number): number {
+  const people = Math.max(listeners, 1);
+  return Math.min(Math.max(min, Math.ceil(people * ratio)), people);
+}
+
+/** The outcome of one `voteSkip`. */
+export interface SkipVote {
+  entry: SongEntry;
+  votes: number;
+  needed: number;
+  /** False when this person had already voted. */
+  counted: boolean;
+  skipped: boolean;
+}
+
 export class Singer implements VoiceFloor, SpeechPause {
   readonly list: SetList;
   #playing: Playing | null = null;
+  /** Song number -> who voted to skip it. */
+  readonly #skipVotes = new Map<SongNo, Set<string>>();
   /** Voice channels she is in. */
   #voices: ContextKey[] = [];
   /** Her speech playbacks running per guild. */
@@ -508,6 +531,43 @@ export class Singer implements VoiceFloor, SpeechPause {
       );
     }
     if (!this.#closed) this.#autoStart();
+  }
+
+  /**
+   * One vote to skip the song she is singing (one per person). It is skipped once
+   * `vote_skip_ratio` of the people listening in her voice channel voted (rounded up, at least
+   * `vote_skip_min`, at most everyone listening); whoever requested it skips it alone. `null`
+   * when nothing plays.
+   */
+  async voteSkip(voter: AccountRef): Promise<SkipVote | null> {
+    const playing = this.#playing;
+    if (!playing) return null;
+    const entry = playing.entry;
+    const votes = this.#skipVotes.get(entry.no) ?? new Set<string>();
+    this.#skipVotes.set(entry.no, votes);
+    const id = `${voter.platform}:${voter.id}`;
+    const counted = !votes.has(id);
+    votes.add(id);
+    const listeners = this.#listeners(playing.guild);
+    const needed = skipVotesNeeded(listeners, this.cfg.vote_skip_ratio, this.cfg.vote_skip_min);
+    const own = entry.requester !== null && sameAccount(entry.requester, voter);
+    const skipped = own || votes.size >= needed;
+    if (skipped) {
+      this.#skipVotes.delete(entry.no);
+      await this.stop(false);
+    }
+    return { entry, votes: votes.size, needed, counted, skipped };
+  }
+
+  /** People in her voice channel of `guild` who can hear the song (not her, not deafened). */
+  #listeners(guild: string): number {
+    const where = this.voiceContext(guild);
+    const world = this.ctx.services.get(WorldStateKey);
+    if (!where || !world) return 1;
+    const room = world
+      .snapshot()
+      .voice_channels.find((c) => c.guild === guild && c.channel === where.channel);
+    return room?.members.filter((m) => !m.is_self && !m.deafened).length ?? 1;
   }
 
   /** Stops the song she is singing; `all` also drops every other song in the list. */

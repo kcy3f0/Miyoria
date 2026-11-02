@@ -40,6 +40,8 @@ export {
   SETLIST_KEY,
   SingError,
   Singer,
+  type SkipVote,
   type SongRequest,
+  skipVotesNeeded,
   workerQuery,
 } from "./singer.js";
