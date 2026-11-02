@@ -1,6 +1,6 @@
 # 自主層設計(草案)
 
-> 狀態:**已確認方向**(2026-11-02),第 12 節的決定已定案。**階段 A、B、D、E、F 已完成**(實作紀錄與偏差見第 13–17 節);下一步是階段 C。這份文件描述把 DeepSeek-chan 從「被叫才醒來的聊天機器人」改成「有自己內心、自己決定做事的角色」的架構改動。終極目標是 Neuro-sama 等級的自主 AI VTuber。現有架構見 [ARCHITECTURE.md](../ARCHITECTURE.md)。
+> 狀態:**已確認方向**(2026-11-02),第 12 節的決定已定案。**階段 A–F 已完成**(實作紀錄與偏差見第 13–18 節);下一步是實測與階段 G。這份文件描述把 DeepSeek-chan 從「被叫才醒來的聊天機器人」改成「有自己內心、自己決定做事的角色」的架構改動。終極目標是 Neuro-sama 等級的自主 AI VTuber。現有架構見 [ARCHITECTURE.md](../ARCHITECTURE.md)。
 
 ## 0. 原則
 
@@ -233,7 +233,7 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 |---|---|---|
 | **A. 閘門與行動工具**(✅ 已完成,見第 13 節) | ActuatorRegistry、Gate、principal;防 injection 第一步(不可信內容移出 system、輸出過濾、記憶來源);包裝 voice / stream / scene / game 成工具,反應回合可用;指令與面板改走閘門 | 「姐姐可以來語音嗎」「開台吧」她會自己判斷要不要做 |
 | **B. 感知與自我**(✅ 已完成,見第 14 節) | WorldState(presence、voice states)、SelfState(慾望、方針、議程、感情描述)、面板「內心」頁雛形 | 她知道誰在線、在做什麼;有自己的狀態 |
-| **C. 心智迴圈** | Mind 模組、內心獨白、意圖、自己發起的回合;talkativeness 取代 attention 數字;initiative 併入 | 會自己找人聊天、偷偷進語音、自己調活躍度、冷場時開話題 |
+| **C. 心智迴圈**(✅ 已完成,見第 18 節) | Mind 模組、內心獨白、意圖、自己發起的回合;talkativeness 取代 attention 數字;initiative 併入 | 會自己找人聊天、偷偷進語音、自己調活躍度、冷場時開話題 |
 | **D. OBS 智慧場景 + Minecraft**(✅ 已完成,見第 17 節) | 場景分類與自動轉場;Minecraft 端到端(adapter 準備與模組建置已完成,見 `extensions/minecraft/SETUP.md`);**遊戲內聊天變成獨立對話情境**(有自己的歷史,玩家名稱可用 `/me link` 綁 Discord 帳號以共用好感與記憶,回覆管道由她選:遊戲內打字、直播語音 + 字幕或兩者) | 「去玩 Minecraft」→ 她自己開遊戲、切場景、開台 |
 | **E. 聊天上下文與圖片**(✅ 已完成,見第 16 節) | 冷啟動補抓歷史、回覆鏈、看圖(deepseek-v4.1-flash 已支援視覺,直接把圖片當多模態內容送給聊天模型;先實測 OpenCode 端是否接受圖片)、語音頻道文字區改用語音回 | 對話更連貫、看得懂圖片 |
 | **F. 沙箱程式**(✅ 已完成,見 8.3 與第 15 節) | 沙箱、`code.run`、自寫工具與核准流程;外掛環境變數白名單 | 她能自己寫小工具 |
@@ -363,3 +363,35 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 8. **回話方式是持續的選擇**(工具 `game_chat_reply`,記在記憶體、每個情境一個,重開恢復預設),不是每句話的標記。自主暫停時她不會在遊戲裡打字(導演也停了,遊戲裡等於暫停),語音照常。
 9. **導演不再評論玩家聊天**(`game.chat` 處理那款遊戲時):聊天只當不可信資料記下並觸發下一次決策,回話交給遊戲聊天的對話,避免同一句話回兩次。系統訊息(死亡、加入離開)照舊由導演實況。
 10. 遊戲聊天的情境沿用現有 attention 與頻道模式(預設跟著 profile 的 `ambient`);心智迴圈(階段 C)接手後一樣適用。
+
+## 18. 階段 C 實作紀錄(2026-11-02)
+
+完成的內容(細節見 [ARCHITECTURE.md](../ARCHITECTURE.md) §4.2、§4.3、§6.5、§14.1):
+
+- **新套件 `@miyoria/mind`(模組 `mind`,`MindKey`)**:
+  - 觸發:`world.salient`(合併 `coalesce_ms` 內的事件;預算 degraded 時只收分數 ≥ 0.6 的)、自適應心跳(閒時約 12 分鐘,熱鬧或在有人的語音裡 4 分鐘,議程到期 3 分鐘;每次心跳什麼都沒發生就慢 1.5 倍(最多 3 次)、安靜時段與預算 degraded 各慢 3 倍、很無聊時快一點;夾在 `min_interval_secs` 與 `max_heartbeat_mins` 之間,exhausted 時沒有心跳)、她的回合結束(距上次想法 5 分鐘以上)、她所在的語音頻道聊完後安靜 `voice_quiet_secs`(5 分鐘內至少 3 句,同一頻道 3 分鐘最多一次),以及其他模組的建議(`MindKey.suggest`)。
+  - 輸入是精簡快照:該伺服器的 `WorldState.summary`、地點與人(短代號 `p1` / `u1`,她只能指快照裡有的)、SelfState(數字)、議程(`g1`)、最近 5 則想法、在場的人的感情描述與關係標籤、記憶(呼叫 prompt contributor `memory`,沿用它的隱私範圍;私訊情境不叫)、她能用的能力清單與底線。**system 只放人格、規則、輸出格式、能力清單和她自己的數字**;名字、世界、觸發細節、建議、記憶,連她自己之前寫的想法 / 議程 / 理由 / 感情描述(都是從別人影響得到的材料寫的)都放在 user role 的資料區塊(`dataBlock`)。
+  - 用途 `mind`(thinking 開、`json_mode`;沒設就用 `chat` 並記一行警告)。回覆用 zod 逐欄、逐項驗證,壞掉的部分丟掉、其他照用,而且全部有上限:想法 600 字、感情 3 則(描述 300 字)、慾望每項 ±0.2、多話程度 3 則(0~1,5 分鐘~1 天)、議程新增 3 則(最多一週)、意圖 `max_intents` 則(15 秒~15 分鐘到期)。
+  - 套用:感情描述 → `SelfState.setFeeling`;`affinity_hint` `+` / `-` → social 的 `applyEvents`(新來源 `mind`,`warm` / `cold` 0.3,**受每日上限約束**,從不直接寫好感);慾望、多話程度、主動程度、議程(新增 / 完成 / 放棄)→ SelfState。
+  - **想法日誌**:每則想法一筆設定 `mind:thought:<id>`(profile 範圍,保留最新 `journal_keep` 則),內容有觸發、獨白、改了什麼、意圖與結果(狀態、閘門決定、她在那個回合說了什麼),每次新增 / 更新都發 `mind.thought`。`/admin memory wipe` 的「記憶與關係」以上會一起刪,並重啟 `mind`。
+  - 成本:每小時呼叫數(滑動一小時,`max_calls_per_hour`)、兩次最小間隔、累計 token;暫停或預算 exhausted 時不想,也不留待處理的觸發。
+- **意圖 → 她自己發起的回合**:agent 提供 `IntentSinkKey`。
+  - 新能力 `chat.start`(在請求的情境開口:文字頻道,或她所在的語音頻道)與 `chat.dm`(私訊某人並聊天,`consent: dm`),中風險、有自己的預設次數(`chat.start` 每天 24 次、每人 4 次、冷卻 1 分鐘;`chat.dm` 6 / 2 / 10 分鐘),都可以用 `[modules.actions.limits."chat.start"]` 改。執行函式把意圖交給該情境的 coordinator。
+  - 其他能力(`voice.join`、`stream.start`、`stage.scene`……)先以 `self` 名義過閘門執行,成功而且她有想說的開場才開回合:`voice.join` 等她真的進了語音頻道(`voice.joined`)才在那裡開口,其他在意圖的情境開口。沒有 agent 時 mind 直接呼叫閘門(只做不說)。
+  - Coordinator 的新輸入 `intent`:不打斷進行中的回合、等待中的訊息、還在排隊的語音,語音裡也不壓過正在講話的人;空下來才開,過期就丟(發 `agent.decision` 說明),新的意圖取代還在等的。回合 ID 事先決定,閘門決定、`agent.decision`、`agent.turn.completed` 都對得回日誌。
+  - 回合本身:不跑 attention、**有工具**,工具以 `Principals.self` 呼叫(能力工具過閘門;需要某個人權限節點的其他工具一律拒絕),她的打算(做了什麼、為什麼、開場想法)放在資料訊息「你的打算」。頻道模式 `off` / `mention-only` 仍是底線,預算不是 ok 時不開。
+- **把數字交給她(§6)**:attention 讀 SelfState 對這個情境的 talkativeness(沒設時照舊用 activeness 與語音的 `ambient_factor` / `interrupt_scale`):插話機率 ×4^(2L−1)(0.5 = 平常,1 = 四倍)、冷卻 ×4^(1−2L)(但不低於新的 `min_cooldown_ms`,文字 2 秒、語音 5 秒)、灰色地帶門檻 ×2^(1−2L)、語音裡別人還在講話時的倍率 0.2 + 0.6L(`interrupt_scale = 0` 仍代表「永遠不壓過別人」)、L ≤ 0.05 = 不插話。底線照舊是設定:近期佔比上限 `max_share_of_recent` 與最小冷卻。`channel_activeness` 工具(「活躍點」)在 self 模組存在時改成設定該情境的 talkativeness(low 0.2 / medium 0.5 / high 0.85),所以在語音裡也真的會更常接話;語音回覆仍不思考。
+- **initiative 併入**:`[modules.initiative] to_mind`(預設 true)且 mind 在跑時,冷場、打招呼、進語音問候、追問都變成給 mind 的建議(資料區塊「可能的契機」),由她決定要不要、怎麼做;initiative 原本的每日次數、安靜時段、退避與同一人冷卻仍先套用。追問同時加進她的議程,不會因為她當下沒處理而消失。mind 存在但沒在接受(暫停 / 預算用完)時什麼都不做;沒有 mind 時照舊直接發 `agent.initiative`。遊戲導演的實況評論(reason `game`)不受影響。
+- **閘門**:`ActionRequest.about`:自主請求可以說「這件事是關於誰」(例如因為 Owen 在才進語音),對方的「不要主動找我」與每人次數就套用在他身上;能力可以帶預設次數(`Capability.limits`)。等待確認的請求有完整內容(`Escalations.pending()`),面板也能回答。
+- **API 與面板**:`GET /api/mind`、`GET /api/mind/thoughts`、`GET /api/mind/approvals`、`POST /api/mind/approvals/{id}/approve|deny`、`POST /api/mind/pause|resume`(變更要 `owner.autonomy.approve`,token 可以)。面板「內心」頁的「想法」分頁:自主行動開關與本小時次數、等待確認(允許 / 拒絕)、想法時間軸(觸發、獨白、改變、意圖狀態、閘門決定、她說的話)。
+
+跟設計不同或延後的地方:
+
+1. **意圖的「動作」與「開口」分開**:非 `chat.*` 的意圖由 agent 先執行動作、成功後才開回合,而不是讓回合裡的模型自己呼叫工具(比較可靠、可測);回合裡仍有工具,她可以再做別的事。
+2. **想法日誌存在 `SettingsStore`**(每則一筆),沒有加資料表;好處是沿用既有的匯出 / 刪除(wipe 計畫加了 `mind:thought:` 前綴),壞處是只適合幾百則的量。
+3. **安靜時段**:mind 自己有 `quiet_start_hour` / `quiet_end_hour`:心跳慢 3 倍,而且**只被心跳喚醒**的想法不能主動開口(`chat.start` / `chat.dm` 會被丟掉);對有人上線、進語音這類事件的反應不受影響(跟 initiative 一致)。
+4. **心跳的節奏常數寫在程式裡**(12 / 4 / 3 分鐘與倍率),設定只有上限(每小時次數、最小間隔、最慢心跳),符合「設定只放底線」。
+5. **面板的寫入權限**:pause / resume 與核准都要 owner 等級的 `owner.autonomy.approve`(Discord 的 `/admin autonomy pause` 仍是 admin 的 `admin.autonomy.toggle`)。高風險的確認仍然要至少一位擁有者能收到 Discord 私訊卡片才會等待;面板只是多一個回答的地方。
+6. **她的想法不會被打斷**:同一時間只有一個想法在跑;意圖執行(可能要等排程器或進語音)在背景進行,不擋下一次思考。
+7. **還沒做**:面板上手動觸發一次思考的按鈕;「某人通常幾點上線」仍留給 G;沒人了要不要離開語音完全靠她在想法裡決定(`voice.leave`),沒有額外規則。
+
