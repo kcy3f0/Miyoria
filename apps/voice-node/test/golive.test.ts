@@ -403,6 +403,55 @@ describe("DvsEngine", () => {
     expect(ffmpegErrorMessage(new Error("spawn ffmpeg ENOENT"), "")).toBe("ffmpeg: spawn ffmpeg ENOENT");
   });
 
+  it("opens the Go Live connection before a live feed's first packets, with a short probe", async () => {
+    const log: string[] = [];
+    const calls: { input: string[]; play: Record<string, unknown> }[] = [];
+    const fake = {
+      Streamer: class {
+        async createStream() {
+          log.push("createStream");
+          return {};
+        }
+        stopStream() {}
+      },
+      VoiceConnection: class {
+        setSession() {}
+      },
+      Encoders: { nvenc: () => ({}), software: () => ({}) },
+      Utils: { normalizeVideoCodec: (c: string) => c },
+      prepareStream: (_src: string, opts: { customInputOptions: string[] }) => {
+        calls.push({ input: opts.customInputOptions, play: {} });
+        return { command: { on() {} }, output: {}, promise: new Promise(() => {}) };
+      },
+      playStream: async (_out: unknown, s: { createStream(): Promise<unknown> }, opts: Record<string, unknown>) => {
+        (calls.at(-1) as { play: Record<string, unknown> }).play = opts;
+        log.push("playStream");
+        await s.createStream();
+      },
+    };
+    const engine = new DvsEngine(client, noLog, async () => fake as never);
+    const run = (source: string) => {
+      const p = planGoLive(req({ source }), cfg);
+      if (!p.ok) throw new Error(p.error);
+      return engine.run(
+        { ...p.plan, encoder: "software" },
+        { kind: "hybrid", guildId: "g1", channelId: "vc1", sessionId: "s" },
+        { onLive() {} },
+        new AbortController().signal,
+      );
+    };
+
+    await run("rtmp://127.0.0.1:1935/live/x");
+    expect(calls[0]?.input).toEqual(expect.arrayContaining(["-analyzeduration", "500000"]));
+    // Packets stay paced (a burst breaks the viewers' playback timing); the connection is reused.
+    expect(calls[0]?.play.readrateInitialBurst).toBeUndefined();
+    expect(log.splice(0)).toEqual(["createStream", "playStream"]);
+
+    await run("C:/videos/clip.mp4");
+    expect(calls[1]?.input).not.toContain("-analyzeduration");
+    expect(log).toEqual(["playStream", "createStream"]);
+  });
+
   it("uses the spelling of the low-delay flag that current ffmpeg accepts", () => {
     expect(LOW_LATENCY_INPUT).toContain("low_delay");
     expect(LOW_LATENCY_INPUT).not.toContain("lowdelay");

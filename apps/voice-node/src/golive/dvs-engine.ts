@@ -25,8 +25,20 @@ type DvsModule = typeof Dvs;
 
 const STDERR_KEEP = 12;
 
-/** ffmpeg input options for live feeds (RTMP / SRT / UDP / RTSP): no read-ahead buffering, low-delay decoding. */
-export const LOW_LATENCY_INPUT = ["-fflags", "nobuffer", "-flags", "low_delay", "-flush_packets", "1", "-max_delay", "100000"];
+/**
+ * ffmpeg input options for live feeds (RTMP / SRT / UDP / RTSP): no read-ahead buffering, low-delay
+ * decoding, and a short probe. ffmpeg's default probe reads up to 5 s of the feed before it outputs
+ * anything, and everything that queues up before the first packet is sent stays in the stream as
+ * delay: playStream() paces packets to real time counted from that first send.
+ */
+export const LOW_LATENCY_INPUT = [
+  "-fflags", "nobuffer",
+  "-flags", "low_delay",
+  "-flush_packets", "1",
+  "-max_delay", "100000",
+  "-analyzeduration", "500000",
+  "-probesize", "1000000",
+];
 
 /** The library's error message echoes the whole command line; keep the exit code and the last stderr lines. */
 export function ffmpegErrorMessage(e: unknown, stderrTail: string): string {
@@ -60,8 +72,10 @@ export class DvsEngine implements StreamEngine {
     // "Live" = the Go Live WebRTC connection is established; playStream() calls createStream() once
     // it has demuxed the first packets, so this also means the source is delivering video.
     const createStream = streamer.createStream.bind(streamer);
+    let early: ReturnType<typeof createStream> | undefined;
     streamer.createStream = async () => {
-      const conn = await createStream();
+      const conn = await (early ?? createStream());
+      early = undefined;
       hooks.onLive();
       return conn;
     };
@@ -79,6 +93,14 @@ export class DvsEngine implements StreamEngine {
         this.log.info("golive: exclusive mode, library voice connection is up (self-deafened)");
       }
       signal.throwIfAborted();
+      // A live feed: open the Go Live connection now instead of after the first packets. Otherwise
+      // the feed queues up while Discord answers STREAM_CREATE, and since packets are paced to real
+      // time from the first send, that queue never drains (sending it in a burst instead breaks the
+      // viewers' playback timing: they only see a spinner).
+      if (plan.live) {
+        early = createStream();
+        early.catch(() => {});
+      }
 
       const stderr: string[] = [];
       const { command, output, promise } = dvs.prepareStream(
