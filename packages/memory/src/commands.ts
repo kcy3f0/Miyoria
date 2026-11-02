@@ -81,10 +81,10 @@ export const WIPE_SCOPE_LABEL: Record<WipeScope, string> = {
 };
 
 const WIPE_SCOPE_DETAIL: Record<WipeScope, string> = {
-  memories: "她記得的所有事（經歷、事實、筆記、之後要問的事）。",
+  memories: "她記得的所有事（經歷、事實、筆記、之後要問的事），以及她自己整理的資料。",
   relationships:
-    "記憶，加上她對每個人的好感、信任、熟悉度、印象、感情描述與變化紀錄，以及心情、內在狀態與內心獨白。",
-  history: "記憶與關係，加上聊天紀錄、決策紀錄與記憶整理進度。",
+    "記憶，加上她對每個人的好感、信任、熟悉度、印象、感情描述與變化紀錄，以及心情、內在狀態、內心獨白、反思、學到的事與回饋紀錄。",
+  history: "記憶與關係，加上聊天紀錄、對話筆記、決策紀錄與記憶整理進度。",
   everything: "以上全部，加上主動發話的狀態。",
 };
 
@@ -96,8 +96,8 @@ const WIPE_SCOPE_DETAIL: Record<WipeScope, string> = {
  */
 export function wipePlan(scope: WipeScope): DataCategoryId[] {
   const level = SCOPES.indexOf(scope);
-  const ids: DataCategoryId[] = ["memories"];
-  if (level >= 1) ids.push("relationships", "inner", "mood");
+  const ids: DataCategoryId[] = ["memories", "knowledge"];
+  if (level >= 1) ids.push("relationships", "inner", "mood", "learning");
   if (level >= 2) ids.push("messages", "decisions");
   if (level >= 3) ids.push("initiative");
   return resolveCategories(ids);

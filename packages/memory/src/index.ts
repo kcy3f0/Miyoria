@@ -44,6 +44,7 @@ export {
   PROMPT_KINDS,
   SECTION_TITLE,
 } from "./contributor.js";
+export { Curator } from "./curate.js";
 export {
   buildEmbedder,
   cosine,

@@ -181,8 +181,16 @@ describe("memory wipe", () => {
       expect(plan, scope).toContain("memories");
       expect(settingsOf(scope)).toContain(MAINTENANCE_KEY);
     }
-    expect(wipePlan("memories")).toEqual(["memories"]);
-    expect(wipePlan("relationships")).toEqual(["memories", "relationships", "inner", "mood"]);
+    expect(wipePlan("memories")).toEqual(["memories", "knowledge"]);
+    expect(wipePlan("relationships")).toEqual([
+      "memories",
+      "relationships",
+      "inner",
+      "knowledge",
+      "learning",
+      "mood",
+    ]);
+    expect(wipePlan("history")).toContain("conversation");
     expect(settingsOf("relationships")).toEqual(
       expect.arrayContaining(["mood:last", "self:state", "self:feeling:"]),
     );
@@ -196,9 +204,12 @@ describe("memory wipe", () => {
       "agent",
       "self",
       "mind",
+      "knowledge",
+      "reflect",
+      "conversation",
       "mood",
     ]);
-    expect(wipeModules("memories")).toEqual(["memory", "initiative"]);
+    expect(wipeModules("memories")).toEqual(["memory", "initiative", "knowledge"]);
   });
 
   it("is_owner_only_and_walks_through_select_confirm_and_modal", async () => {

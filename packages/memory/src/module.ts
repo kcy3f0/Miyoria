@@ -23,10 +23,14 @@ import {
 } from "@miyoria/store";
 import { type ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
 import {
+  CONVERSATION_FOLDED_TOPIC,
   type ContextKey,
   contextKeyString,
   type Envelope,
   FollowupSourceKey,
+  isJsonObject,
+  type JsonValue,
+  MemoryCuratorKey,
   type ProfileId,
   type PromptContributors,
   PromptContributorsKey,
@@ -40,6 +44,7 @@ import {
   MemoryConfigSchema,
 } from "./config.js";
 import { CONTRIBUTOR_KEY, MemoryContributor } from "./contributor.js";
+import { Curator } from "./curate.js";
 import { buildEmbedder, type Embedder } from "./embed.js";
 import { MemoryEngine, MemoryEngineKey } from "./engine.js";
 import { RECALL, REMEMBER, RecallTool, RememberTool } from "./tools.js";
@@ -126,11 +131,18 @@ export class MemoryModule implements Module {
     });
     ctx.provide(MemoryEngineKey, engine);
     ctx.provide(FollowupSourceKey, engine);
+    ctx.provide(MemoryCuratorKey, new Curator(engine));
     this.#installer.install(ctx, engine);
     ctx.log.info({ embedder: embedder.name }, "memory started");
 
     // Subscribe before returning so no message published after start is missed.
-    const sub = ctx.subscribe(["platform.message.created", "voice.utterance"]);
+    // A fold of the conversation (module `conversation`) consolidates its context right away,
+    // so no line is past `max_lines_per_batch` before it is consolidated.
+    const sub = ctx.subscribe([
+      "platform.message.created",
+      "voice.utterance",
+      CONVERSATION_FOLDED_TOPIC,
+    ]);
     const installer = this.#installer;
     ctx.spawn("consolidate", (signal) => consolidationLoop(ctx, engine, installer, sub, signal));
     if (config.forgetting.enabled) {
@@ -200,6 +212,8 @@ export interface Activity {
   pending: number;
   lastMs: number;
   retryAtMs: number | null;
+  /** Consolidate at the next tick regardless of the thresholds. */
+  forced?: boolean;
 }
 
 function activityKey(context: ContextKey): string {
@@ -221,6 +235,18 @@ export class ActivityTracker {
     a.lastMs = Math.max(a.lastMs, atMs);
   }
 
+  /** A conversation was folded: consolidate it at the next tick. */
+  force(context: ContextKey, atMs: number): void {
+    const key = activityKey(context);
+    let a = this.#contexts.get(key);
+    if (!a) {
+      a = { context, pending: 1, lastMs: atMs, retryAtMs: null };
+      this.#contexts.set(key, a);
+    }
+    a.pending = Math.max(a.pending, 1);
+    a.forced = true;
+  }
+
   /** A context that may have unconsolidated lines from before a restart. */
   maybePending(context: ContextKey): void {
     const key = activityKey(context);
@@ -238,7 +264,7 @@ export class ActivityTracker {
       if (
         a.pending > 0 &&
         (a.retryAtMs === null || nowMs >= a.retryAtMs) &&
-        (a.pending >= every || nowMs - a.lastMs >= idleMs)
+        (a.forced === true || a.pending >= every || nowMs - a.lastMs >= idleMs)
       ) {
         out.push(a.context);
       }
@@ -297,6 +323,13 @@ async function consolidationLoop(
         tracker.message(env.event.data.id.context, nowMs);
       } else if (env.event.type === "voice_utterance") {
         tracker.message(env.event.data.context, nowMs);
+      } else if (
+        env.event.type === "custom" &&
+        env.event.data.topic === CONVERSATION_FOLDED_TOPIC &&
+        isJsonObject(env.event.data.payload)
+      ) {
+        const c = parseFolded(env.event.data.payload.context);
+        if (c) tracker.force(c, nowMs);
       }
       event = sub.recv().then((e): Wake => ({ kind: "event", env: e }));
       continue;
@@ -325,6 +358,14 @@ async function consolidationLoop(
     }
     tick = nextTick(tickMs);
   }
+}
+
+function parseFolded(value: JsonValue | undefined): ContextKey | null {
+  if (!isJsonObject(value)) return null;
+  const { platform, scope, channel, kind } = value;
+  if (typeof platform !== "string" || typeof channel !== "string") return null;
+  if (kind !== "channel" && kind !== "thread" && kind !== "dm" && kind !== "voice") return null;
+  return { platform, scope: typeof scope === "string" ? scope : null, channel, kind };
 }
 
 async function maintenanceLoop(
