@@ -117,6 +117,8 @@
 - [ ] 取得物品的規劃器:她只說目標(例如「鐵鎬」),程式依配方與工具等級往回推出砍樹 → 工作台 → 木鎬 → 石頭 → 石鎬 → 鐵 → 熔爐 → 鐵鎬,逐步執行並回報(參考 mc_aiplayer 的 GoalPlanner)
 - [ ] 失敗後的防呆:動作失敗後暫時不給低階移動 / 挖掘,逼她換方法或換目標
 - [ ] 已知限制:只隔著樹葉看到的原木 Baritone 會立刻停;只支援一般熔爐;平滑轉頭在 ±180° 附近可能甩一下;遊戲內聊天預設「安靜」等級
+- [x] 唱歌(點歌):`workers/sing`(yt-dlp / 本機歌庫 → Demucs → Seed-VC 歌聲轉換 → 混音 + lrclib 歌詞,快取)、`@miyoria/sing`(歌單、`sing_request` / `sing_start` / `sing_stop`、她決定什麼時候唱、`/queue song request | list | skip | stop`、`[modules.queue]` 的 `song` 項目)、嘴型跟人聲走(Voice Link `0x03` 嘴型音軌)、歌詞字幕(見 [design/autonomy.md](design/autonomy.md) §22)
+- [ ] 實測:在真的 Discord 語音 + VTS + Go Live(`GOLIVE_AUDIO=true`)唱一首
 
 **完成條件**:她能直播玩 Minecraft,邊玩邊實況,觀眾可以點單、投票影響她的行動。(待實測)
 
@@ -143,4 +145,4 @@ Phase 0–8 先用 Rust 寫成原型(留在 git 歷史裡),之後整個改寫成
 
 ## 後續可以考慮
 
-更多遊戲 adapter、Telegram / LINE adapter、唱歌(歌聲合成)、記憶視覺化、她自己寫日記 / 發社群貼文、影像理解(看觀眾貼的圖)、vLLM-Omni 的 WebSocket 文字串流輸入(邊生成邊合成)。
+更多遊戲 adapter、Telegram / LINE adapter、唱歌進階(和聲、即時翻唱、自己寫詞)、記憶視覺化、她自己寫日記 / 發社群貼文、影像理解(看觀眾貼的圖)、vLLM-Omni 的 WebSocket 文字串流輸入(邊生成邊合成)。

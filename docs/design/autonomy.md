@@ -1,6 +1,6 @@
 # 自主層設計(草案)
 
-> 狀態:**已確認方向**(2026-11-02),第 12 節的決定已定案。**階段 A–G 已完成**(實作紀錄與偏差見第 13–19 節,實測修正見第 20 節,頻道聊天等級見第 21 節);下一步是實測與人設重寫。這份文件描述把 DeepSeek-chan 從「被叫才醒來的聊天機器人」改成「有自己內心、自己決定做事的角色」的架構改動。終極目標是 Neuro-sama 等級的自主 AI VTuber。現有架構見 [ARCHITECTURE.md](../ARCHITECTURE.md)。
+> 狀態:**已確認方向**(2026-11-02),第 12 節的決定已定案。**階段 A–G 已完成**(實作紀錄與偏差見第 13–19 節,實測修正見第 20 節,頻道聊天等級見第 21 節,唱歌見第 22 節);下一步是實測與人設重寫。這份文件描述把 DeepSeek-chan 從「被叫才醒來的聊天機器人」改成「有自己內心、自己決定做事的角色」的架構改動。終極目標是 Neuro-sama 等級的自主 AI VTuber。現有架構見 [ARCHITECTURE.md](../ARCHITECTURE.md)。
 
 ## 0. 原則
 
@@ -476,3 +476,22 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 - `/channel activeness`(擁有者的 low / medium / high)還在,在等級之內調整她沒定多話程度時的倍率;跟等級有點重疊,之後可以考慮拿掉。
 - 安靜的數字(0.45、10 分鐘、3 小時、15%)還沒實測過。
 - 遊戲聊天室(`minecraft:<世界>`,kind `channel`)也是文字情境,沒設定時一樣跟著預設的 `quiet`;要她在遊戲裡多聊就設 `channels = { "minecraft:local" = "normal" }` 或 `lively`。
+
+## 22. 唱歌(點歌,2026-11-02)
+
+目標是 Neuro-sama 那種「點歌 → 她用自己的聲音唱」。翻唱在直播機的 `workers/sing`(yt-dlp / 本機歌庫 → Demucs 人聲分離 → Seed-VC 歌聲轉換,用她的參考音 → 混音,歌詞從 lrclib.net 抓;協定見 [voice-link.md](../protocols/voice-link.md)「歌曲 Worker」),Core 的 `sing` 模組(`@miyoria/sing`)管歌單和唱的時機。
+
+- **一樣是請求,她決定**:有人點歌時她用 `sing_request`(能力 `sing.request`,中風險,預設每天 40 首、每人 8 首)開始準備,也可以拒絕;準備要一兩分鐘(唱過的歌是快取,馬上好),這段時間她照常聊天。指令 `/queue song request` 和面板是強制(`command` + override):好了、她有空就唱。`[modules.queue]` 裡種類 `song` 的項目被叫號(`/queue manage next`)時也一樣強制,唱完把項目標成完成(失敗就跳過)。
+- **什麼時候唱也是她決定**:她同意準備的歌好了之後,模組把「準備好了」交給心智迴圈(`MindKey.suggest`,reason `song_ready`),她用 `sing.play` 意圖加一句開場自己挑時機;沒唱的話 `remind_secs`(300)後再提醒,最多 `max_reminders`(2)次。回合的情境裡有「你的歌單」(準備中 / 準備好了 / 正在唱),所以有人說「唱剛剛那首」她也能直接 `sing_start`。沒有心智迴圈時(或 `start = "auto"`)準備好的歌會自己開始。
+- **先說完再唱**:`sing.play` 不會蓋過她的話:先等觸發它的回合結束,再等她的語音安靜 `quiet_ms`(700),最多 `announce_max_secs`(20 秒);自動開始的歌先給她一個 initiative(`song_start`)講開場。唱的時候模組佔住那個語音頻道(`VoiceFloorKey`):她在那裡的語音回覆直接丟掉(不然會排在歌後面、幾分鐘後才播出來);歌不是她的語音,所以**插話不會打斷**,只有 `sing_stop` / `/queue song skip`(淡出 1.5 秒)和 `/queue song stop`(連歌單一起清空)會。唱完一整首後她會收到 `song_done`,可以講感想。
+- **嘴型與字幕**:Core 把 worker 做好的 48 kHz 混音照實際時間(提前 `lead_ms`)送給 voice node,同時把轉換後的人聲當**嘴型音軌**(Voice Link `0x03` 訊框、`play_start.levels`)一起送,所以 VTS 的嘴型跟人聲走、不會跟著鼓聲動;同步歌詞的每一行在播放到那裡時發 `sing.cue` 事件,Stage 轉成 overlay 字幕,開始 / 結束時發 `speaking`。
+- **不可信資料**:歌名、歌手、歌詞來自 YouTube / lrclib / 點歌的人;進 prompt 前一律 `safeName`(單行、去控制字元、截短),再放進資料區塊;卡片上的歌名跳脫 Markdown。連結只接受 worker 的 `SING_URL_HOSTS`(預設 YouTube、SoundCloud、Bilibili、Niconico)。
+- **GPU**:worker 一次只做一首,每個階段用完就釋放 VRAM(`SING_KEEP_MODELS=1` 可保留)。實測(4070 SUPER,TTS / ASR / OBS 同時開著):3 分 28 秒的歌從 YouTube 搜尋到做好約 62 秒(分離 4.6 秒、轉換 42 秒),本行程 VRAM 峰值約 3.2 GB;第一次要另外下載約 2 GB 的模型。
+- **直播要開音訊**:Go Live 的畫面推流要帶聲音(voice node 的 `GOLIVE_AUDIO=true`)觀眾才聽得到歌;Discord 語音頻道裡的人不受影響。
+
+還沒做 / 要注意:
+
+- 還沒在真的 Discord 語音 + VTS 上試唱過(嘴型音軌、字幕時間、唱歌時有人說話的情況都只有單元測試);歌詞時間是官方音軌的,MV 版前奏比較長時會對不上。
+- 唱歌時語音裡有人說話,agent 仍可能生成回覆(會被丟掉,花 token);之後可以讓 attention 在唱歌時直接略過。
+- 自動挑音高只挑八度(-12 / 0 / +12,伴奏不動);要轉調用 `key`(整首一起移,伴奏用 librosa 移調,品質普通)。
+- 歌單只在記憶體(worker 的快取在磁碟上,重開後再點同一首是馬上好)。

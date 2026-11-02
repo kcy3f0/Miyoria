@@ -652,7 +652,7 @@ registry.register(
 | `/voice` | `join`、`leave`、`mode [mode]`、`consent [on\|off]`、`golive start\|stop\|status` |
 | `/stream` | `start`、`stop`、`status`、`scene <name>`(自動完成 OBS 場景) |
 | `/me` | `profile`、`call <稱呼>`、`link [code]`、`privacy [presence on\|off] [dm on\|off] [approach on\|off]`、`memory show\|export\|forget` |
-| `/queue` | `add <text>`、`list`(附「下一個 / 完成 / 跳過 / 暫停」按鈕)、`upvote <id>`、`manage next\|done\|skip\|remove\|clear\|pause\|resume\|priority`、`vote start\|end`(投票用卡片上的按鈕) |
+| `/queue` | `add <text>`、`list`(附「下一個 / 完成 / 跳過 / 暫停」按鈕)、`upvote <id>`、`manage next\|done\|skip\|remove\|clear\|pause\|resume\|priority`、`vote start\|end`(投票用卡片上的按鈕)、`song request <song> [key]\|list\|skip\|stop`(點歌,過閘門) |
 | `/game` | `start`、`stop`、`goal`、`status` |
 | `/channel` | `mode [mode]`、`activeness [level]` |
 | `/admin` | `module list\|enable\|disable\|restart`、`role list\|assign\|revoke\|map\|unmap\|whois`、`perm allow\|deny\|clear`、`person show\|tag\|untag\|block\|unblock\|reset\|adjust`、`persona show`、`memory wipe`、`autonomy pause\|resume\|status` |
@@ -662,7 +662,7 @@ registry.register(
 
 **回覆**:`CommandReply` = 純文字(`text`,文字平台與擴充用)+ 選用的結構化卡片(`card`:標題、文字、小字、區段 + 按鈕、分隔線、按鈕列、下拉選單、檔案、強調色)+ 附件(`files`)+ 面板 session。Discord 一律渲染成 **Components V2**(container),**不用 embed**(架構測試會擋)。共用 helper:`notice(kind, text, detail)`(info / success / warn / error;原始錯誤放在獨立的小字行)、`confirm(...)`(紅色確認卡,破壞性動作一律先確認)、`pageOf` / `pageButtons`(分頁)。表單用 modal(例如 `/me profile` 的「設定稱呼」、`/admin memory wipe` 要求輸入 profile id)。擴充的純文字回覆照樣可用(`@miyoria/sdk` 不變)。
 
-**指令也過閘門**:`/voice join|leave|golive start|stop`、`/stream start|stop|scene`、`/game start|stop|goal` 不直接呼叫服務,而是用 principal `command`(帶 `override`)呼叫行動 registry(§14.1):略過她的判斷(頻率、審核),但絕對禁止與同意照樣檢查,每次都有稽核紀錄。
+**指令也過閘門**:`/voice join|leave|golive start|stop`、`/stream start|stop|scene`、`/game start|stop|goal`、`/queue song request|skip|stop` 不直接呼叫服務,而是用 principal `command`(帶 `override`)呼叫行動 registry(§14.1):略過她的判斷(頻率、審核),但絕對禁止與同意照樣檢查,每次都有稽核紀錄。
 
 **指令以外的卡片**:`ReplySink`(`ReplySinkKey`,`@miyoria/commands`,Discord bot 在 ready 時提供)把 `CommandReply` 當成新的私訊送出(Components V2、不 ping 人),例如閘門給擁有者的確認卡;卡片上的按鈕照一般的元件路由處理。
 
@@ -866,6 +866,8 @@ extensions/minecraft/
 | `chat.start` | — | 她主動在請求的情境開口(文字頻道,或她所在的語音頻道):開一個她自己發起的回合;預設每天 24 次、每人 4 次、冷卻 1 分鐘 | 中 | agent |
 | `chat.dm` | — | 她主動私訊某人聊天(`consent: dm`);預設每天 6 次、每人 2 次、冷卻 10 分鐘 | 中 | agent |
 | `speak` | — | 在語音頻道說一句話(面板的「說這句話」) | 低 | 內建 |
+| `sing.request` | `sing_request` | 準備一首歌(`workers/sing` 用她的聲音翻唱;指令 / 面板 = 好了就唱),見 [design/autonomy.md](design/autonomy.md) §22 | 中 | sing |
+| `sing.play` / `sing.stop` | `sing_start` / `sing_stop` | 在她所在的語音頻道唱準備好的歌(先等她說完);停止(`all` = 連歌單清空) | 低 | sing |
 | `test.high` | `test_high_risk` | 什麼都不做的高風險佔位(`[modules.actions] test_capability = true` 才有) | 高 | actions |
 | `code.run` | `code_run` | 在離線、用完即丟的 Docker 容器裡跑她寫的 Python / Node(`network` 一律 `none`);輸出以不可信資料區塊回來 | 高 | sandbox(opt-in,Docker 可用時) |
 | `tool.propose` | `tool_propose` | 提出自寫工具;閘門放行 = 核准那個版本 | 高 | sandbox |
@@ -987,6 +989,7 @@ miyoria/
 │  ├─ initiative/             # 主動發話
 │  ├─ queue/                  # 觀眾請求佇列
 │  ├─ game/                   # 遊戲導演
+│  ├─ sing/                   # 點歌:歌單、唱歌的時機、播放(嘴型音軌、歌詞字幕)
 │  ├─ api/                    # Admin API(Hono REST + SSE)、Discord 登入、/metrics
 │  ├─ ext-host/               # 擴充宿主、JSON-RPC、manifest
 │  ├─ mcp/                    # MCP client / server
