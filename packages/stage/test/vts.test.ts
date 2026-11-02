@@ -114,7 +114,7 @@ describe("vts", () => {
     expect(state.data.details).toBe(false);
 
     const params = await c.inputParameters();
-    expect(params.has("FaceAngleX") && params.has("MouthForm")).toBe(true);
+    expect(params.has("FaceAngleX") && params.has("MouthSmile")).toBe(true);
 
     const err = await c.request("NoSuchRequest", {}).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
@@ -128,7 +128,7 @@ describe("vts", () => {
     c.inject(
       [
         ["MouthOpen", 0.5],
-        ["MouthForm", 0.1],
+        ["MouthSmile", 0.55],
       ],
       false,
     );
@@ -157,7 +157,7 @@ describe("vts", () => {
       for (const p of d.parameterValues) seen.set(p.id, p.value);
     }
     expect(injections.at(-1).faceFound).toBe(true);
-    expect([...seen.keys()].sort()).toStrictEqual(["FaceAngleX", "MouthForm", "MouthOpen"]);
+    expect([...seen.keys()].sort()).toStrictEqual(["FaceAngleX", "MouthOpen", "MouthSmile"]);
     expect(Math.abs((seen.get("FaceAngleX") as number) - 3)).toBeLessThan(1e-6);
 
     // A single frame carries every parameter in one request.

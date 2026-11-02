@@ -3,7 +3,8 @@
 // * Module `stage.link` (`StageLinkModule`, Core side) serves the Stage Link WebSocket
 //   (`docs/protocols/stage-link.md`), forwards emotions, subtitles and speaking state to the
 //   Stage node and provides `StageLinkKey` (scene, stream, hotkey, gaze, status). It registers
-//   `stream start | stop | scene <name> | status`.
+//   `stream start | stop | scene <name> | status` and follows the voice node's Go Live with OBS
+//   (`voice.golive` → OBS "Start / Stop Streaming").
 //
 //   ```toml
 //   [modules."stage.link"]
@@ -32,6 +33,7 @@ export {
 } from "./link/commands.js";
 export { checkHello, type HelloOutcome, tokenMatches } from "./link/conn.js";
 export { EMOTION_TOPIC, Forwarder } from "./link/forward.js";
+export { type GoLiveFollow, goliveFollow, VOICE_GOLIVE_TOPIC } from "./link/golive.js";
 export {
   DEFAULT_BIND,
   ERROR_TOPIC,

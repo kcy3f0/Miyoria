@@ -16,7 +16,10 @@ export const ObsConfigSchema = z.object({
   port: z.number().int().min(0).max(65_535).default(4455),
   /** obs-websocket password (empty when authentication is off). */
   password: z.string().default(""),
-  /** Text source that shows her subtitles (none by default). */
+  /**
+   * Text source that shows her latest line (none by default). Created in the current scene,
+   * at the bottom, when OBS does not have it yet.
+   */
   subtitle_source: z.string().nullable().default(null),
   /** Clear the subtitle source this long after the final text; 0 keeps it. */
   subtitle_clear_ms: z.number().int().nonnegative().default(6_000),
@@ -36,6 +39,11 @@ export interface Obs {
   stopStream(): Promise<void>;
   /** Sets the `text` setting of a text source. */
   setText(source: string, text: string): Promise<void>;
+  /**
+   * Creates text source `source` in the current scene unless an input with that name exists.
+   * Returns whether it created one (optional).
+   */
+  ensureTextSource?(source: string): Promise<boolean>;
   /** Drops the connection (optional). */
   close?(): Promise<void>;
 }
@@ -124,6 +132,50 @@ class ObsWebSocketObs implements Obs {
     });
   }
 
+  async ensureTextSource(source: string): Promise<boolean> {
+    const { inputs } = await this.#client.call("GetInputList");
+    if (inputs.some((i) => i.inputName === source)) return false;
+    const { inputKinds } = await this.#client.call("GetInputKindList", { unversioned: false });
+    // GDI+ on Windows, FreeType elsewhere.
+    const kind = ["text_gdiplus_v3", "text_gdiplus_v2", "text_ft2_source_v2"].find((k) =>
+      inputKinds.includes(k),
+    );
+    if (!kind) throw new ObsError("OBS has no text source type");
+    const video = await this.#client.call("GetVideoSettings");
+    const width = Math.round(video.baseWidth * 0.9);
+    const fontSize = Math.max(Math.round(video.baseHeight / 16), 24);
+    const scene = await this.currentScene();
+    const { sceneItemId } = await this.#client.call("CreateInput", {
+      sceneName: scene,
+      inputName: source,
+      inputKind: kind,
+      inputSettings: {
+        text: "",
+        font: { face: "Microsoft JhengHei", size: fontSize, style: "Bold", flags: 1 },
+        color: 0xffffffff,
+        outline: true,
+        outline_size: Math.max(Math.round(fontSize / 10), 3),
+        outline_color: 0xff000000,
+        align: "center",
+        valign: "bottom",
+        extents: true,
+        extents_cx: width,
+        extents_cy: fontSize * 3,
+        extents_wrap: true,
+      },
+      sceneItemEnabled: true,
+    });
+    await this.#client.call("SetSceneItemTransform", {
+      sceneName: scene,
+      sceneItemId,
+      sceneItemTransform: {
+        positionX: Math.round((video.baseWidth - width) / 2),
+        positionY: Math.round(video.baseHeight - fontSize * 3 - video.baseHeight * 0.04),
+      },
+    });
+    return true;
+  }
+
   async close(): Promise<void> {
     await this.#client.disconnect();
   }
@@ -188,6 +240,7 @@ export class ObsController {
           log.info("connected to OBS");
           backoffMs = 1_000;
           this.#current = obs;
+          await this.#ensureSubtitleSource(obs);
           while (!signal.aborted) {
             try {
               await this.refresh();
@@ -207,6 +260,18 @@ export class ObsController {
     } finally {
       for (const timer of this.#clearTimers) clearTimeout(timer);
       this.#clearTimers.clear();
+    }
+  }
+
+  async #ensureSubtitleSource(obs: Obs): Promise<void> {
+    const source = this.#config.subtitle_source;
+    if (source === null || !obs.ensureTextSource) return;
+    try {
+      if (await obs.ensureTextSource(source)) {
+        log.info({ source }, "created the subtitle text source in the current scene");
+      }
+    } catch (error) {
+      log.warn({ err: errorMessage(error), source }, "cannot create the subtitle source");
     }
   }
 

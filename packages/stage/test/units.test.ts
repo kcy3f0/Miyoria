@@ -16,6 +16,7 @@ import {
   encodeMessage,
   Forwarder,
   GazeConfigSchema,
+  goliveFollow,
   IdleMotion,
   Levels,
   type LipSyncConfig,
@@ -29,6 +30,7 @@ import {
   StageLinkConfigSchema,
   type StageMessage,
   tokenMatches,
+  VOICE_GOLIVE_TOPIC,
   type VtsCommand,
 } from "../src/index.js";
 
@@ -150,6 +152,8 @@ describe("config", () => {
       hello_timeout_ms: 5_000,
       request_timeout_ms: 10_000,
       subtitle_text_turns: false,
+      golive_obs: true,
+      golive_start_delay_ms: 3_000,
     });
     const c = parseStageConfig({ vts: { inject_hz: 30 }, gaze: { chat: { face_x: 1 } } });
     expect(c.core_url).toBe("ws://127.0.0.1:7882/stage-link");
@@ -206,12 +210,15 @@ describe("avatar", () => {
       new URL("../../../profiles/deepseek-chan/avatar.toml", import.meta.url),
     );
     const p = AvatarProfile.load(path);
-    // The draft still has placeholders.
-    expect(p.vtsModel).toBeNull();
-    expect(p.emotions.size).toBe(0);
+    expect(p.vtsModel).toBe("大肥鱼");
+    // Every emotion but `neutral` (the resting state) maps to one of the model's expressions.
+    expect(p.emotions.size).toBe(8);
+    expect([...p.emotions.values()].every((a) => JSON.stringify(a).includes(".exp3.json"))).toBe(
+      true,
+    );
     expect(p.lipsync).toBe("inject");
     expect(p.mouthOpen).toBe("MouthOpen");
-    expect(p.mouthForm).toBe("MouthForm");
+    expect(p.mouthForm).toBe("MouthSmile");
   });
 
   it("maps_expressions_and_hotkeys", () => {
@@ -397,16 +404,19 @@ describe("lipsync", () => {
       const mouth = m.update(0.15, TICK);
       expect(mouth.open).toBeGreaterThanOrEqual(0);
       expect(mouth.open).toBeLessThanOrEqual(1);
-      expect(Math.abs(mouth.form)).toBeLessThanOrEqual(1);
+      // VTS `MouthSmile` range.
+      expect(mouth.form).toBeGreaterThanOrEqual(0);
+      expect(mouth.form).toBeLessThanOrEqual(1);
       forms.push(mouth.form);
     }
     const min = Math.min(...forms);
     const max = Math.max(...forms);
-    expect(max - min, "form varies").toBeGreaterThan(0.1);
-    expect(max - min).toBeLessThanOrEqual(0.71);
+    expect(max - min, "form varies").toBeGreaterThan(0.05);
+    expect(max - min).toBeLessThanOrEqual(0.36);
     for (let i = 0; i < 120; i++) m.update(0, TICK);
-    expect(m.update(0, TICK)).toStrictEqual({ open: 0, form: 0 });
-    expect(m.reset()).toStrictEqual({ open: 0, form: 0 });
+    // At rest the mouth goes back to neutral (0.5).
+    expect(m.update(0, TICK)).toStrictEqual({ open: 0, form: 0.5 });
+    expect(m.reset()).toStrictEqual({ open: 0, form: 0.5 });
   });
 
   it("levels_go_stale_and_respect_latency", () => {
@@ -525,5 +535,23 @@ describe("forward", () => {
     expect(f.onEvent(event("failed", "hi"))).toStrictEqual([
       { type: "speaking", state: "stopped" },
     ]);
+  });
+});
+
+describe("go live follow", () => {
+  it("maps_states_to_obs_actions", () => {
+    expect(VOICE_GOLIVE_TOPIC).toBe("voice.golive");
+    expect(goliveFollow("starting")).toBe("start");
+    expect(goliveFollow("live")).toBeNull();
+    expect(goliveFollow("stopped")).toBe("stop");
+    expect(goliveFollow("failed")).toBe("stop");
+    expect(goliveFollow(undefined)).toBeNull();
+    expect(goliveFollow("nonsense")).toBeNull();
+  });
+
+  it("config_defaults_follow_go_live", () => {
+    const config = StageLinkConfigSchema.parse({ token: "x" });
+    expect(config.golive_obs).toBe(true);
+    expect(config.golive_start_delay_ms).toBe(3_000);
   });
 });

@@ -99,7 +99,7 @@ function respond(st: VtsState, req: Json): Json {
     case "InputParameterListRequest":
       out = {
         defaultParameters: DEFAULT_PARAMS.map((name) => ({ name })),
-        customParameters: [{ name: "MouthForm" }],
+        customParameters: [{ name: "MouthSmile" }],
       };
       break;
     default:
@@ -218,6 +218,11 @@ export class FakeObs implements Obs, ObsConnector {
 
   async setText(source: string, text: string): Promise<void> {
     this.state.texts.push([source, text]);
+  }
+
+  async ensureTextSource(source: string): Promise<boolean> {
+    this.state.calls.push(`ensure ${source}`);
+    return true;
   }
 
   async connect(): Promise<Obs> {

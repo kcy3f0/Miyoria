@@ -78,9 +78,12 @@ token = "${STAGE_LINK_TOKEN}"
 # hello_timeout_ms = 5000
 # request_timeout_ms = 10000
 # subtitle_text_turns = false
+golive_obs = true          # 跟在 voice node 的 Go Live 後面按 OBS 開始 / 停止直播
+golive_start_delay_ms = 3000   # 等 voice node 的 ffmpeg 綁好 RTMP listener 再按
 ```
 
 - 訂閱 `agent.emotion`、`agent.turn.completed`、`voice.playback`,依上面的規則轉送。
+- 另外訂閱 `voice.golive`(`{guild, state, error?, reason?}`):`starting` 時在 `golive_start_delay_ms` 後叫 OBS 開始直播(最多重試 3 次),`stopped` / `failed` 時叫 OBS 停止。所以 Discord 的 `/golive start` 一個指令就能從推流到 OBS 全包;`golive_obs = false` 可以關掉,讓 OBS 自己控制。
 - 提供 `Arc<StageLink>`:`set_scene`、`stream`、`hotkey`、`refresh_status`、`gaze`、`status`、`subscribe_status`。
 - 狀態變化發佈成 `Custom { topic: "stage.status" }`,payload `{connected, vts, obs, scene, streaming}`(斷線時只有 `{"connected": false}`)。
 - 有 `CommandRegistry` 時註冊指令:`stream start`、`stream stop`、`stream scene <name>`、`stream status`(權限節點 `stream.start` / `stream.stop` / `stream.scene` / `stream.status`)。
@@ -102,7 +105,7 @@ Voice node(跟 Stage 在同一台直播機)播放她的聲音時,把播放中的
 - 播完或被打斷時可以送一個 `{"t": <ms>, "rms": 0}`;就算沒送,Stage 在 150 ms(`stale_ms`)沒收到新值後也會把嘴巴闔上。Core 送來 `speaking` `stopped` 時 Stage 也會立刻歸零。
 - RMS 應該在**實際出聲的那一刻**送出(也就是 voice node 把該段送進播放器的時候)。如果音訊輸出還有固定延遲,用 `[stage.lipsync] latency_ms` 在 Stage 端補。
 
-Stage 端的處理:雜訊閘(`gate`,預設 0.015)→ 乘上 `gain`(預設 5.0)並截在 `max_open` → attack / release 平滑(預設 35 / 110 ms)→ `MouthOpen`;`MouthForm` 在嘴巴張開時小幅擺動(`form_base` ± `form_variation`)。以 `[stage.vts] inject_hz`(預設 60 Hz)用 `InjectParameterDataRequest`(mode `set`)跟頭部 / 視線參數一起注入。參數名稱來自 profile 的 `avatar.toml` `[lipsync]`;`mode = "mic"` 時不注入嘴型,也不開這個端點。
+Stage 端的處理:雜訊閘(`gate`,預設 0.015)→ 乘上 `gain`(預設 5.0)並截在 `max_open` → attack / release 平滑(預設 35 / 110 ms)→ `MouthOpen`;`MouthSmile` 在嘴巴張開時小幅擺動(`form_base` 預設 0.5 ± `form_variation` 預設 0.175)。以 `[stage.vts] inject_hz`(預設 60 Hz)用 `InjectParameterDataRequest`(mode `set`)跟頭部 / 視線參數一起注入。參數名稱來自 profile 的 `avatar.toml` `[lipsync]`;`mode = "mic"` 時不注入嘴型,也不開這個端點。
 
 ---
 

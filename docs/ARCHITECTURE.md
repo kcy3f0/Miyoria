@@ -587,7 +587,7 @@ registry.register(
 
 - 透過 VTS Plugin API(本機 WebSocket)認證成外掛。
 - **情緒 → 表情**:依 `avatar.toml` 觸發 expression / hotkey;同一時間只維持一個主表情,會淡入淡出。
-- **嘴型**:從 TTS 音訊串流算 RMS(之後可加 viseme 估計),以約 60Hz 用 `InjectParameterData` 注入 `MouthOpen` / `MouthForm`,跟播放時間對齊。備案:把 TTS 輸出到虛擬音源線,讓 VTS 當麥克風做 lip sync。
+- **嘴型**:從 TTS 音訊串流算 RMS(之後可加 viseme 估計),以約 60Hz 用 `InjectParameterData` 注入 `MouthOpen` / `MouthSmile`(VTS 追蹤參數,0..1,模型端對應到 `ParamMouthOpenY` / `ParamMouthForm`),跟播放時間對齊。備案:把 TTS 輸出到虛擬音源線,讓 VTS 當麥克風做 lip sync。
 - **Idle 與注意力**:眨眼、呼吸交給 VTS;我們注入頭部角度和視線(例如看向聊天室、看向遊戲畫面),讓她有在「看」的感覺。
 - 道具(item)載入、場景互動可以用工具開放給 agent。
 

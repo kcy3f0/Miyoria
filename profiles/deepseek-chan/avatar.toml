@@ -1,29 +1,30 @@
-# DeepSeek-chan 模型對照(草稿)
+# DeepSeek-chan 模型對照
 #
 # 模型:「DeepSeek-chan Live2D Model + Layered PSD」by Kamiya_Ryoko
 # https://vgen.co/KAMIYA/product/deepseek-chan-deepseek-free-live2d-model-layered-psd-psd/1c55a71a-2747-4616-819d-2dc0a934089d
-# 授權:可用於商業內容、可修改;不可原樣再散佈或轉售模型檔 / PSD
-#   → 模型檔放在 VTube Studio 的模型資料夾,不放進這個 repo
+# 授權:個人直播、影片(含平台收益)可用;不可原樣再散佈或轉售模型檔 / PSD;公開分享要標註來源
+#   → 模型檔放在 VTube Studio 的模型資料夾(StreamingAssets/Live2DModels/DeepSeek-chan),不放進這個 repo
 #
-# 下面的 expression / hotkey 名稱要等匯入 VTS 之後依實際模型填寫
+# 下面的 expression 檔名對應官方模型的 Exp3/ 資料夾(VTS 裡的模型名稱是「大肥鱼」)
 
-vts_model = "<VTS 中的模型名稱或 ID>"
+vts_model = "大肥鱼"
 
 [emotion]   # 情緒標記 → VTS expression 檔或 hotkey
 neutral     = ""
-happy       = "<expression>.exp3.json"
-smug        = "<expression>.exp3.json"
-annoyed     = "<expression>.exp3.json"
-angry       = "<expression>.exp3.json"
-embarrassed = "<expression>.exp3.json"
-sad         = "<expression>.exp3.json"
-surprised   = "<expression>.exp3.json"
-thinking    = "<expression>.exp3.json"
+happy       = "爱心眼.exp3.json"
+smug        = "屑屑眼.exp3.json"
+annoyed     = "黑脸.exp3.json"
+angry       = "＞＜.exp3.json"
+embarrassed = "脸红.exp3.json"
+sad         = "流泪.exp3.json"
+surprised   = "圈圈眼.exp3.json"
+thinking    = "单片眼镜.exp3.json"
 
 [lipsync]
 mode = "inject"        # inject:由 TTS 音訊算出嘴型注入;mic:VTS 用虛擬音源線自己做
+# VTS 的追蹤參數(0..1);這個模型把它們對應到 ParamMouthOpenY / ParamMouthForm
 mouth_open = "MouthOpen"
-mouth_form = "MouthForm"
+mouth_form = "MouthSmile"
 
 [credit]
 text = "\"DeepSeek-chan Live2D Model + Layered PSD\" by Kamiya_Ryoko"

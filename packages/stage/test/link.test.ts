@@ -26,6 +26,7 @@ import {
   type StageLink,
   StageLinkKey,
   StageLinkModule,
+  VOICE_GOLIVE_TOPIC,
 } from "../src/index.js";
 import { delay, type Json, WAIT_MS, waitUntil } from "./common.js";
 
@@ -290,6 +291,45 @@ describe("stage.link", () => {
 
     h.link().gaze("game");
     expect(await node.recvJson()).toStrictEqual({ type: "gaze", target: "game" });
+  });
+
+  it("follows_go_live_with_obs", async () => {
+    const h = await Harness.start({ golive_start_delay_ms: 0 });
+    const node = await h.node();
+    node.sendJson({ type: "status", vts: true, obs: true, scene: "Talk", streaming: false });
+    await waitUntil(() => h.link().status()?.obs === true);
+
+    // The voice node started Go Live: Stage presses OBS "Start Streaming".
+    h.publish(customEvent(VOICE_GOLIVE_TOPIC, { guild: "g1", state: "starting" }));
+    const start = await node.recvJson();
+    expect(start.type).toBe("stream");
+    expect(start.action).toBe("start");
+    node.sendJson({
+      type: "status",
+      vts: true,
+      obs: true,
+      scene: "Talk",
+      streaming: true,
+      id: start.id,
+    });
+    await waitUntil(() => h.link().status()?.streaming === true);
+
+    // "live" does not touch OBS again.
+    h.publish(customEvent(VOICE_GOLIVE_TOPIC, { guild: "g1", state: "live" }));
+    // Go Live ended: Stage presses OBS "Stop Streaming".
+    h.publish(customEvent(VOICE_GOLIVE_TOPIC, { guild: "g1", state: "stopped" }));
+    const stop = await node.recvJson();
+    expect(stop.type).toBe("stream");
+    expect(stop.action).toBe("stop");
+    node.sendJson({
+      type: "status",
+      vts: true,
+      obs: true,
+      scene: "Talk",
+      streaming: false,
+      id: stop.id,
+    });
+    await waitUntil(() => h.link().status()?.streaming === false);
   });
 
   it("requests_are_answered_by_id", async () => {

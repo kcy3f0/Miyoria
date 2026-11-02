@@ -1,4 +1,7 @@
-// Lip sync: playback levels from the voice node → `MouthOpen` / `MouthForm`.
+// Lip sync: playback levels from the voice node → `MouthOpen` / `MouthSmile`.
+//
+// Both are VTube Studio tracking parameters in 0..1; VTS maps them to the model's
+// `ParamMouthOpenY` / `ParamMouthForm` (where 0.5 is a neutral mouth).
 //
 // The voice node streams `{"t": <ms>, "rms": 0..1}` to `ws://127.0.0.1:7883/levels` while she
 // speaks. `Levels` keeps the most recent samples (optionally delayed to line up with audio
@@ -26,10 +29,10 @@ export const LipSyncConfigSchema = z.object({
   release_ms: z.number().default(110),
   /** Largest opening (0..1). */
   max_open: z.number().default(1.0),
-  /** Resting `MouthForm`. */
-  form_base: z.number().default(0.0),
-  /** How far `MouthForm` wanders while talking. */
-  form_variation: z.number().default(0.35),
+  /** Resting mouth shape (0..1, 0.5 = neutral). */
+  form_base: z.number().default(0.5),
+  /** How far the mouth shape wanders while talking. */
+  form_variation: z.number().default(0.175),
   /** Delay applied to incoming levels (audio output latency). */
   latency_ms: z.number().int().nonnegative().default(0),
   /** Without new levels for this long the mouth closes. */
@@ -103,7 +106,7 @@ export class MouthShaper {
 
   constructor(config: LipSyncConfig) {
     this.#envelope = new Envelope(config);
-    this.#formBase = clamp(config.form_base, -1, 1);
+    this.#formBase = clamp(config.form_base, 0, 1);
     this.#formVariation = clamp(config.form_variation, 0, 1);
   }
 
@@ -112,7 +115,7 @@ export class MouthShaper {
     // The shape changes faster while the mouth moves a lot.
     this.#phase += (dtMs / 1000) * (1.5 + 6 * open);
     const wander = 0.6 * Math.sin(this.#phase * 1.7) + 0.4 * Math.sin(this.#phase * 4.3 + 1);
-    const form = clamp(this.#formBase + this.#formVariation * wander * Math.min(open, 1), -1, 1);
+    const form = clamp(this.#formBase + this.#formVariation * wander * Math.min(open, 1), 0, 1);
     return { open, form };
   }
 

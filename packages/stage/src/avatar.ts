@@ -60,8 +60,11 @@ export class AvatarProfile {
   lipsync: LipSyncMode = "inject";
   /** Parameter for mouth opening. Default `MouthOpen`. */
   mouthOpen = "MouthOpen";
-  /** Parameter for mouth shape. Default `MouthForm`. */
-  mouthForm: string | null = "MouthForm";
+  /**
+   * VTS tracking parameter for mouth shape (0..1). Default `MouthSmile`, which VTS maps to
+   * `ParamMouthForm`; `MouthForm` itself is a Live2D parameter VTS won't take injections for.
+   */
+  mouthForm: string | null = "MouthSmile";
 
   /** Parses `avatar.toml` (`null` when the profile has none). */
   static parse(table: JsonObject | Record<string, unknown> | null): AvatarProfile {

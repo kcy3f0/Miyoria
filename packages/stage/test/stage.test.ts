@@ -129,7 +129,13 @@ describe("stage", () => {
       scene: "Game",
       streaming: false,
     });
-    expect(obs.state.calls).toStrictEqual(["scene Game", "scene Missing", "start", "stop"]);
+    expect(obs.state.calls).toStrictEqual([
+      "ensure Subtitle",
+      "scene Game",
+      "scene Missing",
+      "start",
+      "stop",
+    ]);
 
     // VTS: hotkeys, emotions with hold, batched parameter injection.
     await link.hotkey("wave");
@@ -155,7 +161,7 @@ describe("stage", () => {
     await waitUntil(() =>
       vts.injections().some((d: Json) => {
         const ids = d.parameterValues.map((p: Json) => p.id);
-        return ["MouthOpen", "MouthForm", "FaceAngleX", "EyeRightY"].every((id) =>
+        return ["MouthOpen", "MouthSmile", "FaceAngleX", "EyeRightY"].every((id) =>
           ids.includes(id),
         );
       }),

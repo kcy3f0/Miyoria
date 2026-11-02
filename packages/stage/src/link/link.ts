@@ -51,6 +51,13 @@ export const StageLinkConfigSchema = z.object({
   request_timeout_ms: z.number().int().nonnegative().default(10_000),
   /** Also show replies of text (non-voice) turns as subtitles. */
   subtitle_text_turns: z.boolean().default(false),
+  /** Follow the voice node's Go Live: start / stop OBS streaming with it. */
+  golive_obs: z.boolean().default(true),
+  /**
+   * Wait this long after Go Live starts before pressing OBS "Start Streaming": the voice node's
+   * ffmpeg has to bind the RTMP listener first. Default 3 000.
+   */
+  golive_start_delay_ms: z.number().int().nonnegative().default(3_000),
 });
 export type StageLinkConfig = z.output<typeof StageLinkConfigSchema>;
 
