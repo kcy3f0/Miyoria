@@ -172,6 +172,9 @@ export class MindLoop implements Mind {
   #salient: SalientEvent[] = [];
   #nextHeartbeat: number | null = null;
   #idleStreak = 0;
+  /** Thoughts in a row (any trigger) that did nothing, and when the run began. */
+  #idleRun = 0;
+  #idleSince: number | null = null;
   #running = false;
   #thinking = false;
   #wake: (() => void) | null = null;
@@ -625,12 +628,9 @@ export class MindLoop implements Mind {
 
   #scheduleHeartbeat(now: number): void {
     const self = this.#d.services.get(SelfStateKey);
-    const world = this.#d.services.get(WorldStateKey)?.snapshot() ?? null;
     const ms = heartbeatMs(
       {
-        lively:
-          (world?.channels.some((c) => c.lively) ?? false) ||
-          (world?.voice_channels.some((v) => v.activity?.lively === true) ?? false),
+        lively: this.#lively(),
         inVoice: [...this.#rooms.values()].some((r) => r.people > 0),
         agendaDue: (self?.agenda() ?? []).some((a) => a.due === null || Date.parse(a.due) <= now),
         night: inQuietHours(now, this.#d.config),
@@ -641,6 +641,15 @@ export class MindLoop implements Mind {
       this.#d.config,
     );
     this.#nextHeartbeat = ms === null ? null : now + ms;
+  }
+
+  /** A text channel or voice channel has a lively conversation going. */
+  #lively(): boolean {
+    const world = this.#d.services.get(WorldStateKey)?.snapshot() ?? null;
+    return (
+      (world?.channels.some((c) => c.lively) ?? false) ||
+      (world?.voice_channels.some((v) => v.activity?.lively === true) ?? false)
+    );
   }
 
   async #thinkPending(signal: AbortSignal): Promise<void> {
@@ -724,6 +733,13 @@ export class MindLoop implements Mind {
           capability: b.capability,
           reason: b.reason,
         })),
+        idle:
+          this.#idleSince === null
+            ? null
+            : {
+                thoughts: this.#idleRun,
+                minutes: Math.round((started - this.#idleSince) / MINUTE_MS),
+              },
       };
       this.#calls.record(started);
       const thought: Thought = {
@@ -808,6 +824,19 @@ export class MindLoop implements Mind {
         snap.agenda,
       );
       thought.intents = intents.map(([, record]) => record);
+      // Talking with people (or listening to a lively conversation) is not sitting idle;
+      // neither is anything she set out to do.
+      if (
+        triggers.some((t) => t.kind === "turn") ||
+        intents.some(([intent]) => intent !== null) ||
+        this.#lively()
+      ) {
+        this.#idleRun = 0;
+        this.#idleSince = null;
+      } else {
+        this.#idleRun += 1;
+        this.#idleSince ??= started;
+      }
       await d.journal.add(thought);
       // Acting can take a while (the scheduler's lanes, joining voice): the loop goes on.
       void this.#act(thought.id, intents, signal).catch((error: unknown) => {

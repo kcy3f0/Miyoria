@@ -268,6 +268,19 @@ describe("mind module", () => {
     expect(thought?.intents).toEqual([]);
   });
 
+  it("tells her when she has done nothing for several thoughts in a row", async () => {
+    const provider = new MockProvider("p");
+    for (let i = 0; i < 4; i++) provider.reply('{"thought": "繼續窩著"}');
+    const r = await rig(provider, { config: { min_interval_secs: 0 } });
+    for (const what of ["a", "b", "c", "d"]) {
+      r.publish(salient(what));
+      await wait(5000);
+    }
+    expect(provider.requests().length).toBe(4);
+    expect(systemText(provider, 2)).not.toContain("# 你已經發呆一陣子了");
+    expect(systemText(provider, 3)).toContain("連續想了 3 次都沒做任何事");
+  });
+
   it("keeps her journal across restarts, the newest `journal_keep`", async () => {
     const store = new MemorySettingsStore();
     const provider = new MockProvider("p").reply('{"thought": "一"}').reply('{"thought": "二"}');
