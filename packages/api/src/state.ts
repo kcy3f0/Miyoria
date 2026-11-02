@@ -13,6 +13,7 @@ import {
 } from "@miyoria/types";
 import type { Context } from "hono";
 import { ApiError } from "./errors.js";
+import { ContextLabels } from "./labels.js";
 import type { Monitor } from "./monitor.js";
 import type { OAuth } from "./oauth.js";
 import { ActiveProfileKey } from "./services.js";
@@ -46,6 +47,9 @@ export class ApiState {
     readonly monitor: Monitor,
     readonly panelDir: string | null,
     readonly tokenize: Tokenizer,
+    /** Emotions of the profile's `avatar.toml`, sorted. */
+    readonly emotions: readonly string[] = [],
+    readonly labels: ContextLabels = new ContextLabels(() => ctx.clock.now()),
   ) {}
 
   /** The service, or a 503 naming `what`. */

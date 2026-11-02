@@ -78,6 +78,24 @@ export interface ApiModuleOptions {
   tokenize?: Tokenizer;
   /** Environment lookup for `MIYORIA_PANEL_DIR` (default `process.env`). */
   env?: (name: string) => string | undefined;
+  /** Emotions the profile's avatar knows (`avatarEmotions`), for `/api/stage`. */
+  emotions?: readonly string[];
+}
+
+/**
+ * Emotion names of a raw `avatar.toml` table (`[emotion]` keys): lowercase, sorted, `neutral`
+ * included, `<placeholder>` values left out.
+ */
+export function avatarEmotions(avatar: Record<string, unknown> | null | undefined): string[] {
+  const table = avatar?.emotion;
+  if (typeof table !== "object" || table === null || Array.isArray(table)) return [];
+  const names = new Set<string>();
+  for (const [name, value] of Object.entries(table)) {
+    if (typeof value !== "string" || value.trim().startsWith("<")) continue;
+    const key = name.trim().toLowerCase();
+    if (key !== "") names.add(key);
+  }
+  return [...names].sort();
 }
 
 /** `host:port` (IPv6 hosts in brackets) of `bind`. */
@@ -150,11 +168,13 @@ export class ApiModule implements Module {
   });
   readonly #tokenize: Tokenizer;
   readonly #env: (name: string) => string | undefined;
+  readonly #emotions: readonly string[];
   #address: AddressInfo | null = null;
 
   constructor(options: ApiModuleOptions = {}) {
     this.#tokenize = options.tokenize ?? tokenize;
     this.#env = options.env ?? ((name) => process.env[name]);
+    this.#emotions = [...(options.emotions ?? [])];
   }
 
   /** The address the server is bound to while running (useful with port 0). */
@@ -200,7 +220,7 @@ export class ApiModule implements Module {
     };
 
     const monitor = new Monitor();
-    const state = new ApiState(ctx, auth, monitor, panelDir, this.#tokenize);
+    const state = new ApiState(ctx, auth, monitor, panelDir, this.#tokenize, this.#emotions);
     const app = createApp(state, { metricsPublic: config.metrics_public });
     const server = createAdaptorServer({ fetch: app.fetch });
     let address: AddressInfo;

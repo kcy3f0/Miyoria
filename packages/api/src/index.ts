@@ -40,6 +40,7 @@ export {
   SseParser,
 } from "./client.js";
 export { ApiError, NO_SUCH_ENDPOINT } from "./errors.js";
+export { ContextLabels, LABEL_MISS_TTL_MS, LABEL_TIMEOUT_MS, LABEL_TTL_MS } from "./labels.js";
 export { METRICS_PATH } from "./metrics.js";
 export {
   type ApiConfig,
@@ -47,6 +48,7 @@ export {
   ApiConfigSchema,
   ApiModule,
   type ApiModuleOptions,
+  avatarEmotions,
   DEFAULT_BIND,
   DEFAULT_PANEL_DIR,
   FETCH_BLOCKED_PORTS,

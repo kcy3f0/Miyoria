@@ -9,7 +9,7 @@ import { AuthService, AuthServiceKey } from "@miyoria/auth";
 import { ExtensionCatalog, ExtensionCatalogKey, ExtensionManifest } from "@miyoria/ext-host";
 import { Supervisor, SupervisorKey } from "@miyoria/kernel";
 import { LlmRouter, LlmRouterKey } from "@miyoria/llm";
-import { McpStatus, McpStatusKey } from "@miyoria/mcp";
+import { McpStatus, McpStatusKey, newServerStatus } from "@miyoria/mcp";
 import {
   type Embedder,
   MemoryEngine,
@@ -19,7 +19,13 @@ import {
 } from "@miyoria/memory";
 import { RequestQueue, RequestQueueKey } from "@miyoria/queue";
 import { Social, SocialKey, socialConfig } from "@miyoria/social";
-import { StageLinkModule } from "@miyoria/stage";
+import {
+  defaultStageStatus,
+  type StageLink,
+  StageLinkKey,
+  StageLinkModule,
+  type StageStatus,
+} from "@miyoria/stage";
 import {
   type AuditEntry,
   AuditLogKey,
@@ -39,10 +45,20 @@ import {
   type JsonValue,
   newId,
   type PersonId,
+  type PlatformSink,
+  PlatformSinks,
+  PlatformSinksKey,
   VoiceSinkKey,
 } from "@miyoria/types";
 import { afterEach, describe, expect, it } from "vitest";
-import { ActiveProfileKey, ApiClient, ApiModule, type AssignRoleRequest } from "../src/index.js";
+import {
+  ActiveProfileKey,
+  ApiClient,
+  ApiModule,
+  type ApiModuleOptions,
+  type AssignRoleRequest,
+  avatarEmotions,
+} from "../src/index.js";
 import { FakeSink, Idle } from "./support/fakes.js";
 import { errorOf, raw, statusOf, waitFor } from "./support/http.js";
 import { TestStore } from "./support/stores.js";
@@ -68,7 +84,10 @@ afterEach(async () => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-async function harness(apiConfig: Record<string, JsonValue> = {}): Promise<Harness> {
+async function harness(
+  apiConfig: Record<string, JsonValue> = {},
+  options: ApiModuleOptions = {},
+): Promise<Harness> {
   const sup = new Supervisor();
   const store = new TestStore();
   const s = sup.services;
@@ -101,7 +120,7 @@ async function harness(apiConfig: Record<string, JsonValue> = {}): Promise<Harne
   const sink = new FakeSink();
   s.provide("voice", VoiceSinkKey, sink);
 
-  const api = new ApiModule({ env: () => undefined });
+  const api = new ApiModule({ env: () => undefined, ...options });
   await sup.register(api, { bind: "127.0.0.1:0", token: TOKEN, panel_dir: "", ...apiConfig }, true);
   await sup.register(new Idle("ext.demo", "Demo"), null, true);
   await sup.startAll();
@@ -643,6 +662,89 @@ describe("routes", () => {
     ]) {
       expect(await statusOf(call)).toBe(409);
     }
+  });
+
+  it("stage_reports_scenes_hotkeys_overlay_and_emotions", async () => {
+    const emotions = avatarEmotions({
+      emotion: { Neutral: "", happy: "a.exp3.json", smug: "<placeholder>", angry: "b.exp3.json" },
+    });
+    expect(emotions).toEqual(["angry", "happy", "neutral"]);
+    const h = await harness({}, { emotions });
+    const status: StageStatus = {
+      ...defaultStageStatus(),
+      vts: true,
+      obs: true,
+      scene: "Talk",
+      scenes: ["Talk", "Game"],
+      hotkeys: ["Wave", "Blush"],
+      overlay_url: "http://127.0.0.1:7884/overlay/",
+    };
+    const hotkeys: string[] = [];
+    const fake = {
+      node: () => ["stage-pc", ["vts", "obs"]],
+      status: () => ({ ...status }),
+      hotkey: async (name: string) => {
+        hotkeys.push(name);
+        return { ...status };
+      },
+    };
+    h.sup.services.provide("stage.link", StageLinkKey, fake as unknown as StageLink);
+    const c = h.client;
+    const stage = await c.stage();
+    expect(stage.node).toBe("stage-pc");
+    expect(stage.scenes).toEqual(["Talk", "Game"]);
+    expect(stage.expressions).toEqual(["Wave", "Blush"]);
+    expect(stage.overlay_url).toBe("http://127.0.0.1:7884/overlay/");
+    expect(stage.emotions).toEqual(["angry", "happy", "neutral"]);
+    expect((await c.stageExpression("Blush")).expression).toBe("Blush");
+    expect(hotkeys).toEqual(["Blush"]);
+
+    // Lists only while the part is connected.
+    status.obs = false;
+    status.vts = false;
+    const down = await c.stage();
+    expect([down.scenes, down.expressions]).toEqual([[], []]);
+    expect(down.overlay_url).toBe("http://127.0.0.1:7884/overlay/");
+
+    // Say checks the emotion against the avatar's.
+    expect(await statusOf(c.stageSay("哼", "furious"))).toBe(400);
+  });
+
+  it("mcp_servers_report_their_target", async () => {
+    const h = await harness();
+    const status = h.sup.services.require(McpStatusKey);
+    status.insert(newServerStatus("files", "stdio", "tools.mcp.files", "npx -y srv C:/data"));
+    const [server] = await h.client.mcpServers();
+    expect(server?.target).toBe("npx -y srv C:/data");
+  });
+
+  it("voice_sessions_are_named_by_the_platform", async () => {
+    const h = await harness();
+    let asked = 0;
+    const sink: PlatformSink = {
+      platform: "discord",
+      send: async () => ({ context: voiceContext(), id: "1" }),
+      react: async () => {},
+      typing: async () => {},
+      describe: async (context) => {
+        asked += 1;
+        return context.channel === "vc1" ? "Miyoria / 雜談" : null;
+      },
+    };
+    const sinks = new PlatformSinks();
+    sinks.register(sink);
+    h.sup.services.provide("kernel", PlatformSinksKey, sinks);
+    h.sup.bus.publish("voice", {
+      type: "voice_joined",
+      data: { context: voiceContext(), participants: [] },
+    });
+    const state = await waitFor(async () => {
+      const s = await h.client.voice();
+      return s.sessions.length === 1 ? s : null;
+    });
+    expect(state.sessions[0]?.label).toBe("Miyoria / 雜談");
+    await h.client.voice();
+    expect(asked, "cached").toBe(1);
   });
 
   it("voice_monitor_and_say", async () => {

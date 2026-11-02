@@ -11,10 +11,12 @@ import {
   type ContextKey,
   newEnvelope,
   newId,
+  PlatformSinks,
   type Subject,
 } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import { ApiClient, ApiConfigSchema, parseBind, SseParser } from "../src/index.js";
+import { ContextLabels, LABEL_MISS_TTL_MS } from "../src/labels.js";
 import { Monitor, percentile } from "../src/monitor.js";
 import {
   avatarUrl,
@@ -357,5 +359,52 @@ describe("config and helpers", () => {
     expect(parseBind("[::1]:0")).toEqual({ host: "::1", port: 0 });
     expect(() => parseBind("nope")).toThrow("invalid bind address");
     expect(() => parseBind("host:99999")).toThrow("invalid bind address");
+  });
+});
+
+describe("ContextLabels", () => {
+  const ctx: ContextKey = { platform: "discord", scope: "g", channel: "c", kind: "voice" };
+  const sinksWith = (describe: () => Promise<string | null>) => {
+    const sinks = new PlatformSinks();
+    sinks.register({
+      platform: "discord",
+      send: async () => ({ context: ctx, id: "1" }),
+      react: async () => {},
+      typing: async () => {},
+      describe,
+    });
+    return sinks;
+  };
+
+  it("gives up on slow lookups without failing, then uses the late answer", async () => {
+    const labels = new ContextLabels(() => 0, 20);
+    let answer: (v: string | null) => void = () => {};
+    const sinks = sinksWith(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    expect(await labels.label(sinks, ctx)).toBeNull();
+    answer("Guild / Voice");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await labels.label(sinks, ctx)).toBe("Guild / Voice");
+  });
+
+  it("caches misses for a while and survives a throwing platform", async () => {
+    let now = 0;
+    let calls = 0;
+    const labels = new ContextLabels(() => now, 20);
+    const sinks = sinksWith(async () => {
+      calls += 1;
+      throw new Error("Missing Access");
+    });
+    expect(await labels.label(sinks, ctx)).toBeNull();
+    expect(await labels.label(sinks, ctx)).toBeNull();
+    expect(calls).toBe(1);
+    now += LABEL_MISS_TTL_MS + 1;
+    expect(await labels.label(sinks, ctx)).toBeNull();
+    expect(calls).toBe(2);
+    expect(await labels.label(undefined, ctx)).toBeNull();
   });
 });

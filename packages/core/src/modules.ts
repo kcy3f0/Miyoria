@@ -8,7 +8,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { AgentModule } from "@miyoria/agent";
-import { ApiModule } from "@miyoria/api";
+import { ApiModule, avatarEmotions } from "@miyoria/api";
 import { AuthConfigSchema, AuthModule } from "@miyoria/auth";
 import { CommandsModule } from "@miyoria/commands";
 import { DiscordBotModule } from "@miyoria/discord";
@@ -114,7 +114,7 @@ export const defaultCatalog: ModuleCatalog = {
   openStore,
   coreModules,
   discord: () => new DiscordBotModule(),
-  api: () => new ApiModule(),
+  api: (deps) => new ApiModule({ emotions: avatarEmotions(deps.profile.avatar) }),
   discoverExtensions,
 };
 

@@ -5,9 +5,9 @@ import { type CatalogEntry, ExtensionCatalogKey, extensionModuleId } from "@miyo
 import { errorMessage, getLogger, type ModuleStatus, SupervisorKey } from "@miyoria/kernel";
 import { type ServerStatus as McpServerStatus, McpStatusKey } from "@miyoria/mcp";
 import { type RequestQueue, RequestQueueKey } from "@miyoria/queue";
-import { type StageLink, StageLinkKey } from "@miyoria/stage";
+import { defaultStageStatus, type StageLink, StageLinkKey } from "@miyoria/stage";
 import { type ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
-import { contextKeyString, newId, VoiceSinkKey } from "@miyoria/types";
+import { contextKeyString, newId, PlatformSinksKey, VoiceSinkKey } from "@miyoria/types";
 import { z } from "zod";
 import { runModuleAction } from "./core.js";
 import { ApiError } from "./errors.js";
@@ -102,7 +102,7 @@ function mcpInfo(s: McpServerStatus, tools: ToolRegistry | undefined): McpServer
   return {
     name: s.name,
     transport: s.transport,
-    target: null,
+    target: s.target ?? null,
     enabled: s.state !== "disabled",
     state: states[s.state],
     error: s.last_error,
@@ -229,7 +229,7 @@ async function queueItemAction(state: ApiState, c: ApiContext): Promise<Response
 
 function stageState(state: ApiState, link: StageLink): StageState {
   const node = link.node()?.[0] ?? null;
-  const status = link.status() ?? { vts: false, obs: false, scene: null, streaming: false };
+  const status = link.status() ?? defaultStageStatus();
   const part = (connected: boolean, what: string): StageLinkState => ({
     connected: node !== null && connected,
     error:
@@ -243,10 +243,12 @@ function stageState(state: ApiState, link: StageLink): StageState {
     vts: part(status.vts, "VTube Studio"),
     obs: part(status.obs, "OBS"),
     scene: status.scene,
-    scenes: [],
+    // Empty (and `null`) from nodes older than these fields.
+    scenes: node !== null && status.obs ? [...status.scenes] : [],
     expression: state.monitor.expression(),
-    expressions: [],
-    overlay_url: null,
+    expressions: node !== null && status.vts ? [...status.hotkeys] : [],
+    emotions: [...state.emotions],
+    overlay_url: node !== null ? status.overlay_url : null,
     speaking: state.monitor.speaking(),
     node,
     streaming: status.streaming,
@@ -340,10 +342,15 @@ async function stageSay(state: ApiState, c: ApiContext): Promise<Response> {
   if ([...text].length > MAX_SAY_CHARS) {
     throw ApiError.badRequest(`\`text\` is longer than ${MAX_SAY_CHARS} characters`);
   }
+  const emotion = request.emotion?.trim().toLowerCase() || null;
+  if (emotion !== null && state.emotions.length > 0 && !state.emotions.includes(emotion)) {
+    throw ApiError.badRequest(
+      `unknown emotion \`${emotion}\` (the avatar knows ${state.emotions.join(", ")})`,
+    );
+  }
   const sink = state.service(VoiceSinkKey, "voice module");
   const context = state.monitor.voiceContext();
   if (!context) throw ApiError.conflict("she is not in a voice channel");
-  const emotion = request.emotion?.trim() || null;
   const turn = newId();
   await state.audit(c, "stage.say", contextKeyString(context), { text, emotion, turn }, true);
   // Fire and forget: the request answers as soon as speaking was handed to the voice module.
@@ -356,8 +363,19 @@ async function stageSay(state: ApiState, c: ApiContext): Promise<Response> {
 
 // ---- voice ------------------------------------------------------------------------------
 
-function voice(state: ApiState): Response {
-  return json(state.monitor.voice(state.now()));
+async function voice(state: ApiState): Promise<Response> {
+  const body = state.monitor.voice(state.now());
+  const sinks = state.optional(PlatformSinksKey);
+  await Promise.all(
+    body.sessions.map(async (s) => {
+      try {
+        s.label = await state.labels.label(sinks, s.context);
+      } catch {
+        s.label = null;
+      }
+    }),
+  );
+  return json(body);
 }
 
 export function opsRoutes(state: ApiState): Route[] {

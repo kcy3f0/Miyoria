@@ -323,10 +323,15 @@ export interface StageState {
   vts: StageLinkState;
   obs: StageLinkState;
   scene: string | null;
+  /** OBS scene names, top of OBS's scene list first; empty while OBS is not connected. */
   scenes: string[];
   /** Last expression (VTube Studio hotkey) triggered through the API. */
   expression: string | null;
+  /** VTube Studio hotkey names of the loaded model (what `POST /api/stage/expression` takes). */
   expressions: string[];
+  /** Emotions of the profile's `avatar.toml` (what `POST /api/stage/say` takes), sorted. */
+  emotions: string[];
+  /** The Stage node's overlay page (an OBS browser source); `null` without a node. */
   overlay_url: string | null;
   /** Her speech is playing. */
   speaking: boolean;
