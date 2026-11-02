@@ -80,6 +80,15 @@ export {
   sameAccount,
 } from "./platform.js";
 export {
+  mergePrivacy,
+  type PersonPrivacy,
+  PRIVACY_PREFIX,
+  PRIVACY_PROFILE,
+  parsePrivacy,
+  privacyAccount,
+  privacyKey,
+} from "./privacy.js";
+export {
   type Participant,
   type PromptContributor,
   PromptContributors,
@@ -87,6 +96,24 @@ export {
   type PromptRequest,
   type PromptSection,
 } from "./prompt.js";
+export {
+  type AgendaInput,
+  type AgendaItem,
+  type AgendaStatus,
+  DRIVE_NAMES,
+  type DriveName,
+  type Drives,
+  type EffectiveTalkativeness,
+  type Feeling,
+  GLOBAL_SCOPE,
+  type SelfPolicy,
+  type SelfSnapshot,
+  type SelfState,
+  SelfStateKey,
+  type Talkativeness,
+  type TalkativenessInput,
+  talkativenessScopes,
+} from "./self.js";
 export { ServiceKey, serviceKey } from "./service-key.js";
 export {
   type Attitude,
@@ -108,3 +135,30 @@ export {
   VoiceSinkKey,
   type VoiceUtterance,
 } from "./voice.js";
+export {
+  type ActivityKind,
+  type ChannelActivity,
+  type HerStatus,
+  MEMBER_TOPIC,
+  type MemberUpdate,
+  type PersonPresence,
+  PRESENCE_TOPIC,
+  type PresenceActivity,
+  type PresencePrivacy,
+  PresencePrivacyKey,
+  type PresenceStatus,
+  type PresenceUpdate,
+  SALIENT_TOPIC,
+  type SalienceKind,
+  type SalientEvent,
+  type TimeContext,
+  VOICE_STATE_TOPIC,
+  type VoiceChannelState,
+  type VoiceMember,
+  type VoiceSpot,
+  type VoiceStateUpdate,
+  type WorldSnapshot,
+  type WorldState,
+  WorldStateKey,
+  type WorldSummaryOptions,
+} from "./world.js";
