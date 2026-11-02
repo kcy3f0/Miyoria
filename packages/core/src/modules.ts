@@ -2,8 +2,9 @@
 // (camelCased); if a package exported something else, fix it here and nowhere else.
 //
 // Boot order (legacy `boot.rs`): llm, speech, voice.link, voice, scheduler, agent, commands,
-// auth, social, mood, memory, initiative, queue, game, mcp, stage.link, recorder, Discord bot,
-// Admin API, terminal chat, then the extension host and one `ext.<id>` per extension.
+// auth, social, mood, memory, initiative, queue, game, mcp, stage.link, sandbox (opt-in),
+// recorder, Discord bot, Admin API, terminal chat, then the extension host and one `ext.<id>`
+// per extension.
 
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -28,6 +29,7 @@ import { McpModule } from "@miyoria/mcp";
 import { EmbeddingConfigSchema, MemoryModule } from "@miyoria/memory";
 import type { Profile } from "@miyoria/profile";
 import { QueueModule } from "@miyoria/queue";
+import { SandboxModule } from "@miyoria/sandbox";
 import { SchedulerModule } from "@miyoria/scheduler";
 import { MoodModule, SocialModule } from "@miyoria/social";
 import { SpeechConfigSchema, SpeechModule } from "@miyoria/speech";
@@ -84,7 +86,7 @@ export function authOwners(config: Config): string[] {
   return parsed.success ? parsed.data.owners : [];
 }
 
-async function coreModules({ config, profile, profileId }: ModuleDeps): Promise<Module[]> {
+async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps): Promise<Module[]> {
   return [
     llmModule(config, profile),
     SpeechModule.withDefaultFactories(config.get("speech", SpeechConfigSchema)),
@@ -102,6 +104,7 @@ async function coreModules({ config, profile, profileId }: ModuleDeps): Promise<
     GameModule.fromProfile(profile),
     McpModule.fromAppConfig(config),
     new StageLinkModule(),
+    new SandboxModule(profileId, { baseDir }),
   ];
 }
 

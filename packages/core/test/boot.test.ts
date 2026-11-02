@@ -23,7 +23,7 @@ import {
   runUntilSignal,
 } from "../src/boot.js";
 import { CLI_PLATFORM, CliPlatform } from "../src/cli-platform.js";
-import { configuredModules, MODULE_IDS } from "../src/module-ids.js";
+import { configuredModules, MODULE_IDS, moduleEnabled } from "../src/module-ids.js";
 import { RecorderModule } from "../src/recorder.js";
 import {
   DEFAULT_DATABASE_URL,
@@ -118,6 +118,7 @@ describe("buildCore", () => {
     expect(state.get("api")).toBe("stopped"); // has a token
     expect(state.get("speech")).toBe("disabled"); // disabled at runtime earlier
     expect(state.get("mood")).toBe("disabled"); // enabled = false
+    expect(state.get("sandbox")).toBe("disabled"); // opt-in, no section
     await core.start();
     expect(core.supervisor.list().find((m) => m.id === "llm")?.state).toBe("running");
     await core.supervisor.disable("llm");
@@ -179,6 +180,15 @@ describe("settings", () => {
     const mods = configuredModules(Config.fromToml("[modules.agent]\nenabled = false"));
     expect(mods.find(([id]) => id === "agent")).toEqual(["agent", false]);
     expect(mods).toHaveLength(MODULE_IDS.length);
+    expect(mods.find(([id]) => id === "sandbox")).toEqual(["sandbox", false]);
+    for (const [toml, on] of [
+      ["[modules.sandbox]\nroot = 'x'", false],
+      ["[modules.sandbox]\nenabled = false", false],
+      ["[modules.sandbox]\nenabled = true", true],
+    ] as const) {
+      expect(moduleEnabled(Config.fromToml(toml), "sandbox"), toml).toBe(on);
+    }
+    expect(moduleEnabled(Config.fromToml(""), "agent")).toBe(true);
   });
 });
 

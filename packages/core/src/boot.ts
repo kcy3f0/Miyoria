@@ -42,7 +42,7 @@ import {
   PromptContributorsKey,
 } from "@miyoria/types";
 import { CliPlatform, type CliPlatformOptions } from "./cli-platform.js";
-import { NEEDS_TOKEN } from "./module-ids.js";
+import { moduleEnabled, NEEDS_TOKEN } from "./module-ids.js";
 import { RecorderModule } from "./recorder.js";
 import { databaseUrl, loadProfile, resolveDatabaseUrl } from "./settings.js";
 
@@ -214,7 +214,7 @@ export async function buildCoreWith(
   for (const module of modules) {
     const id = module.manifest.id;
     const section = config.module(id);
-    let enabled = section.enabled;
+    let enabled = moduleEnabled(config, id);
     // A module disabled at runtime (command / panel) stays disabled.
     const saved = await store.moduleState.get(id);
     if (saved !== null) enabled = enabled && saved;

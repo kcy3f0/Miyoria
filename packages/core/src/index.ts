@@ -22,7 +22,13 @@ export type {
   InstalledExtension,
   NewExtensionOptions,
 } from "./ext-cli.js";
-export { configuredModules, MODULE_IDS, NEEDS_TOKEN } from "./module-ids.js";
+export {
+  configuredModules,
+  MODULE_IDS,
+  moduleEnabled,
+  NEEDS_TOKEN,
+  OPT_IN_MODULES,
+} from "./module-ids.js";
 export {
   buildCore,
   defaultCatalog,

@@ -41,6 +41,7 @@
     "@miyoria/memory": "workspace:*",
     "@miyoria/profile": "workspace:*",
     "@miyoria/queue": "workspace:*",
+    "@miyoria/sandbox": "workspace:*",
     "@miyoria/scheduler": "workspace:*",
     "@miyoria/social": "workspace:*",
     "@miyoria/speech": "workspace:*",
