@@ -241,6 +241,9 @@ care_min_familiarity = 40
 # game_interests = ["Minecraft"] # 除了角色的 interests 之外,她有興趣的遊戲
 cooldown_secs = 900              # 同一件事(同一個人上線…)多久內不再提醒她
 max_salient_per_minute = 6
+# voice_activity_window_secs = 300 # 語音裡的對話(語音辨識的句子)算在多長的時間內
+# voice_lively_lines = 6         # 這段時間內這麼多句,或 voice_quiet_secs 內有人說話 = 正在聊天(不是冷場)
+# voice_quiet_secs = 40
 
 # 她的內在:慾望(想聊天、想玩、想被注意、想休息、好奇)、無聊、她自己定的方針與議程、
 # 對每個人的感情描述。數字只決定自然漂移的速度,怎麼做由她自己判斷
@@ -264,6 +267,11 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # quiet_start_hour = 1           # 深夜安靜時段:心跳變慢,只因心跳醒來時不主動找人
 # quiet_end_hour = 7
 # voice_quiet_secs = 40          # 語音裡聊完後安靜多久算冷場
+# self_start_gap_voice_secs = 300 # 同一個語音頻道,她自己主動開口至少隔多久
+# self_start_gap_text_secs = 600 # 同一個文字頻道 / 私訊
+# self_start_max_backoff = 8     # 主動開口沒人接,間隔每次加倍,最多到這麼多倍;有人跟她說話就恢復
+# stale_topic_mins = 45          # 她提過、沒人接的話題,這段時間內不再提
+# blocked_retry_mins = 30        # 失敗的動作(例如遊戲沒開時的 game.start)狀況沒變前不再試,最久這麼久
 # journal_keep = 200             # 想法日誌保留幾則原文;再多 digest_batch 則就把最舊的整理成摘要
 # digest_batch = 50
 # digests_keep = 60              # 摘要保留幾則(在面板「內心 → 想法」)
@@ -279,6 +287,7 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # max_calls_per_hour = 40        # 所有頻道合計;預算 degraded 時減半、間隔加倍,exhausted 停止
 # max_calls_per_day = 400
 # min_interval_secs = 30         # 同一個頻道兩次整理至少隔多久
+# stale_thread_mins = 30         # 筆記裡這麼久沒人碰的事(懸而未決的問題、話題)不再放進 prompt
 
 # 她自己整理的資料庫(人、伺服器、她自己、她取名的主題):內容結構由她決定,這裡只有大小上限
 # [modules.knowledge]

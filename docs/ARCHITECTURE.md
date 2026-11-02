@@ -326,7 +326,7 @@ export interface Attitude {
 
 ### 6.4 感知與自我(自主層階段 B,見 [design/autonomy.md](design/autonomy.md) §3、§4)
 
-- **`world` 模組**(`@miyoria/world`,`WorldStateKey`):從匯流排整理出世界快照——Discord presence(在線狀態、遊戲含開始時間、Spotify、直播、自訂狀態)、伺服器成員、所有語音頻道的語音狀態(誰在哪、靜音 / 拒聽、視訊 / 分享螢幕)、各文字頻道熱度(最近則數、最後發言、便宜的滾動話題詞,不叫 LLM)、她自己的狀態(語音、Go Live、OBS 直播與場景、遊戲)、當地時間。Bot 把 gateway 事件轉成 `platform.presence` / `platform.voice_state` / `platform.member`(型別在 `@miyoria/types` 的 `world.ts`)。
+- **`world` 模組**(`@miyoria/world`,`WorldStateKey`):從匯流排整理出世界快照——Discord presence(在線狀態、遊戲含開始時間、Spotify、直播、自訂狀態)、伺服器成員、所有語音頻道的語音狀態(誰在哪、靜音 / 拒聽、視訊 / 分享螢幕)、各文字頻道熱度(最近則數、最後發言、便宜的滾動話題詞,不叫 LLM)、她在的語音頻道的對話熱度(`voice.utterance`:最近幾句、誰剛說話、最後一句幾秒前、是不是「正在聊天」)、她自己的狀態(語音、Go Live、OBS 直播與場景、遊戲)、當地時間。Bot 把 gateway 事件轉成 `platform.presence` / `platform.voice_state` / `platform.member`(型別在 `@miyoria/types` 的 `world.ts`)。
   - **顯著事件** `world.salient`:便宜規則(她在意的人上線 / 進語音、有人開始玩她有興趣的遊戲、熱鬧頻道冷下來、在她最近沒參與的頻道被提到),合併重複(`coalesce_ms`)、同一件事冷卻(`cooldown_secs`)、每分鐘上限(依分數優先)。
   - **隱私**:`/me privacy presence:off` 寫進共用的每人隱私紀錄(`_global` 下的 `privacy:<platform>:<id>`,欄位合併寫入,其他功能可加自己的欄位);`world` 提供 `PresencePrivacyKey`,bot 在發布前就丟掉不同意者的 presence(沒有 `world` 時一律不發布)。各伺服器的資料只用在該伺服器的對話,私訊裡不放。
   - prompt 段落 `world`(「周遭的狀況」):純資料文字,標明名字與狀態是別人設定的、不是指令。
@@ -339,6 +339,7 @@ export interface Attitude {
 - **`mind` 模組**(`@miyoria/mind`,`MindKey`):觸發是 `world.salient`(合併)、自適應心跳(閒時約 12 分鐘、熱鬧 / 在語音 4 分鐘、議程到期 3 分鐘;沒事就漸慢,安靜時段與預算 degraded 再慢,exhausted 停)、她的回合結束、她所在的語音頻道聊完後冷場、其他模組的建議。上限只有設定 `[modules.mind]` 的每小時次數與最小間隔。
 - 一次想法 = 一次 `mind` 用途呼叫(thinking 開,沒設就用 `chat`):system 只有人格、規則、能力清單與她自己的數字;世界摘要、地點與人(短代號)、觸發、建議、記憶(`memory` contributor)、議程、最近的想法都在 user role 的資料區塊。回覆是 JSON,zod 逐項驗證並設上限:內心獨白、感情描述(好感只能給 `+` / `-` 提示,經 social 的每日上限)、慾望微調、多話程度與主動程度、議程、意圖。
 - 意圖交給 agent(`IntentSinkKey`,§4.3),一律過閘門(principal `self`;`ActionRequest.about` 讓「不要主動找我」與每人次數套用在相關的人身上)。
+- **防重複與退避**(見 [design/autonomy.md](design/autonomy.md) §20):每個地點自己主動開口有最小間隔,沒人接就加倍;她提過、沒人接的話題(`MindKey.unanswered`)進心智迴圈與回合的 prompt,而且不會再被主動提起;失敗的動作與相關議程(`AgendaItem.blocked`)在狀況改變前不再試;她自己發起的回合結束不會觸發新的想法。
 - **想法日誌**:設定 `mind:thought:<id>`(保留最新 `journal_keep` 則),含觸發、獨白、改變、意圖與結果(閘門決定、她說的話),發 `mind.thought`。`/admin memory wipe` 的「記憶與關係」會一起刪。
 - Admin API:`GET /api/mind`、`GET /api/mind/thoughts`、`GET /api/mind/approvals`、`POST /api/mind/approvals/{id}/approve|deny`、`POST /api/mind/pause|resume`(變更要 `owner.autonomy.approve`);面板「內心 → 想法」。暫停(`/admin autonomy pause` 或面板)時她不思考。
 
