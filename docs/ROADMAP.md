@@ -119,7 +119,10 @@
 - [ ] 已知限制:只隔著樹葉看到的原木 Baritone 會立刻停;只支援一般熔爐;平滑轉頭在 ±180° 附近可能甩一下;遊戲內聊天預設「安靜」等級
 - [x] 唱歌(點歌):`workers/sing`(yt-dlp / 本機歌庫 → Demucs → Seed-VC 歌聲轉換 → 混音 + lrclib 歌詞,快取)、`@miyoria/sing`(歌單、`sing_request` / `sing_start` / `sing_stop`、她決定什麼時候唱、`/queue song request | list | skip | stop`、`[modules.queue]` 的 `song` 項目)、嘴型跟人聲走(Voice Link `0x03` 嘴型音軌)、歌詞字幕(見 [design/autonomy.md](design/autonomy.md) §22)
 - [x] 唱歌時放原曲影片:worker 平行抓影片(H.264 ≤ 1080p,`video.mp4`,本機歌庫用旁邊的 `video.*`)、`song_video` 訊息、Stage 用 OBS 媒體來源靜音播放並跟歌同步(`latency_ms` + 位置校正)、場景用途 `sing`(導演切過去、唱完回原場景)
-- [ ] 實測:在真的 Discord 語音 + VTS + Go Live(`GOLIVE_AUDIO=true`)唱一首,含 `唱歌` 場景的影片同步
+- [x] 高音不破音:轉換前清理 F0(八度錯誤、尖刺、短暫掉格)、自動挑音高看歌的最高音對她的上限、必要時整首往下轉調(伴奏用 Rubber Band)、參考音可以多段
+- [x] 做歌時獨佔顯示卡:TTS / ASR worker 的 `POST /offload` / `POST /reload`、歌曲 worker `SING_OFFLOAD_URLS`、她先說「我去準備一下歌喔」再開始、暫停期間不說不聽、overlay「準備歌曲中…」
+- [x] 歌單在 Core 重開後還在(settings store),接回 worker 的工作
+- [ ] 實測:在真的 Discord 語音 + VTS + Go Live(`GOLIVE_AUDIO=true`)唱一首,含 `唱歌` 場景的影片同步、獨佔顯示卡的整段流程
 
 **完成條件**:她能直播玩 Minecraft,邊玩邊實況,觀眾可以點單、投票影響她的行動。(待實測)
 

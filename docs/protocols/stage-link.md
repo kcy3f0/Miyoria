@@ -31,6 +31,7 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 | `avatar_hotkey` | `name`, `id?` | 觸發 VTS hotkey(名稱或 hotkey ID) |
 | `gaze` | `target`(`chat` / `game` / `camera`) | 她看哪裡 |
 | `song_video` | `action`(`play` / `stop`), `song`, `path?`, `offset_ms?`, `scene?` | 她唱的歌的原曲影片(見下面「唱歌時放影片」)。`play`:`path` 是直播機上歌曲快取裡的影片(絕對路徑),`offset_ms` 是送出時歌已經唱了多久,`scene` 是導演會切去的 `sing` 場景(沒有就是目前場景);`stop`:停掉並清空。沒有 `id`、不回覆 |
+| `notice` | `text` | overlay 的一行狀態(`""` 清掉)。她的語音因為要做歌暫停時是「準備歌曲中…」(來自 `speech.pause`) |
 | `status_request` | `id?` | 要一份最新的 `status` |
 | `ping` / `pong` | | |
 
@@ -193,9 +194,10 @@ Stage 的 HTTP 伺服器(`[stage] overlay_bind`,預設 `127.0.0.1:7884`):
 {"type":"emotion","name":"happy","intensity":1.0}
 {"type":"subtitle","turn":"01JD3W6Q8X0Z5K2M9C4B7N1R3T","text":"早安。","final":false}
 {"type":"speaking","state":"started"}
+{"type":"notice","text":"準備歌曲中…"}
 ```
 
-`core` 表示 Stage 目前有沒有連上 Core。`subtitle` 的規則同上(同一個 `turn` 的新字幕取代舊的)。
+`notice` 顯示在字幕上方(有顯示字幕的 overlay 就會顯示),`""` 清掉;新的連線也會先收到目前的 notice。`core` 表示 Stage 目前有沒有連上 Core。`subtitle` 的規則同上(同一個 `turn` 的新字幕取代舊的)。
 
 ---
 

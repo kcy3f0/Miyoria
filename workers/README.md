@@ -403,7 +403,7 @@ curl -sS -X POST http://127.0.0.1:8001/asr -F "audio=@out.wav" -F "language=zh"
 
 1. **找歌**:`query` 先比對本機歌庫(`data/songs/library/`,檔名 `歌手 - 歌名.mp3`;或一個資料夾放 `vocals.*` + `instrumental.*`,已經分好就不用再分離),沒有就用 yt-dlp `ytsearch1:` 搜 YouTube;`url` 只接受 `SING_URL_HOSTS` 的網域。最長 `SING_MAX_SECONDS`(480 秒)。
 2. **分離**:Demucs `htdemucs`(`SING_SEPARATOR_MODEL=htdemucs_ft` 比較乾淨、慢 4 倍)→ 人聲 + 伴奏;同一個來源只分一次(`data/songs/_sources/`)。
-3. **轉換**:Seed-VC 的歌聲模型(F0 條件、44.1 kHz、Whisper-small 內容編碼、BigVGAN v2 44 kHz、RMVPE 音高),參考音是 `voices/deepseek-chan/ref.wav`。自動挑八度:歌的人聲中位音高跟她的(說話中位數 + `SING_TARGET_OFFSET` 半音)比,選 -12 / 0 / +12,伴奏不動;`pitch` 可以直接指定人聲移調,`key` 是整首轉調(伴奏一起移)。原人聲靜音的地方,轉換後的人聲會被閘掉(去掉轉換的雜音)。
+3. **轉換**:Seed-VC 的歌聲模型(F0 條件、44.1 kHz、Whisper-small 內容編碼、BigVGAN v2 44 kHz、RMVPE 音高),參考音是 `voices/deepseek-chan/ref.wav`(`SING_REF` 也可以用 `;` 列多個檔案或給資料夾,串成最多 25 秒)。轉換前先清 F0(`pitch.py`:補 ≤ 40 ms 的掉格、折回短暫的八度跳動、濾掉尖刺;`SING_F0_CLEAN=0` 關掉)。自動挑音高:看歌的人聲中位數**和最高音**(第 95 百分位),對她的中位數(說話 + `SING_TARGET_OFFSET`)和上限(`SING_MAX_NOTE`,或說話 + `SING_CEILING_OFFSET`),選八度(-12 / 0 / +12);最高音還是超過上限就整首往下轉(最多 `SING_KEY_MIN` −5,伴奏用 ffmpeg Rubber Band 一起移),低太多就往上一點(最多 `SING_KEY_MAX` +3);`pitch` 可以直接指定人聲移調,`key` 是整首轉調(伴奏一起移,這時只自動挑八度)。原人聲靜音的地方,轉換後的人聲會被閘掉(去掉轉換的雜音)。
 4. **混音**:轉換後的人聲恢復成原人聲的響度,加上伴奏,整體正規化到 `SING_TARGET_LUFS`(-16),峰值 ≤ -1 dBFS。輸出 `mix.wav`、`vocals.wav`、`instrumental.wav`,以及 Core 串流用的 48 kHz 單聲道 `play_mix.pcm` / `play_vocals.pcm`(人聲那條給嘴型用)。
 5. **歌詞**:lrclib.net 依歌名 / 歌手 / 長度找同步 LRC(找不到就沒有字幕)。
 6. **影片**(跟 2–5 平行,從下載那一步開始):影片網站的來源另外抓**只有畫面**的影片(H.264 ≤ `SING_VIDEO_MAX_HEIGHT` 優先,其次其他編碼轉封裝成 mp4,不超過 `SING_VIDEO_MAX_MB`),存成 `video.mp4`,唱歌時直播畫面放它(靜音)。本機歌庫:資料夾裡的 `video.*`,或跟音檔同名的影片檔(`歌手 - 歌名.mp4`)。歌要等影片好才算做好;影片失敗或音訊好了之後 `SING_VIDEO_WAIT_S` 秒還沒好就不等(`meta.json` `has_video: false` + `video_error`)。SoundCloud 這種沒有影片的連結會直接略過。這功能之前做好的歌,再點一次會只補抓影片。
@@ -454,6 +454,11 @@ curl -s http://127.0.0.1:8005/jobs/<id>          # state / stage / progress;done
 | `SING_DEVICE` / `SING_SEPARATE_DEVICE` | `cuda` | 分離 OOM 時自動退到 CPU |
 | `SING_DIFFUSION_STEPS` / `SING_CFG_RATE` | 30 / 0.7 | 步數越多越穩、越慢 |
 | `SING_TARGET_OFFSET` | 2 | 她唱歌的音高比說話高幾個半音(自動挑八度用) |
+| `SING_MAX_NOTE` / `SING_CEILING_OFFSET` | — / 16 | 她的最高音(`A5` 或 Hz);沒設就是說話中位數 + 16 半音 |
+| `SING_KEY_MIN` / `SING_KEY_MAX` | -5 / 3 | 自動整首轉調的範圍(都設 0 = 只挑八度) |
+| `SING_F0_CLEAN` | 1 | 轉換前清理 F0 |
+| `SING_OFFLOAD_URLS` | (空) | 做歌時請它們放掉 GPU 的 worker,例如 `http://127.0.0.1:8002,http://127.0.0.1:8003` |
+| `SING_EXCLUSIVE_WAIT_S` / `SING_RELOAD_TIMEOUT_S` | 30 / 300 | 等 Core 說可以開始(她先說一句)/ 等 worker 載回來 |
 | `SING_TARGET_LUFS` | -16 | 混音響度 |
 | `SING_MAX_SECONDS` | 480 | 最長的歌 |
 | `SING_URL_HOSTS` | YouTube、SoundCloud、Bilibili、Niconico | 連結允許的網域(逗號分隔,子網域也算) |
@@ -462,3 +467,5 @@ curl -s http://127.0.0.1:8005/jobs/<id>          # state / stage / progress;done
 | `HOST` / `PORT` | `127.0.0.1` / `8005` | 只聽本機 |
 
 Go Live 直播要讓觀眾聽到歌,voice node 的 `GOLIVE_AUDIO` 要開(`true`);語音頻道裡的人不受影響。
+
+**做歌時獨佔顯示卡**:12 GB 的卡上 TTS + ASR 開著時轉換會慢 10 倍以上。TTS / ASR worker 有 `POST /offload`(丟掉模型、清 CUDA cache,之後 `/tts`、`/asr` 回 `503 {"error":"offloaded"}`)和 `POST /reload`(跟啟動一樣重建;放掉超過 `TTS_OFFLOAD_MAX_S` / `ASR_OFFLOAD_MAX_S` 900 秒會自己載回來),見 [voice-link.md](../docs/protocols/voice-link.md)「讓出顯示卡」。歌曲 worker 設 `SING_OFFLOAD_URLS=http://127.0.0.1:8002,http://127.0.0.1:8003` 後,分離 / 轉換前叫它們放掉、轉換完叫它們載回來(失敗、取消也會);Core 會讓她先說一句「我去準備一下歌喔」。重建成本約等於啟動時間(這台:TTS 引擎 12.9 秒、ASR 14.9 秒)。

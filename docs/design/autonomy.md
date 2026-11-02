@@ -494,8 +494,15 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
   - **同步**:Stage 收到 `play` 後等 `[stage.lipsync] latency_ms`(跟嘴型一樣,對到觀眾聽到的時間)再 restart 媒體來源(`song_video_lead_ms` 可以提早一點補 OBS 開檔的時間),之後 1.5 秒、每 20 秒比對 OBS 回報的播放位置,差超過 `song_video_resync_ms`(300 ms)就 seek。Stage 中途才連上(或重連)時,Core 用經過的時間重送 `play`,影片從唱到的地方開始。結束一樣晚 `latency_ms` 才停、清掉檔案。
   - 媒體來源是靜音的(`SetInputMute`),觀眾聽到的是她的翻唱。
 
+- **高音破音**(2026-11-02):原因有兩個,各補一個。① 音高追蹤錯:RMVPE 在高音常常跳八度、尖刺或掉一兩格,Seed-VC 就照著唱出破音。轉換前先清 F0(`workers/sing/pitch.py`):≤ 40 ms 的無聲小洞補起來、跟前後 0.5 秒中位數差約 ±12(或 ±24)半音的短暫跳動折回來、5 格中位數濾掉尖刺;真的持續的八度跳躍會留著。② 音域:模型只聽過她說話,音越高越容易破。自動挑音高改看**歌的最高音**(有聲音框的第 95 百分位)跟她的上限(`SING_MAX_NOTE`,沒設就是她說話的中位數 + `SING_CEILING_OFFSET` 16 半音):每個八度先算它需要的整首轉調(超過上限就往下,最多 `SING_KEY_MIN` −5;低太多而且有空間就往上,最多 `SING_KEY_MAX` +3),再挑「中位數離她最近 + 超過上限的 ×2 + 每半音轉調 0.5 分」最便宜的。整首轉調時伴奏一起移,用 ffmpeg 的 Rubber Band(`rubberband` filter,比 librosa 的 phase vocoder 乾淨很多;沒有就退回 librosa),meta 的 `pitch` 記下 `auto_key`、`song_key`、`ceiling_note`、`top_after_note`。點歌時給了 `key` 就只自動挑八度。參考音可以給多段(`SING_REF` 用 `;` 分隔或給資料夾,串成最多 25 秒)。
+- **做歌時獨佔顯示卡**(2026-11-02):12 GB 的卡上 TTS(約 4.3 GB)和 ASR(約 1.5 GB)開著時,轉換會溢到共享記憶體、慢 10 倍以上(實測:那段時間別人的語音辨識從平均 2.7 秒變 10.5 秒一句)。worker 設 `SING_OFFLOAD_URLS` 後,第一個 GPU 階段前叫 TTS / ASR `POST /offload`(丟掉模型、清 CUDA cache),轉換完(失敗、取消也一樣)`POST /reload`,reload 跟混音平行、等它回來工作才結束;TTS / ASR 放掉太久(900 秒)沒人叫會自己載回來。重建的成本就是它們的啟動時間:這台機器上 TTS 引擎 12.9 秒(權重約 10.4 秒、CUDA graphs 0.9 秒、聲音 priming 1.6 秒),ASR 14.9 秒(模型 + 暖機前)。
+  - **先說再走**:工作送出時帶 `exclusive_ack`,worker 在 offload 前停在 `exclusive: "waiting"`。Core 看到後在她的語音頻道給她一個 initiative(reason `song_prepare`,「你要去準備歌了…用一句很短的話跟大家說,例如『我去準備一下歌喔』」),等她說完、安靜 `quiet_ms`,或 8 秒內都沒開口、最多 `announce_max_secs`,才 `POST /jobs/{id}/exclusive`。不在語音裡、或 `prepare_notice_gap_secs`(180 秒)內已經說過(連點好幾首)就直接放行;`[modules.sing] prepare_notice = false` 讓 worker 不等。
+  - **暫停期間**:`sing` 提供 `SpeechPauseKey`、發 `speech.pause`(`{paused, reason: "song"}`):voice 模組不送她的話去 TTS(那句當作被打斷)、聽到的話直接丟掉不送 ASR(不排隊、不重試);ASR / TTS 回 `offloaded` 的失敗只記 debug;overlay 顯示「準備歌曲中…」(Stage Link `notice`)。worker 的 reload 回來、工作結束後恢復。
+
 還沒做 / 要注意:
 
+- 連點好幾首時,每一首都會 offload → reload → 下一首又 offload(TTS 每次重建約 13 秒);之後可以讓 worker 在下一個工作也要 GPU 時延後 reload。
+- `SING_OFFLOAD_URLS` 預設不開;要用就在歌曲 worker 的環境設 `SING_OFFLOAD_URLS=http://127.0.0.1:8002,http://127.0.0.1:8003`,TTS / ASR 也要是有 `/offload` 的新版。
 - 還沒在真的 Discord 語音 + VTS 上試唱過(嘴型音軌、字幕時間、唱歌時有人說話的情況都只有單元測試);歌詞時間是官方音軌的,MV 版前奏比較長時會對不上。
 - 唱歌時語音裡有人說話,agent 仍可能生成回覆(會被丟掉,花 token);之後可以讓 attention 在唱歌時直接略過。
 - 自動挑音高只挑八度(-12 / 0 / +12,伴奏不動);要轉調用 `key`(整首一起移,伴奏用 librosa 移調,品質普通)。
