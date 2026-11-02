@@ -8,6 +8,7 @@ import {
   type Module,
   type ModuleContext,
 } from "@miyoria/kernel";
+import { LlmRouterKey } from "@miyoria/llm";
 import { SpeechServiceKey } from "@miyoria/speech";
 import { SettingsStoreKey } from "@miyoria/store";
 import { type JsonObject, type ProfileId, VoiceSinkKey } from "@miyoria/types";
@@ -19,22 +20,24 @@ import { type VoiceLink, VoiceLinkKey } from "./link/link.js";
 import { VoiceLinkModule } from "./link/module.js";
 import { Listener } from "./listen.js";
 import { Speaker } from "./sink.js";
+import { SpeechTranslator } from "./translate.js";
 import { Semaphore } from "./util.js";
 
 /**
  * Module `voice`: listens in voice channels (VAD → ASR → `voice_utterance`) and speaks
  * (`VoiceSink` → TTS → playback), with consent, barge-in and the `join` / `leave` /
- * `voice consent` commands.
+ * `voice consent` / `golive` commands.
  *
  * Requires `voice.link` (`VoiceLinkKey`) and `speech` (`SpeechServiceKey`); uses the
- * `SettingsStore` for consent flags and the `CommandRegistry` for commands when available.
+ * `SettingsStore` for consent flags, the `CommandRegistry` for commands and the LLM router for
+ * `tts_translate` when available.
  */
 export class VoiceModule implements Module {
   static readonly ID = "voice";
   readonly manifest = defineManifest(VoiceModule.ID, "Voice", {
     description: "Listens and speaks in voice channels",
     requires: [VoiceLinkModule.ID, "speech"],
-    optional: ["commands"],
+    optional: ["commands", "llm"],
     configSchema: VoiceConfigSchema,
   });
   readonly #profileId: ProfileId;
@@ -61,7 +64,24 @@ export class VoiceModule implements Module {
     const barge = new BargeIn(config.barge_in, config.barge_in_ms, config.barge_in_fade_ms);
 
     if (!speech.hasTts()) ctx.log.warn("no TTS provider configured: she cannot speak");
-    ctx.provide(VoiceSinkKey, new Speaker({ ctx, link, speech, profile, config, barge }));
+    let translator: SpeechTranslator | null = null;
+    if (config.tts_translate !== null) {
+      const router = ctx.services.get(LlmRouterKey);
+      if (router) {
+        translator = new SpeechTranslator(
+          router,
+          config.tts_translate_purpose,
+          config.tts_translate,
+          ctx.log,
+        );
+      } else {
+        ctx.log.warn("tts_translate is set but there is no LLM router: she speaks untranslated");
+      }
+    }
+    ctx.provide(
+      VoiceSinkKey,
+      new Speaker({ ctx, link, speech, profile, config, barge, translator }),
+    );
 
     if (speech.hasAsr()) {
       const listener = new Listener({
@@ -82,8 +102,11 @@ export class VoiceModule implements Module {
     const registry = ctx.services.get(CommandRegistryKey) ?? null;
     this.#link = link;
     this.#registry = registry;
-    if (registry) registerCommands(registry, link, consent);
-    ctx.log.info({ voice: profile.voice, consent: config.consent }, "voice module running");
+    if (registry) registerCommands(registry, link, consent, config.golive_source);
+    ctx.log.info(
+      { voice: profile.voice, consent: config.consent, speaks: translator?.language ?? null },
+      "voice module running",
+    );
   }
 
   async stop(): Promise<void> {

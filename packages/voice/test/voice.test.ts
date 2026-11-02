@@ -8,6 +8,7 @@ import {
   type ModuleContext,
   type Subscription,
 } from "@miyoria/kernel";
+import { type ChatRequest, type LlmRouter, LlmRouterKey } from "@miyoria/llm";
 import {
   type AsrHint,
   type AsrProvider,
@@ -167,7 +168,10 @@ afterEach(async () => {
   env = null;
 });
 
-async function boot(voiceConfig: JsonObject = {}): Promise<Env> {
+async function boot(
+  voiceConfig: JsonObject = {},
+  router: Pick<LlmRouter, "complete"> | null = null,
+): Promise<Env> {
   const asr = new FakeAsr();
   asr.text = "这个游戏好难";
   const tts = new FakeTts();
@@ -180,7 +184,10 @@ async function boot(voiceConfig: JsonObject = {}): Promise<Env> {
       [new CommandsModule(), null],
       [module, voiceConfig as JsonValue],
     ],
-    (services) => services.provide("app", SettingsStoreKey, settings),
+    (services) => {
+      services.provide("app", SettingsStoreKey, settings);
+      if (router) services.provide("app", LlmRouterKey, router as LlmRouter);
+    },
   );
   expect(h.moduleState("voice").state).toBe("running");
   const node = await h.node(SELF_ID);
@@ -219,6 +226,11 @@ async function readPlayback(node: Node): Promise<[number, number, number]> {
     else if (msg.kind === "text" && msg.text.includes("play_end")) return [id, rate, samples];
     else throw new Error(`unexpected ${msg.kind}`);
   }
+}
+
+function finish(node: Node, play: number): void {
+  node.sendJson({ type: "playback", play, state: "started" });
+  node.sendJson({ type: "playback", play, state: "finished" });
 }
 
 describe("voice", () => {
@@ -419,7 +431,87 @@ describe("voice", () => {
     expect(registry.get(["voice", "consent"])).toBeUndefined();
   });
 
+  it("golive_commands", async () => {
+    const e = await boot();
+    const registry = e.registry();
+    expect(registry.get(["golive", "start"])).toBeDefined();
+    expect(registry.groupDescription(["golive"])).toContain("Go Live");
+
+    // Not in a voice channel: joins the invoker's channel first, then goes live.
+    const joining = e.command("golive start", "u7", {}, "g2");
+    expect(await e.node.recvType("join")).toEqual({ type: "join", guild: "g2", user_id: "u7" });
+    e.node.sendJson({ type: "joined", guild: "g2", channel: "vc2" });
+    expect((await e.node.recvType("golive_start")).guild).toBe("g2");
+    const joined = await joining;
+    expect(joined.ephemeral).toBe(false);
+    expect(joined.text).toContain("/voice consent off");
+    expect(joined.text).toContain("開台");
+
+    const starting = e.command("golive start", "u7");
+    const req = await e.node.recvType("golive_start");
+    expect(req.guild).toBe("g1");
+    expect(req.source).toBe("rtmp://127.0.0.1:1935/live/miyoria");
+    expect((await starting).text).toContain("開台");
+
+    // The node reports progress; `/golive status` mirrors it.
+    e.node.sendJson({ type: "golive", guild: "g1", state: "live" });
+    await waitUntil(() => e.h.link().golive("g1")?.state === "live");
+    const live = await e.command("golive status", "u7");
+    expect(live.ephemeral).toBe(true);
+    expect(live.text).toContain("直播中");
+
+    // A second start is refused while it runs.
+    expect((await e.command("golive start", "u7")).text).toContain("已經在直播");
+
+    const stopping = e.command("golive stop", "u7");
+    expect((await e.node.recvType("golive_stop")).guild).toBe("g1");
+    e.node.sendJson({ type: "golive", guild: "g1", state: "stopped", reason: "stop requested" });
+    await waitUntil(() => e.h.link().golive("g1")?.state === "stopped");
+    expect((await stopping).text).toContain("收台");
+    expect((await e.command("golive status", "u7")).text).toContain("沒在直播");
+  });
+
+  it("golive_start_takes_a_source_override", async () => {
+    const e = await boot();
+    const starting = e.command("golive start", "u7", { source: "srt://127.0.0.1:9999" });
+    expect((await e.node.recvType("golive_start")).source).toBe("srt://127.0.0.1:9999");
+    await starting;
+  });
+
   // ── TS-specific ─────────────────────────────────────────────────────────────
+
+  it("tts_translate_speaks_the_translation_and_keeps_the_original_for_subtitles", async () => {
+    const asked: ChatRequest[] = [];
+    const router = {
+      async complete(purpose: string, request: ChatRequest) {
+        expect(purpose).toBe("fast");
+        asked.push(request);
+        const line = request.messages.at(-1)?.content;
+        if (line === "壞掉") throw new Error("model down");
+        return { text: ` ja(${String(line)}) ` } as never;
+      },
+    };
+    const e = await boot({ tts_translate: "Japanese" }, router);
+    const events = e.h.subscribe(["voice.playback"]);
+    const sink = e.h.services.require(VoiceSinkKey);
+
+    // Prepared early (when the agent queues the sentence), spoken later: translated once.
+    sink.prepare?.(voiceCtx, "<emo:happy>你好啊");
+    const speaking = sink.speak(voiceCtx, "<emo:happy>你好啊", "happy", null);
+    finish(e.node, (await readPlayback(e.node))[0]);
+    expect(await speaking).toBe("completed");
+    expect(asked.length).toBe(1);
+    expect(asked[0]?.thinking).toBe(false);
+    expect(e.tts.requests[0]).toMatchObject({ text: "ja(你好啊)", language: "Japanese" });
+    const started = (await nextEvent(events)).event;
+    expect(started.type === "voice_playback" && started.data.text).toBe("你好啊");
+
+    // A failed translation still speaks, untranslated.
+    const fallback = sink.speak(voiceCtx, "壞掉", null, null);
+    finish(e.node, (await readPlayback(e.node))[0]);
+    expect(await fallback).toBe("completed");
+    expect(e.tts.requests[1]?.text).toBe("壞掉");
+  });
 
   it("speak_signal_abort_stops_playback", async () => {
     const e = await boot();

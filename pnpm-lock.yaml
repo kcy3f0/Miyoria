@@ -965,6 +965,9 @@ importers:
       '@miyoria/kernel':
         specifier: workspace:*
         version: link:../kernel
+      '@miyoria/llm':
+        specifier: workspace:*
+        version: link:../llm
       '@miyoria/speech':
         specifier: workspace:*
         version: link:../speech

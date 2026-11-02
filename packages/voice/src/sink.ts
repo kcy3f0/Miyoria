@@ -22,6 +22,7 @@ import type { VoiceLink } from "./link/link.js";
 import type { Playback } from "./link/playback.js";
 import { stripTags } from "./text.js";
 import { LATENCY_TOPIC } from "./topics.js";
+import type { SpeechTranslator } from "./translate.js";
 import { aborted } from "./util.js";
 
 export interface SpeakerDeps {
@@ -31,6 +32,8 @@ export interface SpeakerDeps {
   profile: VoiceProfile;
   config: VoiceConfig;
   barge: BargeIn;
+  /** Set when she speaks in another language than she writes (`tts_translate`). */
+  translator: SpeechTranslator | null;
 }
 
 /** `first` followed by the rest of `it`; `return()` releases `it`. */
@@ -75,15 +78,16 @@ export class Speaker implements VoiceSink {
     turn: TurnId | null,
     signal: AbortSignal | undefined,
   ): Promise<Playback> {
-    const { ctx, speech, profile, config, link } = this.#d;
+    const { ctx, speech, profile, config, link, translator } = this.#d;
+    const t0 = ctx.clock.now();
+    const said = translator ? await translator.translate(text, signal) : text;
     const request = {
-      text,
-      language: config.tts_language,
+      text: said,
+      language: translator?.language ?? config.tts_language,
       emotion,
       instruct: profile.instructFor(emotion),
       voice: profile.voice,
     };
-    const t0 = ctx.clock.now();
     const [provider, stream] = await speech.synthesize(request, signal);
     const it = stream[Symbol.asyncIterator]();
     let first: AudioChunk;
@@ -111,7 +115,7 @@ export class Speaker implements VoiceSink {
             context: { ...context },
             turn,
             provider,
-            chars: [...text].length,
+            chars: [...said].length,
             first_audio_ms: firstAudioMs,
           },
         },
@@ -119,6 +123,11 @@ export class Speaker implements VoiceSink {
       { turn },
     );
     return link.play(guild, first.sampleRate, prepend(first, it));
+  }
+
+  prepare(_context: ContextKey, rawText: string): void {
+    const text = stripTags(rawText);
+    if (text !== "") this.#d.translator?.prepare(text);
   }
 
   async speak(

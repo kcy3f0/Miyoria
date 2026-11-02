@@ -2,7 +2,7 @@
 
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { defineManifest, type Module, type ModuleContext } from "@miyoria/kernel";
+import { defineManifest, errorMessage, type Module, type ModuleContext } from "@miyoria/kernel";
 import { WebSocketServer } from "ws";
 import { aborted } from "../util.js";
 import { VoiceLinkError } from "./conn.js";
@@ -99,7 +99,10 @@ export class VoiceLinkModule implements Module {
     try {
       await listen(server, bind.host, bind.port);
     } catch (error) {
-      throw new VoiceLinkError(`cannot bind voice link to \`${config.bind}\``, { cause: error });
+      throw new VoiceLinkError(
+        `cannot bind voice link to \`${config.bind}\`: ${errorMessage(error)}`,
+        { cause: error },
+      );
     }
     const addr = server.address() as AddressInfo;
     if (!isLoopback(addr.address)) {

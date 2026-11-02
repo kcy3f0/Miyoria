@@ -59,6 +59,8 @@ Self voice node(`apps/voice-node`,TS)和 Core 的 `voice.link` 模組之間的�
 
 Core 要 self 帳號把畫面(OBS 的輸出:VTuber + 遊戲)推進語音頻道當 Go Live 直播。node 用 ffmpeg 讀 `source`(NVENC 優先,沒有就 x264),經 `@dank074/discord-video-stream` 送到 Discord。
 
+Core 端由 `voice` 模組的 `/golive start`、`/golive stop`、`/golive status` 指令送出(來源預設是 `[modules.voice] golive_source`,即 `rtmp://127.0.0.1:1935/live/miyoria`;她還不在語音頻道時,`/golive start` 會先送 `join` 進下指令的人所在的頻道);`stage.link` 收到 `voice.golive` 事件後會跟著按 OBS 開始 / 停止直播(見 [stage-link.md](stage-link.md))。
+
 **`golive_start`**
 
 | 欄位 | 說明 |

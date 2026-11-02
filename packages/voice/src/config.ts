@@ -40,6 +40,20 @@ export const VoiceConfigSchema = z.object({
   barge_in_fade_ms: z.number().int().nonnegative().default(150),
   /** Language hint sent to TTS. Default `Chinese`. */
   tts_language: z.string().default("Chinese"),
+  /**
+   * Speak in this language (e.g. `Japanese`): every line is translated by the LLM right before
+   * TTS and sent to TTS with this language; subtitles, the chat log and memory keep the original.
+   * Default null (speak what she wrote).
+   */
+  tts_translate: z.string().nullable().default(null),
+  /** LLM purpose used for `tts_translate`. Default `fast`. */
+  tts_translate_purpose: z.string().default("fast"),
+  /**
+   * Where the broadcast encoder (OBS) pushes for Discord Go Live. The voice node's ffmpeg is the
+   * RTMP server (`-listen 1`) unless the URL asks otherwise. Default matches the documented OBS
+   * setup (server `rtmp://127.0.0.1:1935/live`, key `miyoria`).
+   */
+  golive_source: z.string().default("rtmp://127.0.0.1:1935/live/miyoria"),
 });
 export type VoiceConfig = z.output<typeof VoiceConfigSchema>;
 

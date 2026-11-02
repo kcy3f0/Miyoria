@@ -1,4 +1,4 @@
-// `join`, `leave` and `voice consent` commands.
+// `join`, `leave`, `voice consent` and `golive` commands.
 
 import {
   ArgKind,
@@ -10,12 +10,27 @@ import {
 } from "@miyoria/commands";
 import { errorMessage, getLogger } from "@miyoria/kernel";
 import type { Consent, ConsentPolicy } from "./consent.js";
+import type { GoLiveState } from "./link/conn.js";
 import type { VoiceLink } from "./link/link.js";
 
 const log = getLogger("voice.commands");
 
 /** Paths registered by `registerCommands`. */
-export const PATHS = ["join", "leave", "voice consent"] as const;
+export const PATHS = [
+  "join",
+  "leave",
+  "voice consent",
+  "golive start",
+  "golive stop",
+  "golive status",
+] as const;
+
+const GOLIVE_STATE_TEXT: Record<GoLiveState, string> = {
+  starting: "正在連線",
+  live: "直播中",
+  stopped: "沒在直播",
+  failed: "失敗了",
+};
 
 /** The announcement she makes after joining a voice channel. */
 export function joinAnnouncement(policy: ConsentPolicy): string {
@@ -42,8 +57,10 @@ export function registerCommands(
   registry: CommandRegistry,
   link: VoiceLink,
   consent: Consent,
+  goliveSource: string,
 ): void {
   registry.setGroupDescription("voice", "語音設定");
+  registry.setGroupDescription("golive", "Discord Go Live 推流");
 
   const policy = consent.policy;
   registry.register(
@@ -93,6 +110,92 @@ export function registerCommands(
         allowed
           ? "知道了,我會聽你說話的。哼,別講無聊的事喔。"
           : "好,我不會聽你說話了。……也不是說我很想聽啦。",
+      );
+    },
+  );
+
+  registry.register(
+    commandSpec("golive start", "把直播畫面送進語音頻道(Discord Go Live)", {
+      args: [
+        argSpec(
+          "source",
+          "RTMP / SRT 來源;預設用設定檔的 [modules.voice] golive_source",
+          ArgKind.string,
+          {
+            required: false,
+          },
+        ),
+      ],
+      permission: "voice.golive",
+    }),
+    async (inv) => {
+      const guild = guildOf(inv);
+      if (guild === null) return CommandReply.ephemeral("要在伺服器裡用啦。");
+      const self = link.selfAccount();
+      const samePlatform = self !== null && self.platform === inv.invoker.platform;
+      if (!link.isConnected() || !samePlatform) {
+        return CommandReply.ephemeral("我的語音帳號現在不在線上……等一下再叫我啦。");
+      }
+      if (link.isStreaming(guild)) return CommandReply.ephemeral("我已經在直播了喔。");
+      const source = (inv.str("source") ?? goliveSource).trim();
+      if (source === "")
+        return CommandReply.ephemeral("沒給來源,設定檔的 `golive_source` 也是空的。");
+      // Not in voice yet: join the invoker's channel first, so one command is enough.
+      let joined = false;
+      if (link.channel(guild) === null) {
+        try {
+          await link.join(guild, null, inv.invoker.id);
+          joined = true;
+        } catch (error) {
+          const e = errorMessage(error);
+          log.warn({ err: e, guild }, "join for go live failed");
+          return CommandReply.ephemeral(`進不去語音頻道……你有在語音頻道裡嗎?(${e})`);
+        }
+      }
+      try {
+        await link.goliveStart({ guild, source });
+        const opening = "好,開台!等 OBS 的畫面連上就開始了。";
+        return CommandReply.public(joined ? `${joinAnnouncement(policy)}\n${opening}` : opening);
+      } catch (error) {
+        const e = errorMessage(error);
+        log.warn({ err: e, guild, source }, "go live start failed");
+        return CommandReply.ephemeral(`開不了台……(${e})`);
+      }
+    },
+  );
+
+  registry.register(
+    commandSpec("golive stop", "結束 Discord Go Live 推流", {
+      permission: "voice.golive",
+    }),
+    async (inv) => {
+      const guild = guildOf(inv);
+      if (guild === null) return CommandReply.ephemeral("要在伺服器裡用啦。");
+      if (!link.isStreaming(guild)) return CommandReply.ephemeral("我本來就沒在直播啊。");
+      try {
+        await link.goliveStop(guild);
+        return CommandReply.public("收台了。今天就到這裡,哼。");
+      } catch (error) {
+        const e = errorMessage(error);
+        log.warn({ err: e, guild }, "go live stop failed");
+        return CommandReply.ephemeral(`收不了台……(${e})`);
+      }
+    },
+  );
+
+  registry.register(
+    commandSpec("golive status", "看 Go Live 的狀態", {
+      permission: "voice.golive",
+      ephemeral: true,
+    }),
+    async (inv) => {
+      const guild = guildOf(inv);
+      if (guild === null) return CommandReply.ephemeral("要在伺服器裡用啦。");
+      const status = link.golive(guild);
+      if (status === null) return CommandReply.ephemeral("沒在直播。");
+      const detail = status.error ?? status.reason;
+      return CommandReply.ephemeral(
+        `Go Live:${GOLIVE_STATE_TEXT[status.state]}${detail ? `(${detail})` : ""}`,
       );
     },
   );

@@ -41,6 +41,11 @@ export type SpeakOutcome = "completed" | "interrupted";
  * resolves once playback finished or was interrupted.
  */
 export interface VoiceSink {
+  /**
+   * Hint that `text` will be spoken in `context` soon (it was just queued), so slow preparation
+   * such as translating it can start before its turn. Optional; never required before `speak`.
+   */
+  prepare?(context: ContextKey, text: string): void;
   speak(
     context: ContextKey,
     text: string,
