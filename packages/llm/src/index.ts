@@ -51,6 +51,15 @@ export * from "./openai/index.js";
 export { LlmRouter, type LlmRouterOptions, RoutedStream, type UsageRecord } from "./router.js";
 export { contextHash, contextSession, sessionId } from "./session.js";
 export {
+  type Completer,
+  completeJson,
+  extractJsonObject,
+  issueLines,
+  type StructuredOptions,
+  StructuredOutputError,
+  type StructuredResult,
+} from "./structured.js";
+export {
   assistantMessage,
   BudgetExhaustedError,
   type ChatMessage,
