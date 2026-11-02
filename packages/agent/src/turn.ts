@@ -58,6 +58,7 @@ import {
   toTimestamp,
   VoiceSinkKey,
   voiceLane,
+  WorldStateKey,
 } from "@miyoria/types";
 import { assess, decide as sample, type TalkLevel, type VoiceAttention } from "./attention.js";
 import type { AttentionConfig, ChannelMode } from "./config.js";
@@ -84,7 +85,13 @@ import {
 
 import type { Agent, Initiative, IntentTurn } from "./runtime.js";
 import { type HistoryEntry, messageText, type Session } from "./session.js";
-import { attitudeHint, type BudgetState, EXHAUSTED_LINE, moodHint } from "./signals.js";
+import {
+  attitudeHint,
+  type BudgetState,
+  EXHAUSTED_LINE,
+  herStatusHint,
+  moodHint,
+} from "./signals.js";
 import {
   type FencedPiece,
   FenceSplitter,
@@ -645,6 +652,8 @@ class Turn {
     const extras: Extras = { notes: [], people: [], sections: null, reasons: [] };
     const mood = this.agent.mood();
     if (mood !== null) extras.notes.push(moodHint(mood));
+    const her = this.agent.ctx.services.get(WorldStateKey)?.snapshot().her ?? null;
+    if (her !== null) extras.notes.push(herStatusHint(her));
     const focus = this.#focus();
     const social = this.social;
     if (social) {

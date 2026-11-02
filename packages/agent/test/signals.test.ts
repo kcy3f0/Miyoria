@@ -6,6 +6,7 @@ import {
   attitudeHint,
   energyCooldownFactor,
   energyProbabilityFactor,
+  herStatusHint,
   moodHint,
   parseBudgetState,
   tone,
@@ -58,5 +59,28 @@ describe("signals", () => {
     expect(parseBudgetState("degraded")).toBe("degraded");
     expect(parseBudgetState("exhausted")).toBe("exhausted");
     expect(() => parseBudgetState("broke")).toThrow("unknown budget state `broke`");
+  });
+});
+
+describe("herStatusHint", () => {
+  it("states where she is, whether she is live and what she plays", () => {
+    const base = {
+      voice: null,
+      voice_name: null,
+      golive: null,
+      streaming: false,
+      scene: null,
+      game: null,
+    };
+    expect(herStatusHint(base)).toBe("你現在不在語音頻道、沒有在直播、沒有在玩遊戲。");
+    expect(
+      herStatusHint({
+        ...base,
+        voice: { platform: "discord", scope: "g", channel: "vc", kind: "voice" },
+        voice_name: "active-only",
+        golive: "live",
+        game: "Minecraft",
+      }),
+    ).toBe("你現在在語音頻道 active-only、正在 Go Live 直播、正在玩 Minecraft。");
   });
 });

@@ -150,6 +150,7 @@ export {
   EXHAUSTED_LINE,
   energyCooldownFactor,
   energyProbabilityFactor,
+  herStatusHint,
   IGNORE_DIRECT_AFFINITY,
   moodHint,
   parseBudgetState,

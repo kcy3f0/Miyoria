@@ -1,7 +1,7 @@
 // Signals from other modules that shape her behaviour: how she feels about people
 // (`SocialSignals`), her mood (`MoodSignals`) and the LLM budget (`llm.budget` events).
 
-import type { Attitude, Mood } from "@miyoria/types";
+import type { Attitude, HerStatus, Mood } from "@miyoria/types";
 import { ParseError } from "./config.js";
 
 /**
@@ -82,6 +82,20 @@ export function attitudeHint(name: string, attitude: Attitude): string {
 }
 
 /** One line describing her mood, e.g. `"你現在的狀態:心情不錯、平靜、有點累"`. */
+/** Her actual voice / stream / game state, for the situation (so she never claims otherwise). */
+export function herStatusHint(her: HerStatus): string {
+  const voice =
+    her.voice === null ? "不在語音頻道" : `在語音頻道 ${her.voice_name ?? her.voice.channel}`;
+  const live =
+    her.golive === "live" || her.golive === "starting"
+      ? "正在 Go Live 直播"
+      : her.streaming
+        ? "OBS 正在直播"
+        : "沒有在直播";
+  const game = her.game === null ? "沒有在玩遊戲" : `正在玩 ${her.game}`;
+  return `你現在${voice}、${live}、${game}。`;
+}
+
 export function moodHint(mood: Mood): string {
   const valence = mood.valence < -0.3 ? "心情不太好" : mood.valence > 0.3 ? "心情不錯" : "心情普通";
   const arousal = mood.arousal > 0.7 ? "有點興奮" : mood.arousal < 0.3 ? "平靜" : "還算放鬆";
