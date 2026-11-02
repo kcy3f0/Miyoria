@@ -83,6 +83,7 @@ describe("config", () => {
       debounce_ms: 1500,
       typing_extend_ms: 2500,
       max_debounce_ms: 4000,
+      history_after_fold: 10,
       history_limit: 50,
       prompt_history: 30,
       max_prompt_chars: 16_000,

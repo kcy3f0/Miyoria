@@ -225,6 +225,11 @@ export const AgentConfigSchema = z.object({
   history_limit: z.number().int().nonnegative().default(50),
   /** Messages of history included in the prompt. */
   prompt_history: z.number().int().nonnegative().default(30),
+  /**
+   * When her conversation notes (module `conversation`) cover older lines, the prompt keeps only
+   * the lines after them, but at least this many of the newest.
+   */
+  history_after_fold: z.number().int().nonnegative().default(10),
   /** The history in the prompt is cut to this many characters, oldest entries first. */
   max_prompt_chars: z.number().int().nonnegative().default(16_000),
   /** One history entry is cut to this many characters. */

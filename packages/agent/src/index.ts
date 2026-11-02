@@ -94,6 +94,7 @@ export { PersonaHandle, PersonaHandleKey } from "./persona.js";
 export {
   ADDRESSED,
   AMBIENT,
+  afterFold,
   BOT_TAG,
   buildMessages,
   checkMessages,

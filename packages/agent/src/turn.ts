@@ -35,11 +35,13 @@ import {
   ActionSinkKey,
   AuthorizerKey,
   type ContextKey,
+  ConversationStatesKey,
   contextKeyString as contextKeyDisplay,
   filterOutgoing,
   type IncomingMessage,
   type JsonValue,
   type LaneKey,
+  LessonsKey,
   newAction,
   type Participant,
   PlatformSinksKey,
@@ -57,7 +59,7 @@ import {
   VoiceSinkKey,
   voiceLane,
 } from "@miyoria/types";
-import { assess, decide as sample, type VoiceAttention } from "./attention.js";
+import { assess, decide as sample, type TalkLevel, type VoiceAttention } from "./attention.js";
 import type { AttentionConfig, ChannelMode } from "./config.js";
 import { typingRefreshMs } from "./config.js";
 import { gather } from "./contributors.js";
@@ -68,6 +70,7 @@ import { awaitBackfill, replyParents } from "./history.js";
 import { linkMentions, type MentionTarget } from "./mentions.js";
 import { agentTurns } from "./metrics.js";
 import {
+  afterFold,
   buildMessages,
   checkMessages,
   cleanReply,
@@ -471,6 +474,24 @@ class Turn {
     return sum / authors.length;
   }
 
+  /**
+   * Her talkativeness here, shifted by the lessons that apply to this place and these speakers
+   * (`LessonsKey`, e.g. "阿明不喜歡被打斷" makes her less likely to chime in while he talks).
+   */
+  #talkativeness(): TalkLevel | null {
+    const base = this.agent.talkativeness(this.key);
+    const lessons = this.agent.ctx.services.get(LessonsKey);
+    if (!lessons) return base;
+    const people = this.#authors().flatMap((a) => {
+      const p = this.social?.attitude(a)?.person ?? null;
+      return p === null ? [] : [p];
+    });
+    const shift = lessons.talkShift(this.key, people);
+    if (shift === 0) return base;
+    const level = Math.min(Math.max((base?.level ?? 0.5) + shift, 0), 1);
+    return { level, scope: `${base?.scope ?? "default"}+lessons` };
+  }
+
   /** Runs attention. */
   async #decide(names: readonly string[], budget: BudgetState): Promise<Decision> {
     const cfg = this.agent.config;
@@ -482,7 +503,7 @@ class Turn {
     const mode: ChannelMode =
       budget !== "ok" && configured === "ambient" ? "mention-only" : configured;
     const activeness = this.agent.handle.activeness(this.key);
-    const talkativeness = this.agent.talkativeness(this.key);
+    const talkativeness = this.#talkativeness();
     const affinity = this.#speakerAffinity();
     const mood = this.agent.mood();
     const voiceCfg = cfg.voice;
@@ -747,10 +768,16 @@ class Turn {
       intent: this.#intentData(),
       sections: extras.sections,
     });
+    // What her conversation notes already cover is not repeated raw (a few lines always stay).
+    const folded = services.get(ConversationStatesKey)?.get(this.key) ?? null;
     const messages = buildMessages(
       persona,
       situation,
-      this.session.recent(cfg.prompt_history).filter((e) => !this.#hidden(e)),
+      afterFold(
+        this.session.recent(cfg.prompt_history).filter((e) => !this.#hidden(e)),
+        folded?.folded_up_to ?? null,
+        cfg.history_after_fold,
+      ),
       data,
       {
         maxChars: cfg.max_prompt_chars,

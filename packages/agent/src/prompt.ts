@@ -26,9 +26,11 @@ import {
   DATA_OPEN,
   dataBlock,
   escapeData,
+  type FoldMark,
   neutralize,
   type PromptSection,
   safeName,
+  timestampMs,
 } from "@miyoria/types";
 import type { HistoryEntry } from "./session.js";
 import { charCount, utf8Len } from "./util.js";
@@ -444,6 +446,22 @@ export function buildMessages(
   if (data !== null) out.push(userMessage(data));
   out.push(systemMessage(situation));
   return out;
+}
+
+/**
+ * The history after the last line her conversation notes cover (`mark`), but at least `keep`
+ * of the newest entries; everything when nothing is folded yet.
+ */
+export function afterFold<T extends { ts: number }>(
+  history: readonly T[],
+  mark: FoldMark | null,
+  keep: number,
+): T[] {
+  if (mark === null) return [...history];
+  const cutoff = timestampMs(mark.ts);
+  const start = history.findIndex((e) => e.ts > cutoff);
+  const from = start < 0 ? history.length : start;
+  return history.slice(Math.max(Math.min(from, history.length - keep), 0));
 }
 
 /** Messages for the `fast` model's respond / stay-quiet check. */
