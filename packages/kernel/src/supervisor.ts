@@ -215,6 +215,7 @@ export class Supervisor {
     slot.restarts.push(now);
     const attempts = slot.restarts.length;
 
+    this.#log.warn({ module: id, reason: error }, "module failed");
     await this.#stopWithDependents(id, error);
     slot.state = "failed";
     slot.reason = error;
