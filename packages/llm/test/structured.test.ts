@@ -38,7 +38,8 @@ class NoJsonMode implements ChatProvider {
   async stream(req: ChatRequest, signal?: AbortSignal): Promise<ChatStream> {
     this.seen.push(structuredClone(req));
     if (req.json_mode) throw new ProviderHttpError("response_format is not supported", 400);
-    return this.#inner.stream(req, signal);
+    signal?.throwIfAborted();
+    return this.#inner.stream(req);
   }
 }
 
