@@ -2,7 +2,7 @@
 
 模組 `sandbox`:讓 DeepSeek-chan 在**用完即丟、不能連外的 Docker 容器**裡執行她自己寫的程式(Python / Node),保存她寫的腳本(工具工作區),以及管理她提出的自寫工具(`tool.propose`)。設計見 [`docs/design/autonomy.md`](../../docs/design/autonomy.md) §7、§8.3(階段 F)。
 
-> 這個模組是 **opt-in**:`[modules.sandbox]` 要寫 `enabled = true` 才會啟動(沒有這一節 = 關閉)。它目前**沒有註冊任何 LLM 工具**:`code.run`、`tool.propose` 是高風險能力,要等階段 A 的閘門(`ActuatorRegistryKey`)接上才會開放給她用,見文末「接到閘門」。
+> 這個模組是 **opt-in**:`[modules.sandbox]` 要寫 `enabled = true` 才會啟動(沒有這一節 = 關閉)。啟動後只要 Docker 可用,就在自主層的閘門(`ActuatorRegistryKey`)註冊 `code.run`、`tool.propose` 與她已核准的工具,反應回合(和之後她自己的回合)都能用,見「閘門與工具」。
 
 ## 服務
 
@@ -71,7 +71,7 @@ reject(name, { reviewer, version, note }) pending → rejected
 propose(同名)                          → pending(version + 1;原本的核准失效)
 invoke(name, args)                     只限 approved;args 依 args_schema 驗證,以 JSON 從 stdin 傳入,
                                        在沙箱裡跑(network none);code 的 sha256 跟紀錄不符就拒絕
-approvedSpecs()                        給階段 A 註冊成 LLM 工具用的 { name, description, parameters }
+approvedSpecs()                        已核准的工具 { name, description, parameters, version }(註冊成 sbx_<name>)
 ```
 
 `args_schema` 必須是 `type: "object"` 的 JSON Schema(用 `z.fromJSONSchema` 驗證)。事件:`sandbox.tool.proposed`、`sandbox.tool.reviewed`、`sandbox.tool.removed`、`sandbox.run.finished`(`custom` 事件,payload 不含程式碼與輸出)。
@@ -81,7 +81,7 @@ approvedSpecs()                        給階段 A 註冊成 LLM 工具用的 { 
 ### 威脅模型
 
 - **程式碼是不可信的。** 寫程式的是 LLM,而 LLM 的輸入包含不可信的聊天、語音辨識、遊戲聊天、網頁與圖片描述。要假設攻擊者能讓她寫出**任何程式**(prompt injection),包括故意的惡意程式:讀檔、偷密鑰、連外、挖礦、塞爆磁碟、fork bomb、試圖逃出容器。
-- **輸出也是不可信的。** stdout、stderr、輸出檔回到她的上下文時是**資料**,可能夾帶下一段 prompt injection;階段 A 要把它放在 user role 的不可信資料區塊(§8.2),不能放進 system。
+- **輸出也是不可信的。** stdout、stderr、輸出檔回到她的上下文時是**資料**,可能夾帶下一段 prompt injection。工具結果用 `formatRun` 包成不可信資料區塊(`dataBlock`:固定分隔符、跳脫裡面的分隔符與聊天模板控制字元)、截斷到 `result_chars`,輸出檔只回檔名與大小;稍後才出來的結果走 agent 的 user role 資料區塊(§8.2),不會進 system。
 - 沙箱要保護的是:主機檔案與密鑰(`.env`、`miyoria.toml`、資料庫、Discord / LLM token)、主機網路與區網、主機資源、其他執行的資料。
 
 ### 容器擋下了什麼
@@ -121,20 +121,23 @@ approvedSpecs()                        給階段 A 註冊成 LLM 工具用的 { 
 
 規劃:建一個 `--internal` 的 user-defined network(沒有對外路由),再起一個同時接 internal 與 bridge 的 egress proxy 容器(只放行白名單網域的 HTTP CONNECT),沙箱容器只接 internal network 並設 `HTTP(S)_PROXY`。非 HTTP 流量與 DNS 全擋。在那之前 `network` 一律 `"none"`;模型可呼叫的 `code.run` 參數也**沒有** `network` 欄位(`CodeRunArgsSchema`),即使之後支援白名單,也要由閘門的設定決定,不由模型決定。
 
-## 接到閘門(階段 A 要做的事)
+## 閘門與工具(`src/gate.ts`)
 
-`capabilities.ts` 已經準備好:
+Docker 可用時(啟動時檢查,之後每 `recheck_ms` 再檢查),module 在 app 的 `ActuatorRegistry` 註冊下面的能力;Docker 不見了就全部撤下,module 停止時也撤下。所有呼叫都經過閘門(暫停、禁止清單、權限、預算、次數限制、審核、稽核紀錄),沒有綁定特定 principal:反應回合是 `user`(或 `on_own` 的 `self`),之後她自己的回合是 `self`。
 
-- `SANDBOX_CAPABILITIES`:`code.run`、`tool.propose` 兩個能力,`risk: "high"`、說明與 zod 參數 schema(`CodeRunArgsSchema`、`ToolProposalSchema`)。
-- `sandboxHandlers({ sandbox, tools })`:閘門放行後呼叫的 handler(解析不可信參數、強制 `network: "none"`、回傳精簡的 `summarizeRun` 結果)。
+| 能力 | 工具 | 風險 | 權限節點(`user` 要有;她可以 `on_own`) | 內容 |
+|---|---|---|---|---|
+| `code.run` | `code_run` | 高 | `sandbox.code.run`(預設只有擁有者) | 跑一段 Python / Node。參數 `language`、`code`、`stdin`、`files`、`timeout_ms`;**沒有 network**,多給的欄位會被丟掉,執行時強制 `network: "none"` |
+| `tool.propose` | `tool_propose` | 高 | `sandbox.tool.propose`(預設只有擁有者) | 提出自寫工具;閘門放行 = **核准這個版本** |
+| `sbx.<name>` | `sbx_<name>` | 中 | `tools.sandbox.<name>`(trusted 以上透過 `tools.*`) | 已核准的自寫工具;參數在閘門依 `args_schema` 驗證,`ProposedTools.invoke` 再驗一次並比對 sha256,在沙箱裡跑(逾時 `tool_timeout_ms`) |
 
-階段 A 要:
-
-1. 在 `ActuatorRegistry` 註冊這兩個能力(用上面的 handler),principal 帶進 `requester`(會記在 `proposed_by`)。
-2. 依 §8.1:高風險 → 她自己的審核呼叫(`review` 用途,只看結構化請求與程式碼,不看聊天原文),有疑慮才轉交擁有者;頻率與預算上限;稽核紀錄。
-3. 自寫工具的核准:審核呼叫或擁有者呼叫 `ProposedTools.approve(name, { reviewer, version })`;面板 / Discord 按鈕顯示程式碼與 `code_sha256`。
-4. 把 `approvedSpecs()` 註冊成 LLM 工具(建議名稱加前綴,例如 `her_<name>`,避免跟內建工具撞名),呼叫時同樣經過閘門,再 `ProposedTools.invoke()`;聽 `sandbox.tool.reviewed` / `removed` 事件更新註冊。
-5. 執行結果放進不可信資料區塊(§8.2)。
+- **審核**(§8.1):高風險 → 她自己的 `review` 呼叫,看結構化請求(含完整程式碼)與能力的 `guidance`(什麼可以放行、什麼要拒絕),不看聊天原文;`uncertain` 才私訊擁有者確認卡,卡片附上程式碼檔(`main.py` / `<name>.py`)、sha256 與參數 schema。
+- **結果怎麼回來**:`code_run` / `tool_propose` 是 `followup` 工具:審核加執行在 `[modules.actions] inline_wait_ms`(預設 8 秒)內完成就直接回結果;否則先回「還沒有結果」,完成後用後續回合(`agent_initiative`,reason `action_result`)告訴她結果或拒絕原因。結果文字由 `formatRun` 產生:exit code、時間、被殺原因、stdout / stderr(stderr 最多佔三分之一)、輸出檔名與大小,全部在不可信資料區塊裡,總長約 `result_chars`。`ActionResult.data` 只有 `summarizeRun` 的位元組數與狀態,不含輸出。
+- **自寫工具的生命週期**:`tool.propose` 被放行 → `propose` + `approve(name, { reviewer, version })`,`reviewer` 是 `self`(她的審核)或回覆確認卡的擁有者帳號;被她的審核或擁有者拒絕 → 存成 `rejected`(附理由);沒有人決定(擁有者沒回、聯絡不到、審核失敗)→ 存成 `pending`,擁有者之後可以從 API 核准。已經核准的工具,新版本被拒絕時**保留舊版**(不會因為一次失敗的提案讓她失去工具)。同名再提出且被放行 → 版本 +1。`sandbox.tool.*` 事件一來就重新同步 `sbx_<name>` 的註冊。
+- **中風險的理由**:程式碼在核准時已經審過(綁定版本與 sha256),每次呼叫只差參數(已驗證 schema)而且仍在離線沙箱裡;再對每次呼叫做審核既貴又慢,等於讓核准沒有意義。剩下的風險是資源用量,交給次數限制(預設中風險上限:每天 30 次、每人 8 次、冷卻 20 秒;`[modules.actions.limits."sbx.<name>"]` 可調,`forbidden = ["sbx.*"]` 可全部關掉)。
+- 參數名稱 `why`、`on_own` 是工具保留的,`args_schema` 不能用(閘門的參數檢查就擋下)。
+- **擁有者看得到的地方**:`/admin autonomy status`(Docker 狀態、能力是否開放、已核准 / 待審 / 已拒絕的工具);API `GET /api/sandbox/tools`(清單與 Docker 狀態,不含程式碼)、`GET /api/sandbox/tools/:name`(含程式碼)、`POST /api/sandbox/tools/:name/approve|reject`(body `{ "version": n, "note"?: "..." }`;版本不是目前版本 → 409;需要 token,或面板帳號有 `owner.autonomy.approve` 與寫入權限)。面板頁面尚未做。
+- 工具工作區(`sandbox.tools.save` 等)沒有開放給模型;`code_run` 的工具說明沒有列出 `mount_tools`(schema 仍接受,掛載是唯讀的)。
 
 ## 設定
 
@@ -143,4 +146,5 @@ approvedSpecs()                        給階段 A 註冊成 LLM 工具用的 { 
 ## 測試
 
 - `pnpm --filter @miyoria/sandbox test`:單元測試用注入的假 `DockerRunner`,不需要 Docker。
-- `test/docker.integration.test.ts` 會真的跑容器;偵測不到 Docker daemon(或設 `MIYORIA_SKIP_DOCKER_TESTS=1`)時自動跳過。第一次會下載映像檔(在作者的機器上 `python:3.12-slim` 約 9 秒、`node:24-slim` 約 3 秒)。
+- `test/gate.test.ts`:閘門路徑(審核 allow / deny / uncertain → 擁有者)、`network` 永遠是 `none`、輸出的不可信框與截斷、後續回合、自寫工具的核准 → 註冊 → 呼叫。
+- `test/docker.integration.test.ts` 會真的跑容器(也有一個經過閘門的 `code_run` 與 `sbx_<name>` 案例);偵測不到 Docker daemon(或設 `MIYORIA_SKIP_DOCKER_TESTS=1`)時自動跳過。第一次會下載映像檔(在作者的機器上 `python:3.12-slim` 約 9 秒、`node:24-slim` 約 3 秒)。
