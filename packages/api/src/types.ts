@@ -1,7 +1,9 @@
 // Wire types shared by the server and the client (Rust `miyoria_api::types`). Field names and
 // nullability mirror the serde JSON exactly; `apps/panel/src/api/*types.ts` mirror these.
 
+import type { PendingApproval } from "@miyoria/actions";
 import type { ModuleStatus } from "@miyoria/kernel";
+
 import type { CostReport, ModelUsage, PeriodReport } from "@miyoria/llm";
 import type { ItemState } from "@miyoria/queue";
 import type { StreamAction } from "@miyoria/stage";
@@ -18,12 +20,14 @@ import type {
   ChannelActivity,
   ContextKey,
   Feeling,
+  MindStats,
   ModuleId,
   ModuleStateKind,
   PersonId,
   PlatformId,
   ProfileId,
   SelfSnapshot,
+  Thought,
   Timestamp,
   TurnId,
   VoiceParticipant,
@@ -454,3 +458,18 @@ export interface ChannelActivityView extends ChannelActivity {
 export interface WorldView extends Omit<WorldSnapshot, "channels"> {
   channels: ChannelActivityView[];
 }
+
+/** `GET /api/mind` (and the answer of `POST /api/mind/pause|resume`). */
+export interface MindView {
+  /** Her autonomy is paused (only commands and the panel act; her mind does not think). */
+  paused: boolean;
+  /** The `mind` module is running. */
+  running: boolean;
+  /** Her mind takes triggers right now. */
+  accepting: boolean;
+  stats: MindStats | null;
+  /** High-risk actions waiting for an owner. */
+  pending_approvals: number;
+}
+
+export type { PendingApproval, Thought };

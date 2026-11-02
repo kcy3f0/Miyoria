@@ -10,6 +10,7 @@ import { ApiError, NO_SUCH_ENDPOINT } from "./errors.js";
 import { innerRoutes } from "./inner.js";
 import { memoryRoutes } from "./memory.js";
 import { metricsRoutes } from "./metrics.js";
+import { mindRoutes } from "./mind.js";
 import * as oauth from "./oauth.js";
 import { opsRoutes } from "./ops.js";
 import { servePanel } from "./panel.js";
@@ -99,6 +100,8 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...innerRoutes(state),
     ...dataRoutes(state),
     ...sandboxRoutes(state),
+    ...mindRoutes(state),
+
     ...metricsRoutes(state, { public: options.metricsPublic ?? false }),
   ];
 }

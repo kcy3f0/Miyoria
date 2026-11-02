@@ -34,6 +34,10 @@
 // * `GET /api/data`, `GET /api/data/export?categories=`, `POST /api/data/wipe`,
 //   `POST /api/data/backup`, `POST /api/data/reset` (her data by category, factory reset;
 //   export and changes need `owner.data.manage`, see `data.ts`)
+// * `GET /api/mind`, `GET /api/mind/thoughts?limit=50`, `GET /api/mind/approvals`,
+//   `POST /api/mind/approvals/{id}/approve|deny`, `POST /api/mind/pause|resume` (changes need
+//   `owner.autonomy.approve`)
+
 // * `GET /api/events?topics=platform.*,agent.*` (Server-Sent Events of bus envelopes)
 
 export {
@@ -110,6 +114,7 @@ export type {
   MemoryItem,
   MemoryListQuery,
   MemoryRecordView,
+  MindView,
   ModelUsage,
   ModuleInfo,
   MoveRequest,

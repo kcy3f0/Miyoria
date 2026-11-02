@@ -21,8 +21,10 @@ import type {
   MemoryItem,
   MemoryListQuery,
   MemoryRecordView,
+  MindView,
   ModuleInfo,
   Page,
+  PendingApproval,
   PersonaSectionInfo,
   PersonDetail,
   PersonSummary,
@@ -34,6 +36,7 @@ import type {
   SessionInfo,
   SetPersonaResponse,
   StageState,
+  Thought,
   UpdateMemoryRequest,
   UpdatePersonRequest,
   UpsertRoleRequest,
@@ -439,6 +442,31 @@ export class ApiClient {
   /** What she perceives: people, voice channels, channel activity, her own status. */
   world(o?: CallOptions): Promise<WorldView> {
     return this.#json("GET", ["world"], o);
+  }
+
+  /** Her mind loop: paused or not, call counts, pending approvals. */
+  mind(o?: CallOptions): Promise<MindView> {
+    return this.#json("GET", ["mind"], o);
+  }
+
+  /** Her thought journal, newest first. */
+  thoughts(limit = 50, o?: CallOptions): Promise<Thought[]> {
+    return this.#json("GET", ["mind", "thoughts"], { ...o, query: { limit: String(limit) } });
+  }
+
+  /** High-risk actions waiting for an owner. */
+  approvals(o?: CallOptions): Promise<PendingApproval[]> {
+    return this.#json("GET", ["mind", "approvals"], o);
+  }
+
+  /** Answers a pending approval; resolves with the ones still pending. */
+  answerApproval(id: string, approved: boolean, o?: CallOptions): Promise<PendingApproval[]> {
+    return this.#json("POST", ["mind", "approvals", id, approved ? "approve" : "deny"], o);
+  }
+
+  /** The emergency stop of her autonomy. */
+  autonomyPause(paused: boolean, o?: CallOptions): Promise<MindView> {
+    return this.#json("POST", ["mind", paused ? "pause" : "resume"], o);
   }
 
   /**
