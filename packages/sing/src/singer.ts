@@ -17,6 +17,8 @@
 //   she first says she is off to prepare it, and only then does the worker go ahead
 //   (`exclusive: "waiting"` → `goExclusive`). Meanwhile speech is paused (`SpeechPauseKey`,
 //   `SPEECH_PAUSE_TOPIC`): the voice module neither speaks nor transcribes, the overlay says so.
+// * The song being prepared, its worker stage and progress are published as
+//   `SONG_PREPARE_TOPIC` whenever they change (the overlay's activity line).
 
 import { CapabilityError } from "@miyoria/actions";
 import { errorMessage, getLogger, type ModuleContext } from "@miyoria/kernel";
@@ -32,8 +34,10 @@ import {
   type JsonValue,
   MindKey,
   type PlaybackState,
+  SONG_PREPARE_TOPIC,
   SONG_TOPIC,
   type SongCue,
+  type SongPrepare,
   SPEECH_PAUSE_TOPIC,
   type SpeechPause,
   safeName,
@@ -155,6 +159,10 @@ export class Singer implements VoiceFloor, SpeechPause {
   readonly #told = new Set<string>();
   #lastNotice = Number.NEGATIVE_INFINITY;
   #paused = false;
+  /** What the worker last said about preparing songs (not stored). */
+  readonly #jobs = new Map<SongNo, { title: string; exclusive: string | null }>();
+  /** JSON of the `SONG_PREPARE_TOPIC` payload last published. */
+  #prepareSent = JSON.stringify(NOT_PREPARING);
 
   /**
    * `videoDir`: the worker's cache dir (absolute) when song videos are shown on stream
@@ -219,6 +227,7 @@ export class Singer implements VoiceFloor, SpeechPause {
       const job = await this.worker.submit(this.#query(query, req.key), signal);
       entry.job = job.id;
       this.#apply(entry, job);
+      this.#publishPrepare();
     } catch (error) {
       // The caller hears about it from the error; no separate notice.
       this.#fail(entry, errorMessage(error), false);
@@ -238,6 +247,10 @@ export class Singer implements VoiceFloor, SpeechPause {
     if (entry.state !== "preparing") return;
     entry.stage = job.stage;
     entry.progress = job.progress;
+    this.#jobs.set(entry.no, {
+      title: job.song?.title.trim() || job.source?.title.trim() || "",
+      exclusive: job.exclusive,
+    });
     this.#onExclusive(entry, job);
     switch (job.state) {
       case "done":
@@ -725,6 +738,37 @@ export class Singer implements VoiceFloor, SpeechPause {
         log.debug({ no: entry.no, err: errorMessage(error) }, "could not check a song job");
       }
     }
+    this.#publishPrepare();
+  }
+
+  /** Publishes the song being prepared (`SONG_PREPARE_TOPIC`) when it changed. */
+  #publishPrepare(): void {
+    const preparing = this.#closed ? [] : this.list.preparing();
+    for (const no of this.#jobs.keys()) {
+      if (!preparing.some((e) => e.no === no)) this.#jobs.delete(no);
+    }
+    // The one furthest along: a job the worker runs before the queued ones.
+    const rank = (e: SongEntry) => (e.stage !== "queued" && e.stage !== "" ? 1 : 0) + e.progress;
+    let best: SongEntry | null = null;
+    for (const e of preparing) if (best === null || rank(e) > rank(best)) best = e;
+    let payload: SongPrepare = NOT_PREPARING;
+    if (best !== null) {
+      const info = this.#jobs.get(best.no);
+      const query = best.query.trim();
+      // A link or a library path is no title; the worker's comes once it found the song.
+      const asked = LINK.test(query) || query.toLowerCase().startsWith("library:") ? "" : query;
+      payload = {
+        no: best.no,
+        title: info?.title || asked,
+        stage: best.stage,
+        progress: Math.round(Math.min(Math.max(best.progress, 0), 1) * 1000) / 1000,
+        exclusive: info?.exclusive ?? null,
+      };
+    }
+    const json = JSON.stringify(payload);
+    if (json === this.#prepareSent) return;
+    this.#prepareSent = json;
+    this.ctx.publish(customEvent(SONG_PREPARE_TOPIC, payload as unknown as JsonValue));
   }
 
   async #resubmit(entry: SongEntry, signal?: AbortSignal): Promise<void> {
@@ -792,6 +836,7 @@ export class Singer implements VoiceFloor, SpeechPause {
     this.#closed = true;
     this.#playing?.stop.abort();
     this.#updatePause();
+    this.#publishPrepare();
   }
 
   // ----- talking to her -----
@@ -816,6 +861,8 @@ export class Singer implements VoiceFloor, SpeechPause {
     this.ctx.publish(customEvent(SONG_TOPIC, cue as unknown as JsonValue));
   }
 }
+
+const NOT_PREPARING: SongPrepare = { no: null, title: "", stage: "", progress: 0, exclusive: null };
 
 function pct(p: number): string {
   return `${Math.round(Math.max(0, Math.min(1, p)) * 100)}%`;

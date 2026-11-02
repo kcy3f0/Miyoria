@@ -11,7 +11,9 @@ import {
 import {
   type ContextKey,
   contextKeyString,
+  customEvent,
   type PlaybackState,
+  SPEECH_SYNTH_TOPIC,
   type SpeakOutcome,
   SpeechPauseKey,
   type TurnId,
@@ -94,6 +96,8 @@ export class Speaker implements VoiceSink {
   ): Promise<Playback> {
     const { ctx, speech, profile, config, link, translator } = this.#d;
     const t0 = ctx.clock.now();
+    // The overlay says she is getting her line ready until it plays (or fails).
+    ctx.publish(customEvent(SPEECH_SYNTH_TOPIC, { context: { ...context }, turn }), { turn });
     const said = translator ? await translator.translate(text, signal) : text;
     const request = {
       text: said,

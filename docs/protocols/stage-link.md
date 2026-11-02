@@ -31,7 +31,8 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 | `avatar_hotkey` | `name`, `id?` | 觸發 VTS hotkey(名稱或 hotkey ID) |
 | `gaze` | `target`(`chat` / `game` / `camera`) | 她看哪裡 |
 | `song_video` | `action`(`play` / `stop`), `song`, `path?`, `offset_ms?`, `scene?` | 她唱的歌的原曲影片(見下面「唱歌時放影片」)。`play`:`path` 是直播機上歌曲快取裡的影片(絕對路徑),`offset_ms` 是送出時歌已經唱了多久,`scene` 是導演會切去的 `sing` 場景(沒有就是目前場景);`stop`:停掉並清空。沒有 `id`、不回覆 |
-| `notice` | `text` | overlay 的一行狀態(`""` 清掉)。她的語音因為要做歌暫停時是「準備歌曲中…」(來自 `speech.pause`) |
+| `notice` | `text` | overlay 的一行狀態(`""` 清掉)。她的語音因為要做歌暫停時是「準備歌曲中…」(來自 `speech.pause`)。新的 overlay 改用 `activity` 顯示這段時間,`notice` 留給舊版 Stage / overlay;新 overlay 只在沒有 `activity` 時才把它顯示在活動膠囊裡 |
+| `activity` | `kind`, `label`, `detail`, `progress`, `elapsed_ms`, `duration_ms` | 她現在在做什麼(overlay 左下的活動膠囊,見下面「活動」)。`kind`:`thinking` / `synthesizing` / `song_prepare` / `singing`,`null` = 隱藏(其他欄位為空);`label` 是短的中文狀態(≤ 40);`detail` 是歌名(已跳脫、≤ 49 字)或 `null`;`progress` 0..1 或 `null`(不確定);唱歌時 `elapsed_ms`(送出時唱到哪)與 `duration_ms`(歌多長),進度由收到的一方自己的時鐘推進 |
 | `status_request` | `id?` | 要一份最新的 `status` |
 | `ping` / `pong` | | |
 
@@ -48,9 +49,26 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 {"type":"gaze","target":"chat"}
 {"type":"song_video","action":"play","song":"yt-K4DyBUG242c","path":"C:\\Miyoria\\data\\songs\\yt-K4DyBUG242c\\video.mp4","offset_ms":0,"scene":"唱歌"}
 {"type":"song_video","action":"stop","song":"yt-K4DyBUG242c"}
+{"type":"activity","kind":"song_prepare","label":"轉換歌聲","detail":"夜に駆ける","progress":0.62,"elapsed_ms":null,"duration_ms":null}
+{"type":"activity","kind":"singing","label":"正在唱","detail":"夜に駆ける","progress":null,"elapsed_ms":0,"duration_ms":261000}
+{"type":"activity","kind":null,"label":"","detail":null,"progress":null,"elapsed_ms":null,"duration_ms":null}
 ```
 
-`song_video` 是 v1 之後加的:舊版 Stage 不認得它(記 debug log、略過),協定版本仍是 1。
+`song_video`、`activity` 是 v1 之後加的:舊版 Stage 不認得它們(記 debug log、略過),協定版本仍是 1。
+
+**活動(`activity`,Core 端)**:由 `stage.link` 從匯流排事件算出來,優先順序由高到低:
+
+| `kind` | `label` | 什麼時候 | 進度 |
+|---|---|---|---|
+| `singing` | 正在唱 | `sing.cue` `started` 到 `ended` | `elapsed_ms` / `duration_ms`(`sing.cue` `started` 的 `duration_ms`;沒有就是不確定) |
+| `song_prepare` | 下載中 / 讓出顯示卡中 / 分離人聲 / 轉換歌聲 / 混音 / 找歌詞(也有 排隊中、找歌中、下載影片、準備歌曲) | `sing.prepare` 有歌在準備(`exclusive` 是 `waiting` / `offloading` 時是「讓出顯示卡中」,其他依 worker 的 `stage`) | worker 的整體進度 |
+| `synthesizing` | 產生語音… | 她的一句話送去 TTS(`voice.synthesis`)、還沒開始播(`voice.playback` `started` / `failed`) | 不確定 |
+| `thinking` | 思考中… | 回合在跑(`agent.turn.started` 到 `completed`),還沒說出任何一句 | 不確定 |
+
+- 一個回合的第一句開始播之後就交給字幕:句子之間(下一句在 TTS)不再顯示「思考中」或「產生語音」。文字頻道的回合只有 `subtitle_text_turns = true` 時才算。
+- `thinking` / `synthesizing` 要持續 250 ms 才顯示(很快結束的回合不會閃一下);回合 2 分鐘、TTS 30 秒沒有結束就不再算。
+- 種類、文字或歌改變時立刻送;同一個活動的進度最多每 250 ms 送一次(而且要變超過 0.5%);唱歌時只在開始送一次。Stage 重新連上(送 `status`)時會先收到目前的活動。
+- 歌名是不可信的文字:經過 `safeName`(去掉控制字元、換行,最多 48 字)。
 
 **字幕的規則**(Core 端):
 
@@ -91,7 +109,7 @@ golive_obs = true          # 跟在 voice node 的 Go Live 後面按 OBS 開始 
 golive_start_delay_ms = 3000   # 等 voice node 的 ffmpeg 綁好 RTMP listener 再按
 ```
 
-- 訂閱 `agent.emotion`、`agent.turn.completed`、`voice.playback`,依上面的規則轉送。
+- 訂閱 `agent.emotion`、`agent.turn.completed`、`voice.playback`,依上面的規則轉送;另外用 `agent.turn.started`、`voice.synthesis`、`sing.prepare`、`sing.cue` 算出 `activity`。
 - 另外訂閱 `voice.golive`(`{guild, state, error?, reason?}`):`starting` 時在 `golive_start_delay_ms` 後叫 OBS 開始直播(最多重試 3 次),`stopped` / `failed` 時叫 OBS 停止。所以 Discord 的 `/golive start` 一個指令就能從推流到 OBS 全包;`golive_obs = false` 可以關掉,讓 OBS 自己控制。
 - 提供 `StageLink` 服務(`StageLinkKey`):`setScene`、`stream`、`hotkey`、`refreshStatus`、`gaze`、`status`、`subscribeStatus`。
 - 狀態變化發佈成 `custom` 事件(topic `stage.status`),payload `{connected, vts, obs, scene, streaming, scenes, hotkeys, overlay_url}`(斷線時只有 `{"connected": false}`)。
@@ -195,9 +213,10 @@ Stage 的 HTTP 伺服器(`[stage] overlay_bind`,預設 `127.0.0.1:7884`):
 {"type":"subtitle","turn":"01JD3W6Q8X0Z5K2M9C4B7N1R3T","text":"早安。","final":false}
 {"type":"speaking","state":"started"}
 {"type":"notice","text":"準備歌曲中…"}
+{"type":"activity","kind":"thinking","label":"思考中…","detail":null,"progress":null,"elapsed_ms":null,"duration_ms":null}
 ```
 
-`notice` 顯示在字幕上方(有顯示字幕的 overlay 就會顯示),`""` 清掉;新的連線也會先收到目前的 notice。`core` 表示 Stage 目前有沒有連上 Core。`subtitle` 的規則同上(同一個 `turn` 的新字幕取代舊的)。
+`activity` 原樣轉送 Core 的 `activity`;新的連線也會先收到目前的活動(唱歌時 `elapsed_ms` 會加上經過的時間),Stage 和 Core 斷線時送一次 `kind: null` 把它藏起來。`notice`(`""` 清掉)也一樣會先送給新的連線;overlay 在沒有活動時把它顯示在活動膠囊裡。`core` 表示 Stage 目前有沒有連上 Core。`subtitle` 的規則同上(同一個 `turn` 的新字幕取代舊的)。
 
 ---
 

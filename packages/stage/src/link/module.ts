@@ -7,6 +7,7 @@ import {
   errorMessage,
   HEALTHY,
   type Health,
+  interval,
   type Module,
   type ModuleContext,
 } from "@miyoria/kernel";
@@ -19,12 +20,15 @@ import {
   type JsonObject,
   Principals,
   parseSongCue,
+  SONG_PREPARE_TOPIC,
   SONG_TOPIC,
   SPEECH_PAUSE_TOPIC,
+  SPEECH_SYNTH_TOPIC,
   StreamCurtainKey,
 } from "@miyoria/types";
 import { type BoundAddress, formatAddress, HttpServer, isLoopback } from "../net.js";
 import { stageCapabilities } from "./actions.js";
+import { ActivityTracker } from "./activity.js";
 import { registerStreamCommands, unregisterStreamCommands } from "./commands.js";
 import { MAX_MESSAGE } from "./conn.js";
 import { type GoLiveState, SceneDirector } from "./director.js";
@@ -82,6 +86,9 @@ function direct(director: SceneDirector, env: Envelope): void {
   }
 }
 
+/** How often the activity line is re-evaluated (show delays, throttled progress, expiry). */
+const ACTIVITY_TICK_MS = 250;
+
 /** How long stop waits for the node to answer the close frame. */
 const CLOSE_GRACE_MS = 2_000;
 
@@ -99,10 +106,10 @@ interface Running {
 
 /**
  * Module `stage.link`: serves the Stage Link WebSocket endpoint (`ws://<bind>/stage-link`),
- * forwards `agent.emotion`, `agent.turn.completed` and `voice.playback` to the Stage node and
- * provides `StageLinkKey`. Registers the capabilities `stage.scene` and `stage.stream` in the
- * actuator registry, and the `stream` commands (which go through it) when `CommandRegistryKey`
- * is available.
+ * forwards `agent.emotion`, `agent.turn.completed` and `voice.playback` to the Stage node, tells
+ * it what she is doing (`activity`, see activity.ts) and provides `StageLinkKey`. Registers the
+ * capabilities `stage.scene` and `stage.stream` in the actuator registry, and the `stream`
+ * commands (which go through it) when `CommandRegistryKey` is available.
  */
 export class StageLinkModule implements Module {
   static readonly ID = "stage.link";
@@ -183,14 +190,23 @@ export class StageLinkModule implements Module {
       singScene: () => (config.scenes.director ? roles.resolve("sing") : null),
       now: () => ctx.clock.now(),
     });
+    const activity = new ActivityTracker({ textTurns: config.subtitle_text_turns });
+    const sendActivity = (): void => {
+      if (!link.isConnected()) return;
+      const msg = activity.next(ctx.clock.now());
+      if (msg) link.send(msg);
+    };
     let nodeUp = false;
     const unsubscribe = link.subscribeStatus((status) => {
       if (status) roles.observe(status.scenes);
       director.onStatus(status);
-      // A node that (re)connects mid-song picks the video up where the song is.
+      // A node that (re)connects mid-song picks the video up where the song is, and is told
+      // what she is doing.
       if (status && !nodeUp) {
         const resume = forwarder.resumeSongVideo();
         if (resume) link.send(resume);
+        const current = activity.resume(ctx.clock.now());
+        if (current) link.send(current);
       }
       nodeUp = status !== null;
     });
@@ -201,8 +217,11 @@ export class StageLinkModule implements Module {
       EMOTION_TOPIC,
       SONG_TOPIC,
       SPEECH_PAUSE_TOPIC,
+      "agent.turn.started",
       "agent.turn.completed",
       "voice.playback",
+      SPEECH_SYNTH_TOPIC,
+      SONG_PREPARE_TOPIC,
       VOICE_GOLIVE_TOPIC,
       GAME_SESSION_TOPIC,
       "voice.joined",
@@ -275,6 +294,7 @@ export class StageLinkModule implements Module {
       try {
         for await (const env of events) {
           direct(director, env);
+          activity.onEvent(env.event, ctx.clock.now());
           if (env.event.type === "custom" && env.event.data.topic === GAME_SESSION_TOPIC) continue;
           if (env.event.type === "custom" && env.event.data.topic === VOICE_GOLIVE_TOPIC) {
             followGoLive(env.event.data.payload);
@@ -285,11 +305,16 @@ export class StageLinkModule implements Module {
               ctx.log.debug("stage node queue full, dropping a message");
             }
           }
+          sendActivity();
         }
       } finally {
         wantStreaming = false;
         clearTimer();
       }
+    });
+
+    ctx.spawn("activity", async (signal) => {
+      for await (const _ of interval(ACTIVITY_TICK_MS, signal)) sendActivity();
     });
 
     const capabilities = stageCapabilities(link, { roles, curtain: director }).map((c) =>

@@ -133,3 +133,9 @@ export const SpeechPauseKey = serviceKey<SpeechPause>("SpeechPause");
 
 /** Topic of `{paused: boolean, reason: string | null}` custom events. */
 export const SPEECH_PAUSE_TOPIC = "speech.pause";
+
+/**
+ * Topic of `{context, turn}` custom events: a line of hers was sent to TTS. Its `voice_playback`
+ * `started` (first audio playing) or `failed` follows.
+ */
+export const SPEECH_SYNTH_TOPIC = "voice.synthesis";

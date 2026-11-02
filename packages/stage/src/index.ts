@@ -42,6 +42,14 @@ export {
   stageCapabilities,
 } from "./link/actions.js";
 export {
+  type ActivityOptions,
+  ActivityTracker,
+  prepareLabel,
+  SINGING_LABEL,
+  SYNTH_LABEL,
+  THINKING_LABEL,
+} from "./link/activity.js";
+export {
   describeStatus,
   PATHS as STREAM_COMMAND_PATHS,
   registerStreamCommands,
@@ -148,6 +156,10 @@ export {
   paramRange,
 } from "./pose.js";
 export {
+  ACTIVITY_DETAIL_MAX,
+  ACTIVITY_LABEL_MAX,
+  type Activity,
+  type ActivityKind,
   CLOSE,
   type CoreMessage,
   defaultStageStatus,
