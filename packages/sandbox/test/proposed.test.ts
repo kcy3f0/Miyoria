@@ -2,15 +2,12 @@ import { MemorySettingsStore } from "@miyoria/store";
 import type { JsonValue } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import {
-  CODE_RUN,
   ProposedTools,
   type RunRequest,
   type RunResult,
   type Sandbox,
   SandboxError,
-  sandboxHandlers,
   TOOL_KEY_PREFIX,
-  TOOL_PROPOSE,
   type ToolProposal,
 } from "../src/index.js";
 
@@ -240,29 +237,5 @@ describe("ProposedTools", () => {
     expect(await kindOf(tools.propose(proposal({ name: "second" })))).toBe("limit");
     // Updating an existing one is not over the limit.
     expect((await tools.propose(proposal())).version).toBe(2);
-  });
-});
-
-describe("sandboxHandlers", () => {
-  it("adapts_capability_args_and_never_grants_network", async () => {
-    const { tools, sandbox } = setup();
-    const handlers = sandboxHandlers({ sandbox, tools });
-    const signal = new AbortController().signal;
-    const out = await handlers[CODE_RUN](
-      { language: "node", code: "console.log(1)", network: { allow: ["evil.example"] } },
-      { requester: "self", signal },
-    );
-    expect(out).toMatchObject({ exit_code: 0, killed_reason: null, files_out: [] });
-    expect(sandbox.requests[0]?.network).toBe("none");
-    await expect(
-      handlers[CODE_RUN]({ language: "bash", code: "x" }, { requester: null, signal }),
-    ).rejects.toThrow();
-
-    expect(await handlers[TOOL_PROPOSE](proposal(), { requester: "self", signal })).toEqual({
-      name: "shout",
-      version: 1,
-      status: "pending",
-    });
-    expect((await tools.get("shout"))?.proposed_by).toBe("self");
   });
 });

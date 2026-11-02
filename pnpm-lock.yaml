@@ -914,6 +914,9 @@ importers:
 
   packages/sandbox:
     dependencies:
+      '@miyoria/actions':
+        specifier: workspace:*
+        version: link:../actions
       '@miyoria/kernel':
         specifier: workspace:*
         version: link:../kernel
@@ -927,6 +930,15 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
+      '@miyoria/commands':
+        specifier: workspace:*
+        version: link:../commands
+      '@miyoria/llm':
+        specifier: workspace:*
+        version: link:../llm
+      '@miyoria/tools':
+        specifier: workspace:*
+        version: link:../tools
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2

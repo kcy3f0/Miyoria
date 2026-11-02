@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { actuatorsFor } from "@miyoria/actions";
 import {
   defineManifest,
   errorMessage,
@@ -6,10 +7,12 @@ import {
   type Health,
   type Module,
   type ModuleContext,
+  sleep,
 } from "@miyoria/kernel";
 import { SettingsStoreKey } from "@miyoria/store";
 import { customEvent, type ProfileId } from "@miyoria/types";
 import { SandboxConfigSchema } from "./config.js";
+import { SandboxGate } from "./gate.js";
 import { ProposedTools, ProposedToolsKey } from "./proposed.js";
 import { type DockerRunner, ProcessDockerRunner } from "./runner.js";
 import { DockerSandbox } from "./sandbox.js";
@@ -30,8 +33,10 @@ export interface SandboxModuleOptions {
  * and prunes old run workspaces. Without Docker the module runs degraded: `run` throws
  * `unavailable` and the health shows why, until Docker comes back (re-checked on use).
  *
- * Nothing is registered as an LLM tool here: `code.run` / `tool.propose` are high-risk
- * capabilities that phase A's gate registers (see `SANDBOX_CAPABILITIES`).
+ * While Docker is available it registers `code.run`, `tool.propose` and one `sbx.<name>` per
+ * approved tool she wrote in the app's actuator registry (see `gate.ts`); they are withdrawn
+ * when Docker goes away (re-checked every `recheck_ms`). `/admin autonomy status` shows the
+ * sandbox and the proposed tools.
  */
 export class SandboxModule implements Module {
   static readonly ID = "sandbox";
@@ -40,6 +45,8 @@ export class SandboxModule implements Module {
     configSchema: SandboxConfigSchema,
   });
   #sandbox: DockerSandbox | null = null;
+  #gate: SandboxGate | null = null;
+  #removeStatus: (() => void) | null = null;
 
   constructor(
     readonly profile: ProfileId,
@@ -61,36 +68,68 @@ export class SandboxModule implements Module {
     this.#sandbox = sandbox;
     ctx.provide(SandboxKey, sandbox);
     const store = ctx.services.get(SettingsStoreKey);
+    let tools: ProposedTools | null = null;
     if (store) {
-      ctx.provide(
-        ProposedToolsKey,
-        new ProposedTools({
-          store,
-          profile: this.profile,
-          sandbox,
-          clock: ctx.clock,
-          publisher,
-          maxTools: config.max_proposed_tools,
-          maxCodeBytes: config.caps.max_code_bytes,
-        }),
-      );
+      tools = new ProposedTools({
+        store,
+        profile: this.profile,
+        sandbox,
+        clock: ctx.clock,
+        publisher,
+        maxTools: config.max_proposed_tools,
+        maxCodeBytes: config.caps.max_code_bytes,
+      });
+      ctx.provide(ProposedToolsKey, tools);
     } else {
       ctx.log.warn("no settings store; proposed tools are unavailable");
     }
 
+    const registry = actuatorsFor(ctx);
+    const gate = new SandboxGate(registry, {
+      sandbox,
+      tools,
+      resultChars: config.result_chars,
+      toolTimeoutMs: config.tool_timeout_ms,
+    });
+    this.#gate = gate;
+    this.#removeStatus = registry.addStatus(SandboxModule.ID, () =>
+      gate.statusLines(sandbox.lastHealth),
+    );
+    // Proposals and reviews (her own, the owners' API) change which tools are offered.
+    const toolEvents = ctx.subscribe(["sandbox.tool.*"]);
+    ctx.spawn("tools", async () => {
+      for await (const _ of toolEvents) await gate.refreshTools();
+    });
+
     ctx.spawn("startup", async (signal) => {
       try {
         const health = await sandbox.health({ signal, refresh: true });
+        await gate.setAvailable(health.available);
         if (health.available) await sandbox.reap(signal);
         await sandbox.prune();
       } catch (error) {
         if (!signal.aborted)
           ctx.log.warn({ err: errorMessage(error) }, "sandbox startup checks failed");
       }
+      // Offer the capabilities only while Docker answers.
+      while (!signal.aborted) {
+        try {
+          await sleep(config.recheck_ms, signal);
+          const health = await sandbox.health({ signal, refresh: true });
+          await gate.setAvailable(health.available);
+        } catch (error) {
+          if (signal.aborted) return;
+          ctx.log.warn({ err: errorMessage(error) }, "sandbox health check failed");
+        }
+      }
     });
   }
 
   async stop(): Promise<void> {
+    this.#removeStatus?.();
+    this.#removeStatus = null;
+    this.#gate?.close();
+    this.#gate = null;
     const sandbox = this.#sandbox;
     this.#sandbox = null;
     await sandbox?.close();

@@ -22,12 +22,16 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@miyoria/actions": "workspace:*",
     "@miyoria/kernel": "workspace:*",
     "@miyoria/store": "workspace:*",
     "@miyoria/types": "workspace:*",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@miyoria/commands": "workspace:*",
+    "@miyoria/llm": "workspace:*",
+    "@miyoria/tools": "workspace:*",
     "@types/node": "^24.19.2",
     "typescript": "~5.9.3",
     "vitest": "^4.1.12"

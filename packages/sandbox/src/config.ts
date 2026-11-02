@@ -133,6 +133,18 @@ export const SandboxConfigSchema = z.object({
   max_scripts: z.number().int().min(0).default(100),
   /** Proposed tools kept per profile (pending, approved and rejected). */
   max_proposed_tools: z.number().int().min(0).default(50),
+  /**
+   * Characters of a run's output (stdout + stderr, framed as untrusted data) she gets back from
+   * `code.run` and her own tools. Keep it below `[modules.agent] max_tool_result_chars` (1000).
+   */
+  result_chars: z.number().int().min(200).default(900),
+  /**
+   * Timeout of one call of an approved tool she wrote, in milliseconds. Such a call is an
+   * ordinary tool call, so keep it below `[modules.agent] tool_timeout_ms` (10 000).
+   */
+  tool_timeout_ms: z.number().int().min(100).default(8000),
+  /** How often Docker is re-checked to offer or withdraw the capabilities, in milliseconds. */
+  recheck_ms: z.number().int().min(1000).default(60_000),
 });
 export type SandboxConfig = z.output<typeof SandboxConfigSchema>;
 

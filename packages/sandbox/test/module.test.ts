@@ -1,11 +1,69 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ActuatorRegistry, ActuatorRegistryKey } from "@miyoria/actions";
 import { Supervisor } from "@miyoria/kernel";
 import { MemorySettingsStore, SettingsStoreKey } from "@miyoria/store";
+import { ToolRegistry } from "@miyoria/tools";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ProposedToolsKey, SandboxKey, SandboxModule } from "../src/index.js";
+import {
+  CODE_RUN,
+  ProposedToolsKey,
+  SandboxKey,
+  SandboxModule,
+  TOOL_PROPOSE,
+} from "../src/index.js";
 import { FakeRunner } from "./fake-runner.js";
+
+/** A supervisor with an app-level actuator registry (like the core's boot). */
+function app(): { sup: Supervisor; registry: ActuatorRegistry; tools: ToolRegistry } {
+  const sup = new Supervisor();
+  const tools = new ToolRegistry();
+  const registry = new ActuatorRegistry({ services: sup.services, tools, builtins: false });
+  sup.services.provide("app", ActuatorRegistryKey, registry);
+  sup.services.provide("app", SettingsStoreKey, new MemorySettingsStore());
+  return { sup, registry, tools };
+}
+
+describe("SandboxModule capabilities", () => {
+  it("registers_code_run_and_tool_propose_when_docker_is_healthy", async () => {
+    const runner = new FakeRunner();
+    const { sup, registry, tools } = app();
+    await sup.register(new SandboxModule("p", { baseDir: base, runner: () => runner }), {}, true);
+    await sup.startAll();
+    await waitFor(() => registry.get(CODE_RUN) !== undefined);
+    expect(registry.get(TOOL_PROPOSE)).toBeDefined();
+    expect(tools.get("code_run")).toBeDefined();
+    expect((await registry.statusLines()).join("\n")).toContain("code.run / tool.propose 已開放");
+    await sup.stopAll();
+    // Withdrawn with the module.
+    expect(registry.get(CODE_RUN)).toBeUndefined();
+    expect(tools.get("code_run")).toBeUndefined();
+    expect(await registry.statusLines()).toEqual([]);
+  });
+
+  it("registers_nothing_without_docker_or_when_disabled", async () => {
+    const down = new FakeRunner();
+    down.dockerUp = false;
+    const a = app();
+    await a.sup.register(new SandboxModule("p", { baseDir: base, runner: () => down }), {}, true);
+    await a.sup.startAll();
+    await waitFor(() => down.calledWith("version").length > 0);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(a.registry.get(CODE_RUN)).toBeUndefined();
+    expect((await a.registry.statusLines()).join("\n")).toContain("能力未開放");
+    await a.sup.stopAll();
+
+    const up = new FakeRunner();
+    const b = app();
+    await b.sup.register(new SandboxModule("p", { baseDir: base, runner: () => up }), {}, false);
+    await b.sup.startAll();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(b.registry.get(CODE_RUN)).toBeUndefined();
+    expect(up.calls).toHaveLength(0);
+    await b.sup.stopAll();
+  });
+});
 
 let base: string;
 beforeEach(() => {

@@ -29,9 +29,6 @@ export {
   CODE_RUN,
   type CodeRunArgs,
   CodeRunArgsSchema,
-  SANDBOX_CAPABILITIES,
-  type SandboxCapability,
-  sandboxHandlers,
   summarizeRun,
   TOOL_PROPOSE,
 } from "./capabilities.js";
@@ -47,6 +44,20 @@ export {
   type SandboxLimits,
   SandboxLimitsSchema,
 } from "./config.js";
+export {
+  codeRunCapability,
+  formatRun,
+  NODE_CODE_RUN,
+  NODE_PROPOSED_PREFIX,
+  NODE_TOOL_PROPOSE,
+  PROPOSED_CAPABILITY_PREFIX,
+  PROPOSED_TOOL_PREFIX,
+  proposalProblem,
+  proposedToolCapability,
+  SandboxGate,
+  type SandboxGateOptions,
+  toolProposeCapability,
+} from "./gate.js";
 export { SandboxModule, type SandboxModuleOptions } from "./module.js";
 export {
   checkName,
