@@ -213,7 +213,13 @@ describe("data routes", () => {
     expect(countOf(inv, "audit")).toBeGreaterThan(0);
     const people = inv.categories.find((c) => c.id === "people");
     expect(people).toMatchObject({ shared: true, confirm: "typed", kept: false });
-    expect(people?.requires).toEqual(["relationships", "call_names", "inner"]);
+    expect(people?.requires).toEqual([
+      "relationships",
+      "call_names",
+      "inner",
+      "knowledge",
+      "learning",
+    ]);
     expect(inv.categories.find((c) => c.id === "audit")?.kept).toBe(true);
     // Without a sandbox there is no tools workspace.
     expect(inv.categories.some((c) => c.id === "tools_workspace")).toBe(false);
@@ -258,8 +264,8 @@ describe("data routes", () => {
     r = await h.call("POST", "/api/data/wipe", { categories: ["messages"], confirm: ` ${P} ` });
     expect(r.status).toBe(200);
     const result = r.body as DataWipeResult;
-    expect(result.deleted).toEqual(["messages"]);
-    expect(result.counts).toEqual({ message_log: 1, memory_watermarks: 1 });
+    expect(result.deleted).toEqual(["conversation", "messages"]);
+    expect(result.counts).toEqual({ message_log: 1, memory_watermarks: 1, conversation_states: 0 });
     expect((await h.store.settings.list(P, WATERMARK_PREFIX)).size).toBe(0);
     expect(countOf(await inventoryOf(h), "memories")).toBe(1);
     const audit = await h.store.audit.recent(10, "api");

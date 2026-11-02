@@ -2,7 +2,8 @@
 // (camelCased); if a package exported something else, fix it here and nowhere else.
 //
 // Boot order (legacy `boot.rs`): llm, speech, voice.link, voice, scheduler, agent, commands,
-// auth, actions, social, mood, world, self, memory, initiative, mind, queue, game, game.chat, mcp,
+// auth, actions, social, mood, world, self, memory, initiative, mind, knowledge, conversation,
+// reflect, queue, game, game.chat, mcp,
 // stage.link, sandbox (opt-in), recorder, Discord bot, Admin API, terminal chat, then the
 // extension host and one `ext.<id>` per extension.
 
@@ -18,6 +19,7 @@ import * as extHost from "@miyoria/ext-host";
 import { GameChatModule, GameHandleKey, GameModule } from "@miyoria/game";
 import { InitiativeModule } from "@miyoria/initiative";
 import type { Config, Module } from "@miyoria/kernel";
+import { ConversationModule, KnowledgeModule, ReflectModule } from "@miyoria/learning";
 import {
   type LlmConfig,
   LlmConfigSchema,
@@ -112,6 +114,14 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
     new InitiativeModule(profileId),
     new MindModule(profileId, {
       name: profile.displayName,
+      persona: (services) =>
+        services.get(PersonaHandleKey)?.personaPrompt() ?? profile.personaPrompt(),
+    }),
+    new KnowledgeModule(profileId),
+    new ConversationModule(profileId),
+    new ReflectModule(profileId, {
+      name: profile.displayName,
+      names: profile.names(),
       persona: (services) =>
         services.get(PersonaHandleKey)?.personaPrompt() ?? profile.personaPrompt(),
     }),

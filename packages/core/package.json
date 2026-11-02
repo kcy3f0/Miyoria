@@ -37,6 +37,7 @@
     "@miyoria/game": "workspace:*",
     "@miyoria/initiative": "workspace:*",
     "@miyoria/kernel": "workspace:*",
+    "@miyoria/learning": "workspace:*",
     "@miyoria/llm": "workspace:*",
     "@miyoria/mcp": "workspace:*",
     "@miyoria/memory": "workspace:*",
