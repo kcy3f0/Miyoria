@@ -59,6 +59,9 @@ Environment
     TTS_GEN_KWARGS         JSON merged into every generate_* call, e.g. {"temperature":0.8}
     TTS_MIN_SENTENCE_CHARS (default 4)   TTS_MAX_SENTENCE_CHARS (default 80)
     TTS_MAX_TEXT_CHARS     reject longer requests (default 2000)
+    TTS_MAX_SECONDS_PER_CHAR  audio cap per sentence: chars × this + 2 s (default 0.35). Sampling
+                           sometimes misses the stop token and the model talks on for half a
+                           minute in a drifting voice; the cap cuts that off. 0 = no cap
     TTS_POOL_SIZE          threads for synthesis calls (default 2; the GPU lock still serialises)
     HOST / PORT            bind address                  (default 127.0.0.1 / 8002)
 """
@@ -93,6 +96,17 @@ log = logging.getLogger("miyoria.tts")
 MAX_TEXT_CHARS = int(os.environ.get("TTS_MAX_TEXT_CHARS", "2000"))
 MIN_CHARS = int(os.environ.get("TTS_MIN_SENTENCE_CHARS", "4"))
 MAX_CHARS = int(os.environ.get("TTS_MAX_SENTENCE_CHARS", "80"))
+MAX_SECONDS_PER_CHAR = float(os.environ.get("TTS_MAX_SECONDS_PER_CHAR", "0.35"))
+# Qwen3-TTS-12Hz: 12 codec frames (= generated tokens) per second of audio.
+TOKENS_PER_SECOND = 12
+
+
+def max_new_tokens(text: str) -> int | None:
+    """Token cap for one sentence (None = no cap): its characters × MAX_SECONDS_PER_CHAR + 2 s."""
+    if MAX_SECONDS_PER_CHAR <= 0:
+        return None
+    chars = sum(1 for c in text if not c.isspace())
+    return int((chars * MAX_SECONDS_PER_CHAR + 2.0) * TOKENS_PER_SECOND)
 
 _LANG = {
     "zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean", "de": "German",
@@ -475,6 +489,9 @@ class FasterEngine(BaseEngine):
         v = _voice or self.resolve_voice(voice)
         kw = dict(self.gen_kwargs)
         kw.pop("chunk_size", None)
+        cap = max_new_tokens(text)
+        if cap is not None:
+            kw.setdefault("max_new_tokens", cap)
         if self.mode == "clone":
             assert v is not None and v.ref_wav is not None
             args: dict[str, Any] = dict(text=text, language=language, ref_audio=str(v.ref_wav),

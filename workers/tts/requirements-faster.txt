@@ -14,3 +14,6 @@ numpy>=1.26
 soundfile>=0.12           # also a faster-qwen3-tts dependency; design_voice.py writes WAVs
 scipy>=1.11               # only used if the model's sample rate ever differs mid-stream
 faster-qwen3-tts>=0.5,<0.6
+# 5.22 breaks qwen_tts loading the speech tokenizer ("property 'upsample' ... has no setter");
+# 5.15.1 is the oldest version qwen-tts-hf accepts and is known to work.
+transformers==5.15.1
