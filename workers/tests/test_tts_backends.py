@@ -381,3 +381,52 @@ def test_qwen_tts_backend_is_sentence_level(load_server, monkeypatch):
     assert r.headers["x-tts-streaming"] == "sentence" and r.headers["x-sample-rate"] == "24000"
     assert r.content == pcm(np.full(4, 0.5), np.full(4, -0.5))
     assert [c[1] for c in calls if c[0] == "gen" and c[1] != PRIME] == [S1, S2]
+
+
+# ── offload / reload (the song worker borrows the GPU) ───────────────────────
+
+
+def test_offload_drops_the_engine_and_reload_builds_a_new_one(run):
+    client, fake, server = run({S1: [np.zeros(4, dtype=np.float32)]})
+    first = fake.state.instances[0]
+    r = client.post("/offload", json={"reason": "sing", "max_s": 0}).json()
+    assert r["state"] == "offloaded" and "offload_ms" in r
+    assert server.state.engine is None
+    h = client.get("/health").json()
+    assert h["status"] == "ok" and h["offloaded"] is True and h["reason"] == "sing" and h["reload_at"] is None
+    for call in (lambda: client.post("/tts", json={"text": S1}), lambda: client.get("/voices")):
+        res = call()
+        assert res.status_code == 503 and res.json() == {"error": "offloaded"}
+    assert client.post("/offload").json()["already"] is True
+
+    r = client.post("/reload").json()
+    assert r["state"] == "ready" and "reload_ms" in r
+    assert len(fake.state.instances) == 2 and fake.state.instances[1] is not first
+    assert fake.state.instances[1].warmup_calls == [100]  # CUDA graphs captured again
+    assert client.get("/health").json()["offloaded"] is False
+    assert client.post("/tts", json={"text": S1}).status_code == 200
+    assert client.post("/reload").json()["already"] is True
+
+
+def test_a_sentence_after_the_offload_is_not_run_on_the_dropped_model(load_server):
+    fake = make_fake_faster()
+    server = load_server({"faster_qwen3_tts": fake})
+    with TestClient(server.app):
+        eng = server.state.engine
+        eng.close()
+        assert eng.model is None and eng.voices == {}
+        pump = server.ChunkPump(eng, [S1], "Chinese", None, "", ThreadPoolExecutor(1), asyncio.new_event_loop())
+        got = []
+        pump._put = got.append
+        pump._run()
+        assert got[0][0] == "error" and got[0][1].status == 503
+
+
+def test_an_offload_nobody_ends_reloads_by_itself(run):
+    client, fake, _ = run()
+    client.post("/offload", json={"max_s": 0.2})
+    deadline = time.time() + 5
+    while client.get("/health").json()["offloaded"] and time.time() < deadline:
+        time.sleep(0.05)
+    assert client.get("/health").json()["offloaded"] is False
+    assert len(fake.state.instances) == 2

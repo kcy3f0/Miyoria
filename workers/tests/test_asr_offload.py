@@ -1,0 +1,66 @@
+"""ASR worker offload / reload (the song worker borrows the GPU), with a stub backend."""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+import time
+
+import pytest
+from conftest import ROOT, make_wav
+from fastapi.testclient import TestClient
+
+
+class StubBackend:
+    name = "stub"
+    model_name = "stub-asr"
+    device = "cpu"
+    loads = 0
+
+    def __init__(self) -> None:
+        StubBackend.loads += 1
+
+    def transcribe(self, x, language, prompt):
+        return {"text": "你好", "language": "zh"}
+
+
+@pytest.fixture
+def asr(monkeypatch):
+    StubBackend.loads = 0
+    spec = importlib.util.spec_from_file_location("asr_server_under_test", ROOT / "asr" / "server.py")
+    server = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "asr_server_under_test", server)
+    spec.loader.exec_module(server)
+    server.make_backend = StubBackend
+    server.decode_wav = lambda data: ([0.0] * 4800, 300)  # no soundfile in the test venv
+    with TestClient(server.app) as client:
+        yield client, server
+
+
+def post(client):
+    return client.post("/asr", files={"audio": ("a.wav", make_wav(0.3), "audio/wav")})
+
+
+def test_offload_and_reload(asr):
+    client, server = asr
+    assert post(client).json()["text"] == "你好"
+    r = client.post("/offload", json={"reason": "sing", "max_s": 0}).json()
+    assert r["state"] == "offloaded"
+    h = client.get("/health").json()
+    assert h["status"] == "ok" and h["offloaded"] is True and h["model"] == "stub-asr" and h["reason"] == "sing"
+    res = post(client)
+    assert res.status_code == 503 and res.json() == {"error": "offloaded"}
+    assert client.post("/offload").json()["already"] is True
+    assert client.post("/reload").json()["state"] == "ready"
+    assert StubBackend.loads == 2
+    assert client.get("/health").json()["offloaded"] is False
+    assert post(client).status_code == 200
+
+
+def test_reloads_by_itself(asr):
+    client, _ = asr
+    client.post("/offload", json={"max_s": 0.2})
+    deadline = time.time() + 5
+    while client.get("/health").json()["offloaded"] and time.time() < deadline:
+        time.sleep(0.05)
+    assert client.get("/health").json()["offloaded"] is False

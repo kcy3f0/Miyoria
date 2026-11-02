@@ -6,6 +6,15 @@
     GET  /health         -> {"status":"ok","model":...,"backend":...,"streaming":bool,"chunk_size":...}
     GET  /voices         -> registered voices
     POST /voices/reload  -> rescan VOICES_DIR (add a voice without restarting)
+    POST /offload        JSON {reason?, max_s?} -> frees the GPU: the engine (model, CUDA graphs, voice
+                         prompts) is dropped and the CUDA cache emptied; until /reload every /tts and
+                         /voices call answers 503 {"error": "offloaded"}. Reloads by itself after
+                         ``max_s`` (TTS_OFFLOAD_MAX_S) in case whoever asked never comes back.
+    POST /reload         -> loads the engine again (a full start: weights, CUDA graphs, voice priming)
+
+OFFLOAD: the song worker borrows the whole GPU while it converts (12 GB cards: conversion next to TTS
+    and ASR runs 10x slower). CUDA graphs are tied to the memory they were captured in, so the model
+    cannot simply move to the CPU and back: offload deletes the engine and reload builds a new one.
 
 BACKENDS (``TTS_BACKEND=faster|qwen-tts``; default: ``faster`` when `faster_qwen3_tts` is importable,
     otherwise ``qwen-tts``; the choice is logged and reported in /health):
@@ -63,12 +72,14 @@ Environment
                            sometimes misses the stop token and the model talks on for half a
                            minute in a drifting voice; the cap cuts that off. 0 = no cap
     TTS_POOL_SIZE          threads for synthesis calls (default 2; the GPU lock still serialises)
+    TTS_OFFLOAD_MAX_S      an offload reloads by itself after this long (default 900; 0 = never)
     HOST / PORT            bind address                  (default 127.0.0.1 / 8002)
 """
 
 from __future__ import annotations
 
 import asyncio
+import gc
 import importlib.util
 import inspect
 import json
@@ -198,9 +209,17 @@ class BaseEngine:
         self.sample_rate = 0
         self.stream_probe: list[str] = []
         self.gen_kwargs: dict[str, Any] = json.loads(os.environ.get("TTS_GEN_KWARGS", "{}") or "{}")
+        self.closed = False  # offloaded: the model is gone, nothing may run on it any more
         self._load_model()
         self.reload_voices()
         self._warmup()
+
+    def close(self) -> None:
+        """Drops the model and everything on the GPU (offload). Waits for the running sentence."""
+        with self.lock:
+            self.closed = True
+            self.model = None
+            self.voices = {}
 
     # -- backend hooks -------------------------------------------------------
 
@@ -578,6 +597,8 @@ class ChunkPump:
                 with self.eng.lock:
                     if self.cancelled.is_set():
                         return
+                    if getattr(self.eng, "closed", False):
+                        raise ApiError(503, "offloaded")
                     gen = self.eng.stream(sentence, self.language, self.voice, self.instruct)
                     try:
                         for wav, sr in gen:
@@ -594,19 +615,32 @@ class ChunkPump:
 
 
 class State:
-    engine: BaseEngine
+    engine: BaseEngine | None
     pool: ThreadPoolExecutor
+    swap: asyncio.Lock  # offload / reload, one at a time
+    offloaded: dict[str, Any] | None = None  # {since, reason, reload_at}
+    auto_reload: asyncio.Task | None = None
 
 
 state = State()
 
 
+def _engine() -> BaseEngine:
+    if state.engine is None:
+        raise ApiError(503, "offloaded")
+    return state.engine
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     state.pool = ThreadPoolExecutor(max_workers=int(os.environ.get("TTS_POOL_SIZE", "2")), thread_name_prefix="tts")
+    state.swap = asyncio.Lock()
+    state.offloaded = None
     loop = asyncio.get_running_loop()
     state.engine = await loop.run_in_executor(state.pool, make_engine)
     yield
+    if state.auto_reload is not None:
+        state.auto_reload.cancel()
     state.pool.shutdown(wait=False, cancel_futures=True)
 
 
@@ -653,7 +687,7 @@ async def tts(req: TtsRequest) -> StreamingResponse:
     if not sentences:
         raise ApiError(400, "text has nothing to speak (punctuation only)")
 
-    eng = state.engine
+    eng = _engine()
     language = to_tts_language(req.language)
     instruct = (req.instruct or "").strip()
     eng.resolve_voice(req.voice)  # fail fast with 404 / 400 before any GPU work
@@ -721,7 +755,7 @@ async def tts(req: TtsRequest) -> StreamingResponse:
 
 @app.get("/voices")
 async def voices() -> dict[str, Any]:
-    e = state.engine
+    e = _engine()
     return {
         "mode": e.mode,
         "default": os.environ.get("TTS_DEFAULT_VOICE") or None,
@@ -731,14 +765,87 @@ async def voices() -> dict[str, Any]:
 
 @app.post("/voices/reload")
 async def voices_reload() -> dict[str, Any]:
-    await asyncio.get_running_loop().run_in_executor(state.pool, state.engine.reload_voices)
+    await asyncio.get_running_loop().run_in_executor(state.pool, _engine().reload_voices)
     return await voices()
+
+
+def _vram_mb() -> int | None:
+    cuda = getattr(sys.modules.get("torch"), "cuda", None)
+    if cuda is not None and cuda.is_available():
+        return round(cuda.memory_allocated() / 2**20)
+    return None
+
+
+def _free_cuda() -> None:
+    gc.collect()
+    cuda = getattr(sys.modules.get("torch"), "cuda", None)
+    if cuda is not None and cuda.is_available():
+        cuda.synchronize()
+        cuda.empty_cache()
+
+
+class OffloadRequest(BaseModel):
+    reason: str | None = None
+    max_s: float | None = None
+
+
+@app.post("/offload")
+async def offload(req: OffloadRequest | None = None) -> dict[str, Any]:
+    req = req or OffloadRequest()
+    async with state.swap:
+        if state.engine is None:
+            return {"state": "offloaded", "offload_ms": 0, "already": True, **(state.offloaded or {})}
+        loop = asyncio.get_running_loop()
+        t0 = time.perf_counter()
+        before = _vram_mb()
+        eng, state.engine = state.engine, None
+        max_s = req.max_s if req.max_s is not None else float(os.environ.get("TTS_OFFLOAD_MAX_S", "900"))
+        state.offloaded = {"since": time.time(), "reason": (req.reason or "")[:80],
+                           "reload_at": time.time() + max_s if max_s > 0 else None}
+        await loop.run_in_executor(state.pool, eng.close)
+        del eng
+        await loop.run_in_executor(state.pool, _free_cuda)
+        ms = (time.perf_counter() - t0) * 1000
+        after = _vram_mb()
+        log.info("offloaded for %r in %.0f ms (VRAM %s -> %s MB)", req.reason, ms, before, after)
+        if state.auto_reload is not None:
+            state.auto_reload.cancel()
+        state.auto_reload = asyncio.create_task(_reload_after(max_s)) if max_s > 0 else None
+        return {"state": "offloaded", "offload_ms": round(ms), "vram_before_mb": before, "vram_after_mb": after}
+
+
+async def _reload_after(seconds: float) -> None:
+    await asyncio.sleep(seconds)
+    log.warning("still offloaded after %.0f s; reloading by itself", seconds)
+    state.auto_reload = None
+    await reload()
+
+
+@app.post("/reload")
+async def reload() -> dict[str, Any]:
+    async with state.swap:
+        if state.engine is not None:
+            return {"state": "ready", "reload_ms": 0, "already": True}
+        task, state.auto_reload = state.auto_reload, None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+        t0 = time.perf_counter()
+        state.engine = await asyncio.get_running_loop().run_in_executor(state.pool, make_engine)
+        state.offloaded = None
+        ms = (time.perf_counter() - t0) * 1000
+        log.info("reloaded in %.0f ms", ms)
+        return {"state": "ready", "reload_ms": round(ms), "vram_mb": _vram_mb()}
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
     e = state.engine
+    if e is None:
+        # Healthy, just not holding a model (POST /reload brings it back).
+        return {"status": "ok", "offloaded": True, "model": os.environ.get("TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-Base"),
+                **(state.offloaded or {}), "vram_allocated_mb": _vram_mb()}
     info: dict[str, Any] = {
+        "offloaded": False,
         "status": "ok",
         "model": e.model_id,
         "device": e.device,

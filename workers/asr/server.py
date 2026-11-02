@@ -1,7 +1,11 @@
 """Miyoria ASR worker — implements the "推論 Worker HTTP 介面" (docs/protocols/voice-link.md).
 
     POST /asr     multipart: audio (WAV, any rate/channels), language?, prompt?   -> JSON
-    GET  /health  -> {"status":"ok","model":...,"device":...}
+    GET  /health  -> {"status":"ok","model":...,"device":...,"offloaded":bool}
+    POST /offload JSON {reason?, max_s?} -> drops the model and empties the CUDA cache (the song
+                  worker borrows the GPU); /asr answers 503 {"error": "offloaded"} until /reload,
+                  which also happens by itself after ``max_s`` (ASR_OFFLOAD_MAX_S)
+    POST /reload  -> loads the model again (and warms it up)
 
 Backend (env ``ASR_BACKEND``):
     sensevoice  SenseVoice-Small via sherpa-onnx (CPU by default). Returns emotion + audio_events.
@@ -22,6 +26,7 @@ Environment
     ASR_SENSEVOICE_PROVIDER cpu | cuda                            (default cpu)
     ASR_POOL_SIZE          worker threads for decode+inference    (default 4)
     ASR_MAX_AUDIO_SECONDS  reject longer clips with 413           (default 60)
+    ASR_OFFLOAD_MAX_S      an offload reloads by itself after this (default 900; 0 = never)
     HOST / PORT            bind address                           (default 127.0.0.1 / 8001)
 
 Concurrency: the model is loaded once at startup (FastAPI lifespan). Decoding / resampling runs
@@ -35,6 +40,7 @@ Output text is raw model output (usually Simplified for Chinese). The Rust side 
 from __future__ import annotations
 
 import asyncio
+import gc
 import importlib.util
 import inspect
 import io
@@ -51,6 +57,7 @@ from typing import Any
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from tags import parse_sensevoice, to_language_code, to_language_name
@@ -214,19 +221,27 @@ class State:
     backend: Any = None
     pool: ThreadPoolExecutor
     lock = threading.Lock()  # serialises model calls (GPU / ORT session)
+    swap: asyncio.Lock  # offload / reload, one at a time
+    offloaded: dict[str, Any] | None = None  # {since, reason, reload_at}
+    auto_reload: asyncio.Task | None = None
+    info: dict[str, Any] = {}  # name / model / device of the backend, kept while offloaded
 
 
 state = State()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    state.pool = ThreadPoolExecutor(max_workers=int(os.environ.get("ASR_POOL_SIZE", "4")), thread_name_prefix="asr")
+class Offloaded(Exception):
+    pass
+
+
+async def _load() -> None:
     t0 = time.perf_counter()
     loop = asyncio.get_running_loop()
-    state.backend = await loop.run_in_executor(state.pool, make_backend)
-    log.info("backend %s ready in %.1fs (%s on %s)", state.backend.name, time.perf_counter() - t0,
-             state.backend.model_name, state.backend.device)
+    backend = await loop.run_in_executor(state.pool, make_backend)
+    state.info = {"model": backend.model_name, "device": backend.device, "backend": backend.name}
+    log.info("backend %s ready in %.1fs (%s on %s)", backend.name, time.perf_counter() - t0,
+             backend.model_name, backend.device)
+    state.backend = backend
     # Warm-up: one second of silence so first-request latency doesn't include kernel/session init.
     try:
         import numpy as np
@@ -234,7 +249,17 @@ async def lifespan(app: FastAPI):
         await loop.run_in_executor(state.pool, lambda: _locked_transcribe(np.zeros(TARGET_SR, np.float32), None, None))
     except Exception:  # warm-up is best effort
         log.exception("warm-up failed (continuing)")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    state.pool = ThreadPoolExecutor(max_workers=int(os.environ.get("ASR_POOL_SIZE", "4")), thread_name_prefix="asr")
+    state.swap = asyncio.Lock()
+    state.offloaded = None
+    await _load()
     yield
+    if state.auto_reload is not None:
+        state.auto_reload.cancel()
     state.pool.shutdown(wait=False, cancel_futures=True)
 
 
@@ -259,6 +284,8 @@ async def _validation_exc(_: Request, exc: RequestValidationError) -> JSONRespon
 
 def _locked_transcribe(x: Any, language: str | None, prompt: str | None) -> tuple[dict[str, Any], float]:
     with state.lock:
+        if state.backend is None:
+            raise Offloaded()
         t0 = time.perf_counter()
         out = state.backend.transcribe(x, language, prompt)
         return out, (time.perf_counter() - t0) * 1000
@@ -270,6 +297,8 @@ async def asr(
     language: str | None = Form(None),
     prompt: str | None = Form(None),
 ) -> JSONResponse:
+    if state.backend is None:
+        return _error(503, "offloaded")
     data = await audio.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         return _error(413, f"upload larger than {MAX_UPLOAD_BYTES // 2**20} MiB")
@@ -285,6 +314,8 @@ async def asr(
         out, duration_ms, infer_ms = await asyncio.get_running_loop().run_in_executor(state.pool, work)
     except BadRequest as e:
         return _error(e.status, e.message)
+    except Offloaded:
+        return _error(503, "offloaded")
     except Exception as e:
         log.exception("inference failed")
         return _error(500, f"inference failed: {type(e).__name__}: {e}")
@@ -305,12 +336,79 @@ async def asr(
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    b = state.backend
-    info: dict[str, Any] = {"status": "ok", "model": b.model_name, "device": b.device, "backend": b.name}
+    info: dict[str, Any] = {"status": "ok", **state.info, "offloaded": state.backend is None}
+    if state.offloaded:
+        info.update(state.offloaded)
+    vram = _vram_mb()
+    if vram is not None:
+        info["vram_allocated_mb"] = vram
+    return info
+
+
+def _vram_mb() -> int | None:
     torch = sys.modules.get("torch")
     if torch is not None and torch.cuda.is_available():
-        info["vram_allocated_mb"] = round(torch.cuda.memory_allocated() / 2**20)
-    return info
+        return round(torch.cuda.memory_allocated() / 2**20)
+    return None
+
+
+def _drop() -> None:
+    with state.lock:  # waits for a running transcription
+        state.backend = None
+    gc.collect()
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+
+
+class OffloadRequest(BaseModel):
+    reason: str | None = None
+    max_s: float | None = None
+
+
+@app.post("/offload")
+async def offload(req: OffloadRequest | None = None) -> dict[str, Any]:
+    req = req or OffloadRequest()
+    async with state.swap:
+        if state.backend is None:
+            return {"state": "offloaded", "offload_ms": 0, "already": True, **(state.offloaded or {})}
+        t0 = time.perf_counter()
+        before = _vram_mb()
+        max_s = req.max_s if req.max_s is not None else float(os.environ.get("ASR_OFFLOAD_MAX_S", "900"))
+        state.offloaded = {"since": time.time(), "reason": (req.reason or "")[:80],
+                           "reload_at": time.time() + max_s if max_s > 0 else None}
+        await asyncio.get_running_loop().run_in_executor(state.pool, _drop)
+        ms = (time.perf_counter() - t0) * 1000
+        after = _vram_mb()
+        log.info("offloaded for %r in %.0f ms (VRAM %s -> %s MB)", req.reason, ms, before, after)
+        if state.auto_reload is not None:
+            state.auto_reload.cancel()
+        state.auto_reload = asyncio.create_task(_reload_after(max_s)) if max_s > 0 else None
+        return {"state": "offloaded", "offload_ms": round(ms), "vram_before_mb": before, "vram_after_mb": after}
+
+
+async def _reload_after(seconds: float) -> None:
+    await asyncio.sleep(seconds)
+    log.warning("still offloaded after %.0f s; reloading by itself", seconds)
+    state.auto_reload = None
+    await reload()
+
+
+@app.post("/reload")
+async def reload() -> dict[str, Any]:
+    async with state.swap:
+        if state.backend is not None:
+            return {"state": "ready", "reload_ms": 0, "already": True}
+        task, state.auto_reload = state.auto_reload, None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+        t0 = time.perf_counter()
+        await _load()
+        state.offloaded = None
+        ms = (time.perf_counter() - t0) * 1000
+        log.info("reloaded in %.0f ms", ms)
+        return {"state": "ready", "reload_ms": round(ms), "vram_mb": _vram_mb()}
 
 
 def main() -> None:
