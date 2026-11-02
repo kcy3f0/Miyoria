@@ -97,6 +97,7 @@ export {
   VERSION,
 } from "./protocol.js";
 export {
+  overlayUrl,
   parseStageConfig,
   type RunStageOptions,
   runStage,

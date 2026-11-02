@@ -170,6 +170,8 @@ export class FakeVts {
 
 export interface FakeObsState {
   scene: string;
+  /** What `sceneList` answers. */
+  scenes: string[];
   streaming: boolean;
   texts: [string, string][];
   calls: string[];
@@ -184,6 +186,7 @@ export class FakeObs implements Obs, ObsConnector {
   constructor(scene = "") {
     this.state = {
       scene,
+      scenes: ["Talk", "Game"],
       streaming: false,
       texts: [],
       calls: [],
@@ -194,6 +197,10 @@ export class FakeObs implements Obs, ObsConnector {
 
   async currentScene(): Promise<string> {
     return this.state.scene;
+  }
+
+  async sceneList(): Promise<string[]> {
+    return [...this.state.scenes];
   }
 
   async setScene(name: string): Promise<void> {

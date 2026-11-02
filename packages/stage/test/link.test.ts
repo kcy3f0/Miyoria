@@ -247,6 +247,9 @@ describe("stage.link", () => {
         obs: false,
         scene: null,
         streaming: false,
+        scenes: [],
+        hotkeys: [],
+        overlay_url: null,
       }),
     );
     expect(env.source).toBe("stage.link");

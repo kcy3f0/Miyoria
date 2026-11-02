@@ -8,6 +8,7 @@ import { AvatarProfile } from "./avatar.js";
 import { EmotionController, type VtsCommand } from "./emotion.js";
 import { Levels, LipSyncConfigSchema, MouthShaper, serveLevels } from "./lipsync.js";
 import { GazeConfigSchema, IdleMotion, MOTION_PARAMS } from "./motion.js";
+import { type BoundAddress, formatAddress, parseBind } from "./net.js";
 import { ObsConfigSchema, type ObsConnector, ObsController, ObsWebSocketConnector } from "./obs.js";
 import { OverlayHub, serveOverlay } from "./overlay.js";
 import {
@@ -161,7 +162,8 @@ export async function runStageWith(
       obs = controller;
     }
 
-    const stage = new Stage(vts, obs, overlay, levels, avatar);
+    const url = overlayUrl(overlayServer.addr);
+    const stage = new Stage(vts, obs, overlay, levels, avatar, url);
     stage.aggregateStatus(tasks.signal);
     await coreLink(config, stage, signal);
   } finally {
@@ -171,8 +173,29 @@ export async function runStageWith(
   }
 }
 
+/**
+ * Overlay page URL for the overlay server's address, `host:port` or bound (a wildcard host
+ * becomes loopback).
+ */
+export function overlayUrl(bind: string | BoundAddress): string | null {
+  let addr: BoundAddress;
+  try {
+    addr = typeof bind === "string" ? parseBind(bind) : bind;
+  } catch {
+    return null;
+  }
+  const host = addr.host === "0.0.0.0" || addr.host === "::" ? "127.0.0.1" : addr.host;
+  return `http://${formatAddress({ host, port: addr.port })}/overlay/`;
+}
+
+const sameNames = (a: string[], b: string[]): boolean =>
+  a.length === b.length && a.every((v, i) => v === b[i]);
+
 class Stage {
   readonly #vts: Watch<VtsClient | null>;
+  /** Hotkey names of the current VTS model. */
+  readonly #hotkeys = new Watch<string[]>([], sameNames);
+  readonly #overlayUrl: string | null;
   readonly #obs: ObsController | null;
   readonly #overlay: OverlayHub;
   readonly #levels: Levels;
@@ -189,12 +212,29 @@ class Stage {
     overlay: OverlayHub,
     levels: Levels,
     avatar: AvatarLoop | null,
+    overlayUrl: string | null = null,
   ) {
     this.#vts = vts;
     this.#obs = obs;
     this.#overlay = overlay;
     this.#levels = levels;
     this.#avatar = avatar;
+    this.#overlayUrl = overlayUrl;
+  }
+
+  /** Re-reads the hotkey list of the current VTS model. */
+  async #refreshHotkeys(): Promise<void> {
+    const client = this.#vtsClient();
+    if (!client) {
+      this.#hotkeys.set([]);
+      return;
+    }
+    try {
+      const names = (await client.hotkeys()).map((h) => h.name).filter((n) => n !== "");
+      if (this.#vtsClient() === client) this.#hotkeys.set(names);
+    } catch (error) {
+      log.debug({ err: errorMessage(error) }, "cannot list VTS hotkeys");
+    }
   }
 
   #vtsClient(): VtsClient | null {
@@ -204,11 +244,15 @@ class Stage {
 
   currentStatus(): StageStatus {
     const obs = this.#obs?.state();
+    const vts = this.#vtsClient() !== null;
     return {
-      vts: this.#vtsClient() !== null,
+      vts,
       obs: obs?.connected ?? false,
       scene: obs?.scene ?? null,
       streaming: obs?.streaming ?? false,
+      scenes: obs?.connected ? [...obs.scenes] : [],
+      hotkeys: vts ? [...this.#hotkeys.get()] : [],
+      overlay_url: this.#overlayUrl,
     };
   }
 
@@ -265,7 +309,7 @@ class Stage {
         });
         return;
       case "status_request":
-        this.#reply(msg.id, null);
+        this.#answer(msg.id, () => this.#refreshHotkeys());
         return;
       case "welcome":
       case "ping":
@@ -287,7 +331,11 @@ class Stage {
       }
     };
     const unsubscribe = [
-      this.#vts.subscribe(update),
+      this.#vts.subscribe(() => {
+        update();
+        void this.#refreshHotkeys();
+      }),
+      this.#hotkeys.subscribe(update),
       this.core.subscribe(update),
       this.#obs?.subscribe(update) ?? (() => {}),
     ];

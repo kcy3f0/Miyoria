@@ -55,15 +55,17 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 
 | type | 欄位 | 說明 |
 |---|---|---|
-| `status` | `vts`(bool), `obs`(bool), `scene`(string / null), `streaming`(bool), `id?` | 目前狀態。`vts`:已連上並通過 VTS 認證;`obs`:已連上 obs-websocket;`scene`:OBS 目前的 program 場景 |
+| `status` | `vts`(bool), `obs`(bool), `scene`(string / null), `streaming`(bool), `scenes`(string[]), `hotkeys`(string[]), `overlay_url`(string / null), `id?` | 目前狀態。`vts`:已連上並通過 VTS 認證;`obs`:已連上 obs-websocket;`scene`:OBS 目前的 program 場景;`scenes`:OBS 所有場景名稱(`GetSceneList`,順序跟 OBS 場景清單由上到下一樣,OBS 沒連上時是 `[]`);`hotkeys`:VTS 目前模型的 hotkey 名稱(VTS 連上 / 換連線、以及收到 `status_request` 時重新讀取,VTS 沒連上時是 `[]`);`overlay_url`:Stage 的 overlay 網頁(給 OBS browser source 用,綁 `0.0.0.0` / `::` 時寫成 `127.0.0.1`) |
 | `error` | `message`, `id?` | 錯誤 |
 | `ping` / `pong` | | |
 
 ```json
-{"type":"status","vts":true,"obs":true,"scene":"Game","streaming":false}
-{"type":"status","vts":true,"obs":true,"scene":"Game","streaming":true,"id":13}
+{"type":"status","vts":true,"obs":true,"scene":"Game","streaming":false,"scenes":["Talk","Game"],"hotkeys":["Wave","臉紅"],"overlay_url":"http://127.0.0.1:7884/overlay/"}
+{"type":"status","vts":true,"obs":true,"scene":"Game","streaming":true,"scenes":["Talk","Game"],"hotkeys":["Wave","臉紅"],"overlay_url":"http://127.0.0.1:7884/overlay/","id":13}
 {"type":"error","message":"OBS is not connected","id":13}
 ```
+
+`scenes`、`hotkeys`、`overlay_url` 是 v1 之後加的欄位:舊版 Stage 不送也沒關係,Core 會當成 `[]`、`[]`、`null`(協定版本仍是 1)。管理面板的 `GET /api/stage` 直接用它們:`scenes` → 場景選單,`hotkeys` → `expressions`(表情 / hotkey 選單),`overlay_url` → overlay 預覽。
 
 **請求與回覆**:`scene`、`stream`、`avatar_hotkey`、`status_request` 帶 `id` 時,Stage 一定要回一個帶同樣 `id` 的訊息:成功回 `status`(動作完成後的狀態),失敗回 `error`。`stream` 會等 OBS 真的進入(或離開)直播狀態才回,最多 `[stage.obs] stream_wait_ms`(預設 15 秒)。Core 端等 `request_timeout_ms`(預設 10 秒)沒回覆就當作失敗。沒有 `id` 的 `error` 只是通知(Core 會發佈成 `stage.error` 事件)。
 
@@ -84,8 +86,8 @@ golive_start_delay_ms = 3000   # 等 voice node 的 ffmpeg 綁好 RTMP listener 
 
 - 訂閱 `agent.emotion`、`agent.turn.completed`、`voice.playback`,依上面的規則轉送。
 - 另外訂閱 `voice.golive`(`{guild, state, error?, reason?}`):`starting` 時在 `golive_start_delay_ms` 後叫 OBS 開始直播(最多重試 3 次),`stopped` / `failed` 時叫 OBS 停止。所以 Discord 的 `/golive start` 一個指令就能從推流到 OBS 全包;`golive_obs = false` 可以關掉,讓 OBS 自己控制。
-- 提供 `Arc<StageLink>`:`set_scene`、`stream`、`hotkey`、`refresh_status`、`gaze`、`status`、`subscribe_status`。
-- 狀態變化發佈成 `Custom { topic: "stage.status" }`,payload `{connected, vts, obs, scene, streaming}`(斷線時只有 `{"connected": false}`)。
+- 提供 `StageLink` 服務(`StageLinkKey`):`setScene`、`stream`、`hotkey`、`refreshStatus`、`gaze`、`status`、`subscribeStatus`。
+- 狀態變化發佈成 `custom` 事件(topic `stage.status`),payload `{connected, vts, obs, scene, streaming, scenes, hotkeys, overlay_url}`(斷線時只有 `{"connected": false}`)。
 - 有 `CommandRegistry` 時註冊指令:`stream start`、`stream stop`、`stream scene <name>`、`stream status`(權限節點 `stream.start` / `stream.stop` / `stream.scene` / `stream.status`)。
 
 ---

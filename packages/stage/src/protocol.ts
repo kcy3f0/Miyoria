@@ -45,15 +45,41 @@ export interface StageStatus {
   scene: string | null;
   /** OBS is streaming. */
   streaming: boolean;
+  /** OBS scene names, top of OBS's scene list first. */
+  scenes: string[];
+  /** Hotkey names of the model loaded in VTube Studio. */
+  hotkeys: string[];
+  /** URL of the node's overlay page (an OBS browser source), if it serves one. */
+  overlay_url: string | null;
 }
 
 export function defaultStageStatus(): StageStatus {
-  return { vts: false, obs: false, scene: null, streaming: false };
+  return {
+    vts: false,
+    obs: false,
+    scene: null,
+    streaming: false,
+    scenes: [],
+    hotkeys: [],
+    overlay_url: null,
+  };
+}
+
+function sameList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 export function sameStatus(a: StageStatus | null, b: StageStatus | null): boolean {
   if (a === null || b === null) return a === b;
-  return a.vts === b.vts && a.obs === b.obs && a.scene === b.scene && a.streaming === b.streaming;
+  return (
+    a.vts === b.vts &&
+    a.obs === b.obs &&
+    a.scene === b.scene &&
+    a.streaming === b.streaming &&
+    a.overlay_url === b.overlay_url &&
+    sameList(a.scenes, b.scenes) &&
+    sameList(a.hotkeys, b.hotkeys)
+  );
 }
 
 const requestId = z
@@ -69,6 +95,10 @@ const StageStatusFields = {
   obs: z.boolean().default(false),
   scene: z.string().nullable().default(null),
   streaming: z.boolean().default(false),
+  // Added after v1 shipped; older nodes leave them out.
+  scenes: z.array(z.string()).default([]),
+  hotkeys: z.array(z.string()).default([]),
+  overlay_url: z.string().nullable().default(null),
 };
 
 /** Text frames sent by the Stage node. `id` answers a Core request. */
@@ -144,13 +174,16 @@ export function encodeMessage(msg: StageMessage | CoreMessage): string {
 }
 
 /** Status without the message fields. */
-export function statusOf(msg: {
-  vts: boolean;
-  obs: boolean;
-  scene: string | null;
-  streaming: boolean;
-}): StageStatus {
-  return { vts: msg.vts, obs: msg.obs, scene: msg.scene, streaming: msg.streaming };
+export function statusOf(msg: StageStatus): StageStatus {
+  return {
+    vts: msg.vts,
+    obs: msg.obs,
+    scene: msg.scene,
+    streaming: msg.streaming,
+    scenes: [...msg.scenes],
+    hotkeys: [...msg.hotkeys],
+    overlay_url: msg.overlay_url,
+  };
 }
 
 /**

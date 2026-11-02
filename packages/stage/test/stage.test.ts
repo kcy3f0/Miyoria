@@ -12,6 +12,7 @@ import {
   AvatarProfile,
   type BoundAddress,
   defaultLipSyncConfig,
+  defaultStageStatus,
   EMOTION_TOPIC,
   formatAddress,
   Levels,
@@ -123,12 +124,17 @@ describe("stage", () => {
     await expect(link.setScene("Missing")).rejects.toThrow("Missing");
     status = await link.stream("start");
     expect(status.streaming).toBe(true);
-    expect(await link.stream("stop")).toStrictEqual({
+    const stopped = await link.stream("stop");
+    expect(stopped).toMatchObject({
       vts: true,
       obs: true,
       scene: "Game",
       streaming: false,
+      scenes: ["Talk", "Game"],
+      hotkeys: ["Wave", "Clear"],
     });
+    expect(stopped.overlay_url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/overlay\/$/);
+    expect(stopped.overlay_url).not.toContain(":0/");
     expect(obs.state.calls).toStrictEqual([
       "ensure Subtitle",
       "scene Game",
@@ -266,7 +272,7 @@ describe("stage", () => {
     writeFileSync(join(d, "index.html"), "<p>overlay</p>");
     writeFileSync(join(d, "app.js"), "console.log(1)");
     const hub = new OverlayHub();
-    hub.status({ vts: true, obs: false, scene: null, streaming: false }, true);
+    hub.status({ ...defaultStageStatus(), vts: true, scenes: ["Talk"] }, true);
     const controller = new AbortController();
     cleanup.push(() => controller.abort());
     const { addr } = await serveOverlay("127.0.0.1:0", d, hub, controller.signal);

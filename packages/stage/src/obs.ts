@@ -33,6 +33,8 @@ export type ObsConfig = z.output<typeof ObsConfigSchema>;
 /** The OBS operations the Stage needs. */
 export interface Obs {
   currentScene(): Promise<string>;
+  /** Scene names, top of OBS's scene list first (optional). */
+  sceneList?(): Promise<string[]>;
   setScene(name: string): Promise<void>;
   streaming(): Promise<boolean>;
   startStream(): Promise<void>;
@@ -106,6 +108,16 @@ class ObsWebSocketObs implements Obs {
   async currentScene(): Promise<string> {
     const r = await this.#client.call("GetCurrentProgramScene");
     return r.sceneName ?? r.currentProgramSceneName;
+  }
+
+  async sceneList(): Promise<string[]> {
+    const { scenes } = await this.#client.call("GetSceneList");
+    // `sceneIndex` 0 is the bottom of OBS's list.
+    return scenes
+      .map((s) => ({ name: String(s.sceneName ?? ""), index: Number(s.sceneIndex ?? 0) }))
+      .filter((s) => s.name !== "")
+      .sort((a, b) => b.index - a.index)
+      .map((s) => s.name);
   }
 
   async setScene(name: string): Promise<void> {
@@ -186,14 +198,22 @@ export interface ObsState {
   connected: boolean;
   scene: string | null;
   streaming: boolean;
+  /** Scene names, top of OBS's scene list first. */
+  scenes: string[];
 }
 
 export function defaultObsState(): ObsState {
-  return { connected: false, scene: null, streaming: false };
+  return { connected: false, scene: null, streaming: false, scenes: [] };
 }
 
 function sameObsState(a: ObsState, b: ObsState): boolean {
-  return a.connected === b.connected && a.scene === b.scene && a.streaming === b.streaming;
+  return (
+    a.connected === b.connected &&
+    a.scene === b.scene &&
+    a.streaming === b.streaming &&
+    a.scenes.length === b.scenes.length &&
+    a.scenes.every((s, i) => s === b.scenes[i])
+  );
 }
 
 /** Keeps one OBS connection (reconnecting with backoff), polls its state and runs commands. */
@@ -280,7 +300,15 @@ export class ObsController {
     const obs = this.#obs();
     const scene = await obs.currentScene();
     const streaming = await obs.streaming();
-    const state: ObsState = { connected: true, scene, streaming };
+    let scenes = this.#state.get().scenes;
+    if (obs.sceneList) {
+      try {
+        scenes = await obs.sceneList();
+      } catch (error) {
+        log.debug({ err: errorMessage(error) }, "cannot list OBS scenes");
+      }
+    }
+    const state: ObsState = { connected: true, scene, streaming, scenes };
     this.#state.set(state);
     return state;
   }

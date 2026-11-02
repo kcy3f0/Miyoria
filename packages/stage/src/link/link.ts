@@ -28,7 +28,10 @@ import { Conn, checkHello } from "./conn.js";
 
 const log = getLogger("stage.link");
 
-/** Topic of status updates published by `stage.link` (`{connected, vts, obs, scene, streaming}`). */
+/**
+ * Topic of status updates published by `stage.link`
+ * (`{connected, vts, obs, scene, streaming, scenes, hotkeys, overlay_url}`).
+ */
 export const STATUS_TOPIC = "stage.status";
 /** Topic of errors reported by the Stage node (`{message}`). */
 export const ERROR_TOPIC = "stage.error";
@@ -195,6 +198,9 @@ export class StageLink {
           obs: status.obs,
           scene: status.scene,
           streaming: status.streaming,
+          scenes: [...status.scenes],
+          hotkeys: [...status.hotkeys],
+          overlay_url: status.overlay_url,
         }
       : { connected: false };
     this.#publish(customEvent(STATUS_TOPIC, payload));

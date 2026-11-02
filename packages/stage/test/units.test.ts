@@ -21,6 +21,7 @@ import {
   Levels,
   type LipSyncConfig,
   MouthShaper,
+  overlayUrl,
   parseAvatarAction,
   parseCoreMessage,
   parseGazeTarget,
@@ -79,6 +80,9 @@ describe("protocol", () => {
       obs: false,
       scene: "Talk",
       streaming: false,
+      scenes: ["Talk", "Game"],
+      hotkeys: ["Wave"],
+      overlay_url: "http://127.0.0.1:7884/overlay/",
       id: 7,
     };
     expect(JSON.parse(encodeMessage(msg))).toStrictEqual({
@@ -87,15 +91,31 @@ describe("protocol", () => {
       obs: false,
       scene: "Talk",
       streaming: false,
+      scenes: ["Talk", "Game"],
+      hotkeys: ["Wave"],
+      overlay_url: "http://127.0.0.1:7884/overlay/",
       id: 7,
     });
+    expect(parseStageMessage(JSON.parse(encodeMessage(msg)))).toStrictEqual(msg);
+    // Older nodes send only the v1 fields.
     expect(parseStageMessage({ type: "status", vts: false, obs: true })).toStrictEqual({
       type: "status",
       vts: false,
       obs: true,
       scene: null,
       streaming: false,
+      scenes: [],
+      hotkeys: [],
+      overlay_url: null,
     });
+  });
+
+  it("overlay_url_from_the_bind_address", () => {
+    expect(overlayUrl("127.0.0.1:7884")).toBe("http://127.0.0.1:7884/overlay/");
+    expect(overlayUrl("0.0.0.0:7884")).toBe("http://127.0.0.1:7884/overlay/");
+    expect(overlayUrl({ host: "::", port: 9000 })).toBe("http://127.0.0.1:9000/overlay/");
+    expect(overlayUrl({ host: "::1", port: 9000 })).toBe("http://[::1]:9000/overlay/");
+    expect(overlayUrl("nonsense")).toBeNull();
   });
 
   it("level_frames", () => {
