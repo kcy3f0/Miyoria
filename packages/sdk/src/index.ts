@@ -31,6 +31,7 @@ export {
   type GameObservation,
   type RegisteredAdapter,
   actToolSchema,
+  describeActions,
   formatActionResult,
   formatObservation,
   registerGameAdapter,

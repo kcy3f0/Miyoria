@@ -26,6 +26,11 @@ export interface GameInfo {
   actions: GameActionSpec[];
   /** Prompt fragment added while the adapter is registered. */
   prompt?: string;
+  /**
+   * How to play (progression, rules of thumb), appended to the act tool's description so the
+   * game's decision loop sees it; chat turns that do not get the tool do not pay for it.
+   */
+  guide?: string;
 }
 
 export interface GameObservation {
@@ -84,12 +89,14 @@ export function actToolSchema(info: GameInfo): JsonSchema {
   };
 }
 
-function describeActions(info: GameInfo): string {
+/** Description of the `game.<id>.act` tool: the actions, then the adapter's guide if any. */
+export function describeActions(info: GameInfo): string {
   const lines = info.actions.map((a) => {
     const params = a.parameters ? ` 參數:${JSON.stringify(a.parameters)}` : "";
     return `- ${a.name}:${a.description}${params}`;
   });
-  return `在 ${info.name} 裡做一個高階動作。可用動作:\n${lines.join("\n")}`;
+  const guide = info.guide?.trim() ? `\n\n${info.guide.trim()}` : "";
+  return `在 ${info.name} 裡做一個高階動作。可用動作:\n${lines.join("\n")}${guide}`;
 }
 
 /** Text the model sees for an observation. */
