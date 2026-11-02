@@ -1,11 +1,24 @@
 // Gateway event handling: messages, typing, readiness and interactions.
 
-import type { CommandRegistry } from "@miyoria/commands";
+import { type CommandRegistry, PanelSessions } from "@miyoria/commands";
 import { errorMessage, getLogger, type ModuleContext } from "@miyoria/kernel";
 import type { ContextKind, PlatformSinks } from "@miyoria/types";
-import { type ChannelType, type Client, Events, type Message, MessageType } from "discord.js";
+import {
+  type ChannelType,
+  type Client,
+  Events,
+  type Interaction,
+  type Message,
+  MessageType,
+  Routes,
+} from "discord.js";
 import type { DiscordConfig } from "./config.js";
-import { handleCommandInteraction } from "./interaction.js";
+import {
+  handleAutocomplete,
+  handleCommandInteraction,
+  handleComponentInteraction,
+  type InteractionEnv,
+} from "./interaction.js";
 import { account, contextKey, incomingMessage, kindOf, PLATFORM } from "./mapping.js";
 import { DiscordSink } from "./sink.js";
 import { runSyncLoop, syncCommands } from "./sync.js";
@@ -21,6 +34,10 @@ export class Shared {
   ready = false;
   #syncStarted = false;
   readonly #kinds = new Map<string, ContextKind>();
+  /** Messages with live controls (panels). */
+  readonly sessions = new PanelSessions({
+    onError: (error) => log.debug({ error: errorMessage(error) }, "cannot disable a panel"),
+  });
 
   constructor(
     readonly config: DiscordConfig,
@@ -82,17 +99,48 @@ export class GatewayBridge {
       this.shared.rememberKind(thread.id, kindOf(thread.type));
     });
     client.on(Events.InteractionCreate, (interaction) => {
-      if (!interaction.isChatInputCommand()) return;
-      this.guard("interaction", async () => {
-        const kind =
-          interaction.guildId === null
-            ? "dm"
-            : interaction.channel
-              ? kindOf(interaction.channel.type)
-              : await this.channelKind(client, interaction.guildId, interaction.channelId);
-        await handleCommandInteraction(this.shared.registry, interaction, kind);
-      });
+      this.guard("interaction", () => this.onInteraction(client, interaction));
     });
+  }
+
+  /** The handlers' shared environment. */
+  env(client: Client): InteractionEnv {
+    return {
+      registry: this.shared.registry,
+      sessions: this.shared.sessions,
+      editChannelMessage: async (channel, message, payload) => {
+        await client.rest.patch(Routes.channelMessage(channel, message), {
+          body: {
+            components: payload.components,
+            flags: payload.flags,
+            allowed_mentions: { parse: [] },
+          },
+        });
+      },
+    };
+  }
+
+  /** Slash commands, autocomplete, buttons, select menus and modal submissions. */
+  private async onInteraction(client: Client, interaction: Interaction): Promise<void> {
+    const kindOfInteraction = async (): Promise<ContextKind> => {
+      if (interaction.guildId === null) return "dm";
+      if (interaction.channel) return kindOf(interaction.channel.type);
+      return this.channelKind(client, interaction.guildId, interaction.channelId ?? "");
+    };
+    if (interaction.isChatInputCommand()) {
+      const kind = await kindOfInteraction();
+      await handleCommandInteraction(this.env(client), interaction, kind);
+    } else if (interaction.isAutocomplete()) {
+      const kind = await kindOfInteraction();
+      await handleAutocomplete(this.env(client), interaction, kind);
+    } else if (
+      interaction.isButton() ||
+      interaction.isStringSelectMenu() ||
+      interaction.isModalSubmit()
+    ) {
+      const kind = await kindOfInteraction();
+      await handleComponentInteraction(this.env(client), interaction, kind);
+    }
   }
 
   /** Runs a listener body; failures are logged and never escape into discord.js. */
@@ -132,14 +180,12 @@ export class GatewayBridge {
         runSyncLoop({
           registry,
           signal,
-          sync: () =>
-            syncCommands(
-              client.rest,
-              client.application.id,
-              registry,
-              config.command_guilds,
+          sync: (first) =>
+            syncCommands(client.rest, client.application.id, registry, config.command_guilds, {
               signal,
-            ),
+              // Once per run: clear the scope not in use (stale duplicates in the list).
+              cleanup: first ? { guilds: [...client.guilds.cache.keys()] } : null,
+            }),
         }),
       );
     }

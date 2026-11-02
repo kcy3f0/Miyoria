@@ -1,6 +1,20 @@
-import { ArgKind, argSpec, type CommandSpec, commandSpec } from "@miyoria/commands";
+import {
+  ArgKind,
+  argSpec,
+  CommandRegistry,
+  CommandReply,
+  type CommandSpec,
+  commandSpec,
+} from "@miyoria/commands";
+import { ApplicationCommandOptionType, InteractionContextType } from "discord.js";
 import { describe, expect, test } from "vitest";
-import { buildTree, toCreateCommands, truncate } from "../src/slash.js";
+import {
+  buildTree,
+  toCreateCommands,
+  truncate,
+  validateCommand,
+  validCommands,
+} from "../src/slash.js";
 
 function specs(): CommandSpec[] {
   return [
@@ -106,6 +120,59 @@ describe("slash commands", () => {
       ),
     );
     expect(sub[0]?.options).toHaveLength(25);
+  });
+
+  test("top_level_commands_carry_contexts_and_member_permissions", () => {
+    const registry = new CommandRegistry();
+    const ok = () => CommandReply.text("ok");
+    registry.register(commandSpec("help", "Help"), ok);
+    registry.register(commandSpec("admin module list", "List"), ok);
+    registry.register(commandSpec("voice join", "Join"), ok);
+    registry.register(
+      commandSpec("stream scene", "Scene", { args: [argSpec("name", "n", ArgKind.string)] }),
+      ok,
+      { autocomplete: { name: () => [] } },
+    );
+    const json = toCreateCommands(buildTree(registry.specs(), (p) => registry.groupInfo(p)));
+    const byName = new Map(json.map((c) => [c.name, c]));
+    expect(byName.get("admin")?.default_member_permissions).toBe("32"); // Manage Server
+    expect(byName.get("admin")?.contexts).toEqual([InteractionContextType.Guild]);
+    expect(byName.get("voice")?.default_member_permissions).toBeNull();
+    expect(byName.get("voice")?.contexts).toEqual([InteractionContextType.Guild]);
+    expect(byName.get("help")?.contexts).toEqual([
+      InteractionContextType.Guild,
+      InteractionContextType.BotDM,
+    ]);
+    expect(byName.get("stream")?.options[0]?.options?.[0]?.autocomplete).toBe(true);
+    expect(validCommands(json)).toHaveLength(json.length);
+  });
+
+  test("validation_catches_what_discord_rejects", () => {
+    const good = toCreateCommands(buildTree([commandSpec("ok", "fine")], () => null))[0];
+    if (!good) throw new Error("no command");
+    expect(validateCommand(good)).toEqual([]);
+    expect(validateCommand({ ...good, name: "Bad Name" })).toEqual([
+      "/Bad Name: invalid name `Bad Name`",
+    ]);
+    expect(validateCommand({ ...good, description: "" })[0]).toContain("description");
+    const mixed = {
+      ...good,
+      options: [
+        { type: ApplicationCommandOptionType.String, name: "b", description: "b", required: false },
+        { type: ApplicationCommandOptionType.String, name: "a", description: "a", required: true },
+        {
+          type: ApplicationCommandOptionType.String,
+          name: "c",
+          description: "c",
+          autocomplete: true,
+          choices: [{ name: "x", value: "x" }],
+        },
+      ],
+    };
+    const problems = validateCommand(mixed);
+    expect(problems.some((p) => p.includes("required option after an optional one"))).toBe(true);
+    expect(problems.some((p) => p.includes("autocomplete and choices"))).toBe(true);
+    expect(validCommands([good, good])).toHaveLength(1);
   });
 
   test("unsupported_depth_is_skipped", () => {

@@ -1,23 +1,35 @@
 // @miyoria/discord: Discord bot account adapter (module `platform.discord.bot`).
 //
 // This is the official bot account: it reads and writes text messages, reacts, shows typing and
-// serves slash commands from the `CommandRegistry`. It never joins voice; that is the separate
-// self-account voice node. See `module.ts` for the Developer Portal setup.
+// serves slash commands, buttons, select menus, modals and autocomplete from the
+// `CommandRegistry`. Replies are Components V2 messages (render.ts), never embeds. It never
+// joins voice; that is the separate self-account voice node. See `module.ts` for the Developer
+// Portal setup.
 //
 // Pure logic lives in testable functions: `splitMessage` (split.ts), the discord.js <-> Miyoria
-// mapping (mapping.ts), the slash command tree (slash.ts) and the interaction flow
+// mapping (mapping.ts), rendering (render.ts), the slash command tree and its validation
+// (slash.ts), command sync and scope cleanup (sync.ts) and the interaction flow
 // (interaction.ts).
 
 export { type DiscordConfig, DiscordConfigSchema, validateDiscordConfig } from "./config.js";
 export {
+  type Ack as InteractionAck,
+  type AutocompleteInteractionLike,
   type CommandDispatcher,
   type CommandInteractionLike,
+  type ComponentInteractionLike,
+  componentInvocation,
   DEFER_AFTER_MS,
+  type EditPayload,
   HANDLER_FAILED_TEXT,
+  handleAutocomplete,
   handleCommandInteraction,
+  handleComponentInteraction,
+  type InteractionEnv,
+  InteractionState,
   invocationFromInteraction,
-  type ReplyOptions,
-  respond,
+  type RepliableLike,
+  respondError,
 } from "./interaction.js";
 export {
   type ArgValueLike,
@@ -45,22 +57,42 @@ export {
   intents,
   SHUTDOWN_GRACE_MS,
 } from "./module.js";
+export {
+  ACCENT_COLORS,
+  disableComponents,
+  hasControls,
+  MAX_V2_COMPONENTS,
+  MAX_V2_TEXT,
+  type MessagePayload,
+  NO_MENTIONS,
+  type PayloadFile,
+  renderCard,
+  renderModal,
+  renderReply,
+} from "./render.js";
 export { DiscordSendError, DiscordSink, type RestLike, type RestRequest } from "./sink.js";
 export {
   buildTree,
+  type GroupLookup,
   type SlashCommandJson,
   type SlashKind,
   type SlashNode,
   type SlashOptionJson,
   toCreateCommands,
   truncate,
+  validateCommand,
+  validCommands,
 } from "./slash.js";
 export { MAX_MESSAGE_LEN, splitMessage } from "./split.js";
 export {
+  type CommandSource,
   currentCommands,
+  type ResetReport,
+  resetCommands,
   runSyncLoop,
   SYNC_DEBOUNCE_MS,
   type SyncLoopOptions,
+  type SyncOptions,
   type SyncRest,
   syncCommands,
 } from "./sync.js";

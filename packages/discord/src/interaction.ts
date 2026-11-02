@@ -1,15 +1,30 @@
-// Slash command interactions: build the `Invocation`, run it, reply (deferring after 1.5 s).
+// Interactions: slash commands, buttons / selects / modals and autocomplete.
+//
+// Every answer goes through `send` (the visibility rule and the deferral state in one place)
+// or `respondError` (refusals and failures: a new ephemeral message, an ephemeral follow-up or
+// an edit of the deferred reply, depending on the interaction's state, and never an edit of the
+// message a control is on). Replies with a `session` are tracked in `PanelSessions`; when one
+// expires its controls are disabled.
 
 import {
   type ArgValue,
   type CommandRegistry,
-  CommandReply,
+  type CommandReply,
+  type ComponentInvocationData,
+  type ComponentOutcome,
   type InvocationData,
+  notice,
+  type PanelSessions,
   type ResolvedUser,
+  replyEphemeral,
 } from "@miyoria/commands";
 import { errorMessage, getLogger, withTimeout } from "@miyoria/kernel";
-import type { ContextKind } from "@miyoria/types";
-import { MessageFlags } from "discord.js";
+import type { AccountRef, ContextKind } from "@miyoria/types";
+import {
+  type APIMessageTopLevelComponent,
+  type APIModalInteractionResponseCallbackData,
+  MessageFlags,
+} from "discord.js";
 import {
   account,
   commandPath,
@@ -24,49 +39,127 @@ import {
   resolvedUsers,
   type UserLike,
 } from "./mapping.js";
-import { MAX_MESSAGE_LEN, splitMessage } from "./split.js";
+import {
+  disableComponents,
+  hasControls,
+  type MessagePayload,
+  NO_MENTIONS,
+  renderModal,
+  renderReply,
+} from "./render.js";
 
 const log = getLogger("discord.interaction");
 
 /** Discord wants an interaction response within 3 s; defer after this. */
 export const DEFER_AFTER_MS = 1_500;
 
-/** Shown when a command handler throws. */
-export const HANDLER_FAILED_TEXT = "嗚……執行的時候出錯了。才不是我的問題,去看 log 啦。";
+/** Shown when a command or component handler throws. */
+export const HANDLER_FAILED_TEXT = "執行指令時發生錯誤。";
 
-/** Mentions in command replies never ping anyone. */
-const NO_MENTIONS = { parse: [] as never[] };
-
-export interface ReplyOptions {
-  content: string;
-  flags?: MessageFlags.Ephemeral;
+/** The body of an edit (`editReply`, `update`, webhook edits): no `Ephemeral` flag. */
+export interface EditPayload {
+  components: APIMessageTopLevelComponent[];
+  flags: number;
+  files?: MessagePayload["files"];
+  attachments?: never[];
   allowedMentions: typeof NO_MENTIONS;
 }
 
-/** The parts of a `ChatInputCommandInteraction` that command handling uses. */
-export interface CommandInteractionLike {
-  commandName: string;
+type SentMessage = { id: string } | null | undefined;
+type CallbackResponse = { resource?: { message?: SentMessage } | null } | null | undefined;
+
+/** What every repliable interaction offers (a structural subset of discord.js). */
+export interface RepliableLike {
   user: UserLike;
   guildId: string | null;
-  channelId: string;
+  channelId: string | null;
   /** The channel's type, when the channel is cached. */
   channel?: { type: number } | null;
   member?: MemberLike | null;
-  options: { data: readonly OptionLike[]; resolved?: ResolvedLike | null };
-  reply(options: ReplyOptions): Promise<unknown>;
-  deferReply(options: { flags?: MessageFlags.Ephemeral }): Promise<unknown>;
-  editReply(options: Omit<ReplyOptions, "flags">): Promise<unknown>;
-  followUp(options: ReplyOptions): Promise<unknown>;
+  replied: boolean;
+  deferred: boolean;
+  reply(options: MessagePayload & { withResponse: true }): Promise<CallbackResponse>;
+  deferReply(options: { flags?: number }): Promise<unknown>;
+  editReply(options: EditPayload): Promise<SentMessage>;
+  followUp(options: MessagePayload): Promise<SentMessage>;
   deleteReply(): Promise<unknown>;
+  /** Edits a message sent through this interaction (valid for 15 minutes). */
+  webhook?: { editMessage(message: string, options: EditPayload): Promise<unknown> } | null;
+}
+
+/** The parts of a `ChatInputCommandInteraction` that command handling uses. */
+export interface CommandInteractionLike extends RepliableLike {
+  commandName: string;
+  options: { data: readonly OptionLike[]; resolved?: ResolvedLike | null };
+}
+
+/** A button, select menu or modal submission. */
+export interface ComponentInteractionLike extends RepliableLike {
+  customId: string;
+  /** Selected values (select menus). */
+  values?: readonly string[];
+  /** Submitted fields (modals). */
+  fields?: { fields: { values(): Iterable<{ customId: string; value?: unknown }> } } | null;
+  /** The message the control is on; modals opened from a slash command have none. */
+  message?: { id: string; channelId?: string; flags?: { has(flag: number): boolean } } | null;
+  /** Missing on modals submitted from a slash command. */
+  update?: (options: EditPayload & { withResponse: true }) => Promise<CallbackResponse>;
+  deferUpdate?: () => Promise<unknown>;
+  /** Missing on modal submissions (a modal cannot open another one). */
+  showModal?: (modal: APIModalInteractionResponseCallbackData) => Promise<unknown>;
+}
+
+/** An autocomplete interaction. */
+export interface AutocompleteInteractionLike {
+  commandName: string;
+  user: UserLike;
+  guildId: string | null;
+  channelId: string | null;
+  member?: MemberLike | null;
+  responded: boolean;
+  options: {
+    data: readonly OptionLike[];
+    getFocused(full: true): { name: string; value: string | number | boolean };
+  };
+  respond(choices: { name: string; value: string }[]): Promise<unknown>;
+}
+
+export type CommandDispatcher = Pick<
+  CommandRegistry,
+  "dispatch" | "dispatchComponent" | "autocomplete" | "get"
+>;
+
+/** What the interaction handlers share. */
+export interface InteractionEnv {
+  registry: CommandDispatcher;
+  sessions: PanelSessions;
+  /** Defer when a handler takes longer than this. */
+  deferAfterMs?: number;
+  /** Edits a public message after its interaction token expired (REST). */
+  editChannelMessage?: (channel: string, message: string, payload: EditPayload) => Promise<void>;
+}
+
+function invokerData(
+  i: Pick<RepliableLike, "user" | "guildId" | "channelId" | "member">,
+  kind: ContextKind,
+) {
+  const member = i.member ?? null;
+  return {
+    invoker: account(i.user.id),
+    invoker_display_name: displayName(i.user, memberNick(member)),
+    context: contextKey(i.guildId, i.channelId ?? "", kind),
+    invoker_is_guild_admin: isGuildAdmin(member),
+    platform_roles: memberRoleIds(member),
+  };
 }
 
 /** Builds the invocation of an interaction. `kind` is the channel's context kind. */
 export function invocationFromInteraction(
-  interaction: CommandInteractionLike,
+  interaction: Pick<CommandInteractionLike, "commandName" | "options"> &
+    Pick<RepliableLike, "user" | "guildId" | "channelId" | "member">,
   kind: ContextKind,
 ): InvocationData {
   const { path, args } = commandPath(interaction.commandName, interaction.options.data);
-  const member = interaction.member ?? null;
   const argRecord: Record<string, ArgValue> = {};
   for (const [name, value] of args) argRecord[name] = value;
   const resolved: Record<string, ResolvedUser> = {};
@@ -74,88 +167,379 @@ export function invocationFromInteraction(
   return {
     path,
     args: argRecord,
-    invoker: account(interaction.user.id),
-    invoker_display_name: displayName(interaction.user, memberNick(member)),
-    context: contextKey(interaction.guildId, interaction.channelId, kind),
-    invoker_is_guild_admin: isGuildAdmin(member),
-    platform_roles: memberRoleIds(member),
+    ...invokerData(interaction, kind),
     resolved_users: resolved,
   };
 }
 
-export type CommandDispatcher = Pick<CommandRegistry, "dispatch" | "get">;
+function modalFields(i: ComponentInteractionLike): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const field of i.fields?.fields.values() ?? []) {
+    if (typeof field.value === "string") out[field.customId] = field.value;
+  }
+  return out;
+}
 
-export interface HandleOptions {
-  /** Defer the interaction when the handler takes longer than this. */
-  deferAfterMs?: number;
+/** Builds the component invocation of an interaction. */
+export function componentInvocation(
+  i: ComponentInteractionLike,
+  kind: ContextKind,
+  sessions: PanelSessions,
+): ComponentInvocationData {
+  const messageId = i.message?.id ?? null;
+  return {
+    custom_id: i.customId,
+    values: [...(i.values ?? [])],
+    fields: modalFields(i),
+    message_id: messageId,
+    session: sessions.get(messageId),
+    ...invokerData(i, kind),
+  };
+}
+
+function editPayload(payload: MessagePayload): EditPayload {
+  const edit: EditPayload = {
+    components: payload.components,
+    flags: MessageFlags.IsComponentsV2,
+    allowedMentions: NO_MENTIONS,
+  };
+  if (payload.files) {
+    edit.files = payload.files;
+    edit.attachments = [];
+  }
+  return edit;
+}
+
+/** How an interaction was acknowledged so far. */
+export type Ack =
+  | { type: "none" }
+  /** `deferReply` with this visibility. */
+  | { type: "deferred"; ephemeral: boolean }
+  /** `deferUpdate` (component interactions). */
+  | { type: "update" }
+  /** Answered with a message. */
+  | { type: "replied" };
+
+/** The acknowledgement state of one interaction (see `respondError`). */
+export class InteractionState {
+  ack: Ack = { type: "none" };
+}
+
+function failureReply(error: unknown): CommandReply {
+  return notice("error", HANDLER_FAILED_TEXT, errorMessage(error));
+}
+
+function sessionFor(
+  env: InteractionEnv,
+  i: RepliableLike,
+  invoker: AccountRef,
+  messageId: string | null,
+  reply: CommandReply,
+  payload: MessagePayload | EditPayload,
+  ephemeral: boolean,
+): void {
+  if (!reply.session || !messageId) return;
+  const disabled: EditPayload = {
+    components: disableComponents(payload.components),
+    flags: MessageFlags.IsComponentsV2,
+    allowedMentions: NO_MENTIONS,
+  };
+  const channel = i.channelId;
+  env.sessions.open(messageId, invoker, reply.session, async () => {
+    try {
+      if (!i.webhook) throw new Error("no interaction webhook");
+      await i.webhook.editMessage(messageId, disabled);
+    } catch (error) {
+      if (!ephemeral && channel && env.editChannelMessage) {
+        await env.editChannelMessage(channel, messageId, disabled);
+        return;
+      }
+      log.debug({ message: messageId, error: errorMessage(error) }, "cannot disable panel");
+    }
+  });
+}
+
+/**
+ * Sends a reply as a new message (or as the edit of a deferred reply), following the
+ * visibility rule. Returns the id of the first message, if Discord told us.
+ */
+async function send(
+  env: InteractionEnv,
+  i: RepliableLike,
+  state: InteractionState,
+  invoker: AccountRef,
+  reply: CommandReply,
+  declaredEphemeral: boolean,
+): Promise<void> {
+  const ephemeral = replyEphemeral(declaredEphemeral, reply);
+  const [first, ...rest] = renderReply(reply, ephemeral);
+  if (!first) return;
+  let id: string | null = null;
+  const ack = state.ack;
+  if (ack.type === "none") {
+    const response = await i.reply({ ...first, withResponse: true });
+    id = response?.resource?.message?.id ?? null;
+    state.ack = { type: "replied" };
+  } else if (ack.type === "deferred" && ack.ephemeral === ephemeral) {
+    id = (await i.editReply(editPayload(first)))?.id ?? null;
+    state.ack = { type: "replied" };
+  } else if (ack.type === "deferred") {
+    // A deferred public reply cannot become ephemeral: answer separately, drop the placeholder.
+    id = (await i.followUp(first))?.id ?? null;
+    await i.deleteReply();
+    state.ack = { type: "replied" };
+  } else {
+    id = (await i.followUp(first))?.id ?? null;
+  }
+  for (const payload of rest) await i.followUp(payload);
+  sessionFor(env, i, invoker, id, reply, first, ephemeral);
+}
+
+/**
+ * The one place errors and refusals are answered: an ephemeral reply when nothing was sent
+ * yet, otherwise an ephemeral follow-up (components: the message the control is on belongs to
+ * someone, never overwrite it), or the edit of an ephemeral deferred reply. Never throws.
+ */
+export async function respondError(
+  i: RepliableLike,
+  reply: CommandReply,
+  state: InteractionState = stateOf(i),
+): Promise<void> {
+  try {
+    const [payload] = renderReply(reply, true);
+    if (!payload) return;
+    const ack = state.ack;
+    if (ack.type === "none") {
+      await i.reply({ ...payload, withResponse: true });
+      state.ack = { type: "replied" };
+    } else if (ack.type === "deferred" && ack.ephemeral) {
+      await i.editReply(editPayload(payload));
+      state.ack = { type: "replied" };
+    } else if (ack.type === "deferred") {
+      await i.followUp(payload);
+      await i.deleteReply();
+      state.ack = { type: "replied" };
+    } else {
+      await i.followUp(payload);
+    }
+  } catch (error) {
+    log.warn({ error: errorMessage(error) }, "cannot send the error response");
+  }
+}
+
+/** A state guessed from discord.js flags (for errors outside the handlers). */
+function stateOf(i: RepliableLike): InteractionState {
+  const state = new InteractionState();
+  if (i.replied) state.ack = { type: "replied" };
+  else if (i.deferred) state.ack = { type: "update" };
+  return state;
+}
+
+/** Acknowledges a command so a follow-up can be sent. */
+async function ensureCommandAck(i: RepliableLike, state: InteractionState, ephemeral: boolean) {
+  if (state.ack.type !== "none") return;
+  await i.deferReply({ flags: ephemeral ? MessageFlags.Ephemeral : undefined });
+  state.ack = { type: "deferred", ephemeral };
 }
 
 /**
  * Runs the command of `interaction` and replies. Fast commands are answered directly; slow ones
- * are deferred after `deferAfterMs` (with the spec's default visibility) and answered with an
- * edit once done. Never throws.
+ * are deferred after `deferAfterMs` (with the command's declared visibility) and answered with
+ * an edit once done. Never throws.
  */
 export async function handleCommandInteraction(
-  registry: CommandDispatcher,
+  env: InteractionEnv,
   interaction: CommandInteractionLike,
   kind: ContextKind,
-  options: HandleOptions = {},
 ): Promise<void> {
   const invocation = invocationFromInteraction(interaction, kind);
   const name = invocation.path.join(" ");
-  const defaultEphemeral = registry.get(invocation.path)?.ephemeral ?? true;
+  const declared = env.registry.get(invocation.path)?.ephemeral ?? true;
+  const state = new InteractionState();
   log.debug({ command: name, user: interaction.user.id }, "slash command");
 
-  const settled: Promise<CommandReply> = registry.dispatch(invocation).then(
-    (reply) => reply,
-    (error: unknown) => {
-      log.warn({ command: name, error: errorMessage(error) }, "command handler failed");
-      return CommandReply.ephemeral(HANDLER_FAILED_TEXT);
-    },
+  const followUp = async (reply: CommandReply) => {
+    await ensureCommandAck(interaction, state, declared);
+    const ephemeral = replyEphemeral(declared, reply);
+    for (const payload of renderReply(reply, ephemeral)) await interaction.followUp(payload);
+  };
+  const settled = env.registry.dispatch(invocation, { followUp }).then(
+    (reply): { reply: CommandReply } | { error: unknown } => ({ reply }),
+    (error: unknown) => ({ error }),
   );
   try {
-    const quick = await withTimeout(settled, options.deferAfterMs ?? DEFER_AFTER_MS);
-    if (quick !== undefined) {
-      await respond(interaction, quick, null);
+    let outcome = await withTimeout(settled, env.deferAfterMs ?? DEFER_AFTER_MS);
+    if (outcome === undefined) {
+      try {
+        await ensureCommandAck(interaction, state, declared);
+      } catch (error) {
+        log.warn({ command: name, error: errorMessage(error) }, "cannot defer interaction");
+      }
+      outcome = await settled;
+    }
+    if ("error" in outcome) {
+      log.warn({ command: name, error: errorMessage(outcome.error) }, "command handler failed");
+      await respondError(interaction, failureReply(outcome.error), state);
       return;
     }
-    try {
-      await interaction.deferReply({
-        flags: defaultEphemeral ? MessageFlags.Ephemeral : undefined,
-      });
-    } catch (error) {
-      log.warn({ command: name, error: errorMessage(error) }, "cannot defer interaction");
+    if (outcome.reply.tone === "error" || outcome.reply.tone === "warn") {
+      await respondError(interaction, outcome.reply, state);
+      return;
     }
-    await respond(interaction, await settled, defaultEphemeral);
+    await send(env, interaction, state, invocation.invoker, outcome.reply, declared);
   } catch (error) {
     log.warn({ command: name, error: errorMessage(error) }, "cannot respond to interaction");
   }
 }
 
 /**
- * Sends `reply`, split into chunks. `deferred` is the visibility the interaction was deferred
- * with, if it was.
+ * Routes a button, select menu or modal submission through the registry and answers it:
+ * `update` edits the message the control is on, `reply` sends a new message, `modal` opens a
+ * modal. Ids Miyoria did not make are ignored. Never throws.
  */
-export async function respond(
-  interaction: CommandInteractionLike,
-  reply: CommandReply,
-  deferred: boolean | null,
+export async function handleComponentInteraction(
+  env: InteractionEnv,
+  interaction: ComponentInteractionLike,
+  kind: ContextKind,
 ): Promise<void> {
-  const ephemeral = reply.ephemeral;
-  const [first = "……", ...rest] = splitMessage(reply.text, MAX_MESSAGE_LEN);
-  const message = (content: string): ReplyOptions => ({
-    content,
-    flags: ephemeral ? MessageFlags.Ephemeral : undefined,
-    allowedMentions: NO_MENTIONS,
-  });
-  if (deferred === null) {
-    await interaction.reply(message(first));
-  } else if (deferred === ephemeral) {
-    await interaction.editReply({ content: first, allowedMentions: NO_MENTIONS });
-  } else {
-    // Visibility of a deferred response cannot change: replace it.
-    await interaction.followUp(message(first));
-    await interaction.deleteReply();
+  const data = componentInvocation(interaction, kind, env.sessions);
+  const state = new InteractionState();
+  const hasMessage =
+    interaction.message !== null &&
+    interaction.message !== undefined &&
+    interaction.update !== undefined &&
+    interaction.deferUpdate !== undefined;
+  const messageEphemeral = interaction.message?.flags?.has(MessageFlags.Ephemeral) ?? true;
+
+  const followUp = async (reply: CommandReply) => {
+    if (state.ack.type === "none") {
+      if (hasMessage) {
+        await interaction.deferUpdate?.();
+        state.ack = { type: "update" };
+      } else {
+        await ensureCommandAck(interaction, state, true);
+      }
+    }
+    for (const payload of renderReply(reply, replyEphemeral(true, reply))) {
+      await interaction.followUp(payload);
+    }
+  };
+  const settled = env.registry.dispatchComponent(data, { followUp }).then(
+    (outcome): { outcome: ComponentOutcome | null } | { error: unknown } => ({ outcome }),
+    (error: unknown) => ({ error }),
+  );
+  try {
+    let done = await withTimeout(settled, env.deferAfterMs ?? DEFER_AFTER_MS);
+    if (done === undefined) {
+      try {
+        if (state.ack.type === "none") {
+          if (hasMessage) {
+            await interaction.deferUpdate?.();
+            state.ack = { type: "update" };
+          } else {
+            await ensureCommandAck(interaction, state, true);
+          }
+        }
+      } catch (error) {
+        log.warn({ id: data.custom_id, error: errorMessage(error) }, "cannot defer interaction");
+      }
+      done = await settled;
+    }
+    if ("error" in done) {
+      log.warn({ id: data.custom_id, error: errorMessage(done.error) }, "component handler failed");
+      await respondError(interaction, failureReply(done.error), state);
+      return;
+    }
+    const outcome = done.outcome;
+    if (outcome === null) return; // not ours
+    const result = outcome.result;
+    switch (result.type) {
+      case "modal": {
+        if (state.ack.type !== "none" || !interaction.showModal) {
+          await respondError(interaction, notice("error", "無法開啟表單，請再試一次。"), state);
+          return;
+        }
+        await interaction.showModal(renderModal(result.modal));
+        state.ack = { type: "replied" };
+        return;
+      }
+      case "update": {
+        if (!hasMessage) {
+          await send(env, interaction, state, data.invoker, result.reply, true);
+          return;
+        }
+        const [payload] = renderReply(result.reply, false);
+        if (!payload) return;
+        const edit = editPayload(payload);
+        if (state.ack.type === "none") {
+          await interaction.update?.({ ...edit, withResponse: true });
+          state.ack = { type: "replied" };
+        } else if (state.ack.type === "update") {
+          await interaction.editReply(edit);
+        } else {
+          await interaction.followUp(renderReply(result.reply, true)[0] as MessagePayload);
+          return;
+        }
+        const id = interaction.message?.id ?? null;
+        if (id === null) return;
+        const previous = data.session ?? null;
+        if (!hasControls(edit.components)) {
+          // Nothing left to disable; an expiry must not bring the old controls back.
+          env.sessions.close(id);
+        } else if (result.reply.session) {
+          sessionFor(env, interaction, data.invoker, id, result.reply, edit, messageEphemeral);
+        } else if (previous) {
+          // Keep the panel's owner and data, and disable the controls it shows now.
+          const carried: CommandReply = {
+            ...result.reply,
+            session: { initiatorOnly: previous.initiator_only, data: previous.data ?? undefined },
+          };
+          sessionFor(env, interaction, previous.initiator, id, carried, edit, messageEphemeral);
+        }
+        return;
+      }
+      case "reply": {
+        if (outcome.ephemeral && (result.reply.tone === "error" || result.reply.tone === "warn")) {
+          await respondError(interaction, result.reply, state);
+          return;
+        }
+        await send(env, interaction, state, data.invoker, result.reply, outcome.ephemeral);
+        return;
+      }
+    }
+  } catch (error) {
+    log.warn({ id: data.custom_id, error: errorMessage(error) }, "cannot respond to interaction");
   }
-  for (const chunk of rest) await interaction.followUp(message(chunk));
+}
+
+/** Answers an autocomplete request; failures answer with no suggestions. Never throws. */
+export async function handleAutocomplete(
+  env: InteractionEnv,
+  interaction: AutocompleteInteractionLike,
+  kind: ContextKind,
+): Promise<void> {
+  try {
+    const focused = interaction.options.getFocused(true);
+    const { path, args } = commandPath(interaction.commandName, interaction.options.data);
+    const argRecord: Record<string, ArgValue> = {};
+    for (const [name, value] of args) {
+      if (name !== focused.name) argRecord[name] = value;
+    }
+    const choices = await env.registry.autocomplete(
+      { path, args: argRecord, ...invokerData(interaction, kind) },
+      focused.name,
+      String(focused.value),
+    );
+    await interaction.respond(choices);
+  } catch (error) {
+    log.debug(
+      { command: interaction.commandName, error: errorMessage(error) },
+      "autocomplete failed",
+    );
+    try {
+      if (!interaction.responded) await interaction.respond([]);
+    } catch {
+      // the interaction expired
+    }
+  }
 }

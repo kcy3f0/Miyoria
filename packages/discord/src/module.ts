@@ -11,7 +11,9 @@
 // 3. Invite the bot with the `bot` and `applications.commands` scopes and the permissions View
 //    Channels, Send Messages, Send Messages in Threads, Read Message History and Add Reactions.
 // 4. For instant command updates during development, list your server ids in `command_guilds`;
-//    otherwise commands are registered globally.
+//    otherwise commands are registered globally. The first sync of every run clears the scope
+//    not in use, so switching modes leaves no duplicates; `miyoria discord commands reset`
+//    clears everything by hand.
 
 import { CommandRegistryKey, CommandsModule } from "@miyoria/commands";
 import {
@@ -97,6 +99,7 @@ export class DiscordBotModule implements Module {
     this.#running = null;
     if (shared) {
       shared.ready = false;
+      shared.sessions.closeAll();
       shared.sinks?.unregister(PLATFORM);
     }
   }

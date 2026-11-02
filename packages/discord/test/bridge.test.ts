@@ -35,7 +35,12 @@ function fakeClient() {
   const client = Object.assign(new EventEmitter(), {
     user: { id: "100", username: "miyoria" },
     application: { id: "100" },
-    guilds: { cache: { size: 2 } },
+    guilds: {
+      cache: new Map([
+        ["77", {}],
+        ["88", {}],
+      ]),
+    },
     channels: {
       cache: new Map<string, { type: ChannelType }>(),
       fetched: [] as string[],
@@ -137,14 +142,23 @@ describe("GatewayBridge", () => {
     expect(r.sinks.get("discord")?.platform).toBe("discord");
     expect(r.shared.ready).toBe(true);
 
-    await waitUntil(() => r.fake.puts.length === 1);
-    expect(r.fake.puts[0]?.route).toBe("/applications/100/guilds/77/commands");
-    expect(r.fake.puts[0]?.body).toEqual([{ name: "ping", description: "Ping", options: [] }]);
+    // The command guild gets the set; the global scope and the other guild are cleared once.
+    await waitUntil(() => r.fake.puts.length === 3);
+    expect(r.fake.puts.map((p) => p.route)).toEqual([
+      "/applications/100/guilds/77/commands",
+      "/applications/100/commands",
+      "/applications/100/guilds/88/commands",
+    ]);
+    expect(r.fake.puts[0]?.body).toMatchObject([
+      { name: "ping", description: "Ping", options: [] },
+    ]);
+    expect(r.fake.puts[1]?.body).toEqual([]);
+    expect(r.fake.puts[2]?.body).toEqual([]);
 
     // A second ready (reconnect) does not start a second sync task.
     r.fake.client.emit(Events.ClientReady, r.fake.client);
     await waitUntil(() => r.shared.ready);
-    expect(r.fake.puts).toHaveLength(1);
+    expect(r.fake.puts).toHaveLength(3);
   });
 
   test("messages_become_platform_events", async () => {
@@ -305,9 +319,41 @@ describe("GatewayBridge", () => {
       },
     });
     await waitUntil(() => replies.length === 1);
-    expect(replies[0]).toMatchObject({ content: "pong 42" });
+    expect(JSON.stringify(replies[0])).toContain('"content":"pong 42"');
+    // Buttons are routed to the registry too; ids from others are left alone.
+    const updates: unknown[] = [];
+    const no = () => false;
+    r.fake.client.emit(Events.InteractionCreate, {
+      isChatInputCommand: no,
+      isAutocomplete: no,
+      isButton: () => true,
+      isStringSelectMenu: no,
+      isModalSubmit: no,
+      customId: "someone-else:1",
+      user: { id: "42", username: "alice_w", globalName: null },
+      guildId: "300",
+      channelId: "200",
+      channel: { type: ChannelType.GuildText },
+      member: null,
+      message: { id: "m" },
+      update: async (o: unknown) => {
+        updates.push(o);
+      },
+      deferUpdate: async () => undefined,
+      reply: async (o: unknown) => {
+        updates.push(o);
+      },
+    });
     // Other interaction kinds are ignored.
-    r.fake.client.emit(Events.InteractionCreate, { isChatInputCommand: () => false });
+    r.fake.client.emit(Events.InteractionCreate, {
+      isChatInputCommand: no,
+      isAutocomplete: no,
+      isButton: no,
+      isStringSelectMenu: no,
+      isModalSubmit: no,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(updates).toEqual([]);
   });
 
   test("listener_failures_do_not_escape", async () => {

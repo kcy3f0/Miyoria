@@ -1,6 +1,12 @@
 import { CommandRegistry, CommandReply, commandSpec } from "@miyoria/commands";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { runSyncLoop, SYNC_DEBOUNCE_MS, type SyncRest, syncCommands } from "../src/sync.js";
+import {
+  resetCommands,
+  runSyncLoop,
+  SYNC_DEBOUNCE_MS,
+  type SyncRest,
+  syncCommands,
+} from "../src/sync.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -28,9 +34,69 @@ describe("syncCommands", () => {
     expect(rest.puts).toEqual([
       {
         route: "/applications/app1/commands",
-        body: [{ name: "ping", description: "Ping", options: [] }],
+        body: [
+          {
+            name: "ping",
+            description: "Ping",
+            options: [],
+            default_member_permissions: null,
+            contexts: [0, 1],
+            integration_types: [0],
+          },
+        ],
       },
     ]);
+  });
+
+  test("guild_mode_clears_the_global_set_and_other_guilds_once", async () => {
+    const registry = new CommandRegistry();
+    registry.register(commandSpec("help", "Help"), handler);
+    const rest = new FakeRest();
+    await syncCommands(rest, "app1", registry, ["g1"], { cleanup: { guilds: ["g1", "g9"] } });
+    expect(rest.puts).toEqual([
+      { route: "/applications/app1/guilds/g1/commands", body: expect.any(Array) },
+      { route: "/applications/app1/commands", body: [] },
+      { route: "/applications/app1/guilds/g9/commands", body: [] },
+    ]);
+    // Later syncs only touch the command guilds.
+    rest.puts = [];
+    await syncCommands(rest, "app1", registry, ["g1"], { cleanup: null });
+    expect(rest.puts.map((p) => p.route)).toEqual(["/applications/app1/guilds/g1/commands"]);
+  });
+
+  test("global_mode_clears_every_guild_set", async () => {
+    const registry = new CommandRegistry();
+    registry.register(commandSpec("help", "Help"), handler);
+    const rest = new FakeRest();
+    rest.failFor = "/guilds/g2/";
+    await syncCommands(rest, "app1", registry, [], { cleanup: { guilds: ["g1", "g2", "g3"] } });
+    expect(rest.puts.map((p) => [p.route, Array.isArray(p.body) && p.body.length])).toEqual([
+      ["/applications/app1/commands", 1],
+      ["/applications/app1/guilds/g1/commands", 0],
+      ["/applications/app1/guilds/g2/commands", 0],
+      ["/applications/app1/guilds/g3/commands", 0],
+    ]);
+  });
+
+  test("invalid_commands_are_left_out_instead_of_failing_the_whole_put", async () => {
+    const registry = new CommandRegistry();
+    registry.register(commandSpec("help", "Help"), handler);
+    registry.register(commandSpec("bad sub", "x"), handler);
+    // A group description Discord rejects (empty).
+    registry.setGroupDescription("bad", "");
+    const rest = new FakeRest();
+    await syncCommands(rest, "app1", registry, []);
+    const body = rest.puts[0]?.body as { name: string }[];
+    expect(body.map((c) => c.name)).toEqual(["help"]);
+  });
+
+  test("reset_clears_the_global_set_and_every_guild", async () => {
+    const rest = new FakeRest();
+    rest.failFor = "/guilds/g2/";
+    const report = await resetCommands(rest, "app1", ["g1", "g2"]);
+    expect(rest.puts.every((p) => Array.isArray(p.body) && p.body.length === 0)).toBe(true);
+    expect(report.cleared).toEqual(["global", "g1"]);
+    expect(report.failed).toEqual([{ scope: "g2", error: "Missing Access" }]);
   });
 
   test("registers_in_each_command_guild_and_survives_failures", async () => {
