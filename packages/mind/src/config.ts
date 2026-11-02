@@ -52,6 +52,21 @@ export const MindConfigSchema = z.object({
   quiet_end_hour: z.number().int().min(0).max(23).default(7),
   /** The voice channel she is in counts as gone quiet after a conversation after this long. */
   voice_quiet_secs: count().default(40),
+  /**
+   * At least this long between two conversations she starts herself in one voice channel / one
+   * text channel or DM. Each one nobody responded to (nobody addressed her there within that
+   * time) doubles it, up to `self_start_max_backoff` times; a real exchange resets it.
+   */
+  self_start_gap_voice_secs: count().default(300),
+  self_start_gap_text_secs: count().default(600),
+  self_start_max_backoff: z.number().int().min(1).default(8),
+  /** Topics she raised that nobody picked up are not raised again for this long. */
+  stale_topic_mins: count().default(45),
+  /**
+   * An action that failed (e.g. `game.start` while the game is not running) is not tried again
+   * until what it depends on changes, or at most this long.
+   */
+  blocked_retry_mins: count().default(30),
   /** Prompt contributors asked for what she remembers about the people and place involved. */
   contributors: z.array(z.string()).default(["memory"]),
 });

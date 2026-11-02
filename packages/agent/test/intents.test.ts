@@ -14,6 +14,7 @@ import {
   type IntentSink,
   IntentSinkKey,
   type JsonValue,
+  MindKey,
   newId,
   type PlatformSink,
   PlatformSinks,
@@ -209,6 +210,36 @@ describe("intents", () => {
     expect(data?.content).toContain("欸,你們在聊什麼");
     const trace = r.h.traces().find((t) => t.turn === outcome.turn);
     expect(trace?.reasons).toContain("intent:chat.start");
+  });
+
+  it("are told what she raised there that nobody picked up, as her own state", async () => {
+    const chat = new MockProvider("chat").reply("換個話題好了。");
+    const r = await rig("ambient", noCheck(), chat);
+    const c = channel("c");
+    const asked: (ContextKey | null)[] = [];
+    r.h.sup.services.provide("mind", MindKey, {
+      accepting: true,
+      suggest: () => false,
+      thoughts: () => [],
+      stats: () => ({}) as never,
+      unanswered: (context) => {
+        asked.push(context);
+        return [
+          { text: "那個 bypass 別找了啦", context: c, at: toTimestamp(0), status: "ignored" },
+        ];
+      },
+    });
+    await r.intents.submit(intent("chat.start", c));
+    await wait(100);
+    expect(asked).toEqual([c]);
+    const system = chat
+      .requests()[0]
+      ?.messages.filter((m) => m.role === "system")
+      .map((m) => m.content)
+      .join("\n");
+    expect(system).toContain(
+      "你最近在這裡自己提過、沒人接的話題:「那個 bypass 別找了啦」。一陣子內不要再提",
+    );
   });
 
   it("wait for a turn in flight and drop when expired", async () => {

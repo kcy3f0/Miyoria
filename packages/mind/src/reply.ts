@@ -66,6 +66,8 @@ export interface IntentDraft {
   why: string;
   opening: string | null;
   expiresInS: number;
+  /** The agenda item (`g1`) it is for, if she said. */
+  agenda: string | null;
 }
 
 /** A change of her documents (refs still unresolved; the knowledge base re-validates it). */
@@ -168,6 +170,7 @@ const Intent = z.object({
   why: optText(200),
   opening: optText(200),
   expires_in_s: optNum,
+  agenda: ref,
 });
 
 const Doc = z.object({
@@ -258,6 +261,7 @@ export function parseMindReply(raw: string, maxIntents: number): MindReply {
       MIN_INTENT_SECS,
       MAX_INTENT_SECS,
     ),
+    agenda: i.agenda,
   }));
 
   const documents = items(obj.documents, Doc, MAX_DOCUMENTS).map((d) => ({

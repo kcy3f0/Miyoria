@@ -1,7 +1,13 @@
 // Signals from other modules that shape her behaviour: how she feels about people
 // (`SocialSignals`), her mood (`MoodSignals`) and the LLM budget (`llm.budget` events).
 
-import type { Attitude, HerStatus, Mood } from "@miyoria/types";
+import {
+  type Attitude,
+  type HerStatus,
+  type Mood,
+  neutralize,
+  type RaisedTopic,
+} from "@miyoria/types";
 import { ParseError } from "./config.js";
 
 /**
@@ -94,6 +100,25 @@ export function herStatusHint(her: HerStatus): string {
         : "沒有在直播";
   const game = her.game === null ? "沒有在玩遊戲" : `正在玩 ${her.game}`;
   return `你現在${voice}、${live}、${game}。`;
+}
+
+/** Topics listed at most. */
+const MAX_UNANSWERED = 3;
+
+/**
+ * What she raised here on her own recently and nobody picked up (her own lines, short), with
+ * the rule not to bring it up again; empty when there is nothing.
+ */
+export function unansweredHint(topics: readonly RaisedTopic[]): string {
+  const lines = topics
+    .slice(0, MAX_UNANSWERED)
+    .map((t) => {
+      const chars = [...neutralize(t.text).replace(/\s+/g, " ").trim()];
+      return chars.length > 40 ? `${chars.slice(0, 40).join("")}…` : chars.join("");
+    })
+    .filter((t) => t !== "");
+  if (lines.length === 0) return "";
+  return `你最近在這裡自己提過、沒人接的話題:${lines.map((l) => `「${l}」`).join("、")}。一陣子內不要再提(換句話說也一樣);沒人接就放下,跟著大家現在聊的事,或換個話題。`;
 }
 
 export function moodHint(mood: Mood): string {

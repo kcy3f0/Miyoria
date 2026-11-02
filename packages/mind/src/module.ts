@@ -47,6 +47,8 @@ export const MIND_TOPICS = [
   "voice.utterance",
   "voice.playback",
   "llm.budget",
+  // Game adapters publish while the game runs: a failed game action may work now.
+  "game.*",
 ];
 
 /**

@@ -58,6 +58,7 @@ describe("her reply", () => {
         why: "想找 Owen",
         opening: "假裝路過",
         expiresInS: 120,
+        agenda: null,
       },
     ]);
   });

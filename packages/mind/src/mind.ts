@@ -32,6 +32,7 @@ import {
   type PatchOp,
   Principals,
   type ProfileId,
+  type RaisedTopic,
   SALIENT_TOPIC,
   type SalientEvent,
   type SelfState,
@@ -50,6 +51,17 @@ import type { Journal } from "./journal.js";
 import { type BudgetState, CallLog, heartbeatMs, inQuietHours } from "./pace.js";
 import { type MindInput, mindMessages, type PersonRef, type PlaceRef } from "./prompt.js";
 import { type DocDraft, type MindReply, MindReplyError, parseMindReply } from "./reply.js";
+import {
+  type Block,
+  blockLifted,
+  conditionOf,
+  kindOf,
+  type PlaceKind,
+  placeKey,
+  related,
+  SelfStarts,
+  type Situation,
+} from "./selfstart.js";
 import { capabilityInfo, gather, NOT_FOR_HER } from "./snapshot.js";
 
 const MINUTE_MS = 60_000;
@@ -67,6 +79,10 @@ const MAX_PENDING = 12;
 const RECENT_THOUGHTS = 5;
 /** Events of intent turns remembered until the intent's outcome names the turn. */
 const MAX_TURN_EVENTS = 200;
+/** Self-started turns remembered (their decisions arrive before they complete). */
+const MAX_SELF_TURNS = 200;
+/** Game adapters publish `game.<id>.<event>`; the director's own topics are not the game. */
+const GAME_EVENT = /^game\.([a-z0-9_-]+)\.[^.]/;
 /** Salient events below this score do not wake her while the budget is degraded. */
 const DEGRADED_MIN_SCORE = 0.6;
 const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
@@ -87,9 +103,19 @@ export interface MindDeps {
 interface VoiceRoom {
   context: ContextKey;
   people: number;
+  /** When the people there said something (her own lines are not conversation). */
   lines: number[];
+  /** Their last line. */
   last: number | null;
+  /** Her own last line there. */
+  herLast: number | null;
   lullAt: number | null;
+}
+
+/** A turn she started herself: what it was about, and whom (for a DM). */
+interface SelfTurn {
+  about: string;
+  dm: AccountRef | null;
 }
 
 type TurnEvent =
@@ -157,10 +183,24 @@ export class MindLoop implements Mind {
   /** Turns of her intents (and events seen for turns not yet known to be hers). */
   readonly #turnEvents = new Map<TurnId, TurnEvent[]>();
   readonly #ownTurns = new Set<TurnId>();
+  /** What she started herself, the backoff and her raised topics. */
+  readonly #starts: SelfStarts;
+  /** Turns she started herself (intents, initiative), by turn id. */
+  readonly #selfTurns = new Map<TurnId, SelfTurn | null>();
+  /** What her intent turns were about (known once the intent was submitted). */
+  readonly #intentTurns = new Map<TurnId, SelfTurn>();
+  /** A DM channel's place key (`dm:<account>`), learned from her DM turns. */
+  readonly #dmPlaces = new Map<string, string>();
+  /** Capabilities on hold after they failed. */
+  readonly #blocks = new Map<string, Block>();
+  /** The agenda item each pending intent is for (intent id → agenda id). */
+  readonly #intentAgenda = new Map<string, string>();
+  #gameSeenAt: number | null = null;
 
   constructor(deps: MindDeps) {
     this.#d = deps;
     this.#calls = new CallLog(deps.config);
+    this.#starts = new SelfStarts(deps.config);
   }
 
   // ---- Mind ---------------------------------------------------------------------------------
@@ -189,6 +229,11 @@ export class MindLoop implements Mind {
 
   digests(limit = 20): ThoughtDigest[] {
     return this.#d.journal.digests(limit);
+  }
+
+  unanswered(context: ContextKey | null): RaisedTopic[] {
+    const key = context === null ? null : this.#placeOf(context);
+    return this.#starts.unanswered(key, this.#now());
   }
 
   stats(): MindStats {
@@ -262,6 +307,7 @@ export class MindLoop implements Mind {
           people: 0,
           lines: [],
           last: null,
+          herLast: null,
           lullAt: null,
         };
         room.people = event.data.participants.filter(
@@ -279,12 +325,20 @@ export class MindLoop implements Mind {
         if (event.data.speaker.is_bot || this.#selfIds.has(event.data.speaker.account.id)) return;
         this.#voiceLine(event.data.context, now);
         return;
-      case "voice_playback":
-        if (event.data.state === "started") this.#voiceLine(event.data.context, now);
+      case "voice_playback": {
+        // Her own speech: not conversation, but the channel is not quiet while she talks.
+        const room = this.#rooms.get(contextKeyString(event.data.context));
+        if (room && event.data.state === "started") room.herLast = now;
         return;
+      }
       case "agent_turn_completed": {
         const { turn, context, text } = event.data;
-        if (this.#turnEvent(turn, { type: "completed", text })) return;
+        const own = this.#turnEvent(turn, { type: "completed", text });
+        if (own || this.#selfTurns.has(turn)) {
+          // A turn she started herself ending is not a reason to think again (no loop).
+          if (text.trim() !== "") this.#startedTalking(turn, context, text, now);
+          return;
+        }
         const last = this.#calls.last();
         const quietEnough = last === null || now - last >= AFTER_TURN_GAP_MS;
         if (text.trim() !== "" && quietEnough && !this.#pending.some((p) => p.kind === "turn")) {
@@ -297,6 +351,17 @@ export class MindLoop implements Mind {
         const skipped = d.reasons.find((r) => r.startsWith("skipped: "));
         if (!d.respond && skipped && d.reasons.some((r) => r.startsWith("intent:"))) {
           this.#turnEvent(d.turn, { type: "skipped", why: skipped.slice("skipped: ".length) });
+        }
+        // Her own turns (intents; initiative except the game commentary) vs. someone
+        // addressing her there: a real exchange, which answers what she raised.
+        const selfStarted = d.reasons.some(
+          (r) =>
+            r.startsWith("intent:") || (r.startsWith("initiative:") && r !== "initiative:game"),
+        );
+        if (selfStarted) {
+          if (d.respond) this.#selfTurn(d.turn);
+        } else if (d.reasons.some((r) => r.startsWith("direct: "))) {
+          this.#starts.engaged(this.#placeOf(d.context), now);
         }
         return;
       }
@@ -328,6 +393,14 @@ export class MindLoop implements Mind {
           });
         } else if (topic === "llm.budget") {
           this.#wake?.();
+        } else {
+          const game = GAME_EVENT.exec(topic)?.[1];
+          if (game !== undefined && game !== "director") {
+            // A game adapter is publishing: the game runs, what failed for its absence may work.
+            const first = this.#gameSeenAt === null || now - this.#gameSeenAt > 5_000;
+            this.#gameSeenAt = now;
+            if (first) this.#liftBlocks(now);
+          }
         }
         return;
       }
@@ -341,6 +414,104 @@ export class MindLoop implements Mind {
     if (!room) return;
     room.lines = [...room.lines.filter((t) => now - t < CONVERSATION_MS), now];
     room.last = now;
+  }
+
+  /** The place key of `context` (a DM channel maps to its partner once known). */
+  #placeOf(context: ContextKey): string {
+    const key = placeKey(context);
+    return this.#dmPlaces.get(key) ?? key;
+  }
+
+  #selfTurn(turn: TurnId): void {
+    if (!this.#selfTurns.has(turn)) this.#selfTurns.set(turn, null);
+    if (this.#selfTurns.size > MAX_SELF_TURNS) {
+      const oldest = this.#selfTurns.keys().next().value;
+      if (oldest !== undefined) this.#selfTurns.delete(oldest);
+    }
+  }
+
+  /** She said `text` in a turn she started herself: the backoff and her raised topics. */
+  #startedTalking(turn: TurnId, context: ContextKey, text: string, now: number): void {
+    const info = this.#intentTurns.get(turn) ?? this.#selfTurns.get(turn) ?? null;
+    let key = placeKey(context);
+    if (info?.dm) {
+      const dm = `dm:${info.dm.platform}:${info.dm.id}`;
+      this.#dmPlaces.set(key, dm);
+      key = dm;
+    }
+    this.#starts.started(key, kindOf(context), context, now, text, info?.about ?? "");
+  }
+
+  /** What her actions depend on right now (for holding and lifting blocks). */
+  #situation(): Situation {
+    const her = this.#d.services.get(WorldStateKey)?.snapshot().her ?? null;
+    return {
+      game: her?.game ?? null,
+      gameSeenAt: this.#gameSeenAt,
+      voice: her?.voice ? contextKeyString(her.voice) : null,
+      live: `${her?.golive ?? ""}|${her?.streaming ?? false}`,
+      scene: her?.scene ?? null,
+    };
+  }
+
+  /** Puts `intent`'s capability (and the agenda items it served) on hold after it failed. */
+  #block(thoughtId: string, intent: Intent, reason: string): void {
+    const now = this.#now();
+    const cap = intent.capability;
+    const why = [...reason.replace(/\s+/g, " ").trim()].slice(0, 160).join("");
+    this.#blocks.set(cap, {
+      capability: cap,
+      reason: why,
+      at: now,
+      condition: conditionOf(cap, this.#situation()),
+    });
+    const changes = [`暫停 ${cap}(${why})`];
+    const self = this.#d.services.get(SelfStateKey);
+    if (self) {
+      const linked = this.#intentAgenda.get(intent.id) ?? null;
+      const about = `${intent.opening ?? ""} ${intent.why}`;
+      for (const item of self.agenda()) {
+        if (item.blocked) continue;
+        if (item.id !== linked && !related(item.text, about)) continue;
+        if (self.blockAgenda(item.id, { capability: cap, reason: why })) {
+          changes.push(`議程「${item.text}」先擱著`);
+        }
+      }
+    }
+    this.#d.journal.update(thoughtId, (t) => {
+      t.changes.push(...changes);
+    });
+  }
+
+  /** Lifts holds whose situation changed (or that waited long enough), agenda items included. */
+  #liftBlocks(now: number): void {
+    const s = this.#situation();
+    const retry = this.#d.config.blocked_retry_mins * MINUTE_MS;
+    const lifted = new Set<string>();
+    for (const [cap, b] of this.#blocks) {
+      if (!blockLifted(b, s, now, retry)) continue;
+      this.#blocks.delete(cap);
+      lifted.add(cap);
+    }
+    const self = this.#d.services.get(SelfStateKey);
+    if (!self) return;
+    for (const item of self.agenda()) {
+      const held = item.blocked;
+      if (!held || this.#blocks.has(held.capability)) continue;
+      const b: Block = {
+        capability: held.capability,
+        reason: held.reason,
+        at: Date.parse(held.at) || now,
+        // Held before a restart: what it depended on then is unknown, so only time or a game
+        // coming up lifts it.
+        condition: conditionOf(held.capability, s),
+      };
+      if (lifted.has(held.capability) || blockLifted(b, s, now, retry)) {
+        self.unblockAgenda(item.id);
+      } else {
+        this.#blocks.set(held.capability, b);
+      }
+    }
   }
 
   /**
@@ -368,21 +539,36 @@ export class MindLoop implements Mind {
     }
   }
 
-  /** Voice channels she is in that went quiet after a conversation. */
+  /**
+   * Voice channels she is in that went quiet after a conversation: nobody (her included) said
+   * anything for `voice_quiet_secs` after at least a few lines of the others. Never while the
+   * world still sees people talking there, nor while she may not start talking there anyway.
+   */
   #checkVoice(now: number): void {
+    const quietMs = this.#d.config.voice_quiet_secs * 1000;
+    let channels: { channel: string; guild: string; secs: number | null }[] | null = null;
     for (const room of this.#rooms.values()) {
       if (room.people === 0 || room.last === null) continue;
-      if (now - room.last < this.#d.config.voice_quiet_secs * 1000) continue;
+      if (now - room.last < quietMs) continue;
+      if (room.herLast !== null && now - room.herLast < quietMs) continue;
       const conversation = room.lines.filter(
         (t) => room.last !== null && room.last - t < CONVERSATION_MS,
       );
       if (conversation.length < CONVERSATION_LINES) continue;
       if (room.lullAt !== null && now - room.lullAt < VOICE_QUIET_GAP_MS) continue;
+      channels ??= (this.#d.services.get(WorldStateKey)?.snapshot().voice_channels ?? []).map(
+        (v) => ({ channel: v.channel, guild: v.guild, secs: v.activity?.secs_since_last ?? null }),
+      );
+      const seen = channels.find(
+        (v) => v.channel === room.context.channel && v.guild === room.context.scope,
+      );
+      if (seen?.secs != null && seen.secs * 1000 < quietMs) continue;
+      if (this.#starts.wait(this.#placeOf(room.context), "voice", now).ms > 0) continue;
       room.lullAt = now;
       room.lines = [];
       this.trigger({
         kind: "voice_quiet",
-        detail: "大家安靜下來了,可以找個話題(記得的事、議程、大家在做的事)",
+        detail: `大家 ${Math.round((now - room.last) / 1000)} 秒沒說話了(之前 5 分鐘 ${conversation.length} 句)`,
         context: room.context,
         at: toTimestamp(now),
       });
@@ -442,7 +628,9 @@ export class MindLoop implements Mind {
     const world = this.#d.services.get(WorldStateKey)?.snapshot() ?? null;
     const ms = heartbeatMs(
       {
-        lively: world?.channels.some((c) => c.lively) ?? false,
+        lively:
+          (world?.channels.some((c) => c.lively) ?? false) ||
+          (world?.voice_channels.some((v) => v.activity?.lively === true) ?? false),
         inVoice: [...this.#rooms.values()].some((r) => r.people > 0),
         agendaDue: (self?.agenda() ?? []).some((a) => a.due === null || Date.parse(a.due) <= now),
         night: inQuietHours(now, this.#d.config),
@@ -494,6 +682,7 @@ export class MindLoop implements Mind {
         this.#fallbackWarned = true;
         d.log.warn({ purpose: cfg.purpose }, "no model chain for the mind purpose; using chat");
       }
+      this.#liftBlocks(started);
       const self = d.services.get(SelfStateKey);
       const registry = d.services.get(ActuatorRegistryKey);
       const snap = await gather({
@@ -528,6 +717,13 @@ export class MindLoop implements Mind {
         lessons: snap.lessons,
         recap: snap.recap,
         digest: d.journal.digests(1)[0]?.summary ?? null,
+        unanswered: this.#starts
+          .unanswered(snap.focus === null ? null : this.#placeOf(snap.focus), started)
+          .map((t) => t.text),
+        blocked: [...this.#blocks.values()].map((b) => ({
+          capability: b.capability,
+          reason: b.reason,
+        })),
       };
       this.#calls.record(started);
       const thought: Thought = {
@@ -597,12 +793,19 @@ export class MindLoop implements Mind {
       thought.ms = this.#now() - started;
       const onlyHeartbeat = triggers.every((t) => t.kind === "heartbeat");
       thought.changes = await this.#apply(reply, snap.people, snap.places, snap.focus, self);
+      // A thought woken only by her own turn ending must not start a conversation where she
+      // just spoke (it would feed itself: her turn, a thought, another turn).
+      const justSpoke = triggers.every((t) => t.kind === "turn")
+        ? triggers.flatMap((t) => (t.context === null ? [] : [this.#placeOf(t.context)]))
+        : [];
       const intents = this.#intents(
         reply,
         snap.people,
         snap.places,
         snap.focus,
         night && onlyHeartbeat,
+        justSpoke,
+        snap.agenda,
       );
       thought.intents = intents.map(([, record]) => record);
       await d.journal.add(thought);
@@ -793,6 +996,8 @@ export class MindLoop implements Mind {
     places: PlaceRef[],
     focus: ContextKey | null,
     quiet: boolean,
+    justSpoke: readonly string[] = [],
+    agenda: readonly { ref: string; item: { id: string } }[] = [],
   ): [Intent | null, ThoughtIntent][] {
     const registry = this.#d.services.get(ActuatorRegistryKey);
     const now = this.#now();
@@ -820,6 +1025,23 @@ export class MindLoop implements Mind {
       }
       if (draft.action === CHAT_START && context === null) problem ??= "no place to talk";
       if (context?.kind === "dm") context = null;
+      if (draft.action === CHAT_START || draft.action === CHAT_DM) {
+        const place =
+          draft.action === CHAT_DM
+            ? who
+              ? `dm:${who.account.platform}:${who.account.id}`
+              : null
+            : context === null
+              ? null
+              : this.#placeOf(context);
+        const kind: PlaceKind = draft.action === CHAT_DM ? "dm" : kindOf(context);
+        if (place !== null && problem === null) {
+          problem = this.#talkProblem(place, kind, draft.opening, draft.why, justSpoke, now);
+        }
+      } else {
+        const held = this.#blocks.get(draft.action);
+        if (held) problem ??= `on hold until things change: ${held.reason}`;
+      }
       const about: AccountRef | null = who?.account ?? null;
       const intent: Intent = {
         id: newId(),
@@ -847,8 +1069,36 @@ export class MindLoop implements Mind {
         decisions: [],
         said: null,
       };
+      const item = draft.agenda === null ? undefined : agenda.find((a) => a.ref === draft.agenda);
+      if (item && problem === null) this.#intentAgenda.set(intent.id, item.item.id);
       return [problem === null ? intent : null, record];
     });
+  }
+
+  /**
+   * Why she should not start talking at `place` now, or `null`: she just spoke there, the
+   * backoff after ignored self-starts, or it is a topic she raised there that nobody picked up.
+   */
+  #talkProblem(
+    place: string,
+    kind: PlaceKind,
+    opening: string | null,
+    why: string,
+    justSpoke: readonly string[],
+    now: number,
+  ): string | null {
+    if (justSpoke.includes(place)) return "she just spoke there";
+    const wait = this.#starts.wait(place, kind, now);
+    if (wait.ms > 0) {
+      const mins = Math.max(1, Math.ceil(wait.ms / MINUTE_MS));
+      const ignored = wait.misses > 0 ? `, ${wait.misses} ignored in a row` : "";
+      return `backoff: she started talking there recently${ignored}; next in ${mins} min`;
+    }
+    const again = this.#starts.repeats(place, `${opening ?? ""} ${why}`, now);
+    if (again !== null) {
+      return `already raised there and nobody picked it up: 「${[...again].slice(0, 40).join("")}」`;
+    }
+    return null;
   }
 
   /** Hands her intents to the agent one by one and follows their outcome. */
@@ -858,9 +1108,25 @@ export class MindLoop implements Mind {
     signal: AbortSignal | undefined,
   ): Promise<void> {
     for (const [intent] of intents) {
-      if (intent === null || signal?.aborted) continue;
+      if (intent === null || signal?.aborted) {
+        if (intent !== null) this.#intentAgenda.delete(intent.id);
+        continue;
+      }
       const outcome = await this.#submit(intent, signal);
-      if (outcome.turn !== null) this.#own(outcome.turn);
+      if (outcome.turn !== null) {
+        this.#own(outcome.turn);
+        this.#intentTurns.set(outcome.turn, {
+          about: `${intent.opening ?? ""} ${intent.why}`.trim(),
+          dm: intent.capability === CHAT_DM ? intent.about : null,
+        });
+        if (this.#intentTurns.size > MAX_TURN_EVENTS) {
+          const oldest = this.#intentTurns.keys().next().value;
+          if (oldest !== undefined) this.#intentTurns.delete(oldest);
+        }
+      }
+      const talkOnly = intent.capability === CHAT_START || intent.capability === CHAT_DM;
+      if (outcome.status === "failed" && !talkOnly) this.#block(thoughtId, intent, outcome.detail);
+      this.#intentAgenda.delete(intent.id);
       this.#d.journal.update(thoughtId, (t) => {
         const record = t.intents.find((i) => i.id === intent.id);
         if (!record) return;

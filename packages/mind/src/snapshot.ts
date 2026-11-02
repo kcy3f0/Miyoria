@@ -28,6 +28,7 @@ import {
   sameAccount,
   type ThoughtTrigger,
   toTimestamp,
+  type VoiceChannelState,
   type WorldSnapshot,
   WorldStateKey,
 } from "@miyoria/types";
@@ -112,6 +113,22 @@ async function label(
   return out;
 }
 
+/**
+ * How much is being said in a voice channel (`;正在聊天:最近 5 分鐘 12 句,最後一句 8 秒前`), so
+ * a busy channel never reads as quiet; empty when unknown.
+ */
+export function voiceTalk(v: VoiceChannelState): string {
+  const a = v.activity;
+  if (!a) return "";
+  if (a.recent_utterances === 0 || a.secs_since_last === null) return ";最近沒人說話";
+  const last =
+    a.secs_since_last < 60
+      ? `${a.secs_since_last} 秒前`
+      : `${Math.round(a.secs_since_last / 60)} 分鐘前`;
+  const who = a.recent_speakers.length > 0 ? `(${a.recent_speakers.slice(0, 4).join("、")})` : "";
+  return `;${a.lively ? "正在聊天:" : ""}最近 ${a.recent_utterances} 句${who},最後一句 ${last}`;
+}
+
 export async function gather(input: GatherInput): Promise<Gathered> {
   const { services } = input;
   const worldState = services.get(WorldStateKey);
@@ -172,7 +189,7 @@ export async function gather(input: GatherInput): Promise<Gathered> {
     await addPlace(
       context,
       `語音頻道 ${v.name ?? v.channel}`,
-      `裡面有 ${people.map((m) => m.display_name).join("、")}`,
+      `裡面有 ${people.map((m) => m.display_name).join("、")}${voiceTalk(v)}`,
     );
   }
   // Fill in the notes of places added first (focus, her voice channel).
@@ -187,7 +204,7 @@ export async function gather(input: GatherInput): Promise<Gathered> {
     );
     if (v && p.context.kind === "voice") {
       const people = v.members.filter((m) => !m.is_self).map((m) => m.display_name);
-      p.note = people.length > 0 ? `裡面有 ${people.join("、")}` : "沒有人";
+      p.note = people.length > 0 ? `裡面有 ${people.join("、")}${voiceTalk(v)}` : "沒有人";
     }
   }
 

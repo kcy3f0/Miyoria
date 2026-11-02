@@ -156,6 +156,7 @@ export {
   moodHint,
   parseBudgetState,
   tone,
+  unansweredHint,
 } from "./signals.js";
 export {
   type FencedPiece,

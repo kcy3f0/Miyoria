@@ -36,6 +36,7 @@ import {
   type PersonPresence,
   SocialSignalsKey,
   toTimestamp,
+  type VoiceActivity,
   type WorldSnapshot,
   type WorldState,
   WorldStateKey,
@@ -76,6 +77,9 @@ class Stub implements Module {
 export class FakeWorld implements WorldState {
   voiceMembers: { account: AccountRef; name: string }[] = [];
   herVoice: ContextKey | null = null;
+  /** Conversation in the voice channel (from utterances). */
+  voiceActivity: VoiceActivity | null = null;
+  game: string | null = null;
   lively = false;
   summaryText = "Owen 在線,在玩 Minecraft。";
 
@@ -89,7 +93,7 @@ export class FakeWorld implements WorldState {
         golive: null,
         streaming: false,
         scene: null,
-        game: null,
+        game: this.game,
       },
       people: [],
       voice_channels:
@@ -101,6 +105,7 @@ export class FakeWorld implements WorldState {
                 guild: GUILD,
                 channel: VOICE.channel,
                 name: "聊天室",
+                activity: this.voiceActivity,
                 members: this.voiceMembers.map((m) => ({
                   account: m.account,
                   person: null,

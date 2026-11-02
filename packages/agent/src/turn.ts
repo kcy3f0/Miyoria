@@ -42,6 +42,7 @@ import {
   type JsonValue,
   type LaneKey,
   LessonsKey,
+  MindKey,
   newAction,
   type Participant,
   PlatformSinksKey,
@@ -91,6 +92,7 @@ import {
   EXHAUSTED_LINE,
   herStatusHint,
   moodHint,
+  unansweredHint,
 } from "./signals.js";
 import {
   type FencedPiece,
@@ -654,6 +656,11 @@ class Turn {
     if (mood !== null) extras.notes.push(moodHint(mood));
     const her = this.agent.ctx.services.get(WorldStateKey)?.snapshot().her ?? null;
     if (her !== null) extras.notes.push(herStatusHint(her));
+    // Her own state: what she raised here herself that nobody picked up (not to repeat it).
+    const unanswered = unansweredHint(
+      this.agent.ctx.services.get(MindKey)?.unanswered?.(this.key) ?? [],
+    );
+    if (unanswered !== "") extras.notes.push(unanswered);
     const focus = this.#focus();
     const social = this.social;
     if (social) {
