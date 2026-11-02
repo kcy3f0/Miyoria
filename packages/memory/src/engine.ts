@@ -563,7 +563,7 @@ export class MemoryEngine implements FollowupSource {
         ),
       ],
       temperature: 0.2,
-      max_tokens: 2000,
+      max_tokens: 4000,
       json_mode: true,
       session: sessionId(this.profile, `memory-${contextHash(context)}`),
     };

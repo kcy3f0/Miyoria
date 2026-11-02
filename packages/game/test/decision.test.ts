@@ -194,7 +194,7 @@ describe("goalNote and config", () => {
     expect(goalNote({ type: "queue", item: 3, requester: "Amy" })).toBe("(觀眾 Amy 的請求)");
   });
 
-  it("config defaults equal the Rust ones", () => {
+  it("config defaults", () => {
     const cfg = GameConfigSchema.parse({});
     expect(cfg).toMatchObject({
       default_game: "minecraft",
@@ -208,7 +208,7 @@ describe("goalNote and config", () => {
       urgent_commentary_min_secs: 3,
       purpose: "game",
       temperature: 0.7,
-      max_tokens: 400,
+      max_tokens: 2000,
       llm_timeout_secs: 30,
       tool_timeout_secs: 20,
       persona_chars: 600,

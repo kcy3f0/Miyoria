@@ -54,7 +54,7 @@ export function appraisalRequest(
   return {
     messages: [systemMessage(system), userMessage(user)],
     temperature: 0.2,
-    max_tokens: 500,
+    max_tokens: 2000, // reasoning models spend part of this on thinking
     json_mode: true,
   };
 }
@@ -75,7 +75,7 @@ export function notesRequest(
   return {
     messages: [systemMessage(system), userMessage(user)],
     temperature: 0.5,
-    max_tokens: 200,
+    max_tokens: 1000, // reasoning models spend part of this on thinking
     json_mode: true,
   };
 }

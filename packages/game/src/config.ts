@@ -53,7 +53,7 @@ export const GameConfigSchema = z.object({
   /** LLM purpose of the decisions. */
   purpose: z.string().default("game"),
   temperature: z.number().default(0.7),
-  max_tokens: z.number().default(400),
+  max_tokens: z.number().default(2000),
   llm_timeout_secs: z.number().default(30),
   tool_timeout_secs: z.number().default(20),
   /** How much of the persona prompt goes into the decision prompt. */

@@ -47,7 +47,7 @@ describe("appraisal parsing", () => {
     );
     expect(req.json_mode).toBe(true);
     expect(req.temperature).toBe(0.2);
-    expect(req.max_tokens).toBe(500);
+    expect(req.max_tokens).toBe(2000);
     expect(req.messages[1]?.content).toBe(
       "【前情,已評估過】\nA: 舊的\n\n【新的對話】\nB: 新的 第二行\n",
     );
