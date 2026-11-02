@@ -47,6 +47,8 @@ export const INNER_TABS = [
   { tab: "feelings", label: "感情" },
   { tab: "world", label: "世界" },
   { tab: "thoughts", label: "想法" },
+  { tab: "knowledge", label: "知識" },
+  { tab: "reflection", label: "反思" },
 ] as const;
 
 export const SYSTEM_TABS = [

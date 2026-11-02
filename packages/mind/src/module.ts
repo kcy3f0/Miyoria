@@ -146,7 +146,7 @@ function short(text: string, max: number): string {
 function condenser(ctx: ModuleContext, config: MindConfig, name: string): Condense {
   return async (thoughts: Thought[]): Promise<ThoughtDigest> => {
     const router = ctx.services.get(LlmRouterKey);
-    if (!router || router.budgetState() !== "ok") return ruleDigest(thoughts);
+    if (router?.budgetState() !== "ok") return ruleDigest(thoughts);
     const lines = thoughts
       .filter((t) => t.thought.trim() !== "")
       .map((t) => {

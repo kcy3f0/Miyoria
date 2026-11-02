@@ -972,3 +972,135 @@ export interface PendingApproval {
   expires_at: Timestamp;
 }
 
+
+// ---------------------------------------------------------------------------
+// what she organized and learned (phase G)
+
+/** `GET /api/mind/digests`: older thoughts condensed. */
+export interface ThoughtDigest {
+  id: string;
+  from: Timestamp;
+  to: Timestamp;
+  count: number;
+  summary: string;
+  intents: Record<string, number>;
+  by: "summarizer" | "rule";
+}
+
+export type KnowledgeSubject =
+  | { type: "person"; person: PersonId }
+  | { type: "guild"; platform: PlatformId; guild: string }
+  | { type: "self" }
+  | { type: "topic"; name: string };
+
+export type SourceKind = "self" | "inferred" | "said" | "panel";
+
+export interface FieldSource {
+  kind: SourceKind;
+  account: AccountRef | null;
+  name: string | null;
+  origin: string | null;
+  confidence: number;
+  at: Timestamp;
+}
+
+export interface KnowledgeVersion {
+  version: number;
+  at: Timestamp;
+  by: SourceKind;
+  name: string | null;
+  why: string;
+  ops: string[];
+}
+
+/** One of her documents: a fixed envelope around content of whatever shape she chose. */
+export interface KnowledgeDoc {
+  id: string;
+  subject: KnowledgeSubject;
+  kind: string;
+  title: string;
+  content: Record<string, unknown>;
+  /** JSON pointer → source. */
+  sources: Record<string, FieldSource>;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+  version: number;
+  history: KnowledgeVersion[];
+  short_id: string;
+  subject_label: string;
+}
+
+/** `GET /api/knowledge`. */
+export interface KnowledgeView {
+  documents: KnowledgeDoc[];
+}
+
+/** `GET /api/knowledge/conversations`: her running notes on a conversation. */
+export interface ConversationNote {
+  context: ContextKey;
+  updated_at: Timestamp;
+  folded_up_to: { id: string; ts: Timestamp } | null;
+  folds: number;
+  lines: number;
+  recap: string;
+  notes: Record<string, unknown>;
+  label: string | null;
+}
+
+export interface Lesson {
+  id: string;
+  text: string;
+  person: PersonId | null;
+  scope: string | null;
+  talk: number | null;
+  created_at: Timestamp;
+  expires_at: Timestamp | null;
+  source: string;
+  display_name: string | null;
+}
+
+export interface FeedbackTally {
+  subject: string;
+  label: string;
+  reactions_pos: number;
+  reactions_neg: number;
+  replies: number;
+  started: number;
+  answered: number;
+  ignored: number;
+  positive: number;
+  negative: number;
+  denied: number;
+  examples: string[];
+}
+
+export interface ReflectionRun {
+  id: string;
+  at: Timestamp;
+  kind: "daily" | "light";
+  context: ContextKey | null;
+  summary: string;
+  insights: number;
+  superseded: number;
+  lessons: string[];
+  goals: string[];
+  documents: string[];
+  feelings: string[];
+  error: string | null;
+  tokens: number | null;
+  ms: number;
+}
+
+/** `GET /api/reflection?days=7`. */
+export interface ReflectionView {
+  stats: {
+    calls_today: number;
+    max_calls_per_day: number;
+    last_daily_at: Timestamp | null;
+    last_light_at: Timestamp | null;
+    idle_reason: string | null;
+  };
+  runs: ReflectionRun[];
+  lessons: Lesson[];
+  feedback: FeedbackTally[];
+}

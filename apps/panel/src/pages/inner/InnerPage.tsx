@@ -7,6 +7,8 @@ import { StatusBadge } from "@/components/status";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FeelingsTab } from "./FeelingsTab";
+import { KnowledgeTab } from "./KnowledgeTab";
+import { ReflectionTab } from "./ReflectionTab";
 import { StateTab } from "./StateTab";
 import { ThoughtsTab } from "./ThoughtsTab";
 import { WorldTab } from "./WorldTab";
@@ -73,6 +75,12 @@ export function InnerPage() {
         </TabsContent>
         <TabsContent value="thoughts">
           <ThoughtsTab />
+        </TabsContent>
+        <TabsContent value="knowledge">
+          <KnowledgeTab />
+        </TabsContent>
+        <TabsContent value="reflection">
+          <ReflectionTab />
         </TabsContent>
         <TabsContent value="world">
           <QueryView query={world} skeleton={<Loading />}>

@@ -1,7 +1,7 @@
 import { Check, X } from "lucide-react";
 import { type ReactNode, useId } from "react";
-import type { MindView, PendingApproval, Thought, ThoughtIntent } from "@/api/types";
-import { useApprovals, useMind, useMindMutations, useThoughts } from "@/app/queries";
+import type { MindView, PendingApproval, Thought, ThoughtDigest, ThoughtIntent } from "@/api/types";
+import { useApprovals, useDigests, useMind, useMindMutations, useThoughts } from "@/app/queries";
 import { READ_ONLY_HINT, useCanWrite } from "@/app/session";
 import { EmptyLine, QueryView, SkeletonRows } from "@/components/query-state";
 import { StatusBadge, type Tone } from "@/components/status";
@@ -265,12 +265,53 @@ function TimelineCard() {
   );
 }
 
+function DigestItem({ d }: { d: ThoughtDigest }) {
+  const intents = Object.entries(d.intents)
+    .map(([k, n]) => `${k} ×${n}`)
+    .join("、");
+  return (
+    <li className="grid gap-x-6 gap-y-1.5 px-4 py-3 sm:grid-cols-[8rem_minmax(0,1fr)]">
+      <div className="text-[13px] text-muted-foreground">
+        <When at={d.to} />
+        <div className="tabular-nums">{d.count} 個想法</div>
+      </div>
+      <div className="grid min-w-0 gap-1">
+        <p className="max-w-[70ch] leading-relaxed">{d.summary}</p>
+        {intents && <p className="font-mono text-xs text-muted-foreground">{intents}</p>}
+      </div>
+    </li>
+  );
+}
+
+/** Older thoughts condensed (only shown when there are some). */
+function DigestsCard() {
+  const digests = useDigests();
+  const list = digests.data ?? [];
+  if (list.length === 0) return null;
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader>
+        <CardTitle>
+          更早的想法(整理)
+          <span className="font-normal text-muted-foreground tabular-nums">{list.length}</span>
+        </CardTitle>
+      </CardHeader>
+      <ol className="divide-y" aria-label="想法整理">
+        {list.map((d) => (
+          <DigestItem key={d.id} d={d} />
+        ))}
+      </ol>
+    </Card>
+  );
+}
+
 export function ThoughtsTab() {
   return (
     <div className="grid gap-6">
       <AutonomyCard />
       <ApprovalsCard />
       <TimelineCard />
+      <DigestsCard />
     </div>
   );
 }

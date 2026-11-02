@@ -58,6 +58,10 @@ export const queryKeys = {
   mind: ["mind"] as const,
   thoughts: ["mind", "thoughts"] as const,
   approvals: ["mind", "approvals"] as const,
+  digests: ["mind", "digests"] as const,
+  knowledge: ["knowledge"] as const,
+  conversationNotes: ["knowledge", "conversations"] as const,
+  reflection: ["reflection"] as const,
 };
 
 /** Errors that retrying cannot fix. */
@@ -396,6 +400,30 @@ export function useThoughts(limit = 50) {
     queryFn: ({ signal }) => api.thoughts(limit, { signal }),
     refetchInterval: poll(5_000),
   });
+}
+
+export function useDigests(limit = 20) {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.digests, queryFn: ({ signal }) => api.digests(limit, { signal }), refetchInterval: poll(60_000) });
+}
+
+export function useKnowledge() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.knowledge, queryFn: ({ signal }) => api.knowledge({ signal }), refetchInterval: poll(15_000) });
+}
+
+export function useConversationNotes() {
+  const api = useApi();
+  return useQuery({
+    queryKey: queryKeys.conversationNotes,
+    queryFn: ({ signal }) => api.conversationNotes({ signal }),
+    refetchInterval: poll(15_000),
+  });
+}
+
+export function useReflection(days = 7) {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.reflection, queryFn: ({ signal }) => api.reflection(days, { signal }), refetchInterval: poll(30_000) });
 }
 
 export function useApprovals() {

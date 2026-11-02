@@ -37,6 +37,10 @@ import type {
   MindView,
   PendingApproval,
   Thought,
+  ThoughtDigest,
+  KnowledgeView,
+  ConversationNote,
+  ReflectionView,
 
   DecisionRecord,
   DecisionsQuery,
@@ -164,6 +168,10 @@ export function createApi(client: ApiClient) {
     answerApproval: (id: string, approved: boolean) =>
       client.post<PendingApproval[]>(`/api/mind/approvals/${seg(id)}/${approved ? "approve" : "deny"}`),
     autonomyPause: (paused: boolean) => client.post<MindView>(`/api/mind/${paused ? "pause" : "resume"}`),
+    digests: (limit: number, o?: Opts) => client.get<ThoughtDigest[]>(`/api/mind/digests?limit=${limit}`, o),
+    knowledge: (o?: Opts) => client.get<KnowledgeView>("/api/knowledge", o),
+    conversationNotes: (o?: Opts) => client.get<ConversationNote[]>("/api/knowledge/conversations", o),
+    reflection: (days: number, o?: Opts) => client.get<ReflectionView>(`/api/reflection?days=${days}`, o),
   };
 }
 

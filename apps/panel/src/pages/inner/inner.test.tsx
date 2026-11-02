@@ -1,7 +1,16 @@
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import type { MindView, PendingApproval, SelfView, Thought, WorldView } from "@/api/types";
+import type {
+  ConversationNote,
+  KnowledgeView,
+  MindView,
+  PendingApproval,
+  ReflectionView,
+  SelfView,
+  Thought,
+  WorldView,
+} from "@/api/types";
 import { mockFetch, renderRoute } from "@/test/render";
 
 const SELF: SelfView = {
@@ -327,5 +336,145 @@ describe("Inner", () => {
     renderRoute("/inner?tab=world");
     expect(await screen.findByRole("link", { name: "內心" })).toBeInTheDocument();
     expect(await screen.findByRole("table", { name: "在線的人" })).toBeInTheDocument();
+  });
+
+  it("shows her documents of any shape, grouped by subject, with where fields came from", async () => {
+    const source = (kind: "self" | "said", name: string | null, confidence = 0.8) => ({
+      kind,
+      account: null,
+      name,
+      origin: null,
+      confidence,
+      at: "2026-11-02T11:00:00.000Z",
+    });
+    const KNOWLEDGE: KnowledgeView = {
+      documents: [
+        {
+          id: "01JC00000000000000000ABC12",
+          subject: { type: "person", person: "p1" },
+          kind: "人物卡",
+          title: "Owen",
+          content: { 喜歡: ["拉麵", "貓"], 最近在忙: "期末考\n**週三**考數學", 怎麼相處: { 稱呼: "歐文" } },
+          sources: { "": source("self", null), "/喜歡/1": source("said", "Owen") },
+          created_at: "2026-11-01T00:00:00.000Z",
+          updated_at: "2026-11-02T11:00:00.000Z",
+          version: 3,
+          history: [{ version: 3, at: "2026-11-02T11:00:00.000Z", by: "said", name: "Owen", why: "他說的", ops: ["add /喜歡/1"] }],
+          short_id: "#abc12",
+          subject_label: "Owen",
+        },
+        {
+          id: "01JC00000000000000000DEF34",
+          subject: { type: "topic", name: "Minecraft 建築計畫" },
+          kind: "計畫",
+          title: "城堡",
+          content: { 進度: [{ 階段: "地基", 完成: true }] },
+          sources: { "": source("self", null) },
+          created_at: "2026-11-01T00:00:00.000Z",
+          updated_at: "2026-11-02T10:00:00.000Z",
+          version: 1,
+          history: [],
+          short_id: "#def34",
+          subject_label: "Minecraft 建築計畫",
+        },
+      ],
+    };
+    const NOTES: ConversationNote[] = [
+      {
+        context: { platform: "discord", scope: "g1", channel: "c1", kind: "channel" },
+        updated_at: "2026-11-02T11:50:00.000Z",
+        folded_up_to: null,
+        folds: 2,
+        lines: 32,
+        recap: "大家在聊海豚,Owen 週三要考試。",
+        notes: { 待回答: ["Amy 問她喜不喜歡海豚"] },
+        label: "Miyoria / 雜談",
+      },
+    ];
+    mockFetch((_m, url) => {
+      if (url.pathname === "/api/knowledge") return { body: KNOWLEDGE };
+      if (url.pathname === "/api/knowledge/conversations") return { body: NOTES };
+      return undefined;
+    });
+    renderRoute("/inner?tab=knowledge");
+    const owen = await screen.findByRole("region", { name: "Owen" });
+    const card = within(owen).getByRole("article", { name: "人物卡「Owen」" });
+    expect(within(card).getByText("拉麵")).toBeInTheDocument();
+    expect(within(card).getByText("(Owen 說)")).toBeInTheDocument();
+    expect(within(card).getByText("稱呼")).toBeInTheDocument();
+    expect(within(card).getByText(/週三/)).toBeInTheDocument();
+    expect(within(card).getByText("#abc12")).toBeInTheDocument();
+    expect(within(card).getByText("改過 1 次")).toBeInTheDocument();
+    const topic = screen.getByRole("region", { name: "Minecraft 建築計畫" });
+    expect(within(topic).getByText("地基")).toBeInTheDocument();
+    expect(within(topic).getByText("是")).toBeInTheDocument();
+    const notes = await screen.findByRole("list", { name: "對話筆記" });
+    expect(within(notes).getByText("Miyoria / 雜談")).toBeInTheDocument();
+    expect(within(notes).getByText("大家在聊海豚,Owen 週三要考試。")).toBeInTheDocument();
+    expect(within(notes).getByText("Amy 問她喜不喜歡海豚")).toBeInTheDocument();
+  });
+
+  it("shows her reflections, lessons and feedback", async () => {
+    const REFLECTION: ReflectionView = {
+      stats: { calls_today: 1, max_calls_per_day: 6, last_daily_at: "2026-11-02T05:00:00.000Z", last_light_at: null, idle_reason: null },
+      runs: [
+        {
+          id: "r1",
+          at: "2026-11-02T05:00:00.000Z",
+          kind: "daily",
+          context: null,
+          summary: "今天插話太多次了。",
+          insights: 2,
+          superseded: 1,
+          lessons: ["Owen 講話時不要插嘴"],
+          goals: ["學會拉麵店的名字"],
+          documents: ["人物卡「Owen」"],
+          feelings: ["Owen"],
+          error: null,
+          tokens: 3000,
+          ms: 9000,
+        },
+      ],
+      lessons: [
+        {
+          id: "l1",
+          text: "Owen 講話時不要插嘴",
+          person: "p1",
+          scope: null,
+          talk: -0.8,
+          created_at: "2026-11-02T05:00:00.000Z",
+          expires_at: "2026-11-12T05:00:00.000Z",
+          source: "daily",
+          display_name: "Owen",
+        },
+      ],
+      feedback: [
+        {
+          subject: "person:p1",
+          label: "Owen",
+          reactions_pos: 2,
+          reactions_neg: 0,
+          replies: 3,
+          started: 0,
+          answered: 0,
+          ignored: 0,
+          positive: 1,
+          negative: 1,
+          denied: 0,
+          examples: ["你好吵"],
+        },
+      ],
+    };
+    mockFetch((_m, url) => (url.pathname === "/api/reflection" ? { body: REFLECTION } : undefined));
+    renderRoute("/inner?tab=reflection");
+    const lessons = await screen.findByRole("table", { name: "學到的事" });
+    expect(within(lessons).getByText("Owen 講話時不要插嘴")).toBeInTheDocument();
+    expect(within(lessons).getByText("安靜一點 -0.8")).toBeInTheDocument();
+    const feedback = screen.getByRole("table", { name: "回饋" });
+    expect(within(feedback).getByText(/反應 \+2 \/ -0/)).toBeInTheDocument();
+    const runs = screen.getByRole("list", { name: "反思紀錄" });
+    expect(within(runs).getByText("今天插話太多次了。")).toBeInTheDocument();
+    expect(within(runs).getByText(/整理記憶 2/)).toBeInTheDocument();
+    expect(within(screen.getByLabelText("反思狀態")).getByText("1 / 6")).toBeInTheDocument();
   });
 });
