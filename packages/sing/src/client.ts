@@ -22,6 +22,9 @@ export const SongMetaSchema = z.object({
   pitch: z.record(z.string(), z.unknown()).catch({}),
   timings: z.record(z.string(), z.number()).catch({}),
   peak_vram_mb: z.number().nullable().catch(null),
+  /** Its original video sits in the song's cache dir as `video.file` (older workers: none). */
+  has_video: z.boolean().catch(false),
+  video: z.object({ file: z.string() }).nullable().catch(null),
 });
 export type SongMeta = z.output<typeof SongMetaSchema>;
 export type LyricLine = z.output<typeof LyricLineSchema>;

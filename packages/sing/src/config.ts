@@ -56,6 +56,16 @@ export const SingConfigSchema = z.object({
   fade_ms: z.number().int().nonnegative().default(1500),
   /** Lyrics lines (when the worker found synced lyrics) become overlay subtitles. */
   lyrics: z.boolean().default(true),
+  /**
+   * The song's original video (when the worker has one) is shown, muted, on the stream while
+   * she sings: the start cue carries its path for the Stage node, which plays it in OBS.
+   */
+  video: z.boolean().default(true),
+  /**
+   * The song worker's cache (`SING_DATA_DIR`) as the Stage node sees it (same machine),
+   * relative to the directory of `miyoria.toml`. Video paths outside it are never sent.
+   */
+  video_dir: z.string().default("data/songs"),
   /** Her mouth follows the converted vocal stem instead of the whole mix. */
   lip_sync_vocals: z.boolean().default(true),
   /** Finished songs kept in the list. */

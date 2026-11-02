@@ -1,7 +1,9 @@
 // Playing one song: fetch the worker's 48 kHz mix and converted vocal, stream them to the voice
 // node close to real time (the vocal as the levels track her mouth follows), and send the lyrics
-// lines as cues while it plays.
+// lines as cues while it plays. The start cue carries the path of the song's original video for
+// the Stage node to show (muted) in OBS.
 
+import { isAbsolute, relative, resolve } from "node:path";
 import type { Clock, PlaybackState, PlayChunk, SongCue, VoicePlayer } from "@miyoria/types";
 import type { SingWorker, SongMeta } from "./client.js";
 
@@ -14,6 +16,28 @@ export interface PlayerDeps {
   fadeMs: number;
   lyrics: boolean;
   lipSyncVocals: boolean;
+  /** The worker's cache dir (absolute) when videos are shown, else `null`. */
+  videoDir: string | null;
+}
+
+/** Song ids and video names as the worker writes them (`safe_id`, `video<ext>`). */
+const SONG_ID = /^[A-Za-z0-9_-]{1,96}$/;
+const VIDEO_FILE = /^video\.(mp4|m4v|mkv|webm|mov)$/;
+
+/**
+ * The absolute path of `song`'s video in the worker's cache `dir` (`<dir>/<id>/video.mp4`), or
+ * `null` when it has none. The id and file name come from the worker, so anything that is not
+ * exactly a song dir and a video name, or would land outside `dir`, gives `null`.
+ */
+export function songVideoPath(dir: string, song: SongMeta): string | null {
+  const file = song.video?.file;
+  if (!song.has_video || file === undefined || !SONG_ID.test(song.id) || !VIDEO_FILE.test(file)) {
+    return null;
+  }
+  const root = resolve(dir);
+  const full = resolve(root, song.id, file);
+  const rel = relative(root, full);
+  return rel === "" || rel.startsWith("..") || isAbsolute(rel) ? null : full;
 }
 
 /** How long to wait for the node to report a started playback before giving up on lyrics. */
@@ -111,7 +135,12 @@ async function cueLyrics(
   }
   if (signal.aborted || handle.state() !== "started") return;
   const startedAt = d.clock.now();
-  d.cue({ state: "started", song: song.id, title: song.title });
+  const video = d.videoDir === null ? null : songVideoPath(d.videoDir, song);
+  d.cue(
+    video === null
+      ? { state: "started", song: song.id, title: song.title }
+      : { state: "started", song: song.id, title: song.title, video, offset_ms: 0 },
+  );
   const lines = d.lyrics && song.lyrics?.synced ? song.lyrics.lines : [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];

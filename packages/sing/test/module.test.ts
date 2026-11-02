@@ -2,6 +2,7 @@
 // preparing → ready → (her mind decides | forced) → playing with lyrics cues and the vocal track,
 // the floor held while it plays, skip / stop, the queue integration and the prompt section.
 
+import { join, resolve } from "node:path";
 import { ActuatorRegistry, ActuatorRegistryKey } from "@miyoria/actions";
 import { CommandRegistry, CommandRegistryKey, Invocation, Permissions } from "@miyoria/commands";
 import { Supervisor } from "@miyoria/kernel";
@@ -71,6 +72,9 @@ function meta(id: string, title: string, seconds = 1): SongMeta {
     pitch: {},
     timings: {},
     peak_vram_mb: null,
+    // Titles with "MV" come with their video.
+    has_video: title.includes("MV"),
+    video: title.includes("MV") ? { file: "video.mp4" } : null,
   };
 }
 
@@ -408,6 +412,35 @@ describe("sing module", () => {
     await settle(6000 + 400);
     expect(h.voice.plays).toHaveLength(1);
     expect(h.mind.suggestions.filter((s) => s.reason === "song_ready")).toHaveLength(0);
+  });
+
+  it("the start cue carries the song's video inside the worker's cache", async () => {
+    const dir = resolve("songs-cache");
+    h = await Harness.create({ video_dir: dir });
+    await h.join();
+    h.worker.cacheHit = true;
+    await h.command("queue song request", { song: "Song MV" });
+    await h.command("queue song request", { song: "Plain song" });
+    await settle(6000 + 400 + 2000 + 6000 + 400 + 2000);
+    const started = h.cues().filter((c) => c.state === "started");
+    expect(started).toHaveLength(2);
+    expect(started[0]).toEqual({
+      state: "started",
+      song: "s-j1",
+      title: "Song MV",
+      video: join(dir, "s-j1", "video.mp4"),
+      offset_ms: 0,
+    });
+    expect(started[1]).not.toHaveProperty("video");
+  });
+
+  it("[modules.sing] video = false sends no video", async () => {
+    h = await Harness.create({ video: false });
+    await h.join();
+    h.worker.cacheHit = true;
+    await h.command("queue song request", { song: "Song MV" });
+    await settle(6000 + 400 + 2000);
+    expect(h.cues().find((c) => c.state === "started")).not.toHaveProperty("video");
   });
 
   it("starts after her opening line instead of over it", async () => {

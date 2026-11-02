@@ -96,10 +96,15 @@ export class Singer implements VoiceFloor {
   readonly #turnsDone: TurnId[] = [];
   #closed = false;
 
+  /**
+   * `videoDir`: the worker's cache dir (absolute) when song videos are shown on stream
+   * (`[modules.sing] video`), else `null`.
+   */
   constructor(
     private readonly cfg: SingConfig,
     private readonly ctx: ModuleContext,
     private readonly worker: SingWorker,
+    private readonly videoDir: string | null = null,
   ) {
     this.list = new SetList(cfg);
   }
@@ -339,6 +344,7 @@ export class Singer implements VoiceFloor {
         fadeMs: this.cfg.fade_ms,
         lyrics: this.cfg.lyrics,
         lipSyncVocals: this.cfg.lip_sync_vocals,
+        videoDir: this.videoDir,
       },
       song,
       guild,

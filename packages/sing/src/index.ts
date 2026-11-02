@@ -24,7 +24,7 @@ export {
   SingPermissionsSchema,
 } from "./config.js";
 export { SingerKey, SingModule } from "./module.js";
-export { paced, singSong, sleep } from "./player.js";
+export { paced, singSong, sleep, songVideoPath } from "./player.js";
 export { PROMPT_KEY, SingPrompt } from "./prompt.js";
 export {
   type NewSong,

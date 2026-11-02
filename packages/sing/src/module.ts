@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { actuatorsFor } from "@miyoria/actions";
 import { CommandMount } from "@miyoria/commands";
 import {
@@ -51,18 +52,27 @@ export class SingModule implements Module {
     configSchema: SingConfigSchema,
   });
   readonly #worker: ((url: string, timeoutMs: number) => SingWorker) | null;
+  readonly #baseDir: string;
   #running: Running | null = null;
 
-  /** `worker`: replaces the HTTP client (tests). */
-  constructor(worker: ((url: string, timeoutMs: number) => SingWorker) | null = null) {
+  /**
+   * `worker`: replaces the HTTP client (tests). `baseDir`: what a relative `video_dir` is
+   * relative to (the directory of `miyoria.toml`; default the working directory).
+   */
+  constructor(
+    worker: ((url: string, timeoutMs: number) => SingWorker) | null = null,
+    options: { baseDir?: string } = {},
+  ) {
     this.#worker = worker;
+    this.#baseDir = options.baseDir ?? process.cwd();
   }
 
   async start(ctx: ModuleContext): Promise<void> {
     const cfg = ctx.config(SingConfigSchema);
     const timeoutMs = cfg.timeout_secs * 1000;
     const worker = this.#worker?.(cfg.url, timeoutMs) ?? new HttpSingWorker(cfg.url, timeoutMs);
-    const singer = new Singer(cfg, ctx, worker);
+    const videoDir = cfg.video ? resolve(this.#baseDir, cfg.video_dir) : null;
+    const singer = new Singer(cfg, ctx, worker, videoDir);
     const actuators = actuatorsFor(ctx);
     const capabilities = singCapabilities(singer, cfg.permissions).map((c) =>
       actuators.register(c),

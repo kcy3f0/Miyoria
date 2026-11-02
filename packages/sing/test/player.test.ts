@@ -1,9 +1,10 @@
 // The song is streamed close to real time (the voice node buffers about a minute), with the
 // vocal stem as a same-length levels track.
 
+import { join, resolve } from "node:path";
 import { systemClock } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { paced } from "../src/index.js";
+import { paced, type SongMeta, songVideoPath } from "../src/index.js";
 
 describe("paced", () => {
   beforeEach(() => {
@@ -68,5 +69,25 @@ describe("paced", () => {
     await vi.advanceTimersByTimeAsync(10);
     await done;
     expect(got.length).toBe(3);
+  });
+});
+
+describe("songVideoPath", () => {
+  const dir = resolve("cache");
+  const song = (id: string, file: string | null, has = true) =>
+    ({ id, has_video: has, video: file === null ? null : { file } }) as unknown as SongMeta;
+
+  it("is the video in the song's cache dir", () => {
+    expect(songVideoPath(dir, song("yt-abc", "video.mp4"))).toBe(join(dir, "yt-abc", "video.mp4"));
+    expect(songVideoPath(dir, song("lib-1-k+2", "video.mkv"))).toBeNull(); // not a worker id
+    expect(songVideoPath(dir, song("lib-1", "video.mkv"))).toBe(join(dir, "lib-1", "video.mkv"));
+  });
+
+  it("never points anywhere else", () => {
+    expect(songVideoPath(dir, song("..", "video.mp4"))).toBeNull();
+    expect(songVideoPath(dir, song("x", "../../secret.mp4"))).toBeNull();
+    expect(songVideoPath(dir, song("x", "video.exe"))).toBeNull();
+    expect(songVideoPath(dir, song("x", null))).toBeNull();
+    expect(songVideoPath(dir, song("x", "video.mp4", false))).toBeNull();
   });
 });

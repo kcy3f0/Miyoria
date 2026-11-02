@@ -129,7 +129,7 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
     new QueueModule(),
     GameModule.fromProfile(profile),
     new GameChatModule(),
-    new SingModule(),
+    new SingModule(null, { baseDir }),
     McpModule.fromAppConfig(config),
     new StageLinkModule(),
     new SandboxModule(profileId, { baseDir }),
