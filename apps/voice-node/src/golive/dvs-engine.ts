@@ -40,6 +40,9 @@ export const LOW_LATENCY_INPUT = [
   "-probesize", "1000000",
 ];
 
+/** Output options when the source's H.264 is copied: AVCC framing → Annex B. */
+export const PASSTHROUGH_FLAGS = ["-bsf:v", "h264_mp4toannexb"];
+
 /** The library's error message echoes the whole command line; keep the exit code and the last stderr lines. */
 export function ffmpegErrorMessage(e: unknown, stderrTail: string): string {
   const raw = e instanceof Error ? e.message : String(e);
@@ -120,6 +123,9 @@ export class DvsEngine implements StreamEngine {
           // reject ("Error setting option flags to value lowdelay"); the flag is spelled `low_delay`.
           minimizeLatency: false,
           customInputOptions: [...plan.inputOptions, ...(plan.live ? LOW_LATENCY_INPUT : [])],
+          // Copied H.264 from RTMP / MP4 is length-prefixed (AVCC); the library's demuxer parses
+          // Annex B, so convert the stream framing (no re-encode).
+          customFfmpegFlags: plan.noTranscode ? PASSTHROUGH_FLAGS : [],
           logLevel: "warning",
         },
         inner.signal,

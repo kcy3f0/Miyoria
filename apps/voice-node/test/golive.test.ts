@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { DvsEngine, ffmpegErrorMessage, LOW_LATENCY_INPUT } from "../src/golive/dvs-engine.js";
+import { DvsEngine, ffmpegErrorMessage, LOW_LATENCY_INPUT, PASSTHROUGH_FLAGS } from "../src/golive/dvs-engine.js";
 import { cachedProbe, resolveEncoder } from "../src/golive/encoder.js";
 import {
   type Attach,
@@ -412,7 +412,7 @@ describe("DvsEngine", () => {
 
   it("opens the Go Live connection before a live feed's first packets, with a short probe", async () => {
     const log: string[] = [];
-    const calls: { input: string[]; play: Record<string, unknown> }[] = [];
+    const calls: { input: string[]; output: string[]; play: Record<string, unknown> }[] = [];
     const fake = {
       Streamer: class {
         async createStream() {
@@ -426,8 +426,8 @@ describe("DvsEngine", () => {
       },
       Encoders: { nvenc: () => ({}), software: () => ({}) },
       Utils: { normalizeVideoCodec: (c: string) => c },
-      prepareStream: (_src: string, opts: { customInputOptions: string[] }) => {
-        calls.push({ input: opts.customInputOptions, play: {} });
+      prepareStream: (_src: string, opts: { customInputOptions: string[]; customFfmpegFlags: string[] }) => {
+        calls.push({ input: opts.customInputOptions, output: opts.customFfmpegFlags, play: {} });
         return { command: { on() {} }, output: {}, promise: new Promise(() => {}) };
       },
       playStream: async (_out: unknown, s: { createStream(): Promise<unknown> }, opts: Record<string, unknown>) => {
@@ -437,11 +437,11 @@ describe("DvsEngine", () => {
       },
     };
     const engine = new DvsEngine(client, noLog, async () => fake as never);
-    const run = (source: string) => {
+    const run = (source: string, noTranscode = false) => {
       const p = planGoLive(req({ source }), cfg);
       if (!p.ok) throw new Error(p.error);
       return engine.run(
-        { ...p.plan, encoder: "software" },
+        { ...p.plan, encoder: "software", noTranscode },
         { kind: "hybrid", guildId: "g1", channelId: "vc1", sessionId: "s" },
         { onLive() {} },
         new AbortController().signal,
@@ -454,13 +454,23 @@ describe("DvsEngine", () => {
     expect(calls[0]?.play.readrateInitialBurst).toBeUndefined();
     expect(log.splice(0)).toEqual(["createStream", "playStream"]);
 
+    // Re-encoding: no extra output options; the encoder already emits Annex B.
+    expect(calls[0]?.output).toEqual([]);
+
     await run("C:/videos/clip.mp4");
     expect(calls[1]?.input).not.toContain("-analyzeduration");
-    expect(log).toEqual(["playStream", "createStream"]);
+    expect(log.splice(0)).toEqual(["playStream", "createStream"]);
+    // Passing the source through: its AVCC framing is converted for the demuxer.
+    await run("rtmp://127.0.0.1:1935/live/x", true);
+    expect(calls.at(-1)?.output).toEqual(PASSTHROUGH_FLAGS);
   });
 
   it("uses the spelling of the low-delay flag that current ffmpeg accepts", () => {
     expect(LOW_LATENCY_INPUT).toContain("low_delay");
     expect(LOW_LATENCY_INPUT).not.toContain("lowdelay");
+  });
+
+  it("copies the source's H.264 as Annex B when not transcoding", () => {
+    expect(PASSTHROUGH_FLAGS).toEqual(["-bsf:v", "h264_mp4toannexb"]);
   });
 });
