@@ -96,6 +96,11 @@ export interface PlatformSink {
   send(context: ContextKey, message: OutgoingMessage, signal?: AbortSignal): Promise<MessageRef>;
   react(message: MessageRef, emoji: string, signal?: AbortSignal): Promise<void>;
   typing(context: ContextKey, signal?: AbortSignal): Promise<void>;
+  /**
+   * Human name of a context, e.g. `"Miyoria / 雜談"` (server / channel), for the admin panel.
+   * `null` when unknown. Optional.
+   */
+  describe?(context: ContextKey, signal?: AbortSignal): Promise<string | null>;
 }
 
 /**

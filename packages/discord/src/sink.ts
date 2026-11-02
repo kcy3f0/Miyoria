@@ -16,6 +16,13 @@ import { MAX_MESSAGE_LEN, splitMessage } from "./split.js";
 export interface RestLike {
   post(route: `/${string}`, options?: RestRequest): Promise<unknown>;
   put(route: `/${string}`, options?: RestRequest): Promise<unknown>;
+  /** Only `describe` reads; without it contexts have no names. */
+  get?(route: `/${string}`, options?: RestRequest): Promise<unknown>;
+}
+
+function nameOf(value: unknown): string | null {
+  if (typeof value !== "object" || value === null || !("name" in value)) return null;
+  return typeof value.name === "string" && value.name.trim() !== "" ? value.name : null;
 }
 
 export interface RestRequest {
@@ -113,6 +120,23 @@ export class DiscordSink implements PlatformSink {
     await inContext(`typing in ${contextKeyString(context)}`, async () => {
       await this.#rest.post(Routes.channelTyping(channel), { signal });
     });
+  }
+
+  /** `"<server> / <channel>"` (just the channel name in DMs); `null` when Discord won't say. */
+  async describe(context: ContextKey, signal?: AbortSignal): Promise<string | null> {
+    const get = this.#rest.get?.bind(this.#rest);
+    if (!get || context.platform !== PLATFORM) return null;
+    try {
+      const channel = nameOf(
+        await get(Routes.channel(snowflake(context.channel, "channel")), { signal }),
+      );
+      if (context.scope === null) return channel;
+      const guild = nameOf(await get(Routes.guild(snowflake(context.scope, "guild")), { signal }));
+      if (guild === null) return channel;
+      return channel === null ? guild : `${guild} / ${channel}`;
+    } catch {
+      return null;
+    }
   }
 }
 

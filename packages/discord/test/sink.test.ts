@@ -110,3 +110,31 @@ describe("DiscordSink", () => {
     );
   });
 });
+
+describe("DiscordSink.describe", () => {
+  const voice: ContextKey = { platform: "discord", scope: "1", channel: "200", kind: "voice" };
+  const names: Record<string, unknown> = {
+    "/channels/200": { id: "200", name: "雜談" },
+    "/guilds/1": { id: "1", name: "Miyoria" },
+  };
+  const rest = (answers: Record<string, unknown>): RestLike => ({
+    post: async () => undefined,
+    put: async () => undefined,
+    get: async (route) => {
+      if (!(route in answers)) throw new Error("404 Unknown Channel");
+      return answers[route];
+    },
+  });
+
+  test("names_server_and_channel", async () => {
+    expect(await new DiscordSink(rest(names)).describe(voice)).toBe("Miyoria / 雜談");
+    expect(await new DiscordSink(rest(names)).describe({ ...voice, scope: null })).toBe("雜談");
+  });
+
+  test("returns_null_when_unknown", async () => {
+    expect(await new DiscordSink(rest({})).describe(voice)).toBeNull();
+    expect(await new DiscordSink(new FakeRest()).describe(voice)).toBeNull();
+    expect(await new DiscordSink(rest(names)).describe({ ...voice, platform: "cli" })).toBeNull();
+    expect(await new DiscordSink(rest(names)).describe({ ...voice, channel: "x" })).toBeNull();
+  });
+});
