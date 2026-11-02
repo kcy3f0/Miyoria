@@ -16,9 +16,9 @@ export {
   MemoryCommands,
   NODE_WIPE,
   PATHS,
-  WIPE_RESTARTS,
   WIPE_SCOPE_LABEL,
   type WipeScope,
+  wipeModules,
   wipePlan,
 } from "./commands.js";
 export {

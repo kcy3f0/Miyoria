@@ -1,8 +1,9 @@
 // `/me memory show | export | forget` (your own memories) and `/admin memory wipe` (everything
 // she remembers, owner only).
 //
-// The wipe deletes per profile in one transaction (see `WipePlan`), after sending a JSON backup
-// of exactly what it deletes, and then restarts the modules that cache that data. Chat history
+// The wipe deletes data categories (`@miyoria/store` `DATA_CATEGORIES`, shared with the panel's
+// data page) in one transaction, after sending a JSON backup of exactly what it deletes, with the
+// modules caching that data stopped around the transaction. Chat history
 // and the consolidation watermarks always go together: without the log, a watermark is
 // harmless; without the watermark, the log would be extracted into memories again.
 
@@ -31,11 +32,13 @@ import {
 import { errorMessage, getLogger, type ServiceLookup, SupervisorKey } from "@miyoria/kernel";
 import {
   AuditLogKey,
+  categoryModules,
+  type DataCategoryId,
   type MemoryKind,
   type MemoryRecord,
   ProfileDataStoreKey,
+  resolveCategories,
   type WipeCounts,
-  type WipePlan,
 } from "@miyoria/store";
 import {
   type Clock,
@@ -45,7 +48,7 @@ import {
   systemClock,
   toTimestamp,
 } from "@miyoria/types";
-import { MAINTENANCE_KEY, type MemoryEngine, WATERMARK_PREFIX } from "./engine.js";
+import type { MemoryEngine } from "./engine.js";
 import { hasScope, scopeLabel, visibleScopes } from "./scope.js";
 import { relativeDate } from "./score.js";
 
@@ -60,15 +63,6 @@ export const PATHS = [
 
 export const NODE_WIPE = "owner.memory.wipe";
 const PAGE_SIZE = 10;
-
-/** Settings keys of other modules that hold memory-derived state (see their packages). */
-const MOOD_KEY = "mood:last"; // @miyoria/social `mood.ts`
-const INITIATIVE_KEY = "initiative:state"; // @miyoria/initiative `module.ts`
-const SELF_KEY = "self:state"; // @miyoria/self `module.ts`
-const FEELING_PREFIX = "self:feeling:"; // @miyoria/self `feelings.ts`
-
-/** Modules whose in-memory caches a wipe invalidates, restarted afterwards in this order. */
-export const WIPE_RESTARTS = ["memory", "social", "mood", "self", "agent", "initiative"] as const;
 
 /** Largest backup sent as is; bigger ones are gzipped. */
 const MAX_PLAIN_BACKUP = 8 * 1024 * 1024;
@@ -94,26 +88,24 @@ const WIPE_SCOPE_DETAIL: Record<WipeScope, string> = {
   everything: "以上全部，加上主動發話的狀態。",
 };
 
-/** What each scope deletes. Every later scope includes the earlier ones. */
-export function wipePlan(scope: WipeScope): WipePlan {
+/**
+ * The data categories (`@miyoria/store` `DATA_CATEGORIES`) each scope deletes. Every later
+ * scope includes the earlier ones. Memories take the maintenance key with them; her mood,
+ * inner state and feelings about people go with the relationships; the consolidation
+ * watermarks are part of `messages`, so they never go without the log they point into.
+ */
+export function wipePlan(scope: WipeScope): DataCategoryId[] {
   const level = SCOPES.indexOf(scope);
-  const plan: WipePlan = {
-    memories: true,
-    relationships: level >= 1,
-    messages: level >= 2,
-    decisions: level >= 2,
-    settings_keys: [MAINTENANCE_KEY],
-    settings_prefixes: [],
-  };
-  // Her mood, inner state and feelings about people go with the relationships.
-  if (level >= 1) {
-    plan.settings_keys.push(MOOD_KEY, SELF_KEY);
-    plan.settings_prefixes.push(FEELING_PREFIX);
-  }
-  // Watermarks go only together with the log they point into.
-  if (plan.messages) plan.settings_prefixes.push(WATERMARK_PREFIX);
-  if (level >= 3) plan.settings_keys.push(INITIATIVE_KEY);
-  return plan;
+  const ids: DataCategoryId[] = ["memories"];
+  if (level >= 1) ids.push("relationships", "inner", "mood");
+  if (level >= 2) ids.push("messages", "decisions");
+  if (level >= 3) ids.push("initiative");
+  return resolveCategories(ids);
+}
+
+/** Modules stopped around a wipe of `scope` (their caches would write the old state back). */
+export function wipeModules(scope: WipeScope): string[] {
+  return categoryModules(wipePlan(scope));
 }
 
 const R = {
@@ -266,17 +258,16 @@ class Handler {
   async wipeConfirm(scope: WipeScope): Promise<CommandReply> {
     const store = this.deps.services.get(ProfileDataStoreKey);
     if (!store) return notice("error", "目前無法清除資料。", "找不到 ProfileDataStore 服務。");
-    const preview = await store.export(this.profile, wipePlan(scope));
+    const inventory = await store.inventory(this.profile);
+    const part = (id: string) =>
+      inventory.categories.flatMap((c) => c.parts).find((p) => p.id === id)?.count ?? 0;
     const counts = [
-      `記憶 ${preview.memories.length} 筆`,
-      ...(preview.relationships.length + preview.relationship_deltas.length > 0 ||
-      scope !== "memories"
-        ? [
-            `關係 ${preview.relationships.length} 筆（變化紀錄 ${preview.relationship_deltas.length} 筆）`,
-          ]
+      `記憶 ${part("memory_records")} 筆`,
+      ...(scope !== "memories"
+        ? [`關係 ${part("relationships")} 筆（變化紀錄 ${part("relationship_deltas")} 筆）`]
         : []),
       ...(scope === "history" || scope === "everything"
-        ? [`聊天紀錄 ${preview.messages.length} 則、決策紀錄 ${preview.decisions.length} 筆`]
+        ? [`聊天紀錄 ${part("message_log")} 則、決策紀錄 ${part("decision_log")} 筆`]
         : []),
     ];
     return confirm({
@@ -335,10 +326,20 @@ class Handler {
       return notice("error", "無法建立或傳送備份檔，沒有刪除任何資料。", errorMessage(error));
     }
 
-    // 2. One transaction.
+    // 2. One transaction, with the modules caching the data stopped around it (a module
+    // saving its state on stop must not write the deleted state back).
     let counts: WipeCounts;
+    let failed: string[] = [];
     try {
-      counts = await store.wipe(this.profile, plan);
+      const sup = this.deps.services.get(SupervisorKey);
+      const run = () => store.wipe(this.profile, plan);
+      if (sup) {
+        const paused = await sup.pause(wipeModules(scope), run);
+        counts = paused.value;
+        failed = paused.failed;
+      } else {
+        counts = await run();
+      }
     } catch (error) {
       log.warn({ error: errorMessage(error) }, "memory wipe failed");
       await this.audit(inv, scope, null, false);
@@ -347,13 +348,12 @@ class Handler {
     log.info({ profile: this.profile, scope, counts }, "memory wiped");
     await this.audit(inv, scope, counts, true);
 
-    // 3. Drop what the running modules cached.
-    const failed = await this.restartModules();
+    const n = (...parts: string[]) => parts.reduce((sum, p) => sum + (counts[p] ?? 0), 0);
     const lines = [
-      `記憶 ${counts.memories} 筆`,
-      `關係 ${counts.relationships} 筆、變化紀錄 ${counts.relationship_deltas} 筆`,
-      `聊天紀錄 ${counts.messages} 則、決策紀錄 ${counts.decisions} 筆`,
-      `設定 ${counts.settings} 項`,
+      `記憶 ${n("memory_records")} 筆`,
+      `關係 ${n("relationships")} 筆、變化紀錄 ${n("relationship_deltas")} 筆`,
+      `聊天紀錄 ${n("message_log")} 則、決策紀錄 ${n("decision_log")} 筆`,
+      `設定 ${n("memory_maintenance", "memory_watermarks", "self_state", "self_feelings", "mood", "initiative")} 項`,
     ];
     const blocks: CardBlock[] = [
       { type: "text", text: `已刪除：\n${lines.join("\n")}` },
@@ -392,25 +392,6 @@ class Handler {
     } catch (error) {
       log.warn({ error: errorMessage(error) }, "cannot write audit entry");
     }
-  }
-
-  /** Restarts the modules that cache wiped data; returns the ids that failed. */
-  async restartModules(): Promise<string[]> {
-    const sup = this.deps.services.get(SupervisorKey);
-    if (!sup) return [];
-    const present = new Map(sup.list().map((m) => [m.id, m]));
-    const failed: string[] = [];
-    for (const id of WIPE_RESTARTS) {
-      const status = present.get(id);
-      if (!status?.enabled) continue;
-      try {
-        await sup.restart(id);
-      } catch (error) {
-        log.warn({ module: id, error: errorMessage(error) }, "restart after memory wipe failed");
-        failed.push(id);
-      }
-    }
-    return failed;
   }
 }
 

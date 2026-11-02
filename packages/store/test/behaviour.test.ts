@@ -22,6 +22,7 @@ import {
   type AuditEntry,
   type AuthScope,
   type DecisionRecord,
+  dataCategory,
   type LogEntry,
   type MemoryFilter,
   type MemoryHit,
@@ -1289,7 +1290,7 @@ function behaviour(open: () => Promise<Store>): void {
     expect(hitIds(await search(['"', "拉麵"]))).toEqual(new Set([r.id]));
   });
 
-  it("wipes one profile's memory data in one go and exports it first", async () => {
+  it("counts, exports and wipes one profile's data by category", async () => {
     const profile = unique("profile");
     const other = unique("profile");
     const person = unique("person") as PersonId;
@@ -1297,71 +1298,122 @@ function behaviour(open: () => Promise<Store>): void {
     const t0 = Date.UTC(2026, 0, 1);
     for (const p of [profile, other]) {
       await store.memories.upsert(memory(p, "fact", guildScope("g"), "喜歡貓", at(t0)));
+      await store.memories.upsert(memory(p, "episode", guildScope("g"), "一起玩", at(t0)));
       await store.relationships.upsert(relationship(p, person, t0));
       await store.relationships.recordDelta(p, person, delta(at(t0), 1, "nice"));
       await store.messages.append(entry(p, ctx, "嗨", at(t0)));
       await store.decisions.append(decision(p, ctx, "replied", at(t0)));
-      await store.settings.set(p, "memory_watermark:a", { at: 1 });
-      await store.settings.set(p, "memory_watermark:b", { at: 2 });
-      await store.settings.set(p, "mood:last", { v: 1 });
-      await store.settings.set(p, "channel_mode:x", "always");
+      await store.personaOverrides.set(p, "style", "新的口吻", "test");
+      for (const [key, value] of [
+        ["memory_maintenance_last", "2026-01-01T00:00:00Z"],
+        ["memory_watermark:a", { at: 1 }],
+        ["memory_watermark:b", { at: 2 }],
+        ["mood:last", { v: 1 }],
+        ["self:state", { boredom: 0.5 }],
+        ["self:feeling:p1", { text: "在意" }],
+        ["channel_mode:discord:g:c", "always"],
+        ["activeness:discord:g:c", "high"],
+        ["sandbox:tool:t", { name: "t" }],
+        ["ext:hello:k", 1],
+      ] as const) {
+        await store.settings.set(p, key, value);
+      }
     }
-    const plan = {
-      memories: true,
-      relationships: true,
-      messages: true,
-      decisions: true,
-      settings_keys: ["mood:last"],
-      settings_prefixes: ["memory_watermark:"],
-    };
-    const backup = await store.profileData.export(profile, plan);
-    expect(backup.profile).toBe(profile);
-    expect(backup.memories).toHaveLength(1);
-    expect(backup.memories[0]).toMatchObject({
-      kind: "fact",
-      content: "content of 喜歡貓",
-      done: false,
+    const inventory = await store.profileData.inventory(profile);
+    const count = (id: string) => inventory.categories.find((c) => c.id === id)?.count;
+    expect(inventory.profile).toBe(profile);
+    expect(count("memories")).toBe(3); // two records + the maintenance key
+    expect(inventory.categories.find((c) => c.id === "memories")?.breakdown).toEqual({
+      fact: 1,
+      episode: 1,
     });
-    expect(backup.memories[0]).not.toHaveProperty("embedding");
-    expect(backup.relationships[0]).toMatchObject({ person_id: person });
-    expect(backup.relationship_deltas[0]).toMatchObject({ reason: "nice" });
-    expect(backup.messages[0]).toMatchObject({ text: "嗨", is_self: false, ts: at(t0) });
-    expect(backup.decisions).toHaveLength(1);
-    expect(backup.settings).toEqual({
-      "memory_watermark:a": { at: 1 },
-      "memory_watermark:b": { at: 2 },
-      "mood:last": { v: 1 },
-    });
+    expect(count("relationships")).toBe(2);
+    expect(count("call_names")).toBe(1);
+    expect(count("inner")).toBe(2);
+    expect(count("mood")).toBe(1);
+    expect(count("messages")).toBe(3); // one line + two watermarks
+    expect(count("decisions")).toBe(1);
+    expect(count("channels")).toBe(2);
+    expect(count("persona")).toBe(1);
+    expect(count("proposed_tools")).toBe(1);
+    expect(count("extensions")).toBe(1);
+    const messages = inventory.categories.find((c) => c.id === "messages");
+    expect(messages?.parts.map((p) => [p.id, p.count])).toEqual([
+      ["message_log", 1],
+      ["memory_watermarks", 2],
+    ]);
+    expect(messages?.updated_at).not.toBeNull();
 
-    const counts = await store.profileData.wipe(profile, plan);
-    expect(counts).toEqual({
-      memories: 1,
+    const backup = await store.profileData.export(profile, ["memories", "messages", "call_names"]);
+    expect(backup).toMatchObject({ format: "miyoria.data", version: 1, profile });
+    expect(backup.categories).toEqual(["memories", "call_names", "messages"]);
+    expect(backup.parts.memory_records).toHaveLength(2);
+    expect(backup.parts.memory_records?.[0]).toMatchObject({ kind: "fact", done: false });
+    expect(backup.parts.memory_records?.[0]).not.toHaveProperty("embedding");
+    expect(backup.parts.message_log?.[0]).toMatchObject({ text: "嗨", is_self: false, ts: at(t0) });
+    expect(backup.parts.memory_watermarks?.map((r) => [r.key, r.value])).toEqual([
+      ["memory_watermark:a", { at: 1 }],
+      ["memory_watermark:b", { at: 2 }],
+    ]);
+    expect(backup.parts.call_names).toEqual([{ person_id: person, call_name: "歐文" }]);
+
+    // Call names are cleared, the relationship stays.
+    expect(await store.profileData.wipe(profile, ["call_names"])).toEqual({ call_names: 1 });
+    expect((await store.relationships.get(profile, person))?.call_name).toBeNull();
+
+    // Each category alone, then nothing of it is left and the rest is untouched.
+    const counts = await store.profileData.wipe(profile, ["messages"]);
+    expect(counts).toEqual({ message_log: 1, memory_watermarks: 2 });
+    expect(await store.messages.recent(profile, ctx, 9)).toEqual([]);
+    expect((await store.settings.list(profile, "memory_watermark:")).size).toBe(0);
+    expect(await store.memories.list(profile, { ...baseFilter, limit: 9 })).toHaveLength(2);
+
+    expect(
+      await store.profileData.wipe(profile, [
+        "memories",
+        "relationships",
+        "inner",
+        "mood",
+        "decisions",
+        "channels",
+        "persona",
+        "proposed_tools",
+        "extensions",
+      ]),
+    ).toEqual({
+      memory_records: 2,
+      memory_maintenance: 1,
       relationships: 1,
       relationship_deltas: 1,
-      messages: 1,
-      decisions: 1,
-      settings: 3,
+      self_state: 1,
+      self_feelings: 1,
+      mood: 1,
+      decision_log: 1,
+      channel_modes: 1,
+      channel_activeness: 1,
+      persona_overrides: 1,
+      proposed_tools: 1,
+      extension_storage: 1,
     });
     expect(await store.memories.list(profile, { ...baseFilter, limit: 9 })).toEqual([]);
     expect(await store.relationships.get(profile, person)).toBeNull();
-    expect(await store.messages.recent(profile, ctx, 9)).toEqual([]);
     expect(await store.decisions.recent(profile, null, 9)).toEqual([]);
-    expect([...(await store.settings.list(profile, "")).keys()]).toEqual(["channel_mode:x"]);
-    // Other profiles are untouched.
-    expect(await store.memories.list(other, { ...baseFilter, limit: 9 })).toHaveLength(1);
-    expect(await store.messages.recent(other, ctx, 9)).toHaveLength(1);
-    expect(await store.settings.list(other, "memory_watermark:")).toHaveProperty("size", 2);
+    expect((await store.personaOverrides.current(profile)).size).toBe(0);
+    expect([...(await store.settings.list(profile, "")).keys()]).toEqual([]);
+    const after = await store.profileData.inventory(profile);
+    for (const c of after.categories) {
+      if (!dataCategory(c.id).shared && c.id !== "other_settings") expect(c.count, c.id).toBe(0);
+    }
 
-    // A narrower plan leaves the rest.
-    const memoriesOnly = { ...plan, relationships: false, messages: false, decisions: false };
-    expect(
-      await store.profileData.wipe(other, {
-        ...memoriesOnly,
-        settings_keys: [],
-        settings_prefixes: [],
-      }),
-    ).toMatchObject({ memories: 1, messages: 0 });
+    // Other profiles are untouched.
+    expect(await store.memories.list(other, { ...baseFilter, limit: 9 })).toHaveLength(2);
     expect(await store.messages.recent(other, ctx, 9)).toHaveLength(1);
+    expect((await store.settings.list(other, "")).size).toBe(10);
+    expect((await store.relationships.get(other, person))?.call_name).toBe("歐文");
+
+    // Kept categories cannot be wiped; unknown ones are refused.
+    await expect(store.profileData.wipe(profile, ["audit"])).rejects.toThrow(/kept/);
+    await expect(store.profileData.wipe(profile, ["nope" as never])).rejects.toThrow(/unknown/);
   });
 
   it("purges messages and deletes settings by prefix", async () => {

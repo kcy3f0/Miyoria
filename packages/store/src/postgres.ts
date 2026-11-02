@@ -40,14 +40,18 @@ import {
   u32,
 } from "./common.js";
 import {
-  EXPORT_TABLES,
-  type ExportTable,
-  emptyCounts,
-  exportColumns,
-  exportRow,
-  planCoversKey,
-  planTables,
-} from "./profile-data.js";
+  addCount,
+  type DataCategoryId,
+  type DataExport,
+  type DataInventory,
+  readExport,
+  readInventory,
+  type SqlDialect,
+  type Stmt,
+  type WipeCounts,
+  type WipeOptions,
+  wipeStatements,
+} from "./data.js";
 import type {
   Account,
   AuditEntry,
@@ -82,12 +86,9 @@ import type {
   PeopleStore,
   PersonaOverrideStore,
   ProfileDataStore,
-  ProfileExport,
   RelationshipStore,
   SettingsStore,
   Store,
-  WipeCounts,
-  WipePlan,
 } from "./stores.js";
 
 const log = getLogger("store.postgres");
@@ -767,71 +768,45 @@ class PgSettings implements SettingsStore {
 
 // ---- whole-profile export / wipe ----------------------------------------------------------
 
+const PG_DIALECT: SqlDialect = {
+  startsWith: (column, param) => `left(${column}, char_length(${param}::text)) = ${param}::text`,
+  jsonText: (column) => `${column}::text`,
+  keyOrder: 'key COLLATE "C"',
+  list: (values) => [...values],
+  bool: (value) => value,
+};
+
 class PgProfileData implements ProfileDataStore {
   constructor(private readonly db: Pg) {}
 
-  async export(profile: ProfileId, plan: WipePlan): Promise<ProfileExport> {
-    const nowRows = await this.db.query("SELECT COALESCE($1::timestamptz, now()) AS now", [
+  #query = (stmt: Stmt) => this.db.query(stmt.sql, stmt.params);
+
+  async #now(): Promise<string> {
+    const rows = await this.db.query("SELECT COALESCE($1::timestamptz, now()) AS now", [
       this.db.now(),
     ]);
-    const out: ProfileExport = {
-      profile,
-      exported_at: normalizeTimestamp(str(nowRows[0] ?? {}, "now")),
-      plan: structuredClone(plan),
-      memories: [],
-      relationships: [],
-      relationship_deltas: [],
-      messages: [],
-      decisions: [],
-      settings: {},
-    };
-    for (const field of planTables(plan)) {
-      const spec: ExportTable = EXPORT_TABLES[field];
-      const rows = await this.db.query(
-        `SELECT ${exportColumns(spec)} FROM ${spec.table} WHERE profile_id = $1 ORDER BY ${spec.order}`,
-        [profile],
-      );
-      out[field] = rows.map((row) => exportRow(spec, row));
-    }
-    const settings = await this.db.query(
-      'SELECT key, value::text AS value FROM profile_settings WHERE profile_id = $1 ORDER BY key COLLATE "C"',
-      [profile],
-    );
-    for (const row of settings) {
-      const key = str(row, "key");
-      if (planCoversKey(plan, key)) {
-        out.settings[key] = parseJson<JsonValue>(str(row, "value"), "setting");
-      }
-    }
-    return out;
+    return normalizeTimestamp(str(rows[0] ?? {}, "now"));
   }
 
-  async wipe(profile: ProfileId, plan: WipePlan): Promise<WipeCounts> {
+  async inventory(profile: ProfileId): Promise<DataInventory> {
+    return readInventory(PG_DIALECT, this.#query, profile, await this.#now());
+  }
+
+  async export(profile: ProfileId, categories: readonly DataCategoryId[]): Promise<DataExport> {
+    return readExport(PG_DIALECT, this.#query, profile, categories, await this.#now());
+  }
+
+  async wipe(
+    profile: ProfileId,
+    categories: readonly DataCategoryId[],
+    options: WipeOptions = {},
+  ): Promise<WipeCounts> {
+    const statements = wipeStatements(PG_DIALECT, profile, categories, options);
     try {
       return await this.db.tx(async (client) => {
-        const counts = emptyCounts();
-        const del = (table: string) =>
-          this.db.execute(`DELETE FROM ${table} WHERE profile_id = $1`, [profile], client);
-        if (plan.memories) counts.memories = await del("memory_records");
-        if (plan.relationships) {
-          counts.relationships = await del("relationships");
-          counts.relationship_deltas = await del("relationship_deltas");
-        }
-        if (plan.messages) counts.messages = await del("message_log");
-        if (plan.decisions) counts.decisions = await del("decision_log");
-        for (const key of plan.settings_keys) {
-          counts.settings += await this.db.execute(
-            "DELETE FROM profile_settings WHERE profile_id = $1 AND key = $2",
-            [profile, key],
-            client,
-          );
-        }
-        for (const prefix of plan.settings_prefixes) {
-          counts.settings += await this.db.execute(
-            "DELETE FROM profile_settings WHERE profile_id = $1 AND left(key, char_length($2)) = $2",
-            [profile, prefix],
-            client,
-          );
+        const counts: WipeCounts = {};
+        for (const { part, stmt } of statements) {
+          addCount(counts, part, await this.db.execute(stmt.sql, stmt.params, client));
         }
         return counts;
       });

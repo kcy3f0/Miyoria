@@ -56,14 +56,18 @@ import {
   u32,
 } from "./common.js";
 import {
-  EXPORT_TABLES,
-  type ExportTable,
-  emptyCounts,
-  exportColumns,
-  exportRow,
-  planCoversKey,
-  planTables,
-} from "./profile-data.js";
+  addCount,
+  type DataCategoryId,
+  type DataExport,
+  type DataInventory,
+  readExport,
+  readInventory,
+  type SqlDialect,
+  type Stmt,
+  type WipeCounts,
+  type WipeOptions,
+  wipeStatements,
+} from "./data.js";
 import type {
   Account,
   AuditEntry,
@@ -97,12 +101,9 @@ import type {
   PeopleStore,
   PersonaOverrideStore,
   ProfileDataStore,
-  ProfileExport,
   RelationshipStore,
   SettingsStore,
   Store,
-  WipeCounts,
-  WipePlan,
 } from "./stores.js";
 
 const log = getLogger("store.sqlite");
@@ -179,6 +180,23 @@ function limitParam(limit: number): number {
 
 // ---- backend core -----------------------------------------------------------------------
 
+/** `$1` placeholders as named `$p1` (`node:sqlite` binds no positional `?1`). */
+function numbered(stmt: Stmt): [string, Params] {
+  const params: Params = {};
+  stmt.params.forEach((value, i) => {
+    params[`p${i + 1}`] = value as SQLInputValue;
+  });
+  return [stmt.sql.replace(/\$(\d+)/g, "$$p$1"), params];
+}
+
+const SQLITE_DIALECT: SqlDialect = {
+  startsWith: (column, param) => `substr(${column}, 1, length(${param})) = ${param}`,
+  jsonText: (column) => column,
+  keyOrder: "key",
+  list: (values) => JSON.stringify(values),
+  bool: (value) => (value ? 1 : 0),
+};
+
 class Db {
   readonly #db: DatabaseSync;
   readonly #statements = new Map<string, StatementSync>();
@@ -214,6 +232,15 @@ class Db {
 
   run(sql: string, params: Params = {}): number {
     return Number(this.#stmt(sql).run(params).changes);
+  }
+
+  /** A `$1`-style statement (`data.ts`). */
+  allStmt(stmt: Stmt): Row[] {
+    return this.all(...numbered(stmt));
+  }
+
+  runStmt(stmt: Stmt): number {
+    return this.run(...numbered(stmt));
   }
 
   exec(sql: string): void {
@@ -706,64 +733,27 @@ class SqliteSettings implements SettingsStore {
 class SqliteProfileData implements ProfileDataStore {
   constructor(private readonly db: Db) {}
 
-  async export(profile: ProfileId, plan: WipePlan): Promise<ProfileExport> {
-    const out: ProfileExport = {
-      profile,
-      exported_at: fromMicros(this.db.nowMicros()),
-      plan: structuredClone(plan),
-      memories: [],
-      relationships: [],
-      relationship_deltas: [],
-      messages: [],
-      decisions: [],
-      settings: {},
-    };
-    for (const field of planTables(plan)) {
-      const spec: ExportTable = EXPORT_TABLES[field];
-      out[field] = this.db
-        .all(
-          `SELECT ${exportColumns(spec)} FROM ${spec.table} WHERE profile_id = $profile ` +
-            `ORDER BY ${spec.order}`,
-          { profile },
-        )
-        .map((row) => exportRow(spec, row));
-    }
-    for (const row of this.db.all(
-      "SELECT key, value FROM profile_settings WHERE profile_id = $profile ORDER BY key",
-      { profile },
-    )) {
-      const key = str(row, "key");
-      if (planCoversKey(plan, key)) out.settings[key] = json<JsonValue>(row, "value", "setting");
-    }
-    return out;
+  #query = async (stmt: Stmt) => this.db.allStmt(stmt);
+
+  async inventory(profile: ProfileId): Promise<DataInventory> {
+    return readInventory(SQLITE_DIALECT, this.#query, profile, fromMicros(this.db.nowMicros()));
   }
 
-  async wipe(profile: ProfileId, plan: WipePlan): Promise<WipeCounts> {
+  async export(profile: ProfileId, categories: readonly DataCategoryId[]): Promise<DataExport> {
+    const now = fromMicros(this.db.nowMicros());
+    return readExport(SQLITE_DIALECT, this.#query, profile, categories, now);
+  }
+
+  async wipe(
+    profile: ProfileId,
+    categories: readonly DataCategoryId[],
+    options: WipeOptions = {},
+  ): Promise<WipeCounts> {
+    const statements = wipeStatements(SQLITE_DIALECT, profile, categories, options);
     try {
       return this.db.tx(() => {
-        const counts = emptyCounts();
-        const del = (table: string) =>
-          this.db.run(`DELETE FROM ${table} WHERE profile_id = $profile`, { profile });
-        if (plan.memories) counts.memories = del("memory_records");
-        if (plan.relationships) {
-          counts.relationships = del("relationships");
-          counts.relationship_deltas = del("relationship_deltas");
-        }
-        if (plan.messages) counts.messages = del("message_log");
-        if (plan.decisions) counts.decisions = del("decision_log");
-        for (const key of plan.settings_keys) {
-          counts.settings += this.db.run(
-            "DELETE FROM profile_settings WHERE profile_id = $profile AND key = $key",
-            { profile, key },
-          );
-        }
-        for (const prefix of plan.settings_prefixes) {
-          counts.settings += this.db.run(
-            "DELETE FROM profile_settings WHERE profile_id = $profile AND " +
-              "substr(key, 1, length($prefix)) = $prefix",
-            { profile, prefix },
-          );
-        }
+        const counts: WipeCounts = {};
+        for (const { part, stmt } of statements) addCount(counts, part, this.db.runStmt(stmt));
         return counts;
       });
     } catch (cause) {

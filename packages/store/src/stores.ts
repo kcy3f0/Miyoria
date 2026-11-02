@@ -7,7 +7,6 @@
 import {
   type AccountRef,
   type ContextKey,
-  type JsonObject,
   type JsonValue,
   type ModuleId,
   type PersonId,
@@ -16,6 +15,7 @@ import {
   serviceKey,
   type Timestamp,
 } from "@miyoria/types";
+import type { DataCategoryId, DataExport, DataInventory, WipeCounts, WipeOptions } from "./data.js";
 import type {
   Account,
   AuditEntry,
@@ -186,51 +186,24 @@ export interface AuditLog {
   recent(limit: number, actor: string | null): Promise<AuditEntry[]>;
 }
 
-/** What a profile wipe removes (everything else, e.g. people, accounts, roles, stays). */
-export interface WipePlan {
-  /** `memory_records` (with their embeddings). */
-  memories: boolean;
-  /** `relationships` and `relationship_deltas`. */
-  relationships: boolean;
-  /** `message_log`. */
-  messages: boolean;
-  /** `decision_log`. */
-  decisions: boolean;
-  /** Settings keys removed exactly. */
-  settings_keys: string[];
-  /** Settings keys removed by prefix. */
-  settings_prefixes: string[];
-}
-
-/** Rows removed by a wipe, per table. */
-export interface WipeCounts {
-  memories: number;
-  relationships: number;
-  relationship_deltas: number;
-  messages: number;
-  decisions: number;
-  settings: number;
-}
-
-/** The rows a wipe would remove, as plain JSON (the backup sent before wiping). */
-export interface ProfileExport {
-  profile: ProfileId;
-  exported_at: Timestamp;
-  plan: WipePlan;
-  memories: JsonObject[];
-  relationships: JsonObject[];
-  relationship_deltas: JsonObject[];
-  messages: JsonObject[];
-  decisions: JsonObject[];
-  settings: JsonObject;
-}
-
-/** Whole-profile data operations, each in one transaction. */
+/**
+ * Whole-profile data operations by category (see `data.ts`): what there is, a JSON backup of
+ * it, and deleting it in one transaction.
+ */
 export interface ProfileDataStore {
-  /** Everything `wipe(profile, plan)` would delete. */
-  export(profile: ProfileId, plan: WipePlan): Promise<ProfileExport>;
-  /** Deletes what `plan` lists for `profile`, all or nothing. */
-  wipe(profile: ProfileId, plan: WipePlan): Promise<WipeCounts>;
+  /** Row counts and last update of every category. */
+  inventory(profile: ProfileId): Promise<DataInventory>;
+  /** The rows of `categories`, as they are (non-exportable categories are left out). */
+  export(profile: ProfileId, categories: readonly DataCategoryId[]): Promise<DataExport>;
+  /**
+   * Deletes `categories` and what they require (`resolveCategories`), all or nothing. Kept
+   * categories are refused.
+   */
+  wipe(
+    profile: ProfileId,
+    categories: readonly DataCategoryId[],
+    options?: WipeOptions,
+  ): Promise<WipeCounts>;
 }
 
 /**

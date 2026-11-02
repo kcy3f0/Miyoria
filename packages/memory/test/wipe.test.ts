@@ -18,6 +18,7 @@ import {
 import { type LlmRouter, LlmRouterKey, MockProvider } from "@miyoria/llm";
 import {
   AuditLogKey,
+  dataCategory,
   MemoryRecordStoreKey,
   MessageLogKey,
   PeopleStoreKey,
@@ -33,8 +34,8 @@ import {
   MemoryEngineKey,
   MemoryModule,
   WATERMARK_PREFIX,
-  WIPE_RESTARTS,
   type WipeScope,
+  wipeModules,
   wipePlan,
 } from "../src/index.js";
 import { acct, guildCtx, profile, router } from "./helpers.js";
@@ -48,17 +49,29 @@ class LlmStub implements Module {
   }
 }
 
-/** Stands in for a module whose caches a wipe must drop; counts its starts. */
+/**
+ * Stands in for a module whose caches a wipe must drop; counts its starts. Like the real mood
+ * module, `mood` saves its cached state on stop.
+ */
 class Counting implements Module {
   readonly manifest;
   starts = 0;
+  #ctx: ModuleContext | null = null;
 
   constructor(id: string) {
     this.manifest = defineManifest(id, id);
   }
 
-  async start(): Promise<void> {
+  async start(ctx: ModuleContext): Promise<void> {
     this.starts++;
+    this.#ctx = ctx;
+  }
+
+  async stop(): Promise<void> {
+    const settings = this.#ctx?.services.get(SettingsStoreKey);
+    if (this.manifest.id === "mood" && settings && this.starts === 1) {
+      await settings.set(profile(), "mood:last", { valence: 0.2 });
+    }
   }
 }
 
@@ -156,19 +169,34 @@ function click(who: string, id: string, extra: Partial<ComponentInvocationData> 
 
 describe("memory wipe", () => {
   it("plans_never_clear_watermarks_without_the_log", () => {
+    const settingsOf = (scope: WipeScope) =>
+      wipePlan(scope).flatMap((id) =>
+        dataCategory(id).parts.flatMap((p) =>
+          p.kind === "settings" ? [...p.keys, ...p.prefixes] : [],
+        ),
+      );
     for (const scope of ["memories", "relationships", "history", "everything"] as WipeScope[]) {
       const plan = wipePlan(scope);
-      expect(plan.settings_prefixes.includes(WATERMARK_PREFIX), scope).toBe(plan.messages);
-      expect(plan.memories, scope).toBe(true);
-      expect(plan.settings_keys).toContain(MAINTENANCE_KEY);
+      expect(settingsOf(scope).includes(WATERMARK_PREFIX), scope).toBe(plan.includes("messages"));
+      expect(plan, scope).toContain("memories");
+      expect(settingsOf(scope)).toContain(MAINTENANCE_KEY);
     }
-    expect(wipePlan("memories")).toMatchObject({ relationships: false, messages: false });
-    expect(wipePlan("relationships").settings_keys).toContain("mood:last");
-    expect(wipePlan("relationships").settings_keys).toContain("self:state");
-    expect(wipePlan("relationships").settings_prefixes).toContain("self:feeling:");
-    expect(wipePlan("memories").settings_prefixes).not.toContain("self:feeling:");
-    expect(wipePlan("everything").settings_keys).toContain("initiative:state");
-    expect(WIPE_RESTARTS).toEqual(["memory", "social", "mood", "self", "agent", "initiative"]);
+    expect(wipePlan("memories")).toEqual(["memories"]);
+    expect(wipePlan("relationships")).toEqual(["memories", "relationships", "inner", "mood"]);
+    expect(settingsOf("relationships")).toEqual(
+      expect.arrayContaining(["mood:last", "self:state", "self:feeling:"]),
+    );
+    expect(settingsOf("memories")).not.toContain("self:feeling:");
+    expect(settingsOf("everything")).toContain("initiative:state");
+    expect(wipeModules("history")).toEqual([
+      "memory",
+      "initiative",
+      "social",
+      "agent",
+      "self",
+      "mood",
+    ]);
+    expect(wipeModules("memories")).toEqual(["memory", "initiative"]);
   });
 
   it("is_owner_only_and_walks_through_select_confirm_and_modal", async () => {
@@ -230,9 +258,10 @@ describe("memory wipe", () => {
     const file = sent[0]?.files?.[0];
     expect(file?.name).toMatch(new RegExp(`^${profile()}-history-.*\\.json$`));
     const backup = JSON.parse(String(file?.data));
-    expect(backup.memories).toHaveLength(1);
-    expect(backup.messages[0].text).toBe("我喜歡拉麵");
-    expect(backup.settings).toHaveProperty(`${WATERMARK_PREFIX}x`);
+    expect(backup.format).toBe("miyoria.data");
+    expect(backup.parts.memory_records).toHaveLength(1);
+    expect(backup.parts.message_log[0].text).toBe("我喜歡拉麵");
+    expect(backup.parts.memory_watermarks[0].key).toBe(`${WATERMARK_PREFIX}x`);
 
     // Gone for this profile, kept for the other and for settings outside the plan.
     const filter = {

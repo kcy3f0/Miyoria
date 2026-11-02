@@ -9,6 +9,27 @@ export {
   StoreError,
   toMicros,
 } from "./common.js";
+export {
+  type CategoryInventory,
+  categoryModules,
+  DATA_CATEGORIES,
+  DATA_EXPORT_FORMAT,
+  type DataCategory,
+  type DataCategoryId,
+  type DataExport,
+  type DataInventory,
+  type DataPart,
+  dataCategory,
+  GLOBAL_SETTINGS_PROFILE,
+  isDataCategoryId,
+  type PartInventory,
+  RESET_CATEGORIES,
+  resolveCategories,
+  type SettingsPart,
+  type TablePart,
+  type WipeCounts,
+  type WipeOptions,
+} from "./data.js";
 export { MemorySettingsStore } from "./memory-settings.js";
 export {
   DEFAULT_STORE_URL,
@@ -64,13 +85,10 @@ export {
   PersonaOverrideStoreKey,
   type ProfileDataStore,
   ProfileDataStoreKey,
-  type ProfileExport,
   type RelationshipStore,
   RelationshipStoreKey,
   type SettingsStore,
   SettingsStoreKey,
   type Store,
   StoreKey,
-  type WipeCounts,
-  type WipePlan,
 } from "./stores.js";
