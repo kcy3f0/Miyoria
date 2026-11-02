@@ -197,6 +197,10 @@ class MockBackend:
         progress(1.0)
         return {"width": 1920, "height": 1080, "vcodec": "avc1.mock", "fps": 30, "format_id": "mock"}
 
+    def library_video(self, v: Path, sdir: Path) -> dict[str, Any]:
+        link_or_copy(v, sdir / f"video{v.suffix.lower()}")
+        return {"source": "library", "bytes": v.stat().st_size}
+
     def fetch_library(self, src: Source, sdir: Path) -> None:
         self.fetch(src, sdir / "source.wav", lambda _: None)
 
@@ -546,8 +550,11 @@ def _start_video(job: Job, src: Source, sdir: Path) -> None:
     if src.kind == "library":
         v = state.store.library_video(src.path or "")
         if v is not None:
-            link_or_copy(v, sdir / f"video{v.suffix.lower()}")
-            info = {"source": "library", "bytes": v.stat().st_size}
+            try:
+                info = state.backend.library_video(v, sdir)
+            except JobError as e:
+                log.info("no video for %s: %s", src.key, e)
+                return
             (sdir / "video.json").write_text(json.dumps(info, indent=2), "utf-8")
     elif src.kind in VIDEO_KINDS:
         job.video = VideoFetch(src, sdir, job.cancel).start()

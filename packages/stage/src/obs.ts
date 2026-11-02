@@ -1,13 +1,19 @@
 // OBS control (obs-websocket v5 via `obs-websocket-js`), behind `Obs` so it can be faked in
 // tests.
 
-import { errorMessage, getLogger, sleep } from "@miyoria/kernel";
-import OBSWebSocket from "obs-websocket-js/json";
+import { errorMessage, getLogger, sleep, withTimeout } from "@miyoria/kernel";
+import OBSWebSocket, { type OBSRequestTypes, type OBSResponseTypes } from "obs-websocket-js/json";
 import { z } from "zod";
 import type { SceneTransition, StreamAction } from "./protocol.js";
 import { Watch } from "./watch.js";
 
 const log = getLogger("stage.obs");
+
+/**
+ * Longest wait for one OBS request. A crashed OBS keeps its socket open behind its crash
+ * dialog and never answers; the failed poll then drops the connection and reconnects.
+ */
+const CALL_TIMEOUT_MS = 5_000;
 
 /** `[obs]` section of the Stage config. */
 export const ObsConfigSchema = z.object({
@@ -151,13 +157,31 @@ class ObsWebSocketObs implements Obs {
     this.#client = client;
   }
 
+  async #call<T extends keyof OBSRequestTypes>(
+    type: T,
+    data?: OBSRequestTypes[T],
+  ): Promise<OBSResponseTypes[T]> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new ObsError(`OBS did not answer ${type} within ${CALL_TIMEOUT_MS} ms`)),
+        CALL_TIMEOUT_MS,
+      );
+    });
+    try {
+      return await Promise.race([this.#client.call(type, data), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async currentScene(): Promise<string> {
-    const r = await this.#client.call("GetCurrentProgramScene");
+    const r = await this.#call("GetCurrentProgramScene");
     return r.sceneName ?? r.currentProgramSceneName;
   }
 
   async sceneList(): Promise<string[]> {
-    const { scenes } = await this.#client.call("GetSceneList");
+    const { scenes } = await this.#call("GetSceneList");
     // `sceneIndex` 0 is the bottom of OBS's list.
     return scenes
       .map((s) => ({ name: String(s.sceneName ?? ""), index: Number(s.sceneIndex ?? 0) }))
@@ -167,14 +191,14 @@ class ObsWebSocketObs implements Obs {
   }
 
   async setScene(name: string): Promise<void> {
-    await this.#client.call("SetCurrentProgramScene", { sceneName: name });
+    await this.#call("SetCurrentProgramScene", { sceneName: name });
   }
 
   async setTransition(name: string, durationMs: number | null): Promise<void> {
-    await this.#client.call("SetCurrentSceneTransition", { transitionName: name });
+    await this.#call("SetCurrentSceneTransition", { transitionName: name });
     if (durationMs === null) return;
     try {
-      await this.#client.call("SetCurrentSceneTransitionDuration", {
+      await this.#call("SetCurrentSceneTransitionDuration", {
         transitionDuration: Math.min(Math.max(Math.round(durationMs), 50), 20_000),
       });
     } catch (error) {
@@ -184,19 +208,19 @@ class ObsWebSocketObs implements Obs {
   }
 
   async streaming(): Promise<boolean> {
-    return (await this.#client.call("GetStreamStatus")).outputActive;
+    return (await this.#call("GetStreamStatus")).outputActive;
   }
 
   async startStream(): Promise<void> {
-    await this.#client.call("StartStream");
+    await this.#call("StartStream");
   }
 
   async stopStream(): Promise<void> {
-    await this.#client.call("StopStream");
+    await this.#call("StopStream");
   }
 
   async setText(source: string, text: string): Promise<void> {
-    await this.#client.call("SetInputSettings", {
+    await this.#call("SetInputSettings", {
       inputName: source,
       inputSettings: { text },
       overlay: true,
@@ -204,19 +228,19 @@ class ObsWebSocketObs implements Obs {
   }
 
   async ensureTextSource(source: string): Promise<boolean> {
-    const { inputs } = await this.#client.call("GetInputList");
+    const { inputs } = await this.#call("GetInputList");
     if (inputs.some((i) => i.inputName === source)) return false;
-    const { inputKinds } = await this.#client.call("GetInputKindList", { unversioned: false });
+    const { inputKinds } = await this.#call("GetInputKindList", { unversioned: false });
     // GDI+ on Windows, FreeType elsewhere.
     const kind = ["text_gdiplus_v3", "text_gdiplus_v2", "text_ft2_source_v2"].find((k) =>
       inputKinds.includes(k),
     );
     if (!kind) throw new ObsError("OBS has no text source type");
-    const video = await this.#client.call("GetVideoSettings");
+    const video = await this.#call("GetVideoSettings");
     const width = Math.round(video.baseWidth * 0.9);
     const fontSize = Math.max(Math.round(video.baseHeight / 16), 24);
     const scene = await this.currentScene();
-    const { sceneItemId } = await this.#client.call("CreateInput", {
+    const { sceneItemId } = await this.#call("CreateInput", {
       sceneName: scene,
       inputName: source,
       inputKind: kind,
@@ -236,7 +260,7 @@ class ObsWebSocketObs implements Obs {
       },
       sceneItemEnabled: true,
     });
-    await this.#client.call("SetSceneItemTransform", {
+    await this.#call("SetSceneItemTransform", {
       sceneName: scene,
       sceneItemId,
       sceneItemTransform: {
@@ -248,7 +272,7 @@ class ObsWebSocketObs implements Obs {
   }
 
   async sceneItems(scene: string): Promise<SceneItem[]> {
-    const { sceneItems } = await this.#client.call("GetSceneItemList", { sceneName: scene });
+    const { sceneItems } = await this.#call("GetSceneItemList", { sceneName: scene });
     return sceneItems.map((i) => ({
       id: Number(i.sceneItemId),
       source: String(i.sourceName ?? ""),
@@ -257,7 +281,7 @@ class ObsWebSocketObs implements Obs {
   }
 
   async setSceneItemEnabled(scene: string, id: number, enabled: boolean): Promise<void> {
-    await this.#client.call("SetSceneItemEnabled", {
+    await this.#call("SetSceneItemEnabled", {
       sceneName: scene,
       sceneItemId: id,
       sceneItemEnabled: enabled,
@@ -265,7 +289,7 @@ class ObsWebSocketObs implements Obs {
   }
 
   async setMediaFile(source: string, file: string): Promise<void> {
-    await this.#client.call("SetInputSettings", {
+    await this.#call("SetInputSettings", {
       inputName: source,
       inputSettings: {
         is_local_file: true,
@@ -277,32 +301,33 @@ class ObsWebSocketObs implements Obs {
       },
       overlay: true,
     });
-    await this.#client.call("SetInputMute", { inputName: source, inputMuted: true });
+    await this.#call("SetInputMute", { inputName: source, inputMuted: true });
   }
 
   async mediaAction(source: string, action: MediaAction): Promise<void> {
-    await this.#client.call("TriggerMediaInputAction", {
+    await this.#call("TriggerMediaInputAction", {
       inputName: source,
       mediaAction: MEDIA_ACTIONS[action],
     });
   }
 
   async mediaCursor(source: string): Promise<number | null> {
-    const r = await this.#client.call("GetMediaInputStatus", { inputName: source });
+    const r = await this.#call("GetMediaInputStatus", { inputName: source });
     return r.mediaState === "OBS_MEDIA_STATE_PLAYING" && typeof r.mediaCursor === "number"
       ? r.mediaCursor
       : null;
   }
 
   async seekMedia(source: string, ms: number): Promise<void> {
-    await this.#client.call("SetMediaInputCursor", {
+    await this.#call("SetMediaInputCursor", {
       inputName: source,
       mediaCursor: Math.max(0, Math.round(ms)),
     });
   }
 
   async close(): Promise<void> {
-    await this.#client.disconnect();
+    // A hung OBS never answers the close handshake either.
+    await withTimeout(this.#client.disconnect(), CALL_TIMEOUT_MS);
   }
 }
 
