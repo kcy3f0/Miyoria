@@ -10,6 +10,8 @@ import {
   type ContextKey,
   type Event,
   Principals,
+  type StreamCurtain,
+  StreamCurtainKey,
   type Subject,
 } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
@@ -93,7 +95,7 @@ function setup(nodes: string[]) {
     priority: "direct",
     signal: new AbortController().signal,
   };
-  return { link, tools, registry, ctx, events };
+  return { link, tools, registry, ctx, events, services };
 }
 
 describe("voice capabilities", () => {
@@ -135,6 +137,20 @@ describe("voice capabilities", () => {
       "Go Live started",
     );
     expect(s.link.calls).toEqual(["join g1 null 7", "golive g1 rtmp://obs/live"]);
+  });
+
+  it("stream_stop lets the stage show the ending scene first", async () => {
+    const s = setup(["voice.golive"]);
+    s.link.streaming = true;
+    s.link.inVoice = "vc1";
+    const curtain: StreamCurtain = {
+      close: async () => {
+        s.link.calls.push("curtain");
+      },
+    };
+    s.services.provide("stage.link", StreamCurtainKey, curtain);
+    expect(await s.tools.get("stream_stop")?.call(s.ctx, {})).toBe("Go Live stopped");
+    expect(s.link.calls).toEqual(["curtain", "golive_stop g1"]);
   });
 
   it("another server is off limits for her and chat requests", async () => {

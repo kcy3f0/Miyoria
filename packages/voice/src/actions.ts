@@ -4,7 +4,7 @@
 
 import { type Capability, CapabilityError, defineCapability } from "@miyoria/actions";
 import { errorMessage } from "@miyoria/kernel";
-import { actLane, type Principal } from "@miyoria/types";
+import { actLane, type Principal, StreamCurtainKey } from "@miyoria/types";
 import { z } from "zod";
 import type { VoiceLink } from "./link/link.js";
 
@@ -154,6 +154,8 @@ export function voiceCapabilities(link: VoiceLink, goliveSource: () => string): 
     async execute(args, ctx) {
       const guild = requireGuild(args, ctx.principal);
       if (!link.isStreaming(guild)) return { text: "not live", data: { stopped: false } };
+      // The stage shows the ending scene for a moment first (when it has one).
+      await ctx.services.get(StreamCurtainKey)?.close(ctx.signal);
       await link.goliveStop(guild);
       return { text: "Go Live stopped", data: { stopped: true } };
     },
