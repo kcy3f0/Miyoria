@@ -10,7 +10,7 @@ export const fmtUsd = (n: number): string => usdFmt.format(n);
 export const fmtPct = (n: number, digits = 0): string => `${(n * 100).toFixed(digits)}%`;
 export const fmtScore = (n: number): string => n.toFixed(2);
 
-/** `ContextKey`'s `Display` from the Rust side, e.g. `discord:123:456` or `discord:dm:voice:789`. */
+/** `contextKeyString` of `packages/types`, e.g. `discord:123:456` or `discord:dm:voice:789`. */
 export function contextKeyString(c: ContextKey): string {
   const voice = c.kind === "voice" ? "voice:" : "";
   return `${c.platform}:${c.scope ?? "dm"}:${voice}${c.channel}`;

@@ -1,7 +1,7 @@
 import type { BusEvent, Envelope } from "../api/types";
 import { accountString, contextShort } from "./format";
 
-/** Mirrors `Event::topic()` in `crates/miyoria-types/src/event.rs`. */
+/** Mirrors `eventTopic()` in `packages/types/src/event.ts`. */
 const TOPICS: Record<Exclude<BusEvent["type"], "custom">, string> = {
   platform_ready: "platform.ready",
   platform_message_created: "platform.message.created",

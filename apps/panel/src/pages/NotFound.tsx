@@ -1,21 +1,14 @@
 import { Link } from "@tanstack/react-router";
-import { Compass } from "lucide-react";
-import { EmptyState } from "../components/ui";
+import { Page } from "@/components/page";
+import { Button } from "@/components/ui/button";
 
 export function NotFoundPage() {
   return (
-    <div className="page">
-      <EmptyState
-        icon={Compass}
-        title="沒有這個頁面"
-        actions={
-          <Link to="/" className="btn btn--sm">
-            回到總覽
-          </Link>
-        }
-      >
-        網址可能打錯了,或這個頁面已經搬家。
-      </EmptyState>
-    </div>
+    <Page className="items-center py-24 text-center">
+      <h1 className="text-2xl font-semibold tracking-tight">沒有這個頁面</h1>
+      <Button asChild variant="outline">
+        <Link to="/">回到總覽</Link>
+      </Button>
+    </Page>
   );
 }

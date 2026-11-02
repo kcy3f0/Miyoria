@@ -1,0 +1,319 @@
+import { Ban, Save } from "lucide-react";
+import { useId, useState } from "react";
+import type { PersonDetail, RelationshipDelta } from "@/api/types";
+import { useAdjustPerson, usePerson, useUpdatePerson } from "@/app/queries";
+import { ConfirmDialog } from "@/components/confirm";
+import { Facts } from "@/components/json-view";
+import { EmptyLine, ErrorLine, SkeletonRows } from "@/components/query-state";
+import { Bipolar, Meter } from "@/components/status";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input, Textarea } from "@/components/ui/input";
+import { Field } from "@/components/ui/label";
+import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { accountString, fmtDateTime, fmtRelative } from "@/lib/format";
+import { notify } from "@/lib/notify";
+
+/** Affinity over time, -100..100 with a zero line. */
+export function AffinityChart({ history }: { history: RelationshipDelta[] }) {
+  if (history.length < 2) return null;
+  const W = 600;
+  const H = 120;
+  const pad = 6;
+  const t0 = new Date(history[0]?.at ?? 0).getTime();
+  const t1 = new Date(history[history.length - 1]?.at ?? 0).getTime();
+  const span = Math.max(1, t1 - t0);
+  const x = (at: string) => pad + ((new Date(at).getTime() - t0) / span) * (W - pad * 2);
+  const y = (v: number) => pad + ((100 - Math.max(-100, Math.min(100, v))) / 200) * (H - pad * 2);
+  const points = history.map((d) => `${x(d.at).toFixed(1)},${y(d.affinity).toFixed(1)}`).join(" ");
+  const first = history[0];
+  const last = history[history.length - 1];
+  return (
+    <figure className="grid gap-1.5">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`好感變化:從 ${Math.round(first?.affinity ?? 0)} 到 ${Math.round(last?.affinity ?? 0)}`}
+        className="h-28 w-full rounded-md border bg-background"
+      >
+        <line x1={pad} x2={W - pad} y1={y(0)} y2={y(0)} stroke="var(--border)" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
+        <polyline points={points} fill="none" stroke="var(--chart-1)" strokeWidth={1.75} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      </svg>
+      <figcaption className="flex justify-between font-mono text-[11px] text-muted-foreground">
+        <span>{fmtDateTime(first?.at ?? "")}</span>
+        <span>{fmtDateTime(last?.at ?? "")}</span>
+      </figcaption>
+    </figure>
+  );
+}
+
+interface Draft {
+  callName: string;
+  tags: string;
+  notes: string;
+}
+
+const fromDetail = (d: PersonDetail): Draft => ({
+  callName: d.relationship?.call_name ?? "",
+  tags: (d.relationship?.tags ?? []).join(", "),
+  notes: d.relationship?.notes ?? "",
+});
+
+/**
+ * Call name, tags and notes. Shows the server's values until the first keystroke; from then on
+ * the user's edits win over refetches (which hand us a new array every time) until saved.
+ */
+export function RelationshipEditor({ detail }: { detail: PersonDetail }) {
+  const update = useUpdatePerson(detail.person.id);
+  const id = useId();
+  const [edits, setEdits] = useState<Draft | null>(null);
+  const shown = edits ?? fromDetail(detail);
+  const change = (field: keyof Draft, value: string) => setEdits({ ...shown, [field]: value });
+
+  const save = () =>
+    update.mutate(
+      {
+        call_name: shown.callName.trim() || null,
+        tags: shown.tags
+          .split(/[,,]/)
+          .map((t) => t.trim())
+          .filter(Boolean),
+        notes: shown.notes,
+      },
+      {
+        onSuccess: () => {
+          notify.ok("已更新");
+          setEdits(null);
+        },
+        onError: (e) => notify.error(e, "更新失敗"),
+      },
+    );
+
+  return (
+    <form
+      className="grid gap-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        save();
+      }}
+    >
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="稱呼" htmlFor={`${id}-call`}>
+          <Input id={`${id}-call`} value={shown.callName} placeholder={detail.person.display_name} onChange={(e) => change("callName", e.target.value)} />
+        </Field>
+        <Field label="標籤" htmlFor={`${id}-tags`}>
+          <Input id={`${id}-tags`} value={shown.tags} placeholder="常客, Minecraft" onChange={(e) => change("tags", e.target.value)} />
+        </Field>
+      </div>
+      <Field label="備註" htmlFor={`${id}-notes`}>
+        <Textarea id={`${id}-notes`} rows={4} value={shown.notes} onChange={(e) => change("notes", e.target.value)} />
+      </Field>
+      <div className="flex items-center gap-2">
+        <Button writes type="submit" size="sm" busy={update.isPending} disabled={edits === null}>
+          <Save />
+          儲存
+        </Button>
+        {edits !== null && (
+          <Button size="sm" variant="ghost" onClick={() => setEdits(null)} disabled={update.isPending}>
+            還原
+          </Button>
+        )}
+      </div>
+    </form>
+  );
+}
+
+const STEPS = [-10, -5, 5, 10] as const;
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="grid gap-3">
+      <h3 className="text-sm font-medium">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function PersonBody({ detail }: { detail: PersonDetail }) {
+  const r = detail.relationship;
+  const update = useUpdatePerson(detail.person.id);
+  const adjust = useAdjustPerson(detail.person.id);
+  const [confirmBlock, setConfirmBlock] = useState(false);
+
+  const setBlocked = (blocked: boolean) =>
+    update.mutate(
+      { blocked },
+      {
+        onSuccess: () => {
+          notify.ok(blocked ? "已封鎖" : "已解除封鎖");
+          setConfirmBlock(false);
+        },
+        onError: (e) => notify.error(e),
+      },
+    );
+
+  return (
+    <>
+      <SheetHeader>
+        <SheetTitle className="flex flex-wrap items-center gap-2 text-lg">
+          {detail.person.display_name}
+          {detail.label && <Badge variant="brand">{detail.label}</Badge>}
+          {detail.blocked && <Badge variant="destructive">已封鎖</Badge>}
+        </SheetTitle>
+        <div className="flex flex-wrap gap-2 pt-1">
+          <Button
+            writes
+            size="sm"
+            variant="outline"
+            className={detail.blocked ? undefined : "text-[oklch(0.74_0.16_25)] hover:text-[oklch(0.78_0.16_25)]"}
+            busy={update.isPending && update.variables?.blocked !== undefined}
+            onClick={() => (detail.blocked ? setBlocked(false) : setConfirmBlock(true))}
+          >
+            <Ban />
+            {detail.blocked ? "解除封鎖" : "封鎖"}
+          </Button>
+        </div>
+      </SheetHeader>
+      <SheetBody className="grid content-start gap-8">
+        <Section title="關係">
+          {r ? (
+            <div className="grid gap-4">
+              <dl className="grid grid-cols-[3rem_minmax(0,1fr)_2.5rem] items-center gap-x-3 gap-y-3 text-sm">
+                <dt className="text-muted-foreground">好感</dt>
+                <dd>
+                  <Bipolar value={r.affinity} label="好感" />
+                </dd>
+                <dd className="text-right font-mono text-xs tabular-nums">{Math.round(r.affinity)}</dd>
+                <dt className="text-muted-foreground">信任</dt>
+                <dd>
+                  <Meter value={r.trust / 100} tone="success" label="信任" />
+                </dd>
+                <dd className="text-right font-mono text-xs tabular-nums">{Math.round(r.trust)}</dd>
+                <dt className="text-muted-foreground">熟悉</dt>
+                <dd>
+                  <Meter value={r.familiarity / 100} label="熟悉" />
+                </dd>
+                <dd className="text-right font-mono text-xs tabular-nums">{Math.round(r.familiarity)}</dd>
+              </dl>
+              <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="調整好感">
+                <span className="mr-1 text-[13px] text-muted-foreground">調整好感</span>
+                {STEPS.map((n) => (
+                  <Button
+                    key={n}
+                    writes
+                    size="sm"
+                    variant="outline"
+                    className="w-12 font-mono"
+                    disabled={adjust.isPending}
+                    onClick={() =>
+                      adjust.mutate(
+                        { affinity: n },
+                        { onSuccess: (p) => notify.ok(`好感 ${Math.round(p.relationship?.affinity ?? 0)}`), onError: (e) => notify.error(e) },
+                      )
+                    }
+                  >
+                    {n > 0 ? `+${n}` : `−${-n}`}
+                  </Button>
+                ))}
+              </div>
+              <AffinityChart history={detail.history} />
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">還沒有關係紀錄</p>
+          )}
+        </Section>
+
+        <Section title="她怎麼看這個人">
+          <RelationshipEditor key={detail.person.id} detail={detail} />
+        </Section>
+
+        <Section title="帳號">
+          <ul className="divide-y rounded-md border">
+            {detail.person.accounts.map((a) => (
+              <li key={accountString(a.account)} className="flex items-center gap-3 px-3 py-2.5 text-sm">
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{a.display_name}</span>
+                  <span className="block truncate font-mono text-xs text-muted-foreground">{a.account.id}</span>
+                </span>
+                <Badge variant="outline">{a.account.platform}</Badge>
+                <time className="w-20 text-right text-[13px] text-muted-foreground" dateTime={a.last_seen} title={fmtDateTime(a.last_seen)}>
+                  {fmtRelative(a.last_seen)}
+                </time>
+              </li>
+            ))}
+          </ul>
+        </Section>
+
+        {detail.history.length > 0 && (
+          <Section title="最近的變化">
+            <ul className="divide-y rounded-md border">
+              {[...detail.history]
+                .reverse()
+                .slice(0, 20)
+                .map((d, i) => (
+                  <li key={`${d.at}-${i}`} className="grid gap-0.5 px-3 py-2.5">
+                    <p className="text-sm">{d.reason}</p>
+                    <p className="flex justify-between gap-3 font-mono text-xs text-muted-foreground">
+                      <span>
+                        好感 {Math.round(d.affinity)} · 信任 {Math.round(d.trust)} · 熟悉 {Math.round(d.familiarity)}
+                      </span>
+                      <time dateTime={d.at}>{fmtRelative(d.at)}</time>
+                    </p>
+                  </li>
+                ))}
+            </ul>
+          </Section>
+        )}
+
+        <Facts
+          items={{
+            "第一次見面": fmtDateTime(detail.person.created_at),
+            "相關記憶": `${detail.memory_count} 則`,
+            id: <span className="font-mono text-xs">{detail.person.id}</span>,
+          }}
+        />
+      </SheetBody>
+      <ConfirmDialog
+        open={confirmBlock}
+        title={`封鎖 ${detail.person.display_name}?`}
+        confirmLabel="封鎖"
+        destructive
+        busy={update.isPending}
+        onClose={() => setConfirmBlock(false)}
+        onConfirm={() => setBlocked(true)}
+      >
+        她會完全忽略這個人。
+      </ConfirmDialog>
+    </>
+  );
+}
+
+export function PersonSheet({ personId, onClose }: { personId: string | undefined; onClose: () => void }) {
+  const person = usePerson(personId);
+  return (
+    <Sheet open={Boolean(personId)} onOpenChange={(o) => !o && onClose()}>
+      <SheetContent className="sm:max-w-2xl">
+        {person.isPending ? (
+          <>
+            <SheetHeader>
+              <SheetTitle className="sr-only">載入中</SheetTitle>
+            </SheetHeader>
+            <SkeletonRows count={5} />
+          </>
+        ) : person.isError ? (
+          <>
+            <SheetHeader>
+              <SheetTitle>找不到這個人</SheetTitle>
+            </SheetHeader>
+            <ErrorLine error={person.error} onRetry={() => void person.refetch()} />
+          </>
+        ) : person.data ? (
+          <PersonBody detail={person.data} />
+        ) : (
+          <EmptyLine>找不到這個人</EmptyLine>
+        )}
+      </SheetContent>
+    </Sheet>
+  );
+}

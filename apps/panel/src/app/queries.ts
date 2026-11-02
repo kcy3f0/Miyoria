@@ -1,7 +1,32 @@
-import { type Query, QueryCache, QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { isApiError } from "../api/http";
-import type { MemoryQuery, PeopleQuery, UpdateMemoryRequest, UpdatePersonRequest } from "../api/planned-types";
-import type { DecisionsQuery, ModuleAction, ModuleInfo, SetPersonaRequest } from "../api/types";
+import {
+  type Query,
+  QueryCache,
+  QueryClient,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { isApiError } from "@/api/http";
+import type {
+  AdjustPersonRequest,
+  AssignRoleRequest,
+  DecisionsQuery,
+  MemoryQuery,
+  ModuleAction,
+  ModuleInfo,
+  PeopleQuery,
+  QueueState,
+  RemoveMappingRequest,
+  RoleMapping,
+  SayRequest,
+  SetPersonaRequest,
+  StageState,
+  StreamAction,
+  UpdateMemoryRequest,
+  UpdatePersonRequest,
+  UpsertRoleRequest,
+} from "@/api/types";
 import { useApi } from "./connection";
 
 export const queryKeys = {
@@ -15,15 +40,19 @@ export const queryKeys = {
   personaHistory: (key: string) => ["persona", key, "history"] as const,
   people: (q: PeopleQuery) => ["people", q] as const,
   person: (id: string) => ["people", "detail", id] as const,
-  memory: (q: MemoryQuery) => ["memory", q] as const,
+  memory: (q: Omit<MemoryQuery, "before">) => ["memory", q] as const,
   roles: ["auth", "roles"] as const,
   assignments: ["auth", "assignments"] as const,
+  mappings: (platform: string, guild: string) => ["auth", "mappings", platform, guild] as const,
   extensions: ["extensions"] as const,
   mcp: ["mcp"] as const,
   queue: ["queue"] as const,
   stage: ["stage"] as const,
   voice: ["voice"] as const,
 };
+
+/** Errors that retrying cannot fix. */
+const FINAL = new Set(["unauthorized", "not_provided", "not_found", "bad_response"]);
 
 /** Polls every `ms`, but stops once the route turned out not to exist or the token is bad. */
 const poll =
@@ -32,9 +61,6 @@ const poll =
     const e = query.state.error;
     return isApiError(e) && FINAL.has(e.kind) ? false : ms;
   };
-
-/** Errors that retrying cannot fix. */
-const FINAL = new Set(["unauthorized", "not_provided", "not_found", "bad_response"]);
 
 export function createQueryClient(onError?: (error: Error) => void): QueryClient {
   return new QueryClient({
@@ -50,7 +76,7 @@ export function createQueryClient(onError?: (error: Error) => void): QueryClient
   });
 }
 
-// --- live --------------------------------------------------------------------
+// --- system ------------------------------------------------------------------
 
 export function useHealth() {
   const api = useApi();
@@ -74,6 +100,36 @@ export function useModuleAction() {
   });
 }
 
+export function useExtensions() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.extensions, queryFn: ({ signal }) => api.extensions({ signal }), refetchInterval: poll(30_000) });
+}
+
+export function useExtensionAction() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, action }: { id: string; action: ModuleAction }) => api.extensionAction(id, action),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: queryKeys.extensions }),
+  });
+}
+
+export function useMcpServers() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.mcp, queryFn: ({ signal }) => api.mcpServers({ signal }), refetchInterval: poll(30_000) });
+}
+
+export function useMcpRestart() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.mcpRestart(name),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: queryKeys.mcp }),
+  });
+}
+
+// --- activity ----------------------------------------------------------------
+
 export function useDecisions(q: DecisionsQuery) {
   const api = useApi();
   return useQuery({ queryKey: queryKeys.decisions(q), queryFn: ({ signal }) => api.decisions(q, { signal }) });
@@ -83,6 +139,13 @@ export function useUsage() {
   const api = useApi();
   return useQuery({ queryKey: queryKeys.usage, queryFn: ({ signal }) => api.llmUsage({ signal }), refetchInterval: poll(30_000) });
 }
+
+export function useCost() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.cost, queryFn: ({ signal }) => api.llmCost({ signal }), refetchInterval: poll(60_000) });
+}
+
+// --- character ---------------------------------------------------------------
 
 export function usePersona() {
   const api = useApi();
@@ -110,21 +173,18 @@ export function useSetPersona() {
   });
 }
 
-// --- planned -----------------------------------------------------------------
-
-export function useCost() {
+export function usePeople(q: PeopleQuery, enabled = true) {
   const api = useApi();
-  return useQuery({ queryKey: queryKeys.cost, queryFn: ({ signal }) => api.llmCost({ signal }), refetchInterval: poll(60_000) });
+  return useQuery({ queryKey: queryKeys.people(q), queryFn: ({ signal }) => api.people(q, { signal }), enabled });
 }
 
-export function usePeople(q: PeopleQuery) {
+export function usePerson(id: string | undefined) {
   const api = useApi();
-  return useQuery({ queryKey: queryKeys.people(q), queryFn: ({ signal }) => api.people(q, { signal }) });
-}
-
-export function usePerson(id: string) {
-  const api = useApi();
-  return useQuery({ queryKey: queryKeys.person(id), queryFn: ({ signal }) => api.person(id, { signal }) });
+  return useQuery({
+    queryKey: queryKeys.person(id ?? ""),
+    queryFn: ({ signal }) => api.person(id ?? "", { signal }),
+    enabled: Boolean(id),
+  });
 }
 
 export function useUpdatePerson(id: string) {
@@ -136,9 +196,27 @@ export function useUpdatePerson(id: string) {
   });
 }
 
-export function useMemory(q: MemoryQuery) {
+export function useAdjustPerson(id: string) {
   const api = useApi();
-  return useQuery({ queryKey: queryKeys.memory(q), queryFn: ({ signal }) => api.memory(q, { signal }) });
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (req: AdjustPersonRequest) => api.adjustPerson(id, req),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["people"] }),
+  });
+}
+
+const MEMORY_PAGE = 50;
+
+/** Newest first, one page at a time: `next_cursor` is the `before` of the next page. */
+export function useMemory(q: Omit<MemoryQuery, "before" | "limit">) {
+  const api = useApi();
+  return useInfiniteQuery({
+    queryKey: queryKeys.memory(q),
+    queryFn: ({ signal, pageParam }) =>
+      api.memory({ ...q, limit: MEMORY_PAGE, before: pageParam ?? undefined }, { signal }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next_cursor,
+  });
 }
 
 export function useUpdateMemory() {
@@ -159,6 +237,8 @@ export function useDeleteMemory() {
   });
 }
 
+// --- access ------------------------------------------------------------------
+
 export function useRoles() {
   const api = useApi();
   return useQuery({ queryKey: queryKeys.roles, queryFn: ({ signal }) => api.roles({ signal }) });
@@ -169,42 +249,68 @@ export function useAssignments() {
   return useQuery({ queryKey: queryKeys.assignments, queryFn: ({ signal }) => api.assignments({ signal }) });
 }
 
-export function useExtensions() {
+export function useMappings(platform: string, guild: string) {
   const api = useApi();
-  return useQuery({ queryKey: queryKeys.extensions, queryFn: ({ signal }) => api.extensions({ signal }) });
-}
-
-export function useExtensionAction() {
-  const api = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, action }: { id: string; action: "enable" | "disable" | "restart" }) => api.extensionAction(id, action),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: queryKeys.extensions }),
+  return useQuery({
+    queryKey: queryKeys.mappings(platform, guild),
+    queryFn: ({ signal }) => api.mappings(platform, guild, { signal }),
+    enabled: Boolean(platform && guild),
   });
 }
 
-export function useMcpServers() {
-  const api = useApi();
-  return useQuery({ queryKey: queryKeys.mcp, queryFn: ({ signal }) => api.mcpServers({ signal }) });
-}
-
-export function useMcpAction() {
+export function useAccessMutations() {
   const api = useApi();
   const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ name, action }: { name: string; action: "enable" | "disable" | "restart" }) => api.mcpAction(name, action),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: queryKeys.mcp }),
-  });
+  const auth = () => void qc.invalidateQueries({ queryKey: ["auth"] });
+  return {
+    assign: useMutation({ mutationFn: (r: AssignRoleRequest) => api.assignRole(r), onSuccess: auth }),
+    revoke: useMutation({ mutationFn: (r: AssignRoleRequest) => api.revokeRole(r), onSuccess: auth }),
+    upsertRole: useMutation({
+      mutationFn: ({ name, req }: { name: string; req: UpsertRoleRequest }) => api.upsertRole(name, req),
+      onSuccess: auth,
+    }),
+    deleteRole: useMutation({ mutationFn: (name: string) => api.deleteRole(name), onSuccess: auth }),
+    setMapping: useMutation({ mutationFn: (m: RoleMapping) => api.setMapping(m), onSuccess: auth }),
+    removeMapping: useMutation({ mutationFn: (m: RemoveMappingRequest) => api.removeMapping(m), onSuccess: auth }),
+  };
 }
+
+// --- live --------------------------------------------------------------------
 
 export function useQueue() {
   const api = useApi();
   return useQuery({ queryKey: queryKeys.queue, queryFn: ({ signal }) => api.queue({ signal }), refetchInterval: poll(3_000) });
 }
 
+export function useQueueMutations() {
+  const api = useApi();
+  const qc = useQueryClient();
+  const set = (state: QueueState) => qc.setQueryData(queryKeys.queue, state);
+  return {
+    skip: useMutation({ mutationFn: (id: string) => api.queueSkip(id), onSuccess: set }),
+    move: useMutation({
+      mutationFn: ({ id, position }: { id: string; position: number }) => api.queueMove(id, position),
+      onSuccess: set,
+    }),
+    pause: useMutation({ mutationFn: (paused: boolean) => api.queuePause(paused), onSuccess: set }),
+  };
+}
+
 export function useStage() {
   const api = useApi();
   return useQuery({ queryKey: queryKeys.stage, queryFn: ({ signal }) => api.stage({ signal }), refetchInterval: poll(5_000) });
+}
+
+export function useStageMutations() {
+  const api = useApi();
+  const qc = useQueryClient();
+  const set = (state: StageState) => qc.setQueryData(queryKeys.stage, state);
+  return {
+    scene: useMutation({ mutationFn: (name: string) => api.stageScene(name), onSuccess: set }),
+    expression: useMutation({ mutationFn: (name: string) => api.stageExpression(name), onSuccess: set }),
+    stream: useMutation({ mutationFn: (action: StreamAction) => api.stageStream(action), onSuccess: set }),
+    say: useMutation({ mutationFn: (req: SayRequest) => api.stageSay(req) }),
+  };
 }
 
 export function useVoice() {

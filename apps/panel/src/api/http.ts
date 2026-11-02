@@ -18,7 +18,7 @@ export interface ApiConfig {
   token: string;
 }
 
-/** The exact message of the server's fallback handler (`server.rs`). */
+/** The exact message of the server's fallback handler (`packages/api/src/server.ts`). */
 export const FALLBACK_NOT_FOUND = "no such endpoint";
 
 export type ApiErrorKind =

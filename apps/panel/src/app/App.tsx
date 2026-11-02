@@ -1,10 +1,11 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isApiError } from "../api/http";
-import type { AuthMethods, SessionInfo } from "../api/types";
-import { ToastProvider } from "../components/toast";
-import { TokenGate } from "../pages/TokenGate";
+import { isApiError } from "@/api/http";
+import type { AuthMethods, SessionInfo } from "@/api/types";
+import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { TokenGate } from "@/pages/login/TokenGate";
 import { ConnectionProvider, useConnection } from "./connection";
 import { EventStreamProvider } from "./events-store";
 import { createQueryClient } from "./queries";
@@ -88,7 +89,7 @@ function Authenticated({ router }: { router: AppRouter }) {
   );
 
   if (auth.status === "checking") {
-    return <div className="login" aria-busy="true" aria-label="確認登入狀態中" />;
+    return <div className="min-h-svh bg-background" aria-busy="true" aria-label="確認登入狀態中" />;
   }
 
   if (auth.status === "signed_out" || !sessionValue) {
@@ -109,11 +110,9 @@ function Authenticated({ router }: { router: AppRouter }) {
   return (
     <SessionProvider value={sessionValue}>
       <QueryClientProvider client={queryClient}>
-        <ToastProvider>
-          <EventStreamProvider>
-            <RouterProvider router={router} />
-          </EventStreamProvider>
-        </ToastProvider>
+        <EventStreamProvider>
+          <RouterProvider router={router} />
+        </EventStreamProvider>
       </QueryClientProvider>
     </SessionProvider>
   );
@@ -123,7 +122,10 @@ export function App({ router }: { router?: AppRouter }) {
   const [r] = useState(() => router ?? createAppRouter());
   return (
     <ConnectionProvider>
-      <Authenticated router={r} />
+      <TooltipProvider>
+        <Authenticated router={r} />
+        <Toaster />
+      </TooltipProvider>
     </ConnectionProvider>
   );
 }

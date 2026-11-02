@@ -3,48 +3,92 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  redirect,
   type RouterHistory,
 } from "@tanstack/react-router";
-import { DecisionsPage } from "../pages/Decisions";
-import { EventsPage } from "../pages/Events";
-import { ExtensionsPage } from "../pages/Extensions";
-import { McpPage } from "../pages/Mcp";
-import { MemoryPage } from "../pages/Memory";
-import { ModulesPage } from "../pages/Modules";
-import { NotFoundPage } from "../pages/NotFound";
-import { OverviewPage } from "../pages/Overview";
-import { PeoplePage } from "../pages/People";
-import { PersonPage } from "../pages/Person";
-import { PersonaPage } from "../pages/Persona";
-import { QueuePage } from "../pages/Queue";
-import { RolesPage } from "../pages/Roles";
-import { SettingsPage } from "../pages/Settings";
-import { StagePage } from "../pages/Stage";
-import { VoicePage } from "../pages/Voice";
+import { AccessPage } from "@/pages/access/AccessPage";
+import { ActivityPage } from "@/pages/activity/ActivityPage";
+import { CharacterPage } from "@/pages/character/CharacterPage";
+import { LivePage } from "@/pages/live/LivePage";
+import { NotFoundPage } from "@/pages/NotFound";
+import { OverviewPage } from "@/pages/overview/OverviewPage";
+import { SettingsPage } from "@/pages/settings/SettingsPage";
+import { SystemPage } from "@/pages/system/SystemPage";
+import { ACTIVITY_TABS, type ActivityTab, CHARACTER_TABS, type CharacterTab, oneOf, SYSTEM_TABS, type SystemTab } from "./nav";
 import { Shell } from "./Shell";
 
 const rootRoute = createRootRoute({ component: Shell, notFoundComponent: NotFoundPage });
 
+const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() !== "" ? v : undefined);
+
+export const activityRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/activity",
+  validateSearch: (s: Record<string, unknown>): { tab?: ActivityTab } => ({ tab: oneOf(ACTIVITY_TABS, s.tab) }),
+  component: ActivityPage,
+});
+
+export const characterRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/character",
+  validateSearch: (s: Record<string, unknown>): { tab?: CharacterTab; person?: string } => ({
+    tab: oneOf(CHARACTER_TABS, s.tab),
+    person: str(s.person),
+  }),
+  component: CharacterPage,
+});
+
+export const systemRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/system",
+  validateSearch: (s: Record<string, unknown>): { tab?: SystemTab; q?: string } => ({
+    tab: oneOf(SYSTEM_TABS, s.tab),
+    q: str(s.q),
+  }),
+  component: SystemPage,
+});
+
+/** Old bookmarks (one page per feature) land on the merged pages. */
+const moved = (path: string, to: string, search: Record<string, string> = {}) =>
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path,
+    beforeLoad: () => {
+      throw redirect({ to, search } as never);
+    },
+  });
+
 const routeTree = rootRoute.addChildren([
   createRoute({ getParentRoute: () => rootRoute, path: "/", component: OverviewPage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/events", component: EventsPage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/decisions", component: DecisionsPage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/voice", component: VoicePage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/persona", component: PersonaPage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/memory", component: MemoryPage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/people", component: PeoplePage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/people/$personId", component: PersonPage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/queue", component: QueuePage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/stage", component: StagePage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/modules", component: ModulesPage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/extensions", component: ExtensionsPage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/mcp", component: McpPage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/roles", component: RolesPage }),
+  activityRoute,
+  createRoute({ getParentRoute: () => rootRoute, path: "/live", component: LivePage }),
+  characterRoute,
+  systemRoute,
+  createRoute({ getParentRoute: () => rootRoute, path: "/access", component: AccessPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage }),
+  moved("/events", "/activity", { tab: "events" }),
+  moved("/decisions", "/activity", { tab: "decisions" }),
+  moved("/voice", "/activity", { tab: "transcript" }),
+  moved("/persona", "/character", { tab: "persona" }),
+  moved("/memory", "/character", { tab: "memory" }),
+  moved("/people", "/character", { tab: "people" }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/people/$personId",
+    beforeLoad: ({ params }) => {
+      throw redirect({ to: "/character", search: { tab: "people", person: params.personId } });
+    },
+  }),
+  moved("/queue", "/live"),
+  moved("/stage", "/live"),
+  moved("/modules", "/system", { tab: "modules" }),
+  moved("/extensions", "/system", { tab: "extensions" }),
+  moved("/mcp", "/system", { tab: "mcp" }),
+  moved("/roles", "/access"),
 ]);
 
 /**
- * Hash history: the Core serves `dist/` as static files, and `#/decisions`
+ * Hash history: the Core serves `dist/` as static files, and `#/activity`
  * needs no server-side SPA fallback.
  */
 export function createAppRouter(history: RouterHistory = createHashHistory()) {

@@ -1,12 +1,11 @@
-// One function per Admin API route. To add an endpoint: put its wire types in
-// `types.ts` (live) or `planned-types.ts` (planned), add a function here, a
-// query key + hook in `queries.ts`, and — for planned routes — a section in
-// `API-PLAN.md`.
+// One function per Admin API route (`packages/api/src`). To add an endpoint: put its wire
+// types in `types.ts`, add a function here and a query key + hook in `app/queries.ts`.
 
 import { type ApiClient, seg } from "./http";
 import type {
   AdjustPersonRequest,
   AssignRoleRequest,
+  AuthMethods,
   CostReport,
   ExtensionInfo,
   McpServerInfo,
@@ -29,9 +28,6 @@ import type {
   UpdatePersonRequest,
   UpsertRoleRequest,
   VoiceState,
-} from "./planned-types";
-import type {
-  AuthMethods,
   DecisionRecord,
   DecisionsQuery,
   HealthInfo,
@@ -49,10 +45,9 @@ type Opts = { signal?: AbortSignal };
 
 export function createApi(client: ApiClient) {
   return {
-    // --- live (crates/miyoria-api/src/server.rs) ---------------------------
     health: (o?: Opts) => client.get<HealthInfo>("/api/health", { ...o, public: true }),
 
-    // --- panel login (crates/miyoria-api/src/oauth.rs) ----------------------
+    // panel login
     authMethods: (o?: Opts) => client.get<AuthMethods>("/api/auth/methods", { ...o, public: true }),
     session: (o?: Opts) => client.get<SessionInfo>("/api/auth/session", o),
     /** Ends the Discord session (clears the cookie); harmless for the token. */
@@ -78,7 +73,6 @@ export function createApi(client: ApiClient) {
     personaHistory: (key: string, o?: Opts) =>
       client.get<PersonaOverride[]>(`/api/persona/${seg(key)}/history`, o),
 
-    // --- panel routes (API-PLAN.md) -----------------------------------------
     llmCost: (o?: Opts) => client.get<CostReport>("/api/llm/cost", o),
 
     people: (q: PeopleQuery = {}, o?: Opts) =>
@@ -116,8 +110,8 @@ export function createApi(client: ApiClient) {
       client.post<ExtensionInfo>(`/api/extensions/${seg(id)}/${action}`),
 
     mcpServers: (o?: Opts) => client.get<McpServerInfo[]>("/api/mcp", o),
-    mcpAction: (name: string, action: "enable" | "disable" | "restart") =>
-      client.post<McpServerInfo>(`/api/mcp/${seg(name)}/${action}`),
+    /** Only `restart` exists at runtime; servers are turned on and off in `miyoria.toml`. */
+    mcpRestart: (name: string) => client.post<McpServerInfo>(`/api/mcp/${seg(name)}/restart`),
 
     queue: (o?: Opts) => client.get<QueueState>("/api/queue", o),
     queueSkip: (id: string) => client.post<QueueState>(`/api/queue/${seg(id)}/skip`),

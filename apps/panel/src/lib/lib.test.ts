@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Envelope } from "../api/types";
-import { foldDiff } from "../components/DiffView";
+import { foldDiff } from "@/components/diff-view";
 import { diffLines, diffStats } from "./diff";
 import { matchesAny, parseTopics, summarize, topicMatches, topicOf } from "./events";
 import { contextKeyString } from "./format";
@@ -69,7 +69,7 @@ describe("topics", () => {
 });
 
 describe("format", () => {
-  it("renders context keys like the Rust Display impl", () => {
+  it("renders context keys like packages/types", () => {
     expect(contextKeyString({ platform: "discord", scope: "1", channel: "2", kind: "channel" })).toBe("discord:1:2");
     expect(contextKeyString({ platform: "discord", scope: null, channel: "9", kind: "voice" })).toBe("discord:dm:voice:9");
   });

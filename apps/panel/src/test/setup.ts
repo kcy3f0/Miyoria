@@ -6,19 +6,30 @@ import { afterEach, expect } from "vitest";
 // whichever `vitest` pnpm hoists in the workspace, which is not the one running these tests.
 expect.extend(matchers);
 
-// jsdom has <dialog> but not its modal methods.
-if (typeof HTMLDialogElement !== "undefined") {
-  HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
-    this.setAttribute("open", "");
-  };
-  HTMLDialogElement.prototype.close ??= function (this: HTMLDialogElement) {
-    this.removeAttribute("open");
-    this.dispatchEvent(new Event("close"));
-  };
-}
-
 // jsdom does not implement scrolling; the router's scroll restoration calls it.
 window.scrollTo = (() => {}) as typeof window.scrollTo;
+
+// What Radix (Select, DropdownMenu, Popover, Tooltip) and cmdk need from a browser.
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+globalThis.ResizeObserver ??= ResizeObserverStub as unknown as typeof ResizeObserver;
+Element.prototype.scrollIntoView ??= () => {};
+Element.prototype.hasPointerCapture ??= () => false;
+Element.prototype.releasePointerCapture ??= () => {};
+Element.prototype.setPointerCapture ??= () => {};
+window.matchMedia ??= ((query: string) => ({
+  matches: false,
+  media: query,
+  onchange: null,
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  addListener: () => {},
+  removeListener: () => {},
+  dispatchEvent: () => false,
+})) as typeof window.matchMedia;
 
 afterEach(() => {
   cleanup();

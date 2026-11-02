@@ -2,10 +2,10 @@ import { createMemoryHistory } from "@tanstack/react-router";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ModuleInfo, SessionInfo } from "../api/types";
-import { type Handler, mockFetch } from "../test/render";
+import type { ModuleInfo, SessionInfo } from "@/api/types";
+import { writeStorage } from "@/lib/storage";
+import { type Handler, mockFetch } from "@/test/render";
 import { App } from "./App";
-import { writeStorage } from "../lib/storage";
 import { STORAGE_BASE_URL, STORAGE_TOKEN } from "./connection";
 import { createAppRouter } from "./router";
 import { LOGIN_ERRORS, READ_ONLY_HINT } from "./session";
@@ -54,7 +54,7 @@ describe("login screen", () => {
     const link = await screen.findByRole("link", { name: "使用 Discord 登入" });
     expect(link).toHaveAttribute("href", "/api/auth/oauth/login?next=%2F%23%2Fpeople");
     expect(screen.getByLabelText("Admin token")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "用 token 連線" })).not.toHaveClass("btn--primary");
+    expect(screen.getByRole("button", { name: "用 token 連線" })).toHaveAttribute("data-variant", "outline");
   });
 
   it("shows only the token form when the Core has no Discord login", async () => {
@@ -100,10 +100,10 @@ describe("login screen", () => {
       return undefined;
     });
     const user = userEvent.setup();
-    renderApp("/modules");
+    renderApp("/system");
     await user.type(await screen.findByLabelText("Admin token"), "s3cret");
     await user.click(screen.getByRole("button", { name: "用 token 連線" }));
-    expect(await screen.findByRole("heading", { name: "子系統" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "系統" })).toBeInTheDocument();
     expect(window.localStorage.getItem(STORAGE_TOKEN)).toBe("s3cret");
     expect(screen.getByRole("button", { name: "登出(清除 token)" })).toBeInTheDocument();
   });
@@ -112,15 +112,15 @@ describe("login screen", () => {
 describe("Discord session", () => {
   it("shows the user, and disables changes for read-only accounts", async () => {
     core({ discord: true, session: discordUser(false), extra: (_m, url) => (url.pathname === "/api/modules" ? { body: [mod] } : undefined) });
-    renderApp("/modules");
-    const row = (await screen.findByText("VOICE")).closest("li") as HTMLElement;
-    const restart = within(row).getByRole("button", { name: /重新啟動/ });
-    expect(restart).toBeDisabled();
-    expect(restart).toHaveAttribute("title", READ_ONLY_HINT);
+    renderApp("/system");
+    const row = (await screen.findByText("VOICE")).closest("tr") as HTMLElement;
+    const actions = within(row).getByRole("button", { name: "VOICE 的動作" });
+    expect(actions).toBeDisabled();
+    expect(actions).toHaveAttribute("title", READ_ONLY_HINT);
     const rail = screen.getByRole("complementary", { name: "主選單" });
     expect(within(rail).getByText("Owen")).toBeInTheDocument();
     expect(within(rail).getByText("唯讀")).toBeInTheDocument();
-    expect(rail.querySelector("img.rail__avatar")).toHaveAttribute("referrerpolicy", "no-referrer");
+    expect(rail.querySelector("img")).toHaveAttribute("referrerpolicy", "no-referrer");
   });
 
   it("lets writers change things, with the CSRF header and no bearer token", async () => {
@@ -134,11 +134,12 @@ describe("Discord session", () => {
       },
     });
     const user = userEvent.setup();
-    renderApp("/modules");
-    const row = (await screen.findByText("VOICE")).closest("li") as HTMLElement;
+    renderApp("/system");
+    const row = (await screen.findByText("VOICE")).closest("tr") as HTMLElement;
     expect(screen.queryByText("唯讀")).not.toBeInTheDocument();
-    await user.click(within(row).getByRole("button", { name: /重新啟動/ }));
-    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "重新啟動" }));
+    await user.click(within(row).getByRole("button", { name: "VOICE 的動作" }));
+    await user.click(await screen.findByRole("menuitem", { name: "重新啟動" }));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "重新啟動" }));
     await waitFor(() => expect(fetch.mock.calls.some(([u, init]) => init?.method === "POST" && String(u) === "/api/modules/voice/restart")).toBe(true));
     const [, init] = fetch.mock.calls.find(([u]) => String(u) === "/api/modules/voice/restart") ?? [];
     const headers = init?.headers as Record<string, string>;
@@ -160,7 +161,7 @@ describe("Discord session", () => {
       return undefined;
     });
     const user = userEvent.setup();
-    renderApp("/modules");
+    renderApp("/system");
     await user.click(await screen.findByRole("button", { name: "登出" }));
     expect(await screen.findByRole("link", { name: "使用 Discord 登入" })).toBeInTheDocument();
     expect(fetch.mock.calls.some(([u, init]) => String(u) === "/api/auth/logout" && init?.method === "POST")).toBe(true);
@@ -177,7 +178,7 @@ describe("Discord session", () => {
         return { status: 401, body: { error: "this account no longer has panel access" } };
       },
     });
-    renderApp("/modules");
+    renderApp("/system");
     expect(await screen.findByText("登入已過期或權限已變更,請重新登入。")).toBeInTheDocument();
     expect(modulesCalls).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: "使用 Discord 登入" })).toBeInTheDocument();

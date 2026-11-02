@@ -1,88 +1,62 @@
 import {
   Activity,
-  AudioLines,
-  Boxes,
-  Brain,
   Clapperboard,
   Gauge,
-  ListOrdered,
   type LucideIcon,
-  Plug,
-  Puzzle,
-  ScrollText,
+  Server,
+  Settings,
   ShieldCheck,
-  Split,
-  Users,
+  UserRound,
 } from "lucide-react";
 
-export type NavPath =
-  | "/"
-  | "/events"
-  | "/decisions"
-  | "/voice"
-  | "/persona"
-  | "/memory"
-  | "/people"
-  | "/queue"
-  | "/stage"
-  | "/modules"
-  | "/extensions"
-  | "/mcp"
-  | "/roles";
+export type NavPath = "/" | "/activity" | "/live" | "/character" | "/system" | "/access" | "/settings";
 
 export interface NavItem {
   to: NavPath;
   label: string;
   icon: LucideIcon;
+  /** Tabs of the page, for the command palette. */
+  tabs?: { tab: string; label: string }[];
 }
 
-export interface NavGroup {
-  title: string;
-  items: NavItem[];
-}
+export const ACTIVITY_TABS = [
+  { tab: "events", label: "事件" },
+  { tab: "decisions", label: "決策" },
+  { tab: "transcript", label: "轉錄" },
+] as const;
 
-export const NAV: NavGroup[] = [
-  {
-    title: "監控",
-    items: [
-      { to: "/", label: "總覽", icon: Gauge },
-      { to: "/events", label: "即時事件", icon: Activity },
-      { to: "/decisions", label: "決策追蹤", icon: Split },
-      { to: "/voice", label: "語音監控", icon: AudioLines },
-    ],
-  },
-  {
-    title: "角色",
-    items: [
-      { to: "/persona", label: "Persona", icon: ScrollText },
-      { to: "/memory", label: "記憶", icon: Brain },
-      { to: "/people", label: "人與關係", icon: Users },
-    ],
-  },
-  {
-    title: "直播",
-    items: [
-      { to: "/queue", label: "請求佇列", icon: ListOrdered },
-      { to: "/stage", label: "直播控制", icon: Clapperboard },
-    ],
-  },
-  {
-    title: "系統",
-    items: [
-      { to: "/modules", label: "子系統", icon: Boxes },
-      { to: "/extensions", label: "擴充套件", icon: Puzzle },
-      { to: "/mcp", label: "MCP 伺服器", icon: Plug },
-      { to: "/roles", label: "權限", icon: ShieldCheck },
-    ],
-  },
+export const CHARACTER_TABS = [
+  { tab: "persona", label: "Persona" },
+  { tab: "memory", label: "記憶" },
+  { tab: "people", label: "人" },
+] as const;
+
+export const SYSTEM_TABS = [
+  { tab: "modules", label: "子系統" },
+  { tab: "extensions", label: "擴充套件" },
+  { tab: "mcp", label: "MCP" },
+] as const;
+
+export type ActivityTab = (typeof ACTIVITY_TABS)[number]["tab"];
+export type CharacterTab = (typeof CHARACTER_TABS)[number]["tab"];
+export type SystemTab = (typeof SYSTEM_TABS)[number]["tab"];
+
+export const NAV: NavItem[] = [
+  { to: "/", label: "總覽", icon: Gauge },
+  { to: "/activity", label: "動態", icon: Activity, tabs: [...ACTIVITY_TABS] },
+  { to: "/live", label: "直播", icon: Clapperboard },
+  { to: "/character", label: "角色", icon: UserRound, tabs: [...CHARACTER_TABS] },
+  { to: "/system", label: "系統", icon: Server, tabs: [...SYSTEM_TABS] },
+  { to: "/access", label: "權限", icon: ShieldCheck },
+  { to: "/settings", label: "設定", icon: Settings },
 ];
 
 export function titleFor(path: string): string {
-  for (const g of NAV) {
-    for (const i of g.items) {
-      if (i.to === "/" ? path === "/" : path === i.to || path.startsWith(`${i.to}/`)) return i.label;
-    }
-  }
-  if (path.startsWith("/settings")) return "設定";
-  return "Miyoria";
+  const item = NAV.find((i) => (i.to === "/" ? path === "/" : path === i.to || path.startsWith(`${i.to}/`)));
+  return item?.label ?? "Miyoria";
+}
+
+/** Narrows a search param to one of `values`, else `undefined`. */
+export function oneOf<T extends string>(values: readonly { tab: T }[], v: unknown): T | undefined {
+  return values.some((x) => x.tab === v) ? (v as T) : undefined;
 }

@@ -1,150 +1,224 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { LogOut, Menu, Settings } from "lucide-react";
+import { LogOut, Search } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Logo } from "../components/logo";
-import { Badge, Button } from "../components/ui";
+import { CommandPalette } from "@/app/CommandPalette";
+import { Logo } from "@/components/logo";
+import { Dot, type Tone } from "@/components/status";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/misc";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+  useSidebar,
+} from "@/components/ui/sidebar";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useConnection } from "./connection";
 import { useEvents } from "./events-store";
 import { NAV, titleFor } from "./nav";
 import { useHealth } from "./queries";
 import { READ_ONLY_HINT, useSession } from "./session";
 
-function ConnectionStatus() {
+/** One dot for Core + event stream; the tooltip has the details. */
+function ConnectionDot() {
   const health = useHealth();
   const { status } = useEvents();
   const { config } = useConnection();
-  const host = config.baseUrl ? config.baseUrl.replace(/^https?:\/\//, "") : "同源";
+  const { state } = useSidebar();
+  const host = config.baseUrl ? config.baseUrl.replace(/^https?:\/\//, "") : window.location.host || "同源";
 
-  const coreTone = health.isSuccess ? "ok" : health.isError ? "danger" : "neutral";
-  const coreText = health.isSuccess ? `Core ${health.data.version}` : health.isError ? "Core 無回應" : "連線中…";
-  const sseTone = status.state === "open" ? "ok" : status.state === "closed" ? "danger" : "warn";
-  const sseText =
+  const sse =
     status.state === "open"
       ? "事件串流已連線"
       : status.state === "retrying"
         ? `事件串流重連中(${Math.round(status.inMs / 1000)} 秒)`
         : status.state === "connecting"
-          ? "事件串流連線中…"
+          ? "事件串流連線中"
           : `事件串流已關閉${status.error ? `:${status.error}` : ""}`;
+  const core = health.isSuccess ? `Core ${health.data.version}` : health.isError ? "Core 無回應" : "Core 連線中";
+
+  let tone: Tone = "warning";
+  if (health.isError || status.state === "closed") tone = "danger";
+  else if (health.isSuccess && status.state === "open") tone = "success";
+  const label = tone === "success" ? "已連線" : tone === "danger" ? "連線中斷" : "連線中";
 
   return (
-    <div aria-live="polite" style={{ display: "grid", gap: "var(--s-1)" }}>
-      <div className="conn" title={host}>
-        <span className="dot" data-tone={coreTone} aria-hidden />
-        <span className="conn__label">
-          {coreText}
-          <span className="faint"> · {host}</span>
-        </span>
-      </div>
-      <div className="conn">
-        <span className="dot" data-tone={sseTone} aria-hidden />
-        <span className="conn__label" title={sseText}>
-          {sseText}
-        </span>
-      </div>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${label}:${core},${sse}`}
+          className="flex h-8 min-w-0 items-center gap-2.5 rounded-md px-2 text-sm text-muted-foreground outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+        >
+          <span className="flex size-4 shrink-0 items-center justify-center">
+            <Dot tone={tone} pulse={tone === "warning"} />
+          </span>
+          {state === "expanded" && <span className="truncate">{label}</span>}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" align="end">
+        <div className="grid gap-0.5">
+          <span>{core}</span>
+          <span className="text-muted-foreground">{sse}</span>
+          <span className="font-mono text-muted-foreground">{host}</span>
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function SessionFooter() {
+  const value = useSession();
+  const { signOut } = useConnection();
+  const { state } = useSidebar();
+  const user = value?.session.method === "discord" ? value.session.user : null;
+  const readOnly = value ? !value.session.permissions.write : false;
+  const logout = value?.logout ?? signOut;
+  const expanded = state === "expanded";
+  return (
+    <div className="flex items-center gap-1">
+      {user && expanded && (
+        <div className="flex min-w-0 flex-1 items-center gap-2 px-2">
+          {user.avatar_url ? (
+            <img
+              src={user.avatar_url}
+              alt=""
+              width={20}
+              height={20}
+              referrerPolicy="no-referrer"
+              className="size-5 shrink-0 rounded-full"
+            />
+          ) : (
+            <span aria-hidden className="size-5 shrink-0 rounded-full bg-muted" />
+          )}
+          <span className="truncate text-sm" title={`Discord · ${user.name}`}>
+            {user.name}
+          </span>
+          {readOnly && (
+            <Badge variant="outline" title={READ_ONLY_HINT}>
+              唯讀
+            </Badge>
+          )}
+        </div>
+      )}
+      {!user && expanded && <span className="flex-1 truncate px-2 text-sm text-muted-foreground">Admin token</span>}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="text-muted-foreground"
+        aria-label={user ? "登出" : "登出(清除 token)"}
+        title={user ? "登出" : "登出(清除 token)"}
+        onClick={logout}
+      >
+        <LogOut />
+      </Button>
     </div>
   );
 }
 
-/** The signed-in Discord user, or nothing for the token. */
-function SessionUser() {
-  const value = useSession();
-  const user = value?.session.method === "discord" ? value.session.user : null;
-  if (!user) return null;
-  const readOnly = !value?.session.permissions.write;
+function AppSidebar({ pathname }: { pathname: string }) {
+  const { setOpenMobile } = useSidebar();
   return (
-    <div className="rail__user">
-      {user.avatar_url ? (
-        <img className="rail__avatar" src={user.avatar_url} alt="" width={24} height={24} referrerPolicy="no-referrer" />
-      ) : (
-        <span className="rail__avatar" aria-hidden />
-      )}
-      <span className="rail__user-name" title={`Discord · ${user.name}`}>
-        {user.name}
-      </span>
-      {readOnly && (
-        <span title={READ_ONLY_HINT}>
-          <Badge>唯讀</Badge>
-        </span>
-      )}
-    </div>
+    <Sidebar aria-label="主選單">
+      <SidebarHeader>
+        <Link
+          to="/"
+          className="flex h-10 items-center gap-2.5 rounded-md px-2 font-semibold tracking-tight outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+          onClick={() => setOpenMobile(false)}
+        >
+          <Logo className="size-5 shrink-0 text-brand" />
+          <span className="truncate group-data-[collapsible=icon]:hidden">Miyoria</span>
+        </Link>
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <nav aria-label="頁面">
+            <SidebarMenu>
+              {NAV.map((item) => {
+                const active = item.to === "/" ? pathname === "/" : pathname === item.to || pathname.startsWith(`${item.to}/`);
+                return (
+                  <SidebarMenuItem key={item.to}>
+                    <SidebarMenuButton asChild tooltip={item.label}>
+                      <Link
+                        to={item.to}
+                        aria-current={active ? "page" : undefined}
+                        onClick={() => setOpenMobile(false)}
+                      >
+                        <item.icon aria-hidden />
+                        <span>{item.label}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
+            </SidebarMenu>
+          </nav>
+        </SidebarGroup>
+      </SidebarContent>
+      <SidebarFooter className="border-t border-sidebar-border">
+        <ConnectionDot />
+        <SessionFooter />
+      </SidebarFooter>
+    </Sidebar>
   );
 }
 
 export function Shell() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const { signOut } = useConnection();
-  const session = useSession();
-  const discord = session?.session.method === "discord";
-  const logout = session?.logout ?? signOut;
-  const [navOpen, setNavOpen] = useState(false);
-
-  // Close the off-canvas nav after navigating, and on Escape.
-  useEffect(() => setNavOpen(false), [pathname]);
-  useEffect(() => {
-    if (!navOpen) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setNavOpen(false);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [navOpen]);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
     document.title = `${titleFor(pathname)} · Miyoria`;
   }, [pathname]);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
-    <div className="shell" data-nav-open={navOpen}>
-      <a href="#main" className="visually-hidden">
+    <SidebarProvider>
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-popover focus:px-3 focus:py-2"
+      >
         跳到主要內容
       </a>
-      <aside className="rail" id="rail" aria-label="主選單">
-        <div className="rail__brand">
-          <Logo className="rail__mark" />
-          Miyoria
-        </div>
-        <nav className="rail__nav">
-          {NAV.map((g) => (
-            <div className="rail__group" key={g.title}>
-              <p className="rail__group-title">{g.title}</p>
-              {g.items.map((item) => (
-                <Link key={item.to} to={item.to} className="rail__link" activeOptions={{ exact: item.to === "/" }}>
-                  <item.icon aria-hidden />
-                  {item.label}
-                </Link>
-              ))}
-            </div>
-          ))}
-        </nav>
-        <div className="rail__foot">
-          <SessionUser />
-          <ConnectionStatus />
-          <div style={{ display: "flex", gap: "var(--s-1)", marginLeft: "calc(var(--s-2) * -1)" }}>
-            <Link to="/settings" className="rail__link" style={{ flex: 1 }}>
-              <Settings aria-hidden />
-              設定
-            </Link>
-            <Button variant="ghost" iconOnly icon={LogOut} label={discord ? "登出" : "登出(清除 token)"} onClick={logout} />
-          </div>
-        </div>
-      </aside>
-      {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} aria-hidden />}
-      <div className="main">
-        <header className="topbar">
-          <Button
-            variant="ghost"
-            iconOnly
-            icon={Menu}
-            label="開啟選單"
-            aria-expanded={navOpen}
-            aria-controls="rail"
-            onClick={() => setNavOpen((v) => !v)}
-          />
-          <span className="topbar__title">{titleFor(pathname)}</span>
+      <AppSidebar pathname={pathname} />
+      <SidebarInset>
+        <header className="sticky top-0 z-10 flex h-12 items-center gap-2 border-b bg-background/85 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/70 sm:px-4">
+          <SidebarTrigger />
+          <button
+            type="button"
+            onClick={() => setPaletteOpen(true)}
+            className="ml-auto flex h-8 w-9 items-center justify-center gap-2 rounded-md border border-input bg-input/20 text-sm text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 sm:w-60 sm:justify-start sm:px-2.5"
+            aria-label="搜尋與跳轉"
+          >
+            <Search className="size-4 shrink-0" />
+            <span className="hidden sm:inline">搜尋…</span>
+            <Kbd className="ml-auto hidden sm:inline-flex">⌘K</Kbd>
+          </button>
         </header>
-        <main id="main" tabIndex={-1} style={{ outline: "none" }}>
+        <main id="main" tabIndex={-1} className="flex-1 outline-none">
           <Outlet />
         </main>
-      </div>
-    </div>
+      </SidebarInset>
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+    </SidebarProvider>
   );
 }

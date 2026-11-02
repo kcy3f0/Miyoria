@@ -1,12 +1,15 @@
-import { QueryClientProvider } from "@tanstack/react-query";
+import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { render } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { vi } from "vitest";
-import { ConnectionProvider } from "../app/connection";
-import { EventStore, EventStoreContext } from "../app/events-store";
-import { createQueryClient } from "../app/queries";
-import { ToastProvider } from "../components/toast";
+import { ConnectionProvider } from "@/app/connection";
+import { EventStore, EventStoreContext } from "@/app/events-store";
+import { createQueryClient } from "@/app/queries";
+import { createAppRouter } from "@/app/router";
+import { SessionProvider, type SessionValue } from "@/app/session";
+import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 export type Handler = (method: string, url: URL, body: unknown) => { status?: number; body?: unknown; text?: string } | undefined;
 
@@ -24,24 +27,67 @@ export function mockFetch(handler: Handler) {
   return fn;
 }
 
+export const writer: SessionValue = {
+  session: { method: "token", user: null, permissions: { write: true } },
+  logout: () => {},
+};
+
+export function testQueryClient(): QueryClient {
+  const qc = createQueryClient();
+  qc.setDefaultOptions({ queries: { retry: false, refetchInterval: false, staleTime: Infinity } });
+  return qc;
+}
+
+function Providers({
+  store,
+  session,
+  queryClient,
+  children,
+}: {
+  store: EventStore;
+  session?: SessionValue;
+  queryClient: QueryClient;
+  children: ReactNode;
+}) {
+  const inner = (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider delayDuration={0}>
+        <EventStoreContext.Provider value={store}>{children}</EventStoreContext.Provider>
+        <Toaster />
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+  return (
+    <ConnectionProvider initial={{ baseUrl: "", token: "t0ken" }}>
+      {session ? <SessionProvider value={session}>{inner}</SessionProvider> : inner}
+    </ConnectionProvider>
+  );
+}
+
 /** Renders `ui` inside every provider a page needs, at a memory route. */
-export function renderPage(ui: ReactNode, opts: { store?: EventStore } = {}) {
+export function renderPage(ui: ReactNode, opts: { store?: EventStore; session?: SessionValue } = {}) {
   const store = opts.store ?? new EventStore(0);
-  const queryClient = createQueryClient();
-  queryClient.setDefaultOptions({ queries: { retry: false, refetchInterval: false, staleTime: Infinity } });
   const root = createRootRoute({ component: () => <Outlet /> });
   const route = createRoute({ getParentRoute: () => root, path: "/", component: () => <>{ui}</> });
   const router = createRouter({ routeTree: root.addChildren([route]), history: createMemoryHistory({ initialEntries: ["/"] }) });
+  const queryClient = testQueryClient();
   const utils = render(
-    <ConnectionProvider initial={{ baseUrl: "", token: "t0ken" }}>
-      <QueryClientProvider client={queryClient}>
-        <ToastProvider>
-          <EventStoreContext.Provider value={store}>
-            <RouterProvider router={router as never} />
-          </EventStoreContext.Provider>
-        </ToastProvider>
-      </QueryClientProvider>
-    </ConnectionProvider>,
+    <Providers store={store} session={opts.session} queryClient={queryClient}>
+      <RouterProvider router={router as never} />
+    </Providers>,
   );
   return { ...utils, store, queryClient };
+}
+
+/** Renders the whole app (shell + routes) at `path`, signed in, without the login round trip. */
+export function renderRoute(path: string, opts: { store?: EventStore; session?: SessionValue } = {}) {
+  const store = opts.store ?? new EventStore(0);
+  const router = createAppRouter(createMemoryHistory({ initialEntries: [path] }));
+  const queryClient = testQueryClient();
+  const utils = render(
+    <Providers store={store} session={opts.session ?? writer} queryClient={queryClient}>
+      <RouterProvider router={router} />
+    </Providers>,
+  );
+  return { ...utils, store, router, queryClient };
 }
