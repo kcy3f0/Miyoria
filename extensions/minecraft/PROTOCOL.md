@@ -117,6 +117,7 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 | `unknown_type` | 不認得的請求 `type` |
 | `invalid_args` | 參數缺漏或型別 / 範圍錯誤 |
 | `not_in_game` | 還在主選單或載入中,沒有玩家 / 世界 |
+| `game_paused` | 單人遊戲在暫停選單中;`mine` 與 `goto {block}` 會被拒絕(Baritone 查方塊掉落物要等內建伺服器,暫停時會讓整個遊戲卡死) |
 | `baritone_unavailable` | 沒有安裝 Baritone |
 | `altoclef_unavailable` | 沒有安裝 AltoClef(或還沒初始化 / API 不符) |
 | `screenshot_failed` | 擷取或編碼失敗 |

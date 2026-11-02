@@ -243,6 +243,8 @@ describe("去玩 Minecraft", () => {
     const f = await Flow.create();
     let handled = true;
     f.sup.services.provide("chat", GameChatKey, { handles: () => handled });
+    // In voice, where her commentary goes.
+    await f.publish({ type: "voice_joined", data: { context: VOICE, participants: [] } });
     await f.startTool({});
     await vi.advanceTimersByTimeAsync(100);
     const hints = () =>

@@ -915,7 +915,15 @@ export class Director {
     s.lastComment = now;
     // `auto`: she may have joined (or left) a voice channel since the game started; comment
     // where she is now rather than where the game was started.
-    if (s.placement === "auto") s.context = this.#resolveContext("auto", s.here);
+    if (s.placement === "auto") {
+      s.context = this.#resolveContext("auto", s.here);
+      // Not in voice and no stream channel: play quietly rather than fill a text channel with
+      // running commentary (`where: "here"` asks for that explicitly).
+      if (s.context.kind !== "voice" && s.context !== this.#cfg.stream_context) {
+        log.debug({ hint }, "commentary skipped: not in voice");
+        return false;
+      }
+    }
     const text = urgent
       ? `(你正在直播玩 ${s.gameName})${hint}`
       : `(你正在直播玩 ${s.gameName})實況:${hint}`;

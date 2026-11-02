@@ -258,6 +258,8 @@ export function errorText(code: string, message: string): string {
       return "沒有連上 Minecraft(遊戲沒開,或 miyoria-bridge 模組沒載入)";
     case "not_in_game":
       return "還在主選單或載入中,不在遊戲世界裡";
+    case "game_paused":
+      return "遊戲現在是暫停的(單人遊戲的暫停選單),要等擁有者回到遊戲才能挖礦或找方塊";
     case "baritone_unavailable":
       return "沒有安裝 Baritone,不能自動走路 / 挖礦";
     case "altoclef_unavailable":

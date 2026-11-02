@@ -34,6 +34,8 @@ public final class Protocol {
     public static final String E_UNKNOWN_TYPE = "unknown_type";
     public static final String E_INVALID_ARGS = "invalid_args";
     public static final String E_NOT_IN_GAME = "not_in_game";
+    /** Single-player is paused; Baritone block lookups would block the render thread forever. */
+    public static final String E_GAME_PAUSED = "game_paused";
     public static final String E_BARITONE_UNAVAILABLE = "baritone_unavailable";
     public static final String E_ALTOCLEF_UNAVAILABLE = "altoclef_unavailable";
     public static final String E_SCREENSHOT_FAILED = "screenshot_failed";

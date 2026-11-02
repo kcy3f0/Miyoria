@@ -446,14 +446,15 @@ describe("game director", () => {
     await h.stop();
   });
 
-  it("auto_commentary_follows_her_into_a_voice_channel_joined_later", async () => {
+  it("auto_commentary_is_spoken_in_voice_and_quiet_elsewhere", async () => {
     const llm = new MockProvider("mock").reply(decision("閒晃", null, "看看四周"));
     const h = await Harness.create(llm, { decide_secs: 5 });
-    // Started from a text channel while she is not in voice: commentary goes there...
+    // Started from a text channel while she is not in voice: she plays quietly (no running
+    // commentary in a text channel)...
     await h.command("game start");
     await secs(5);
-    expect(h.hintContexts.take().at(-1)).toEqual(textCtx());
-    // ...until she joins a voice channel; then it follows her there.
+    expect(h.hintContexts.take()).toEqual([]);
+    // ...until she joins a voice channel; then she comments there.
     await h.publish({ type: "voice_joined", data: { context: voiceCtx(), participants: [] } });
     await secs(20);
     expect(h.hintContexts.take().at(-1)).toEqual(voiceCtx());

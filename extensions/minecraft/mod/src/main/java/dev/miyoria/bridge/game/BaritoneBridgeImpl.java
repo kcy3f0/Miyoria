@@ -93,6 +93,7 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
         Goal goal;
         if (req.has("block")) {
             String block = blockName(req.str("block"));
+            requireUnpaused();
             b().getGetToBlockProcess().getToBlock(new BlockOptionalMeta(block));
             out.addProperty("goal", "GetToBlock{" + block + "}");
             return;
@@ -114,6 +115,18 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
         out.addProperty("goal", goal.toString());
     }
 
+    /**
+     * Baritone resolves a block's drops through the integrated server and waits for it on the
+     * render thread. While single-player is paused the server never answers, and the whole game
+     * hangs (the pause menu can no longer be closed). Refuse instead.
+     */
+    private static void requireUnpaused() throws ProtocolException {
+        if (MinecraftClient.getInstance().isPaused()) {
+            throw new ProtocolException(Protocol.E_GAME_PAUSED,
+                    "the game is paused (single-player pause menu); it has to be resumed first");
+        }
+    }
+
     private void doMine(Request req, JsonObject out) throws ProtocolException {
         List<String> names = new ArrayList<>();
         if (req.has("block")) names.add(blockName(req.str("block")));
@@ -129,6 +142,7 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
         }
         if (names.isEmpty()) throw new ProtocolException(Protocol.E_INVALID_ARGS, "mine needs \"blocks\" (or \"block\")");
         int count = Math.max(0, req.optInt("count", 0)); // 0 = until stopped
+        requireUnpaused();
         b().getMineProcess().mineByName(count, names.toArray(new String[0]));
         JsonArray echo = new JsonArray();
         names.forEach(echo::add);
