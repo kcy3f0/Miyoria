@@ -643,3 +643,155 @@ export interface VoiceSession {
 export interface VoiceState {
   sessions: VoiceSession[];
 }
+
+// ---------------------------------------------------------------------------
+// inner life (`GET /api/self`, `GET /api/world`; `packages/types` self.ts / world.ts)
+
+export type DriveName = "social" | "play" | "attention" | "rest" | "curiosity";
+
+export interface Mood {
+  /** -1..1 */
+  valence: number;
+  /** 0..1 */
+  arousal: number;
+  /** 0..1 */
+  energy: number;
+}
+
+export interface Talkativeness {
+  level: number;
+  until: Timestamp | null;
+  why: string;
+  set_at: Timestamp;
+}
+
+export interface SelfPolicy {
+  /** By scope: `*`, `voice`, `text`, `discord:<guild>`, or a context string. */
+  talkativeness: Record<string, Talkativeness>;
+  initiative: number;
+  initiative_why: string;
+}
+
+export type AgendaStatus = "open" | "done" | "expired" | "dropped";
+
+export interface AgendaItem {
+  id: string;
+  text: string;
+  why: string;
+  person: PersonId | null;
+  context: ContextKey | null;
+  created_at: Timestamp;
+  due: Timestamp | null;
+  expires_at: Timestamp | null;
+  status: AgendaStatus;
+  closed_at: Timestamp | null;
+}
+
+export interface FeelingView {
+  person: PersonId;
+  display_name: string | null;
+  text: string;
+  updated_at: Timestamp;
+  by: string;
+}
+
+/** `GET /api/self`. */
+export interface SelfView {
+  at: Timestamp;
+  mood: Mood | null;
+  boredom: number;
+  drives: Record<DriveName, number>;
+  policy: SelfPolicy;
+  /** Open items first, then recently closed ones. */
+  agenda: AgendaItem[];
+  /** Newest first. */
+  feelings: FeelingView[];
+}
+
+export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
+
+export interface PresenceActivity {
+  type: "playing" | "streaming" | "listening" | "watching" | "competing" | "custom";
+  name: string;
+  details: string | null;
+  state: string | null;
+  started_at: Timestamp | null;
+  url: string | null;
+}
+
+export interface VoiceSpot {
+  platform: PlatformId;
+  guild: string;
+  channel: string;
+  channel_name: string | null;
+}
+
+export interface PersonPresence {
+  account: AccountRef;
+  person: PersonId | null;
+  display_name: string;
+  status: PresenceStatus | null;
+  activities: PresenceActivity[];
+  voice: VoiceSpot | null;
+  online_since: Timestamp | null;
+  updated_at: Timestamp;
+}
+
+export interface VoiceMember {
+  account: AccountRef;
+  person: PersonId | null;
+  display_name: string;
+  is_self: boolean;
+  muted: boolean;
+  deafened: boolean;
+  video: boolean;
+  streaming: boolean;
+  since: Timestamp;
+}
+
+export interface VoiceChannelState {
+  platform: PlatformId;
+  guild: string;
+  channel: string;
+  name: string | null;
+  members: VoiceMember[];
+}
+
+export interface ChannelActivity {
+  context: ContextKey;
+  label: string | null;
+  recent_messages: number;
+  per_minute: number;
+  last_at: Timestamp | null;
+  recent_authors: string[];
+  topic: string[];
+  lively: boolean;
+  her_last_at: Timestamp | null;
+}
+
+export interface HerStatus {
+  voice: ContextKey | null;
+  voice_name: string | null;
+  golive: string | null;
+  streaming: boolean;
+  scene: string | null;
+  game: string | null;
+}
+
+export interface TimeContext {
+  local: string;
+  weekday: number;
+  weekend: boolean;
+  part_of_day: string;
+  utc_offset_minutes: number;
+}
+
+/** `GET /api/world`. */
+export interface WorldView {
+  at: Timestamp;
+  time: TimeContext;
+  her: HerStatus;
+  people: PersonPresence[];
+  voice_channels: VoiceChannelState[];
+  channels: ChannelActivity[];
+}

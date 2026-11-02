@@ -9,12 +9,23 @@ import {
 import { AccessPage } from "@/pages/access/AccessPage";
 import { ActivityPage } from "@/pages/activity/ActivityPage";
 import { CharacterPage } from "@/pages/character/CharacterPage";
+import { InnerPage } from "@/pages/inner/InnerPage";
 import { LivePage } from "@/pages/live/LivePage";
 import { NotFoundPage } from "@/pages/NotFound";
 import { OverviewPage } from "@/pages/overview/OverviewPage";
 import { SettingsPage } from "@/pages/settings/SettingsPage";
 import { SystemPage } from "@/pages/system/SystemPage";
-import { ACTIVITY_TABS, type ActivityTab, CHARACTER_TABS, type CharacterTab, oneOf, SYSTEM_TABS, type SystemTab } from "./nav";
+import {
+  ACTIVITY_TABS,
+  type ActivityTab,
+  CHARACTER_TABS,
+  type CharacterTab,
+  INNER_TABS,
+  type InnerTab,
+  oneOf,
+  SYSTEM_TABS,
+  type SystemTab,
+} from "./nav";
 import { Shell } from "./Shell";
 
 const rootRoute = createRootRoute({ component: Shell, notFoundComponent: NotFoundPage });
@@ -36,6 +47,13 @@ export const characterRoute = createRoute({
     person: str(s.person),
   }),
   component: CharacterPage,
+});
+
+export const innerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/inner",
+  validateSearch: (s: Record<string, unknown>): { tab?: InnerTab } => ({ tab: oneOf(INNER_TABS, s.tab) }),
+  component: InnerPage,
 });
 
 export const systemRoute = createRoute({
@@ -63,6 +81,7 @@ const routeTree = rootRoute.addChildren([
   activityRoute,
   createRoute({ getParentRoute: () => rootRoute, path: "/live", component: LivePage }),
   characterRoute,
+  innerRoute,
   systemRoute,
   createRoute({ getParentRoute: () => rootRoute, path: "/access", component: AccessPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage }),

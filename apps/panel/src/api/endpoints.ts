@@ -28,6 +28,8 @@ import type {
   UpdatePersonRequest,
   UpsertRoleRequest,
   VoiceState,
+  SelfView,
+  WorldView,
   DecisionRecord,
   DecisionsQuery,
   HealthInfo,
@@ -128,6 +130,9 @@ export function createApi(client: ApiClient) {
     stageSay: (req: SayRequest) => client.post<{ turn: string | null }>("/api/stage/say", req),
 
     voice: (o?: Opts) => client.get<VoiceState>("/api/voice", o),
+
+    self: (o?: Opts) => client.get<SelfView>("/api/self", o),
+    world: (o?: Opts) => client.get<WorldView>("/api/world", o),
   };
 }
 

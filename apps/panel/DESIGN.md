@@ -43,7 +43,7 @@ title, semibold, tracking-tight). Tables and numbers use `tabular-nums`.
 ## Layout
 
 - Shell: shadcn `Sidebar` (15 rem, collapses to 3.25 rem icons, `⌘/Ctrl+B`; off-canvas
-  sheet below `md`). Seven items: 總覽 · 動態 · 直播 · 角色 · 系統 · 權限 · 設定. Footer: one
+  sheet below `md`). Eight items: 總覽 · 動態 · 直播 · 角色 · 內心 · 系統 · 權限 · 設定. Footer: one
   status dot for Core + event stream (tooltip: version, stream state, host), the Discord user
   (or "Admin token") and logout.
 - Sticky 48 px header: sidebar trigger and the ⌘K search button only (no title echo).

@@ -49,6 +49,8 @@ export const queryKeys = {
   queue: ["queue"] as const,
   stage: ["stage"] as const,
   voice: ["voice"] as const,
+  self: ["self"] as const,
+  world: ["world"] as const,
 };
 
 /** Errors that retrying cannot fix. */
@@ -316,4 +318,16 @@ export function useStageMutations() {
 export function useVoice() {
   const api = useApi();
   return useQuery({ queryKey: queryKeys.voice, queryFn: ({ signal }) => api.voice({ signal }), refetchInterval: poll(5_000) });
+}
+
+// --- inner life --------------------------------------------------------------
+
+export function useSelf() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.self, queryFn: ({ signal }) => api.self({ signal }), refetchInterval: poll(5_000) });
+}
+
+export function useWorld() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.world, queryFn: ({ signal }) => api.world({ signal }), refetchInterval: poll(5_000) });
 }
