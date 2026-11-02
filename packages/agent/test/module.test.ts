@@ -1,7 +1,7 @@
 // Port of the crate's module-level tests (`tests.rs`).
 
 import { CommandRegistryKey } from "@miyoria/commands";
-import { contextSession, MockProvider } from "@miyoria/llm";
+import { contentText, contextSession, MockProvider } from "@miyoria/llm";
 import { ToolRegistryKey } from "@miyoria/tools";
 import { type ContextKey, eventTopic, isJsonObject } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -37,7 +37,7 @@ afterEach(async () => {
 function lastToolResult(mock: MockProvider, n: number): string {
   const last = mock.requests()[n]?.messages.at(-1);
   expect(last?.role).toBe("tool");
-  return last?.content ?? "";
+  return contentText(last?.content ?? "");
 }
 
 describe("agent module", () => {

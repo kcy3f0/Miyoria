@@ -16,10 +16,13 @@ import {
   type ChatRequest,
   type ChatResponse,
   collectResponse,
+  hasImages,
   LlmError,
   type ModelRef,
   modelRefString,
+  ProviderHttpError,
   type StreamEvent,
+  textOnlyRequest,
   type Usage,
 } from "./types.js";
 
@@ -45,6 +48,18 @@ export interface LlmRouterOptions {
   clock?: Clock;
   /** `[llm.thinking]`: whether reasoning models think, per purpose (default off). */
   thinking?: ReadonlyMap<string, boolean>;
+  /**
+   * `[llm.image_input]`: whether a model takes image parts, keyed by `provider:model` or by
+   * `provider` (the model entry wins). Unlisted models do.
+   */
+  imageInput?: ReadonlyMap<string, boolean>;
+}
+
+/** HTTP statuses with which a provider may refuse image parts it does not support. */
+const IMAGE_REJECTION_STATUSES: ReadonlySet<number> = new Set([400, 413, 415, 422]);
+
+function rejectsImages(error: unknown): boolean {
+  return error instanceof ProviderHttpError && IMAGE_REJECTION_STATUSES.has(error.status);
 }
 
 /** One routed call while it streams. */
@@ -104,6 +119,9 @@ export class LlmRouter {
   readonly #metrics: LlmMetrics;
   readonly #clock: Clock;
   readonly #thinking: ReadonlyMap<string, boolean>;
+  readonly #imageInput: ReadonlyMap<string, boolean>;
+  /** Models that refused image parts in this run (`provider:model`); they get text from now on. */
+  readonly #refusedImages = new Set<string>();
 
   constructor(
     providers: ReadonlyMap<string, ChatProvider>,
@@ -117,6 +135,26 @@ export class LlmRouter {
     this.#metrics = llmMetrics(options.metrics);
     this.#clock = options.clock ?? systemClock;
     this.#thinking = options.thinking ?? new Map();
+    this.#imageInput = options.imageInput ?? new Map();
+  }
+
+  /**
+   * Whether `model` takes image parts: not after it refused them in this run, else
+   * `[llm.image_input]` for the model, then for its provider; unlisted models do.
+   */
+  modelTakesImages(model: ModelRef): boolean {
+    const key = modelRefString(model);
+    if (this.#refusedImages.has(key)) return false;
+    return this.#imageInput.get(key) ?? this.#imageInput.get(model.provider) ?? true;
+  }
+
+  /**
+   * Whether a request for `purpose` would reach a model that looks at images (the first model
+   * of the chain in use), so callers can skip preparing images nobody sees.
+   */
+  takesImages(purpose: string): boolean {
+    const first = this.#chainForState(purpose, this.#cost.state())[0];
+    return first !== undefined && this.modelTakesImages(first);
   }
 
   /** `request.thinking`, else `[llm.thinking]` for the purpose; off when neither says. */
@@ -224,14 +262,29 @@ export class LlmRouter {
       let iterator: AsyncIterator<StreamEvent>;
       let first: IteratorResult<StreamEvent>;
       const sentAt = this.#clock.now();
+      let routed: ChatRequest = {
+        ...request,
+        model: model.model,
+        thinking: this.#thinkingFor(purpose, request),
+      };
+      const images = hasImages(routed.messages);
+      if (images && !this.modelTakesImages(model)) routed = textOnlyRequest(routed);
       try {
-        const stream = await provider.stream(
-          { ...request, model: model.model, thinking: this.#thinkingFor(purpose, request) },
-          signal,
-        );
-        iterator = stream[Symbol.asyncIterator]();
-        // Only fall back if the model fails before its first event.
-        first = await iterator.next();
+        try {
+          [iterator, first] = await this.#open(provider, routed, signal);
+        } catch (error) {
+          // A provider that cannot take image parts: once more as text, and remember it.
+          if (signal?.aborted || !images || !hasImages(routed.messages) || !rejectsImages(error)) {
+            throw error;
+          }
+          log.warn(
+            { model: key, err: errorMessage(error) },
+            "model refused image input, retrying as text",
+          );
+          [iterator, first] = await this.#open(provider, textOnlyRequest(routed), signal);
+          this.#refusedImages.add(key);
+          log.warn({ model: key }, "sending this model text only from now on");
+        }
       } catch (error) {
         if (signal?.aborted) throw error;
         log.warn({ model: key, err: errorMessage(error) }, "model failed, trying next in chain");
@@ -250,6 +303,17 @@ export class LlmRouter {
       return new RoutedStream(call, this.#track(call, first, iterator, signal));
     }
     throw lastError ?? new LlmError("all models failed");
+  }
+
+  /** Starts a response; only failures before the first event count as the model failing. */
+  async #open(
+    provider: ChatProvider,
+    request: ChatRequest,
+    signal: AbortSignal | undefined,
+  ): Promise<[AsyncIterator<StreamEvent>, IteratorResult<StreamEvent>]> {
+    const stream = await provider.stream(request, signal);
+    const iterator = stream[Symbol.asyncIterator]();
+    return [iterator, await iterator.next()];
   }
 
   async complete(

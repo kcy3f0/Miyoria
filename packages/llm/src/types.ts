@@ -10,9 +10,35 @@ export interface ToolCall {
   arguments: string;
 }
 
+export interface TextPart {
+  type: "text";
+  text: string;
+}
+
+/** How closely a vision model looks at an image (OpenAI `detail`); `low` costs least. */
+export type ImageDetail = "auto" | "low" | "high";
+
+export interface ImagePart {
+  type: "image_url";
+  /** `url` is an `https:` URL or a `data:image/...;base64,...` URL. */
+  image_url: { url: string; detail: ImageDetail };
+  /**
+   * Text that stands in for the image when the model cannot take images (never sent along
+   * with the image).
+   */
+  alt?: string;
+}
+
+/** One part of a multimodal message (Chat Completions content parts). */
+export type ContentPart = TextPart | ImagePart;
+
+/** Plain text, or parts (text and images) for vision models. */
+export type MessageContent = string | ContentPart[];
+
 export interface ChatMessage {
   role: ChatRole;
-  content: string;
+  /** Images only in `user` messages. */
+  content: MessageContent;
   /** Optional speaker name (OpenAI `name` field). */
   name: string | null;
   /** Tool calls made by the assistant in this message. */
@@ -21,7 +47,39 @@ export interface ChatMessage {
   tool_call_id: string | null;
 }
 
-function plain(role: ChatRole, content: string, name: string | null = null): ChatMessage {
+/** What stands in for an image without `alt` in text-only form. */
+export const IMAGE_PLACEHOLDER = "[圖片]";
+
+/**
+ * The content as plain text: text parts joined by line breaks, images replaced by their `alt`
+ * (or `[圖片]`).
+ */
+export function contentText(content: MessageContent): string {
+  if (typeof content === "string") return content;
+  return content
+    .map((p) => (p.type === "text" ? p.text : (p.alt ?? IMAGE_PLACEHOLDER)))
+    .filter((t) => t !== "")
+    .join("\n");
+}
+
+/** Whether any message carries an image part. */
+export function hasImages(messages: readonly ChatMessage[]): boolean {
+  return messages.some(
+    (m) => typeof m.content !== "string" && m.content.some((p) => p.type === "image_url"),
+  );
+}
+
+/** `request` with every multimodal message flattened to text (`contentText`). */
+export function textOnlyRequest(request: ChatRequest): ChatRequest {
+  return {
+    ...request,
+    messages: request.messages.map((m) =>
+      typeof m.content === "string" ? m : { ...m, content: contentText(m.content) },
+    ),
+  };
+}
+
+function plain(role: ChatRole, content: MessageContent, name: string | null = null): ChatMessage {
   return { role, content, name, tool_calls: [], tool_call_id: null };
 }
 
@@ -29,7 +87,7 @@ export function systemMessage(content: string): ChatMessage {
   return plain("system", content);
 }
 
-export function userMessage(content: string, name: string | null = null): ChatMessage {
+export function userMessage(content: MessageContent, name: string | null = null): ChatMessage {
   return plain("user", content, name);
 }
 

@@ -11,6 +11,7 @@ import {
   type ChatProvider,
   type ChatRequest,
   type ChatStream,
+  contentText,
   LlmRouter,
   LlmRouterKey,
   MockProvider,
@@ -54,7 +55,7 @@ class FnProvider implements ChatProvider {
 
   async stream(request: ChatRequest): Promise<ChatStream> {
     this.requests.push(structuredClone(request));
-    const text = this.reply(request.messages.at(-1)?.content ?? "");
+    const text = this.reply(contentText(request.messages.at(-1)?.content ?? ""));
     return (async function* () {
       yield { type: "text_delta" as const, text };
       yield { type: "done" as const, finish_reason: "stop", usage: null };

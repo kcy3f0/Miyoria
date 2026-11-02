@@ -1,7 +1,7 @@
 // Port of `tests/signals.rs`: tool registry from the app, prompt contributors, social and mood
 // signals, initiative and the LLM budget.
 
-import { MockProvider } from "@miyoria/llm";
+import { contentText, MockProvider } from "@miyoria/llm";
 import { ToolRegistryKey } from "@miyoria/tools";
 import {
   type Attitude,
@@ -60,14 +60,14 @@ function lastTrace(h: Harness): DecisionTrace {
 function situation(mock: MockProvider, i: number): string {
   const msgs = mock.requests()[i]?.messages ?? [];
   expect(msgs.at(-1)?.role).toBe("system");
-  return msgs.at(-1)?.content ?? "";
+  return contentText(msgs.at(-1)?.content ?? "");
 }
 
 /** The user-role data message right before the situation. */
 function data(mock: MockProvider, i: number): string {
   const msgs = mock.requests()[i]?.messages ?? [];
   expect(msgs.at(-2)?.role).toBe("user");
-  return msgs.at(-2)?.content ?? "";
+  return contentText(msgs.at(-2)?.content ?? "");
 }
 
 // ---------------------------------------------------------------- tools

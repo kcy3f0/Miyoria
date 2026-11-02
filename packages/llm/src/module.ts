@@ -59,6 +59,9 @@ export const ProviderConfigSchema = z
  *
  * [llm.thinking]   # reasoning before answering, per purpose; unlisted purposes: off
  * chat = true
+ *
+ * [llm.image_input]   # which models take images; unlisted: yes
+ * "ollama" = false
  * ```
  */
 export const LlmConfigSchema = z.object({
@@ -72,6 +75,11 @@ export const LlmConfigSchema = z.object({
    * thinking adds seconds before the first word, which matters more for her than depth.
    */
   thinking: z.record(z.string(), z.boolean()).default({}),
+  /**
+   * Whether a model takes image parts, keyed by `provider:model` or `provider` (the model entry
+   * wins). Unlisted models do; a model that refuses them gets text from then on anyway.
+   */
+  image_input: z.record(z.string(), z.boolean()).default({}),
 });
 export type LlmConfig = z.output<typeof LlmConfigSchema>;
 
@@ -125,6 +133,7 @@ export class LlmModule implements Module {
       pricing: new Map(Object.entries(this.#config.pricing)),
       budget: this.#config.budget,
       thinking: new Map(Object.entries(this.#config.thinking)),
+      imageInput: new Map(Object.entries(this.#config.image_input)),
     });
     router.setPurposes(this.#overrides);
     return router;

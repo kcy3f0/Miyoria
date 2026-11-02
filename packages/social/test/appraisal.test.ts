@@ -1,3 +1,4 @@
+import { contentText } from "@miyoria/llm";
 import { describe, expect, it } from "vitest";
 import { AppraisalParseError, appraisalRequest, parseAppraisal, parseNotes } from "../src/index.js";
 
@@ -51,6 +52,6 @@ describe("appraisal parsing", () => {
     expect(req.messages[1]?.content).toBe(
       "【前情,已評估過】\nA: 舊的\n\n【新的對話】\nB: 新的 第二行\n",
     );
-    expect(req.messages[0]?.content.endsWith("只列出這些人:B")).toBe(true);
+    expect(contentText(req.messages[0]?.content ?? "").endsWith("只列出這些人:B")).toBe(true);
   });
 });

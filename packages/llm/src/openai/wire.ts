@@ -2,7 +2,7 @@
 
 import type { JsonValue } from "@miyoria/types";
 import { z } from "zod";
-import type { ChatMessage, ChatRequest, Usage } from "../types.js";
+import type { ChatMessage, ChatRequest, ContentPart, Usage } from "../types.js";
 
 /**
  * Request body. Only `content` / `tool_calls` are ever sent for assistant messages, so
@@ -45,14 +45,24 @@ function wireMessage(m: ChatMessage): Record<string, JsonValue> {
         }))
       : [];
   // `null` for assistant messages that only carry tool calls.
-  const out: Record<string, JsonValue> = {
-    role: m.role,
-    content: m.content !== "" || toolCalls.length === 0 ? m.content : null,
-  };
+  const content: JsonValue =
+    typeof m.content !== "string"
+      ? m.content.map(wirePart)
+      : m.content !== "" || toolCalls.length === 0
+        ? m.content
+        : null;
+  const out: Record<string, JsonValue> = { role: m.role, content };
   if (m.name !== null) out.name = m.name;
   if (toolCalls.length > 0) out.tool_calls = toolCalls;
   if (m.role === "tool" && m.tool_call_id !== null) out.tool_call_id = m.tool_call_id;
   return out;
+}
+
+/** A content part as the API takes it (`alt` is ours and stays out). */
+function wirePart(p: ContentPart): JsonValue {
+  return p.type === "text"
+    ? { type: "text", text: p.text }
+    : { type: "image_url", image_url: { url: p.image_url.url, detail: p.image_url.detail } };
 }
 
 const opt = <T extends z.ZodType>(schema: T) => schema.nullable().optional();
