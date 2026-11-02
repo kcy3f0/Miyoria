@@ -1,25 +1,7 @@
-// Permission node patterns.
+// Permission node patterns. Matching is defined once in `@miyoria/commands` (the fallback
+// permissions use the same function).
 
-/**
- * Does `pattern` cover `node`?
- *
- * - `"*"` covers every node.
- * - `"queue.*"` covers `"queue"` and everything below it (`"queue.skip"`, `"queue.skip.self"`),
- *   but not `"queuex"`.
- * - Anything else must match exactly.
- *
- * Patterns can be checked against patterns: `"admin.*"` covers `"admin.role.*"`.
- */
-export function matches(pattern: string, node: string): boolean {
-  if (pattern === "*") return true;
-  if (pattern.endsWith(".*")) {
-    const prefix = pattern.slice(0, -2);
-    return (
-      node === prefix || (node.startsWith(prefix) && node.slice(prefix.length).startsWith("."))
-    );
-  }
-  return pattern === node;
-}
+export { matches } from "@miyoria/commands";
 
 const SEGMENT = /^[a-z0-9_-]+$/;
 

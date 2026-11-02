@@ -1,15 +1,19 @@
 // Built-in roles. Each lists all of its nodes; roles do not inherit from each other.
 //
+// The grants are defined once, in `@miyoria/commands` (`nodes.ts`), so the fallback permissions
+// used without this module mean exactly the same:
+//
 // | Role | Rank | Grants | Denies |
 // |---|---|---|---|
 // | owner | 100 | `*` | |
 // | admin | 80 | everything below plus `admin.*`, `module.*`, `memory.*`, `stream.*` | |
 // | moderator | 60 | trusted plus `voice.*`, `queue.*`, `game.*`, `stream.scene`, ... | `tools.mcp.*` |
 // | trusted | 40 | user plus `chat.*`, `tools.*`, `queue.priority`, `game.suggest`, `stream.clip` | `tools.mcp.*` |
-// | user | 20 | restricted plus `chat.talk`, `link.*`, `voice.join`, `voice.leave`, ... | |
-// | restricted | 10 | `ping`, `help.*`, `me.*`, privacy controls | |
+// | user | 20 | restricted plus `chat.talk`, `voice.join`, `queue.request`, views of settings, ... | |
+// | restricted | 10 | `help`, `me.*`, `memory.self.*`, `voice.consent` | |
 // | blocked | 0 | nothing | |
 
+import { builtinRoleGrants } from "@miyoria/commands";
 import type { RoleDefinition } from "@miyoria/store";
 
 export const OWNER = "owner";
@@ -35,8 +39,14 @@ export const PANEL_ACCESS = "admin.panel.access";
 /** Lets a panel user make changes (every non-`GET` admin API route). */
 export const PANEL_WRITE = "admin.panel.write";
 
-/** Self-service privacy controls; kept even for `restricted`. */
-const PRIVACY: readonly string[] = [
+/** The seven built-in roles, highest rank first. */
+export function builtinRoles(): RoleDefinition[] {
+  return builtinRoleGrants().map((r) => ({ ...r, builtin: true }));
+}
+
+// ---- upgrades of stored built-in roles -------------------------------------------------------
+
+const V1_PRIVACY = [
   "ping",
   "help.*",
   "me.*",
@@ -46,8 +56,7 @@ const PRIVACY: readonly string[] = [
   "memory.export.self",
   "voice.consent",
 ];
-
-const EVERYDAY: readonly string[] = [
+const V1_EVERYDAY = [
   "chat.talk",
   "link.*",
   "voice.join",
@@ -57,16 +66,8 @@ const EVERYDAY: readonly string[] = [
   "game.status",
   "stream.status",
 ];
-
-const TRUSTED_EXTRA: readonly string[] = [
-  "chat.*",
-  "tools.*",
-  "queue.priority",
-  "game.suggest",
-  "stream.clip",
-];
-
-const MODERATOR_EXTRA: readonly string[] = [
+const V1_TRUSTED = ["chat.*", "tools.*", "queue.priority", "game.suggest", "stream.clip"];
+const V1_MODERATOR = [
   "voice.*",
   "queue.*",
   "game.*",
@@ -80,30 +81,44 @@ const MODERATOR_EXTRA: readonly string[] = [
   "admin.role.whois",
   "admin.audit.view",
 ];
+const V1_ADMIN = ["admin.*", "module.*", "memory.*", "stream.*"];
 
-const ADMIN_EXTRA: readonly string[] = ["admin.*", "module.*", "memory.*", "stream.*"];
+/**
+ * Grants of the built-in roles as earlier versions seeded them. A stored built-in role that
+ * still has exactly these grants was never edited and is upgraded to the current definition.
+ */
+export const LEGACY_BUILTIN_GRANTS: Readonly<Record<string, readonly (readonly string[])[]>> = {
+  admin: [[...V1_PRIVACY, ...V1_EVERYDAY, ...V1_TRUSTED, ...V1_MODERATOR, ...V1_ADMIN]],
+  moderator: [[...V1_PRIVACY, ...V1_EVERYDAY, ...V1_TRUSTED, ...V1_MODERATOR]],
+  trusted: [[...V1_PRIVACY, ...V1_EVERYDAY, ...V1_TRUSTED]],
+  user: [[...V1_PRIVACY, ...V1_EVERYDAY]],
+  restricted: [V1_PRIVACY],
+};
 
-/** MCP tools can do anything their server can; below admin they need an explicit override. */
-const NO_MCP: readonly string[] = ["tools.mcp.*"];
+const sameList = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((x, i) => x === b[i]);
 
-function role(
-  name: string,
-  rank: number,
-  grants: readonly (readonly string[])[],
-  denies: readonly string[],
-): RoleDefinition {
-  return { name, rank, grants: grants.flat(), denies: [...denies], builtin: true };
-}
-
-/** The seven built-in roles, highest rank first. */
-export function builtinRoles(): RoleDefinition[] {
-  return [
-    role(OWNER, 100, [["*"]], []),
-    role(ADMIN, 80, [PRIVACY, EVERYDAY, TRUSTED_EXTRA, MODERATOR_EXTRA, ADMIN_EXTRA], []),
-    role(MODERATOR, 60, [PRIVACY, EVERYDAY, TRUSTED_EXTRA, MODERATOR_EXTRA], NO_MCP),
-    role(TRUSTED, 40, [PRIVACY, EVERYDAY, TRUSTED_EXTRA], NO_MCP),
-    role(USER, 20, [PRIVACY, EVERYDAY], []),
-    role(RESTRICTED, 10, [PRIVACY], []),
-    role(BLOCKED, BLOCKED_RANK, [], []),
-  ];
+/**
+ * What to do with a stored role named like a built-in one: `current` (nothing to do),
+ * `upgrade` (unedited legacy definition: replace it) or `edited` (left alone).
+ */
+export function builtinStatus(stored: RoleDefinition): "current" | "upgrade" | "edited" | null {
+  const current = builtinRoles().find((r) => r.name === stored.name);
+  if (!current) return null;
+  if (
+    stored.rank === current.rank &&
+    sameList(stored.grants, current.grants) &&
+    sameList(stored.denies, current.denies)
+  ) {
+    return "current";
+  }
+  const legacy = LEGACY_BUILTIN_GRANTS[stored.name] ?? [];
+  if (
+    stored.rank === current.rank &&
+    sameList(stored.denies, current.denies) &&
+    legacy.some((grants) => sameList(stored.grants, grants))
+  ) {
+    return "upgrade";
+  }
+  return "edited";
 }

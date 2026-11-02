@@ -117,8 +117,8 @@ describe("auth module", () => {
     expect(h.registry().get(["admin", "role", "list"])).toBeDefined();
 
     const list = await h.run(inv("admin role list", "1"));
-    expect(list, list).toContain("`owner` 100");
-    expect(list, list).toContain("`blocked` 0");
+    expect(list, list).toContain("**owner**　等級 100");
+    expect(list, list).toContain("**blocked**　等級 0");
     const denied = await h.run(inv("admin role list", "5"));
     expect(denied, denied).toContain("權限");
   });
@@ -130,42 +130,42 @@ describe("auth module", () => {
     let reply = await h.run(
       asGuildAdmin(inv("admin role assign", "2", { user: "<@5>", role: "moderator" })),
     );
-    expect(reply, reply).toContain("是 `moderator` 了");
+    expect(reply, reply).toContain("的角色設為 `moderator`");
     expect(auth.allowsSubject(subject("5", "g1"), "admin.channel.mode")).toBe(true);
     expect(auth.allowsSubject(subject("5", "g2"), "admin.channel.mode")).toBe(false);
 
     // Same rank as the guild admin: refused.
     reply = await h.run(asGuildAdmin(inv("admin role assign", "2", { user: "5", role: "admin" })));
-    expect(reply, reply).toContain("不能動它");
+    expect(reply, reply).toContain("等級不低於你的角色");
     // Global changes need global authority.
     reply = await h.run(
       asGuildAdmin(inv("admin role assign", "2", { user: "5", role: "trusted", scope: "global" })),
     );
-    expect(reply, reply).toContain("沒有權限");
+    expect(reply, reply).toContain("沒有進行這項變更的權限");
 
     // The owner may grant admin globally; the guild admin cannot then block them.
     reply = await h.run(
       inv("admin role assign", "1", { user: "6", role: "admin", scope: "global" }),
     );
-    expect(reply, reply).toContain("全域是 `admin`");
+    expect(reply, reply).toContain("在全域的角色設為 `admin`");
     expect(auth.allows(acc("6"), "admin.module.toggle")).toBe(true);
     reply = await h.run(
       asGuildAdmin(inv("admin role assign", "2", { user: "6", role: "blocked" })),
     );
-    expect(reply, reply).toContain("我才不聽你的");
+    expect(reply, reply).toContain("的角色等級不低於你");
 
     reply = await h.run(
       asGuildAdmin(inv("admin role revoke", "2", { user: "5", role: "moderator" })),
     );
-    expect(reply, reply).toContain("收回了");
+    expect(reply, reply).toContain("已收回");
     expect(auth.allowsSubject(subject("5", "g1"), "admin.channel.mode")).toBe(false);
     reply = await h.run(
       asGuildAdmin(inv("admin role revoke", "2", { user: "5", role: "moderator" })),
     );
-    expect(reply, reply).toContain("本來就沒有");
+    expect(reply, reply).toContain("沒有被指派");
 
     const unknown = await h.run(inv("admin role assign", "1", { user: "5", role: "ghost" }));
-    expect(unknown, unknown).toContain("沒有 `ghost`");
+    expect(unknown, unknown).toContain("找不到角色 `ghost`");
 
     const actions = h.audit.actions();
     expect(actions).toContainEqual(["role.assign", true]);
@@ -197,13 +197,13 @@ describe("auth module", () => {
     let reply = await h.run(
       asGuildAdmin(inv("admin role map", "2", { discord_role: "<@&r-mod>", role: "moderator" })),
     );
-    expect(reply, reply).toContain("就是 `moderator`");
+    expect(reply, reply).toContain("對應到角色 `moderator`");
     const auth = h.authorizer();
     expect(auth.allowsSubject(subject("8", "g1", ["r-mod"]), "admin.channel.mode")).toBe(true);
     reply = await h.run(
       asGuildAdmin(inv("admin role map", "2", { discord_role: "r-adm", role: "admin" })),
     );
-    expect(reply, reply).toContain("不能動它");
+    expect(reply, reply).toContain("等級不低於你的角色");
 
     const whois = inv("admin role whois", "1", { user: "8" });
     const resolved: ResolvedUser = {
@@ -213,13 +213,13 @@ describe("auth module", () => {
     };
     whois.resolved_users["8"] = resolved;
     reply = await h.run(whois);
-    expect(reply, reply).toContain("是 `moderator`");
+    expect(reply, reply).toContain("的角色是 `moderator`");
     expect(reply, reply).toContain("<@&r-mod> 的對應");
     expect(reply, reply).toContain("`trusted`");
 
     const unmap = () => asGuildAdmin(inv("admin role unmap", "2", { discord_role: "r-mod" }));
-    expect(await h.run(unmap())).toContain("不再對應");
-    expect(await h.run(unmap())).toContain("本來就沒有");
+    expect(await h.run(unmap())).toContain("已取消");
+    expect(await h.run(unmap())).toContain("目前沒有對應");
     expect(auth.allowsSubject(subject("8", "g1", ["r-mod"]), "admin.channel.mode")).toBe(false);
   });
 
@@ -229,23 +229,23 @@ describe("auth module", () => {
     let reply = await h.run(
       asGuildAdmin(inv("admin perm deny", "2", { role: "user", node: "voice.join" })),
     );
-    expect(reply, reply).toContain("不能用 `voice.join`");
+    expect(reply, reply).toContain("已禁止 `user` 在這個伺服器使用 `voice.join`");
     expect(auth.allowsSubject(subject("9", "g1"), "voice.join")).toBe(false);
     expect(auth.allowsSubject(subject("9", "g2"), "voice.join")).toBe(true);
 
     reply = await h.run(
       asGuildAdmin(inv("admin perm allow", "2", { role: "user", node: "owner.shutdown" })),
     );
-    expect(reply, reply).toContain("你自己都不能用");
+    expect(reply, reply).toContain("你本身沒有");
     reply = await h.run(
       asGuildAdmin(inv("admin perm allow", "2", { role: "user", node: "Bad Node" })),
     );
-    expect(reply, reply).toContain("格式不對");
+    expect(reply, reply).toContain("格式不正確");
 
     reply = await h.run(
       asGuildAdmin(inv("admin perm clear", "2", { role: "user", node: "voice.join" })),
     );
-    expect(reply, reply).toContain("拿掉了");
+    expect(reply, reply).toContain("已移除");
     expect(auth.allowsSubject(subject("9", "g1"), "voice.join")).toBe(true);
     expect(h.audit.actions()).toContainEqual(["perm.set", true]);
   });
@@ -256,15 +256,15 @@ describe("auth module", () => {
     await h.sup.restart("commands");
     await eventually(() => h.services.get(CommandRegistryKey)?.get(path) !== undefined);
     // Still the RBAC authorizer.
-    expect(h.authorizer().allows(acc("5"), "zzz.unknown")).toBe(false);
+    expect(h.services.get(AuthorizerKey)).toBeInstanceOf(AuthService);
     expect(h.services.get(AuthServiceKey)).toBeInstanceOf(AuthService);
 
     await h.sup.disable("auth");
-    await eventually(() => h.services.get(AuthorizerKey)?.allows(acc("5"), "zzz.unknown") === true);
+    await eventually(() => !(h.services.get(AuthorizerKey) instanceof AuthService));
     expect(h.registry().get(path)).toBeUndefined();
 
     await h.sup.enable("auth");
-    expect(h.authorizer().allows(acc("5"), "zzz.unknown")).toBe(false);
+    expect(h.services.get(AuthorizerKey)).toBeInstanceOf(AuthService);
     expect(h.registry().get(path)).toBeDefined();
   });
 });

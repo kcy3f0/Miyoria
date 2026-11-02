@@ -22,7 +22,7 @@ import {
   systemClock,
   toTimestamp,
 } from "@miyoria/types";
-import { builtinRoles } from "./builtin.js";
+import { builtinRoles, builtinStatus } from "./builtin.js";
 import { isValidPattern } from "./node.js";
 import {
   accountKey,
@@ -126,18 +126,40 @@ export class AuthService extends BaseAuthorizer {
   }
 
   /**
-   * Writes the built-in roles that are missing from the store. Existing ones (possibly edited)
-   * are left alone. Returns how many were written.
+   * Writes the built-in roles that are missing from the store and upgrades stored ones that
+   * still have an earlier version's default grants. Edited ones are left alone (logged). Returns
+   * how many were written.
    */
   async seedBuiltins(): Promise<number> {
-    const existing = new Set(
-      (await withContext("loading roles", this.#store.roles())).map((r) => r.name),
+    const existing = new Map(
+      (await withContext("loading roles", this.#store.roles())).map((r) => [r.name, r]),
     );
     let seeded = 0;
     for (const role of builtinRoles()) {
-      if (!existing.has(role.name)) {
+      const stored = existing.get(role.name);
+      if (!stored) {
         await this.#store.upsertRole(role);
         seeded++;
+        continue;
+      }
+      switch (builtinStatus(stored)) {
+        case "upgrade":
+          await this.#store.upsertRole(role);
+          log.info({ role: role.name }, "upgraded built-in role to the current default nodes");
+          seeded++;
+          break;
+        case "edited": {
+          const missing = role.grants.filter((g) => !stored.grants.includes(g));
+          if (missing.length > 0) {
+            log.info(
+              { role: role.name, missing },
+              "built-in role was edited; new default nodes not added",
+            );
+          }
+          break;
+        }
+        default:
+          break;
       }
     }
     return seeded;

@@ -1,7 +1,7 @@
 import type { RoleDefinition } from "@miyoria/store";
 import type { AccountRef, ContextKey, Subject } from "@miyoria/types";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { builtinRoles, USER } from "../src/builtin.js";
+import { builtinRoles, LEGACY_BUILTIN_GRANTS, USER } from "../src/builtin.js";
 import { AuthError, AuthService } from "../src/service.js";
 import { FakeAudit, FakeAuthStore } from "./fake.js";
 
@@ -29,6 +29,26 @@ async function load(store = new FakeAuthStore(), audit: FakeAudit | null = new F
 }
 
 describe("AuthService", () => {
+  test("upgrades_unedited_builtins_from_an_earlier_version", async () => {
+    const store = new FakeAuthStore();
+    for (const name of ["user", "moderator"] as const) {
+      const legacy = LEGACY_BUILTIN_GRANTS[name]?.[0] ?? [];
+      const current = builtinRoles().find((r) => r.name === name);
+      store.roleList.push({
+        name,
+        rank: current?.rank ?? 0,
+        grants: [...legacy],
+        denies: [...(current?.denies ?? [])],
+        builtin: true,
+      });
+    }
+    const { service } = await load(store);
+    expect(service.role("user")?.grants).toContain("queue.vote");
+    expect(service.role("user")?.grants).not.toContain("ping");
+    expect(service.role("moderator")?.grants).toContain("admin.person.block");
+    expect(service.role("moderator")?.grants).not.toContain("memory.view.others");
+  });
+
   test("seeds_missing_builtins_and_keeps_edited_ones", async () => {
     const store = new FakeAuthStore();
     store.roleList.push({ name: "user", rank: 20, grants: ["ping"], denies: [], builtin: true });

@@ -47,13 +47,17 @@ describe("built-in roles", () => {
     expect(allows(get(MODERATOR), "admin.module.toggle")).toBe(false);
     expect(allows(get(TRUSTED), "tools.web.search")).toBe(true);
     expect(allows(get(USER), "voice.join")).toBe(true);
-    expect(allows(get(USER), "ping")).toBe(true);
+    expect(allows(get(USER), "help")).toBe(true);
+    expect(allows(get(USER), "queue.vote")).toBe(true);
+    expect(allows(get(USER), "channel.mode.view")).toBe(true);
+    expect(allows(get(MODERATOR), "admin.person.block")).toBe(true);
+    expect(allows(get(MODERATOR), "memory.view.others")).toBe(false);
     expect(allows(get(USER), "queue.skip")).toBe(false);
     expect(allows(get(USER), "admin.channel.mode")).toBe(false);
-    expect(allows(get(RESTRICTED), "memory.forget.self")).toBe(true);
+    expect(allows(get(RESTRICTED), "memory.self.forget")).toBe(true);
     expect(allows(get(RESTRICTED), "voice.consent")).toBe(true);
     expect(allows(get(RESTRICTED), "voice.join")).toBe(false);
-    expect(allows(get(BLOCKED), "ping")).toBe(false);
+    expect(allows(get(BLOCKED), "help")).toBe(false);
   });
 
   test("panel_nodes_are_held_by_owner_and_admin_only", () => {

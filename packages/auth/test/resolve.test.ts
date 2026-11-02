@@ -142,11 +142,11 @@ describe("resolution", () => {
     expect(allowed(s, owner, "")).toBe(true);
     const user = subject("9", null, [], false);
     expect(allowed(s, user, "")).toBe(true);
-    expect(allowed(s, user, "ping")).toBe(true);
+    expect(allowed(s, user, "help")).toBe(true);
     expect(allowed(s, user, "admin.module.toggle")).toBe(false);
     const blocked = subject("4", ctx("g1", "c1"), [], false);
     expect(allowed(s, blocked, "")).toBe(false);
-    expect(allowed(s, blocked, "ping")).toBe(false);
+    expect(allowed(s, blocked, "help")).toBe(false);
     const admin = subject("9", ctx("g1", "c1"), [], true);
     expect(allowed(s, admin, "admin.module.toggle")).toBe(true);
     expect(allowed(s, admin, "owner.shutdown")).toBe(false);

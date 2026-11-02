@@ -10,12 +10,16 @@ import {
   ArgKind,
   type ArgSpec,
   argSpec,
+  type CardBlock,
+  type Choice,
   type CommandRegistry,
   CommandRegistryKey,
-  CommandReply,
+  type CommandReply,
   type CommandSpec,
+  cardReply,
   commandSpec,
   type Invocation,
+  notice,
 } from "@miyoria/commands";
 import { getLogger, type ServiceLookup } from "@miyoria/kernel";
 import type { AuthScope, NodeOverride, RoleDefinition, RoleMapping } from "@miyoria/store";
@@ -47,7 +51,7 @@ const SHOWN_NODES = 6;
 
 /**
  * Remembers which registry the commands went into, so they can be removed on stop and
- * re-registered when the `commands` module restarts.
+ * re-registered when the `commands` module provides a different registry.
  */
 export class AuthCommands {
   #installed: CommandRegistry | null = null;
@@ -88,13 +92,25 @@ function unregister(registry: CommandRegistry): void {
 type Handler = (service: AuthService, inv: Invocation) => Promise<CommandReply>;
 
 function add(registry: CommandRegistry, service: AuthService, spec: CommandSpec, handler: Handler) {
-  registry.register({ ...spec, ephemeral: true }, (inv) => handler(service, inv));
+  const roleSuggestions = (_inv: Invocation, value: string): Choice[] => {
+    const q = value.trim().toLowerCase();
+    return service
+      .roles()
+      .filter((r) => q === "" || r.name.includes(q))
+      .map((r) => ({ name: `${r.name}（等級 ${r.rank}）`, value: r.name }));
+  };
+  const hasRoleArg = spec.args.some((a) => a.name === "role");
+  registry.register(
+    { ...spec, ephemeral: true },
+    (inv) => handler(service, inv),
+    hasRoleArg ? { autocomplete: { role: roleSuggestions } } : {},
+  );
 }
 
 const scopeArg = (): ArgSpec =>
   argSpec(
     "scope",
-    "範圍(預設:在伺服器裡是 guild,私訊裡是 global)",
+    "範圍（預設：伺服器內為 guild，私訊中為 global）",
     ArgKind.choice(["global", "guild", "channel"]),
     { required: false },
   );
@@ -102,15 +118,15 @@ const scopeArg = (): ArgSpec =>
 const userArg = (description: string, required = true): ArgSpec =>
   argSpec("user", description, ArgKind.user, { required });
 
-const roleArg = (): ArgSpec => argSpec("role", "Miyoria 角色,例如 moderator", ArgKind.string);
+const roleArg = (): ArgSpec => argSpec("role", "Miyoria 角色，例如 moderator", ArgKind.string);
 
 function register(registry: CommandRegistry, service: AuthService): void {
-  registry.setGroupDescription("admin role", "角色管理");
-  registry.setGroupDescription("admin perm", "權限節點覆寫");
   add(
     registry,
     service,
-    commandSpec("admin role list", "列出角色、身分組對應與覆寫", { permission: NODE_LIST }),
+    commandSpec("admin role list", "列出角色、身分組對應與在這裡生效的覆寫", {
+      permission: NODE_LIST,
+    }),
     list,
   );
   for (const revoke of [false, true]) {
@@ -148,8 +164,8 @@ function register(registry: CommandRegistry, service: AuthService): void {
   add(
     registry,
     service,
-    commandSpec("admin role whois", "查某人在這裡實際的角色和原因", {
-      args: [userArg("對象(預設是你自己)", false)],
+    commandSpec("admin role whois", "查詢某人在這裡實際生效的角色與原因", {
+      args: [userArg("對象（預設為你自己）", false)],
       permission: NODE_WHOIS,
     }),
     whois,
@@ -161,7 +177,7 @@ function register(registry: CommandRegistry, service: AuthService): void {
       commandSpec(PERM_OPS[op].path, PERM_OPS[op].description, {
         args: [
           roleArg(),
-          argSpec("node", "權限節點,例如 queue.skip 或 queue.*", ArgKind.string),
+          argSpec("node", "權限節點，例如 queue.skip 或 queue.*", ArgKind.string),
           scopeArg(),
         ],
         permission: NODE_PERM,
@@ -176,7 +192,7 @@ type PermOp = "allow" | "deny" | "clear";
 const PERM_OPS: Record<PermOp, { path: string; description: string }> = {
   allow: { path: "admin perm allow", description: "在某個範圍允許角色使用權限節點" },
   deny: { path: "admin perm deny", description: "在某個範圍禁止角色使用權限節點" },
-  clear: { path: "admin perm clear", description: "拿掉某個範圍的權限節點覆寫" },
+  clear: { path: "admin perm clear", description: "移除某個範圍的權限節點覆寫" },
 };
 
 /** An early exit with the reply to send (Rust `Err(CommandReply)`). */
@@ -198,14 +214,10 @@ async function replying(body: () => Promise<CommandReply>): Promise<CommandReply
   }
 }
 
-function no(text: string): CommandReply {
-  return CommandReply.ephemeral(text);
-}
-
 function failed(error: unknown): CommandReply {
   const chain = errorChain(error);
   log.warn({ error: chain }, "auth command failed");
-  return no(`失敗了啦:${chain}`);
+  return notice("error", "操作失敗。", chain);
 }
 
 /** Runs a store-backed change; a failure becomes a `failed` refusal. */
@@ -218,13 +230,14 @@ async function guarded<T>(work: Promise<T>): Promise<T> {
 }
 
 const actor = (inv: Invocation): string => accountString(inv.invoker);
+const code = (s: string) => `\`${s}\``;
 
 function who(account: AccountRef): string {
   return account.platform === "discord" ? `<@${account.id}>` : accountString(account);
 }
 
 function platformRole(inv: Invocation, id: string): string {
-  return inv.context.platform === "discord" ? `<@&${id}>` : `\`${id}\``;
+  return inv.context.platform === "discord" ? `<@&${id}>` : code(id);
 }
 
 function scopeLabel(inv: Invocation, scope: AuthScope): string {
@@ -244,9 +257,9 @@ function scopeLabel(inv: Invocation, scope: AuthScope): string {
 function sourceLabel(inv: Invocation, source: Source): string {
   switch (source.type) {
     case "config_owner":
-      return "設定檔裡的主人";
+      return "設定檔中的擁有者";
     case "assignment":
-      return `${scopeLabel(inv, source.scope)}的指派(由 ${source.granted_by})`;
+      return `${scopeLabel(inv, source.scope)}的指派（由 ${source.granted_by}）`;
     case "platform_role":
       return `身分組 ${platformRole(inv, source.platform_role)} 的對應`;
     case "guild_admin":
@@ -260,7 +273,7 @@ function parseScope(inv: Invocation): AuthScope {
   const guild = inv.context.scope;
   const inGuild = (scope: AuthScope): AuthScope => {
     if (guild !== null) return scope;
-    throw new Refusal(no("私訊裡沒有伺服器或頻道範圍啦,用 global。"));
+    throw new Refusal(notice("warn", "私訊中沒有伺服器或頻道範圍，請使用 global。"));
   };
   const scope = inv.str("scope");
   if ((scope === null && guild === null) || scope === "global") return { type: "global" };
@@ -274,7 +287,9 @@ function roleNamed(svc: AuthService, inv: Invocation): RoleDefinition {
   const name = (inv.str("role") ?? "").trim().toLowerCase();
   const role = svc.role(name);
   if (!role) {
-    throw new Refusal(no(`沒有 \`${name}\` 這個角色。用 \`/admin role list\` 看看有哪些。`));
+    throw new Refusal(
+      notice("warn", `找不到角色 ${code(name)}。`, "可以用 /admin role list 查看所有角色。"),
+    );
   }
   return role;
 }
@@ -290,34 +305,39 @@ function authority(
   node: string,
 ): { subject: Subject; resolution: Resolution } {
   const subject = scope.type === "global" ? accountSubject(inv.invoker) : inv.subject();
-  if (!svc.check(subject, node)) throw new Refusal(no("你在這個範圍沒有權限做這個啦。"));
+  if (!svc.check(subject, node)) {
+    throw new Refusal(notice("error", "你在這個範圍沒有進行這項變更的權限。", `需要權限：${node}`));
+  }
   return { subject, resolution: svc.resolve(subject) };
 }
 
 function outrank(resolution: Resolution, role: RoleDefinition): void {
   if (!outranks(resolution, role.rank)) {
-    throw new Refusal(no(`\`${role.name}\` 跟你一樣高或比你高,你不能動它。哼,想得美。`));
+    throw new Refusal(notice("error", `角色 ${code(role.name)} 的等級不低於你的角色，無法變更。`));
   }
 }
 
 async function list(svc: AuthService, inv: Invocation): Promise<CommandReply> {
-  let out = "角色(由高到低):";
-  for (const role of svc.roles()) {
+  const lines = svc.roles().map((role) => {
     const more = Math.max(0, role.grants.length - SHOWN_NODES);
     const nodes = role.grants.slice(0, SHOWN_NODES);
-    let line = `\n\`${role.name}\` ${role.rank}${role.builtin ? " · 內建" : ""} — ${
-      nodes.length === 0 ? "(什麼都不能做)" : nodes.join(", ")
-    }`;
-    if (more > 0) line += ` …還有 ${more} 個`;
-    if (role.denies.length > 0) line += `;禁止 ${role.denies.join(", ")}`;
-    out += line;
-  }
+    let detail = nodes.length === 0 ? "沒有任何權限" : nodes.join("、");
+    if (more > 0) detail += ` 等 ${role.grants.length} 個節點`;
+    if (role.denies.length > 0) detail += `；禁止 ${role.denies.join("、")}`;
+    return `**${role.name}**　等級 ${role.rank}${role.builtin ? "（內建）" : ""}\n-# ${detail}`;
+  });
+  const blocks: CardBlock[] = [{ type: "text", text: lines.join("\n") }];
   if (inv.context.scope !== null) {
     try {
       const maps = await svc.mappings(inv.context.platform, inv.context.scope);
       if (maps.length > 0) {
-        out += "\n\n這個伺服器的身分組對應:";
-        for (const m of maps) out += `\n${platformRole(inv, m.platform_role)} → \`${m.role}\``;
+        blocks.push({ type: "separator" });
+        blocks.push({
+          type: "text",
+          text: `**這個伺服器的身分組對應**\n${maps
+            .map((m) => `${platformRole(inv, m.platform_role)} → ${code(m.role)}`)
+            .join("\n")}`,
+        });
       }
     } catch (error) {
       return failed(error);
@@ -327,18 +347,24 @@ async function list(svc: AuthService, inv: Invocation): Promise<CommandReply> {
     .overrides()
     .filter((o) => scopeCovers(o.scope, inv.context));
   if (overrides.length > 0) {
-    out += "\n\n在這裡生效的覆寫:";
-    for (const o of overrides) {
-      out += `\n\`${o.role}\` 在${scopeLabel(inv, o.scope)}${o.allow ? "允許" : "禁止"} \`${o.node}\``;
-    }
+    blocks.push({ type: "separator" });
+    blocks.push({
+      type: "text",
+      text: `**在這裡生效的覆寫**\n${overrides
+        .map(
+          (o) =>
+            `${code(o.role)} 在${scopeLabel(inv, o.scope)}${o.allow ? "允許" : "禁止"} ${code(o.node)}`,
+        )
+        .join("\n")}`,
+    });
   }
-  return CommandReply.ephemeral(out);
+  return cardReply(blocks, { title: "角色", accent: "neutral" });
 }
 
 function assign(svc: AuthService, inv: Invocation, revoke: boolean): Promise<CommandReply> {
   return replying(async () => {
     const target = inv.account("user");
-    if (!target) throw new Refusal(no("要指定一個人啦。"));
+    if (!target) throw new Refusal(notice("warn", "請指定對象。"));
     const role = roleNamed(svc, inv);
     const scope = parseScope(inv);
     const { resolution: me } = authority(svc, inv, scope, NODE_ASSIGN);
@@ -348,29 +374,29 @@ function assign(svc: AuthService, inv: Invocation, revoke: boolean): Promise<Com
       !sameAccount(target, inv.invoker) &&
       !outranks(me, svc.resolve(targetSubject).effective.rank)
     ) {
-      throw new Refusal(no(`${who(target)} 的角色跟你一樣高或比你高,我才不聽你的。`));
+      throw new Refusal(notice("error", `${who(target)} 的角色等級不低於你，無法變更。`));
     }
     const place = scopeLabel(inv, scope);
     if (revoke) {
       const removed = await guarded(svc.revoke(actor(inv), target, role.name, scope));
       return removed
-        ? no(`好,收回了 ${who(target)} 在${place}的 \`${role.name}\`。`)
-        : no(`${who(target)} 在${place}本來就沒有被指派 \`${role.name}\` 啊。`);
+        ? notice("success", `已收回 ${who(target)} 在${place}的角色 ${code(role.name)}。`)
+        : notice("info", `${who(target)} 在${place}沒有被指派角色 ${code(role.name)}。`);
     }
     await guarded(svc.assign(actor(inv), target, role.name, scope));
-    let text = `好啦,${who(target)} 在${place}是 \`${role.name}\` 了。感謝我吧。`;
     const effective = svc.resolve(inv.subjectFor(target)).effective;
-    if (effective.role !== role.name) {
-      text += `\n(不過他在這裡實際生效的是 \`${effective.role}\`。)`;
-    }
-    return no(text);
+    return notice(
+      "success",
+      `已將 ${who(target)} 在${place}的角色設為 ${code(role.name)}。`,
+      effective.role !== role.name ? `目前在這裡實際生效的角色是 ${code(effective.role)}。` : null,
+    );
   });
 }
 
 function mapRole(svc: AuthService, inv: Invocation, remove: boolean): Promise<CommandReply> {
   return replying(async () => {
     const guild = inv.context.scope;
-    if (guild === null) throw new Refusal(no("身分組對應只能在伺服器裡設定。"));
+    if (guild === null) throw new Refusal(notice("warn", "身分組對應只能在伺服器中設定。"));
     const platform = inv.context.platform;
     const discordRole = inv.str("discord_role") ?? "";
     const { resolution: me } = authority(svc, inv, { type: "guild", platform, guild }, NODE_MAP);
@@ -380,9 +406,9 @@ function mapRole(svc: AuthService, inv: Invocation, remove: boolean): Promise<Co
     if (old) outrank(me, old);
     const shown = platformRole(inv, discordRole);
     if (remove) {
-      if (!existing) return no(`${shown} 本來就沒有對應啊。`);
+      if (!existing) return notice("info", `${shown} 目前沒有對應任何角色。`);
       await guarded(svc.unmapRole(actor(inv), platform, guild, discordRole));
-      return no(`好,${shown} 不再對應任何角色了。`);
+      return notice("success", `已取消 ${shown} 的角色對應。`);
     }
     const role = roleNamed(svc, inv);
     outrank(me, role);
@@ -393,7 +419,7 @@ function mapRole(svc: AuthService, inv: Invocation, remove: boolean): Promise<Co
       role: role.name,
     };
     await guarded(svc.mapRole(actor(inv), mapping));
-    return no(`好,在這個伺服器有 ${shown} 的人就是 \`${role.name}\`。`);
+    return notice("success", `已將這個伺服器的 ${shown} 對應到角色 ${code(role.name)}。`);
   });
 }
 
@@ -402,22 +428,28 @@ async function whois(svc: AuthService, inv: Invocation): Promise<CommandReply> {
   const subject = inv.subjectFor(target);
   await svc.preload(subject);
   const r = svc.resolve(subject);
-  let out = `${who(target)} 在這裡是 \`${r.effective.role}\`(rank ${r.effective.rank})。\n原因:${sourceLabel(
-    inv,
-    r.effective.source,
-  )}`;
+  const blocks: CardBlock[] = [
+    {
+      type: "text",
+      text: `${who(target)} 在這裡的角色是 ${code(r.effective.role)}（等級 ${r.effective.rank}）。\n原因：${sourceLabel(
+        inv,
+        r.effective.source,
+      )}`,
+    },
+  ];
   const others = r.candidates
     .filter((c) => !candidateEquals(c, r.effective))
-    .map((c) => `\`${c.role}\`(${sourceLabel(inv, c.source)})`);
-  if (others.length > 0) out += `\n也符合:${others.join("、")}`;
+    .map((c) => `${code(c.role)}（${sourceLabel(inv, c.source)}）`);
+  if (others.length > 0)
+    blocks.push({ type: "text", text: `其他符合的角色：${others.join("、")}` });
   const unknown =
     !sameAccount(target, inv.invoker) &&
     target.platform === inv.context.platform &&
     !Object.hasOwn(inv.resolved_users, target.id);
   if (unknown && inv.context.scope !== null) {
-    out += "\n(看不到對方的身分組,只算了指派的角色。)";
+    blocks.push({ type: "muted", text: "看不到對方的身分組，只計算了指派的角色。" });
   }
-  return CommandReply.ephemeral(out);
+  return cardReply(blocks, { title: "角色查詢", accent: "neutral" });
 }
 
 function perm(svc: AuthService, inv: Invocation, op: PermOp): Promise<CommandReply> {
@@ -425,24 +457,29 @@ function perm(svc: AuthService, inv: Invocation, op: PermOp): Promise<CommandRep
     const role = roleNamed(svc, inv);
     const node = (inv.str("node") ?? "").trim();
     if (!isValidPattern(node)) {
-      throw new Refusal(no(`\`${node}\` 格式不對,要像 \`queue.skip\` 或 \`queue.*\` 這樣。`));
+      throw new Refusal(
+        notice("warn", `權限節點 ${code(node)} 的格式不正確。`, "範例：queue.skip 或 queue.*"),
+      );
     }
     const scope = parseScope(inv);
     const { subject: meSubject, resolution: me } = authority(svc, inv, scope, NODE_PERM);
     outrank(me, role);
     // Allowing (or lifting a deny) must not hand out more than one has.
     if (op !== "deny" && !svc.check(meSubject, node)) {
-      throw new Refusal(no(`你自己都不能用 \`${node}\`,不能給別人啦。`));
+      throw new Refusal(notice("error", `你本身沒有 ${code(node)} 權限，無法授予其他角色。`));
     }
     const place = scopeLabel(inv, scope);
     if (op === "clear") {
       const removed = await guarded(svc.removeOverride(actor(inv), scope, role.name, node));
       return removed
-        ? no(`好,拿掉了 \`${role.name}\` 在${place}對 \`${node}\` 的覆寫。`)
-        : no(`\`${role.name}\` 在${place}本來就沒有 \`${node}\` 的覆寫啊。`);
+        ? notice("success", `已移除 ${code(role.name)} 在${place}對 ${code(node)} 的覆寫。`)
+        : notice("info", `${code(role.name)} 在${place}沒有 ${code(node)} 的覆寫。`);
     }
     const allow = op === "allow";
     await guarded(svc.setOverride(actor(inv), { scope, role: role.name, node, allow }));
-    return no(`好,\`${role.name}\` 在${place}${allow ? "可以用" : "不能用"} \`${node}\` 了。`);
+    return notice(
+      "success",
+      `已${allow ? "允許" : "禁止"} ${code(role.name)} 在${place}使用 ${code(node)}。`,
+    );
   });
 }

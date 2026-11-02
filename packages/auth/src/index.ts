@@ -23,6 +23,8 @@ export {
   BLOCKED,
   BLOCKED_RANK,
   builtinRoles,
+  builtinStatus,
+  LEGACY_BUILTIN_GRANTS,
   MODERATOR,
   OWNER,
   PANEL_ACCESS,
