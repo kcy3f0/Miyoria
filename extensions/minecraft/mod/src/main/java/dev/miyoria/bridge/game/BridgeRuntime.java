@@ -26,6 +26,10 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Glue: owns the server and every game-facing component. Requests are marshalled onto the client
@@ -46,6 +50,12 @@ public final class BridgeRuntime implements ActionHandler {
     private final EventDetector detector;
     private final SnapshotSummarizer.Options snapshotOptions;
     private BaritoneBridge baritone; // null when Baritone is not installed
+    /** Off-client-thread Baritone block lookups (see {@link #handle}). */
+    private static final ExecutorService PREWARM = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "miyoria-bridge-prewarm");
+        t.setDaemon(true);
+        return t;
+    });
 
     private List<EntityInfo> hostileCache = List.of();
     private long tickCount;
@@ -128,7 +138,30 @@ public final class BridgeRuntime implements ActionHandler {
             out.ok(d);
             return;
         }
-        mc.execute(() -> {
+        // Block lookups (mine, goto {block}) resolve on a worker first: on the client thread they
+        // wait on a future the client thread itself has to run, and the game hangs for good.
+        List<String> lookups =
+                baritone != null && Protocol.T_BARITONE.equals(req.type()) ? baritone.lookupTargets(req) : List.of();
+        if (!lookups.isEmpty()) {
+            BaritoneBridge b = baritone;
+            CompletableFuture.runAsync(() -> b.prewarm(lookups), PREWARM)
+                    .orTimeout(30, TimeUnit.SECONDS)
+                    .whenComplete((ok, err) -> {
+                        if (err != null) {
+                            LOG.warn("resolving {} for Baritone failed", lookups, err);
+                            out.fail(Protocol.E_INTERNAL, "could not resolve blocks " + lookups + ": " + err);
+                            return;
+                        }
+                        mc.execute(() -> run(req, out));
+                    });
+            return;
+        }
+        mc.execute(() -> run(req, out));
+    }
+
+    /** Client thread. */
+    private void run(Request req, Responder out) {
+        {
             try {
                 dispatch(req, out);
             } catch (ProtocolException e) {
@@ -137,7 +170,7 @@ public final class BridgeRuntime implements ActionHandler {
                 LOG.warn("request {} failed", req.type(), t);
                 out.fail(Protocol.E_INTERNAL, t.toString());
             }
-        });
+        }
     }
 
     /** Client thread. */

@@ -16,6 +16,19 @@ public interface BaritoneBridge {
     /** Execute a {@code baritone} request (goto/mine/follow/explore/farm/build/stop/raw). */
     JsonObject execute(Request request) throws ProtocolException;
 
+    /**
+     * Block ids a request will make Baritone look up ({@code mine}, {@code goto {block}}); empty when
+     * none. Any thread.
+     */
+    java.util.List<String> lookupTargets(Request request);
+
+    /**
+     * Resolves {@code blocks} so Baritone caches what they drop. Baritone computes that through a
+     * future the client thread has to run; called on the client thread it waits on itself and the
+     * game hangs. Must NOT run on the client thread.
+     */
+    void prewarm(java.util.List<String> blocks);
+
     /** Cancel whatever Baritone is doing. */
     void cancel();
 

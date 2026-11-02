@@ -10,6 +10,7 @@ import baritone.api.pathing.goals.GoalNear;
 import baritone.api.pathing.goals.GoalXZ;
 import baritone.api.process.IBaritoneProcess;
 import baritone.api.utils.BlockOptionalMeta;
+import baritone.api.utils.BlockOptionalMetaLookup;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -125,6 +126,31 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
             throw new ProtocolException(Protocol.E_GAME_PAUSED,
                     "the game is paused (single-player pause menu); it has to be resumed first");
         }
+    }
+
+    @Override
+    public List<String> lookupTargets(Request req) {
+        try {
+            String command = req.str("command").toLowerCase();
+            List<String> names = new ArrayList<>();
+            if (("mine".equals(command) || "goto".equals(command)) && req.has("block")) {
+                names.add(blockName(req.str("block")));
+            }
+            JsonElement arr = req.body().get("blocks");
+            if ("mine".equals(command) && arr != null && arr.isJsonArray()) {
+                for (JsonElement e : arr.getAsJsonArray()) {
+                    if (e.isJsonPrimitive() && e.getAsJsonPrimitive().isString()) names.add(blockName(e.getAsString()));
+                }
+            }
+            return names;
+        } catch (ProtocolException e) {
+            return List.of(); // the request itself reports the bad argument
+        }
+    }
+
+    @Override
+    public void prewarm(List<String> blocks) {
+        if (!blocks.isEmpty()) new BlockOptionalMetaLookup(blocks.toArray(new String[0]));
     }
 
     private void doMine(Request req, JsonObject out) throws ProtocolException {
