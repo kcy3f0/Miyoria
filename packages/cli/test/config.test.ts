@@ -56,7 +56,7 @@ describe("config", () => {
       ["agent", false],
       ["memory", true],
     ]);
-    expect(areas).toEqual(["auth", "commands", "speech", "stage 節點", "stage.link"]);
+    expect(areas).toEqual(["commands", "speech", "stage 節點", "stage.link"]);
   });
 
   it("menu_areas_edit_only_picked_fields", async () => {

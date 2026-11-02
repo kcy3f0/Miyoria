@@ -3,6 +3,7 @@
 import { loadDotenv } from "@miyoria/kernel";
 import { cliVersion } from "./assets.js";
 import * as configCmd from "./commands/config.js";
+import * as discordCmd from "./commands/discord.js";
 import * as doctor from "./commands/doctor.js";
 import * as init from "./commands/init.js";
 import * as nodeCmd from "./commands/node.js";
@@ -304,6 +305,28 @@ export const COMMANDS: CommandSpec = {
           name: "validate",
           help: "載入並檢查目前的角色",
           run: (ctx) => nodeCmd.profileValidate(ctx.config),
+        },
+      ],
+    },
+    {
+      name: "discord",
+      help: "Discord bot 工具",
+      subcommands: [
+        {
+          name: "commands",
+          help: "斜線指令",
+          subcommands: [
+            {
+              name: "reset",
+              help: "刪除 bot 在全域與所有伺服器的斜線指令（清掉重複的舊指令，core 下次啟動會重新註冊）",
+              run: (ctx) =>
+                discordCmd.commandsReset(
+                  ctx.config,
+                  isInteractive() ? interactivePrompter() : null,
+                  ctx.yes,
+                ),
+            },
+          ],
         },
       ],
     },

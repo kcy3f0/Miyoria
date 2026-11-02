@@ -332,9 +332,7 @@ export async function runArea(area: Area, p: Prompter, ws: Workspace): Promise<v
     case "owner":
       await settings.ask(p, ws, settings.OWNER);
       if (ws.references("MIYORIA_OWNER_ID").length === 0) {
-        p.warn(
-          "miyoria.toml 沒有引用 MIYORIA_OWNER_ID([modules.commands] / [modules.auth] 的 owners)",
-        );
+        p.warn("miyoria.toml 沒有引用 MIYORIA_OWNER_ID([modules.commands] 的 owners)");
       }
       return;
     case "tokens":

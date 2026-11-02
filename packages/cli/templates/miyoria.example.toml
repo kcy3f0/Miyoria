@@ -66,16 +66,20 @@ voice = "deepseek-chan"
 # ---- 子系統 --------------------------------------------------------------
 # 每個 [modules.<id>] 都可以加 enabled = false 關掉
 
+# 擁有者只在這裡設定(舊設定檔的 [modules.auth] owners 仍然有效,兩邊會合併)
 [modules.commands]
 owners = ["discord:${MIYORIA_OWNER_ID:-0}"]
 
+# 角色與權限節點(owner > admin > moderator > trusted > user > restricted > blocked)
 [modules.auth]
-owners = ["discord:${MIYORIA_OWNER_ID:-0}"]
+# default_role = "user"
 
 [modules."platform.discord.bot"]
 token = "${DISCORD_BOT_TOKEN:-}"
 # 填伺服器 id 可以讓 slash command 立即生效;空的 = 全域(最多要等一小時)
 # id 要加引號,例如 ["123456789012345678"](數字太大,TOML 整數會失真)
+# 每次啟動會清掉另一種範圍留下的舊指令;指令清單有重複時可執行一次
+# `miyoria discord commands reset`
 command_guilds = []
 
 # Admin API:CLI(`miyoria module ...`)和之後的管理面板用。token 由 `miyoria init` 產生
@@ -109,7 +113,8 @@ token = "${VOICE_LINK_TOKEN:-}"
 bind = "127.0.0.1:7882"
 token = "${STAGE_LINK_TOKEN:-}"
 
-# 擴充套件資料夾(`miyoria ext list` / `miyoria ext dev`)
+# 擴充套件資料夾(`miyoria ext list` / `miyoria ext dev`)。子資料夾 examples/ 不會載入;
+# 想試範例(/hello)就把 "extensions/examples" 加進來
 [modules.extensions]
 dirs = ["extensions"]
 
@@ -120,7 +125,7 @@ barge_in = "stop"          # 有人插話時停止說話:stop | ignore
 # tts_translate = "Japanese"
 
 [modules.agent]
-# 頻道模式:off | mention-only | ambient | always。也可以在 Discord 用 /mode 即時切換
+# 頻道模式:off | mention-only | ambient | always。也可以在 Discord 用 /channel mode 即時切換
 # default_mode = "ambient"
 # channels = { "<channel id>" = "always", "discord:<guild id>" = "mention-only" }
 

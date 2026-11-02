@@ -9,7 +9,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { AgentModule } from "@miyoria/agent";
 import { ApiModule } from "@miyoria/api";
-import { AuthModule } from "@miyoria/auth";
+import { AuthConfigSchema, AuthModule } from "@miyoria/auth";
 import { CommandsModule } from "@miyoria/commands";
 import { DiscordBotModule } from "@miyoria/discord";
 import * as extHost from "@miyoria/ext-host";
@@ -75,6 +75,15 @@ export function llmModule(config: Config, profile: Profile): LlmModule {
   return new LlmModule(llm, [new OpenAiFactory()], { purposeOverrides: overrides });
 }
 
+/**
+ * `[modules.auth] owners`. Owners belong in `[modules.commands] owners`; the auth section is
+ * still read so both the RBAC and the fallback permissions see the same owners.
+ */
+export function authOwners(config: Config): string[] {
+  const parsed = AuthConfigSchema.safeParse(config.module(AuthModule.ID).config ?? {});
+  return parsed.success ? parsed.data.owners : [];
+}
+
 async function coreModules({ config, profile, profileId }: ModuleDeps): Promise<Module[]> {
   return [
     llmModule(config, profile),
@@ -83,7 +92,7 @@ async function coreModules({ config, profile, profileId }: ModuleDeps): Promise<
     new VoiceModule(profileId, profile.voice),
     new SchedulerModule(),
     new AgentModule(profile),
-    new CommandsModule(),
+    new CommandsModule({ owners: authOwners(config) }),
     new AuthModule(),
     SocialModule.fromProfile(profile),
     new MoodModule(profileId, profile.manifest.mood),

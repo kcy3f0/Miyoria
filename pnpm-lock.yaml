@@ -343,6 +343,9 @@ importers:
       '@miyoria/core':
         specifier: workspace:*
         version: link:../core
+      '@miyoria/discord':
+        specifier: workspace:*
+        version: link:../discord
       '@miyoria/kernel':
         specifier: workspace:*
         version: link:../kernel
