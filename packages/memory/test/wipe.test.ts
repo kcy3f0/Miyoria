@@ -163,8 +163,11 @@ describe("memory wipe", () => {
     }
     expect(wipePlan("memories")).toMatchObject({ relationships: false, messages: false });
     expect(wipePlan("relationships").settings_keys).toContain("mood:last");
+    expect(wipePlan("relationships").settings_keys).toContain("self:state");
+    expect(wipePlan("relationships").settings_prefixes).toContain("self:feeling:");
+    expect(wipePlan("memories").settings_prefixes).not.toContain("self:feeling:");
     expect(wipePlan("everything").settings_keys).toContain("initiative:state");
-    expect(WIPE_RESTARTS).toEqual(["memory", "social", "mood", "agent", "initiative"]);
+    expect(WIPE_RESTARTS).toEqual(["memory", "social", "mood", "self", "agent", "initiative"]);
   });
 
   it("is_owner_only_and_walks_through_select_confirm_and_modal", async () => {

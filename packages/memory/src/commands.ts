@@ -64,9 +64,11 @@ const PAGE_SIZE = 10;
 /** Settings keys of other modules that hold memory-derived state (see their packages). */
 const MOOD_KEY = "mood:last"; // @miyoria/social `mood.ts`
 const INITIATIVE_KEY = "initiative:state"; // @miyoria/initiative `module.ts`
+const SELF_KEY = "self:state"; // @miyoria/self `module.ts`
+const FEELING_PREFIX = "self:feeling:"; // @miyoria/self `feelings.ts`
 
 /** Modules whose in-memory caches a wipe invalidates, restarted afterwards in this order. */
-export const WIPE_RESTARTS = ["memory", "social", "mood", "agent", "initiative"] as const;
+export const WIPE_RESTARTS = ["memory", "social", "mood", "self", "agent", "initiative"] as const;
 
 /** Largest backup sent as is; bigger ones are gzipped. */
 const MAX_PLAIN_BACKUP = 8 * 1024 * 1024;
@@ -86,7 +88,8 @@ export const WIPE_SCOPE_LABEL: Record<WipeScope, string> = {
 
 const WIPE_SCOPE_DETAIL: Record<WipeScope, string> = {
   memories: "她記得的所有事（經歷、事實、筆記、之後要問的事）。",
-  relationships: "記憶，加上她對每個人的好感、信任、熟悉度、印象與變化紀錄，以及心情狀態。",
+  relationships:
+    "記憶，加上她對每個人的好感、信任、熟悉度、印象、感情描述與變化紀錄，以及心情與內在狀態。",
   history: "記憶與關係，加上聊天紀錄、決策紀錄與記憶整理進度。",
   everything: "以上全部，加上主動發話的狀態。",
 };
@@ -102,7 +105,11 @@ export function wipePlan(scope: WipeScope): WipePlan {
     settings_keys: [MAINTENANCE_KEY],
     settings_prefixes: [],
   };
-  if (level >= 1) plan.settings_keys.push(MOOD_KEY);
+  // Her mood, inner state and feelings about people go with the relationships.
+  if (level >= 1) {
+    plan.settings_keys.push(MOOD_KEY, SELF_KEY);
+    plan.settings_prefixes.push(FEELING_PREFIX);
+  }
   // Watermarks go only together with the log they point into.
   if (plan.messages) plan.settings_prefixes.push(WATERMARK_PREFIX);
   if (level >= 3) plan.settings_keys.push(INITIATIVE_KEY);
