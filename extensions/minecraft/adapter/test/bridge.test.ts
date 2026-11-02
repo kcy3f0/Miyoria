@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { BridgeClient, type BridgeError, type BridgeEvent } from "../src/bridge.js";
-import { resolveEndpoint } from "../src/config.js";
+import { bridgeConfigPath, defaultMinecraftDir, resolveEndpoint } from "../src/config.js";
 import { FakeMod, waitFor } from "./fake-mod.js";
 
 let mod: FakeMod | undefined;
@@ -44,6 +44,20 @@ describe("resolveEndpoint", () => {
       token: "cfg",
     });
     expect(await resolveEndpoint({}, {})).toEqual({ url: "ws://127.0.0.1:7890", token: "" });
+  });
+
+  it("falls back to the official launcher's .minecraft", async () => {
+    const appData = mkdtempSync(join(tmpdir(), "appdata-"));
+    mkdirSync(join(appData, ".minecraft", "config"), { recursive: true });
+    writeFileSync(join(appData, ".minecraft", "config", "miyoria-bridge.json"), JSON.stringify({ port: 7891, token: "launcher" }));
+    expect(defaultMinecraftDir({ APPDATA: appData }, "win32")).toBe(join(appData, ".minecraft"));
+    expect(defaultMinecraftDir({ HOME: "/home/x" }, "linux")).toBe(join("/home/x", ".minecraft"));
+    expect(defaultMinecraftDir({}, "win32")).toBeUndefined();
+    expect(await resolveEndpoint({}, { APPDATA: appData }, "win32")).toEqual({ url: "ws://127.0.0.1:7891", token: "launcher" });
+    // An explicit instance dir wins over the default.
+    expect(bridgeConfigPath({ minecraft_dir: "D:/mc" }, { APPDATA: appData }, "win32")).toBe(
+      join("D:/mc", "config", "miyoria-bridge.json"),
+    );
   });
 });
 
@@ -148,5 +162,23 @@ describe("BridgeClient", () => {
     expect(mod.hellos).toBe(1);
     const err = (await c.request("ping").catch((e: unknown) => e)) as BridgeError;
     expect(err.code).toBe("not_connected");
+  });
+
+  it("survives a malformed url and connects once it is fixed", async () => {
+    mod = await FakeMod.start();
+    const m = mod;
+    let url = "not a url";
+    const warnings: string[] = [];
+    client = new BridgeClient({
+      endpoint: () => ({ url, token: m.token }),
+      reconnectMinMs: 20,
+      reconnectMaxMs: 40,
+      log: { info: () => {}, warn: (message) => warnings.push(message) },
+    });
+    client.start();
+    await waitFor(() => warnings.includes("invalid bridge url"));
+    url = m.url;
+    const c = client;
+    await waitFor(() => c.ready);
   });
 });

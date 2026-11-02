@@ -153,7 +153,16 @@ export class BridgeClient {
       return;
     }
     if (this.#closed) return;
-    const ws = new WebSocket(endpoint.url, { handshakeTimeout: this.#opts.helloTimeoutMs });
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(endpoint.url, { handshakeTimeout: this.#opts.helloTimeoutMs });
+    } catch (error) {
+      // A malformed `url` throws synchronously; keep retrying (the config may be fixed) instead
+      // of crashing the extension with an unhandled rejection.
+      this.#opts.log?.warn("invalid bridge url", { url: endpoint.url, error: String(error) });
+      this.#schedule();
+      return;
+    }
     this.#ws = ws;
     ws.on("open", () => {
       ws.send(JSON.stringify({ type: "hello", token: endpoint.token, client: "miyoria-adapter" }));

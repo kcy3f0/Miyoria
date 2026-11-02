@@ -44,22 +44,45 @@ async function readBridgeFile(path: string): Promise<BridgeFile | undefined> {
   }
 }
 
+/** The official launcher's default game directory (`undefined` when the environment lacks it). */
+export function defaultMinecraftDir(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (platform === "win32") return env.APPDATA ? join(env.APPDATA, ".minecraft") : undefined;
+  if (!env.HOME) return undefined;
+  return platform === "darwin"
+    ? join(env.HOME, "Library", "Application Support", "minecraft")
+    : join(env.HOME, ".minecraft");
+}
+
+/** Path of `miyoria-bridge.json`: explicit file, then instance dir, then the launcher default. */
+export function bridgeConfigPath(
+  config: AdapterConfig,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  const explicit = config.bridge_config ?? env.MIYORIA_MC_BRIDGE_CONFIG;
+  if (explicit) return explicit;
+  const dir = config.minecraft_dir ?? env.MIYORIA_MC_DIR ?? defaultMinecraftDir(env, platform);
+  return dir ? join(dir, "config", BRIDGE_FILE) : undefined;
+}
+
+export const BRIDGE_FILE = "miyoria-bridge.json";
+
 /**
  * Resolves the endpoint: config fields, then the environment
  * (`MIYORIA_MC_URL`, `MIYORIA_MC_TOKEN`, `MIYORIA_MC_DIR`,
- * `MIYORIA_MC_BRIDGE_CONFIG`), then the mod's own config file. Re-run on
- * every connection attempt so a regenerated token is picked up.
+ * `MIYORIA_MC_BRIDGE_CONFIG`), then the mod's own config file (by default the
+ * official launcher's `.minecraft`). Re-run on every connection attempt so a
+ * regenerated token is picked up.
  */
 export async function resolveEndpoint(
   config: AdapterConfig,
   env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<Endpoint> {
-  const filePath =
-    config.bridge_config ??
-    env.MIYORIA_MC_BRIDGE_CONFIG ??
-    (config.minecraft_dir ?? env.MIYORIA_MC_DIR
-      ? join(config.minecraft_dir ?? env.MIYORIA_MC_DIR ?? "", "config", "miyoria-bridge.json")
-      : undefined);
+  const filePath = bridgeConfigPath(config, env, platform);
   const file = filePath ? await readBridgeFile(filePath) : undefined;
   const url =
     config.url ??
