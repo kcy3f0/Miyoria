@@ -121,7 +121,7 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
     tool: {
       name: "game_start",
       description:
-        `開始直播玩遊戲(導演迴路會自己決定目標與動作,直播畫面會自動切到遊戲場景)。game 省略 = ${o.defaultGame}。` +
+        `開始玩遊戲(例如 Minecraft;導演迴路會自己決定目標與動作,直播畫面會切到遊戲場景)。只有被要求玩遊戲時才用;只是要開直播 / 開台請用 stream_start,不要用這個。game 省略 = ${o.defaultGame}。` +
         "遊戲沒開時會失敗,那就跟大家說、請擁有者先開遊戲。goal 可以給第一個目標;stream = true 會順便開台(Go Live)。",
       properties: {
         game: { type: "string", description: `遊戲 id,例如 ${o.defaultGame}` },

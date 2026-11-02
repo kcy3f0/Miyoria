@@ -15,7 +15,7 @@ import {
   type Subject,
 } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
-import { voiceCapabilities } from "../src/actions.js";
+import { joinTarget, voiceCapabilities } from "../src/actions.js";
 import type { VoiceLink } from "../src/index.js";
 
 const CTX: ContextKey = { platform: "discord", scope: "g1", channel: "c1", kind: "channel" };
@@ -159,5 +159,41 @@ describe("voice capabilities", () => {
       /not across servers/,
     );
     expect(s.link.calls).toEqual([]);
+  });
+});
+
+describe("joinTarget", () => {
+  const requester = { platform: "discord", id: "u1" };
+  const principal = { kind: "user", requester, context: null } as never;
+  const worldWith = (voice: { guild: string; channel: string } | null) =>
+    ({
+      person: () =>
+        voice === null
+          ? null
+          : { voice: { platform: "discord", guild: voice.guild, channel: voice.channel } },
+    }) as never;
+
+  it("uses the requester's channel from the bot's world view", () => {
+    expect(joinTarget("g1", principal, worldWith({ guild: "g1", channel: "vc9" }))).toEqual({
+      channel: "vc9",
+      follow: null,
+    });
+  });
+
+  it("falls back to asking the voice node when the world doesn't know", () => {
+    expect(joinTarget("g1", principal, undefined)).toEqual({ channel: null, follow: "u1" });
+    expect(joinTarget("g1", principal, worldWith(null))).toEqual({ channel: null, follow: "u1" });
+    // In voice, but on another server.
+    expect(joinTarget("g1", principal, worldWith({ guild: "g2", channel: "vc9" }))).toEqual({
+      channel: null,
+      follow: "u1",
+    });
+  });
+
+  it("has nobody to follow without a requester", () => {
+    expect(joinTarget("g1", { kind: "self", requester: null } as never, undefined)).toEqual({
+      channel: null,
+      follow: null,
+    });
   });
 });

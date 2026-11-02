@@ -4,7 +4,7 @@
 
 import { type Capability, CapabilityError, defineCapability } from "@miyoria/actions";
 import { errorMessage } from "@miyoria/kernel";
-import { actLane, type Principal, StreamCurtainKey } from "@miyoria/types";
+import { actLane, type Principal, StreamCurtainKey, type WorldState } from "@miyoria/types";
 import { z } from "zod";
 import type { VoiceLink } from "./link/link.js";
 
@@ -45,8 +45,30 @@ function requireNode(link: VoiceLink): void {
 
 const GUILD_PROPERTY = { type: "string", description: "伺服器 id(省略 = 這個伺服器)" };
 
+/**
+ * Where to join for `principal`'s request in `guild`: the requester's current voice channel as the
+ * bot sees it (`world`), else ask the voice node to look the requester up (`follow`).
+ */
+export function joinTarget(
+  guild: string,
+  principal: Principal,
+  world: WorldState | undefined,
+): { channel: string | null; follow: string | null } {
+  const requester = principal.requester ?? null;
+  if (requester === null) return { channel: null, follow: null };
+  const spot = world?.person(requester)?.voice ?? null;
+  if (spot !== null && spot.guild === guild && spot.platform === requester.platform) {
+    return { channel: spot.channel, follow: null };
+  }
+  return { channel: null, follow: requester.id };
+}
+
 /** The four capabilities, bound to `link` (and the default Go Live source). */
-export function voiceCapabilities(link: VoiceLink, goliveSource: () => string): Capability[] {
+export function voiceCapabilities(
+  link: VoiceLink,
+  goliveSource: () => string,
+  world: () => WorldState | undefined = () => undefined,
+): Capability[] {
   const join = defineCapability<JoinArgs>({
     name: "voice.join",
     summary: "加入語音頻道",
@@ -67,12 +89,14 @@ export function voiceCapabilities(link: VoiceLink, goliveSource: () => string): 
     async execute(args, ctx) {
       const guild = requireGuild(args, ctx.principal);
       requireNode(link);
-      const channel = args.channel ?? null;
-      const follow = channel === null ? (ctx.principal.requester?.id ?? null) : null;
-      if (channel === null && follow === null) {
+      const target =
+        args.channel != null
+          ? { channel: args.channel, follow: null }
+          : joinTarget(guild, ctx.principal, world());
+      if (target.channel === null && target.follow === null) {
         throw new CapabilityError("no channel given and nobody to follow");
       }
-      const joined = await link.join(guild, channel, follow);
+      const joined = await link.join(guild, target.channel, target.follow);
       return { text: `joined voice channel ${joined}`, data: { channel: joined } };
     },
   });
@@ -109,7 +133,7 @@ export function voiceCapabilities(link: VoiceLink, goliveSource: () => string): 
     tool: {
       name: "stream_start",
       description:
-        "開始在 Discord 語音頻道 Go Live 直播(直播機的 OBS 會跟著開播)。還不在語音時會先進對方所在的語音頻道。",
+        "開直播 / 開台:在 Discord 語音頻道 Go Live(直播機的 OBS 會跟著開播),跟玩遊戲無關。還不在語音時會先進對方所在的語音頻道。",
       properties: { guild: GUILD_PROPERTY },
     },
     scope: guildOf,
@@ -124,10 +148,12 @@ export function voiceCapabilities(link: VoiceLink, goliveSource: () => string): 
       if (source === "") throw new CapabilityError("no Go Live source configured");
       let joined = false;
       if (link.channel(guild) === null) {
-        const follow = ctx.principal.requester?.id ?? null;
-        if (follow === null) throw new GoLiveJoinError("not in voice and nobody to follow");
+        const target = joinTarget(guild, ctx.principal, world());
+        if (target.channel === null && target.follow === null) {
+          throw new GoLiveJoinError("not in voice and nobody to follow");
+        }
         try {
-          await link.join(guild, null, follow);
+          await link.join(guild, target.channel, target.follow);
           joined = true;
         } catch (error) {
           throw new GoLiveJoinError(errorMessage(error), { cause: error });
