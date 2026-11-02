@@ -1,6 +1,6 @@
 # @miyoria/overlay
 
-直播用的 **OBS 瀏覽器來源**:字幕(邊講邊出)、情緒指示、小型狀態 / 請求佇列面板。背景透明、深色極簡,每個有字的區塊都自帶半透明深色底板,所以疊在亮的遊戲畫面上也看得清楚。Vite + TypeScript,沒有框架,build 後約 12 KB。
+直播用的 **OBS 瀏覽器來源**:字幕(邊講邊出)、情緒指示、小型狀態 / 請求佇列面板、左下角的活動膠囊(她現在在做什麼,附進度條)。背景透明、深色極簡,每個有字的區塊都自帶半透明深色底板,所以疊在亮的遊戲畫面上也看得清楚。Vite + TypeScript,沒有框架,build 後約 32 KB(gzip 約 12 KB)。
 
 ## 它怎麼拿到資料
 
@@ -14,6 +14,8 @@
 | `{"type":"status","core","vts","obs","scene","streaming"}` | 狀態面板:直播中 / 場景名 / Core、VTS、OBS 連線點。 |
 | `{"type":"queue","items":[…]}` | 請求佇列(「接下來」)。`items` 可以是字串,或帶 `title`(也認 `text` / `name` / `song` / `request`…)與 `by`(也認 `user` / `requester`…)的物件;最多顯示 5 筆,多的寫「還有 N 項」。 |
 
+| `{"type":"activity","kind","label","detail","progress","elapsed_ms","duration_ms"}` | 活動膠囊(見下面)。`kind`:`thinking`(思考中…)、`synthesizing`(產生語音…)、`song_prepare`(下載中 / 讓出顯示卡中 / 分離人聲 / 轉換歌聲 / 混音 / 找歌詞,`detail` 是歌名,`progress` 是 worker 的進度)、`singing`(正在唱,`elapsed_ms` + `duration_ms` 由 overlay 自己的時鐘推進度);`kind: null` 隱藏。不認得的 `kind` 當成沒有進度的狀態顯示。 |
+| `{"type":"notice","text"}` | 舊版 Core 的一行狀態(「準備歌曲中…」,`""` 清掉)。沒有 `activity` 時顯示在活動膠囊裡(沒有進度)。 |
 | `{"type":"levels","rms","bands"?}` | 她的聲音音量(0..1,和嘴型同一份、同樣延遲),每個 avatar frame 一次(約 60/s),停下時送一次 `rms: 0`。畫成左側邊緣從上到下一整排固定不動的橫條(貼齊畫面左緣、前端圓角、半透明):每條只改長度和透明度,中間的跟低頻、上下兩端的跟高頻,顏色跟著情緒點;她開口時淡入、停下時淡出。唱歌時跟著她的人聲。 |
 
 不認得的訊息、壞掉的 JSON 一律略過,不會中斷。WebSocket 斷線會自動重連(0.5 s 起、最長 5 s),Stage 重開不用重新整理 OBS 的來源。
@@ -35,7 +37,7 @@ OBS:新增「瀏覽器」來源,網址 `http://127.0.0.1:7884/overlay/`,寬 1920
 | 參數 | 預設 | 說明 |
 |---|---|---|
 | `ws` | 跟頁面同一個主機的 `…/overlay/ws`(file:// 開啟時 `ws://127.0.0.1:7884/overlay/ws`) | 推送位址,只接受 `ws://` / `wss://`。 |
-| `show` | `subtitles,emotion,status,queue,wave` | 要顯示哪些部分,逗號分隔。例如 `?show=subtitles,queue`。沒有任何有效名稱時視為預設。 |
+| `show` | `subtitles,emotion,status,queue,wave,activity` | 要顯示哪些部分,逗號分隔。例如 `?show=subtitles,queue`。沒有任何有效名稱時視為預設。 |
 | `cps` | `14` | 打字機基本速度(每秒字數,2~200)。字幕來得比顯示快時會自動加速追上;`200` = 不做打字效果。 |
 | `scale` | `1` | 整體縮放(0.4~3)。1 是以 1080p 為準,版面隨畫面寬高等比,720p / 4K 看起來一樣。 |
 | `demo` | 關 | `?demo=1` 播一段內建的假資料,不用連 Stage,設計和預覽用。 |
@@ -46,17 +48,20 @@ OBS:新增「瀏覽器」來源,網址 `http://127.0.0.1:7884/overlay/`,寬 1920
 - **打字機**:整行文字從第一個 frame 就排好版(還沒打到的字是透明的),所以字不會在打的過程中跳行。以 code point 計算,不會把 emoji 拆開。字幕修正(同 turn 的文字前綴改變)時,只重打有變的部分。
 - **字幕消失**:`final` 之後,等打完、她停止說話,再停留 `2.2 秒 + 每字 55 ms`(上限 9 秒)後淡出。沒有 `final` 又 8 秒沒更新、也不在說話,視為殘留,淡出。
 - **字型**:用系統字型(Segoe UI Variable / 微軟正黑體 / Noto Sans TC)。中文字型檔太大,不內嵌;OBS 所在的 Windows 都有。
-- 動態:字幕底板淡入 + 輕微上移;情緒點換色;直播中的紅點慢慢呼吸。`prefers-reduced-motion` 時全部關掉。
+- **活動膠囊**:左下角、她的聲音條右邊(`left: 10rem`,比字幕底板低,不會重疊)。一個情緒色的點、短短的狀態文字、歌名(太長會省略),底部膠囊裡面一條細的進度條:有進度時平順地長到新的值;唱歌時從唱到的地方線性跑到歌的結尾(CSS 動畫,不用一直收訊息);沒有進度時是一道慢慢移動的微光。換狀態時文字交叉淡化、膠囊寬度緩動到新的長度;沒事做時淡出。
+- **動態**:全部用同一套:出現時淡入 + 輕微位移(或高度展開),`--t-enter` 260 ms、`--ease-out`;消失 `--t-exit` 200 ms;文字改變交叉淡化 `--t-change` 240 ms;排序、寬度 `--t-move` 280 ms;進度 `--t-progress` 700 ms(都在 `style.css` 的 `:root`)。元素要等消失的動畫跑完才移出版面(`hidden`)。側邊面板的區塊(情緒、狀態、佇列)和裡面的「直播中」、場景名稱、「還有 N 項」用 0fr → 1fr 的 grid 列展開 / 收起,面板高度跟著平順變化;佇列每一項有自己的 key,新的展開進來、移除的收起後才刪掉、換位置的滑過去(FLIP);情緒名稱、場景名稱交叉淡化;連線點換色。`prefers-reduced-motion` 時所有時間變成 1 ms,微光、呼吸都停掉(唱歌的進度條照常走,那是資訊)。
 
 ## 結構
 
 ```
-src/feed.ts        訊息型別、parseMessage、reduce(純函式,有測試)
+src/feed.ts        訊息型別、parseMessage、reduce、shownActivity(純函式,有測試)
 src/typewriter.ts  打字機步進、code point 工具、停留時間(純函式,有測試)
 src/config.ts      query string(有測試)
 src/emotion.ts     情緒名稱 → 顏色(同亮度同彩度,只轉色相)
 src/connection.ts  WebSocket 重連
-src/view.ts        DOM、rAF 迴圈、字幕計時
-src/demo.ts        ?demo=1 的假資料
+src/view.ts        DOM、rAF 迴圈、字幕計時、面板與佇列(FLIP)
+src/activity.ts    活動膠囊(文字、寬度、進度條)
+src/motion.ts      共用動態:is-out 進出、交叉淡化、讀 CSS 的時間
+src/demo.ts        ?demo=1 的假資料(說話、思考、做歌的每個階段、唱歌、佇列變動輪流來)
 src/style.css      版面與視覺
 ```

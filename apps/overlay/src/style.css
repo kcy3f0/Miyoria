@@ -5,6 +5,10 @@
  * with a cool tint, 82% opaque) so contrast does not depend on what is behind it. One accent family:
  * the emotion dot. Sizes are in rem, and rem follows the frame (16px at 1920x1080), so the layout is the
  * same at 720p, 1440p or 4K; ?scale= adjusts it.
+ *
+ * Motion: one language for everything. Things enter (fade + a small move, or a fold that opens) in
+ * --t-enter with --ease-out, leave in --t-exit with --ease-exit, and text that changes cross-fades in
+ * --t-change. Nothing bounces; under prefers-reduced-motion every duration is 1ms.
  */
 
 :root {
@@ -20,9 +24,32 @@
   --live: oklch(0.68 0.21 25);
 
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 0.7, 0.2);
+  --ease-in-out: cubic-bezier(0.45, 0, 0.55, 1);
+
+  /* Motion timings (motion.ts reads --t-exit to know when an exit is over). */
+  --t-enter: 260ms;
+  --t-exit: 200ms;
+  --t-change: 240ms;
+  --t-move: 280ms;
+  --t-progress: 700ms;
+  --t-color: 500ms;
+  /* Distance things travel when they enter or leave. */
+  --shift: 0.45rem;
 
   --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft JhengHei UI", "Noto Sans TC", "PingFang TC",
     system-ui, sans-serif;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-enter: 1ms;
+    --t-exit: 1ms;
+    --t-change: 1ms;
+    --t-move: 1ms;
+    --t-progress: 1ms;
+    --t-color: 1ms;
+  }
 }
 
 html {
@@ -51,10 +78,70 @@ body {
   display: none !important;
 }
 
+/* Set for one frame to apply a state without its transition. */
+.no-motion,
+.no-motion * {
+  transition: none !important;
+}
+
 .overlay {
   position: fixed;
   inset: 0;
   pointer-events: none;
+}
+
+/* ── shared motion pieces ─────────────────────────────────────────────── */
+
+/* A block whose height folds open and shut, so whatever contains it resizes smoothly. */
+.fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows var(--t-enter) var(--ease-out),
+    opacity var(--t-enter) var(--ease-out),
+    transform var(--t-move) var(--ease-out);
+}
+
+.fold.is-out {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition-duration: var(--t-exit);
+  transition-timing-function: var(--ease-exit);
+}
+
+.fold__in {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Text that cross-fades: old and new item share one grid cell while one fades out and the other in. */
+.swap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.swap__item {
+  grid-area: 1 / 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition:
+    opacity var(--t-change) var(--ease-out),
+    transform var(--t-change) var(--ease-out);
+}
+
+.swap__item.is-out {
+  opacity: 0;
+  transform: translateY(0.3em);
+}
+
+.swap__item.is-leaving {
+  opacity: 0;
+  transform: translateY(-0.3em);
+  transition-duration: var(--t-exit);
+  transition-timing-function: var(--ease-exit);
 }
 
 /* ── subtitles ────────────────────────────────────────────────────────── */
@@ -73,14 +160,15 @@ body {
   box-shadow: 0 0.6rem 1.8rem oklch(0 0 0 / 0.38);
   transform: translateX(-50%);
   transition:
-    opacity 220ms var(--ease-out),
-    transform 260ms var(--ease-out);
+    opacity var(--t-enter) var(--ease-out),
+    transform var(--t-enter) var(--ease-out);
 }
 
 .subtitle.is-hidden {
   opacity: 0;
-  transform: translate(-50%, 0.6rem);
-  transition-duration: 420ms, 420ms;
+  transform: translate(-50%, var(--shift));
+  transition-duration: var(--t-exit);
+  transition-timing-function: var(--ease-exit);
 }
 
 .subtitle__text {
@@ -111,40 +199,166 @@ body {
   width: 10rem;
   height: 100%;
   opacity: 1;
-  transition: opacity 260ms var(--ease-out);
+  transition: opacity var(--t-enter) var(--ease-out);
 }
 
+/* Her voice dies away slower than anything else leaves. */
 .wave.is-idle {
   opacity: 0;
-  transition-duration: 900ms;
+  transition-duration: calc(var(--t-exit) * 4.5);
 }
 
-/* ── notice (a status line above the subtitles) ──────────────────────── */
+/* ── activity capsule (bottom left, right of the voice bars) ──────────── */
 
-.notice {
+.activity {
+  --dot: var(--ink-faint);
+  --label-max: 18rem;
   position: absolute;
-  left: 50%;
-  bottom: 13.5rem;
+  left: 10rem;
+  bottom: 1.5rem;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.45rem 1rem 0.5rem;
+  gap: 0.65rem;
+  height: 2.6rem;
+  padding: 0 1.15rem 0.2rem 1rem;
+  overflow: hidden;
   background: var(--plate);
   border: 1px solid var(--plate-edge);
   border-radius: 999px;
   box-shadow: 0 0.4rem 1.2rem oklch(0 0 0 / 0.3);
-  color: var(--ink-dim);
-  font-size: 1.15rem;
-  letter-spacing: 0.04em;
-  transform: translateX(-50%);
+  font-size: 1.08rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 1.2;
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--t-enter) var(--ease-out),
+    transform var(--t-enter) var(--ease-out);
 }
 
-.notice__dot {
+.activity.is-out {
+  opacity: 0;
+  transform: translateY(var(--shift));
+  transition-duration: var(--t-exit);
+  transition-timing-function: var(--ease-exit);
+}
+
+.activity__dot {
+  flex: none;
   width: 0.55rem;
   height: 0.55rem;
   border-radius: 50%;
-  background: var(--ink-faint);
+  background: var(--dot);
+  transition: background-color var(--t-color) var(--ease-out);
+}
+
+.activity.is-busy .activity__dot {
   animation: pulse 1.6s ease-in-out infinite;
+}
+
+/* Its width is set to the label's (activity.ts) and eases there, so the capsule never jumps. */
+.activity__label {
+  flex: none;
+  overflow: hidden;
+  transition: width var(--t-move) var(--ease-out);
+}
+
+.activity__item {
+  display: flex;
+  align-items: baseline;
+  justify-self: start;
+  width: max-content;
+  max-width: var(--label-max);
+}
+
+.activity__verb {
+  flex: none;
+}
+
+.activity__mark {
+  flex: none;
+  color: var(--ink-faint);
+  font-weight: 500;
+}
+
+.activity__mark:first-of-type {
+  margin-left: 0.15em;
+}
+
+.activity__title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-dim);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The progress bar: a thin track along the bottom, inside the capsule's rounded shape. */
+.activity__track {
+  position: absolute;
+  left: 1rem;
+  right: 1.15rem;
+  bottom: 0.42rem;
+  height: 0.16rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: oklch(1 0 0 / 0.1);
+}
+
+.activity__fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--dot);
+  opacity: 0.9;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition:
+    transform var(--t-progress) var(--ease-out),
+    opacity var(--t-change) var(--ease-out),
+    background-color var(--t-color) var(--ease-out);
+}
+
+/* No real progress: the fill gives way to a slow shimmer. */
+.activity__track::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 34%;
+  background: linear-gradient(90deg, transparent, oklch(1 0 0 / 0.42), transparent);
+  opacity: 0;
+  transform: translateX(-100%);
+  transition: opacity var(--t-change) var(--ease-out);
+}
+
+.activity__track.is-indeterminate .activity__fill {
+  opacity: 0;
+}
+
+.activity__track.is-indeterminate::after {
+  opacity: 1;
+  animation: shimmer 1.9s var(--ease-in-out) infinite;
+}
+
+@keyframes shimmer {
+  to {
+    transform: translateX(295%);
+  }
+}
+
+/* A song's bar runs from where the song is to its end (duration and delay set by activity.ts). */
+@keyframes activity-fill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
 }
 
 /* ── side panel ───────────────────────────────────────────────────────── */
@@ -156,7 +370,6 @@ body {
   box-sizing: border-box;
   width: 18rem;
   display: grid;
-  gap: 0.85rem;
   padding: 0.95rem 1.1rem;
   background: var(--plate);
   border: 1px solid var(--plate-edge);
@@ -164,12 +377,38 @@ body {
   box-shadow: 0 0.5rem 1.4rem oklch(0 0 0 / 0.32);
   font-size: 1.05rem;
   line-height: 1.35;
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--t-enter) var(--ease-out),
+    transform var(--t-enter) var(--ease-out);
 }
 
-/* Sections after the first are separated by a hairline, not by more boxes. */
-.panel > * + * {
+.panel.is-out {
+  opacity: 0;
+  transform: translateY(calc(var(--shift) * -1));
+  transition-duration: var(--t-exit);
+  transition-timing-function: var(--ease-exit);
+}
+
+/*
+ * Sections after the first one shown are separated by a hairline, not by more boxes. The spacing
+ * eases when a section above folds away, so the one below does not jump up.
+ */
+.panel__sec > .fold__in > * {
+  margin-top: 0.85rem;
   padding-top: 0.85rem;
   border-top: 1px solid var(--rule);
+  transition:
+    margin-top var(--t-enter) var(--ease-out),
+    padding-top var(--t-enter) var(--ease-out),
+    border-top-color var(--t-enter) var(--ease-out);
+}
+
+.panel__sec.is-first > .fold__in > * {
+  margin-top: 0;
+  padding-top: 0;
+  border-top-color: transparent;
 }
 
 .emotion {
@@ -188,8 +427,8 @@ body {
   background: var(--dot);
   opacity: var(--level);
   transition:
-    background-color 500ms var(--ease-out),
-    opacity 500ms var(--ease-out);
+    background-color var(--t-color) var(--ease-out),
+    opacity var(--t-color) var(--ease-out);
 }
 
 .emotion__name {
@@ -197,14 +436,15 @@ body {
   font-size: 1.3rem;
   font-weight: 600;
   letter-spacing: 0.02em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .status {
   display: grid;
-  gap: 0.5rem;
+}
+
+/* Rows fold open and shut; their gap lives inside them. */
+.status__row > .fold__in > * {
+  padding-bottom: 0.5rem;
 }
 
 .status__live {
@@ -224,9 +464,6 @@ body {
 
 .status__scene {
   color: var(--ink-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .status__chips {
@@ -242,6 +479,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+  transition: color var(--t-color) var(--ease-out);
 }
 
 .chip__dot {
@@ -250,6 +488,9 @@ body {
   box-sizing: border-box;
   border: 1.5px solid currentColor;
   border-radius: 50%;
+  transition:
+    background-color var(--t-color) var(--ease-out),
+    border-color var(--t-color) var(--ease-out);
 }
 
 .chip.is-ok {
@@ -263,11 +504,10 @@ body {
 
 .queue {
   display: grid;
-  gap: 0.5rem;
 }
 
 .queue__title {
-  margin: 0;
+  margin: 0 0 0.5rem;
   color: var(--ink-faint);
   font-size: 0.92rem;
   font-weight: 600;
@@ -276,17 +516,22 @@ body {
 
 .queue__list {
   display: grid;
-  gap: 0.4rem;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.queue__item {
+/* Items unfold in from the side, fold out the same way, and slide when they change place. */
+.queue__item.is-out {
+  transform: translateX(var(--shift));
+}
+
+.queue__row {
   display: grid;
   grid-template-columns: 1.1rem minmax(0, 1fr) auto;
   align-items: baseline;
   column-gap: 0.55rem;
+  padding-bottom: 0.4rem;
 }
 
 .queue__n {
@@ -325,6 +570,12 @@ body {
   border-radius: 0.4rem;
   color: var(--ink-dim);
   font-size: 0.9rem;
+  transition: opacity var(--t-enter) var(--ease-out);
+}
+
+.offline.is-out {
+  opacity: 0;
+  transition-duration: var(--t-exit);
 }
 
 @keyframes pulse {
@@ -334,15 +585,15 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .subtitle,
-  .subtitle.is-hidden,
-  .emotion__dot,
-  .wave {
-    transition-duration: 1ms;
+  .status__pulse,
+  .activity.is-busy .activity__dot,
+  .activity__track.is-indeterminate::after {
+    animation: none;
   }
 
-  .status__pulse,
-  .notice__dot {
-    animation: none;
+  /* Still says "busy" without moving: a faint, still highlight. */
+  .activity__track.is-indeterminate::after {
+    transform: translateX(95%);
+    opacity: 0.6;
   }
 }

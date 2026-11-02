@@ -1,8 +1,11 @@
 // DOM for the overlay. Holds the reducer state plus the time-based bits the reducer must not know about
-// (typewriter position, linger timers) and paints them from one animation-frame loop.
+// (typewriter position, linger timers) and paints them from one animation-frame loop. Everything that
+// appears, disappears or changes goes through motion.ts, so nothing pops.
+import { ActivityCapsule } from "./activity.js";
 import type { OverlayConfig } from "./config.js";
-import { type Action, initialState, type OverlayState, reduce } from "./feed.js";
+import { type Action, initialState, type OverlayState, type QueueItem, reduce, shownActivity } from "./feed.js";
 import { emotionColor } from "./emotion.js";
+import { isPresent, present, reflow, removeAfterExit, Swap } from "./motion.js";
 import {
   advance,
   cpLength,
@@ -28,6 +31,16 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return e;
 }
 
+/**
+ * A block that folds open and shut (its height through a 0fr → 1fr grid row, plus a fade), so the
+ * panel around it resizes smoothly. Content goes into `body`. Starts folded.
+ */
+function fold(className: string, parent: Element): { el: HTMLElement; body: HTMLElement } {
+  const e = el("div", `fold ${className} is-out`, parent);
+  e.hidden = true;
+  return { el: e, body: el("div", "fold__in", e) };
+}
+
 export class Overlay {
   private state: OverlayState = initialState();
 
@@ -49,20 +62,23 @@ export class Overlay {
   private readonly shownEl: HTMLElement;
   private readonly restEl: HTMLElement;
   private readonly panel: HTMLElement;
+  /** The panel's sections, top to bottom (the first one shown has no hairline above it). */
+  private readonly sections: HTMLElement[];
   private readonly emotionRow: HTMLElement;
   private readonly emotionDot: HTMLElement;
-  private readonly emotionName: HTMLElement;
+  private readonly emotionName: Swap;
   private readonly statusBox: HTMLElement;
   private readonly liveRow: HTMLElement;
-  private readonly sceneEl: HTMLElement;
+  private readonly sceneRow: HTMLElement;
+  private readonly sceneName: Swap;
   private readonly chips: Record<"core" | "vts" | "obs", HTMLElement>;
   private readonly queueBox: HTMLElement;
-  private readonly queueList: HTMLElement;
+  private readonly queueList: QueueList;
   private readonly queueMore: HTMLElement;
+  private readonly queueMoreText: Swap;
   private readonly offline: HTMLElement;
   private readonly wave: Wave;
-  private readonly noticeEl: HTMLElement;
-  private readonly noticeText: HTMLElement;
+  private readonly activity: ActivityCapsule;
 
   constructor(
     root: HTMLElement,
@@ -80,19 +96,27 @@ export class Overlay {
     this.restEl = el("span", "subtitle__rest", p);
     this.subtitle.hidden = !cfg.show.has("subtitles");
 
-    this.panel = el("aside", "panel", main);
+    this.panel = el("aside", "panel is-out", main);
     this.panel.hidden = true;
 
-    this.emotionRow = el("div", "emotion", this.panel);
-    this.emotionDot = el("i", "emotion__dot", this.emotionRow);
-    this.emotionName = el("span", "emotion__name", this.emotionRow);
+    const emotion = fold("panel__sec", this.panel);
+    this.emotionRow = emotion.el;
+    const emotionBody = el("div", "emotion", emotion.body);
+    this.emotionDot = el("i", "emotion__dot", emotionBody);
+    this.emotionName = new Swap(el("span", "emotion__name", emotionBody));
 
-    this.statusBox = el("div", "status", this.panel);
-    this.liveRow = el("div", "status__live", this.statusBox);
-    el("i", "status__pulse", this.liveRow);
-    el("span", "", this.liveRow, "直播中");
-    this.sceneEl = el("div", "status__scene", this.statusBox);
-    const chips = el("div", "status__chips", this.statusBox);
+    const status = fold("panel__sec", this.panel);
+    this.statusBox = status.el;
+    const statusBody = el("div", "status", status.body);
+    const live = fold("status__row", statusBody);
+    this.liveRow = live.el;
+    const liveBody = el("div", "status__live", live.body);
+    el("i", "status__pulse", liveBody);
+    el("span", "", liveBody, "直播中");
+    const scene = fold("status__row", statusBody);
+    this.sceneRow = scene.el;
+    this.sceneName = new Swap(el("div", "status__scene", scene.body));
+    const chips = el("div", "status__chips", statusBody);
     const chip = (label: string): HTMLElement => {
       const c = el("span", "chip", chips);
       el("i", "chip__dot", c);
@@ -101,18 +125,22 @@ export class Overlay {
     };
     this.chips = { core: chip("Core"), vts: chip("VTS"), obs: chip("OBS") };
 
-    this.queueBox = el("div", "queue", this.panel);
-    el("h2", "queue__title", this.queueBox, "接下來");
-    this.queueList = el("ol", "queue__list", this.queueBox);
-    this.queueMore = el("div", "queue__more", this.queueBox);
+    const queue = fold("panel__sec", this.panel);
+    this.queueBox = queue.el;
+    const queueBody = el("div", "queue", queue.body);
+    el("h2", "queue__title", queueBody, "接下來");
+    this.queueList = new QueueList(el("ol", "queue__list", queueBody));
+    const more = fold("queue__more", queueBody);
+    this.queueMore = more.el;
+    this.queueMoreText = new Swap(more.body);
 
-    // A status line above the subtitles (「準備歌曲中…」 while her voice is away for a song).
-    this.noticeEl = el("div", "notice", main);
-    el("i", "notice__dot", this.noticeEl);
-    this.noticeText = el("span", "notice__text", this.noticeEl);
-    this.noticeEl.hidden = true;
+    this.sections = [this.emotionRow, this.statusBox, this.queueBox];
 
-    this.offline = el("div", "offline", main, "feed offline");
+    // What she is doing (bottom left, right of the voice bars). Also shows an older Core's notice
+    // (「準備歌曲中…」).
+    this.activity = new ActivityCapsule(main);
+
+    this.offline = el("div", "offline is-out", main, "feed offline");
     this.offline.hidden = true;
 
     this.renderPanel();
@@ -147,7 +175,7 @@ export class Overlay {
       this.maybeHide(now, total);
     }
     this.wave.frame(dt, now);
-    this.offline.hidden = !(this.cfg.debug && !this.state.connected);
+    present(this.offline, this.cfg.debug && !this.state.connected);
   }
 
   // ── subtitle ─────────────────────────────────────────────────────────────
@@ -215,53 +243,139 @@ export class Overlay {
     this.restEl.textContent = b;
   }
 
-  // ── side panel ───────────────────────────────────────────────────────────
+  // ── side panel and activity ──────────────────────────────────────────────
 
   private renderPanel(): void {
-    const { emotion, status, queue, notice } = this.state;
+    const { emotion, status, queue } = this.state;
     const show = this.cfg.show;
 
-    // Part of the subtitle area: shown wherever subtitles are.
-    this.noticeEl.hidden = !(show.has("subtitles") && notice !== null);
-    this.noticeText.textContent = notice ?? "";
+    if (emotion) {
+      const c = emotionColor(emotion.name);
+      this.wave.accent(c);
+      this.activity.accent(c);
+    }
+    this.activity.show(show.has("activity") ? shownActivity(this.state) : null);
+
+    // A panel that is fading in opens its sections at once instead of unfolding them behind the fade.
+    const instant = !isPresent(this.panel);
 
     const emotionOn = show.has("emotion") && emotion !== null;
-    this.emotionRow.hidden = !emotionOn;
     if (emotion) {
-      this.emotionName.textContent = emotion.name;
-      const c = emotionColor(emotion.name);
-      this.emotionDot.style.setProperty("--dot", c);
-      this.wave.accent(c);
+      this.emotionName.text(emotion.name, instant || !isPresent(this.emotionRow));
+      this.emotionDot.style.setProperty("--dot", emotionColor(emotion.name));
       this.emotionDot.style.setProperty("--level", String(0.45 + 0.55 * emotion.intensity));
     }
 
     const statusOn = show.has("status") && status !== null;
-    this.statusBox.hidden = !statusOn;
     if (status) {
-      this.liveRow.hidden = !status.streaming;
-      this.sceneEl.hidden = !status.scene;
-      this.sceneEl.textContent = status.scene ?? "";
+      present(this.liveRow, status.streaming, instant);
+      if (status.scene) this.sceneName.text(status.scene, instant || !isPresent(this.sceneRow));
+      present(this.sceneRow, status.scene !== null, instant);
       for (const k of ["core", "vts", "obs"] as const) this.chips[k].classList.toggle("is-ok", status[k]);
     }
 
-    const items = queue.slice(0, QUEUE_SHOWN);
     const queueOn = show.has("queue") && queue.length > 0;
-    this.queueBox.hidden = !queueOn;
     if (queueOn) {
-      this.queueList.replaceChildren(
-        ...items.map((q, i) => {
-          const li = el("li", "queue__item");
-          el("span", "queue__n", li, String(i + 1));
-          el("span", "queue__what", li, q.title);
-          if (q.by) el("span", "queue__by", li, q.by);
-          return li;
-        }),
-      );
-      const more = queue.length - items.length;
-      this.queueMore.hidden = more <= 0;
-      this.queueMore.textContent = more > 0 ? `還有 ${more} 項` : "";
+      this.queueList.render(queue.slice(0, QUEUE_SHOWN), instant || !isPresent(this.queueBox));
+      const more = queue.length - QUEUE_SHOWN;
+      if (more > 0) this.queueMoreText.text(`還有 ${more} 項`, instant || !isPresent(this.queueMore));
+      present(this.queueMore, more > 0, instant);
     }
 
-    this.panel.hidden = !(emotionOn || statusOn || queueOn);
+    const on = [emotionOn, statusOn, queueOn];
+    const panelOn = on.some(Boolean);
+    if (panelOn) present(this.panel, true);
+    let first = true;
+    this.sections.forEach((sec, i) => {
+      // A section folding shut keeps its hairline until it is gone.
+      if (!on[i]) {
+        present(sec, false, instant);
+        return;
+      }
+      sec.classList.toggle("is-first", first);
+      first = false;
+      present(sec, true, instant);
+    });
+    if (!panelOn) present(this.panel, false);
+  }
+}
+
+/** Keys of queue items; a repeated item gets its occurrence number. */
+function queueKeys(items: readonly QueueItem[]): string[] {
+  const seen = new Map<string, number>();
+  return items.map((q) => {
+    const base = `${q.title}\u0000${q.by ?? ""}`;
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    return `${base}\u0000${n}`;
+  });
+}
+
+/**
+ * The queue list, keyed by item: new items unfold in, removed ones fold out before they are dropped,
+ * and items that change place slide there (FLIP) instead of jumping.
+ */
+class QueueList {
+  private readonly items = new Map<string, HTMLElement>();
+
+  constructor(private readonly list: HTMLElement) {}
+
+  render(queue: readonly QueueItem[], instant: boolean): void {
+    const keys = queueKeys(queue);
+    const wanted = new Set(keys);
+    // First: where the items that stay are now.
+    const before = new Map<HTMLElement, number>();
+    for (const li of this.items.values()) before.set(li, li.getBoundingClientRect().top);
+
+    for (const [key, li] of this.items) {
+      if (wanted.has(key)) continue;
+      this.items.delete(key);
+      before.delete(li);
+      if (instant) li.remove();
+      else {
+        li.classList.add("is-out");
+        removeAfterExit(li);
+      }
+    }
+
+    const entering: HTMLElement[] = [];
+    let prev: Element | null = null;
+    queue.forEach((q, i) => {
+      const key = keys[i] as string;
+      let li = this.items.get(key);
+      if (!li) {
+        li = el("li", instant ? "fold queue__item" : "fold queue__item is-out");
+        const row = el("div", "queue__row", el("div", "fold__in", li));
+        el("span", "queue__n", row);
+        el("span", "queue__what", row, q.title);
+        if (q.by) el("span", "queue__by", row, q.by);
+        this.items.set(key, li);
+        if (!instant) entering.push(li);
+      }
+      const n = li.querySelector(".queue__n");
+      if (n) n.textContent = String(i + 1);
+      // Items on their way out stay where they are; the others go in queue order around them.
+      const at: ChildNode | null = prev ? prev.nextSibling : this.list.firstChild;
+      if (at !== li) this.list.insertBefore(li, at);
+      prev = li;
+    });
+
+    // Last, invert, play: items that moved start where they were and slide into place.
+    const moved: HTMLElement[] = [];
+    if (!instant) {
+      for (const [li, top] of before) {
+        const dy = top - li.getBoundingClientRect().top;
+        if (Math.abs(dy) < 0.5) continue;
+        li.classList.add("no-motion");
+        li.style.transform = `translateY(${dy}px)`;
+        moved.push(li);
+      }
+    }
+    if (moved.length > 0 || entering.length > 0) reflow(this.list);
+    for (const li of moved) {
+      li.classList.remove("no-motion");
+      li.style.transform = "";
+    }
+    for (const li of entering) li.classList.remove("is-out");
   }
 }

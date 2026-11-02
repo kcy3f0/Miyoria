@@ -8,7 +8,10 @@
 //   {"type":"status","core":bool,"vts":bool,"obs":bool,"scene":"…"|null,"streaming":bool}
 //   {"type":"queue","items":[…]}
 //   {"type":"levels","rms":0..1,"bands":[…]?}   her voice level, once per avatar frame (~60/s)
-//   {"type":"notice","text":"準備歌曲中…"}       a status line; "" clears it
+//   {"type":"notice","text":"準備歌曲中…"}       a status line; "" clears it (older Cores)
+//   {"type":"activity","kind":"thinking"|"synthesizing"|"song_prepare"|"singing"|null,
+//    "label":"…","detail":"…"|null,"progress":0..1|null,"elapsed_ms":n|null,"duration_ms":n|null}
+//                                               what she is doing; kind null hides it
 
 export interface Subtitle {
   turn: string;
@@ -30,6 +33,22 @@ export interface Status {
   streaming: boolean;
 }
 
+/**
+ * What she is doing, for the activity capsule. `progress` null = indeterminate; a song being sung
+ * has `elapsedMs` (into the song when the message was sent) and `durationMs` instead, and its
+ * progress runs on the overlay's clock.
+ */
+export interface Activity {
+  /** `thinking`, `synthesizing`, `song_prepare`, `singing` (others are shown as indeterminate). */
+  kind: string;
+  label: string;
+  /** The song it is about, if any. */
+  detail: string | null;
+  progress: number | null;
+  elapsedMs: number | null;
+  durationMs: number | null;
+}
+
 export interface QueueItem {
   /** What is queued (song / game request / topic). */
   title: string;
@@ -49,8 +68,9 @@ export interface OverlayState {
   emotion: Emotion | null;
   status: Status | null;
   queue: QueueItem[];
-  /** A status line such as 「準備歌曲中…」, or null. */
+  /** A status line such as 「準備歌曲中…」 from an older Core, or null. Shown in the activity capsule when there is no activity. */
   notice: string | null;
+  activity: Activity | null;
 }
 
 export type FeedMessage =
@@ -62,7 +82,9 @@ export type FeedMessage =
   /** High-rate audio level: drawn by the waveform, never part of the reduced state. */
   | { type: "levels"; rms: number; bands: number[] | null }
 
-  | { type: "notice"; text: string };
+  | { type: "notice"; text: string }
+  /** `null` hides the activity capsule. */
+  | { type: "activity"; activity: Activity | null };
 
 /** Everything the reducer accepts: feed messages plus the connection state, which the transport reports. */
 export type Action = FeedMessage | { type: "connection"; connected: boolean };
@@ -70,6 +92,8 @@ export type Action = FeedMessage | { type: "connection"; connected: boolean };
 export const MAX_QUEUE_ITEMS = 12;
 const MAX_TEXT = 2000;
 const MAX_TITLE = 160;
+const MAX_LABEL = 40;
+const MAX_DAY_MS = 86_400_000;
 
 export function initialState(): OverlayState {
   return {
@@ -81,6 +105,7 @@ export function initialState(): OverlayState {
     status: null,
     queue: [],
     notice: null,
+    activity: null,
   };
 }
 
@@ -95,6 +120,11 @@ function str(v: unknown): string | null {
 function nonEmpty(v: unknown): string | null {
   const s = str(v)?.trim();
   return s ? s : null;
+}
+
+/** A finite number in [min, max], else null. */
+function within(v: unknown, min: number, max: number): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v >= min && v <= max ? v : null;
 }
 
 function clamp01(n: number): number {
@@ -189,9 +219,52 @@ export function parseMessage(text: string): FeedMessage | null {
       const body = str(raw.text);
       return body === null ? null : { type: "notice", text: body.trim().slice(0, MAX_TITLE) };
     }
+    case "activity":
+      return parseActivity(raw);
     default:
       return null;
   }
+}
+
+function parseActivity(raw: Record<string, unknown>): FeedMessage | null {
+  if (raw.kind === null) return { type: "activity", activity: null };
+  const kind = str(raw.kind);
+  if (kind === null || !/^[a-z_]{1,32}$/.test(kind)) return null;
+  const label = nonEmpty(raw.label);
+  // Nothing to say: same as hidden.
+  if (!label) return { type: "activity", activity: null };
+  const progress = typeof raw.progress === "number" && Number.isFinite(raw.progress) ? clamp01(raw.progress) : null;
+  const durationMs = within(raw.duration_ms, 1, MAX_DAY_MS);
+  return {
+    type: "activity",
+    activity: {
+      kind,
+      label: label.slice(0, MAX_LABEL),
+      detail: nonEmpty(raw.detail)?.slice(0, MAX_TITLE) ?? null,
+      progress,
+      elapsedMs: durationMs === null ? null : (within(raw.elapsed_ms, 0, MAX_DAY_MS) ?? 0),
+      durationMs,
+    },
+  };
+}
+
+function sameActivity(a: Activity | null, b: Activity | null): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.kind === b.kind &&
+    a.label === b.label &&
+    a.detail === b.detail &&
+    a.progress === b.progress &&
+    a.elapsedMs === b.elapsedMs &&
+    a.durationMs === b.durationMs
+  );
+}
+
+/** What the capsule shows: the activity, else an older Core's notice (indeterminate), else nothing. */
+export function shownActivity(state: Pick<OverlayState, "activity" | "notice">): Activity | null {
+  if (state.activity) return state.activity;
+  if (state.notice === null) return null;
+  return { kind: "notice", label: state.notice, detail: null, progress: null, elapsedMs: null, durationMs: null };
 }
 
 export function reduce(state: OverlayState, action: Action): OverlayState {
@@ -200,7 +273,7 @@ export function reduce(state: OverlayState, action: Action): OverlayState {
       // A dropped feed means nobody is driving the overlay: stop claiming she is talking.
       return action.connected
         ? { ...state, connected: true }
-        : { ...state, connected: false, speaking: false };
+        : { ...state, connected: false, speaking: false, activity: null };
     case "speaking":
       return { ...state, speaking: action.state === "started" };
     case "emotion":
@@ -213,6 +286,8 @@ export function reduce(state: OverlayState, action: Action): OverlayState {
       const notice = action.text === "" ? null : action.text;
       return notice === state.notice ? state : { ...state, notice };
     }
+    case "activity":
+      return sameActivity(state.activity, action.activity) ? state : { ...state, activity: action.activity };
     case "subtitle":
       return reduceSubtitle(state, action);
     case "levels":
