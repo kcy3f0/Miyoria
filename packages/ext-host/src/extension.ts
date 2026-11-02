@@ -35,6 +35,7 @@ import {
 } from "@miyoria/types";
 import { z } from "zod";
 import { type HostConfig, runtimeCommand } from "./config.js";
+import { type ExtensionEnv, extensionEnv } from "./env.js";
 import type { ExtensionManifest, Permissions } from "./manifest.js";
 import { validPattern, validTopic } from "./manifest.js";
 import {
@@ -81,6 +82,16 @@ export interface ExtensionSpec {
   /** Absolute extension directory. */
   dir: string;
   granted: Permissions;
+  /**
+   * Host variables passed through and values set for the process (besides the platform
+   * allowlist). Missing = the manifest's `[env] pass`, nothing set.
+   */
+  env?: ExtensionEnv;
+}
+
+/** What the extension's process environment is built from. */
+export function specEnv(spec: ExtensionSpec): ExtensionEnv {
+  return spec.env ?? { pass: spec.manifest.env.pass, set: {} };
 }
 
 export function extensionModuleId(spec: ExtensionSpec): ModuleId {
@@ -169,7 +180,8 @@ export class ExtensionModule implements Module {
     const child = spawn(program, args, {
       cwd: this.spec.dir,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, MIYORIA_RPC: "stdio", MIYORIA_EXTENSION_ID: id },
+      // Never the core's whole environment (its secrets): an allowlist (see `env.ts`).
+      env: extensionEnv(id, specEnv(this.spec)),
       windowsHide: true,
     });
     try {

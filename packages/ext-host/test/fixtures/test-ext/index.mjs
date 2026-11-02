@@ -107,6 +107,7 @@ async function onRequest(method, params) {
             { name: "crash.now", description: "Exits the process" },
             { name: "try.publish", description: "Publishes on a topic" },
             { name: "store.roundtrip", description: "Writes and reads storage" },
+            { name: "env.get", description: "Reports its environment" },
             ...(game
               ? [{ name: `game.${game}.id`, description: "Echoes the declared game id" }]
               : []),
@@ -151,6 +152,15 @@ async function onRequest(method, params) {
           const got = await request("storage.get", { key: args.key });
           return JSON.stringify(got.value);
         }
+        case "env.get":
+          return JSON.stringify({
+            names: Object.keys(process.env).sort(),
+            secret: process.env.MIYORIA_TEST_SECRET ?? null,
+            passed: process.env.MIYORIA_TEST_PASSED ?? null,
+            set: process.env.MIYORIA_TEST_SET ?? null,
+            rpc: process.env.MIYORIA_RPC ?? null,
+            path: Boolean(process.env.PATH),
+          });
         default:
           throw new Error(`unknown tool ${name}`);
       }

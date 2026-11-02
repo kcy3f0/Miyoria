@@ -36,6 +36,7 @@ export {
   resolvedDirs,
   runtimeCommand,
 } from "./config.js";
+export { BASE_ENV, type ExtensionEnv, extensionEnv } from "./env.js";
 export {
   EXTENSIONS_MODULE_ID,
   ExtensionModule,
@@ -45,6 +46,7 @@ export {
   extensionModuleId,
   gameToolAllowed,
   HOST_VERSION,
+  specEnv,
 } from "./extension.js";
 export {
   type CatalogEntry,
@@ -61,6 +63,7 @@ export {
 } from "./host.js";
 export {
   type ConfigSection,
+  type EnvSpec,
   ExtensionManifest,
   GAME_ADAPTER_KIND,
   KNOWN_KINDS,
@@ -74,6 +77,7 @@ export {
   type Placement,
   type Runtime,
   runsOnCore,
+  validEnvPattern,
   validGameId,
   validId,
   validPattern,

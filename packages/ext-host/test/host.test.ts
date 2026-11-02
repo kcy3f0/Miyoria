@@ -151,6 +151,7 @@ describe("ext host end to end", { timeout: 30_000 }, () => {
     expect(h.tools.names()).toEqual([
       "crash_now",
       "echo_say",
+      "env_get",
       "slow_wait",
       "store_roundtrip",
       "try_publish",
@@ -192,6 +193,37 @@ describe("ext host end to end", { timeout: 30_000 }, () => {
     expect(h.tools.isEmpty).toBe(true);
     expect(h.commands.specs()).toEqual([]);
     expect(h.prompts.all()).toEqual([]);
+  });
+
+  it("extensions_get_an_allowlisted_environment_not_the_cores_secrets", async () => {
+    const saved = { ...process.env };
+    process.env.MIYORIA_TEST_SECRET = "s3cret";
+    process.env.LLM_API_KEY = "sk-should-never-leak";
+    process.env.MIYORIA_TEST_PASSED = "yes";
+    try {
+      const h = await harness(
+        [join(FIXTURES, "test-ext")],
+        '[extensions."test.fixture"]\nenv = { MIYORIA_TEST_SET = "configured" }\n',
+      );
+      await waitState(h, EXT, "running", 5000);
+      const seen = JSON.parse(await call(h, "env_get", {})) as {
+        names: string[];
+        secret: string | null;
+        passed: string | null;
+        set: string | null;
+        rpc: string | null;
+        path: boolean;
+      };
+      expect(seen.secret).toBeNull();
+      expect(seen.names).not.toContain("LLM_API_KEY");
+      expect(seen.passed).toBe("yes");
+      expect(seen.set).toBe("configured");
+      expect(seen.rpc).toBe("stdio");
+      expect(seen.path).toBe(true);
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+      Object.assign(process.env, saved);
+    }
   });
 
   it("events_are_filtered_by_permissions", async () => {

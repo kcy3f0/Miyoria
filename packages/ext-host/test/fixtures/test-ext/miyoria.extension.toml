@@ -9,3 +9,7 @@ placement = "core"
 events = ["custom.ok.*", "ext.other.*", "game.*"]
 tools = true
 commands = true
+
+# Host variables the fixture may read (env allowlist test).
+[env]
+pass = ["MIYORIA_TEST_PASS*"]

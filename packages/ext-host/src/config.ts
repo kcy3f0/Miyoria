@@ -65,19 +65,56 @@ export type PermissionOverride = z.output<typeof PermissionOverrideSchema>;
 
 /**
  * `[extensions."<id>"]`: `enabled`, an optional `permissions` override that can only narrow
- * what the manifest declares, and everything else as the extension's own config.
+ * what the manifest declares, the extension's environment (`env`, `env_pass`) and everything
+ * else as the extension's own config.
+ *
+ * ```toml
+ * [extensions."miyoria.minecraft"]
+ * env = { MIYORIA_MC_TOKEN = "${MC_TOKEN}" }   # set for the process (literal values)
+ * env_pass = ["MIYORIA_MC_URL"]               # replaces the manifest's `[env] pass`
+ * ```
  */
 export interface ExtensionSettings {
   enabled: boolean | null;
   permissions: PermissionOverride | null;
+  /** Variables set for the extension process. */
+  env: Record<string, string>;
+  /** Host variables passed through instead of the manifest's `[env] pass`; `null` = the manifest's. */
+  envPass: string[] | null;
   config: JsonObject;
+}
+
+const EnvSchema = z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string());
+const EnvPassSchema = z.array(z.string());
+
+function parseSetting<S extends z.ZodType>(
+  schema: S,
+  value: unknown,
+  id: string,
+  key: string,
+): z.output<S> {
+  const result = schema.safeParse(value);
+  if (!result.success) {
+    throw new ConfigError(
+      "invalid",
+      `[extensions."${id}"].${key}: ${z.prettifyError(result.error)}`,
+      `extensions.${id}.${key}`,
+      { cause: result.error },
+    );
+  }
+  return result.data;
 }
 
 export function extensionSettings(config: Config, id: string): ExtensionSettings {
   const all = config.section("extensions");
   const section = isJsonObject(all) && Object.hasOwn(all, id) ? all[id] : undefined;
-  if (!isJsonObject(section)) return { enabled: null, permissions: null, config: {} };
-  const { enabled, permissions, ...rest } = section;
+  if (!isJsonObject(section)) {
+    return { enabled: null, permissions: null, env: {}, envPass: null, config: {} };
+  }
+  const { enabled, permissions, env, env_pass, ...rest } = section;
+  const vars = env === undefined ? {} : parseSetting(EnvSchema, env, id, "env");
+  const pass =
+    env_pass === undefined ? null : parseSetting(EnvPassSchema, env_pass, id, "env_pass");
   let parsed: PermissionOverride | null = null;
   if (permissions !== undefined) {
     const result = PermissionOverrideSchema.safeParse(permissions);
@@ -94,6 +131,8 @@ export function extensionSettings(config: Config, id: string): ExtensionSettings
   return {
     enabled: typeof enabled === "boolean" ? enabled : null,
     permissions: parsed,
+    env: vars,
+    envPass: pass,
     config: rest,
   };
 }

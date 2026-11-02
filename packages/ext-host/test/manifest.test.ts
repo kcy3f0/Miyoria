@@ -115,7 +115,27 @@ describe("manifest", () => {
       placement: "core",
       permissions: { events: [], tools: false, commands: false, network: [], input: [] },
       config: { schema: null },
+      env: { pass: [] },
       mcp_servers: [],
     });
+  });
+
+  it("validates_env_patterns", () => {
+    const m = ExtensionManifest.parse(
+      [
+        'id = "x"',
+        'version = "1"',
+        'runtime = "node"',
+        'entry = "i.js"',
+        "[env]",
+        'pass = ["MIYORIA_MC_*", "APP_URL", "*", "A*", "BAD-NAME"]',
+      ].join("\n"),
+    );
+    expect(m.env.pass).toHaveLength(5);
+    const errors = m.errors().filter((e) => e.startsWith("invalid env pattern"));
+    expect(errors).toHaveLength(3);
+    expect(errors.join("\n")).toContain("`*`");
+    expect(errors.join("\n")).toContain("`A*`");
+    expect(errors.join("\n")).toContain("`BAD-NAME`");
   });
 });

@@ -94,8 +94,28 @@ const ManifestSchema = z.object({
   placement: z.enum(["core", "stage", "any"]).default("core"),
   permissions: PermissionsSchema.prefault({}),
   config: z.object({ schema: z.string().nullable().default(null) }).prefault({}),
+  env: z.object({ pass: z.array(z.string()).default([]) }).prefault({}),
   mcp_servers: z.array(McpServerSpecSchema).default([]),
 });
+
+/**
+ * `[env]`: host environment variables the extension reads. The extension process gets only a
+ * small platform allowlist (`PATH`, `SystemRoot`, `TEMP`, `HOME`, ...; see `env.ts`) plus these,
+ * never the whole environment of the core (which holds its secrets).
+ *
+ * ```toml
+ * [env]
+ * pass = ["MIYORIA_MC_URL", "MIYORIA_MC_*"]   # exact names, or a prefix ending in `*`
+ * ```
+ */
+export interface EnvSpec {
+  pass: string[];
+}
+
+/** An environment variable name, or a prefix of at least three characters ending in `*`. */
+export function validEnvPattern(pattern: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(pattern) || /^[A-Za-z_][A-Za-z0-9_]{2,}\*$/.test(pattern);
+}
 
 export type ManifestErrorKind = "read" | "parse";
 
@@ -142,6 +162,8 @@ export class ExtensionManifest {
   placement: Placement;
   permissions: Permissions;
   config: ConfigSection;
+  /** Host environment variables passed through (see `EnvSpec`). */
+  env: EnvSpec;
   mcp_servers: McpServerSpec[];
 
   constructor(data: z.output<typeof ManifestSchema>) {
@@ -156,6 +178,7 @@ export class ExtensionManifest {
     this.placement = data.placement;
     this.permissions = data.permissions;
     this.config = data.config;
+    this.env = data.env;
     this.mcp_servers = data.mcp_servers;
   }
 
@@ -224,6 +247,13 @@ export class ExtensionManifest {
     }
     for (const pattern of this.permissions.events) {
       if (!validPattern(pattern)) errors.push(`invalid event pattern \`${pattern}\``);
+    }
+    for (const pattern of this.env.pass) {
+      if (!validEnvPattern(pattern)) {
+        errors.push(
+          `invalid env pattern \`${pattern}\` (a variable name, or a prefix of 3+ characters ending in \`*\`)`,
+        );
+      }
     }
     for (const server of this.mcp_servers) {
       if ((server.command === null) === (server.url === null)) {

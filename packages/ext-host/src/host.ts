@@ -199,6 +199,7 @@ export function discover(config: Config, baseDir: string = process.cwd()): Disco
         granted: grantedPermissions(settings, manifest.permissions),
         manifest,
         dir,
+        env: { pass: settings.envPass ?? manifest.env.pass, set: settings.env },
       };
       catalog.push({ spec, enabled });
       modules.push({

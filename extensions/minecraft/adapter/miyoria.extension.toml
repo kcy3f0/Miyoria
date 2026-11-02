@@ -19,3 +19,7 @@ network = ["127.0.0.1:7890"]
 
 [config]
 schema = "config.schema.json"
+
+# 從主機環境讀的變數(其他環境變數不會傳給外掛,見 docs/ARCHITECTURE.md §9.2)。
+[env]
+pass = ["MIYORIA_MC_*"]
