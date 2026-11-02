@@ -247,6 +247,8 @@ async function issueCode(social: Social, inv: Invocation): Promise<CommandReply>
     [
       { type: "text", text: `你的連結代碼：\`${issued}\`` },
       { type: "muted", text: `請在 10 分鐘內用另一個帳號執行 /me link code:${issued}` },
+      // Game accounts (module `game.chat`) redeem it in game chat.
+      { type: "muted", text: `遊戲帳號(例如 Minecraft):在遊戲聊天室輸入 !link ${issued}` },
     ],
     { title: "帳號連結", accent: "info", ephemeral: true },
   );

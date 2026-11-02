@@ -2,9 +2,9 @@
 // (camelCased); if a package exported something else, fix it here and nowhere else.
 //
 // Boot order (legacy `boot.rs`): llm, speech, voice.link, voice, scheduler, agent, commands,
-// auth, actions, social, mood, world, self, memory, initiative, queue, game, mcp, stage.link,
-// sandbox (opt-in), recorder, Discord bot, Admin API, terminal chat, then the extension host and
-// one `ext.<id>` per extension.
+// auth, actions, social, mood, world, self, memory, initiative, queue, game, game.chat, mcp,
+// stage.link, sandbox (opt-in), recorder, Discord bot, Admin API, terminal chat, then the
+// extension host and one `ext.<id>` per extension.
 
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -15,7 +15,7 @@ import { AuthConfigSchema, AuthModule } from "@miyoria/auth";
 import { CommandsModule } from "@miyoria/commands";
 import { DiscordBotModule } from "@miyoria/discord";
 import * as extHost from "@miyoria/ext-host";
-import { GameHandleKey, GameModule } from "@miyoria/game";
+import { GameChatModule, GameHandleKey, GameModule } from "@miyoria/game";
 import { InitiativeModule } from "@miyoria/initiative";
 import type { Config, Module } from "@miyoria/kernel";
 import {
@@ -111,6 +111,7 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
     new InitiativeModule(profileId),
     new QueueModule(),
     GameModule.fromProfile(profile),
+    new GameChatModule(),
     McpModule.fromAppConfig(config),
     new StageLinkModule(),
     new SandboxModule(profileId, { baseDir }),
