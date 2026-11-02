@@ -1,12 +1,14 @@
-// Her voice as a column of bars on the left edge. The bars never move: each one only grows,
+// Her voice as a column of bars along the whole left edge. The bars never move: each one only grows,
 // shrinks and brightens with her voice. They are mirrored around the middle; the middle bars follow
 // the low bands of the Stage's lip-sync levels and the outer ones the high bands, so the column
 // takes the shape of what she is saying. Each bar has its own smoothing, so they do not move in
 // lockstep. Tinted with the emotion colour, semi-transparent, and the whole column fades in when
 // she starts and out when she stops.
 
-/** Bars in the column (even: mirrored halves). */
+/** Bars in a field made before the frame's height is known (even: mirrored halves). */
 export const BAR_COUNT = 26;
+/** Spacing of the bars (rem); the column fills the frame's height at this spacing. */
+const PITCH_REM = 0.74;
 /** A level older than this counts as silence (the feed stops while nothing plays). */
 const STALE_MS = 220;
 /** dBFS mapped to 0 and 1. */
@@ -124,7 +126,11 @@ export class BarField {
 export class Wave {
   readonly element: HTMLCanvasElement;
   readonly #ctx: CanvasRenderingContext2D | null;
-  readonly #bars = new BarField();
+  /** As many bars as fit the frame's height (made again when that changes). */
+  #bars = new BarField();
+  /** The latest level, for a field made after it arrived. */
+  #last: [number, readonly number[] | null, number] | null = null;
+  #rem = 16;
   #accent = "oklch(0.72 0.012 275)";
   #idle = true;
   /** The canvas holds no bars. */
@@ -151,10 +157,19 @@ export class Wave {
   }
 
   level(rms: number, bands: readonly number[] | null, now: number): void {
+    this.#last = [rms, bands, now];
     this.#bars.push(rms, bands, now);
   }
 
   frame(dtMs: number, now: number): void {
+    if (!this.#fit()) return;
+    // The column runs the full height of the frame at a fixed spacing (an even count: the
+    // halves mirror each other).
+    const count = Math.max(2, 2 * Math.floor(this.#height / (PITCH_REM * this.#rem) / 2));
+    if (count !== this.#bars.count) {
+      this.#bars = new BarField(count);
+      if (this.#last) this.#bars.push(...this.#last);
+    }
     this.#bars.advance(dtMs, now);
     const idle = this.#bars.silent();
     if (idle !== this.#idle) {
@@ -173,6 +188,7 @@ export class Wave {
     const w = this.element.clientWidth;
     const h = this.element.clientHeight;
     if (w === 0 || h === 0) return false;
+    this.#rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
     if (w !== this.#width || h !== this.#height || dpr !== this.#dpr) {
       this.#width = w;
       this.#height = h;
@@ -185,15 +201,15 @@ export class Wave {
 
   #draw(): void {
     const ctx = this.#ctx;
-    if (!ctx || !this.#fit()) return;
+    if (!ctx) return;
     const dpr = this.#dpr;
-    const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const rem = this.#rem;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, this.#width, this.#height);
 
     const values = this.#bars.values;
     const n = values.length;
-    const pitch = 0.74 * rem;
+    const pitch = PITCH_REM * rem;
     const thick = 0.42 * rem;
     const r = thick / 2;
     const rest = 0.5 * rem; // what still shows of a bar at rest, so the column keeps its outline
