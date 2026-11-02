@@ -147,6 +147,11 @@ token = "${STAGE_LINK_TOKEN:-}"
 
 [stage.vts]
 enabled = true                 # VTube Studio:設定 → 開啟 API(port 8001)
+# face_found = true            # 注入時告訴 VTS 有臉(不播模型的「追蹤遺失」動畫);自己開臉部追蹤時改 false
+
+# [stage.lipsync]
+# latency_ms = 180             # 嘴型延後多久(觀眾比播放器晚聽到聲音);嘴比聲音早就加大,晚就調小
+# 眨眼、動作、情緒漸變、手勢:[stage.blink] / [stage.motion] / [stage.emotion] / [stage.gesture],見 docs/protocols/stage-link.md
 
 [stage.obs]
 enabled = false                # OBS:工具 → WebSocket 伺服器設定

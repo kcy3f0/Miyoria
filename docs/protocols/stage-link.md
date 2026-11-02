@@ -94,20 +94,28 @@ golive_start_delay_ms = 3000   # 等 voice node 的 ffmpeg 綁好 RTMP listener 
 
 # 嘴型音量串流(Lip-sync levels,v1)
 
-Voice node(跟 Stage 在同一台直播機)播放她的聲音時,把播放中的音量送給 Stage,Stage 算出嘴型注入 VTube Studio。
+Voice node(跟 Stage 在同一台直播機)播放她的聲音時,把播放中的音量與音色送給 Stage,Stage 算出嘴型注入 VTube Studio。
 
 - **位址**:`ws://127.0.0.1:7883/levels`(`[stage.lipsync] bind`)。只綁本機,不需要 token。
 - **方向**:voice node → Stage,單向;Stage 不回任何東西。連線斷了 voice node 自己重連即可。
-- **訊框**:文字 JSON,每 10–20 ms 一個,**只在她說話時送**:
+- **訊框**:文字 JSON,每 10 ms 一個,**只在她說話時送**:
   ```json
-  {"t": 1234, "rms": 0.21}
+  {"t": 1234, "rms": 0.21, "bands": [0.0123, 0.0310, 0.0402, 0.0281, 0.0094, 0.0031]}
   ```
-  - `t`:這段音訊在本次播放中的位置(毫秒,從 0 開始)。目前只當作參考。
-  - `rms`:這 10–20 ms 音訊的 RMS,範圍 0..1(PCM s16 除以 32768 後計算)。超出範圍會被截斷。
-- 播完或被打斷時可以送一個 `{"t": <ms>, "rms": 0}`;就算沒送,Stage 在 150 ms(`stale_ms`)沒收到新值後也會把嘴巴闔上。Core 送來 `speaking` `stopped` 時 Stage 也會立刻歸零。
-- RMS 應該在**實際出聲的那一刻**送出(也就是 voice node 把該段送進播放器的時候)。如果音訊輸出還有固定延遲,用 `[stage.lipsync] latency_ms` 在 Stage 端補。
+  - `t`:這個 10 ms 視窗在本次播放中的起點(毫秒,每段播放從 0 開始)。**Stage 用它排時間**:每段播放的第一筆把 `t = 0` 對到 Stage 的時鐘(anchor),之後每筆在 `anchor + t + latency_ms` 生效,所以網路抖動、一次到好幾筆都不會讓嘴型忽快忽慢;比預期早到的訊框把 anchor 往前修(延遲最少的那筆最準),連續晚到超過 `resync_ms`(預設 60 ms,播放器停頓、voice node 重新對時)就開新的時間軸。`t` 回到 0 = 新的一段播放。沒有 `t` 的訊框(舊版)依到達時間排。
+  - `rms`:這 10 ms 音訊的 RMS,範圍 0..1(PCM s16 除以 32768 後計算)。超出範圍會被截斷。
+  - `bands`(可省略,v1 的相容擴充):單聲道先做 pre-emphasis(+6 dB/oct),再經過 6 個帶通濾波器(中心 300 / 550 / 850 / 1300 / 2000 / 3000 Hz,Q 1.5,兩級串接),每個頻帶在最近 20 ms 的 RMS。只有「形狀」有意義(Stage 取 dB 後減掉平均),絕對大小不重要。舊的 Stage 會忽略這個欄位;舊的 voice node 不送它時,Stage 就不驅動母音參數。
+- 播完或被打斷時可以送一個 `{"t": <ms>, "rms": 0}`;就算沒送,Stage 在 150 ms(`stale_ms`)沒收到新值後也會把嘴巴闔上。`speaking` `stopped` 不會清掉已排隊的訊框(那些音觀眾還沒聽到)。
+- RMS 應該在**實際出聲的那一刻**送出(voice node 把該段送進播放器的時候)。觀眾比這晚約 150–250 ms 聽到(Discord / 推流緩衝),所以 Stage 預設延後 `latency_ms = 180`;嘴型明顯比聲音早就加大,晚就調小。
 
-Stage 端的處理:雜訊閘(`gate`,預設 0.015)→ 乘上 `gain`(預設 5.0)並截在 `max_open` → attack / release 平滑(預設 35 / 110 ms)→ `MouthOpen`;`MouthSmile` 在嘴巴張開時小幅擺動(`form_base` 預設 0.5 ± `form_variation` 預設 0.175)。以 `[stage.vts] inject_hz`(預設 60 Hz)用 `InjectParameterDataRequest`(mode `set`)跟頭部 / 視線參數一起注入。參數名稱來自 profile 的 `avatar.toml` `[lipsync]`;`mode = "mic"` 時不注入嘴型,也不開這個端點。
+**Stage 端的處理**(`[stage.lipsync]`,以 `[stage.vts] inject_hz` 預設 60 Hz 注入;每格的 dt 取自時鐘,所以 30 Hz 也可以):
+
+1. 每格把這段時間內到期的**所有**訊框合起來(`aggregate = "rms"` 能量平均,或 `"max"`),不會丟樣本。
+2. 音量 → 張嘴(`Envelope`):換成 dBFS,低於 `gate_db`(-50)算安靜;自動增益參考值(AGC)跟著她的音量走,往上快(`agc_attack_ms` 150)、往下慢(`agc_ms` 2000),只在說話時移動,限制在 `agc_min_db`..`agc_max_db`(-38..-4,起始 `agc_init_db` -16);參考值以下 `range_db`(26 dB)對到張嘴 0..1,再套 `curve`(0.85)、乘 `max_open`。最後 attack / release 平滑(`attack_ms` 22 / `release_ms` 80)。所以小聲的句子嘴巴也會張開,一般說話不會只開到兩成。
+3. 母音(`VowelClassifier`):`bands` 的形狀跟五個母音樣板(`vowel_templates`,預設是日語女聲的共振峰合成量出來的)比距離,softmax(`vowel_sharpness`)成 A/I/U/E/O 權重,`vowel_smooth_ms`(45)平滑;只在嘴巴有張開時更新。
+4. 注入:`MouthOpen` = 張嘴;`JawOpen`(自訂參數)= 張嘴 × `jaw_gain`(0.8);`VoiceA..VoiceO` = 權重 × 張嘴 × `vowel_gain`,`VoiceSilence` = 1 − 1.5 × 張嘴(模型把它們對到 `ParamA..ParamO` / `ParamSilence`);`MouthSmile`(嘴型)= 情緒姿勢的值 + `avatar.toml` `[lipsync.shape.<母音>]` 的偏移 × 權重 × 張嘴(例如 i/e 嘴角往兩邊、u/o 嘟嘴)。不再用正弦波假裝嘴型變化。
+
+參數名稱來自 profile 的 `avatar.toml` `[lipsync]`(`mouth_open`、`mouth_form`、`jaw`、`vowels = true/false`);`mode = "mic"` 時不注入嘴型,也不開這個端點。
 
 ---
 
@@ -134,6 +142,20 @@ Stage 的 HTTP 伺服器(`[stage] overlay_bind`,預設 `127.0.0.1:7884`):
 Stage 以外掛身分連 VTS Public API(`ws://127.0.0.1:8001`,`[stage.vts] url`),自己實作 JSON API:
 
 - 認證:`AuthenticationTokenRequest`(使用者要在 VTS 按「允許」)→ token 存在 `<data_dir>/vts-token.txt`(預設 `data/stage/vts-token.txt`)→ `AuthenticationRequest`。token 失效時自動重新申請。
-- 連上後用 `CurrentModelRequest`、`ExpressionStateRequest`、`HotkeysInCurrentModelRequest`、`InputParameterListRequest` 檢查 `avatar.toml` 的設定(找不到的只會警告;VTS 沒有的參數不注入)。
-- 情緒:`avatar.toml` `[emotion]` 的值以 `.exp3.json` 結尾 → `ExpressionActivationRequest`;其他 → hotkey 名稱(`HotkeyTriggerRequest`,名稱會先對照成 hotkey ID)。同一時間只維持一個主表情;表情維持 `emotion_hold_ms`(預設 4 秒),她說話時不會結束,說完至少再留 `after_speech_ms`(預設 1.5 秒),然後回到 `neutral`。`neutral` 是表情檔時休息狀態就開著它;是 hotkey 時(例如 VTS 的「Remove all expressions」)回到休息狀態時觸發它。沒對照到的情緒視為 `neutral`。
-- Idle:注入 `FaceAngleX/Y/Z`、`EyeLeftX/Y`、`EyeRightX/Y`,在 `gaze` 目標的姿勢附近緩慢飄動(`[stage.gaze]` 可調每個目標的姿勢與 `idle_amount`)。
+- 連上後用 `CurrentModelRequest`、`ExpressionStateRequest`、`HotkeysInCurrentModelRequest` 檢查 `avatar.toml` 的設定(找不到的只會警告),再用 `ParameterCreationRequest` 建立 `[stage.vts] custom_params` 裡 VTS 沒有的自訂參數(預設 `JawOpen`、`BrowInnerUp`、`MouthFunnel`、`MouthPucker`、`REyeSquint`、`LEyeSquint`、`mouthSmileL`、`mouthSmileR`、`MiyoriaEyeSmile`、`MiyoriaBodyX/Y/Z`;很多模型的對應寫的是 ARKit 名稱,參數存在之後那些對應就會動),最後 `InputParameterListRequest`:VTS 沒有的參數不注入。
+- 注入:每格一個 `InjectParameterDataRequest`,`mode: "set"`,只送 Miyoria 自己驅動的參數;`faceFound` 預設 `true`(`[stage.vts] face_found`),VTS 就不會播模型的「追蹤遺失」待機動畫(大肥鱼的 `脱捕.motion3.json` 會接管眼睛、下巴、頭和道具,每 13 秒重複同一套動作)。
+- **情緒**(`avatar.toml` `[emotion.<名稱>]`):
+  - `expression`:重點貼圖。`.exp3.json` → `ExpressionActivationRequest`;其他 → hotkey 名稱(`HotkeyTriggerRequest`,名稱會先對照成 hotkey ID)。強度低於 `accent_min` 時不開。同一時間只維持一個主情緒;維持 `emotion_hold_ms`(預設 4 秒),她說話時不會結束,說完至少再留 `after_speech_ms`(預設 1.5 秒),然後回到 `neutral`。`neutral` 是表情檔時沒有重點貼圖時就開著它;是 hotkey 時(例如 VTS 的「Remove all expressions」)回到休息狀態時觸發它。沒有貼圖也沒有姿勢的情緒視為 `neutral`。舊寫法 `[emotion] happy = "x.exp3.json"` 仍然可以用。
+  - `params`:VTS 輸入參數的姿勢(眉毛、眼睛開合、`MiyoriaEyeSmile`、瞇眼、嘴角、鼓臉…)。`neutral` 的 params 是休息值;情緒在 `[stage.emotion] ease_in_ms`(250)內漸入,維持期間往 `sustain`(0.65)衰減(`decay_ms` 3000),結束後 `ease_out_ms`(700)漸出;換情緒時交叉淡入淡出。整個姿勢乘上 `intensity`。`FaceAngle*`、`EyeLeft*`、`EyeRight*`、`MiyoriaBody*` 是加在程序動作上的偏移(歪頭、低頭、看旁邊)。
+  - `blink`:眨眼頻率倍數。`gesture` / `gesture_chance`:見下面手勢。
+  - Core 端:語音回合的情緒在**用那個情緒說的那句話開始播放時**才送(`voice.playback` `started` 帶 `emotion`;LLM 的標記通常比聲音早一句以上),`intensity` 來自 `<emo:happy 0.5>` 這種標記(沒寫就是 1)。文字回合照舊立刻送。Stage 端再把情緒和 `speaking` 延後 `latency_ms`,跟嘴型一起對上觀眾聽到的時間。
+- **手勢**(`[gesture.<名稱>]`):`open` / `close` 是 hotkey 名稱或 `.exp3.json`(表情檔:開了之後關掉,不用寫 `close`),`group` 同一組同時只有一個(例如兩隻手),`hold_ms` 停留時間範圍,`cooldown_ms` 同一個手勢再觸發的最短間隔。情緒依 `gesture_chance ×(0.4 + 0.6 × 強度)× [stage.gesture] chance_scale` 從自己的 `gesture` 清單隨機挑一個(優先挑上次沒用過的);任兩個手勢開始至少隔 `[stage.gesture] min_gap_ms`(8 秒)。`[idle] gesture` 在她安靜 `after_ms` 之後每 `every_ms` 偶爾來一次;情緒手勢可以接手同一組的待機手勢(先關,`switch_ms` 後再開)。VTS 重新連上時會先把進行中的手勢關掉。
+- **眨眼**(`[stage.blink]`):`EyeOpenLeft/Right` = 姿勢的值 × 眨眼曲線。間隔是 `min_ms`(2 s)+ 指數分布(平均 `mean_ms` 3.8 s),超過 `max_ms`(6 s)重抽;閉眼 `close_ms` 120 ms、全閉 `closed_ms` 30 ms、睜開 `open_ms` 180 ms;`double_chance` 15% 接第二下(最多兩下);每句話開始有 `speech_chance` 35% 會眨一下;頻率乘上情緒的 `blink`。
+- **動作**(`[stage.gaze]` 姿勢與 `idle_amount`、`[stage.motion]` 其他):`FaceAngleX/Y/Z`、`EyeLeftX/Y`、`EyeRightX/Y` 在 `gaze` 目標的姿勢附近。頭部是種子雜訊(兩個八度、每次啟動不同,`seed` 可固定),說話時 ×`speech_motion`(1.5);嘴巴從閉到開(`nod_threshold`)時小點頭(`nod_deg`,間隔至少 `nod_gap_ms`),每句開頭隨機歪頭或點頭(`sentence_deg`)。眼睛做 saccade:平均每 `saccade_mean_ms`(1.4 s)跳一次 `saccade_amount`,`glance_chance` 的機率是比較大的一瞥(`glance_amount`),頭會跟一點(`head_follow_deg`)。身體 `MiyoriaBodyX/Y/Z` = 頭的 `body_follow`(0.35)倍、延遲 `body_lag_ms`(450),再加自己的飄動(`body_drift`)。
+
+**VTS 端要手動設定的對應**(大肥鱼;API 不能改模型的參數對應,要在 VTS 的模型設定 → 參數裡改,存檔):
+
+1. **「微笑」**(輸出 `EyeSmile`):輸入從 `MouthSmile` 改成 `MiyoriaEyeSmile`,輸入範圍 0..1。不改的話,嘴型的 `MouthSmile`(休息值 0.58)會讓眼睛一直瞇著、說話時亂瞇。
+2. **「身体X / 身体Y / 身体Z」**(輸出 `PositionX/Y/Z`,模型的物理再推到 `ParamBodyAngle*`、骨盆、手臂、裙子):輸入從 `FaceAngleX/Y/Z` 改成 `MiyoriaBodyX/Y/Z`,範圍 -30..30 → -30..30。不改的話身體照舊跟頭完全同步(也能用,只是比較僵)。
+3. 其他(`JawOpen`、`BrowInnerUp`、`MouthFunnel`、`MouthPucker`、`REyeSquint`、`LEyeSquint`、`mouthSmileL/R`)模型原本就對應到這些名字,Stage 建立參數後自動生效,不用改。
+4. `TimeUntilTrackingLostIdleAnimation` 不用動:`faceFound = true` 時那段動畫不會播。如果你自己開了臉部追蹤,把 `[stage.vts] face_found = false` 或關掉 Miyoria 的注入,兩邊會搶參數。

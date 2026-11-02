@@ -89,7 +89,8 @@ pnpm start:dist                   # node dist/main.js
 **嘴型音量(給 Stage)**
 - 設了 `STAGE_LEVELS_URL` 就會連過去(WebSocket 客戶端,Stage 沒開時安靜地重連,只警告一次)。播放時,**Discord 播放器實際拉走的 PCM**(已重新取樣成 48 kHz 立體聲、補靜音也算)每 10 ms 算一次 RMS,送 `{"t":<自這段播放開始的 ms>,"rms":0..1}`。`t` 是視窗起點,跟音訊自己的時間軸走;每筆依牆上時鐘在 `起點 + t` 送出(播放器剛開始會一口氣多讀幾個 frame,所以不是看拉取當下),播放器停頓後會重新對時而不是一口氣補送。
 - 播放結束(播完、被打斷、連線中斷)送最後一筆 `rms: 0`。同時只有一段播放在驅動嘴型,後開始的取代先開始的。
-- RMS 是真正的相對滿刻度值(一般說話約 0.05~0.2);要更大的嘴型幅度可調 `STAGE_LEVELS_GAIN`,或讓 Stage 那邊自己做正規化。
+- 每筆也帶 `bands`:pre-emphasis 後 6 個帶通頻帶(300 / 550 / 850 / 1300 / 2000 / 3000 Hz)在最近 20 ms 的 RMS,Stage 用它的形狀估計母音(A/I/U/E/O)。舊版 Stage 會忽略它。
+- RMS 是真正的相對滿刻度值(一般說話約 0.05~0.2);Stage 那邊會自己做 dB 曲線和自動增益,`STAGE_LEVELS_GAIN` 通常不用調。
 
 **Go Live(推流)**
 - Core 送 `golive_start { guild, source, channel?, width?, height?, fps?, bitrate_kbps?, encoder?, audio?, listen? }`,node 回報 `golive { guild, state: starting | live | stopped | failed, error?, reason? }`(完整欄位說明見 [`docs/protocols/voice-link.md`](../../docs/protocols/voice-link.md))。`source` 通常是 OBS 的輸出:`srt://127.0.0.1:9999`(node 的 ffmpeg 自動當 `mode=listener`,OBS 填 `?mode=caller`)或 `rtmp://127.0.0.1:1935/live/miyoria`(ffmpeg 當 RTMP 伺服器,`-listen 1`);也可以是已經在跑的本機伺服器(`listen: false`)、`udp://`、`http(s)://`、本機檔案。
@@ -144,7 +145,7 @@ src/
   golive/encoder.ts   NVENC 實測探針與 auto / nvenc / software 選擇
   golive/manager.ts   Go Live 狀態機(starting → live → stopped | failed),引擎與語音端都是注入的
   golive/dvs-engine.ts  discord-video-stream 引擎:ffmpeg 轉碼 → Go Live;hybrid / exclusive 兩種語音共存方式
-  levels/rms.ts       10 ms 視窗 RMS(交錯立體聲 → 單聲道)
+  levels/rms.ts       10 ms 視窗 RMS + 母音頻帶(交錯立體聲 → 單聲道)
   levels/publisher.ts 依牆上時鐘排程送出每個視窗,播放時間軸 t,多段播放交接
   levels/client.ts    Stage levels 的 WebSocket 客戶端(安靜重連)
   audio/resampler.ts  串流式 windowed-sinc 重新取樣、單聲道 ⇄ 立體聲

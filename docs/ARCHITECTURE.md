@@ -603,9 +603,11 @@ registry.register(
 ### 12.1 VTube Studio
 
 - 透過 VTS Plugin API(本機 WebSocket)認證成外掛。
-- **情緒 → 表情**:依 `avatar.toml` 觸發 expression / hotkey;同一時間只維持一個主表情,會淡入淡出。
-- **嘴型**:從 TTS 音訊串流算 RMS(之後可加 viseme 估計),以約 60Hz 用 `InjectParameterData` 注入 `MouthOpen` / `MouthSmile`(VTS 追蹤參數,0..1,模型端對應到 `ParamMouthOpenY` / `ParamMouthForm`),跟播放時間對齊。備案:把 TTS 輸出到虛擬音源線,讓 VTS 當麥克風做 lip sync。
-- **Idle 與注意力**:眨眼、呼吸交給 VTS;我們注入頭部角度和視線(例如看向聊天室、看向遊戲畫面),讓她有在「看」的感覺。
+- **全部由 Miyoria 驅動**:注入時告訴 VTS `faceFound = true`,模型的「追蹤遺失」待機動畫就不會接管;連上時建立模型對應需要的自訂參數(`JawOpen`、`BrowInnerUp`、`MiyoriaEyeSmile`、`MiyoriaBodyX/Y/Z`…)。VTS 端要手動改兩個對應(眼睛微笑、身體),見 [`docs/protocols/stage-link.md`](protocols/stage-link.md)〈VTube Studio〉。
+- **情緒 → 姿勢 + 重點表情**:`avatar.toml` 每個情緒有一組參數姿勢(眉毛、眼睛、嘴角、臉頰、歪頭),依強度漸入、維持時慢慢衰減、結束漸出,換情緒時交叉淡化;`.exp3.json` 貼圖只在強度夠時當重點。語音回合的情緒在那句話**開始播放時**才套用(`voice.playback` 帶 `emotion`),標記可以寫強度(`<emo:happy 0.5>`)。
+- **手勢**:模型自帶的動畫 / 貼圖(竖手指、抚胸、狗尾巴草、流冷汗…)由情緒或發呆觸發,成對的開 / 關、同組互斥、冷卻時間、多個變體隨機挑。
+- **嘴型**:voice node 每 10 ms 送播放中音訊的 RMS 和 6 個頻帶能量;Stage 依訊框自己的時間軸 + 觀眾延遲(預設 180 ms)排時間,dB 曲線 + 慢速自動增益算張嘴,頻帶形狀估計母音 A/I/U/E/O,注入 `MouthOpen`、`JawOpen`、`VoiceA..O` / `VoiceSilence` 和依母音調整的嘴型。備案:把 TTS 輸出到虛擬音源線,讓 VTS 當麥克風做 lip sync。
+- **Idle 與注意力**:程序眨眼(隨機間隔、偶爾連眨、隨情緒改頻率)、眼睛 saccade、種子雜訊的頭部飄動(不會重複同一個循環)、說話時動作變大並在音節點頭、句首歪頭;身體是頭的延遲縮小版加自己的飄動。視線目標(看聊天室、看遊戲畫面)決定基準姿勢;呼吸交給 VTS。
 - 道具(item)載入、場景互動可以用工具開放給 agent。
 
 ### 12.2 OBS
