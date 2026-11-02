@@ -7,7 +7,14 @@ import { createServer, type Server } from "node:http";
 import { AuthService, AuthServiceKey } from "@miyoria/auth";
 import { Supervisor, SupervisorKey } from "@miyoria/kernel";
 import { RequestQueue, RequestQueueKey } from "@miyoria/queue";
-import { type AuditEntry, AuditLogKey, AuthStoreKey, SettingsStoreKey } from "@miyoria/store";
+import {
+  type AuditEntry,
+  AuditLogKey,
+  AuthStoreKey,
+  ProfileDataStoreKey,
+  SettingsStoreKey,
+  SqliteStore,
+} from "@miyoria/store";
 import { type AccountRef, AuthorizerKey, type JsonValue } from "@miyoria/types";
 import { afterEach, describe, expect, it } from "vitest";
 import { ActiveProfileKey, ApiClient, ApiModule } from "../src/index.js";
@@ -395,6 +402,45 @@ describe("oauth", () => {
     const r = await h.withCookie("POST", "/api/queue/pause", cookie, true);
     expect(r.status).toBe(403);
     expect(r.body.error).toContain("admin.panel.write");
+  });
+
+  it("data_management_needs_owner_data_manage", async () => {
+    const h = await harnessWith(true);
+    const sqlite = await SqliteStore.open(":memory:");
+    h.sup.services.provide("kernel", ProfileDataStoreKey, sqlite.profileData);
+    try {
+      // An admin (`admin.*`, write) sees the inventory but may not export or delete.
+      await h.auth.assign("test", discord(ADMIN), "admin", { type: "global" });
+      const admin = await h.loginCookie("admin-code");
+      const inv = await h.withCookie("GET", "/api/data", admin, false);
+      expect(inv.status).toBe(200);
+      expect(inv.body.can_manage).toBe(false);
+      expect((await h.withCookie("GET", "/api/data/export", admin, false)).status).toBe(403);
+      const denied = await h.withCookie("POST", "/api/data/backup", admin, true);
+      expect(denied.status).toBe(403);
+      expect(denied.body.error).toContain("owner.data.manage");
+
+      // A read-only account cannot change anything.
+      await h.auth.upsertRole("test", {
+        name: "viewer",
+        rank: 50,
+        grants: ["admin.panel.access", "owner.data.manage"],
+        denies: [],
+        builtin: false,
+      });
+      await h.auth.assign("test", discord(VIEWER), "viewer", { type: "global" });
+      const viewer = await h.loginCookie("viewer-code");
+      const wipe = await h.withCookie("POST", "/api/data/backup", viewer, true);
+      expect(wipe.status).toBe(403);
+      expect(wipe.body.error).toContain("admin.panel.write");
+
+      // The config owner may.
+      const owner = await h.loginCookie("owner-code");
+      expect((await h.withCookie("GET", "/api/data", owner, false)).body.can_manage).toBe(true);
+      expect((await h.withCookie("POST", "/api/data/backup", owner, true)).status).toBe(200);
+    } finally {
+      await sqlite.close();
+    }
   });
 
   it("logout_and_revocation", async () => {

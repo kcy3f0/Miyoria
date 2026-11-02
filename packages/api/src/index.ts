@@ -30,6 +30,9 @@
 // * `GET /api/stage`, `POST /api/stage/scene|expression|stream|say`
 // * `GET /api/voice`
 // * `GET /api/self` (her inner state), `GET /api/world` (what she perceives); read-only
+// * `GET /api/data`, `GET /api/data/export?categories=`, `POST /api/data/wipe`,
+//   `POST /api/data/backup`, `POST /api/data/reset` (her data by category, factory reset;
+//   export and changes need `owner.data.manage`, see `data.ts`)
 // * `GET /api/events?topics=platform.*,agent.*` (Server-Sent Events of bus envelopes)
 
 export {
@@ -40,6 +43,18 @@ export {
   type EventStream,
   SseParser,
 } from "./client.js";
+export {
+  BACKUP_TOKEN_HEADER,
+  BACKUP_TOKEN_TTL_MS,
+  type DataCategoryView,
+  type DataInventoryView,
+  type DataNote,
+  type DataViewId,
+  type DataWipeResult,
+  NODE_DATA_MANAGE,
+  parseContextKeyString,
+  TOOLS_WORKSPACE,
+} from "./data.js";
 export { ApiError, NO_SUCH_ENDPOINT } from "./errors.js";
 export { ContextLabels, LABEL_MISS_TTL_MS, LABEL_TIMEOUT_MS, LABEL_TTL_MS } from "./labels.js";
 export { METRICS_PATH } from "./metrics.js";

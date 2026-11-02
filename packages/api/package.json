@@ -32,6 +32,7 @@
     "@miyoria/mcp": "workspace:*",
     "@miyoria/memory": "workspace:*",
     "@miyoria/queue": "workspace:*",
+    "@miyoria/sandbox": "workspace:*",
     "@miyoria/social": "workspace:*",
     "@miyoria/stage": "workspace:*",
     "@miyoria/store": "workspace:*",
@@ -41,7 +42,10 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@miyoria/initiative": "workspace:*",
     "@miyoria/profile": "workspace:*",
+    "@miyoria/self": "workspace:*",
+    "@miyoria/voice": "workspace:*",
     "@types/node": "^24.19.2",
     "typescript": "~5.9.3",
     "vitest": "^4.1.12"

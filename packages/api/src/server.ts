@@ -5,6 +5,7 @@ import { SettingsStoreKey } from "@miyoria/store";
 import { AuthorizerKey } from "@miyoria/types";
 import { Hono } from "hono";
 import { coreRoutes } from "./core.js";
+import { dataRoutes } from "./data.js";
 import { ApiError, NO_SUCH_ENDPOINT } from "./errors.js";
 import { innerRoutes } from "./inner.js";
 import { memoryRoutes } from "./memory.js";
@@ -95,6 +96,7 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...roleRoutes(state),
     ...opsRoutes(state),
     ...innerRoutes(state),
+    ...dataRoutes(state),
     ...metricsRoutes(state, { public: options.metricsPublic ?? false }),
   ];
 }
