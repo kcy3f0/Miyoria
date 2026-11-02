@@ -23,6 +23,7 @@ import {
   type StageMessage,
   type StageStatus,
   sameStatus,
+  sceneTransitionOf,
   VERSION,
 } from "./protocol.js";
 import {
@@ -300,7 +301,9 @@ class Stage {
         this.#avatar?.gaze(msg.target);
         return;
       case "scene":
-        this.#answer(msg.id, async () => this.#obsOrThrow().setScene(msg.name));
+        this.#answer(msg.id, async () =>
+          this.#obsOrThrow().setScene(msg.name, sceneTransitionOf(msg)),
+        );
         return;
       case "stream":
         this.#answer(msg.id, async () => this.#obsOrThrow().stream(msg.action));

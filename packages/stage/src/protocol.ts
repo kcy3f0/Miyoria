@@ -4,6 +4,9 @@ import { z } from "zod";
 
 export const VERSION = 1;
 
+/** Longest scene transition OBS accepts (`SetCurrentSceneTransitionDuration`), in ms. */
+export const TRANSITION_MAX_MS = 20_000;
+
 /** Close codes used by Core. */
 export const CLOSE = {
   /** Malformed hello, unsupported version or no hello in time. */
@@ -29,6 +32,21 @@ export const GazeTargetSchema = z.enum(["chat", "game", "camera"]);
 export function parseGazeTarget(s: string): GazeTarget | null {
   const v = s.trim().toLowerCase();
   return v === "chat" || v === "game" || v === "camera" ? v : null;
+}
+
+/** An OBS scene transition: its name and, for transitions that have one, a duration. */
+export interface SceneTransition {
+  name: string;
+  /** `null` = keep the transition's own duration (fixed transitions such as stingers). */
+  duration_ms: number | null;
+}
+
+/** The transition a `scene` message asks for, if any. */
+export function sceneTransitionOf(msg: {
+  transition?: string;
+  transition_ms?: number;
+}): SceneTransition | null {
+  return msg.transition ? { name: msg.transition, duration_ms: msg.transition_ms ?? null } : null;
 }
 
 /** `speaking` states. */
@@ -129,7 +147,11 @@ export type CoreMessage =
   | { type: "emotion"; name: string; intensity: number }
   | { type: "subtitle"; turn: string; text: string; final: boolean }
   | { type: "speaking"; state: SpeakingState }
-  | { type: "scene"; name: string; id?: number }
+  /**
+   * `transition` (an OBS transition name) and `transition_ms` (its duration) are set as OBS's
+   * current transition before the switch; left out, OBS uses whatever is current.
+   */
+  | { type: "scene"; name: string; transition?: string; transition_ms?: number; id?: number }
   | { type: "stream"; action: StreamAction; id?: number }
   | { type: "avatar_hotkey"; name: string; id?: number }
   | { type: "gaze"; target: GazeTarget }
@@ -143,7 +165,23 @@ const CoreMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("emotion"), name: z.string(), intensity: z.number() }),
   z.object({ type: z.literal("subtitle"), turn: z.string(), text: z.string(), final: z.boolean() }),
   z.object({ type: z.literal("speaking"), state: SpeakingStateSchema }),
-  z.object({ type: z.literal("scene"), name: z.string(), id: requestId }),
+  z.object({
+    type: z.literal("scene"),
+    name: z.string(),
+    // Added after v1 shipped; older Cores leave them out (older nodes ignore them).
+    transition: z
+      .string()
+      .nullish()
+      .transform((v) => (v?.trim() ? v.trim() : undefined)),
+    transition_ms: z
+      .number()
+      .int()
+      .min(0)
+      .max(TRANSITION_MAX_MS)
+      .nullish()
+      .transform((v) => v ?? undefined),
+    id: requestId,
+  }),
   z.object({ type: z.literal("stream"), action: StreamActionSchema, id: requestId }),
   z.object({ type: z.literal("avatar_hotkey"), name: z.string(), id: requestId }),
   z.object({ type: z.literal("gaze"), target: GazeTargetSchema }),
@@ -152,9 +190,15 @@ const CoreMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("pong") }),
 ]);
 
-/** Drops a missing `id` key, like serde's `skip_serializing_if = "Option::is_none"`. */
+/** Optional keys that are left out when missing. */
+const OPTIONAL_KEYS = ["id", "transition", "transition_ms"] as const;
+
+/** Drops missing optional keys, like serde's `skip_serializing_if = "Option::is_none"`. */
 function dropMissingId<T extends object>(msg: T): T {
-  if ("id" in msg && msg.id === undefined) delete msg.id;
+  const record = msg as Record<string, unknown>;
+  for (const key of OPTIONAL_KEYS) {
+    if (key in record && record[key] === undefined) delete record[key];
+  }
   return msg;
 }
 
