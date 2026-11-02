@@ -85,12 +85,13 @@ ${GUARD_RULES}`;
  */
 export function speaksRule(language: string): string {
   const example = /japanese|日/i.test(language)
-    ? "例如:<voice>えっ、本当に?</voice>欸,真的嗎?<voice>じゃあ一緒に行こう!</voice>那一起去吧!"
-    : `例如:<voice>(這句的 ${language})</voice>欸,真的嗎?`;
+    ? "例如:欸,真的嗎?<voice>えっ、本当に?</voice>那一起去吧!<voice>じゃあ一緒に行こう!</voice>"
+    : `例如:欸,真的嗎?<voice>(這句的 ${language})</voice>`;
   return [
     `- 你的聲音是用 ${language} 念出來的,字幕和紀錄顯示你寫的中文。`,
-    `每一句都先用 <voice>…</voice> 寫出要念的 ${language},緊接著寫同一句的中文,兩邊意思一樣;`,
-    `<voice> 裡只放念得出來的 ${language},遊戲用語和專有名詞也寫成 ${language} 的說法。${example}`,
+    `每一句都照常用中文寫,寫完那句馬上接 <voice>…</voice>,裡面是同一句要念的 ${language},意思一樣。`,
+    `中文那句一定要寫(不要只寫 <voice>),<voice> 裡只放念得出來的 ${language},`,
+    `遊戲用語和專有名詞也寫成 ${language} 的說法。${example}`,
   ].join("");
 }
 

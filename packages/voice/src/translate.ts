@@ -8,6 +8,17 @@ import { type LlmRouter, systemMessage, userMessage } from "@miyoria/llm";
 /** Translations kept for lines that were prepared but not spoken yet (or spoken twice). */
 const MAX_CACHED = 32;
 
+const KANA = /[぀-ヿㇰ-ㇿｦ-ﾟ]/u;
+
+/**
+ * Whether `text` is in `language`, where that can be told from the script alone: Japanese has
+ * kana (Chinese never does). `null` for languages it cannot tell.
+ */
+export function isIn(language: string, text: string): boolean | null {
+  if (/japanese|日本|日文|日語/i.test(language)) return KANA.test(text);
+  return null;
+}
+
 /** The prompt for one line. */
 export function translatePrompt(language: string): string {
   return [
@@ -35,12 +46,21 @@ export class SpeechTranslator {
 
   prepare(text: string): void {
     if (text.trim() === "" || this.#pending.has(text)) return;
-    this.#keep(text, this.#run(text));
+    // Already in the target language (she slipped into it): said as it is.
+    this.#keep(text, isIn(this.language, text) === true ? Promise.resolve(text) : this.#run(text));
   }
 
-  /** The reply already said `text` in the target language: no translation call for it. */
+  /**
+   * The reply already said `text` in the target language: no translation call for it. A line
+   * that is not in that language after all (she wrote it in Chinese) is ignored.
+   */
   provide(text: string, translation: string): void {
     if (text.trim() === "" || translation.trim() === "") return;
+    if (isIn(this.language, translation) === false) {
+      this.log.debug({ text, translation }, "spoken line is not in the target language");
+      this.prepare(text);
+      return;
+    }
     this.#pending.delete(text);
     this.#keep(text, Promise.resolve(translation.trim()));
   }

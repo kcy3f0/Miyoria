@@ -180,6 +180,9 @@ interface CheckReply {
   reason: string;
 }
 
+/** Written sentences a bilingual reply may hold before their `<voice>` line is given up on. */
+const MAX_UNVOICED = 2;
+
 /**
  * Streams a voice reply: every completed sentence is submitted as a `speak` action right away,
  * so the first one plays while the rest is generated.
@@ -196,8 +199,14 @@ class Speech {
   /** Links and code blocks she wrote, for the text chat instead of speech. */
   readonly aside: string[] = [];
   /**
-   * After a `<voice>` line: the line and the written text that goes with it, collected until the
-   * next one (or a pause, an emotion change, the end) and then said as one piece.
+   * Bilingual replies (`bilingual`): each written sentence comes with its spoken line,
+   * `written<voice>spoken</voice>` (asked for) or `<voice>spoken</voice>written`. Written
+   * sentences wait in `#written` for the line that follows them ...
+   */
+  #written: { text: string; emotion: string | null }[] = [];
+  /**
+   * ... or, when the line came first, the line and the written text after it are collected
+   * here until the next line (or a pause, an emotion change, the end).
    */
   #pair: { spoken: string; text: string } | null = null;
 
@@ -213,6 +222,8 @@ class Speech {
     readonly signal: AbortSignal,
     /** Tells the voice sink a sentence is coming (`VoiceSink.prepare`). */
     readonly prepare: ((text: string, spoken?: string) => void) | null = null,
+    /** She is heard in another language and writes `<voice>` lines (`VoiceSink.speaksIn`). */
+    readonly bilingual = false,
   ) {}
 
   /** Her speech was interrupted: nothing more is said. */
@@ -242,14 +253,34 @@ class Speech {
       this.#pair.text += part.text;
       return;
     }
-    for (const sentence of this.#splitter.push(part.text)) await this.#say(sentence);
+    for (const sentence of this.#splitter.push(part.text)) await this.#sentence(sentence);
   }
 
-  /** A `<voice>` line: the text before it is complete, the text after it goes with it. */
+  async #sentence(sentence: string): Promise<void> {
+    if (!this.bilingual) return this.#say(sentence);
+    this.#written.push({ text: sentence, emotion: this.#emotion });
+    // A reply that does not write the lines is not held back for long: the oldest sentences
+    // go out on their own (the voice sink translates them).
+    while (this.#written.length > MAX_UNVOICED) {
+      const first = this.#written.shift();
+      if (first) await this.#say(first.text, undefined, first.emotion);
+    }
+  }
+
+  /** A `<voice>` line: for the written sentences before it, or else the text after it. */
   async voiceLine(line: string): Promise<void> {
-    await this.#endPair();
-    const rest = this.#splitter.flush();
-    if (rest !== null) await this.#say(rest);
+    if (this.#pair !== null) {
+      await this.#endPair();
+    } else {
+      const rest = this.#splitter.flush();
+      if (rest !== null) this.#written.push({ text: rest, emotion: this.#emotion });
+      if (this.#written.length > 0) {
+        const written = this.#written;
+        this.#written = [];
+        await this.#say(written.map((w) => w.text).join(""), line, written[0]?.emotion ?? null);
+        return;
+      }
+    }
     if (line.trim() !== "") this.#pair = { spoken: line, text: "" };
   }
 
@@ -257,7 +288,17 @@ class Speech {
     const pair = this.#pair;
     if (pair === null) return;
     this.#pair = null;
+    // A line nobody wrote down: subtitles and her history only ever carry the written text, so
+    // it is said only when it is all she said (better than silence).
+    if (pair.text.trim() === "" && this.spoken !== "") return;
     await this.#say(pair.text.trim() === "" ? pair.spoken : pair.text, pair.spoken);
+  }
+
+  /** Written sentences still waiting for a line go out on their own. */
+  async #sayWritten(): Promise<void> {
+    const written = this.#written;
+    this.#written = [];
+    for (const w of written) await this.#say(w.text, undefined, w.emotion);
   }
 
   /**
@@ -272,7 +313,7 @@ class Speech {
     }
     await this.#endPair();
     const done = this.#splitter.flushComplete();
-    if (done !== null) await this.#say(done);
+    if (done !== null) await this.#sentence(done);
     this.#emotion = emotion;
   }
 
@@ -280,7 +321,7 @@ class Speech {
   async flush(): Promise<void> {
     await this.#endPair();
     const rest = this.#splitter.flush();
-    if (rest !== null) await this.#say(rest);
+    if (rest !== null) await this.#sentence(rest);
   }
 
   /** End of a response: an unclosed code block ends here too. */
@@ -288,9 +329,10 @@ class Speech {
     for (const piece of this.#fences.flush()) await this.#piece(piece);
     for (const part of this.#links.flush()) await this.#part(part);
     await this.flush();
+    await this.#sayWritten();
   }
 
-  async #say(sentence: string, spoken?: string): Promise<void> {
+  async #say(sentence: string, spoken?: string, emotion = this.#emotion): Promise<void> {
     if (this.stopped()) return;
     // Links taken out may leave double spaces behind.
     const text = filterOutgoing(cleanReply(sentence, this.names)).replace(/[ \t]{2,}/g, " ");
@@ -300,7 +342,7 @@ class Speech {
     const action = newAction(
       this.lane,
       this.priority,
-      { type: "speak", context: this.context, text, emotion: this.#emotion },
+      { type: "speak", context: this.context, text, emotion },
       { ttl: this.ttlMs, turn: this.turn },
     );
     try {
@@ -860,6 +902,7 @@ class Turn {
         cfg.voice.speak_ttl_ms,
         this.signal,
         voiceSink?.prepare ? (text, spoken) => voiceSink.prepare?.(this.key, text, spoken) : null,
+        Boolean(voiceSink?.speaksIn),
       );
       await this.#produce(router, messages, priority, speech);
       await this.#postAside(sink, speech.aside, priority);

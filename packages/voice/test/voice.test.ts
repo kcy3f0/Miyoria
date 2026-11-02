@@ -556,6 +556,21 @@ describe("voice", () => {
     expect(await speaking).toBe("completed");
     expect(asked.length).toBe(0);
     expect(e.tts.requests[0]).toMatchObject({ text: "えっ、本当に?", language: "Japanese" });
+
+    // A "Japanese" line without kana is Chinese after all: translated instead.
+    sink.prepare?.(voiceCtx, "苦力怕好討厭", "苦力怕真的很討厭");
+    const second = sink.speak(voiceCtx, "苦力怕好討厭", null, null);
+    finish(e.node, (await readPlayback(e.node))[0]);
+    expect(await second).toBe("completed");
+    expect(asked.length).toBe(1);
+    expect(e.tts.requests[1]?.text).toBe("ja(?)");
+
+    // Written in Japanese already: said as it is, no call.
+    const third = sink.speak(voiceCtx, "もう、邪魔しないでよ!", null, null);
+    finish(e.node, (await readPlayback(e.node))[0]);
+    expect(await third).toBe("completed");
+    expect(asked.length).toBe(1);
+    expect(e.tts.requests[2]?.text).toBe("もう、邪魔しないでよ!");
   });
 
   it("speak_signal_abort_stops_playback", async () => {

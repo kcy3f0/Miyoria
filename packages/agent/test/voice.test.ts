@@ -310,6 +310,51 @@ describe("voice", () => {
     expect(prompt).toContain("用 Japanese 念出來");
   });
 
+  it("voice_lines_after_their_written_sentence_go_with_it", async () => {
+    const prepared: [string, string | undefined][] = [];
+    const voiceSink = {
+      speaksIn: "Japanese",
+      prepare: (_c: ContextKey, text: string, spoken?: string) => prepared.push([text, spoken]),
+      speak: async () => "completed" as const,
+    };
+    const mock = new MockProvider("chat").reply(
+      "欸,真的嗎?好厲害!<voice>えっ、本当に?すごい!</voice><emo:happy>那走吧!<voice>じゃあ行こう!</voice><voice>誰も書いてない</voice>",
+    );
+    const h = await Harness.build("off", voiceConfig("always"), mock, null, { voiceSink });
+    h.publish(joined());
+    h.publish(utterance("Owen", "我中樂透了"));
+    await wait(3000);
+    // Two written sentences share one line; a line nobody wrote down is not said.
+    expect(prepared).toEqual([
+      ["欸,真的嗎?好厲害!", "えっ、本当に?すごい!"],
+      ["那走吧!", "じゃあ行こう!"],
+    ]);
+    expect(h.sink.speeches()).toEqual([
+      ["欸,真的嗎?好厲害!", null],
+      ["那走吧!", "happy"],
+    ]);
+  });
+
+  it("a_bilingual_reply_without_voice_lines_is_still_said_sentence_by_sentence", async () => {
+    const prepared: [string, string | undefined][] = [];
+    const voiceSink = {
+      speaksIn: "Japanese",
+      prepare: (_c: ContextKey, text: string, spoken?: string) => prepared.push([text, spoken]),
+      speak: async () => "completed" as const,
+    };
+    const mock = new MockProvider("chat").reply("一。二。三。四。");
+    const h = await Harness.build("off", voiceConfig("always"), mock, null, { voiceSink });
+    h.publish(joined());
+    h.publish(utterance("Owen", "數數看"));
+    await wait(3000);
+    expect(prepared).toEqual([
+      ["一。", undefined],
+      ["二。", undefined],
+      ["三。", undefined],
+      ["四。", undefined],
+    ]);
+  });
+
   it("first_token_latency_is_published_for_the_monitor", async () => {
     const paced = new Paced([
       [
