@@ -1,6 +1,6 @@
 # miyoria-bridge 通訊協定(protocol 1)
 
-`miyoria-bridge` 是裝在 Minecraft 1.21.1 客戶端裡的 Fabric 模組,在本機開一個 WebSocket 伺服器。TS adapter(`extensions/minecraft/adapter`,之後實作)連上來,把它包成 `GameAdapter` 的 `describe / observe / act / events`。
+`miyoria-bridge` 是裝在 Minecraft 1.21.1 客戶端裡的 Fabric 模組,在本機開一個 WebSocket 伺服器。TS adapter(`extensions/minecraft/adapter`)連上來,把它包成 `GameAdapter` 的 `describe / observe / act / events`。
 
 - 位址:`ws://127.0.0.1:<port>`(預設 `7890`;只綁 loopback,不會對外)。
 - 每則訊息是一個 **文字 frame,內容為單一 JSON 物件**(UTF-8,單則上限 1 MiB)。
@@ -312,7 +312,7 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 | `goal_failed` | Baritone 找不到路徑 | `{"reason":"no_path","goal"}` |
 | `baritone_idle` | (額外)Baritone 從忙碌變成閒置(連續閒置 10 tick 才送,過濾路段切換的抖動)。挖礦做完、跟隨目標消失這類沒有 `goal_reached` 的流程用它判斷結束 | `{"process","goal","cancelled": bool}`;`cancelled` 表示是我們送了 `stop` |
 
-`goal_reached` 對應 `goto` 類目標;`mine` / `follow` / `explore` / `farm` 沒有「到達」的概念,結束時只會有 `baritone_idle`。
+`goal_reached` 對應 `goto` 類目標;`mine` / `follow` / `explore` / `farm` 沒有「到達」的概念,結束時只會有 `baritone_idle`。注意 `goal_reached` / `goal_failed` 來自 Baritone 的 `PathEvent`(`AT_GOAL` / `CALC_FAILED`),**每一段路**都會送:挖礦時每走到一顆礦、`follow` 每次追上、AltoClef 子任務之間都會出現。client 要自己記得目前下的是哪種工作再解讀(adapter 只在 `goto` 時把它當成完成,見 `README.md` §7)。
 
 範例:
 

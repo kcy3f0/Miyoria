@@ -5,9 +5,12 @@
 ```
 extensions/minecraft/
   mod/        # Fabric 客戶端模組 miyoria-bridge(Java 21,Gradle + Fabric Loom)
-  adapter/    # TS game adapter(之後實作):連到 mod 的 WebSocket,實作 GameAdapter
+  adapter/    # TS game adapter 擴充(miyoria.minecraft):連到 mod 的 WebSocket,實作 GameAdapter
   PROTOCOL.md # 通訊協定(精確的 JSON)
+  SETUP.md    # 第一次實玩的逐步設定(玩家端 + Miyoria 端)
 ```
+
+**第一次要讓她玩,照 [SETUP.md](SETUP.md) 一步一步做。** 這份 README 是背景說明與參考。
 
 | | 版本 |
 |---|---|
@@ -25,7 +28,7 @@ extensions/minecraft/
 1. 安裝 **Fabric Loader** for 1.21.1(官方安裝程式 https://fabricmc.net/use/installer/ )。
 2. 把這些放進該實例的 `mods/`:
    - **Fabric API**(`fabric-api-0.116.17+1.21.1.jar` 或更新的 1.21.1 版)。
-   - **Baritone**:`baritone-standalone-fabric-1.11.3.jar`(https://github.com/cabaletta/baritone/releases/tag/v1.11.3 )。
+   - **Baritone**:`baritone-api-fabric-1.11.3.jar`(https://github.com/cabaletta/baritone/releases/tag/v1.11.3 ;也就是建置時 `./gradlew downloadBaritone` 抓到 `mod/libs/` 的同一個檔案)。**不要用 `baritone-standalone-fabric`**:standalone 版連 API 都混淆了,別的模組呼叫不到,miyoria-bridge 會當作沒有 Baritone(log 會出現 `baritone.api is missing`)。`api` 版是完整的 Baritone 模組,只是保留 API 不混淆。
    - **miyoria-bridge**:`mod/build/libs/miyoria-bridge-0.1.0.jar`(建置方式見 §2)。
    - 可選 **AltoClef**:`altoclef-1.21.1-0.19.jar`(https://github.com/MiranCZ/altoclef/releases/tag/0.19 )。
 3. **重要:AltoClef 內建了自己的 Baritone**。只用 AltoClef 時,**不要**再放獨立的 Baritone jar(會有兩個 id 為 `baritone` 的模組而衝突);只想用 Baritone 時就不要放 AltoClef。
@@ -50,7 +53,7 @@ export JAVA_HOME="C:/Program Files/Eclipse Adoptium/jdk-21.0.3.9-hotspot"   # Wi
 
 ### Baritone 怎麼被解析
 
-Baritone **沒有**發佈到公開 Maven 倉庫,官方產物是 GitHub Releases 的 jar。所以建置時編譯對象是 `mod/libs/baritone-api-fabric-<版本>.jar`(`compileOnly`,不會打包進模組,執行時由玩家安裝的 Baritone / AltoClef 提供):
+Baritone **沒有**發佈到公開 Maven 倉庫,官方產物是 GitHub Releases 的 jar。所以建置時編譯對象是 `mod/libs/baritone-api-fabric-<版本>.jar`(`compileOnly`,不會打包進模組,執行時由玩家安裝的 Baritone / AltoClef 提供;玩家要裝的也是這個 jar):
 
 - `./gradlew downloadBaritone` 會從 `https://github.com/cabaletta/baritone/releases/download/v1.11.3/baritone-api-fabric-1.11.3.jar` 下載;也可以手動下載放到同一路徑。版本由 `mod/gradle.properties` 的 `baritone_version` 決定。
 - jar 缺少時:`./gradlew test` **仍可執行**(改用 `src/baritoneStub/java` 裡標明「COMPILE-ONLY STUB」的最小介面,只含用到的少數型別,**不會**被打包),但 `jar` / `build` / `runClient` 會失敗並印出上述修復指示。
@@ -59,8 +62,7 @@ Baritone **沒有**發佈到公開 Maven 倉庫,官方產物是 GitHub Releases 
 ### 開發時直接跑遊戲
 
 ```bash
-./gradlew downloadBaritoneStandalone   # 取得完整 Baritone,只給 runClient 用
-./gradlew runClient                    # 啟動帶有 miyoria-bridge + Fabric API + Baritone 的開發客戶端
+./gradlew runClient    # 啟動帶有 miyoria-bridge + Fabric API + Baritone(mod/libs 的 api jar)的開發客戶端
 ```
 
 ### 目錄
@@ -148,50 +150,24 @@ AltoClef(`<遊戲目錄>/altoclef/altoclef_settings.json`)內建這些生存反�
 2. 擷取方式選 **Windows 10 (1903 and up)**;關閉「擷取游標」;勾選「Client Area」(只抓遊戲畫面,不含標題列與邊框)。
 3. 視窗不能最小化;被其他視窗擋住在新版擷取方式下仍能擷取。若黑畫面,改用 **Game Capture**(模式:擷取特定視窗)。
 4. 音訊:Windows 11 可用「應用程式音訊擷取」只收 Minecraft 的聲音;她的語音(TTS)走另一條(見 `docs/ARCHITECTURE.md` §12.2 的 VB-Cable)。
-5. 想讓 LLM「看」畫面時,用協定的 `screenshot`(縮圖給支援圖片的模型),和 OBS 擷取互不干擾。
+5. 協定有 `screenshot`(縮圖給支援圖片的模型),和 OBS 擷取互不干擾;adapter 目前還沒用它(工具結果只傳文字)。
 
-## 7. TS adapter 怎麼連(之後實作)
+## 7. TS adapter(`adapter/`,擴充 `miyoria.minecraft`)
 
-`extensions/minecraft/adapter` 實作 `GameAdapter`,對應關係:
+Core 的擴充套件主機從 `[modules.extensions] dirs`(預設 `["extensions"]`,相對於啟動 Miyoria 的資料夾)找到 `adapter/miyoria.extension.toml`(`kind = ["game-adapter","tools"]`、`game = "minecraft"`),用 `node dist/index.js` 啟動它。所以 adapter 要先建置:`pnpm --filter "@miyoria/ext-minecraft..." build`(連同 `@miyoria/sdk`)。設定放在 `miyoria.toml` 的 `[extensions."miyoria.minecraft"]`,欄位見 `adapter/config.schema.json`;最重要的是 `minecraft_dir`(遊戲實例目錄,adapter 從 `<目錄>/config/miyoria-bridge.json` 讀 port 和 token,每次重連都重讀)。沒設定時會找官方啟動器預設的 `%APPDATA%\.minecraft`,找不到 token 時 log 會警告一次並列出找過的路徑。
 
 | GameAdapter | miyoria-bridge |
 |---|---|
-| `describe()` | 靜態描述:可用動作與 JSON Schema(來自 `PROTOCOL.md` §5),`hello_ack.capabilities` 決定哪些動作可用 |
-| `observe()` | `{"type":"observe"}`(必要時加 `screenshot`)→ 快照 JSON,adapter 再轉成給 LLM 看的文字摘要 |
-| `act(action)` | 對應的請求 `baritone` / `altoclef` / `chat` / `look` / `use` / `attack` / `select_slot` / `stop` |
-| `events()` | 伺服器推送的 `{"type":"event",...}` → `AsyncIterable<GameEvent>` |
+| `describe()` | 14 個動作(`goto`、`mine`、`follow`、`explore`、`farm`、`build`、`get`、`chat`、`stop`、`look`、`attack`、`use`、`select`、`respawn`)與參數 schema |
+| `observe()` | `observe` → 繁中摘要 + 精簡狀態(`busy`、`capabilities`、背包、附近生物 / 方塊…);沒連上或在主選單時回 `connected:false` / `in_game:false`,導演就不會叫 LLM |
+| `act(action)` | 對應到 `baritone` / `altoclef` / `chat` / `look` / `use` / `attack` / `select_slot` / `respawn` / `stop`;`hello_ack.capabilities` 說沒有的模組直接回失敗 |
+| `events()` | 推送事件 → `game.minecraft.<事件>`,`data.text` 是給實況用的一句話,`important` 標出值得馬上反應的(死亡、低血量、危險生物、稀有物品、別人講話、成就);另外有 `connected` / `disconnected` |
 
-連線骨架(Node + `ws`):
+工具名稱:`game.minecraft.observe` / `game.minecraft.act`(registry 裡是 `game_minecraft_observe` / `game_minecraft_act`),導演(`packages/game`)和聊天中的她都用這兩個。
 
-```ts
-import { readFileSync } from "node:fs";
-import WebSocket from "ws";
+**目標什麼時候算完成**:Baritone 每走完一段路就送 `goal_reached`(挖礦是一顆礦接一顆、`follow` 一直重新追上、AltoClef 在子任務之間尋路),所以 adapter 記住上一個動作開始的是什麼工作:只有 `goto` 會轉送 `goal_reached` / `goal_failed`;`mine` / `follow` / `explore` / `farm` / `build` 以 `baritone_idle` 結束;AltoClef 的 `get` 期間 Baritone 也會在子任務之間閒置,adapter 收到 `baritone_idle` 時先 `observe`,AltoClef 自己也閒下來才轉送(文字「AltoClef 任務做完了」)。
 
-const cfg = JSON.parse(readFileSync(`${MC_DIR}/config/miyoria-bridge.json`, "utf8"));
-const ws = new WebSocket(`ws://127.0.0.1:${cfg.port}`);
-
-let seq = 0;
-const pending = new Map<string, (m: any) => void>();
-const request = (body: object) =>
-  new Promise<any>((resolve) => {
-    const id = String(++seq);
-    pending.set(id, resolve);
-    ws.send(JSON.stringify({ id, ...body }));
-  });
-
-ws.on("open", () => ws.send(JSON.stringify({ type: "hello", token: cfg.token, client: "miyoria-adapter" })));
-ws.on("message", (raw) => {
-  const m = JSON.parse(raw.toString());
-  if (m.type === "result") {
-    pending.get(m.id)?.(m);
-    pending.delete(m.id);
-  }
-  else if (m.type === "event") console.log("event", m.name, m.data);
-  else if (m.type === "hello_ack") request({ type: "observe" }).then((r) => console.log(r.data));
-});
-```
-
-雙速控制的分工:快迴路(逐幀)完全在 Baritone / AltoClef;慢迴路(LLM)每幾秒或遇到事件(`damage`、`hostile_near`、`low_health`、`death`、`goal_reached`、`baritone_idle`)時才 `observe` 一次,下高階目標(`baritone goto/mine/follow`、`altoclef get ...`)並產生實況評論。
+雙速控制的分工:快迴路(逐幀)完全在 Baritone / AltoClef;慢迴路(導演 + LLM)每 `decide_secs`(預設 20 秒)或遇到事件(`death`、`low_health`、`hostile_near`、`goal_reached`、`goal_failed`、`baritone_idle`、`advancement`、`chat`、`connected`)時才 `observe` 一次,下高階目標並產生實況評論。
 
 ## 8. 疑難排解
 
@@ -201,6 +177,8 @@ ws.on("message", (raw) => {
 | 連上後立刻被關(close 1008) | 第一則不是 `hello`、5 秒內沒送、token 錯誤 |
 | `not_in_game` | 還在主選單或載入畫面,等進入世界後再下動作 |
 | `baritone_unavailable` | `mods/` 沒有 Baritone(或用了 AltoClef 又另外放了獨立 Baritone 造成衝突) |
+| log 有 `baritone.api is missing` | 裝成了 `baritone-standalone-fabric`,換成 `baritone-api-fabric-1.11.3.jar` |
+| adapter log `no miyoria-bridge token` / `the mod refused the connection` | `[extensions."miyoria.minecraft"] minecraft_dir` 沒設或指錯資料夾(要指到含 `config/` 的那層) |
 | `altoclef_unavailable` | 沒裝 AltoClef,或剛進世界還沒初始化,或版本 API 不同 |
 | `goto` 一直 `goal_failed` | 目標區塊沒載入或不可達;調高渲染距離、確認 `allowBreak` / `allowPlace` 設定 |
 | `screenshot` 全黑 | 關掉光影再試;確認視窗未最小化 |
@@ -208,6 +186,6 @@ ws.on("message", (raw) => {
 
 ## 9. 驗證狀態
 
-已驗證:Gradle 建置、JUnit(協定、快照、事件偵測、設定、WebSocket 驗證與請求回覆 round trip)、對真實 Baritone 1.11.3 API jar 的編譯、缺 jar 時的失敗訊息與 stub 測試路徑。
+已驗證:Gradle 建置(Windows、Temurin JDK 21)、JUnit 48 項(協定、快照、事件偵測、設定、WebSocket 驗證與請求回覆 round trip)、對真實 Baritone 1.11.3 API jar 的編譯、缺 jar 時的失敗訊息與 stub 測試路徑;adapter 的 Vitest(對假 mod 的連線、重連、token、動作對應、事件與目標完成判斷,以及透過 SDK runtime 的整個擴充)與擴充探索(`miyoria ext list` 找得到 `miyoria.minecraft`)。
 
 **尚未在真實遊戲裡驗證**(需要 Minecraft 帳號與圖形環境):所有與遊戲互動的行為,包含 `observe` 的實際內容、Baritone / AltoClef 動作、`use` / `attack` 按鍵模擬、`screenshot` 擷取、`advancement` / `chat` 事件解析,以及 AltoClef 的反射呼叫(已對照 `altoclef-1.21.1-0.19.jar` 的方法簽名撰寫,未實跑)。第一次實機測試請從 `observe` 與 `baritone goto` 開始。
