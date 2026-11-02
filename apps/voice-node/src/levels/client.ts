@@ -1,5 +1,6 @@
 // WebSocket client for the Stage's levels endpoint (ws://127.0.0.1:7883/levels).
-// Sends `{"t": <ms>, "rms": 0..1}` text frames. The Stage being absent is normal: reconnect
+// Sends `{"t": <ms>, "rms": 0..1, "bands": [..]}` text frames (`bands` only when measured).
+// The Stage being absent is normal: reconnect
 // quietly (one warning per outage) and drop points while disconnected.
 import WebSocket from "ws";
 import type { Logger } from "../log.js";
@@ -18,7 +19,10 @@ export interface LevelsClientOptions {
 
 export function encodeLevel(p: LevelPoint): string {
   // 4 decimals is far below what a mouth shape can show; keeps the frames small.
-  return `{"t":${Math.round(p.t)},"rms":${Math.round(p.rms * 10_000) / 10_000}}`;
+  const head = `{"t":${Math.round(p.t)},"rms":${Math.round(p.rms * 10_000) / 10_000}`;
+  if (!p.bands || p.bands.length === 0) return `${head}}`;
+  // Bands are compared on a log scale: keep 3 significant digits instead of fixed decimals.
+  return `${head},"bands":[${p.bands.map((b) => Number(b.toPrecision(3))).join(",")}]}`;
 }
 
 export class LevelsClient implements LevelSink {

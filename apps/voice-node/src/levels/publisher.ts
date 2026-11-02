@@ -29,6 +29,8 @@ export interface LevelPublisherOptions {
   /** RMS multiplier (`STAGE_LEVELS_GAIN`). */
   gain?: number;
   windowMs?: number;
+  /** Also send band energies for the Stage's vowel shapes. Default true (older Stages ignore them). */
+  bands?: boolean;
   /** Test hooks. */
   schedule?: Schedule;
   now?: () => number;
@@ -47,7 +49,13 @@ export class LevelPublisher {
     this.active?.supersede();
     const tap = new LevelTap(
       this.o.sink,
-      new RmsFramer({ sampleRate: OUT_RATE, channels: 2, windowMs: this.o.windowMs ?? 10, gain: this.o.gain ?? 1 }),
+      new RmsFramer({
+        sampleRate: OUT_RATE,
+        channels: 2,
+        windowMs: this.o.windowMs ?? 10,
+        gain: this.o.gain ?? 1,
+        bands: this.o.bands ?? true,
+      }),
       this.o.schedule ?? defaultSchedule,
       this.o.now ?? (() => performance.now()),
       (t) => {

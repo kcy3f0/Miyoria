@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type RawData, WebSocketServer } from "ws";
 import { encodeLevel, LevelsClient } from "../src/levels/client.js";
 import { LevelPublisher, type Schedule } from "../src/levels/publisher.js";
-import { type LevelPoint, RmsFramer } from "../src/levels/rms.js";
+import { DEFAULT_BAND_CENTERS, type LevelPoint, RmsFramer } from "../src/levels/rms.js";
 import { DiscordPlayerPort } from "../src/playback/discord-port.js";
 import { PlaybackQueue } from "../src/playback/queue.js";
 import { FRAME_BYTES, PlaybackSource } from "../src/playback/source.js";
@@ -91,6 +91,104 @@ describe("RmsFramer", () => {
     f.pushPcm(constant(1, 960));
     f.reset();
     expect(f.pushPcm(constant(1, 480))[0]?.t).toBe(0);
+  });
+});
+
+/** Formant-synthesised vowel (stereo s16le @ 48 kHz): harmonics of `f0` through 3 resonances. */
+function vowel(formants: [number, number, number], f0: number, ms: number, scale = 1): Buffer {
+  const rate = 48_000;
+  const bw = [90, 110, 160];
+  const n = Math.round((rate * ms) / 1000);
+  const partials: [number, number][] = [];
+  for (let k = 1; k * f0 < 5000; k++) {
+    const f = k * f0;
+    let a = 1 / k;
+    formants.forEach((F, i) => {
+      const r = f / F;
+      a /= Math.sqrt((1 - r * r) ** 2 + ((f * (bw[i] as number)) / (F * F)) ** 2);
+    });
+    partials.push([f, a]);
+  }
+  const peak = partials.reduce((s, [, a]) => s + a, 0);
+  const b = Buffer.alloc(n * 4);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (const [f, a] of partials) s += a * Math.sin((2 * Math.PI * f * i) / rate);
+    const v = Math.round((s / peak) * 12000 * scale);
+    b.writeInt16LE(v, i * 4);
+    b.writeInt16LE(v, i * 4 + 2);
+  }
+  return b;
+}
+
+/** Band RMS → dB around their mean (what the Stage's vowel classifier compares). */
+function shape(bands: number[]): number[] {
+  const db = bands.map((x) => 10 * Math.log10(x * x + 1e-12));
+  const mean = db.reduce((a, b) => a + b, 0) / db.length;
+  return db.map((x) => x - mean);
+}
+
+// Japanese female vowels (F1, F2, F3) and the Stage's default templates
+// (`DEFAULT_VOWEL_TEMPLATES` in packages/stage/src/lipsync.ts).
+const VOWELS: Record<string, { formants: [number, number, number]; template: number[] }> = {
+  a: { formants: [850, 1350, 2900], template: [-7.8, 2, 9.8, 7.7, -1.2, -10.4] },
+  i: { formants: [320, 2800, 3400], template: [11.9, 3.5, -4.3, -9, -4, 1.8] },
+  u: { formants: [380, 1550, 2700], template: [8.7, 4.5, -1.8, 0.9, -1.7, -10.7] },
+  e: { formants: [550, 2350, 3000], template: [-1, 6.7, 0.2, -5.9, 0.5, -0.4] },
+  o: { formants: [500, 900, 2800], template: [4.4, 11.4, 9.2, 1.3, -9.1, -17.2] },
+};
+
+describe("RmsFramer bands", () => {
+  it("are off by default and on with `bands`", () => {
+    expect(framer().pushPcm(constant(8000, 480))[0]?.bands).toBeUndefined();
+    const pts = framer({ bands: true }).pushPcm(sine(16000, 960, 48_000, 850));
+    expect(pts).toHaveLength(2);
+    const bands = pts[1]?.bands as number[];
+    expect(bands).toHaveLength(DEFAULT_BAND_CENTERS.length);
+    // A pure 850 Hz tone lands in the 850 Hz band.
+    const loudest = bands.indexOf(Math.max(...bands));
+    expect(DEFAULT_BAND_CENTERS[loudest]).toBe(850);
+    // Silence after it rings out to zero.
+    const f = framer({ bands: true });
+    f.pushPcm(sine(16000, 960));
+    const quiet = f.pushSilence(960).at(-1)?.bands as number[];
+    expect(Math.max(...quiet)).toBe(0);
+  });
+
+  it("separate the five vowels at any pitch and level", () => {
+    for (const [name, v] of Object.entries(VOWELS)) {
+      for (const f0 of [200, 240, 290]) {
+        for (const scale of [0.25, 1]) {
+          const pts = framer({ bands: true }).pushPcm(vowel(v.formants, f0, 120, scale));
+          const s = shape(pts.at(-1)?.bands as number[]);
+          // Nearest template is the vowel's own.
+          let best = "";
+          let bestD = Number.POSITIVE_INFINITY;
+          for (const [other, o] of Object.entries(VOWELS)) {
+            const d = s.reduce((acc, x, k) => acc + (x - (o.template[k] as number)) ** 2, 0);
+            if (d < bestD) {
+              bestD = d;
+              best = other;
+            }
+          }
+          expect(best, `${name} at ${f0} Hz ×${scale}`).toBe(name);
+        }
+      }
+    }
+  });
+
+  it("travel on the wire with 3 significant digits", () => {
+    expect(encodeLevel({ t: 0, rms: 0.1, bands: [0.012345, 0.5, 0] })).toBe(
+      '{"t":0,"rms":0.1,"bands":[0.0123,0.5,0]}',
+    );
+    expect(encodeLevel({ t: 0, rms: 0.1, bands: [] })).toBe('{"t":0,"rms":0.1}');
+  });
+
+  it("are sent by the publisher", () => {
+    const sent: LevelPoint[] = [];
+    const pub = new LevelPublisher({ sink: { send: (p) => sent.push(p) }, now: () => 0, schedule: () => ({ cancel() {} }) });
+    pub.begin().frame(constant(8000, 480));
+    expect(sent[0]?.bands).toHaveLength(DEFAULT_BAND_CENTERS.length);
   });
 });
 
