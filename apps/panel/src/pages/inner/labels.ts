@@ -1,4 +1,11 @@
-import type { AgendaStatus, DriveName, PresenceActivity, PresenceStatus } from "@/api/types";
+import type {
+  AgendaStatus,
+  DriveName,
+  IntentStatus,
+  PresenceActivity,
+  PresenceStatus,
+  ThoughtTriggerKind,
+} from "@/api/types";
 import type { Tone } from "@/components/status";
 
 export const DRIVE_LABEL: Record<DriveName, string> = {
@@ -37,6 +44,48 @@ export const AGENDA_TONE: Record<AgendaStatus, Tone> = {
   done: "success",
   expired: "neutral",
   dropped: "neutral",
+};
+
+export const TRIGGER_LABEL: Record<ThoughtTriggerKind, string> = {
+  heartbeat: "心跳",
+  salient: "周遭變化",
+  suggestion: "契機",
+  turn: "講完話",
+  voice_quiet: "語音冷場",
+  manual: "手動",
+};
+
+export const INTENT_LABEL: Record<IntentStatus, string> = {
+  pending: "等待",
+  started: "進行中",
+  done: "完成",
+  denied: "擋下",
+  dropped: "放棄",
+  failed: "失敗",
+};
+
+export const INTENT_TONE: Record<IntentStatus, Tone> = {
+  pending: "neutral",
+  started: "brand",
+  done: "success",
+  denied: "danger",
+  dropped: "neutral",
+  failed: "warning",
+};
+
+/** Where the gate decided. */
+export const STAGE_LABEL: Record<string, string> = {
+  unknown: "未知能力",
+  args: "參數",
+  pause: "暫停",
+  prohibition: "禁止",
+  consent: "對方意願",
+  permission: "權限",
+  budget: "額度",
+  risk: "風險",
+  rate: "次數",
+  review: "審核",
+  escalation: "擁有者",
 };
 
 /** `*` / `voice` / `text` / `discord:<guild>` / a context string, in words. */

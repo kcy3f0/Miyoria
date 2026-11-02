@@ -55,6 +55,9 @@ export const queryKeys = {
   self: ["self"] as const,
   world: ["world"] as const,
   data: ["data"] as const,
+  mind: ["mind"] as const,
+  thoughts: ["mind", "thoughts"] as const,
+  approvals: ["mind", "approvals"] as const,
 };
 
 /** Errors that retrying cannot fix. */
@@ -381,3 +384,40 @@ export function useDataMutations() {
     }),
   };
 }
+export function useMind() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.mind, queryFn: ({ signal }) => api.mind({ signal }), refetchInterval: poll(5_000) });
+}
+
+export function useThoughts(limit = 50) {
+  const api = useApi();
+  return useQuery({
+    queryKey: queryKeys.thoughts,
+    queryFn: ({ signal }) => api.thoughts(limit, { signal }),
+    refetchInterval: poll(5_000),
+  });
+}
+
+export function useApprovals() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.approvals, queryFn: ({ signal }) => api.approvals({ signal }), refetchInterval: poll(5_000) });
+}
+
+export function useMindMutations() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return {
+    pause: useMutation({
+      mutationFn: (paused: boolean) => api.autonomyPause(paused),
+      onSuccess: (view) => qc.setQueryData(queryKeys.mind, view),
+    }),
+    answer: useMutation({
+      mutationFn: ({ id, approved }: { id: string; approved: boolean }) => api.answerApproval(id, approved),
+      onSuccess: (pending) => {
+        qc.setQueryData(queryKeys.approvals, pending);
+        void qc.invalidateQueries({ queryKey: queryKeys.mind });
+      },
+    }),
+  };
+}
+

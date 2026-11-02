@@ -8,6 +8,7 @@ import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FeelingsTab } from "./FeelingsTab";
 import { StateTab } from "./StateTab";
+import { ThoughtsTab } from "./ThoughtsTab";
 import { WorldTab } from "./WorldTab";
 
 const route = getRouteApi("/inner");
@@ -69,6 +70,9 @@ export function InnerPage() {
           <QueryView query={self} skeleton={<Loading />}>
             {(s) => <FeelingsTab self={s} />}
           </QueryView>
+        </TabsContent>
+        <TabsContent value="thoughts">
+          <ThoughtsTab />
         </TabsContent>
         <TabsContent value="world">
           <QueryView query={world} skeleton={<Loading />}>

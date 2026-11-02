@@ -34,6 +34,10 @@ import type {
   VoiceState,
   SelfView,
   WorldView,
+  MindView,
+  PendingApproval,
+  Thought,
+
   DecisionRecord,
   DecisionsQuery,
   HealthInfo,
@@ -153,6 +157,13 @@ export function createApi(client: ApiClient) {
     dataBackup: () => client.download("POST", "/api/data/backup"),
     dataReset: (confirm: string, backupToken: string) =>
       client.post<DataWipeResult>("/api/data/reset", { confirm, backup_token: backupToken }),
+    mind: (o?: Opts) => client.get<MindView>("/api/mind", o),
+    thoughts: (limit: number, o?: Opts) =>
+      client.get<Thought[]>(`/api/mind/thoughts?limit=${limit}`, o),
+    approvals: (o?: Opts) => client.get<PendingApproval[]>("/api/mind/approvals", o),
+    answerApproval: (id: string, approved: boolean) =>
+      client.post<PendingApproval[]>(`/api/mind/approvals/${seg(id)}/${approved ? "approve" : "deny"}`),
+    autonomyPause: (paused: boolean) => client.post<MindView>(`/api/mind/${paused ? "pause" : "resume"}`),
   };
 }
 

@@ -884,3 +884,88 @@ export interface DataWipeResult {
   failed_modules: string[];
   notes: DataNote[];
 }
+
+// ---------------------------------------------------------------------------
+// mind loop and autonomy (`packages/types/src/mind.ts`, `packages/api/src/mind.ts`)
+
+export interface MindStats {
+  calls_last_hour: number;
+  max_calls_per_hour: number;
+  calls_total: number;
+  tokens_total: number;
+  last_at: Timestamp | null;
+  next_heartbeat_at: Timestamp | null;
+  /** Why she is not thinking right now (`paused`, `budget exhausted`, ...). */
+  idle_reason: string | null;
+}
+
+/** `GET /api/mind`, `POST /api/mind/pause|resume`. */
+export interface MindView {
+  paused: boolean;
+  running: boolean;
+  accepting: boolean;
+  stats: MindStats | null;
+  pending_approvals: number;
+}
+
+export type ThoughtTriggerKind = "heartbeat" | "salient" | "suggestion" | "turn" | "voice_quiet" | "manual";
+
+export interface ThoughtTrigger {
+  kind: ThoughtTriggerKind;
+  detail: string;
+  context: ContextKey | null;
+  at: Timestamp;
+}
+
+export interface ThoughtDecision {
+  at: Timestamp;
+  capability: string;
+  allowed: boolean;
+  stage: string;
+  reason: string;
+}
+
+export type IntentStatus = "pending" | "started" | "done" | "denied" | "dropped" | "failed";
+
+export interface ThoughtIntent {
+  id: string;
+  capability: string;
+  args: unknown;
+  why: string;
+  opening: string | null;
+  context: ContextKey | null;
+  about: AccountRef | null;
+  expires_at: Timestamp;
+  status: IntentStatus;
+  detail: string | null;
+  turn: TurnId | null;
+  decisions: ThoughtDecision[];
+  said: string | null;
+}
+
+/** `GET /api/mind/thoughts` (newest first). */
+export interface Thought {
+  id: string;
+  at: Timestamp;
+  triggers: ThoughtTrigger[];
+  thought: string;
+  changes: string[];
+  intents: ThoughtIntent[];
+  tokens: number | null;
+  error: string | null;
+  ms: number;
+}
+
+/** `GET /api/mind/approvals`: high-risk actions waiting for an owner. */
+export interface PendingApproval {
+  id: string;
+  capability: string;
+  summary: string;
+  principal: string;
+  args: unknown;
+  why: string | null;
+  review: string;
+  requested_at: Timestamp;
+  expires_at: Timestamp;
+}
+
