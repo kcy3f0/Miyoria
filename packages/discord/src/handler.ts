@@ -6,8 +6,10 @@ import { errorMessage, getLogger, type ModuleContext } from "@miyoria/kernel";
 import {
   type AccountRef,
   type ContextKind,
+  type PlatformHistories,
   type PlatformSinks,
   PresencePrivacyKey,
+  type QuotedMessage,
 } from "@miyoria/types";
 import {
   type ChannelType,
@@ -19,13 +21,23 @@ import {
   Routes,
 } from "discord.js";
 import type { DiscordConfig } from "./config.js";
+import { DiscordHistory, type HistoryClientLike } from "./history.js";
 import {
   handleAutocomplete,
   handleCommandInteraction,
   handleComponentInteraction,
   type InteractionEnv,
 } from "./interaction.js";
-import { account, contextKey, incomingMessage, kindOf, PLATFORM } from "./mapping.js";
+import {
+  account,
+  contextKey,
+  hasContent,
+  incomingMessage,
+  kindOf,
+  type MessageLike,
+  PLATFORM,
+  quotedMessage,
+} from "./mapping.js";
 import {
   type GuildMemberLike,
   memberEvent,
@@ -72,6 +84,8 @@ export class Shared {
     selfIds: Iterable<string>,
     readonly registry: CommandRegistry,
     readonly sinks: PlatformSinks | null,
+    /** Where the message history reader is registered once connected. */
+    readonly histories: PlatformHistories | null = null,
   ) {
     this.selfIds = new Set(selfIds);
   }
@@ -256,6 +270,9 @@ export class GatewayBridge {
     }
     const sink = new DiscordSink(client.rest);
     this.shared.sinks?.register(sink);
+    this.shared.histories?.register(
+      new DiscordHistory(client as unknown as HistoryClientLike, this.shared.selfIds),
+    );
     // Cards outside interactions (the gate's approval requests to the owners).
     this.ctx.provide(ReplySinkKey, sink);
     this.shared.ready = true;
@@ -282,12 +299,19 @@ export class GatewayBridge {
 
   private async onMessage(client: Client, msg: Message): Promise<void> {
     if (msg.type !== MessageType.Default && msg.type !== MessageType.Reply) return;
-    if (msg.content === "" && msg.attachments.size === 0) return;
+    // Sticker-, embed- and forward-only messages count too.
+    if (!hasContent(msg as unknown as MessageLike)) return;
     const kind = await this.channelKind(client, msg.guildId, msg.channelId, msg.channel?.type);
-    const repliedAuthor = await repliedAuthorId(msg);
+    const parent = await repliedMessage(msg);
     this.ctx.publish({
       type: "platform_message_created",
-      data: incomingMessage(msg, kind, this.shared.selfIds, repliedAuthor),
+      data: incomingMessage(
+        msg as unknown as MessageLike,
+        kind,
+        this.shared.selfIds,
+        parent?.author?.id ?? null,
+        quoted(parent),
+      ),
     });
   }
 
@@ -316,16 +340,30 @@ export class GatewayBridge {
   }
 }
 
-/** The author of the message `msg` replies to (cache first, then one REST call). */
-async function repliedAuthorId(msg: Message): Promise<string | null> {
+/** The parts of the replied-to message the handler reads (it may come back partial). */
+type ParentLike = Partial<MessageLike> & { author?: { id: string } | null };
+
+/** The message `msg` replies to (cache first, then one REST call). */
+async function repliedMessage(msg: Message): Promise<ParentLike | null> {
   const ref = msg.reference?.messageId;
   if (msg.type !== MessageType.Reply || !ref) return null;
   const cached = msg.channel.messages.cache.get(ref);
-  if (cached) return cached.author.id;
+  if (cached) return cached as unknown as ParentLike;
   try {
-    return (await msg.fetchReference()).author.id;
+    return (await msg.fetchReference()) as unknown as ParentLike;
   } catch (error) {
     log.debug({ message: msg.id, error: errorMessage(error) }, "cannot fetch replied message");
+    return null;
+  }
+}
+
+/** The replied-to message as a quote, if it came with enough to read. */
+function quoted(parent: ParentLike | null): QuotedMessage | null {
+  if (parent === null || typeof parent.content !== "string" || !parent.author) return null;
+  try {
+    return quotedMessage(parent as MessageLike);
+  } catch (error) {
+    log.debug({ error: errorMessage(error) }, "cannot read replied message");
     return null;
   }
 }

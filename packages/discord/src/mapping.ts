@@ -8,8 +8,14 @@ import {
   type Attachment,
   type ContextKey,
   type ContextKind,
+  type Embed,
+  type ForwardedMessage,
   type IncomingMessage,
+  incomingText,
+  type MessageRef,
   type PlatformId,
+  type QuotedMessage,
+  type Sticker,
   toTimestamp,
 } from "@miyoria/types";
 import { ApplicationCommandOptionType, ChannelType } from "discord.js";
@@ -34,7 +40,8 @@ export function contextKey(guild: string | null, channel: string, kind: ContextK
 
 /**
  * Context kind of a channel type. Text chat in voice channels counts as a normal channel; voice
- * contexts belong to the voice node.
+ * contexts belong to the voice node (while she is in the voice channel, the agent routes its
+ * text chat to the voice context).
  */
 export function kindOf(channel: ChannelType): ContextKind {
   switch (channel) {
@@ -64,9 +71,59 @@ export function displayName(user: UserLike, nick?: string | null): string {
 }
 
 export interface AttachmentLike {
+  id?: string;
   url: string;
   name: string;
   contentType?: string | null;
+  size?: number | null;
+  /** Alt text. */
+  description?: string | null;
+}
+
+export interface StickerLike {
+  id: string;
+  name: string;
+}
+
+export interface EmbedLike {
+  title?: string | null;
+  description?: string | null;
+  url?: string | null;
+}
+
+/** Map-like collections as discord.js hands them out (`Collection`) or tests build them. */
+interface Values<T> {
+  values(): Iterable<T>;
+}
+
+interface Entries<T> {
+  entries(): Iterable<[string, T]>;
+}
+
+/** What a message mentions, with names (`MessageMentions`). */
+export interface MentionsLike {
+  users: { keys(): Iterable<string> } & Partial<Entries<UserLike>>;
+  /** Guild members of mentioned users (their nicknames). */
+  members?: Entries<{ nickname?: string | null; user?: UserLike }> | null;
+  channels?: Entries<{ name?: string | null }> | null;
+  roles?: Entries<{ name: string }> | null;
+}
+
+/** A forwarded message's snapshot (`MessageSnapshot`). */
+export interface SnapshotLike {
+  content?: string | null;
+  attachments?: Values<AttachmentLike> | null;
+  stickers?: Values<StickerLike> | null;
+  embeds?: readonly EmbedLike[] | null;
+  mentions?: MentionsLike | null;
+}
+
+/** `MessageReference`: `type` 0 = reply, 1 = forward. */
+export interface ReferenceLike {
+  messageId?: string | null;
+  channelId?: string | null;
+  guildId?: string | null;
+  type?: number | null;
 }
 
 /** The parts of a discord.js `Message` that `incomingMessage` reads. */
@@ -79,25 +136,132 @@ export interface MessageLike {
   member?: { nickname?: string | null } | null;
   content: string;
   createdTimestamp: number;
-  mentions: { users: { keys(): Iterable<string> } };
-  attachments: { values(): Iterable<AttachmentLike> };
+  mentions: MentionsLike;
+  attachments: Values<AttachmentLike>;
+  stickers?: Values<StickerLike> | null;
+  embeds?: readonly EmbedLike[] | null;
+  reference?: ReferenceLike | null;
+  messageSnapshots?: Values<SnapshotLike> | null;
+}
+
+/** Reference type of a forward (`MessageReferenceType.Forward`). */
+export const REFERENCE_FORWARD = 1;
+
+/** Longest quoted parent text kept with a reply. */
+export const MAX_QUOTE_CHARS = 300;
+
+/** Names to replace `<@id>`, `<#id>` and `<@&id>` with. */
+export interface MentionNames {
+  users: ReadonlyMap<string, string>;
+  channels: ReadonlyMap<string, string>;
+  roles: ReadonlyMap<string, string>;
+}
+
+/** The names a message's mention data knows (members' nicknames over user names). */
+export function mentionNames(mentions: MentionsLike | null | undefined): MentionNames {
+  const users = new Map<string, string>();
+  const channels = new Map<string, string>();
+  const roles = new Map<string, string>();
+  for (const [id, user] of mentions?.users.entries?.() ?? []) users.set(id, displayName(user));
+  for (const [id, member] of mentions?.members?.entries() ?? []) {
+    const nick = member.nickname?.trim();
+    if (nick) users.set(id, nick);
+    else if (member.user && !users.has(id)) users.set(id, displayName(member.user));
+  }
+  for (const [id, channel] of mentions?.channels?.entries() ?? []) {
+    if (channel.name) channels.set(id, channel.name);
+  }
+  for (const [id, role] of mentions?.roles?.entries() ?? []) roles.set(id, role.name);
+  return { users, channels, roles };
+}
+
+/**
+ * Replaces raw mention markup with readable names: `<@id>` / `<@!id>` → `@name`, `<#id>` →
+ * `#name`, `<@&id>` → `@name`, custom emoji `<:name:id>` / `<a:name:id>` → `:name:`. Unknown
+ * ids get a generic name, never the raw id. Timestamps (`<t:…>`) are left alone.
+ */
+export function resolveMentions(text: string, names: MentionNames): string {
+  return text
+    .replace(/<@!?(\d{1,20})>/g, (_m, id: string) => `@${names.users.get(id) ?? "某人"}`)
+    .replace(/<@&(\d{1,20})>/g, (_m, id: string) => `@${names.roles.get(id) ?? "某個身分組"}`)
+    .replace(/<#(\d{1,20})>/g, (_m, id: string) => `#${names.channels.get(id) ?? "某個頻道"}`)
+    .replace(/<a?:(\w{1,32}):\d{1,20}>/g, (_m, name: string) => `:${name}:`);
+}
+
+function attachments(list: Values<AttachmentLike> | null | undefined): Attachment[] {
+  const out: Attachment[] = [];
+  for (const a of list?.values() ?? []) {
+    out.push({
+      url: a.url,
+      filename: a.name,
+      content_type: a.contentType ?? null,
+      id: a.id ?? null,
+      size: a.size ?? null,
+      description: a.description?.trim() || null,
+    });
+  }
+  return out;
+}
+
+function stickers(list: Values<StickerLike> | null | undefined): Sticker[] {
+  return [...(list?.values() ?? [])].map((s) => ({ id: s.id, name: s.name }));
+}
+
+function embeds(list: readonly EmbedLike[] | null | undefined): Embed[] {
+  const out: Embed[] = [];
+  for (const e of list ?? []) {
+    const embed: Embed = {
+      title: e.title?.trim() || null,
+      description: e.description?.trim() || null,
+      url: e.url?.trim() || null,
+    };
+    if (embed.title !== null || embed.description !== null || embed.url !== null) out.push(embed);
+  }
+  return out;
+}
+
+function forwarded(list: Values<SnapshotLike> | null | undefined): ForwardedMessage[] {
+  const out: ForwardedMessage[] = [];
+  for (const snap of list?.values() ?? []) {
+    out.push({
+      text: resolveMentions(snap.content ?? "", mentionNames(snap.mentions)),
+      attachments: attachments(snap.attachments),
+      stickers: stickers(snap.stickers),
+      embeds: embeds(snap.embeds),
+    });
+  }
+  return out;
+}
+
+/** Cuts `text` to `max` characters (plus `…`). */
+export function clip(text: string, max: number): string {
+  const chars = [...text];
+  return chars.length > max ? `${chars.slice(0, max).join("")}…` : text;
+}
+
+/** The replied-to message as a reply carries it: author and a clipped, resolved text. */
+export function quotedMessage(msg: MessageLike): QuotedMessage {
+  const own = incomingMessage(msg, "channel", new Set());
+  return {
+    author: own.author.account,
+    author_name: own.author.display_name,
+    text: clip(incomingText(own), MAX_QUOTE_CHARS),
+  };
 }
 
 /**
  * Maps a gateway message. `selfIds` are all of her accounts (bot and self account);
- * `repliedAuthorId` is the author of the message this one replies to, if it is a reply.
+ * `repliedAuthorId` is the author of the message this one replies to, if it is a reply, and
+ * `referenced` that message itself when it was at hand.
  */
 export function incomingMessage(
   msg: MessageLike,
   kind: ContextKind,
   selfIds: ReadonlySet<string>,
   repliedAuthorId: string | null = null,
+  referenced: QuotedMessage | null = null,
 ): IncomingMessage {
   const effectiveKind: ContextKind = msg.guildId === null ? "dm" : kind;
-  const attachments: Attachment[] = [];
-  for (const a of msg.attachments.values()) {
-    attachments.push({ url: a.url, filename: a.name, content_type: a.contentType ?? null });
-  }
   let mentionsSelf = false;
   for (const id of msg.mentions.users.keys()) {
     if (selfIds.has(id)) {
@@ -105,22 +269,56 @@ export function incomingMessage(
       break;
     }
   }
+  const context = contextKey(msg.guildId, msg.channelId, effectiveKind);
   return {
-    id: {
-      context: contextKey(msg.guildId, msg.channelId, effectiveKind),
-      id: msg.id,
-    },
+    id: { context, id: msg.id },
     author: {
       account: account(msg.author.id),
       display_name: displayName(msg.author, msg.member?.nickname ?? null),
       is_bot: msg.author.bot ?? false,
     },
-    text: msg.content,
+    text: resolveMentions(msg.content, mentionNames(msg.mentions)),
     mentions_self: mentionsSelf,
     reply_to_self: repliedAuthorId !== null && selfIds.has(repliedAuthorId),
-    attachments,
+    attachments: attachments(msg.attachments),
     ts: toTimestamp(msg.createdTimestamp),
+    reply_to: replyRef(msg, context),
+    referenced: replyRef(msg, context) === null ? null : referenced,
+    stickers: stickers(msg.stickers),
+    embeds: embeds(msg.embeds),
+    forwarded: forwarded(msg.messageSnapshots),
   };
+}
+
+/** The message `msg` replies to (not a forward). A reply across channels keeps its channel. */
+export function replyRef(msg: MessageLike, context: ContextKey): MessageRef | null {
+  const ref = msg.reference;
+  if (!ref || (ref.type ?? 0) === REFERENCE_FORWARD || !ref.messageId) return null;
+  const elsewhere = ref.channelId && ref.channelId !== msg.channelId;
+  return {
+    context: elsewhere
+      ? contextKey(ref.guildId ?? msg.guildId, ref.channelId as string, context.kind)
+      : context,
+    id: ref.messageId,
+  };
+}
+
+/**
+ * Whether a message carries anything to read: text, attachments, stickers, embeds or a
+ * forwarded message.
+ */
+export function hasContent(msg: MessageLike): boolean {
+  const any = (v: Values<unknown> | null | undefined): boolean => {
+    for (const _ of v?.values() ?? []) return true;
+    return false;
+  };
+  return (
+    msg.content.trim() !== "" ||
+    any(msg.attachments) ||
+    any(msg.stickers) ||
+    (msg.embeds?.length ?? 0) > 0 ||
+    any(msg.messageSnapshots)
+  );
 }
 
 /** Permissions as discord.js or the raw API hands them out. */

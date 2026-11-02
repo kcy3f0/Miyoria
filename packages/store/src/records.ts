@@ -13,7 +13,7 @@ import type {
   Timestamp,
   TurnId,
 } from "@miyoria/types";
-import { newId } from "@miyoria/types";
+import { incomingText, newId } from "@miyoria/types";
 
 // ---- conversation log -------------------------------------------------------------------
 
@@ -34,7 +34,10 @@ export interface LogEntry {
   turn: TurnId | null;
 }
 
-/** Builds an entry from a platform message, with a fresh id and no turn. */
+/**
+ * Builds an entry from a platform message, with a fresh id and no turn. Stickers, embeds,
+ * attachments and forwards are noted inline in `text` (`incomingText`).
+ */
 export function logEntryFromIncoming(
   profile: ProfileId,
   message: IncomingMessage,
@@ -46,7 +49,7 @@ export function logEntryFromIncoming(
     context: message.id.context,
     author: message.author.account,
     author_name: message.author.display_name,
-    text: message.text,
+    text: incomingText(message),
     is_self: isSelf,
     ts: message.ts,
     turn: null,

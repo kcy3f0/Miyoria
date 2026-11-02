@@ -36,6 +36,8 @@ import {
   ActuatorExecutorKey,
   type JsonValue,
   KERNEL_MODULE,
+  PlatformHistories,
+  PlatformHistoriesKey,
   PlatformSinks,
   PlatformSinksKey,
   type ProfileId,
@@ -177,6 +179,7 @@ export async function buildCoreWith(
 
   const k = KERNEL_MODULE;
   services.provide(k, PlatformSinksKey, new PlatformSinks());
+  services.provide(k, PlatformHistoriesKey, new PlatformHistories());
   services.provide(k, SupervisorKey, supervisor);
   services.provide(k, StoreKey, store);
   services.provide(k, SettingsStoreKey, store.settings);

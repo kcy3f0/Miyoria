@@ -1,8 +1,10 @@
+import { incomingText } from "@miyoria/types";
 import { ApplicationCommandOptionType, ChannelType } from "discord.js";
 import { describe, expect, test } from "vitest";
 import {
   commandPath,
   displayName,
+  hasContent,
   incomingMessage,
   isGuildAdmin,
   kindOf,
@@ -10,7 +12,9 @@ import {
   type MessageLike,
   type OptionLike,
   parseUserIds,
+  quotedMessage,
   resolvedUsers,
+  resolveMentions,
   snowflake,
   type UserLike,
 } from "../src/mapping.js";
@@ -61,9 +65,22 @@ describe("mapping", () => {
     expect(m.mentions_self).toBe(true);
     expect(m.reply_to_self).toBe(false);
     expect(m.attachments).toEqual([
-      { url: "https://cdn/cat.png", filename: "cat.png", content_type: "image/png" },
+      {
+        url: "https://cdn/cat.png",
+        filename: "cat.png",
+        content_type: "image/png",
+        id: null,
+        size: null,
+        description: null,
+      },
     ]);
-    expect(m.text).toBe("hi <@7>");
+    // Mentions are resolved to names on intake.
+    expect(m.text).toBe("hi @miyoria");
+    expect(m.reply_to).toBeNull();
+    expect(m.referenced).toBeNull();
+    expect(m.stickers).toEqual([]);
+    expect(m.embeds).toEqual([]);
+    expect(m.forwarded).toEqual([]);
     expect(m.ts).toBe("2026-11-01T12:00:00.000Z");
   });
 
@@ -195,5 +212,97 @@ describe("mapping", () => {
     expect(snowflake("123456789012345678", "channel")).toBe("123456789012345678");
     expect(() => snowflake("0", "channel")).toThrow("invalid Discord channel id `0`");
     expect(() => snowflake("x1", "message")).toThrow("invalid Discord message id `x1`");
+  });
+
+  test("resolves_mentions_channels_roles_and_custom_emoji", () => {
+    const msg = message({
+      content: "<@42> <@!43> 看 <#9> 問 <@&5> <:pepe:123> <a:dance:456> <@1> <#2> <t:1700000000:R>",
+      mentions: {
+        users: new Map([
+          ["42", user("42", "alice_w", "Alice")],
+          ["43", user("43", "bob", null)],
+        ]),
+        members: new Map([["43", { nickname: "阿伯" }]]),
+        channels: new Map([["9", { name: "雜談" }]]),
+        roles: new Map([["5", { name: "管理員" }]]),
+      },
+    });
+    expect(incomingMessage(msg, "channel", selves()).text).toBe(
+      "@Alice @阿伯 看 #雜談 問 @管理員 :pepe: :dance: @某人 #某個頻道 <t:1700000000:R>",
+    );
+    // Unknown ids never leak as raw markup.
+    const none = { users: new Map(), channels: new Map(), roles: new Map() };
+    expect(resolveMentions("<@&9>", none)).toBe("@某個身分組");
+  });
+
+  test("maps_reply_references_stickers_embeds_attachment_details_and_forwards", () => {
+    const quoted = { author: { platform: "discord", id: "8" }, author_name: "DS", text: "早安" };
+    const forwardedMentions = { users: new Map([["42", user("42", "a", "Alice")]]) };
+    const msg = message({
+      content: "",
+      reference: { messageId: "900", channelId: "200", guildId: "300", type: 0 },
+      attachments: new Map([
+        [
+          "5",
+          {
+            id: "5",
+            url: "https://cdn.discordapp.com/a/5/cat.png?ex=1",
+            name: "cat.png",
+            contentType: "image/png",
+            size: 1234,
+            description: "一隻橘貓",
+          },
+        ],
+      ]),
+      stickers: new Map([["s1", { id: "s1", name: "鯨魚揮手" }]]),
+      embeds: [{ title: "新聞", description: "內容", url: "https://example.com/x" }, {}],
+      messageSnapshots: new Map([["f1", { content: "轉傳的 <@42>", mentions: forwardedMentions }]]),
+    });
+    const m = incomingMessage(msg, "channel", selves(), "8", quoted);
+    expect(m.reply_to).toEqual({ context: m.id.context, id: "900" });
+    expect(m.reply_to_self).toBe(true);
+    expect(m.referenced).toEqual(quoted);
+    expect(m.attachments[0]).toMatchObject({ id: "5", size: 1234, description: "一隻橘貓" });
+    expect(m.stickers).toEqual([{ id: "s1", name: "鯨魚揮手" }]);
+    // Empty embeds are dropped.
+    expect(m.embeds).toEqual([
+      { title: "新聞", description: "內容", url: "https://example.com/x" },
+    ]);
+    expect(m.forwarded).toEqual([
+      { text: "轉傳的 @Alice", attachments: [], stickers: [], embeds: [] },
+    ]);
+    expect(incomingText(m)).toBe(
+      "[貼圖: 鯨魚揮手] [嵌入: 新聞 - 內容 https://example.com/x] [圖片: cat.png(一隻橘貓)] [轉傳: 轉傳的 @Alice]",
+    );
+    expect(hasContent(msg)).toBe(true);
+  });
+
+  test("forwards_are_not_replies_and_empty_messages_have_no_content", () => {
+    const forward = message({ reference: { messageId: "900", type: 1 } });
+    expect(incomingMessage(forward, "channel", selves()).reply_to).toBeNull();
+    // A reply in another channel keeps the parent's channel.
+    const cross = message({ reference: { messageId: "900", channelId: "201" } });
+    expect(incomingMessage(cross, "thread", selves()).reply_to?.context).toEqual({
+      platform: "discord",
+      scope: "300",
+      channel: "201",
+      kind: "thread",
+    });
+    expect(hasContent(message({ content: "  " }))).toBe(false);
+    const sticker = new Map([["s", { id: "s", name: "x" }]]);
+    expect(hasContent(message({ content: "", stickers: sticker }))).toBe(true);
+    expect(hasContent(message({ content: "", embeds: [{ title: "t" }] }))).toBe(true);
+  });
+
+  test("quoted_parent_is_clipped_and_resolved", () => {
+    const parent = message({
+      content: `<@42> ${"長".repeat(400)}`,
+      mentions: { users: new Map([["42", user("42", "a", "Alice")]]) },
+    });
+    const q = quotedMessage(parent);
+    expect(q.author).toEqual({ platform: "discord", id: "42" });
+    expect(q.author_name).toBe("Ali");
+    expect(q.text.startsWith("@Alice 長")).toBe(true);
+    expect([...q.text].length).toBe(301);
   });
 });

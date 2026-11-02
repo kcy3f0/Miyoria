@@ -10,7 +10,7 @@ import {
   type Subscription,
   Supervisor,
 } from "@miyoria/kernel";
-import { PlatformSinks } from "@miyoria/types";
+import { PlatformHistories, PlatformSinks } from "@miyoria/types";
 import { ChannelType, type Client, Events, MessageType } from "discord.js";
 import { afterEach, describe, expect, test } from "vitest";
 import { DiscordConfigSchema } from "../src/config.js";
@@ -64,6 +64,7 @@ interface Rig {
   sup: Supervisor;
   bus: EventBus;
   sinks: PlatformSinks;
+  histories: PlatformHistories;
   registry: CommandRegistry;
   shared: Shared;
   fake: ReturnType<typeof fakeClient>;
@@ -86,10 +87,12 @@ async function boot(selfIds: string[] = []): Promise<Rig> {
   const registry = new CommandRegistry();
   const sinks = new PlatformSinks();
   const config = DiscordConfigSchema.parse({ token: "t", command_guilds: ["77"] });
-  const shared = new Shared(config, selfIds, registry, sinks);
+  const histories = new PlatformHistories();
+  const shared = new Shared(config, selfIds, registry, sinks, histories);
   const fake = fakeClient();
   new GatewayBridge(probe.ctx as ModuleContext, shared).attach(fake.client as unknown as Client);
-  rig = { sup, bus, sinks, registry, shared, fake, events: bus.subscribe("platform.*") };
+  const events = bus.subscribe("platform.*");
+  rig = { sup, bus, sinks, histories, registry, shared, fake, events };
   return rig;
 }
 
@@ -140,6 +143,7 @@ describe("GatewayBridge", () => {
     // The bot account first, then her other accounts in id order.
     expect(ids).toEqual(["100", "50", "300"]);
     expect(r.sinks.get("discord")?.platform).toBe("discord");
+    expect(r.histories.get("discord")?.platform).toBe("discord");
     expect(r.shared.ready).toBe(true);
 
     // The command guild gets the set; the global scope and the other guild are cleared once.
@@ -222,6 +226,68 @@ describe("GatewayBridge", () => {
     );
     const third = await next(r);
     expect(third.type === "platform_message_created" && third.data.reply_to_self).toBe(false);
+  });
+
+  test("replies_carry_the_parent_reference_and_its_text", async () => {
+    const r = await boot(["100"]);
+    const parent = guildMessage({
+      id: "999",
+      author: { id: "55", username: "bob" },
+      content: "要不要吃拉麵",
+    });
+    r.fake.client.emit(
+      Events.MessageCreate,
+      guildMessage({
+        type: MessageType.Reply,
+        reference: { messageId: "999", channelId: "200" },
+        channel: {
+          type: ChannelType.GuildText,
+          messages: { cache: new Map([["999", parent]]) },
+        },
+      }),
+    );
+    const event = await next(r);
+    if (event.type !== "platform_message_created") throw new Error("expected a message");
+    expect(event.data.reply_to?.id).toBe("999");
+    expect(event.data.referenced).toEqual({
+      author: { platform: "discord", id: "55" },
+      author_name: "bob",
+      text: "要不要吃拉麵",
+    });
+    expect(event.data.reply_to_self).toBe(false);
+  });
+
+  test("sticker_embed_and_forward_only_messages_are_kept", async () => {
+    const r = await boot();
+    const none = attachmentList([]);
+    r.fake.client.emit(
+      Events.MessageCreate,
+      guildMessage({
+        id: "s",
+        content: "",
+        attachments: none,
+        stickers: new Map([["1", { id: "1", name: "嗨" }]]),
+      }),
+    );
+    r.fake.client.emit(
+      Events.MessageCreate,
+      guildMessage({ id: "e", content: "", embeds: [{ title: "連結", url: "https://x" }] }),
+    );
+    r.fake.client.emit(
+      Events.MessageCreate,
+      guildMessage({
+        id: "f",
+        content: "",
+        reference: { messageId: "1", type: 1 },
+        messageSnapshots: new Map([["1", { content: "轉傳" }]]),
+      }),
+    );
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const event = await next(r);
+      if (event.type === "platform_message_created") ids.push(event.data.id.id);
+    }
+    expect(ids).toEqual(["s", "e", "f"]);
   });
 
   test("system_and_empty_messages_are_ignored", async () => {

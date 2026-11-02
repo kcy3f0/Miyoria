@@ -44,7 +44,12 @@ describe("architecture", () => {
   });
 
   it("does_not_use_legacy_discord_embeds", () => {
-    expect(matching(/\bEmbedBuilder\b|\bMessageEmbed\b|\bembeds\s*:/)).toEqual([]);
+    expect(matching(/\bEmbedBuilder\b|\bMessageEmbed\b/)).toEqual([]);
+    // Output payloads (`embeds: [...]`) only; reading the embeds people send (the intake
+    // mapping, `IncomingMessage.embeds` elsewhere) is fine.
+    const outgoing = (p: string) =>
+      p.startsWith("packages/discord/src/") && p !== "packages/discord/src/mapping.ts";
+    expect(matching(/\bembeds\s*:/, outgoing)).toEqual([]);
   });
 
   it("answers_interactions_only_through_the_renderer", () => {

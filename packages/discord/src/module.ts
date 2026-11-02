@@ -28,7 +28,7 @@ import {
   type ModuleManifest,
   withTimeout,
 } from "@miyoria/kernel";
-import { PlatformSinksKey } from "@miyoria/types";
+import { PlatformHistoriesKey, PlatformSinksKey } from "@miyoria/types";
 import { Client, Events, GatewayIntentBits, Options, Partials } from "discord.js";
 import { DiscordConfigSchema, validateDiscordConfig } from "./config.js";
 import { GatewayBridge, Shared } from "./handler.js";
@@ -99,7 +99,8 @@ export class DiscordBotModule implements Module {
     if (sinks === null) {
       ctx.log.warn("PlatformSinks service missing; output actions cannot reach Discord");
     }
-    const shared = new Shared(config, selfIds, registry, sinks);
+    const histories = ctx.services.get(PlatformHistoriesKey) ?? null;
+    const shared = new Shared(config, selfIds, registry, sinks, histories);
     this.#running = shared;
     const client = createClient({ presence: config.presence_intents });
     new GatewayBridge(ctx, shared).attach(client);
@@ -115,6 +116,7 @@ export class DiscordBotModule implements Module {
       shared.ready = false;
       shared.sessions.closeAll();
       shared.sinks?.unregister(PLATFORM);
+      shared.histories?.unregister(PLATFORM);
     }
   }
 

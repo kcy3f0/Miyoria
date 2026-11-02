@@ -9,9 +9,16 @@
 // Pure logic lives in testable functions: `splitMessage` (split.ts), the discord.js <-> Miyoria
 // mapping (mapping.ts), rendering (render.ts), the slash command tree and its validation
 // (slash.ts), command sync and scope cleanup (sync.ts) and the interaction flow
-// (interaction.ts).
+// (interaction.ts). `DiscordHistory` (history.ts) reads earlier messages for the agent.
 
 export { type DiscordConfig, DiscordConfigSchema, validateDiscordConfig } from "./config.js";
+export {
+  DiscordHistory,
+  type FetchedLike,
+  type HistoryClientLike,
+  MAX_FETCH,
+  type MessageManagerLike,
+} from "./history.js";
 export {
   type Ack as InteractionAck,
   type AutocompleteInteractionLike,
@@ -37,18 +44,25 @@ export {
   commandPath,
   contextKey,
   displayName,
+  hasContent,
   incomingMessage,
   isAdminPermissions,
   isGuildAdmin,
   kindOf,
   type MemberLike,
+  type MentionNames,
+  type MentionsLike,
   type MessageLike,
+  mentionNames,
   type OptionLike,
   PLATFORM,
   parseUserIds,
   platform,
+  quotedMessage,
   type ResolvedLike,
+  replyRef,
   resolvedUsers,
+  resolveMentions,
   snowflake,
 } from "./mapping.js";
 export {
