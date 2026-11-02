@@ -189,6 +189,40 @@ export class Supervisor {
     await this.enable(id);
   }
 
+  /**
+   * Stops the running modules among `ids` (with their dependents, in the order given), runs
+   * `fn` while they are down, then starts every enabled, stopped module again. For changing
+   * data a module caches and saves on stop: restarting after the change would let `stop` write
+   * the old state back. Other lifecycle operations wait until this is done; `fn` must not call
+   * back into the supervisor. `failed` lists the stopped modules that did not come back.
+   */
+  pause<T>(
+    ids: readonly ModuleId[],
+    fn: () => Promise<T>,
+  ): Promise<{ value: T; failed: ModuleId[] }> {
+    return this.#queue.run(async () => {
+      const stopped: ModuleId[] = [];
+      for (const id of ids) {
+        const slot = this.#slots.get(id);
+        if (!slot?.enabled || slot.running === null) continue;
+        for (const dep of this.#dependents(id)) {
+          if (this.#slots.get(dep)?.running && !stopped.includes(dep)) stopped.push(dep);
+        }
+        slot.restarts = [];
+        await this.#stopWithDependents(id, null);
+        if (!stopped.includes(id)) stopped.push(id);
+      }
+      let value: T;
+      try {
+        value = await fn();
+      } finally {
+        await this.#startPending();
+      }
+      const failed = stopped.filter((id) => this.#slots.get(id)?.state !== "running");
+      return { value, failed };
+    });
+  }
+
   // ---- internals (run inside the queue) -------------------------------------------------
 
   #slot(id: ModuleId): Slot {

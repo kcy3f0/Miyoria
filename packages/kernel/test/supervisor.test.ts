@@ -69,6 +69,40 @@ describe("Supervisor", () => {
     expect(state(sup, "top")).toBe("stopped");
   });
 
+  it("pause stops modules around a change and starts them again", async () => {
+    const sup = new Supervisor();
+    const base = new TestModule(defineManifest("base", "Base"));
+    const top = new TestModule(defineManifest("top", "Top", { requires: ["base"] }));
+    const off = new TestModule(defineManifest("off", "Off"));
+    await sup.register(base, null, true);
+    await sup.register(top, null, true);
+    await sup.register(off, null, false);
+    await sup.startAll();
+
+    const seen: (string | undefined)[] = [];
+    const result = await sup.pause(["base", "off", "nope"], async () => {
+      seen.push(state(sup, "base"), state(sup, "top"));
+      return 42;
+    });
+    expect(result).toEqual({ value: 42, failed: [] });
+    expect(seen).toEqual(["stopped", "stopped"]);
+    expect(base.stops).toBe(1);
+    expect(state(sup, "base")).toBe("running");
+    expect(state(sup, "top")).toBe("running");
+    expect(state(sup, "off")).toBe("disabled");
+    expect(sup.list().find((s) => s.id === "base")?.enabled).toBe(true);
+
+    // A failing change still brings them back.
+    await expect(
+      sup.pause(["base"], async () => {
+        throw new Error("nope");
+      }),
+    ).rejects.toThrow("nope");
+    expect(state(sup, "base")).toBe("running");
+    expect(base.starts).toBe(3);
+    await sup.stopAll();
+  });
+
   it("missing_requirement_keeps_module_stopped", async () => {
     const sup = new Supervisor();
     await sup.register(
