@@ -113,7 +113,7 @@ export class Overlay {
   dispatch(action: Action): void {
     if (action.type === "levels") {
       // Same clock as the rAF timestamps, but not tied to a frame having run.
-      this.wave.level(action.rms, performance.now());
+      this.wave.level(action.rms, action.bands, performance.now());
       return;
     }
     const prev = this.state;

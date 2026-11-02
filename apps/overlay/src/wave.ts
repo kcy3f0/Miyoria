@@ -1,22 +1,22 @@
-// Her voice as a waveform along the left edge: the level history as horizontal strokes, the newest
-// at the vertical centre and older ones drifting outward (up and down) while they fade. It follows
-// the Stage's `levels` feed, which is delayed like her lip sync, so it moves with what viewers hear.
-// Tinted with the emotion colour; it fades away entirely when she is quiet.
+// Her voice as a column of bars on the left edge. The bars never move: each one only grows,
+// shrinks and brightens with her voice. They are mirrored around the middle; the middle bars follow
+// the low bands of the Stage's lip-sync levels and the outer ones the high bands, so the column
+// takes the shape of what she is saying. Each bar has its own smoothing, so they do not move in
+// lockstep. Tinted with the emotion colour, semi-transparent, and the whole column fades in when
+// she starts and out when she stops.
 
-/** One history step (the strokes move this often). */
-export const STEP_MS = 1000 / 60;
-/** How far back the strokes reach, centre to either end. */
-export const HISTORY_MS = 3200;
+/** Bars in the column (even: mirrored halves). */
+export const BAR_COUNT = 26;
 /** A level older than this counts as silence (the feed stops while nothing plays). */
 const STALE_MS = 220;
 /** dBFS mapped to 0 and 1. */
 const FLOOR_DB = -52;
 const CEIL_DB = -12;
-/** Per-step smoothing towards a louder / quieter level. */
-const ATTACK = 0.55;
-const RELEASE = 0.14;
-/** Below this the whole history counts as silent. */
-const SILENT = 0.012;
+/** Time constants (ms) towards a louder / quieter value. */
+const ATTACK_MS = 45;
+const RELEASE_MS = 240;
+/** Below this every bar counts as quiet. */
+const SILENT = 0.015;
 
 /** Display value 0..1 of a level: a dB scale with a little expansion, so quiet speech stays small. */
 export function levelValue(rms: number): number {
@@ -26,62 +26,108 @@ export function levelValue(rms: number): number {
   return v ** 1.35;
 }
 
-/** Fixed-rate history of smoothed values, newest first. Pure: the view feeds it time and levels. */
-export class WaveHistory {
-  readonly values: Float32Array;
-  #head = 0;
-  #carry = 0;
-  #current = 0;
-  #target = 0;
-  #targetAt = Number.NEGATIVE_INFINITY;
+/** Distance of bar `i` from the middle, 0 (centre) .. 1 (top / bottom end). */
+export function barDistance(i: number, count = BAR_COUNT): number {
+  const half = count / 2;
+  const k = i < half ? half - 1 - i : i - half;
+  return half <= 1 ? 0 : k / (half - 1);
+}
 
-  constructor(readonly length = Math.round(HISTORY_MS / STEP_MS)) {
-    this.values = new Float32Array(length);
+/**
+ * Bar values from a level: the band shape (each band against its own recent peak, so the shape
+ * shows which bands are active rather than the voice's fixed tilt) spread over the bars by
+ * distance from the middle, scaled by the overall level and by a gentle taper towards the ends.
+ */
+export function barTargets(
+  value: number,
+  bands: readonly number[] | null,
+  out: Float32Array,
+  peaks?: Float32Array,
+  seed = 0,
+): void {
+  const n = out.length;
+  for (let i = 0; i < n; i++) {
+    const d = barDistance(i, n);
+    const taper = 0.45 + 0.55 * (1 - d * d);
+    let shape: number;
+    if (bands && bands.length > 0 && peaks) {
+      const pos = d * (bands.length - 1);
+      const a = Math.floor(pos);
+      const b = Math.min(a + 1, bands.length - 1);
+      const f = pos - a;
+      const ra = (bands[a] ?? 0) / Math.max(peaks[a] ?? 0, 1e-6);
+      const rb = (bands[b] ?? 0) / Math.max(peaks[b] ?? 0, 1e-6);
+      shape = Math.min(1, Math.sqrt(ra * (1 - f) + rb * f));
+    } else {
+      // No band data: a slow, uneven ripple so the bars still differ from each other.
+      shape = 0.7 + 0.3 * Math.sin(seed * 0.006 + i * 1.7) * Math.sin(seed * 0.0023 + i * 0.6);
+    }
+    out[i] = value * taper * (0.35 + 0.65 * shape);
+  }
+}
+
+/** Smoothed bar values from the feed. Pure: the view feeds it time and levels. */
+export class BarField {
+  readonly values: Float32Array;
+  readonly #targets: Float32Array;
+  readonly #peaks = new Float32Array(16);
+  readonly #speed: Float32Array;
+  #value = 0;
+  #bands: number[] | null = null;
+  #at = Number.NEGATIVE_INFINITY;
+
+  constructor(readonly count = BAR_COUNT) {
+    this.values = new Float32Array(count);
+    this.#targets = new Float32Array(count);
+    // Each bar reacts a little faster or slower than the next (fixed, so it never flickers).
+    this.#speed = Float32Array.from({ length: count }, (_, i) => 0.8 + 0.4 * ((i * 7919) % 13) / 12);
   }
 
   /** A level from the feed at time `now` (ms). */
-  push(rms: number, now: number): void {
-    this.#target = levelValue(rms);
-    this.#targetAt = now;
+  push(rms: number, bands: readonly number[] | null, now: number): void {
+    this.#value = levelValue(rms);
+    this.#bands = bands && bands.length <= this.#peaks.length ? [...bands] : null;
+    this.#at = now;
   }
 
-  /** Advances the history to `now`, `dtMs` after the previous call. */
+  /** Moves the bars `dtMs` towards the latest level (silence once it is stale). */
   advance(dtMs: number, now: number): void {
-    this.#carry += Math.max(dtMs, 0);
-    // A long gap (hidden tab) does not replay every step it missed.
-    if (this.#carry > STEP_MS * this.length) this.#carry = STEP_MS * this.length;
-    const target = now - this.#targetAt > STALE_MS ? 0 : this.#target;
-    while (this.#carry >= STEP_MS) {
-      this.#carry -= STEP_MS;
-      const k = target > this.#current ? ATTACK : RELEASE;
-      this.#current += (target - this.#current) * k;
-      if (this.#current < 1e-4) this.#current = 0;
-      this.#head = (this.#head + 1) % this.length;
-      this.values[this.#head] = this.#current;
+    const dt = Math.min(Math.max(dtMs, 0), 100);
+    const fresh = now - this.#at <= STALE_MS;
+    const bands = fresh ? this.#bands : null;
+    if (bands) {
+      // Each band's recent peak decays slowly, so the shape adapts to her voice and to songs.
+      for (let k = 0; k < bands.length; k++) {
+        const b = bands[k] ?? 0;
+        const p = this.#peaks[k] ?? 0;
+        this.#peaks[k] = b > p ? b : p * Math.exp(-dt / 2500);
+      }
+    }
+    barTargets(fresh ? this.#value : 0, bands, this.#targets, this.#peaks, now);
+    for (let i = 0; i < this.count; i++) {
+      const v = this.values[i] ?? 0;
+      const t = this.#targets[i] ?? 0;
+      const tau = (t > v ? ATTACK_MS : RELEASE_MS) * (this.#speed[i] ?? 1);
+      const next = v + (t - v) * (1 - Math.exp(-dt / tau));
+      this.values[i] = next < 1e-4 ? 0 : next;
     }
   }
 
-  /** Value `age` steps ago (0 = newest). */
-  at(age: number): number {
-    return this.values[(this.#head - age + this.length * 2) % this.length] ?? 0;
-  }
-
-  /** Nothing audible anywhere in the history. */
+  /** Every bar is (nearly) still. */
   silent(): boolean {
     for (const v of this.values) if (v > SILENT) return false;
     return true;
   }
 }
 
-/** Draws a `WaveHistory` into its own canvas. */
+/** Draws a `BarField` into its own canvas. */
 export class Wave {
   readonly element: HTMLCanvasElement;
   readonly #ctx: CanvasRenderingContext2D | null;
-  readonly #history = new WaveHistory();
-  readonly #still: boolean;
+  readonly #bars = new BarField();
   #accent = "oklch(0.72 0.012 275)";
   #idle = true;
-  /** The canvas holds no strokes. */
+  /** The canvas holds no bars. */
   #cleared = true;
   #width = 0;
   #height = 0;
@@ -93,30 +139,29 @@ export class Wave {
     this.element.setAttribute("aria-hidden", "true");
     parent.append(this.element);
     this.#ctx = this.element.getContext("2d");
-    this.#still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
   }
 
   set hidden(v: boolean) {
     this.element.hidden = v;
   }
 
-  /** Stroke colour (the emotion colour). */
+  /** Bar colour (the emotion colour). */
   accent(color: string): void {
     this.#accent = color;
   }
 
-  level(rms: number, now: number): void {
-    this.#history.push(rms, now);
+  level(rms: number, bands: readonly number[] | null, now: number): void {
+    this.#bars.push(rms, bands, now);
   }
 
   frame(dtMs: number, now: number): void {
-    this.#history.advance(dtMs, now);
-    const idle = this.#history.silent();
+    this.#bars.advance(dtMs, now);
+    const idle = this.#bars.silent();
     if (idle !== this.#idle) {
       this.#idle = idle;
       this.element.classList.toggle("is-idle", idle);
     }
-    // Nothing to draw once the strokes are gone and the canvas is clear.
+    // Nothing to draw once the bars are gone and the canvas is clear.
     if (idle && this.#cleared) return;
     this.#draw();
   }
@@ -146,42 +191,28 @@ export class Wave {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, this.#width, this.#height);
 
-    const h = this.#history;
-    const x0 = 1.75 * rem;
-    const reach = 6.25 * rem;
-    const mid = this.#height / 2;
-    const half = mid - 3 * rem;
-    const n = this.#still ? 1 : h.length;
-    const pitch = half / h.length;
-    const thick = Math.max(1.25, pitch * 0.55);
+    const values = this.#bars.values;
+    const n = values.length;
+    const pitch = 1.05 * rem;
+    const thick = 0.46 * rem;
+    const r = thick / 2;
+    const rest = 0.5 * rem; // what still shows of a bar at rest, so the column keeps its outline
+    const reach = 7.5 * rem;
+    const top = this.#height / 2 - (pitch * (n - 1)) / 2;
     let drawn = false;
 
     ctx.fillStyle = this.#accent;
-    for (let age = 0; age < n; age++) {
-      const v = h.at(age);
-      if (v <= SILENT) continue;
+    for (let i = 0; i < n; i++) {
+      const v = values[i] ?? 0;
+      if (v <= 1e-3) continue;
       drawn = true;
-      const t = age / h.length;
-      ctx.globalAlpha = 0.92 * (1 - t) ** 1.6;
-      const len = Math.max(thick, v * reach);
-      const dy = age * pitch;
-      // Mirrored around the centre: newest in the middle, history moving out both ways.
+      const y = top + i * pitch - r;
+      const len = rest + v * reach;
+      ctx.globalAlpha = Math.min(0.72, 0.16 + 0.62 * v);
+      // Flush with the frame edge; only the end that reaches into the picture is round.
       ctx.beginPath();
-      ctx.roundRect(x0, mid - dy - thick / 2, len, thick, thick / 2);
-      if (age > 0) ctx.roundRect(x0, mid + dy - thick / 2, len, thick, thick / 2);
+      ctx.roundRect(-r, y, len + r, thick, r);
       ctx.fill();
-    }
-
-    // The spine the strokes grow from: a hairline, strongest at the centre (now) and fading out
-    // towards the ends like the history does.
-    if (drawn) {
-      const spine = ctx.createLinearGradient(0, mid - half, 0, mid + half);
-      spine.addColorStop(0, "oklch(0.97 0.006 275 / 0)");
-      spine.addColorStop(0.5, "oklch(0.97 0.006 275 / 0.22)");
-      spine.addColorStop(1, "oklch(0.97 0.006 275 / 0)");
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = spine;
-      ctx.fillRect(x0 - 1, mid - half, 1, half * 2);
     }
     ctx.globalAlpha = 1;
     this.#cleared = !drawn;

@@ -35,7 +35,12 @@ export function startDemo(emit: (m: FeedMessage) => void): () => void {
     const syllable = Math.max(0, Math.sin((phase / 1000) * Math.PI * 6.2)) ** 0.7;
     const phrase = 0.55 + 0.45 * Math.sin((phase / 1000) * Math.PI * 0.7);
     const rms = 0.012 + 0.16 * syllable * phrase * (0.75 + Math.random() * 0.5);
-    emit({ type: "levels", rms, bands: null });
+    // Six bands (low → high) whose balance drifts like changing vowels.
+    const t = phase / 1000;
+    const bands = [0, 1, 2, 3, 4, 5].map(
+      (k) => rms * (1.1 - k * 0.14) * (0.6 + 0.4 * Math.sin(t * (2.3 + k * 0.9) + k)) * (0.8 + Math.random() * 0.4),
+    );
+    emit({ type: "levels", rms, bands });
   }, 1000 / 60);
 
   void (async () => {
