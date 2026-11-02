@@ -29,9 +29,7 @@ repositories {
 // ---------------------------------------------------------------------------
 def baritoneLibsDir = layout.projectDirectory.dir('libs').asFile
 def baritoneApiName = "baritone-api-fabric-${project.baritone_version}.jar"
-def baritoneStandaloneName = "baritone-standalone-fabric-${project.baritone_version}.jar"
 def baritoneApiJar = new File(baritoneLibsDir, baritoneApiName)
-def baritoneStandaloneJar = new File(baritoneLibsDir, baritoneStandaloneName)
 def baritoneUrl = { String name ->
     "https://github.com/cabaletta/baritone/releases/download/v${project.baritone_version}/${name}"
 }
@@ -59,10 +57,11 @@ dependencies {
 
     if (haveBaritoneApi) {
         modCompileOnly files(baritoneApiJar)
-        if (baritoneStandaloneJar.isFile()) {
-            // Dev runtime only (./gradlew runClient). Not packaged.
-            modLocalRuntime files(baritoneStandaloneJar)
-        }
+        // The "api" jar is the complete Baritone mod with its API left unobfuscated, so it is
+        // also what runs: ./gradlew runClient uses it (dev runtime only, never packaged) and it
+        // is the jar players install. The "standalone" jar obfuscates the API too and cannot be
+        // driven by another mod.
+        modLocalRuntime files(baritoneApiJar)
     }
 
     testImplementation platform('org.junit:junit-bom:5.11.4')
@@ -138,7 +137,7 @@ def downloadTo = { String url, File dest ->
 
 tasks.register('downloadBaritone') {
     group = 'miyoria'
-    description = "Downloads ${baritoneApiName} (compile-time Baritone API) from GitHub releases into libs/."
+    description = "Downloads ${baritoneApiName} (Baritone with its API unobfuscated: compile target, runClient mod and the jar players install) from GitHub releases into libs/."
     outputs.file(baritoneApiJar)
     doLast {
         if (baritoneApiJar.isFile()) {
@@ -151,17 +150,16 @@ tasks.register('downloadBaritone') {
     }
 }
 
+// Kept so old instructions fail loudly instead of fetching a jar that cannot work.
 tasks.register('downloadBaritoneStandalone') {
     group = 'miyoria'
-    description = "Downloads ${baritoneStandaloneName} (full Baritone, used only by ./gradlew runClient)."
-    outputs.file(baritoneStandaloneJar)
+    description = 'Removed: the standalone Baritone jar obfuscates its API. Use downloadBaritone.'
     doLast {
-        if (baritoneStandaloneJar.isFile()) {
-            println "Already present: ${baritoneStandaloneJar}"
-        } else {
-            println "Downloading ${baritoneUrl(baritoneStandaloneName)}"
-            downloadTo(baritoneUrl(baritoneStandaloneName), baritoneStandaloneJar)
-        }
+        throw new GradleException("""
+The standalone Baritone jar obfuscates Baritone's API, so miyoria-bridge cannot drive it.
+Use ./gradlew downloadBaritone: ${baritoneApiName} is the complete mod (API unobfuscated);
+runClient already uses it, and it is the Baritone jar to put in the game's mods/ folder.
+""")
     }
 }
 

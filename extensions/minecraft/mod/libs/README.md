@@ -1,6 +1,6 @@
 # libs/
 
-Baritone does not publish to a Maven repository, so the compile-time API jar lives here (git-ignored, LGPL-3.0).
+Baritone does not publish to a Maven repository, so its jar lives here (git-ignored, LGPL-3.0).
 
     ./gradlew downloadBaritone              # fetches baritone-api-fabric-<baritone_version>.jar from GitHub releases
 
@@ -9,9 +9,9 @@ https://github.com/cabaletta/baritone/releases (tag `v1.11.3` = Minecraft 1.21 /
 
     libs/baritone-api-fabric-1.11.3.jar
 
-Optional, only for `./gradlew runClient` (dev game with Baritone installed):
+That one jar is the complete Baritone mod with its API left unobfuscated. It is the compile target,
+the Baritone that `./gradlew runClient` loads, and the jar players put in `mods/`. Do not use the
+`baritone-standalone-fabric` jar: it obfuscates the API too, so miyoria-bridge cannot drive it.
 
-    ./gradlew downloadBaritoneStandalone    # baritone-standalone-fabric-<baritone_version>.jar
-
-Without the API jar, `./gradlew test` still works (against the compile-only stub in `src/baritoneStub/java`),
+Without the jar, `./gradlew test` still works (against the compile-only stub in `src/baritoneStub/java`),
 but `jar` / `build` / `runClient` fail with these instructions.

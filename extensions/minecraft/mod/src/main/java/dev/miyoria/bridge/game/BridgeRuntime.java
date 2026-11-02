@@ -60,13 +60,31 @@ public final class BridgeRuntime implements ActionHandler {
         this.snapshotOptions = new SnapshotSummarizer.Options(cfg.maxEntities, cfg.maxBlockKinds);
 
         if (FabricLoader.getInstance().isModLoaded("baritone")) {
-            try {
-                this.baritone = new BaritoneBridgeImpl(this::emit);
-            } catch (Throwable t) { // NoClassDefFoundError etc: wrong Baritone build
-                LOG.error("Baritone is installed but its API could not be loaded; baritone actions disabled", t);
+            if (!baritoneApiPresent()) {
+                // The class is only touched lazily, so without this check observe itself would
+                // fail later with NoClassDefFoundError.
+                LOG.error("Baritone is installed but baritone.api is missing: the \"standalone\" Baritone jar"
+                        + " obfuscates its API. Put baritone-api-fabric-1.11.3.jar in mods/ instead;"
+                        + " baritone actions disabled");
+            } else {
+                try {
+                    this.baritone = new BaritoneBridgeImpl(this::emit);
+                } catch (Throwable t) { // NoClassDefFoundError etc: wrong Baritone build
+                    LOG.error("Baritone is installed but its API could not be loaded; baritone actions disabled", t);
+                }
             }
         } else {
             LOG.warn("Baritone is not installed: movement/mining actions will answer baritone_unavailable");
+        }
+    }
+
+    /** Whether Baritone's API classes exist under their real names (not obfuscated). */
+    private static boolean baritoneApiPresent() {
+        try {
+            Class.forName("baritone.api.BaritoneAPI", false, BridgeRuntime.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException | LinkageError e) {
+            return false;
         }
     }
 
