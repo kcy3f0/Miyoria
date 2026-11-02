@@ -29,6 +29,7 @@ import type {
   QueueState,
   RemoveMappingRequest,
   SayResponse,
+  SelfView,
   SessionInfo,
   SetPersonaResponse,
   StageState,
@@ -37,6 +38,7 @@ import type {
   UpsertRoleRequest,
   UsageInfo,
   VoiceState,
+  WorldView,
 } from "./types.js";
 
 export type ClientErrorKind = "invalid_url" | "transport" | "api" | "decode";
@@ -409,6 +411,18 @@ export class ApiClient {
 
   voice(o?: CallOptions): Promise<VoiceState> {
     return this.#json("GET", ["voice"], o);
+  }
+
+  // ---- inner life -----------------------------------------------------------------------
+
+  /** Her drives, boredom, policy, agenda, mood and feelings. */
+  self(o?: CallOptions): Promise<SelfView> {
+    return this.#json("GET", ["self"], o);
+  }
+
+  /** What she perceives: people, voice channels, channel activity, her own status. */
+  world(o?: CallOptions): Promise<WorldView> {
+    return this.#json("GET", ["world"], o);
   }
 
   /**

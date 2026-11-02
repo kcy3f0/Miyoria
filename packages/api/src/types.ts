@@ -15,15 +15,19 @@ import type {
 } from "@miyoria/store";
 import type {
   AccountRef,
+  ChannelActivity,
   ContextKey,
+  Feeling,
   ModuleId,
   ModuleStateKind,
   PersonId,
   PlatformId,
   ProfileId,
+  SelfSnapshot,
   Timestamp,
   TurnId,
   VoiceParticipant,
+  WorldSnapshot,
 } from "@miyoria/types";
 
 /** `GET /api/health`. */
@@ -397,4 +401,24 @@ export interface VoiceSession {
 /** `GET /api/voice`. */
 export interface VoiceState {
   sessions: VoiceSession[];
+}
+
+/** One of her feelings, with the person's name. */
+export interface FeelingView extends Feeling {
+  display_name: string | null;
+}
+
+/** `GET /api/self`: her inner state and her feelings about people (newest first). */
+export interface SelfView extends SelfSnapshot {
+  feelings: FeelingView[];
+}
+
+/** A text context of the world snapshot, with its human name when the platform knows it. */
+export interface ChannelActivityView extends ChannelActivity {
+  label: string | null;
+}
+
+/** `GET /api/world`: what she perceives right now. */
+export interface WorldView extends Omit<WorldSnapshot, "channels"> {
+  channels: ChannelActivityView[];
 }

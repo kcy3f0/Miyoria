@@ -6,6 +6,7 @@ import { AuthorizerKey } from "@miyoria/types";
 import { Hono } from "hono";
 import { coreRoutes } from "./core.js";
 import { ApiError, NO_SUCH_ENDPOINT } from "./errors.js";
+import { innerRoutes } from "./inner.js";
 import { memoryRoutes } from "./memory.js";
 import { metricsRoutes } from "./metrics.js";
 import * as oauth from "./oauth.js";
@@ -93,6 +94,7 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...memoryRoutes(state),
     ...roleRoutes(state),
     ...opsRoutes(state),
+    ...innerRoutes(state),
     ...metricsRoutes(state, { public: options.metricsPublic ?? false }),
   ];
 }

@@ -29,6 +29,7 @@
 // * `GET /api/queue`, `POST /api/queue/{id}/skip|move`, `POST /api/queue/pause|resume`
 // * `GET /api/stage`, `POST /api/stage/scene|expression|stream|say`
 // * `GET /api/voice`
+// * `GET /api/self` (her inner state), `GET /api/world` (what she perceives); read-only
 // * `GET /api/events?topics=platform.*,agent.*` (Server-Sent Events of bus envelopes)
 
 export {
@@ -79,10 +80,12 @@ export type {
   AdjustPersonRequest,
   AssignRoleRequest,
   AuthMethods,
+  ChannelActivityView,
   CostInfo,
   ErrorBody,
   ExpressionRequest,
   ExtensionInfo,
+  FeelingView,
   HealthInfo,
   LatencyStats,
   McpServerInfo,
@@ -106,6 +109,7 @@ export type {
   SayRequest,
   SayResponse,
   SceneRequest,
+  SelfView,
   SessionInfo,
   SessionPermissions,
   SessionUser,
@@ -121,4 +125,5 @@ export type {
   VoiceLatency,
   VoiceSession,
   VoiceState,
+  WorldView,
 } from "./types.js";
