@@ -2,8 +2,9 @@
 //
 //     <emo:happy>欸你回來啦!<pause 300/>今天的考試怎麼樣?
 //
-// Recognised tags: `<emo:name>`, `<pause N/>` (milliseconds) and `<silence/>`. Tags may be split
-// across chunks; anything that does not form a valid tag is passed through as text.
+// Recognised tags: `<emo:name>` (or `<emo:name 0.5>` with an intensity 0..1), `<pause N/>`
+// (milliseconds) and `<silence/>`. Tags may be split across chunks; anything that does not form
+// a valid tag is passed through as text.
 
 import { asciiLower, utf8Len } from "./util.js";
 
@@ -16,8 +17,8 @@ export const MAX_PAUSE_MS = 10_000;
 export type Segment =
   /** Clean text. Consecutive text segments belong together. */
   | { type: "text"; text: string }
-  /** Lower-cased emotion name. */
-  | { type: "emotion"; emotion: string }
+  /** Lower-cased emotion name, with the intensity (0..1) when the tag gave one. */
+  | { type: "emotion"; emotion: string; intensity?: number }
   | { type: "pause"; ms: number }
   | { type: "silence" };
 
@@ -101,9 +102,13 @@ function parseTag(raw: string): Segment | null {
   if (body.endsWith("/")) body = trimEndSpaces(body.slice(0, -1));
   const lower = asciiLower(body);
   if (lower.startsWith("emo:")) {
-    const name = lower.slice(4).trim();
+    // `<emo:name>` or `<emo:name 0.5>` (intensity 0..1).
+    const [name = "", level, ...extra] = lower.slice(4).trim().split(/ +/);
     const valid = name !== "" && utf8Len(name) <= MAX_EMOTION_LEN && [...name].every(isNameChar);
-    return valid ? { type: "emotion", emotion: name } : null;
+    if (!valid || extra.length > 0) return null;
+    if (level === undefined) return { type: "emotion", emotion: name };
+    if (!/^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/.test(level)) return null;
+    return { type: "emotion", emotion: name, intensity: Math.min(Number(level), 1) };
   }
   if (lower === "silence") return { type: "silence" };
   if (lower.startsWith("pause")) {
@@ -126,7 +131,7 @@ function isNameChar(c: string): boolean {
 }
 
 const PREFIXES: readonly [string, (c: string) => boolean][] = [
-  ["emo:", (c) => isNameChar(c) || c === " " || c === "/"],
+  ["emo:", (c) => isNameChar(c) || c === " " || c === "." || c === "/"],
   [
     "pause",
     (c) => /^[0-9]$/.test(c) || c === " " || c === "=" || c === "m" || c === "s" || c === "/",

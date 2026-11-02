@@ -1007,7 +1007,12 @@ class Turn {
           type: "custom",
           data: {
             topic: "agent.emotion",
-            payload: { turn: this.turn, context: contextJson(this.key), emotion: segment.emotion },
+            payload: {
+              turn: this.turn,
+              context: contextJson(this.key),
+              emotion: segment.emotion,
+              ...(segment.intensity === undefined ? {} : { intensity: segment.intensity }),
+            },
           },
         },
         { turn: this.turn },

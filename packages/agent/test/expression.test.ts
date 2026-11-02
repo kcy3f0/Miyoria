@@ -87,6 +87,26 @@ describe("expression", () => {
     expect(parseChunks([long.slice(0, 55), long.slice(55)])).toEqual([text(long)]);
   });
 
+  it("emotion_intensity", () => {
+    const strong = (emotion: string, intensity: number): Segment => ({
+      type: "emotion",
+      emotion,
+      intensity,
+    });
+    expect(parseChunks(["<emo:happy 0.5>耶"])).toStrictEqual([strong("happy", 0.5), text("耶")]);
+    expect(parseChunks(["<emo:sad .3/>"])).toStrictEqual([strong("sad", 0.3)]);
+    expect(parseChunks(["<emo:smug 1>"])).toStrictEqual([strong("smug", 1)]);
+    expect(parseChunks(["<emo:smug 2>"])).toStrictEqual([strong("smug", 1)]);
+    // Split across chunks while the number is still arriving.
+    expect(parseChunks(["<emo:angry 0.", "8>!"])).toStrictEqual([strong("angry", 0.8), text("!")]);
+    // Without a number the segment has no intensity key.
+    expect(parseChunks(["<emo:happy>"])).toStrictEqual([emo("happy")]);
+    // Anything else after the name is not a tag.
+    expect(parseChunks(["<emo:happy very>"])).toEqual([text("<emo:happy very>")]);
+    expect(parseChunks(["<emo:happy 0.5 x>"])).toEqual([text("<emo:happy 0.5 x>")]);
+    expect(parseChunks(["<emo:happy -1>"])).toEqual([text("<emo:happy -1>")]);
+  });
+
   it("lenient_tag_variants", () => {
     expect(parseChunks(["<EMO:Happy>"])).toEqual([emo("happy")]);
     expect(parseChunks(["<emo: angry >"])).toEqual([emo("angry")]);
