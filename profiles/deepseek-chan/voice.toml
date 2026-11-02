@@ -1,18 +1,26 @@
-# DeepSeek-chan 聲音(草稿)— 數值要等 Phase 0 的 TTS 評測後再調
+# DeepSeek-chan 聲音
+#
+# 流程:workers/tts/design_voice.py 用 Qwen3-TTS VoiceDesign 依 [design] 生成候選音,
+# 挑一個當 Qwen3-TTS Base 的 clone 參考音(workers/voices/deepseek-chan/ref.wav)。
 
 provider = "qwen3-tts"
-# 先用 VoiceDesign 依描述生成參考音,滿意後固定成 clone 的參考音檔
 mode = "voice-design-then-clone"
 
 [design]
-language = "Chinese"
+# 參考音用日文錄(聲線較貼近描述);Base 可以跨語言複製,她平常照樣講中文
+language = "Japanese"
 instruct = """
-十六、七歲少女的聲音,音色清亮、音調偏高,帶一點傲氣和不耐煩。
-說話節奏輕快,台灣口音的普通話。
-生氣時語速加快、音調上揚;害羞時聲音變小、略帶結巴。
+18歲日本少女聲線，剛踏入社會的新人。音色明亮清透、略帶稚氣但不過度幼化，屬於中高音域的少女音，不是蘿莉音。
+咬字清晰乾淨，日語敬語發音端正有禮。語速中等偏快，帶著認真投入的幹勁，句尾常自然上揚，充滿朝氣與期待。
+情緒外露直率：開心時聲音輕快跳躍、尾音微微上挑；被誇獎時略帶害羞的笑意與輕微氣音；慌張時音高急升、語句短促。
+整體溫暖、真誠、元氣滿滿，帶一點天然呆的可愛感。
 """
-sample_text = "哼,你終於來了喔?我才、才沒有在等你呢。好啦,今天要做什麼?"
+sample_text = "ふん、やっと来たのね？べ、別にあなたを待ってたわけじゃないんだから。で、今日は何するの？"
 
+# 目前的參考音是日文(design 的第 0 個候選),但她講中文:用 ref.txt 的接續模式(ICL)時,
+# 每句的發音和音色會在日文/中文之間亂跳。所以 workers/voices/deepseek-chan/ 只放 ref.wav、
+# 不放 ref.txt(日文原文留在 ref.ja.txt),worker 就只取音色(x-vector),語言跟著文字走。
+# design_voice.py pick 會重新寫出 ref.txt;換回日文參考音時記得再改名。
 [clone]
 ref_audio = "voice/ref.wav"     # 由 VoiceDesign 產生並挑選後放這裡(不進 git)
 ref_text  = "voice/ref.txt"
