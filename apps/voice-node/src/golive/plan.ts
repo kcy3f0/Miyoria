@@ -135,7 +135,7 @@ export function planGoLive(req: GoLiveStartMessage, defaults: GoLiveConfig): Pla
       encoder: req.encoder ?? defaults.encoder,
       nvencPreset: defaults.nvencPreset,
       codec: defaults.codec,
-      audio: req.audio ?? true,
+      audio: req.audio ?? defaults.audio,
       hwDecode: defaults.hwDecode,
       noTranscode: defaults.noTranscode,
     },

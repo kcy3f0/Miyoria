@@ -21,6 +21,12 @@ export interface GoLiveConfig {
   hwDecode: boolean;
   /** Forward the source's H.264 as-is (the source must have 1 s keyframes, no B-frames). */
   noTranscode: boolean;
+  /**
+   * Send the source's audio with the stream (a request's `audio` wins). Her voice reaches the
+   * channel through the voice connection anyway; turning this off also removes the sender's
+   * audio/video sync waits.
+   */
+  audio: boolean;
   /** Give up on a source that has not delivered video after this long (s). */
   startTimeoutS: number;
 }
@@ -112,6 +118,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       bitrateMaxFactor: num(env, "GOLIVE_BITRATE_MAX_FACTOR", 1.33, 1, 4),
       hwDecode: bool(env, "GOLIVE_HWACCEL_DECODE", true),
       noTranscode: bool(env, "GOLIVE_NO_TRANSCODE", false),
+      audio: bool(env, "GOLIVE_AUDIO", true),
       startTimeoutS: num(env, "GOLIVE_START_TIMEOUT_S", 120, 5, 3600),
     },
   };

@@ -137,6 +137,13 @@ describe("config", () => {
     expect(c.stageLevelsUrl).toBe("ws://127.0.0.1:7883/levels");
     expect(c.stageLevelsGain).toBe(2);
     expect(c.golive).toMatchObject({ voiceMode: "exclusive", encoder: "nvenc", fps: 30, noTranscode: true, hwDecode: true });
+    expect(loadConfig({ SELF_TOKEN: "x" }).golive.audio).toBe(true);
+    const muted = loadConfig({ SELF_TOKEN: "x", GOLIVE_AUDIO: "false" }).golive;
+    expect(muted.audio).toBe(false);
+    const plan = planGoLive(req(), muted);
+    expect(plan.ok && plan.plan.audio).toBe(false);
+    const asked = planGoLive(req({ audio: true }), muted);
+    expect(asked.ok && asked.plan.audio).toBe(true);
     expect(loadConfig({ SELF_TOKEN: "x" }).stageLevelsUrl).toBeUndefined();
     expect(() => loadConfig({ SELF_TOKEN: "x", STAGE_LEVELS_URL: "http://x" })).toThrow(/STAGE_LEVELS_URL/);
     expect(() => loadConfig({ SELF_TOKEN: "x", GOLIVE_VOICE_MODE: "both" })).toThrow(/GOLIVE_VOICE_MODE/);
