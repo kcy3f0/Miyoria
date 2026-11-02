@@ -26,7 +26,7 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 | `emotion` | `name`, `intensity`(0..1) | 情緒標記(來自 `agent.emotion`)。`name` 是小寫,`intensity` 沒給時是 `1.0` |
 | `subtitle` | `turn`, `text`, `final`(bool) | 字幕。同一個 `turn` 的新字幕取代舊的(`text` 是到目前為止的全文)。沒有 turn 的語音用 `""` |
 | `speaking` | `state`(`started` / `stopped`) | 她開始 / 停止說話(來自 `voice.playback`) |
-| `scene` | `name`, `id?` | 切 OBS 場景 |
+| `scene` | `name`, `transition?`, `transition_ms?`, `id?` | 切 OBS 場景。有 `transition` 時先把它設成 OBS 目前的轉場(`SetCurrentSceneTransition`),有 `transition_ms` 再設長度(`SetCurrentSceneTransitionDuration`,0..20000;Cut、stinger 這種固定長度的轉場設不了長度,只會記 debug log)再切。OBS 沒有這個轉場時記警告、照樣用目前的轉場切換 |
 | `stream` | `action`(`start` / `stop`), `id?` | 開始 / 停止直播 |
 | `avatar_hotkey` | `name`, `id?` | 觸發 VTS hotkey(名稱或 hotkey ID) |
 | `gaze` | `target`(`chat` / `game` / `camera`) | 她看哪裡 |
@@ -40,6 +40,7 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 {"type":"subtitle","turn":"01JD3W6Q8X0Z5K2M9C4B7N1R3T","text":"哼,才不是在等你呢。","final":false}
 {"type":"speaking","state":"started"}
 {"type":"scene","name":"Game","id":12}
+{"type":"scene","name":"Game","transition":"Fade","transition_ms":300,"id":15}
 {"type":"stream","action":"start","id":13}
 {"type":"avatar_hotkey","name":"Wave","id":14}
 {"type":"gaze","target":"chat"}
@@ -65,7 +66,7 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 {"type":"error","message":"OBS is not connected","id":13}
 ```
 
-`scenes`、`hotkeys`、`overlay_url` 是 v1 之後加的欄位:舊版 Stage 不送也沒關係,Core 會當成 `[]`、`[]`、`null`(協定版本仍是 1)。管理面板的 `GET /api/stage` 直接用它們:`scenes` → 場景選單,`hotkeys` → `expressions`(表情 / hotkey 選單),`overlay_url` → overlay 預覽。
+`scenes`、`hotkeys`、`overlay_url` 是 v1 之後加的欄位:舊版 Stage 不送也沒關係,Core 會當成 `[]`、`[]`、`null`(協定版本仍是 1)。`scene` 的 `transition` / `transition_ms` 也是之後加的:舊版 Stage 會忽略它們(用 OBS 目前的轉場),協定版本不變。管理面板的 `GET /api/stage` 直接用它們:`scenes` → 場景選單,`hotkeys` → `expressions`(表情 / hotkey 選單),`overlay_url` → overlay 預覽。
 
 **請求與回覆**:`scene`、`stream`、`avatar_hotkey`、`status_request` 帶 `id` 時,Stage 一定要回一個帶同樣 `id` 的訊息:成功回 `status`(動作完成後的狀態),失敗回 `error`。`stream` 會等 OBS 真的進入(或離開)直播狀態才回,最多 `[stage.obs] stream_wait_ms`(預設 15 秒)。Core 端等 `request_timeout_ms`(預設 10 秒)沒回覆就當作失敗。沒有 `id` 的 `error` 只是通知(Core 會發佈成 `stage.error` 事件)。
 
@@ -89,6 +90,36 @@ golive_start_delay_ms = 3000   # 等 voice node 的 ffmpeg 綁好 RTMP listener 
 - 提供 `StageLink` 服務(`StageLinkKey`):`setScene`、`stream`、`hotkey`、`refreshStatus`、`gaze`、`status`、`subscribeStatus`。
 - 狀態變化發佈成 `custom` 事件(topic `stage.status`),payload `{connected, vts, obs, scene, streaming, scenes, hotkeys, overlay_url}`(斷線時只有 `{"connected": false}`)。
 - 有 `CommandRegistry` 時註冊指令:`stream start`、`stream stop`、`stream scene <name>`、`stream status`(權限節點 `stream.start` / `stream.stop` / `stream.scene` / `stream.status`)。
+
+### 場景用途與場景導演(`[modules."stage.link".scenes]`)
+
+```toml
+[modules."stage.link".scenes]
+director = true                 # 狀態一變就自動切場景
+classify = true                 # 第一次看到場景清單時用 LLM(classify_purpose,預設 fast)從名稱判斷用途
+roles = { chat = "聊天", game = "遊戲" }          # 擁有者指定,最優先(面板不能改)
+transition = { name = "Fade", duration_ms = 300 } # 每次切換的轉場(none = OBS 目前的)
+transitions = { game = { name = "Stinger" } }     # 個別用途的轉場
+debounce_ms = 1500              # 這麼近的狀態變化算一次
+min_switch_ms = 8000            # 兩次自動切換的最小間隔(開場、結尾除外)
+manual_hold_ms = 120000         # 別人手動切了之後,導演這麼久不插手
+starting_ms = 30000             # 開台後開場畫面停多久
+ending_ms = 6000                # 停播前結尾畫面停多久
+brb_after_ms = 300000           # 直播中、沒在玩遊戲時多久沒人講話 → 暫離(0 = 不切)
+brb_on_voice_leave = true       # 直播中她離開語音 → 暫離
+only_while_live = false         # true:只在直播中切
+```
+
+- **用途(role)**:內建 `chat`(聊天)、`game`(遊戲)、`brb`(暫離)、`starting`(開場)、`ending`(結尾);`roles` 裡可以加自己的(小寫英數與 `_`)。每個用途的場景依序取自:設定檔 `roles` → 面板(`PUT /api/stage/scenes`,存在 settings `_global` / `stage:scene_roles`)→ 自動分類。自動分類在節點第一次回報 `scenes`、以及場景清單改變時跑一次:`fast` 用途、JSON 模式,場景名稱放在不可信的資料區塊裡,答案只認清單裡一字不差(不分大小寫)的名稱;沒有 LLM、呼叫失敗或答案不是 JSON 時改用關鍵字(`chat` / `talk` / `雜談`、`game` / `遊戲`、`brb` / `afk` / `暫離`、`start` / `soon` / `開場`、`end` / `outro` / `下播`…)。服務 `SceneRolesKey`。
+- **能力 `stage.scene`** 收 `{role}` 或 `{name}`(場景名稱;不是場景名稱但是用途名稱時當用途):用途會帶上它的轉場送 `scene`。她的工具 `stage_scene` 一樣可以給 `role`。
+- **導演**(principal `director`,每次切換都是 `stage.scene {role}` 過閘門,所以自主暫停時導演也停):
+  - 開台(Go Live `starting` / `live`,或 OBS 開始直播)→ `starting`(沒有開場場景就 `chat`),`starting_ms` 後 → `chat`(或 `game`);
+  - `game.director.session` `started` → `game`,`stopped` → `chat`;
+  - 直播中、沒在玩遊戲:`brb_after_ms` 沒有任何人講話(她的語音、別人的語音、回合完成)或她離開了語音頻道 → `brb`,有人講話 / 回到語音 → 回來;
+  - 停播:Go Live `stopped` / `failed`,或 OBS 停止直播 → `ending`,並停在結尾畫面直到有新的變化(開台、開始 / 停止遊戲)。
+  - 只對**變化**反應(開機時不會去「修正」目前的場景);`debounce_ms` 內的變化合併;兩次自動切換至少隔 `min_switch_ms`;別人(OBS 裡手動、指令、面板、她自己的 `stage_scene`)切了之後 `manual_hold_ms` 內不插手,期間有變化就等時間到再切。開場與結尾不受這些等待限制。
+- **結尾幕(`StreamCurtainKey`)**:`stream.stop`(Go Live)與 `stage.stream stop`(`/stream stop`、面板)在真的停播前先呼叫它:切到 `ending`、停留 `ending_ms` 再停;沒有結尾場景、沒在直播或切換被閘門擋下時馬上繼續。
+- 轉場會改掉 OBS「目前的轉場」設定,之後你在 OBS 手動切換也會用它。
 
 ---
 

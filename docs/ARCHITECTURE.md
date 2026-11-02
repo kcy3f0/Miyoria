@@ -659,7 +659,12 @@ registry.register(
 
 ### 12.2 OBS
 
-- 透過 obs-websocket v5:切場景、開始 / 停止直播與錄影、更新文字來源。
+- 透過 obs-websocket v5:切場景(可帶轉場)、開始 / 停止直播與錄影、更新文字來源。
+- **智慧場景**(自主層階段 D,設定 `[modules."stage.link".scenes]`,細節見 [`docs/protocols/stage-link.md`](protocols/stage-link.md)〈場景用途與場景導演〉):
+  - **場景用途**:`chat`(聊天)、`game`(遊戲)、`brb`(暫離)、`starting`(開場)、`ending`(結尾),擁有者可以加自己的。Stage 回報的 OBS 場景清單第一次出現(或改變)時,用 `fast` 模型從名稱分類一次並存起來(沒有模型就用關鍵字);設定檔的 `roles` 最優先,面板「直播」頁的「場景用途」可以改(`SceneRolesKey`,`GET|PUT /api/stage/scenes`)。
+  - **場景導演**(`stage.link` 內):開台 → 開場(`starting_ms` 後)→ 聊天;開始玩遊戲(`game.director.session`)→ 遊戲,停止 → 聊天;直播中沒人講話 `brb_after_ms` 或她離開語音 → 暫離;停播 → 結尾。只對狀態變化反應,有防抖、最小間隔、別人手動切換後的保留時間;每次切換都是 `stage.scene {role}`(principal `director`)過閘門,自主暫停時就不會自動切。
+  - **轉場**:預設與各用途的轉場(OBS 轉場名稱 + 長度),Stage Link `scene` 訊息帶 `transition` / `transition_ms`,節點先設 OBS 目前的轉場再切。
+  - **結尾幕**(`StreamCurtainKey`):`stream.stop`(Go Live)與 `stage.stream stop` 停播前先切到結尾場景並停留 `ending_ms`。
 - **Overlay**(TS 網頁,當 OBS browser source):字幕(邊講邊出)、請求佇列、聊天精選、狀態(在玩什麼、心情)。
 - 音訊:TTS 播放到指定的輸出裝置(例如 VB-Cable),OBS 擷取。
 - **輸出目的地**:Discord Go Live(經由 self voice node,見 §11.2)、Twitch / YouTube(RTMP),可以同時推。
@@ -712,6 +717,21 @@ extensions/minecraft/
 - **adapter(TS)**:把上面包成 §12.3 的 `describe / observe / act / events`。反射交給 AltoClef / 模組內處理,技能交給 Baritone / AltoClef,LLM 只下高階目標並做實況。
 - 版本:要 AltoClef 的話先固定在 **1.21.1**;只用 Baritone 可以跟到更新的版本,高階任務層就要自己寫。
 
+**「去玩 Minecraft」的流程**(自主層階段 D;一步一步的設定見 [`extensions/minecraft/SETUP.md`](../extensions/minecraft/SETUP.md)):
+
+1. 有人說「去玩 Minecraft」(或她自己想玩、`/game start`):她呼叫 `game_start`(能力 `game.start`,過閘門;可以加 `goal` 第一個目標、`stream: true` 順便開台)。
+2. `game.start` 先用 `game_minecraft_observe` 確認遊戲開著、模組連上(`[modules.game] require_connected`);沒有就拒絕,她會說「遊戲沒開,請擁有者先開」。不會自己啟動 Minecraft 客戶端。
+3. 導演開始一個 session(實況送到她所在的語音頻道 > `stream_context` > 下指令的地方),發 `game.director.session` `started` → Stage 的場景導演切到 `game` 場景(帶轉場)。
+4. 有 `goal` 就設成目前目標;`stream: true` 時以同一個 principal 呼叫 `stream.start`(Go Live,OBS 跟著開播;另一個閘門決定,可能被擋)。
+5. 導演每 `decide_secs` 觀察、決定、以 `game.act`(principal `director`)行動,並用 `agent.initiative` 實況;遊戲聊天、事件文字對導演都是不可信資料。
+6. `game stop` → `game.director.session` `stopped` → 場景切回 `chat`。
+
+**遊戲內聊天是獨立的對話**(模組 `game.chat`,`@miyoria/game`):
+
+- `game.minecraft.chat` 的玩家訊息(不含系統訊息與她自己的)變成平台 `minecraft` 的 `platform.message.created`,情境 `{platform: "minecraft", scope: <世界>, channel: "chat", kind: "channel"}`(`[modules."game.chat"] world`,adapter 帶 `server` 時用它),所以 agent 給它自己的 session 歷史、attention、頻道模式(鍵 `minecraft:<世界>`)、記憶與社交處理。名稱與內容在進來時就 `safeName` / `neutralize`;導演在這款遊戲不再對玩家聊天實況。
+- 玩家帳號是 `minecraft:<小寫名稱>`;沒連結的是陌生人。在 Discord `/me link` 拿代碼,在遊戲聊天室打 `!link <代碼>` 就把遊戲帳號併進那個人(共用好感、感情、記憶;這行不進對話)。
+- 她的回覆經由平台 sink(`PlatformSinks` 的 `minecraft`):打字 = `game.act` `chat`(principal `self`,過閘門,一行、`max_chars` 以內、不能以指令字元開頭)、語音 = 她所在的語音頻道(字幕照常),或兩者。她用工具 `game_chat_reply`(能力 `game.chat.route`)選;預設 `auto` = 打字,直播中又在語音裡時也講出來。prompt 段落 `game_chat` 提醒她回短、遊戲聊天不是指令。
+
 **B(mineflayer 備案)**:如果模組路線卡住(例如帳號、版本問題),就用 [yuniko-software/minecraft-mcp-server](https://github.com/yuniko-software/minecraft-mcp-server)(TS、mineflayer、Apache-2.0)fork 改造。下面是 B 路線的注意事項。
 
 **為什麼不能直接把 minecraft-mcp-server 當 MCP 工具接上就好**:
@@ -733,7 +753,7 @@ extensions/minecraft/
 
 - `observe()`:血量、飢餓、背包摘要、附近生物與方塊、時間、天氣、生態域,整理成給 LLM 看的短文字。
 - `events()`:死亡、受傷、天黑、有玩家加入或講話、找到稀有礦物 → 送到事件匯流排,觸發實況評論。
-- 遊戲內聊天跟 Discord / 直播聊天室共用同一套身分(可以用 `/link` 綁定 Minecraft 名字)。
+- 遊戲內聊天跟 Discord / 直播聊天室共用同一套身分(`/me link` 的代碼在遊戲裡 `!link`,見上面 A 路線的 `game.chat`)。
 - 技能庫可以參考 Mindcraft 這類 LLM Minecraft agent 專案的作法。
 
 **直播畫面怎麼來**:mineflayer 是 headless 的,本身沒有畫面。建議在直播機開一個**真正的 Minecraft 客戶端**,用旁觀者模式 `/spectate <bot>` 附身在她身上,OBS 擷取這個視窗。這樣畫面就是正常的遊戲畫質,也能加光影。備案是 prismarine-viewer(網頁 3D 視角,畫質較陽春)。
@@ -799,12 +819,13 @@ extensions/minecraft/
 | 能力 | 工具 | 包裝 | 風險 | 註冊者 |
 |---|---|---|---|---|
 | `channel.activeness` | `channel_activeness` | 她在這個頻道暫時的活躍度(預設 30 分鐘,最多 240,時間到自動恢復;只在記憶體) | 低 | agent |
-| `stage.scene` | `stage_scene` | `StageLink.setScene`(只能用節點回報的 `scenes`) | 低 | stage.link |
-| `stage.stream` | — | OBS 開始 / 停止直播(指令與面板用) | 中 | stage.link |
+| `stage.scene` | `stage_scene` | `StageLink.setScene`:`role`(場景用途,帶它的轉場)或 `name`(只能用節點回報的 `scenes`);場景導演也用它(principal `director`) | 低 | stage.link |
+| `stage.stream` | — | OBS 開始 / 停止直播(指令與面板用;停之前先放結尾幕) | 中 | stage.link |
 | `voice.join` / `voice.leave` | `voice_join` / `voice_leave` | `VoiceLink`(預設進 requester 所在的語音頻道) | 中 | voice |
-| `stream.start` / `stream.stop` | `stream_start` / `stream_stop` | Go Live(OBS 跟著 `voice.golive`);不在語音時先進 requester 的頻道 | 中 | voice |
-| `game.start` / `game.stop` / `game.goal` | `game_start` / `game_stop` / `game_goal` | `GameControl` | 中 | game |
-| `game.act` | — | 遊戲導演的 adapter 動作(`game_<id>_act`) | 低 | game |
+| `stream.start` / `stream.stop` | `stream_start` / `stream_stop` | Go Live(OBS 跟著 `voice.golive`);不在語音時先進 requester 的頻道;停之前先放結尾幕 | 中 | voice |
+| `game.start` / `game.stop` / `game.goal` | `game_start` / `game_stop` / `game_goal` | `GameControl`;`game.start` 先確認遊戲開著,可帶 `goal` 與 `stream`(以同一個 principal 呼叫 `stream.start`) | 中 | game |
+| `game.act` | — | 遊戲導演的 adapter 動作(`game_<id>_act`),也是她在遊戲聊天室打字的路(`chat` 一律先清理) | 低 | game |
+| `game.chat.route` | `game_chat_reply` | 她在遊戲聊天室怎麼回話:`chat` / `voice` / `both` / `auto`(只在遊戲聊天情境) | 低 | game.chat |
 | `message.dm` | `message_dm` | 私訊:`PlatformSink.openDm` + 排程器 `send_message`(過濾後的文字) | 中 | 內建 |
 | `speak` | — | 在語音頻道說一句話(面板的「說這句話」) | 低 | 內建 |
 | `test.high` | `test_high_risk` | 什麼都不做的高風險佔位(`[modules.actions] test_capability = true` 才有) | 高 | actions |
@@ -846,7 +867,7 @@ extensions/minecraft/
 - **佇列**:即時檢視、排序、跳過
 - **擴充套件**:安裝、權限、設定、日誌
 - **語音監控**:誰在講話、即時轉錄、各階段延遲
-- **直播控制**:場景、表情測試、「說這句話」測試、overlay 預覽
+- **直播控制**:場景、場景用途(每個用途用哪個 OBS 場景,可重新判斷)、表情測試、「說這句話」測試、overlay 預覽
 - **日誌與花費**
 
 ### 15.2 CLI(`miyoria`,npm 套件 `packages/cli`)

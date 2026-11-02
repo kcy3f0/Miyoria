@@ -93,6 +93,18 @@ default_game = "minecraft"
 decide_secs = 20           # 多久想一次下一步(有事件時會提早,最快每 4 秒)
 # 她不在語音頻道時,實況送到哪(可省略;省略就送到下 /game start 的頻道)
 # stream_context = { platform = "discord", scope = "<伺服器 id>", channel = "<頻道 id>", kind = "voice" }
+# require_connected = true   # 開始前先確認遊戲開著、模組連上;沒開就拒絕(她會請你開遊戲)
+
+# 遊戲內聊天變成她的一段對話(預設就開著,這段可省略)
+[modules."game.chat"]
+world = "local"            # 這個世界 / 伺服器的名字;換世界或伺服器時改它,歷史就分開
+username = "<她的 Minecraft 名字>"   # 別人在遊戲裡提到這個名字 = 在叫她
+# max_chars = 120          # 她在遊戲聊天室一句最多幾個字
+# reply = "auto"           # auto(打字,直播中又在語音時也講出來)| chat | voice | both
+
+# 遊戲聊天室要不要主動插話,跟一般頻道一樣用頻道模式(預設跟 profile:ambient)
+# [modules.agent]
+# channels = { "minecraft:local" = "mention-only" }
 ```
 
 確認找得到擴充:
@@ -116,13 +128,41 @@ pnpm dev ext list          # 要列出 miyoria.minecraft 0.1.0  ...\extensions\m
 
 4. 第一次建議先 `/game goal 走到最近的樹旁邊`,確認她會走;再試 `/game goal 挖一些石頭`。
 
+### 直接跟她說「去玩 Minecraft」
+
+不用指令也可以:在 Discord 跟她說「去玩 Minecraft 吧」「開台玩 Minecraft」。她自己決定要不要(好感、心情),要的話會用 `game_start` 工具:
+
+1. 先確認遊戲開著、模組連上。**沒開的話她會說遊戲沒開、請你先開**(Miyoria 不會自己啟動 Minecraft);還在主選單可以開始,進入世界後她就會動。
+2. 開始一個 session(她在語音頻道就在語音裡實況),直播畫面自動切到遊戲場景(見第 7 步)。
+3. 你說了要做什麼(「去挖鐵礦」)她會把它當第一個目標;說了要開台、她也願意的話會順便 Go Live(OBS 跟著開播,也要過閘門,太頻繁或你禁止 `stream.*` 時會被擋)。從遊戲聊天室裡要求開台不行(跨伺服器禁令),要在 Discord 講。
+4. 之後導演迴路自己決定目標和動作,邊玩邊實況;「別玩了」或 `/game stop` 停止,畫面切回聊天場景。
+
+### 遊戲內聊天
+
+- 遊戲裡其他玩家說的話是她的一段獨立對話(不會跟 Discord 頻道混在一起)。她在遊戲裡回話很短,而且一定不是指令(開頭的 `/`、`!`、`#`、`.` 會被拿掉)。
+- 直播中又在語音頻道時,她的回話也會用語音講出來(有字幕);她可以自己改成只打字、只講或都要。
+- **把你的 Minecraft 帳號連到 Discord**:在 Discord 打 `/me link`(不帶代碼)拿一組代碼,10 分鐘內在遊戲聊天室輸入 `!link <代碼>`。連好之後遊戲裡的你就是 Discord 的你(同一份好感和記憶);沒連的玩家對她來說是陌生人。
+- 她的遊戲名字要寫在 `[modules."game.chat"] username`,別人在遊戲裡叫她時她才知道。
+- 自主暫停(`/admin autonomy pause`)時,她不會在遊戲裡打字,導演也停下來。
+
 ## 7. OBS
 
 1. 建一個場景,例如 `Game`(遊戲場景)。
 2. 來源 →「視窗擷取」→ 視窗選 `[javaw.exe]: Minecraft* 1.21.1 - ...`;擷取方式 **Windows 10 (1903 and up)**;取消「擷取游標」;勾「Client Area」。黑畫面就改用「遊戲擷取」→ 擷取特定視窗。
 3. 疊上 VTube Studio 的她(角落)和 overlay 瀏覽器來源 `http://127.0.0.1:7884/overlay/`(1920×1080,字幕與狀態)。
 4. 音訊:「應用程式音訊擷取」選 `javaw.exe` 只收遊戲聲音;她的語音走 TTS 那條。
-5. 切換:直播機的 Stage 節點連著時可以 `/stream scene Game`,不然在 OBS 手動切。
+5. 其他場景(建議都建,名稱看得出用途就好,例如):`Talk` / `雜談`(平常聊天)、`BRB` / `暫離`、`Starting Soon` / `開場`、`Ending` / `結尾`。
+6. **場景用途**:Stage 節點連上後,Core 會用 AI 從名稱判斷每個場景的用途(聊天、遊戲、暫離、開場、結尾)。到面板「直播」頁的「場景用途」確認,不對就改;或寫死在設定檔:
+
+   ```toml
+   [modules."stage.link".scenes]
+   roles = { chat = "Talk", game = "Game", brb = "BRB", starting = "Starting Soon", ending = "Ending" }
+   transition = { name = "Fade", duration_ms = 300 }   # OBS「場景轉換」裡的名稱
+   transitions = { game = { name = "Stinger" } }       # 進遊戲用 stinger(要先在 OBS 建好)
+   ```
+
+7. **自動切換**:開台 → 開場畫面(30 秒)→ 聊天;開始玩 → 遊戲;停止 → 聊天;直播中 5 分鐘沒人講話或她離開語音 → 暫離;下播 → 結尾畫面停 6 秒才真的停播。你在 OBS 手動切了之後,2 分鐘內不會被切回來。手動切換仍可以 `/stream scene <場景或用途>`(例如 `/stream scene game`)。
+8. 轉場會變成 OBS 目前的轉場(之後手動切換也用它)。轉場名稱打錯時只會記警告,照樣切換。
 
 ## 出問題時
 
@@ -131,3 +171,6 @@ pnpm dev ext list          # 要列出 miyoria.minecraft 0.1.0  ...\extensions\m
 - 她站著不動、`/game status` 說 bot 閒置:看遊戲 log 有沒有 Baritone 相關錯誤;`baritone.api is missing` = 裝成 standalone 了。
 - `/game start` 回「找不到 minecraft 的遊戲 adapter」:adapter 沒 build(第 1 步)、不是在 repo 根目錄啟動 Core,或 `pnpm dev ext list` 沒列出它。
 - `/game status` 的狀況寫「還在主選單或載入中」:導演在等,進入世界就好,下一次決策(≤ 20 秒)會自己接上。
+- `/game start`(或她)說「Minecraft 還沒開,或遊戲裡的模組沒有連上」:遊戲沒開、`minecraft_dir` 指錯,或 adapter 還沒連上(Core log 要有 `connected to the mod`)。
+- 場景沒有自動切:看面板「場景用途」有沒有對到場景;自主暫停中導演也會停;剛手動切過的話要等 `manual_hold_ms`(預設 2 分鐘)。
+- 遊戲聊天她不回:頻道模式是不是 `off` / `mention-only`(`[modules.agent] channels` 的 `minecraft:<world>`);暫停中她不打字。

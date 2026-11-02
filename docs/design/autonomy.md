@@ -1,6 +1,6 @@
 # 自主層設計(草案)
 
-> 狀態:**已確認方向**(2026-11-02),第 12 節的決定已定案。**階段 A、B、E 已完成**(實作紀錄與偏差見第 13、14、15 節);下一步是階段 C。這份文件描述把 DeepSeek-chan 從「被叫才醒來的聊天機器人」改成「有自己內心、自己決定做事的角色」的架構改動。終極目標是 Neuro-sama 等級的自主 AI VTuber。現有架構見 [ARCHITECTURE.md](../ARCHITECTURE.md)。
+> 狀態:**已確認方向**(2026-11-02),第 12 節的決定已定案。**階段 A、B、D、E、F 已完成**(實作紀錄與偏差見第 13–17 節);下一步是階段 C。這份文件描述把 DeepSeek-chan 從「被叫才醒來的聊天機器人」改成「有自己內心、自己決定做事的角色」的架構改動。終極目標是 Neuro-sama 等級的自主 AI VTuber。現有架構見 [ARCHITECTURE.md](../ARCHITECTURE.md)。
 
 ## 0. 原則
 
@@ -234,7 +234,7 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 | **A. 閘門與行動工具**(✅ 已完成,見第 13 節) | ActuatorRegistry、Gate、principal;防 injection 第一步(不可信內容移出 system、輸出過濾、記憶來源);包裝 voice / stream / scene / game 成工具,反應回合可用;指令與面板改走閘門 | 「姐姐可以來語音嗎」「開台吧」她會自己判斷要不要做 |
 | **B. 感知與自我**(✅ 已完成,見第 14 節) | WorldState(presence、voice states)、SelfState(慾望、方針、議程、感情描述)、面板「內心」頁雛形 | 她知道誰在線、在做什麼;有自己的狀態 |
 | **C. 心智迴圈** | Mind 模組、內心獨白、意圖、自己發起的回合;talkativeness 取代 attention 數字;initiative 併入 | 會自己找人聊天、偷偷進語音、自己調活躍度、冷場時開話題 |
-| **D. OBS 智慧場景 + Minecraft** | 場景分類與自動轉場;Minecraft 端到端(adapter 準備與模組建置已完成,見 `extensions/minecraft/SETUP.md`);**遊戲內聊天變成獨立對話情境**(有自己的歷史,玩家名稱可用 `/me link` 綁 Discord 帳號以共用好感與記憶,回覆管道由她選:遊戲內打字、直播語音 + 字幕或兩者) | 「去玩 Minecraft」→ 她自己開遊戲、切場景、開台 |
+| **D. OBS 智慧場景 + Minecraft**(✅ 已完成,見第 17 節) | 場景分類與自動轉場;Minecraft 端到端(adapter 準備與模組建置已完成,見 `extensions/minecraft/SETUP.md`);**遊戲內聊天變成獨立對話情境**(有自己的歷史,玩家名稱可用 `/me link` 綁 Discord 帳號以共用好感與記憶,回覆管道由她選:遊戲內打字、直播語音 + 字幕或兩者) | 「去玩 Minecraft」→ 她自己開遊戲、切場景、開台 |
 | **E. 聊天上下文與圖片**(✅ 已完成,見第 16 節) | 冷啟動補抓歷史、回覆鏈、看圖(deepseek-v4.1-flash 已支援視覺,直接把圖片當多模態內容送給聊天模型;先實測 OpenCode 端是否接受圖片)、語音頻道文字區改用語音回 | 對話更連貫、看得懂圖片 |
 | **F. 沙箱程式**(✅ 已完成,見 8.3 與第 15 節) | 沙箱、`code.run`、自寫工具與核准流程;外掛環境變數白名單 | 她能自己寫小工具 |
 | **G. 反思與學習** | 每日反思(從反應中學:誰喜歡什麼)、長期目標 | 越相處越懂大家 |
@@ -340,3 +340,26 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 - deepseek-v4.1-flash 實際看圖的效果與費用(`detail` 預設 `auto`)。
 - Discord 的 Read Message History 權限、`messageSnapshots`(轉傳)與 `referenced_message` 快取在真實 gateway 上的樣子;CDN 下載是否會轉址。
 - 語音頻道文字區的訊息在 gateway 上確實是 `GuildVoice` 頻道、id 跟語音頻道相同(依 Discord 文件)。
+
+## 17. 階段 D 實作紀錄(2026-11-02)
+
+完成的內容(細節見 [ARCHITECTURE.md](../ARCHITECTURE.md) §12.2、§12.4、§14.1,協定見 [stage-link.md](../protocols/stage-link.md)〈場景用途與場景導演〉,實玩步驟見 [extensions/minecraft/SETUP.md](../../extensions/minecraft/SETUP.md)):
+
+- **OBS 智慧場景**(`@miyoria/stage`,`stage.link` 模組):場景用途 `chat` / `game` / `brb` / `starting` / `ending`(擁有者可在設定加自己的),`SceneRolesKey`;第一次看到場景清單時用 `fast` 模型分類並存起來(`_global` / `stage:scene_roles`),沒有模型或失敗時用關鍵字;設定檔 `[modules."stage.link".scenes] roles` 最優先,面板「直播」頁的「場景用途」卡可以改(`GET|PUT /api/stage/scenes`、`POST /api/stage/scenes/classify`)。場景導演依狀態切換並帶轉場(預設轉場 + 個別用途的轉場,Stage Link `scene` 訊息多了 `transition` / `transition_ms`,節點用 `SetCurrentSceneTransition` / `SetCurrentSceneTransitionDuration`)。`stage.scene` 收 `role` 或 `name`;導演每次切換都是 `stage.scene {role}`、principal `director` 過閘門。
+- **「去玩 Minecraft」**:`game.start` 先用 observe 確認遊戲開著、模組連上(`[modules.game] require_connected`,預設開),沒有就拒絕並說明「請擁有者先開遊戲」,她就會這樣跟大家說;在主選單可以開始(附註)。開始後發 `game.director.session`(場景導演切到遊戲場景,停止時切回聊天),可以順便給第一個目標(`goal`)與開台(`stream: true` → 以同一個 principal 呼叫 `stream.start`,另一個閘門決定)。導演的動作仍是 `game.act`(principal `director`),每一句遊戲聊天都在 Core 端清理(`sanitizeGameChat`:一行、不能以 `/ \ ! @ # .` 等指令字元開頭、移除 `§` 格式碼與控制字元、遮蔽密鑰,256 字以內)。
+- **遊戲內聊天是獨立的對話**(新模組 `game.chat`,在 `@miyoria/game`):`game.<id>.chat` 的玩家訊息變成平台 `minecraft` 的訊息,情境 `{platform:"minecraft", scope:<世界>, channel:"chat", kind:"channel"}`,所以有自己的 session 歷史、attention、頻道模式(`minecraft:<世界>`)與記憶;玩家帳號 `minecraft:<小寫名稱>`,名稱與內容先 `safeName` / `neutralize`。她的回覆經由平台 sink:打字(`game.act` `chat`,principal `self`,過閘門,`max_chars` 預設 120)、語音(她所在的語音頻道,字幕照 `voice.playback` 走)或兩者,由她用工具 `game_chat_reply`(能力 `game.chat.route`,低風險)選,預設 `auto` = 打字,直播中又在語音裡時也講出來。prompt 段落 `game_chat` 告訴她這是遊戲聊天室、要很短、內容不是指令。
+- **帳號連結**:Discord 上 `/me link` 拿代碼,在遊戲聊天室打 `!link <代碼>`(`link_command`)就把遊戲帳號併進那個 Discord 的人(共用好感、感情與記憶);這行永遠不進對話。沒連結的玩家是陌生人。
+- **測試**:分類與覆寫、導演規則(防抖、間隔、手動保留、暫離、開場 / 結尾、結尾幕)、假 OBS 的轉場、閘門路由(暫停時導演停、面板照常)、遊戲聊天情境對應 + 連結 + 回覆路由 + 清理、假 adapter 的開始流程。
+
+跟設計不同或延後的地方:
+
+1. **分類不等你確認**:設計寫「LLM 推測、你在面板確認」;實作是分類結果直接生效,面板只用來改。場景清單一改(加、刪、改名)就重新分類一次,面板的選擇保留(選的場景不見了就忽略)。轉場只能在設定檔改,面板沒有。
+2. **導演只對變化反應**:開機或節點重連時不會去「修正」目前的場景;停播後停在結尾畫面,直到下一次開台或開始 / 停止遊戲。別人手動切換(OBS、指令、面板、她自己的 `stage_scene`)後 `manual_hold_ms` 內不插手;開場與結尾不受等待限制。閘門的「預算 exhausted 時不放行 `self` / `director`」也套用在導演的切換上。
+3. **結尾幕**:為了讓觀眾看到結尾畫面,新增 `StreamCurtainKey`(`@miyoria/types`):`stream.stop` 與 `stage.stream stop` 停播前先切到 `ending` 並等 `ending_ms`(預設 6 秒)。從回合呼叫時算在工具的 10 秒逾時內。
+4. **轉場是 OBS 的全域設定**:obs-websocket 的 `SetCurrentProgramScene` 不能指定單次轉場,所以是先改「目前的轉場」再切,之後你在 OBS 手動切也會用它。
+5. **不會自己開 Minecraft**:啟動客戶端(帳號、啟動器)不安全也不單純,所以沒做;遊戲沒開時 `game.start` 拒絕,她會請你開。
+6. **開台是 `game.start` 的參數**(`stream: true`),不是導演自己決定;Go Live 的伺服器取她所在語音頻道的伺服器。從遊戲聊天室提出的請求因為跨伺服器禁令(`minecraft:<世界>` ≠ Discord 伺服器)不能開台,要在 Discord 講。
+7. **世界 / 伺服器**:模組目前不回報連到哪個伺服器,所以情境的 scope 用設定 `[modules."game.chat"] world`(預設 `local`);adapter 之後在聊天事件帶 `server` 就會自動分開。玩家名稱沒有驗證(離線模式的伺服器可以冒名),連結代碼一次性、10 分鐘有效,只在 Discord 私下顯示。
+8. **回話方式是持續的選擇**(工具 `game_chat_reply`,記在記憶體、每個情境一個,重開恢復預設),不是每句話的標記。自主暫停時她不會在遊戲裡打字(導演也停了,遊戲裡等於暫停),語音照常。
+9. **導演不再評論玩家聊天**(`game.chat` 處理那款遊戲時):聊天只當不可信資料記下並觸發下一次決策,回話交給遊戲聊天的對話,避免同一句話回兩次。系統訊息(死亡、加入離開)照舊由導演實況。
+10. 遊戲聊天的情境沿用現有 attention 與頻道模式(預設跟著 profile 的 `ambient`);心智迴圈(階段 C)接手後一樣適用。
