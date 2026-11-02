@@ -406,6 +406,7 @@ curl -sS -X POST http://127.0.0.1:8001/asr -F "audio=@out.wav" -F "language=zh"
 3. **轉換**:Seed-VC 的歌聲模型(F0 條件、44.1 kHz、Whisper-small 內容編碼、BigVGAN v2 44 kHz、RMVPE 音高),參考音是 `voices/deepseek-chan/ref.wav`。自動挑八度:歌的人聲中位音高跟她的(說話中位數 + `SING_TARGET_OFFSET` 半音)比,選 -12 / 0 / +12,伴奏不動;`pitch` 可以直接指定人聲移調,`key` 是整首轉調(伴奏一起移)。原人聲靜音的地方,轉換後的人聲會被閘掉(去掉轉換的雜音)。
 4. **混音**:轉換後的人聲恢復成原人聲的響度,加上伴奏,整體正規化到 `SING_TARGET_LUFS`(-16),峰值 ≤ -1 dBFS。輸出 `mix.wav`、`vocals.wav`、`instrumental.wav`,以及 Core 串流用的 48 kHz 單聲道 `play_mix.pcm` / `play_vocals.pcm`(人聲那條給嘴型用)。
 5. **歌詞**:lrclib.net 依歌名 / 歌手 / 長度找同步 LRC(找不到就沒有字幕)。
+6. **影片**(跟 2–5 平行,從下載那一步開始):影片網站的來源另外抓**只有畫面**的影片(H.264 ≤ `SING_VIDEO_MAX_HEIGHT` 優先,其次其他編碼轉封裝成 mp4,不超過 `SING_VIDEO_MAX_MB`),存成 `video.mp4`,唱歌時直播畫面放它(靜音)。本機歌庫:資料夾裡的 `video.*`,或跟音檔同名的影片檔(`歌手 - 歌名.mp4`)。歌要等影片好才算做好;影片失敗或音訊好了之後 `SING_VIDEO_WAIT_S` 秒還沒好就不等(`meta.json` `has_video: false` + `video_error`)。SoundCloud 這種沒有影片的連結會直接略過。這功能之前做好的歌,再點一次會只補抓影片。
 
 做好的歌快取在 `data/songs/<id>/`(`meta.json` 有來源、音高、歌詞、各階段耗時與 VRAM 峰值);同一個查詢 / 連結 / 檔案 + 同樣的音高設定再點一次是馬上好。`data/` 是本機資料:下載的歌、模型權重、參考音都不要提交。
 
@@ -443,7 +444,7 @@ curl -s http://127.0.0.1:8005/jobs/<id>          # state / stage / progress;done
 .venv/Scripts/python -m pytest tests/test_sing.py  # mock 模式(SING_BACKEND=mock),不需要 GPU / 網路
 ```
 
-**實測**(2026-11-02,4070 SUPER,TTS / ASR / OBS 同時開著、GPU 已用約 10 GB):NCS 的〈On & On〉(3 分 28 秒)從 YouTube 搜尋到做好 **61.9 秒**:找歌 3.3 秒、下載 8.1 秒、分離 4.6 秒、轉換 42.3 秒(30 steps)、混音 1.6 秒、歌詞 2.0 秒;本行程 PyTorch VRAM 峰值 **3.2 GB**。同一首再點是快取。
+**實測**(2026-11-02,4070 SUPER,TTS / ASR / OBS 同時開著、GPU 已用約 10 GB):NCS 的〈On & On〉(3 分 28 秒)從 YouTube 搜尋到做好 **61.9 秒**:找歌 3.3 秒、下載 8.1 秒、分離 4.6 秒、轉換 42.3 秒(30 steps)、混音 1.6 秒、歌詞 2.0 秒;本行程 PyTorch VRAM 峰值 **3.2 GB**。同一首再點是快取。同一首的影片(只抓影片,沒有重做轉換):720p60 H.264(這首 YouTube 最高 720p)、78.4 MB,找 + 下載 16.9 秒(下載本身約 8 秒、8.8 MB/s),跟分離 + 轉換平行跑,不會拖慢。
 
 | 環境變數 | 預設 | 說明 |
 |---|---|---|
@@ -457,6 +458,7 @@ curl -s http://127.0.0.1:8005/jobs/<id>          # state / stage / progress;done
 | `SING_MAX_SECONDS` | 480 | 最長的歌 |
 | `SING_URL_HOSTS` | YouTube、SoundCloud、Bilibili、Niconico | 連結允許的網域(逗號分隔,子網域也算) |
 | `SING_LIBRARY_FIRST` / `SING_LYRICS` / `SING_KEEP_MODELS` | 1 / 1 / 0 | 先比對本機歌庫 / 抓歌詞 / 模型留在 VRAM |
+| `SING_VIDEO` / `SING_VIDEO_MAX_HEIGHT` / `SING_VIDEO_MAX_MB` / `SING_VIDEO_WAIT_S` | 1 / 1080 / 300 / 120 | 抓原曲影片 / 最高解析度 / 最大檔案 / 音訊好了之後最多再等幾秒 |
 | `HOST` / `PORT` | `127.0.0.1` / `8005` | 只聽本機 |
 
 Go Live 直播要讓觀眾聽到歌,voice node 的 `GOLIVE_AUDIO` 要開(`true`);語音頻道裡的人不受影響。

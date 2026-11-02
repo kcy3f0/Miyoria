@@ -136,13 +136,14 @@ token = "${VOICE_LINK_TOKEN:-}"
 bind = "127.0.0.1:7882"
 token = "${STAGE_LINK_TOKEN:-}"
 
-# OBS 智慧場景:每個場景的用途(chat 聊天 / game 遊戲 / brb 暫離 / starting 開場 / ending 結尾)。
+# OBS 智慧場景:每個場景的用途(chat 聊天 / game 遊戲 / brb 暫離 / starting 開場 / ending 結尾 / sing 唱歌)。
 # 第一次看到 OBS 的場景清單時用 fast 模型從名稱判斷(沒有模型就用關鍵字),面板「直播」頁可以改;
 # 這裡寫的最優先,面板不能改。導演:開台 → 開場再到聊天、開始玩遊戲 → 遊戲、直播中沒人講話或她離開語音
-# → 暫離、下播 → 結尾(先停留 ending_ms 再真的停播)。她也可以自己用 stage_scene 換。
+# → 暫離、下播 → 結尾(先停留 ending_ms 再真的停播)、唱歌 → 唱歌(放原曲 MV,唱完回到原本的場景)。
+# 她也可以自己用 stage_scene 換。
 [modules."stage.link".scenes]
 # director = true
-# roles = { chat = "聊天", game = "遊戲", brb = "暫離", starting = "開場", ending = "結尾" }
+# roles = { chat = "聊天", game = "遊戲", brb = "暫離", starting = "開場", ending = "結尾", sing = "唱歌" }
 # transition = { name = "Fade", duration_ms = 300 }   # 每次切換用的轉場(OBS 裡的名稱)
 # transitions = { game = { name = "Stinger" } }       # 個別用途的轉場(stinger 不用給長度)
 # starting_ms = 30000        # 開場畫面停多久
@@ -175,6 +176,8 @@ dirs = ["extensions"]
 # max_pending_per_user = 2   # 每個人同時最多幾首在歌單上
 # lyrics = true              # 同步歌詞變成 overlay 字幕
 # lip_sync_vocals = true     # 嘴型跟轉換後的人聲走(不是整首混音)
+# video = true               # 唱的時候在直播畫面放原曲影片(靜音);Stage 用 [stage.obs] song_video_source 播
+# video_dir = "data/songs"   # worker 的 SING_DATA_DIR(直播機上的路徑),不在裡面的影片不會送
 
 # 遊戲內聊天變成獨立的對話(每個世界 / 伺服器一段歷史)。玩家在 Discord 用 /me link 拿代碼,
 # 在遊戲聊天室打 `!link <代碼>` 就跟 Discord 帳號連在一起;沒連的玩家是陌生人。
@@ -369,4 +372,9 @@ host = "127.0.0.1"
 port = 4455
 password = "${OBS_PASSWORD:-}"
 # subtitle_source = "Miyoria 字幕"   # 她最新的一句話;OBS 沒有這個文字來源時自動建在目前場景下方
+# 唱歌時放原曲影片的媒體來源(要自己在「唱歌」場景建,見 docs/protocols/stage-link.md「唱歌時放影片」)
+# song_video_source = "Miyoria 歌曲影片"
+# song_video_dir = "data/songs"      # worker 的 SING_DATA_DIR;不在裡面的路徑不放
+# song_video_lead_ms = 0             # 影片比歌慢就加大(OBS 開檔要一點時間)
+# song_video_resync_ms = 300         # 跟歌差超過就 seek
 

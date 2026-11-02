@@ -30,6 +30,7 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 | `stream` | `action`(`start` / `stop`), `id?` | 開始 / 停止直播 |
 | `avatar_hotkey` | `name`, `id?` | 觸發 VTS hotkey(名稱或 hotkey ID) |
 | `gaze` | `target`(`chat` / `game` / `camera`) | 她看哪裡 |
+| `song_video` | `action`(`play` / `stop`), `song`, `path?`, `offset_ms?`, `scene?` | 她唱的歌的原曲影片(見下面「唱歌時放影片」)。`play`:`path` 是直播機上歌曲快取裡的影片(絕對路徑),`offset_ms` 是送出時歌已經唱了多久,`scene` 是導演會切去的 `sing` 場景(沒有就是目前場景);`stop`:停掉並清空。沒有 `id`、不回覆 |
 | `status_request` | `id?` | 要一份最新的 `status` |
 | `ping` / `pong` | | |
 
@@ -44,7 +45,11 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 {"type":"stream","action":"start","id":13}
 {"type":"avatar_hotkey","name":"Wave","id":14}
 {"type":"gaze","target":"chat"}
+{"type":"song_video","action":"play","song":"yt-K4DyBUG242c","path":"C:\\Miyoria\\data\\songs\\yt-K4DyBUG242c\\video.mp4","offset_ms":0,"scene":"唱歌"}
+{"type":"song_video","action":"stop","song":"yt-K4DyBUG242c"}
 ```
+
+`song_video` 是 v1 之後加的:舊版 Stage 不認得它(記 debug log、略過),協定版本仍是 1。
 
 **字幕的規則**(Core 端):
 
@@ -110,16 +115,42 @@ brb_on_voice_leave = true       # 直播中她離開語音 → 暫離
 only_while_live = false         # true:只在直播中切
 ```
 
-- **用途(role)**:內建 `chat`(聊天)、`game`(遊戲)、`brb`(暫離)、`starting`(開場)、`ending`(結尾);`roles` 裡可以加自己的(小寫英數與 `_`)。每個用途的場景依序取自:設定檔 `roles` → 面板(`PUT /api/stage/scenes`,存在 settings `_global` / `stage:scene_roles`)→ 自動分類。自動分類在節點第一次回報 `scenes`、以及場景清單改變時跑一次:`fast` 用途、JSON 模式,場景名稱放在不可信的資料區塊裡,答案只認清單裡一字不差(不分大小寫)的名稱;沒有 LLM、呼叫失敗或答案不是 JSON 時改用關鍵字(`chat` / `talk` / `雜談`、`game` / `遊戲`、`brb` / `afk` / `暫離`、`start` / `soon` / `開場`、`end` / `outro` / `下播`…)。服務 `SceneRolesKey`。
+- **用途(role)**:內建 `chat`(聊天)、`game`(遊戲)、`brb`(暫離)、`starting`(開場)、`ending`(結尾)、`sing`(唱歌);`roles` 裡可以加自己的(小寫英數與 `_`)。每個用途的場景依序取自:設定檔 `roles` → 面板(`PUT /api/stage/scenes`,存在 settings `_global` / `stage:scene_roles`)→ 自動分類。自動分類在節點第一次回報 `scenes`、以及場景清單改變時跑一次:`fast` 用途、JSON 模式,場景名稱放在不可信的資料區塊裡,答案只認清單裡一字不差(不分大小寫)的名稱;沒有 LLM、呼叫失敗或答案不是 JSON 時改用關鍵字(`chat` / `talk` / `雜談`、`game` / `遊戲`、`brb` / `afk` / `暫離`、`start` / `soon` / `開場`、`end` / `outro` / `下播`、`sing` / `song` / `karaoke` / `MV` / `唱歌` / `歌回`…)。服務 `SceneRolesKey`。
 - **能力 `stage.scene`** 收 `{role}` 或 `{name}`(場景名稱;不是場景名稱但是用途名稱時當用途):用途會帶上它的轉場送 `scene`。她的工具 `stage_scene` 一樣可以給 `role`。
 - **導演**(principal `director`,每次切換都是 `stage.scene {role}` 過閘門,所以自主暫停時導演也停):
   - 開台(Go Live `starting` / `live`,或 OBS 開始直播)→ `starting`,`starting_ms` 後 → `chat`(在玩遊戲就 `game`)。沒有場景的用途會跳過、換下一個符合的(沒有開場場景就直接聊天;正在玩遊戲就維持遊戲場景);
   - `game.director.session` `started` → `game`,`stopped` → `chat`;
+  - 她開始唱歌(`sing.cue` `started`)→ `sing`(立刻,不等 debounce、`min_switch_ms`、`manual_hold_ms`),唱的時候不會切去暫離或遊戲;唱完(`ended`)→ 回到唱之前的場景(用 `stage.scene {name}`),唱的期間狀況變了(遊戲開始 / 結束、開台 / 下播)就改去現在該在的場景,有人手動切走了就不動。沒有 `sing` 場景時唱歌不切場景;
   - 直播中、沒在玩遊戲:`brb_after_ms` 沒有任何人講話(她的語音、別人的語音、回合完成)或她離開了語音頻道 → `brb`,有人講話 / 回到語音 → 回來;
   - 停播:Go Live `stopped` / `failed`,或 OBS 停止直播 → `ending`,並停在結尾畫面直到有新的變化(開台、開始 / 停止遊戲)。
   - 只對**變化**反應(開機時不會去「修正」目前的場景);`debounce_ms` 內的變化合併;兩次自動切換至少隔 `min_switch_ms`;別人(OBS 裡手動、指令、面板、她自己的 `stage_scene`)切了之後 `manual_hold_ms` 內不插手,期間有變化就等時間到再切。開場與結尾不受這些等待限制。
 - **結尾幕(`StreamCurtainKey`)**:`stream.stop`(Go Live)與 `stage.stream stop`(`/stream stop`、面板)在真的停播前先呼叫它:切到 `ending`、停留 `ending_ms` 再停;沒有結尾場景、沒在直播或切換被閘門擋下時馬上繼續。
 - 轉場會改掉 OBS「目前的轉場」設定,之後你在 OBS 手動切換也會用它。
+
+### 唱歌時放影片(`song_video`,Stage 端)
+
+```toml
+[stage.obs]
+# song_video_source = "Miyoria 歌曲影片"   # 媒體來源名稱(不要這功能:Core 的 [modules.sing] video = false)
+# song_video_dir = "data/songs"            # worker 的 SING_DATA_DIR;不在裡面的路徑一律不放
+# song_video_lead_ms = 0                   # 提早多久 restart(補 OBS 開檔到出第一格的時間)
+# song_video_resync_ms = 300               # 跟歌差超過這麼多就 seek(0 = 不檢查)
+```
+
+- 收到 `play`:先確認 `path` 是 `song_video_dir` 裡存在的 `video.<mp4|mkv|webm|mov|m4v>`;要播的場景是 `scene`(沒給就是 OBS 目前的場景)。**媒體來源要是那個場景裡的項目**(直接放在場景裡,不要包在群組 / 巢狀場景裡),不是就什麼都不做(每個場景只警告一次)。
+- 設定媒體來源(`SetInputSettings`,overlay):`is_local_file: true`、`local_file`、`looping: false`、`restart_on_activate: false`、`close_when_inactive: false`、`clear_on_media_end: true`,再 `SetInputMute` 靜音。`restart_on_activate` 刻意關掉:切場景的轉場晚於開始時,OBS 會把影片從頭重播、跟歌錯開;開始的時間由 Stage 自己控制。項目是隱藏的就先顯示,歌結束後再藏回去。
+- 時間:收到後 `[stage.lipsync] latency_ms` − `offset_ms` − `song_video_lead_ms` 時 `TriggerMediaInputAction` restart;1.5 秒後、之後每 20 秒用 `GetMediaInputStatus` 比對位置,差超過 `song_video_resync_ms` 就 `SetMediaInputCursor`。晚到的 `play`(`offset_ms` 大)立刻 restart、0.3 秒後 seek 到歌的位置。
+- 收到 `stop`(或下一首的 `play`):晚 `latency_ms` 後 stop、把 `local_file` 清空。
+- OBS 沒連上、拒絕任何一個呼叫:記 log,歌照唱,不會讓 Stage 出錯。
+
+**OBS 要自己建的東西**(Miyoria 不會改你的 OBS 場景):
+
+1. 新增場景,名稱例如 `唱歌`(或在 `[modules."stage.link".scenes] roles` 寫 `sing = "你的場景名稱"`;名稱裡有 sing / song / karaoke / MV / 唱歌 / 歌回 的會被自動分類成 `sing`)。
+2. 場景裡由下到上:
+   1. **媒體來源**,名稱 `Miyoria 歌曲影片`(跟 `song_video_source` 一樣):「本機檔案」打勾、檔案先空著、「循環」不勾、「來源變成作用中時重新開始播放」不勾(Stage 也會設)。按右鍵 → 變形 → 「符合畫面大小」(全畫面在最底層)。音訊混音器裡它會被設成靜音,不用管。
+   2. 她的 **VTube Studio 視窗擷取**(或遊戲擷取 / Spout2,跟聊天場景一樣的來源可以直接「加入現有的」),放在影片上面,背景透明。
+   3. 最上面 **`Miyoria Overlay` 瀏覽器來源**(`http://127.0.0.1:7884/overlay/`,一樣「加入現有的」),歌詞字幕會在這裡。
+3. 沒有 `唱歌` 場景也可以:把同一個媒體來源加進聊天場景(可以先隱藏),唱歌時 Stage 會在目前場景裡顯示它、唱完藏回去。
 
 ---
 

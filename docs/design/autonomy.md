@@ -488,6 +488,11 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 - **不可信資料**:歌名、歌手、歌詞來自 YouTube / lrclib / 點歌的人;進 prompt 前一律 `safeName`(單行、去控制字元、截短),再放進資料區塊;卡片上的歌名跳脫 Markdown。連結只接受 worker 的 `SING_URL_HOSTS`(預設 YouTube、SoundCloud、Bilibili、Niconico)。
 - **GPU**:worker 一次只做一首,每個階段用完就釋放 VRAM(`SING_KEEP_MODELS=1` 可保留)。實測(4070 SUPER,TTS / ASR / OBS 同時開著):3 分 28 秒的歌從 YouTube 搜尋到做好約 62 秒(分離 4.6 秒、轉換 42 秒),本行程 VRAM 峰值約 3.2 GB;第一次要另外下載約 2 GB 的模型。
 - **直播要開音訊**:Go Live 的畫面推流要帶聲音(voice node 的 `GOLIVE_AUDIO=true`)觀眾才聽得到歌;Discord 語音頻道裡的人不受影響。
+- **邊唱邊放原曲 MV**(2026-11-02):來源是影片網站時,worker 從下載那一步起**平行**抓影片(只要畫面,H.264 ≤ 1080p 優先,超過 `SING_VIDEO_MAX_MB` 300 MB 不要),存成歌曲快取裡的 `video.mp4`;本機歌庫用音檔旁邊的 `video.*`(資料夾)或同名影片檔。歌要兩邊都好才算「準備好了」,但影片失敗、或音訊做完 `SING_VIDEO_WAIT_S`(120 秒)後還沒好,就不等它(`has_video: false`、`video_error`)——影片不會拖住唱歌。實測 NCS〈On & On〉(3 分 28 秒):影片 720p60 H.264(YouTube 這首最高 720p)、78.4 MB、找影片 + 下載 16.9 秒,遠比分離 + 轉換(約 47 秒)短,所以平常不會變慢。這功能之前做好的歌,下次再點會只補抓影片。
+  - Core 的開始 cue 帶影片的**絕對路徑**(`[modules.sing] video_dir`,預設 `data/songs`,= worker 的 `SING_DATA_DIR`;只有 `<歌曲 id>/video.<副檔名>` 這種形狀、而且在這個資料夾裡的才會送)和 `offset_ms`;`stage.link` 轉成 Stage Link 的 `song_video` `play` / `stop`。Stage 再檢查一次路徑(`[stage.obs] song_video_dir` 裡、存在、是影片檔),不在裡面就不放。
+  - **場景**:新的場景用途 `sing`(唱歌)。有 `sing` 場景時導演一開始唱就立刻切過去(不等 debounce / 手動切換的保留時間),唱完回到**唱之前的那個場景**;唱的期間開始 / 停止玩遊戲、開台 / 下播的話,就改切「現在該在的」場景;唱到一半有人手動切走就不切回去。沒有 `sing` 場景時不切場景,影片只在**目前場景裡有那個媒體來源**時播。
+  - **同步**:Stage 收到 `play` 後等 `[stage.lipsync] latency_ms`(跟嘴型一樣,對到觀眾聽到的時間)再 restart 媒體來源(`song_video_lead_ms` 可以提早一點補 OBS 開檔的時間),之後 1.5 秒、每 20 秒比對 OBS 回報的播放位置,差超過 `song_video_resync_ms`(300 ms)就 seek。Stage 中途才連上(或重連)時,Core 用經過的時間重送 `play`,影片從唱到的地方開始。結束一樣晚 `latency_ms` 才停、清掉檔案。
+  - 媒體來源是靜音的(`SetInputMute`),觀眾聽到的是她的翻唱。
 
 還沒做 / 要注意:
 
