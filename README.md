@@ -47,7 +47,7 @@ pnpm test                   # 每個套件的 Vitest;pnpm typecheck、pnpm lint 
 1. 啟動 ASR / TTS worker:見 [workers/README.md](workers/README.md)(沒有 GPU 可以先用 `workers/fake`)
 2. `miyoria core`
 3. 在直播機啟動 self 帳號語音節點:見 [apps/voice-node/README.md](apps/voice-node/README.md)(`VOICE_LINK_TOKEN` 要跟 core 的 `.env` 一樣)
-4. 在 Discord 打 `/join`
+4. 在 Discord 打 `/voice join`(`/help` 會列出你能用的所有指令)
 
 ### 其他節點與工具
 

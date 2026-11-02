@@ -370,7 +370,7 @@ export interface Action {
 
 - 持久化在 DB,Panel 和 overlay 會即時顯示。
 - 排序:公平輪替(同一個人不能洗版)× 權重(好感、訂閱、抖內)× 時間。
-- 指令:`/queue list | skip | remove | clear | pause`(依權限),觀眾用 `/request` 或直播聊天室 `!request`。
+- 指令:`/queue list`(公開卡片,附叫號按鈕)、`/queue manage next | done | skip | remove | clear | pause | resume | priority`(依權限),觀眾用 `/queue add`、`/queue upvote` 或直播聊天室 `!request`。
 - 「投票模式」:一段時間內收集觀眾指令,票數最高的執行(類似 Twitch Plays)。
 
 ---
@@ -541,7 +541,7 @@ export interface PlatformSink {
 | `text:*`、反應、輸入中、指令回應 | bot |
 | `voice:*`、進出語音、Go Live 開關 | self |
 
-**流程範例**:有人在文字頻道打 `/join` → bot 收到指令並檢查權限 → Core 發 `voice.join{guild, channel}` 給 self voice node → self 帳號進語音,bot 在文字頻道回「我進去囉」。
+**流程範例**:有人在文字頻道打 `/voice join` → bot 收到指令並檢查權限 → Core 發 `voice.join{guild, channel}` 給 self voice node → self 帳號進語音,bot 在文字頻道貼出「她已加入語音頻道」卡片(收音說明與同意按鈕)。
 
 **Go Live**:OBS 把畫面(VTuber + 遊戲)用本機串流輸出(RTMP / SRT 到 localhost,或虛擬攝影機)→ self voice node 用 ffmpeg 轉碼後推到 Discord Go Live。可以同時推 Twitch / YouTube。
 
@@ -551,31 +551,48 @@ export interface PlatformSink {
 
 ### 11.3 跨平台指令框架
 
-指令定義一次,自動對應到 Discord slash command、文字前綴指令、直播聊天室 `!cmd`、CLI 和 Panel:
+指令定義一次(`@miyoria/commands`),自動對應到 Discord slash command、文字前綴指令、直播聊天室 `!cmd`、CLI 和 Panel。指令可以一起宣告自己的**元件路由**(按鈕、下拉選單、表單)和參數的**自動完成**:
 
 ```ts
 // @miyoria/commands
 registry.register(
-  commandSpec("memory forget", "讓 Miyoria 忘記關於你的某件事", {
-    args: [argSpec("what", "要忘記什麼", ArgKind.string)],
-    permission: "memory.self.forget",
-    ephemeral: true,
-  }),
-  (inv) => forget(inv),
+  commandSpec("queue list", "查看目前的佇列", { permission: "queue.list" }),
+  (inv) => listCard(queue),
+  {
+    components: [
+      // 卡片上的「下一個」按鈕:custom_id = "mi:queue:list:next"
+      { route: "queue:list:next", permission: "queue.manage", handle: () => ComponentResult.update(next()) },
+    ],
+  },
 );
 ```
 
-預設指令群組(之後再細化):
+**指令樹**(指令 → 群組 → 子指令,最多三層;群組說明集中在 `packages/commands/src/tree.ts`):
 
-| 群組 | 指令 |
+| 指令 | 子指令 |
 |---|---|
-| 對話 | `/chat`、`/mode`(頻道模式)、`/activeness`(主動程度) |
-| 語音 | `/join`、`/leave`、`/voice consent`、`/voice mode` |
-| 記憶 | `/memory show / forget / export` |
-| 自己 | `/me`(她怎麼叫你、你的資料)、`/link` |
-| 佇列 | `/request`、`/queue list / skip / remove / clear / pause` |
-| 直播 / 遊戲 | `/stream start / stop / scene`、`/game start / stop / goal` |
-| 管理 | `/admin module list / enable / disable / restart`、`/admin role map`、`/admin block`、`/admin budget` |
+| `/voice` | `join`、`leave`、`mode [mode]`、`consent [on\|off]`、`golive start\|stop\|status` |
+| `/stream` | `start`、`stop`、`status`、`scene <name>`(自動完成 OBS 場景) |
+| `/me` | `profile`、`call <稱呼>`、`link [code]`、`memory show\|export\|forget` |
+| `/queue` | `add <text>`、`list`(附「下一個 / 完成 / 跳過 / 暫停」按鈕)、`upvote <id>`、`manage next\|done\|skip\|remove\|clear\|pause\|resume\|priority`、`vote start\|end`(投票用卡片上的按鈕) |
+| `/game` | `start`、`stop`、`goal`、`status` |
+| `/channel` | `mode [mode]`、`activeness [level]` |
+| `/admin` | `module list\|enable\|disable\|restart`、`role list\|assign\|revoke\|map\|unmap\|whois`、`perm allow\|deny\|clear`、`person show\|tag\|untag\|block\|unblock\|reset\|adjust`、`persona show`、`memory wipe` |
+| `/help` | 依分類列出**呼叫者能用的**指令(也用來確認她在線上,取代 `/ping`) |
+
+`/admin` 在 Discord 設定 `default_member_permissions = ManageGuild`(沒有「管理伺服器」權限的人看不到,權限節點照樣檢查);`/voice`、`/stream`、`/queue`、`/game`、`/channel`、`/admin` 只能在伺服器裡用(`contexts = [Guild]`),`/me`、`/help` 也能在私訊用。
+
+**回覆**:`CommandReply` = 純文字(`text`,文字平台與擴充用)+ 選用的結構化卡片(`card`:標題、文字、小字、區段 + 按鈕、分隔線、按鈕列、下拉選單、檔案、強調色)+ 附件(`files`)+ 面板 session。Discord 一律渲染成 **Components V2**(container),**不用 embed**(架構測試會擋)。共用 helper:`notice(kind, text, detail)`(info / success / warn / error;原始錯誤放在獨立的小字行)、`confirm(...)`(紅色確認卡,破壞性動作一律先確認)、`pageOf` / `pageButtons`(分頁)。表單用 modal(例如 `/me profile` 的「設定稱呼」、`/admin memory wipe` 要求輸入 profile id)。擴充的純文字回覆照樣可用(`@miyoria/sdk` 不變)。
+
+**元件路由**:每個控制項的 `custom_id` 是 `mi:<route>:<參數...>`。全域只有一個路由器(registry):取最長的已註冊前綴 → 檢查**所屬指令的權限節點**(以及路由自己額外宣告的節點)→ 解析參數 → `require` → `handle`;兩個指令宣告同一個路由會在註冊(啟動)時失敗。回覆帶 `session` 的訊息會被記錄(以訊息 id 為 key):可限制只有發起人能操作,TTL 到期後自動停用按鈕。需要任意文字的狀態(例如要忘記的關鍵字)放在 session,不放進 `custom_id`。
+
+**可見性**(`replyEphemeral`,集中一處):依指令宣告的 `ephemeral`;查詢、設定、錯誤、管理 = 只有自己看得到,給頻道看的結果卡片(佇列、投票、加入語音、Go Live 開始)= 公開;warn / error 一律只有自己看得到。延遲回應(超過 1.5 秒)用宣告的可見性 defer,不會再有 defer 與最後回覆可見性不一致的情況。錯誤統一由 `respondError` 回覆:還沒回應就回一則 ephemeral,已 defer 就編輯或補一則 ephemeral follow-up,**元件互動出錯時絕不覆蓋按鈕所在的那則訊息**。
+
+**系統文字**:中性、簡短的繁體中文,全形標點(,。?!:()),不用角色口吻;角色口吻只出現在她本人說話的地方(例如 `/me profile` 的一句引言)。指令說明用第三人稱「她」。
+
+**同步**:指令只存在一個範圍——`command_guilds` 為空時全域,否則在列出的伺服器。每次啟動的第一次同步會順便清掉另一個範圍(伺服器模式清全域與其他伺服器,全域模式清每個伺服器),所以切換模式不會在清單裡留下重複的舊指令;每個指令在整批覆寫前先驗證(名稱、說明長度、選項數、必填順序、總字數),不合格的會記錄錯誤並略過,不會讓整批失敗。手動全部清除:`miyoria discord commands reset`。`commands` 模組重啟時沿用同一個 registry,其他模組註冊的指令不會消失(模組用 `CommandMount` 掛指令,registry 換新時會自動重新註冊)。
+
+**清除記憶**(`/admin memory wipe`,節點 `owner.memory.wipe`):選範圍(記憶 / + 關係 / + 聊天紀錄 / 全部)→ 紅色確認卡(列出筆數)→ 表單輸入 profile id → 先把要刪的資料匯出成 JSON 附件傳出 → 同一個交易裡依 `profile_id` 刪除(`memory_records`、`relationships` + `relationship_deltas`、`message_log`、`decision_log`、設定 `memory_watermark:*`、`memory_maintenance_last`、`mood:last`、`initiative:state`;人物、帳號、連結代碼、權限、稽核紀錄、人格不動)→ 寫稽核紀錄 → 重啟 memory、social、mood、agent、initiative 清掉快取。聊天紀錄與整理進度(watermark)永遠一起刪,避免舊紀錄被重新萃取成記憶。
 
 ---
 
@@ -707,9 +724,12 @@ extensions/minecraft/
 
 套件:`@miyoria/auth`。
 
-- **RBAC + 權限節點**:角色 `owner > admin > moderator > trusted > user > restricted > blocked`;權限節點像 `module.toggle`、`memory.forget.others`、`voice.join`、`game.control`、`queue.skip`、`tools.mcp.<server>.<tool>`。角色可以自訂。
+- **RBAC + 權限節點**:角色 `owner > admin > moderator > trusted > user > restricted > blocked`;權限節點像 `admin.module.toggle`、`voice.join`、`queue.manage`、`memory.self.forget`、`owner.memory.wipe`、`tools.mcp.<server>.<tool>`。角色可以自訂。
+- **一套語意**:內建角色的節點清單只定義一次(`@miyoria/commands` 的 `nodes.ts`);`auth` 模組用它建立內建角色,沒有 `auth` 時的備援權限也套用同一份清單(設定檔的擁有者 = owner、伺服器管理員 = admin、其他人 = user),所以同一個節點有沒有 `auth` 意思都一樣。資料庫裡沒被改過的舊版內建角色會自動升級到新的節點清單;改過的保留原樣(日誌會列出缺少的新節點)。
+- **查看與變更分開**:設定類指令用「查看」節點(`channel.mode.view`、`channel.activeness.view`、`voice.mode.view`、`voice.golive.view`,user 以上)顯示目前值,變更另外需要 `admin.channel.mode`、`admin.channel.activeness`、`admin.voice.mode`、`voice.golive`(moderator 以上)。跟參數有關的額外限制也是宣告好的節點(例如改 `owner` 標籤要 `owner.person.tag`、調好感要 `owner.person.adjust`),不在 handler 裡偷偷判斷是不是擁有者。
+- **擁有者**:只在 `[modules.commands] owners` 設定;舊設定檔的 `[modules.auth] owners` 仍會讀取並合併。
 - **範圍**:全域 / 每個伺服器 / 每個頻道,可以覆寫。
-- **Discord 角色對應**:`/admin role map @Mods moderator`,把 Discord 角色對應到 Miyoria 角色;slash command 同時設定 Discord 原生的 `default_member_permissions` 當第一道防線。
+- **Discord 角色對應**:`/admin role map @Mods moderator`,把 Discord 角色對應到 Miyoria 角色;slash command 同時設定 Discord 原生的 `default_member_permissions`(`/admin` = 管理伺服器)當第一道防線。
 - **Panel 登入**:Discord OAuth2(Panel 使用者就是 Discord 使用者,權限一致,要有 `admin.panel.access` / `admin.panel.write`);`miyoria init` 產生的 `MIYORIA_API_TOKEN` 照樣能用(CLI 一直用 token)。
 - **稽核紀錄**:所有管理操作(誰、何時、改了什麼)都記下來。
 
@@ -749,6 +769,7 @@ extensions/minecraft/
 | `miyoria persona show / set` | 看 / 改執行期的人格段落 |
 | `miyoria profile validate` | 檢查 profile 格式 |
 | `miyoria ext new / list / install / validate / dev` | 擴充開發與管理 |
+| `miyoria discord commands reset` | 刪除 bot 在全域與所有伺服器的斜線指令(清掉重複的舊指令;core 下次啟動會重新註冊) |
 
 之後可能再加:`say`(測試 TTS + 嘴型)、`memory search / forget`、節點配對。資料庫備份 / 還原目前用 `scripts/backup.*`、`scripts/restore.*`(見 OPERATIONS §7)。
 

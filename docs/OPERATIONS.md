@@ -201,7 +201,7 @@ pnpm start                      # 或 pnpm build && pnpm start:dist
 
 - `VOICE_LINK_TOKEN` 必須跟 Core 的 `.env` 一樣。
 - `VOICE_LINK_URL`:同機 `ws://127.0.0.1:7879/voice-link`;跨機用 `ws://<tailnet-ip>:7879/voice-link` 或 `wss://voice.example.com/voice-link`。
-- 啟動後在 Discord 打 `/join`,她就會進你所在的語音頻道。詳細設定見 [apps/voice-node/README.md](../apps/voice-node/README.md)。
+- 啟動後在 Discord 打 `/voice join`,她就會進你所在的語音頻道。詳細設定見 [apps/voice-node/README.md](../apps/voice-node/README.md)。
 - 長期運行建議用行程管理員:Windows 用工作排程器「登入時執行」或 NSSM,Linux 用 systemd / pm2。`Ctrl+C` / SIGTERM 會先離開語音頻道再結束。
 
 ### 推論 worker
