@@ -83,7 +83,7 @@ export const WIPE_SCOPE_LABEL: Record<WipeScope, string> = {
 const WIPE_SCOPE_DETAIL: Record<WipeScope, string> = {
   memories: "她記得的所有事（經歷、事實、筆記、之後要問的事）。",
   relationships:
-    "記憶，加上她對每個人的好感、信任、熟悉度、印象、感情描述與變化紀錄，以及心情與內在狀態。",
+    "記憶，加上她對每個人的好感、信任、熟悉度、印象、感情描述與變化紀錄，以及心情、內在狀態與內心獨白。",
   history: "記憶與關係，加上聊天紀錄、決策紀錄與記憶整理進度。",
   everything: "以上全部，加上主動發話的狀態。",
 };

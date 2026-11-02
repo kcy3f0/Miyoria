@@ -2,14 +2,14 @@
 // (camelCased); if a package exported something else, fix it here and nowhere else.
 //
 // Boot order (legacy `boot.rs`): llm, speech, voice.link, voice, scheduler, agent, commands,
-// auth, actions, social, mood, world, self, memory, initiative, queue, game, game.chat, mcp,
+// auth, actions, social, mood, world, self, memory, initiative, mind, queue, game, game.chat, mcp,
 // stage.link, sandbox (opt-in), recorder, Discord bot, Admin API, terminal chat, then the
 // extension host and one `ext.<id>` per extension.
 
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ActionsModule } from "@miyoria/actions";
-import { AgentModule } from "@miyoria/agent";
+import { AgentModule, PersonaHandleKey } from "@miyoria/agent";
 import { ApiModule, avatarEmotions } from "@miyoria/api";
 import { AuthConfigSchema, AuthModule } from "@miyoria/auth";
 import { CommandsModule } from "@miyoria/commands";
@@ -28,6 +28,7 @@ import {
 } from "@miyoria/llm";
 import { McpModule } from "@miyoria/mcp";
 import { EmbeddingConfigSchema, MemoryModule } from "@miyoria/memory";
+import { MindModule } from "@miyoria/mind";
 import type { Profile } from "@miyoria/profile";
 import { QueueModule } from "@miyoria/queue";
 import { SandboxModule } from "@miyoria/sandbox";
@@ -109,6 +110,11 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
     new SelfModule(profileId),
     new MemoryModule(profileId, config.get("memory.embedding", EmbeddingConfigSchema)),
     new InitiativeModule(profileId),
+    new MindModule(profileId, {
+      name: profile.displayName,
+      persona: (services) =>
+        services.get(PersonaHandleKey)?.personaPrompt() ?? profile.personaPrompt(),
+    }),
     new QueueModule(),
     GameModule.fromProfile(profile),
     new GameChatModule(),

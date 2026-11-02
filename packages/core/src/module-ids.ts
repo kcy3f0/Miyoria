@@ -20,6 +20,7 @@ export const MODULE_IDS: readonly string[] = [
   "self",
   "memory",
   "initiative",
+  "mind",
   "queue",
   "game",
   "game.chat",

@@ -206,12 +206,13 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
   }),
   category(
     "inner",
-    // @miyoria/self `STATE_KEY`, `FEELING_PREFIX`
+    // @miyoria/self `STATE_KEY`, `FEELING_PREFIX`; @miyoria/mind's thought journal
     [
       settings("self_state", "active", ["self:state"]),
       settings("self_feelings", "active", [], ["self:feeling:"]),
+      settings("mind_thoughts", "active", [], ["mind:thought:"]),
     ],
-    { modules: ["self"] },
+    { modules: ["self", "mind"] },
   ),
   // @miyoria/social `mood.ts` `SETTINGS_KEY`
   category("mood", [settings("mood", "active", ["mood:last"])], {

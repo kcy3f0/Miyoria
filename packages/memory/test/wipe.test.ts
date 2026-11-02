@@ -187,6 +187,7 @@ describe("memory wipe", () => {
       expect.arrayContaining(["mood:last", "self:state", "self:feeling:"]),
     );
     expect(settingsOf("memories")).not.toContain("self:feeling:");
+    expect(settingsOf("relationships")).toContain("mind:thought:");
     expect(settingsOf("everything")).toContain("initiative:state");
     expect(wipeModules("history")).toEqual([
       "memory",
