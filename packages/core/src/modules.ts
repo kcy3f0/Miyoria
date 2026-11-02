@@ -2,9 +2,9 @@
 // (camelCased); if a package exported something else, fix it here and nowhere else.
 //
 // Boot order (legacy `boot.rs`): llm, speech, voice.link, voice, scheduler, agent, commands,
-// auth, social, mood, memory, initiative, queue, game, mcp, stage.link, sandbox (opt-in),
-// recorder, Discord bot, Admin API, terminal chat, then the extension host and one `ext.<id>`
-// per extension.
+// auth, social, mood, world, self, memory, initiative, queue, game, mcp, stage.link, sandbox
+// (opt-in), recorder, Discord bot, Admin API, terminal chat, then the extension host and one
+// `ext.<id>` per extension.
 
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -14,7 +14,7 @@ import { AuthConfigSchema, AuthModule } from "@miyoria/auth";
 import { CommandsModule } from "@miyoria/commands";
 import { DiscordBotModule } from "@miyoria/discord";
 import * as extHost from "@miyoria/ext-host";
-import { GameModule } from "@miyoria/game";
+import { GameHandleKey, GameModule } from "@miyoria/game";
 import { InitiativeModule } from "@miyoria/initiative";
 import type { Config, Module } from "@miyoria/kernel";
 import {
@@ -31,12 +31,14 @@ import type { Profile } from "@miyoria/profile";
 import { QueueModule } from "@miyoria/queue";
 import { SandboxModule } from "@miyoria/sandbox";
 import { SchedulerModule } from "@miyoria/scheduler";
+import { SelfModule } from "@miyoria/self";
 import { MoodModule, SocialModule } from "@miyoria/social";
 import { SpeechConfigSchema, SpeechModule } from "@miyoria/speech";
 import { AvatarProfile, parseStageConfig, runStage, StageLinkModule } from "@miyoria/stage";
 import { openStore as openStoreBackend, type Store } from "@miyoria/store";
 import { isJsonObject } from "@miyoria/types";
 import { VoiceLinkModule, VoiceModule } from "@miyoria/voice";
+import { WorldModule } from "@miyoria/world";
 import {
   buildCoreWith,
   type Core,
@@ -98,6 +100,11 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
     new AuthModule(),
     SocialModule.fromProfile(profile),
     new MoodModule(profileId, profile.manifest.mood),
+    new WorldModule({
+      interests: profile.manifest.interests,
+      game: (services) => services.get(GameHandleKey)?.status()?.game_name ?? null,
+    }),
+    new SelfModule(profileId),
     new MemoryModule(profileId, config.get("memory.embedding", EmbeddingConfigSchema)),
     new InitiativeModule(profileId),
     new QueueModule(),

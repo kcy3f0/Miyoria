@@ -15,6 +15,8 @@ export const MODULE_IDS: readonly string[] = [
   "auth",
   "social",
   "mood",
+  "world",
+  "self",
   "memory",
   "initiative",
   "queue",

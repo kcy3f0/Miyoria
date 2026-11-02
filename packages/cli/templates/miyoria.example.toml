@@ -81,6 +81,10 @@ token = "${DISCORD_BOT_TOKEN:-}"
 # 每次啟動會清掉另一種範圍留下的舊指令;指令清單有重複時可執行一次
 # `miyoria discord commands reset`
 command_guilds = []
+# 讓她知道誰在線、在玩什麼、誰在哪個語音頻道。要先在 Developer Portal → Bot →
+# Privileged Gateway Intents 打開 Presence Intent 與 Server Members Intent;
+# 沒開就設成 false,否則 Discord 會拒絕連線
+presence_intents = true
 
 # Admin API:CLI(`miyoria module ...`)和之後的管理面板用。token 由 `miyoria init` 產生
 [modules.api]
@@ -135,6 +139,26 @@ default_mode = "ambient"
 ambient_factor = 0.5       # 主動插話機率的倍率
 cooldown_ms = 20000        # 她講完後至少隔多久才會再主動開口
 debounce_ms = 700          # 對方講完後等多久(看他是不是還要繼續講)
+
+# 她的感知:誰在線、在玩什麼、誰在哪個語音頻道、各頻道熱不熱鬧。
+# 每個人都能用 /me privacy presence:off 不讓她讀自己的狀態
+[modules.world]
+# guilds = []                    # 只看這些伺服器;空的 = bot 所在的每個伺服器(各伺服器的資料只在該伺服器用)
+care_min_affinity = 30           # 好感或熟悉度到這個程度,對方上線 / 進語音時她才會注意到
+care_min_familiarity = 40
+# game_interests = ["Minecraft"] # 除了角色的 interests 之外,她有興趣的遊戲
+cooldown_secs = 900              # 同一件事(同一個人上線…)多久內不再提醒她
+max_salient_per_minute = 6
+
+# 她的內在:慾望(想聊天、想玩、想被注意、想休息、好奇)、無聊、她自己定的方針與議程、
+# 對每個人的感情描述。數字只決定自然漂移的速度,怎麼做由她自己判斷
+[modules.self]
+boredom_per_hour = 0.15          # 沒事做時無聊上升的速度
+# [modules.self.rise_per_hour]   # 各慾望自己上升的速度
+# social = 0.08
+# play = 0.05
+# attention = 0.04
+# curiosity = 0.05
 
 # ---- 程式沙箱 ----------------------------------------------------------------
 # 她寫的程式在用完即丟、不能連外的 Docker 容器裡執行(需要 Docker Desktop / Docker Engine)。
