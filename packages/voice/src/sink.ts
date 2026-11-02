@@ -66,8 +66,17 @@ export class Speaker implements VoiceSink {
     this.#d = deps;
   }
 
-  #playbackEvent(context: ContextKey, turn: TurnId | null, state: PlaybackState, text: string) {
-    this.#d.ctx.publish({ type: "voice_playback", data: { context, turn, state, text } }, { turn });
+  #playbackEvent(
+    context: ContextKey,
+    turn: TurnId | null,
+    state: PlaybackState,
+    text: string,
+    emotion: string | null,
+  ) {
+    this.#d.ctx.publish(
+      { type: "voice_playback", data: { context, turn, state, text, emotion } },
+      { turn },
+    );
   }
 
   async #start(
@@ -148,10 +157,10 @@ export class Speaker implements VoiceSink {
       playback = await this.#start(context, guild, text, emotion, turn, signal);
     } catch (error) {
       this.#d.ctx.log.warn({ err: errorMessage(error) }, "cannot start speech");
-      this.#playbackEvent(context, turn, "failed", text);
+      this.#playbackEvent(context, turn, "failed", text, emotion);
       throw error;
     }
-    this.#playbackEvent(context, turn, "started", text);
+    this.#playbackEvent(context, turn, "started", text, emotion);
     const barge = this.#d.barge;
     const token = barge.register(guild, playback);
     let state: PlaybackState;
@@ -165,7 +174,7 @@ export class Speaker implements VoiceSink {
       barge.unregister(guild, token);
       playback.stop(0);
     }
-    this.#playbackEvent(context, turn, state, text);
+    this.#playbackEvent(context, turn, state, text, emotion);
     switch (state) {
       case "finished":
         return "completed";

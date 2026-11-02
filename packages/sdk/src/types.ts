@@ -120,7 +120,13 @@ export type Event =
   | { type: "voice_utterance"; data: VoiceUtterance }
   | {
       type: "voice_playback";
-      data: { context: ContextKey; turn: Ulid | null; state: PlaybackState; text: string };
+      data: {
+        context: ContextKey;
+        turn: Ulid | null;
+        state: PlaybackState;
+        text: string;
+        emotion?: string | null;
+      };
     }
   | {
       type: "agent_initiative";

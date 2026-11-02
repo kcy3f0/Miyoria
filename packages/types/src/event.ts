@@ -73,7 +73,17 @@ export type Event =
   /** Her own speech playback. */
   | {
       type: "voice_playback";
-      data: { context: ContextKey; turn: TurnId | null; state: PlaybackState; text: string };
+      data: {
+        context: ContextKey;
+        turn: TurnId | null;
+        state: PlaybackState;
+        text: string;
+        /**
+         * Emotion the sentence is spoken with (`null`: none). Missing from older publishers; the
+         * Stage shows the emotion when the sentence starts playing.
+         */
+        emotion?: string | null;
+      };
     }
   /** Asks the agent to start a turn on her own initiative (no new input). */
   | {
