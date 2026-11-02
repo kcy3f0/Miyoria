@@ -149,6 +149,10 @@ interface Session {
   game: string;
   gameName: string;
   context: ContextKey;
+  /** How `context` was chosen; `auto` follows her into a voice channel she joins later. */
+  placement: Placement;
+  /** Where the session was started from. */
+  here: ContextKey;
   starter: AccountRef;
   startedAt: number;
   goal: Goal | null;
@@ -612,6 +616,8 @@ export class Director {
       game,
       gameName: name,
       context,
+      placement,
+      here,
       starter: invoker,
       startedAt: now,
       goal: null,
@@ -907,6 +913,9 @@ export class Director {
       return false;
     }
     s.lastComment = now;
+    // `auto`: she may have joined (or left) a voice channel since the game started; comment
+    // where she is now rather than where the game was started.
+    if (s.placement === "auto") s.context = this.#resolveContext("auto", s.here);
     const text = urgent
       ? `(你正在直播玩 ${s.gameName})${hint}`
       : `(你正在直播玩 ${s.gameName})實況:${hint}`;

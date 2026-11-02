@@ -113,6 +113,7 @@ class Harness {
   readonly prompts = new PromptContributors();
   readonly queue: RequestQueue;
   readonly hintLog: Log<string>;
+  readonly hintContexts: Log<ContextKey>;
   readonly nudgeLog: Log<Record<string, JsonValue>>;
   readonly traceLog: Log<Record<string, JsonValue>>;
 
@@ -151,6 +152,9 @@ class Harness {
       expect(e.data.reason).toBe("game");
       return e.data.hint;
     });
+    this.hintContexts = collect(this.sup.bus.subscribe("agent.initiative"), (e) =>
+      e.type === "agent_initiative" ? e.data.context : null,
+    );
     this.nudgeLog = collect(this.sup.bus.subscribe("mood.nudge"), (e) =>
       e.type === "custom" ? (e.data.payload as Record<string, JsonValue>) : null,
     );
@@ -439,6 +443,20 @@ describe("game director", () => {
     expect(h.status()?.goal).toBeNull();
     // Other kinds are left alone.
     expect(h.queue.get(song)?.state).toBe("active");
+    await h.stop();
+  });
+
+  it("auto_commentary_follows_her_into_a_voice_channel_joined_later", async () => {
+    const llm = new MockProvider("mock").reply(decision("閒晃", null, "看看四周"));
+    const h = await Harness.create(llm, { decide_secs: 5 });
+    // Started from a text channel while she is not in voice: commentary goes there...
+    await h.command("game start");
+    await secs(5);
+    expect(h.hintContexts.take().at(-1)).toEqual(textCtx());
+    // ...until she joins a voice channel; then it follows her there.
+    await h.publish({ type: "voice_joined", data: { context: voiceCtx(), participants: [] } });
+    await secs(20);
+    expect(h.hintContexts.take().at(-1)).toEqual(voiceCtx());
     await h.stop();
   });
 
