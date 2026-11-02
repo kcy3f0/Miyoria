@@ -30,3 +30,7 @@ __pycache__/
 # TypeScript build state
 *.tsbuildinfo
 coverage/
+
+# 本機執行資料與 Python 虛擬環境
+/data/
+workers/.venv-*/
