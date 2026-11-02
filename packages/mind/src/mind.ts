@@ -1038,6 +1038,10 @@ export class MindLoop implements Mind {
         if (place !== null && problem === null) {
           problem = this.#talkProblem(place, kind, draft.opening, draft.why, justSpoke, now);
         }
+        // The owner's level of a text channel (the agent checks it again when it opens).
+        if (draft.action === CHAT_START && context !== null && problem === null) {
+          problem = this.#d.services.get(IntentSinkKey)?.ceiling?.(context)?.blocked ?? null;
+        }
       } else {
         const held = this.#blocks.get(draft.action);
         if (held) problem ??= `on hold until things change: ${held.reason}`;

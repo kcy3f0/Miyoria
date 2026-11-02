@@ -399,3 +399,26 @@ describe("after her turns", () => {
     expect(r.intents.intents).toEqual([]);
   });
 });
+
+describe("channel levels", () => {
+  it("are shown with the place, and a level that blocks her start drops the chat.start", async () => {
+    const start = reply([{ action: "chat.start", place: "p1", why: "想聊天", opening: "大家好" }]);
+    const provider = new MockProvider("p").reply(start).reply(start);
+    const r = await manual(provider);
+    let blocked: string | null = null;
+    r.intents.levels = (c) =>
+      c.kind === "voice" ? null : { mode: "quiet", label: "安靜", blocked };
+    expect(status(await r.think())).toEqual([["chat.start", "started", "queued"]]);
+    expect(dataText(provider, 0)).toContain("聊天等級「安靜」");
+    expect(systemText(provider, 0)).toContain("「安靜」的頻道很少主動開口");
+
+    blocked = "level quiet: she started talking here 0 min ago; next in 180 min";
+    r.intents.intents.length = 0;
+    // Past her own backoff, still inside the level's gap.
+    await wait(11 * MIN);
+    const second = await r.think();
+    expect(dataText(provider, 1)).toContain("聊天等級「安靜」,現在不能主動開口");
+    expect(status(second)).toEqual([["chat.start", "dropped", blocked]]);
+    expect(r.intents.intents).toEqual([]);
+  });
+});

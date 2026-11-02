@@ -35,6 +35,7 @@ import {
   MindKey,
   type PersonPresence,
   SocialSignalsKey,
+  type TalkCeiling,
   toTimestamp,
   type VoiceActivity,
   type WorldSnapshot,
@@ -198,9 +199,16 @@ export class FakeIntents implements IntentSink {
     turn: "01JCTURN000000000000000000",
   });
 
+  /** The channel levels the agent would report (none by default). */
+  levels: (context: ContextKey) => TalkCeiling | null = () => null;
+
   async submit(intent: Intent): Promise<IntentOutcome> {
     this.intents.push(structuredClone(intent));
     return this.outcome(intent);
+  }
+
+  ceiling(context: ContextKey): TalkCeiling | null {
+    return this.levels(context);
   }
 }
 

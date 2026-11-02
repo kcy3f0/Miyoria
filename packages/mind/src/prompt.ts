@@ -169,7 +169,7 @@ function rules(input: MindInput): string {
   lines.push(
     "",
     "# 你能做的事(intents 的 action)",
-    "- chat.start:主動在某個地點開口說話(place 填文字頻道,或你所在的語音頻道)",
+    "- chat.start:主動在某個地點開口說話(place 填文字頻道,或你所在的語音頻道);文字頻道的「聊天等級」是擁有者設的上限,「安靜」的頻道很少主動開口,寫著「現在不能主動開口」的就不要",
     "- chat.dm:主動私訊某個人聊天(person 必填;只找跟你熟、你真的想找的人)",
   );
   for (const c of input.capabilities) {

@@ -12,6 +12,7 @@ import {
   ConversationStatesKey,
   contextKeyString,
   dataBlock,
+  IntentSinkKey,
   KnowledgeKey,
   type KnowledgeSubject,
   LessonsKey,
@@ -206,6 +207,14 @@ export async function gather(input: GatherInput): Promise<Gathered> {
       const people = v.members.filter((m) => !m.is_self).map((m) => m.display_name);
       p.note = people.length > 0 ? `裡面有 ${people.join("、")}${voiceTalk(v)}` : "沒有人";
     }
+  }
+  // The owner's level of each text channel: a ceiling on her talking there.
+  const sink = services.get(IntentSinkKey);
+  for (const p of places) {
+    const ceiling = sink?.ceiling?.(p.context) ?? null;
+    if (ceiling === null) continue;
+    const level = `聊天等級「${ceiling.label}」${ceiling.blocked === null ? "" : ",現在不能主動開口"}`;
+    p.note = p.note === "" ? level : `${p.note};${level}`;
   }
 
   // ---- people
