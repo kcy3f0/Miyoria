@@ -138,7 +138,7 @@ only_while_live = false         # true:只在直播中切
 # song_video_resync_ms = 300               # 跟歌差超過這麼多就 seek(0 = 不檢查)
 ```
 
-- 收到 `play`:先確認 `path` 是 `song_video_dir` 裡存在的 `video.<mp4|mkv|webm|mov|m4v>`;要播的場景是 `scene`(沒給就是 OBS 目前的場景)。**媒體來源要是那個場景裡的項目**(直接放在場景裡,不要包在群組 / 巢狀場景裡),不是就什麼都不做(每個場景只警告一次)。
+- 收到 `play`:先確認 `path` 是 `song_video_dir` 裡存在的 `video.<mp4|mkv|webm|mov|m4v>`;要播的場景是 `scene`(沒給就是 OBS 目前的場景)。**媒體來源要是那個場景裡的項目**,或是放在場景裡的巢狀場景(最多兩層)裡,例如給影片加圓角框用的 `唱歌 · 影片`(群組不算);都找不到就什麼都不做(每個場景只警告一次)。顯示 / 隱藏的是找到的那一層裡的項目。
 - 設定媒體來源(`SetInputSettings`,overlay):`is_local_file: true`、`local_file`、`looping: false`、`restart_on_activate: false`、`close_when_inactive: false`、`clear_on_media_end: true`,再 `SetInputMute` 靜音。`restart_on_activate` 刻意關掉:切場景的轉場晚於開始時,OBS 會把影片從頭重播、跟歌錯開;開始的時間由 Stage 自己控制。項目是隱藏的就先顯示,歌結束後再藏回去。
 - 時間:收到後 `[stage.lipsync] latency_ms` − `offset_ms` − `song_video_lead_ms` 時 `TriggerMediaInputAction` restart;1.5 秒後、之後每 20 秒用 `GetMediaInputStatus` 比對位置,差超過 `song_video_resync_ms` 就 `SetMediaInputCursor`。晚到的 `play`(`offset_ms` 大)立刻 restart、0.3 秒後 seek 到歌的位置。
 - 收到 `stop`(或下一首的 `play`):晚 `latency_ms` 後 stop、把 `local_file` 清空。

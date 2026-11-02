@@ -100,6 +100,17 @@ describe("song video on the stage", () => {
     await waitUntil(() => media().includes("hide 聊天#3"), "hidden again");
   });
 
+  it("finds the video inside a scene nested in the sing scene (a frame around it)", async () => {
+    const { sv, obs, video, media } = rig({ latencyMs: 0 });
+    obs?.items.set("唱歌", [{ id: 2, source: "唱歌 · 影片", enabled: true }]);
+    obs?.items.set("唱歌 · 影片", [{ id: 5, source: SOURCE, enabled: false }]);
+    sv.play({ song: "yt-abc", path: video, scene: "唱歌" });
+    await waitUntil(() => media().includes(`media ${SOURCE} restart`), "restart");
+    expect(media()).toContain("show 唱歌 · 影片#5");
+    sv.stop("yt-abc");
+    await waitUntil(() => media().includes("hide 唱歌 · 影片#5"), "hidden again");
+  });
+
   it("does nothing when the scene has no video source", async () => {
     const { sv, video, media } = rig({ latencyMs: 0 });
     sv.play({ song: "yt-abc", path: video });

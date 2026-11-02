@@ -13,7 +13,7 @@ import { stat } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import { errorMessage, getLogger } from "@miyoria/kernel";
 import type { Clock } from "@miyoria/types";
-import type { Obs, ObsConfig } from "./obs.js";
+import type { Obs, ObsConfig, SceneItem } from "./obs.js";
 
 const log = getLogger("stage.song-video");
 
@@ -43,6 +43,36 @@ export async function songVideoFile(dir: string, path: string | undefined): Prom
   } catch {
     return null;
   }
+}
+
+/** How deep `findSceneItem` looks into scenes nested in the scene (a frame scene around the video). */
+const MAX_NESTING = 2;
+
+/**
+ * The item showing `source` in `scene`, or in a scene nested in it (e.g. 「唱歌 · 影片」, which
+ * frames the video): the scene that holds it and the item. `null` when it is nowhere.
+ */
+export async function findSceneItem(
+  obs: Pick<Obs, "sceneItems">,
+  scene: string,
+  source: string,
+  depth = 0,
+): Promise<{ scene: string; item: SceneItem } | null> {
+  if (!obs.sceneItems) return null;
+  let items: SceneItem[];
+  try {
+    items = await obs.sceneItems(scene);
+  } catch {
+    return null; // not a scene
+  }
+  const item = items.find((i) => i.source === source);
+  if (item) return { scene, item };
+  if (depth >= MAX_NESTING) return null;
+  for (const child of items) {
+    const found = await findSceneItem(obs, child.source, source, depth + 1);
+    if (found) return found;
+  }
+  return null;
 }
 
 export interface SongVideoDeps {
@@ -157,8 +187,10 @@ export class SongVideo {
       log.debug({ song: msg.song }, "OBS is not connected; the song plays without its video");
       return;
     }
-    const scene = msg.scene ?? this.#deps.currentScene() ?? (await obs.currentScene());
-    const item = (await obs.sceneItems(scene)).find((i) => i.source === source);
+    const top = msg.scene ?? this.#deps.currentScene() ?? (await obs.currentScene());
+    const found = await findSceneItem(obs, top, source);
+    const scene = found?.scene ?? top;
+    const item = found?.item;
     if (!item) {
       this.#warnOnce(
         `scene:${scene}`,
