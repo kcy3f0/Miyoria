@@ -38,6 +38,7 @@ import { type BudgetState, CallCap } from "./caps.js";
 import type { ConversationConfig } from "./config.js";
 import { applyDrafts, DRAFT_FORMAT, DraftSchema, type RefTable } from "./drafts.js";
 import { checkContent, outline } from "./json-doc.js";
+import { staleness, touchUnits } from "./threads.js";
 
 /** Settings key prefix of conversation states. */
 export const STATE_PREFIX = "conversation:state:";
@@ -69,6 +70,13 @@ export function parseState(value: JsonValue): ConversationState | null {
   const context = parseContext(value.context);
   if (!context || typeof value.recap !== "string" || !isJsonObject(value.notes)) return null;
   const mark = isJsonObject(value.folded_up_to) ? value.folded_up_to : null;
+  const touched = isJsonObject(value.touched)
+    ? Object.fromEntries(
+        Object.entries(value.touched).filter(
+          (e): e is [string, string] => typeof e[1] === "string",
+        ),
+      )
+    : null;
   return {
     context,
     updated_at: typeof value.updated_at === "string" ? value.updated_at : toTimestamp(0),
@@ -80,6 +88,7 @@ export function parseState(value: JsonValue): ConversationState | null {
     lines: typeof value.lines === "number" ? value.lines : 0,
     recap: value.recap,
     notes: value.notes,
+    ...(touched === null ? {} : { touched }),
   };
 }
 
@@ -346,21 +355,24 @@ export class ConversationEngine implements ConversationStates {
       );
       this.tokens += result.tokens;
       const reply = result.value;
+      const notes = checkContent(reply.notes as JsonObject, {
+        maxDepth: 5,
+        maxStringChars: 600,
+        maxKeyChars: 48,
+        maxKeys: 30,
+        maxArray: 30,
+        maxChars: cfg.max_notes_chars,
+      });
+      const updated = toTimestamp(d.clock.now());
       const state: ConversationState = {
         context,
-        updated_at: toTimestamp(d.clock.now()),
+        updated_at: updated,
         folded_up_to: { id: last.id, ts: last.ts },
         folds: (previous?.folds ?? 0) + 1,
         lines: (previous?.lines ?? 0) + lines.length,
         recap: cutText(neutralize(reply.recap), cfg.max_recap_chars),
-        notes: checkContent(reply.notes as JsonObject, {
-          maxDepth: 5,
-          maxStringChars: 600,
-          maxKeyChars: 48,
-          maxKeys: 30,
-          maxArray: 30,
-          maxChars: cfg.max_notes_chars,
-        }),
+        notes,
+        touched: touchUnits(previous, notes, updated, previous?.updated_at ?? null),
       };
       this.#states.set(key, state);
       this.#trim();
@@ -436,11 +448,24 @@ export class ConversationEngine implements ConversationStates {
           : "文字頻道";
     if (previous !== null) {
       const notes = outline(previous.notes).join("\n");
+      const { stale } = this.#staleness(previous);
+      // Threads nobody touched for a while: dropped if they are over.
+      const old =
+        stale.size === 0
+          ? []
+          : outline(previous.notes, {
+              visible: (p) =>
+                [...stale].some((s) => s === p || s.startsWith(`${p}/`) || p.startsWith(`${s}/`)),
+            });
+      const staleText =
+        old.length === 0
+          ? ""
+          : `\n超過 ${cfg.stale_thread_mins} 分鐘沒人提的部分(已經結束、沒人在意的話就從筆記刪掉,不要再當成進行中的事):\n${old.join("\n")}`;
       blocks.push(
         dataBlock(
           "conversation",
           "你之前的筆記",
-          `前情提要:${previous.recap}\n${notes === "" ? "" : `筆記(目前的 JSON 結構):\n${JSON.stringify(previous.notes)}`}`,
+          `前情提要:${previous.recap}\n${notes === "" ? "" : `筆記(目前的 JSON 結構):\n${JSON.stringify(previous.notes)}`}${staleText}`,
         ),
       );
     }
@@ -521,11 +546,29 @@ export class ConversationEngine implements ConversationStates {
       .catch(() => undefined);
   }
 
-  /** The state as prompt text (recap + outline of her notes), at most `maxChars`. */
+  /** Stale threads of `state` now. */
+  #staleness(state: ConversationState) {
+    return staleness(
+      state.notes,
+      state.touched,
+      state.updated_at,
+      this.#d.clock.now(),
+      this.#d.config.stale_thread_mins * 60_000,
+    );
+  }
+
+  /**
+   * The state as prompt text (recap + outline of her notes), at most `maxChars`. Stale threads
+   * are left out, so turns do not keep resurfacing what nobody talks about any more.
+   */
   render(context: ContextKey, maxChars: number): string | null {
     const s = this.#states.get(contextKeyString(context));
     if (!s) return null;
-    const notes = outline(s.notes).join("\n");
+    const { hidden } = this.#staleness(s);
+    const notes = outline(
+      s.notes,
+      hidden.size === 0 ? {} : { visible: (p) => !hidden.has(p) },
+    ).join("\n");
     const text = `前情提要:${s.recap}${notes === "" ? "" : `\n${notes}`}`;
     return cutText(text, maxChars);
   }

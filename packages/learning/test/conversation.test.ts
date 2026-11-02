@@ -137,6 +137,38 @@ describe("conversation compaction", () => {
     expect([...(await store.list("p", STATE_PREFIX)).keys()]).toEqual([stateKey(TEXT)]);
   });
 
+  it("hides threads of her notes nobody touched for stale_thread_mins from turns", async () => {
+    // The second fold keeps the open question and the plan as they were: nobody touched them.
+    const kept = JSON.stringify({
+      recap: "大家聊完海豚,開始聊晚餐。",
+      notes: { 話題: ["晚餐"], 待回答: ["Amy 問我喜不喜歡海豚"], 計畫: { Owen: "週三考數學" } },
+    });
+    const provider = new MockProvider("p").reply(FIRST).reply(kept);
+    const r = await rig({ provider });
+    await lines(r, 16);
+    await wait(6_000);
+    expect(await r.contribute("conversation", request(TEXT))).toContain("Amy 問我喜不喜歡海豚");
+    await wait(20 * 60_000);
+    await lines(r, 16, "晚餐");
+    await wait(6_000);
+    expect(provider.requests()).toHaveLength(2);
+    await wait(10 * 60_000);
+    // 30 minutes after it last changed: stale, so turns no longer resurface it.
+    const body = await r.contribute("conversation", request(TEXT));
+    expect(body).toContain("- 話題: 晚餐");
+    expect(body).not.toContain("Amy 問我喜不喜歡海豚");
+    expect(body).not.toContain("週三考數學");
+    // The state itself keeps it; the next fold is asked to drop it if it is over.
+    const s = r.sup.services.require(ConversationStatesKey).get(TEXT);
+    expect(s?.notes.待回答).toEqual(["Amy 問我喜不喜歡海豚"]);
+    await lines(r, 16, "又");
+    await wait(6_000);
+    const data = provider.requests()[2]?.messages[1]?.content as string;
+    expect(data).toContain("超過 30 分鐘沒人提的部分");
+    expect(data.split("超過 30 分鐘沒人提的部分")[1]).toContain("Amy 問我喜不喜歡海豚");
+    expect(data.split("超過 30 分鐘沒人提的部分")[1]).not.toContain("晚餐");
+  });
+
   it("never sits on the voice hot path: turns read the state while a fold is running", async () => {
     const hanging = new HangingProvider();
     const store = new MemorySettingsStore();

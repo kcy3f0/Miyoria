@@ -42,6 +42,11 @@ export const ConversationConfigSchema = z.object({
   max_tokens: count().default(2000),
   /** Characters of the state in a turn's prompt. */
   prompt_chars: count().default(1500),
+  /**
+   * A thread of her notes (an open question, a plan, a topic) nobody touched for this long is
+   * stale: turns no longer see it and the next fold is asked to drop it if it is over (0 = never).
+   */
+  stale_thread_mins: count().default(30),
   /** Offset of local time in transcripts (minutes east of UTC). */
   utc_offset_minutes: z
     .number()
