@@ -369,6 +369,12 @@ importers:
       '@miyoria/initiative':
         specifier: workspace:*
         version: link:../initiative
+      '@miyoria/learning':
+        specifier: workspace:*
+        version: link:../learning
+      '@miyoria/mind':
+        specifier: workspace:*
+        version: link:../mind
       '@miyoria/profile':
         specifier: workspace:*
         version: link:../profile

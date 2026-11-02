@@ -8,6 +8,7 @@ import { coreRoutes } from "./core.js";
 import { dataRoutes } from "./data.js";
 import { ApiError, NO_SUCH_ENDPOINT } from "./errors.js";
 import { innerRoutes } from "./inner.js";
+import { learningRoutes } from "./learning.js";
 import { memoryRoutes } from "./memory.js";
 import { metricsRoutes } from "./metrics.js";
 import { mindRoutes } from "./mind.js";
@@ -101,6 +102,7 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...dataRoutes(state),
     ...sandboxRoutes(state),
     ...mindRoutes(state),
+    ...learningRoutes(state),
 
     ...metricsRoutes(state, { public: options.metricsPublic ?? false }),
   ];

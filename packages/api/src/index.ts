@@ -38,6 +38,9 @@
 //   `POST /api/mind/approvals/{id}/approve|deny`, `POST /api/mind/pause|resume` (changes need
 //   `owner.autonomy.approve`)
 
+// * `GET /api/knowledge` (her documents), `GET /api/knowledge/conversations` (her conversation
+//   notes), `GET /api/reflection?days=7` (reflections, lessons, feedback),
+//   `GET /api/mind/digests?limit=20`; read-only
 // * `GET /api/events?topics=platform.*,agent.*` (Server-Sent Events of bus envelopes)
 
 export {
@@ -101,13 +104,17 @@ export type {
   AssignRoleRequest,
   AuthMethods,
   ChannelActivityView,
+  ConversationNoteView,
   CostInfo,
   ErrorBody,
   ExpressionRequest,
   ExtensionInfo,
   FeelingView,
   HealthInfo,
+  KnowledgeDocView,
+  KnowledgeView,
   LatencyStats,
+  LessonView,
   McpServerInfo,
   McpState,
   McpToolInfo,
@@ -126,6 +133,7 @@ export type {
   QueueAuthor,
   QueueItemInfo,
   QueueState,
+  ReflectionView,
   RemoveMappingRequest,
   SayRequest,
   SayResponse,

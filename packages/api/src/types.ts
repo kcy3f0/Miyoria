@@ -19,13 +19,19 @@ import type {
   AccountRef,
   ChannelActivity,
   ContextKey,
+  ConversationState,
+  FeedbackTally,
   Feeling,
+  KnowledgeDoc,
+  Lesson,
   MindStats,
   ModuleId,
   ModuleStateKind,
   PersonId,
   PlatformId,
   ProfileId,
+  ReflectionRun,
+  ReflectionStats,
   SelfSnapshot,
   Thought,
   Timestamp,
@@ -473,3 +479,33 @@ export interface MindView {
 }
 
 export type { PendingApproval, Thought };
+
+// ---- what she organized and learned (phase G) -----------------------------------------------
+
+/** One of her documents, with its short id (as her prompts show it) and whom it is about. */
+export interface KnowledgeDocView extends KnowledgeDoc {
+  short_id: string;
+  subject_label: string;
+}
+
+/** `GET /api/knowledge`: every document, most recently updated first. */
+export interface KnowledgeView {
+  documents: KnowledgeDocView[];
+}
+
+/** `GET /api/knowledge/conversations`: her notes on a conversation, with the place's name. */
+export interface ConversationNoteView extends ConversationState {
+  label: string | null;
+}
+
+export interface LessonView extends Lesson {
+  display_name: string | null;
+}
+
+/** `GET /api/reflection?days=7`. */
+export interface ReflectionView {
+  stats: ReflectionStats;
+  runs: ReflectionRun[];
+  lessons: LessonView[];
+  feedback: FeedbackTally[];
+}

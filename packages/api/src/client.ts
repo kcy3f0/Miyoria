@@ -8,15 +8,17 @@ import type {
   RoleDefinition,
   RoleMapping,
 } from "@miyoria/store";
-import type { ContextKey, Envelope, PlatformId } from "@miyoria/types";
+import type { ContextKey, Envelope, PlatformId, ThoughtDigest } from "@miyoria/types";
 import { statusText } from "./errors.js";
 import type {
   AssignRoleRequest,
   AuthMethods,
+  ConversationNoteView,
   CostInfo,
   ErrorBody,
   ExtensionInfo,
   HealthInfo,
+  KnowledgeView,
   McpServerInfo,
   MemoryItem,
   MemoryListQuery,
@@ -29,6 +31,7 @@ import type {
   PersonDetail,
   PersonSummary,
   QueueState,
+  ReflectionView,
   RemoveMappingRequest,
   SayResponse,
   SceneRolesState,
@@ -462,6 +465,26 @@ export class ApiClient {
   /** Answers a pending approval; resolves with the ones still pending. */
   answerApproval(id: string, approved: boolean, o?: CallOptions): Promise<PendingApproval[]> {
     return this.#json("POST", ["mind", "approvals", id, approved ? "approve" : "deny"], o);
+  }
+
+  /** Digests of her older thoughts, newest first. */
+  digests(limit = 20, o?: CallOptions): Promise<ThoughtDigest[]> {
+    return this.#json("GET", ["mind", "digests"], { ...o, query: { limit: String(limit) } });
+  }
+
+  /** Her self-organized documents. */
+  knowledge(o?: CallOptions): Promise<KnowledgeView> {
+    return this.#json("GET", ["knowledge"], o);
+  }
+
+  /** Her running notes on each conversation. */
+  conversationNotes(o?: CallOptions): Promise<ConversationNoteView[]> {
+    return this.#json("GET", ["knowledge", "conversations"], o);
+  }
+
+  /** Her reflections, lessons and the feedback of the last `days` days. */
+  reflection(days = 7, o?: CallOptions): Promise<ReflectionView> {
+    return this.#json("GET", ["reflection"], { ...o, query: { days: String(days) } });
   }
 
   /** The emergency stop of her autonomy. */
