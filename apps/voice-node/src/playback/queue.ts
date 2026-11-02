@@ -87,10 +87,12 @@ export class PlaybackQueue {
     return this.entries[0]?.play;
   }
 
-  start(play: number, sampleRate: number): StartResult {
+  /** `levels`: the play comes with a levels track ({@link pushLevels}) for lip sync. */
+  start(play: number, sampleRate: number, levels = false): StartResult {
     if (this.find(play)) return { ok: false, error: `play ${play} already exists` };
     if (this.entries.length > this.maxQueued) return { ok: false, error: "playback queue is full" };
     const source = this.createSource(sampleRate);
+    if (levels) source.enableLevels();
     this.entries.push({ play, source, state: "queued", startedReported: false, stopRequested: false });
     this.pump();
     return { ok: true };
@@ -108,6 +110,11 @@ export class PlaybackQueue {
     }
     if (e.state === "waiting") this.tryBegin(e);
     return r === "ok";
+  }
+
+  /** Appends to a play's levels track. Unknown plays are ignored. */
+  pushLevels(play: number, pcm: Uint8Array): void {
+    this.find(play)?.source.writeLevels(pcm);
   }
 
   /** Core has no more audio for this play. */

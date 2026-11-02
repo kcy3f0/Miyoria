@@ -22,6 +22,11 @@ export const CLOSE = {
 export const TAG_CAPTURE = 0x01;
 /** Binary frame tag of playback audio (Core → node). */
 export const TAG_PLAYBACK = 0x02;
+/**
+ * Binary frame tag of a playback's levels track (Core → node, plays started with `levels`):
+ * what the lip-sync levels follow instead of the audio, sent before the `0x02` frame it goes with.
+ */
+export const TAG_LEVELS = 0x03;
 
 const u32 = () => z.number().int().min(0).max(0xffff_ffff);
 const optString = () => z.string().nullable().default(null);
@@ -102,7 +107,8 @@ export type CoreMessage =
   | { type: "welcome"; session: string }
   | { type: "join"; guild: string; channel?: string; user_id?: string }
   | { type: "leave"; guild: string }
-  | { type: "play_start"; play: number; guild: string; sample_rate: number }
+  /** `levels`: `0x03` frames follow with the track the lip-sync levels use (older nodes ignore it). */
+  | { type: "play_start"; play: number; guild: string; sample_rate: number; levels?: boolean }
   | { type: "play_end"; play: number }
   | { type: "play_stop"; play: number; fade_ms: number }
   /** Starts a Go Live stream of `source` (see `docs/protocols/voice-link.md`). */

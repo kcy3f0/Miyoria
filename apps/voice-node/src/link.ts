@@ -14,6 +14,7 @@ import {
   type CoreMessage,
   decodeBinaryFrame,
   encodeNodeMessage,
+  FRAME_LEVELS,
   FRAME_PLAYBACK,
   type NodeMessage,
   parseCoreMessage,
@@ -52,6 +53,8 @@ export interface CoreLinkEvents {
   message: [msg: CoreMessage];
   /** Binary playback audio from Core. `pcm` is a view into the received buffer. */
   playbackAudio: [play: number, pcm: Buffer];
+  /** Binary levels track of a play (what lip sync follows). */
+  playbackLevels: [play: number, pcm: Buffer];
   /** Retrying is pointless; the process should shut down. */
   fatal: [error: Error];
 }
@@ -269,6 +272,7 @@ export class CoreLink extends EventEmitter<CoreLinkEvents> implements LinkSink {
       return;
     }
     if (frame.value.kind === FRAME_PLAYBACK) this.emit("playbackAudio", frame.value.id, frame.value.pcm);
+    else if (frame.value.kind === FRAME_LEVELS) this.emit("playbackLevels", frame.value.id, frame.value.pcm);
     else this.log.debug("ignoring capture-direction frame from Core");
   }
 

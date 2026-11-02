@@ -63,3 +63,56 @@ export interface VoiceSink {
 }
 
 export const VoiceSinkKey = serviceKey<VoiceSink>("VoiceSink");
+
+/** One chunk of a sound she plays that is not her speech (`VoicePlayer`). */
+export interface PlayChunk {
+  /** PCM s16 mono at the playback's sample rate. */
+  samples: Int16Array;
+  /**
+   * Same length as `samples`: what the avatar's mouth follows instead of the sound itself (the
+   * vocal stem of a song, so drums do not move her lips). Only used when the playback was
+   * started with `levels`.
+   */
+  levels?: Int16Array;
+}
+
+/** A playback started with `VoicePlayer.play`. */
+export interface PlayHandle {
+  /** `null` until the node reports that it is audible. */
+  state(): PlaybackState | null;
+  /** Resolves once it finished, was stopped or failed. */
+  wait(): Promise<PlaybackState>;
+  /** Fades out over `fadeMs` (0 = cut). */
+  stop(fadeMs: number): void;
+}
+
+/**
+ * Plays audio that is not her speech (songs) in the voice channel she is in. Provided by the
+ * `voice.link` module. Unlike `VoiceSink.speak` there is no TTS, no barge-in and no subtitles: the
+ * caller owns the playback and stops it. The voice node buffers about a minute, so the caller
+ * paces `audio` close to real time.
+ */
+export interface VoicePlayer {
+  /** The voice channel she is in, in `guild`. */
+  channel(guild: string): string | null;
+  play(
+    guild: string,
+    sampleRate: number,
+    audio: AsyncIterable<PlayChunk>,
+    options?: { levels?: boolean },
+  ): Promise<PlayHandle>;
+}
+
+export const VoicePlayerKey = serviceKey<VoicePlayer>("VoicePlayer");
+
+/**
+ * Something other than her speech holds the voice channel of a guild, e.g. a song she is
+ * singing. Her speech there is dropped meanwhile (it would wait behind the song in the node's
+ * queue and come out minutes late). Provided by the module that plays it (`sing`).
+ */
+export interface VoiceFloor {
+  /** What holds `guild`'s voice channel (`"song"`), or `null` when her speech may play. */
+  holder(guild: string): string | null;
+}
+
+export const VoiceFloorKey = serviceKey<VoiceFloor>("VoiceFloor");

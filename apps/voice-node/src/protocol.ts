@@ -3,12 +3,15 @@
 // Text frames are JSON objects with a `type`; binary frames are audio:
 //   0x01 [stream: u32 LE] [PCM s16le mono 16 kHz ...]   node -> Core (capture)
 //   0x02 [play:   u32 LE] [PCM s16le mono ...]          Core -> node (playback)
+//   0x03 [play:   u32 LE] [PCM s16le mono ...]          Core -> node (levels track of a play
+//                                                       started with `levels`: what lip sync follows)
 
 export const PROTOCOL_VERSION = 1;
 export const CAPTURE_SAMPLE_RATE = 16_000;
 
 export const FRAME_CAPTURE = 0x01;
 export const FRAME_PLAYBACK = 0x02;
+export const FRAME_LEVELS = 0x03;
 
 /** WebSocket close codes the protocol assigns meaning to. */
 export const CLOSE_VERSION_MISMATCH = 4400;
@@ -23,7 +26,7 @@ export type CoreMessage =
   | { type: "welcome"; session: string }
   | { type: "join"; guild: string; channel?: string; user_id?: string }
   | { type: "leave"; guild: string }
-  | { type: "play_start"; play: number; guild: string; sample_rate: number }
+  | { type: "play_start"; play: number; guild: string; sample_rate: number; levels?: boolean }
   | { type: "play_end"; play: number }
   | { type: "play_stop"; play: number; fade_ms: number }
   | GoLiveStartMessage
@@ -133,7 +136,9 @@ export function parseCoreMessage(text: string): ParseResult<CoreMessage> {
       ) {
         return fail(`play_start: \`sample_rate\` must be an integer in ${MIN_PLAY_RATE}..${MAX_PLAY_RATE}`);
       }
-      return { ok: true, value: { type, play, guild, sample_rate: rate } };
+      const value: Extract<CoreMessage, { type: "play_start" }> = { type, play, guild, sample_rate: rate };
+      if (raw.levels === true) value.levels = true;
+      return { ok: true, value };
     }
     case "play_end": {
       const play = raw.play;
@@ -276,8 +281,8 @@ export function encodePlaybackFrame(play: number, pcm: Uint8Array): Buffer {
 }
 
 export interface BinaryFrame {
-  kind: typeof FRAME_CAPTURE | typeof FRAME_PLAYBACK;
-  /** stream id (0x01) or play id (0x02) */
+  kind: typeof FRAME_CAPTURE | typeof FRAME_PLAYBACK | typeof FRAME_LEVELS;
+  /** stream id (0x01) or play id (0x02, 0x03) */
   id: number;
   /** A view into the input buffer (no copy). */
   pcm: Buffer;
@@ -288,7 +293,7 @@ export function decodeBinaryFrame(buf: Uint8Array): ParseResult<BinaryFrame> {
   if (buf.byteLength < 5) return fail("binary frame shorter than its 5-byte header");
   const b = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
   const kind = b[0];
-  if (kind !== FRAME_CAPTURE && kind !== FRAME_PLAYBACK) {
+  if (kind !== FRAME_CAPTURE && kind !== FRAME_PLAYBACK && kind !== FRAME_LEVELS) {
     return fail(`unknown binary frame kind 0x${(kind ?? 0).toString(16).padStart(2, "0")}`, true);
   }
   return { ok: true, value: { kind, id: b.readUInt32LE(1), pcm: b.subarray(5) } };

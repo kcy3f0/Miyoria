@@ -3,7 +3,7 @@
 import { errorMessage, getLogger } from "@miyoria/kernel";
 import type { AudioChunk, AudioStream } from "@miyoria/speech";
 import type { PlaybackState } from "@miyoria/types";
-import { encodeAudio, TAG_PLAYBACK } from "../protocol.js";
+import { encodeAudio, TAG_LEVELS, TAG_PLAYBACK } from "../protocol.js";
 import { deferred, Watch } from "../util.js";
 import type { Conn } from "./conn.js";
 
@@ -68,12 +68,18 @@ export class Playback implements Stoppable {
 
 type Next = { ok: true; result: IteratorResult<AudioChunk> } | { ok: false; error: unknown };
 
+/**
+ * A chunk with an optional levels track of the same length (plays started with `levels`): sent
+ * as `0x03` frames, each before the `0x02` frame it goes with.
+ */
+export type LeveledChunk = AudioChunk & { levels?: Int16Array };
+
 /** Starts streaming `audio` to the node. `play_start` has already been sent. */
 export function startPlayback(
   conn: Conn,
   id: number,
   sampleRate: number,
-  audio: AudioStream,
+  audio: AudioStream | AsyncIterable<LeveledChunk>,
   node: Watch<PlaybackState | null>,
 ): Playback {
   const playback = new Playback(id);
@@ -94,7 +100,7 @@ async function pump(
   conn: Conn,
   playback: Playback,
   sampleRate: number,
-  audio: AudioStream,
+  audio: AsyncIterable<LeveledChunk>,
   node: Watch<PlaybackState | null>,
 ): Promise<PlaybackState> {
   const id = playback.id;
@@ -163,7 +169,7 @@ async function pump(
         }
         continue;
       }
-      const chunk = next.result.value;
+      const chunk: LeveledChunk = next.result.value;
       if (chunk.sampleRate !== sampleRate) {
         log.warn(
           { play: id, expected: sampleRate, got: chunk.sampleRate },
@@ -175,6 +181,9 @@ async function pump(
       for (let at = 0; at < chunk.samples.length; at += frameLen) {
         const frame = chunk.samples.subarray(at, at + frameLen);
         try {
+          if (chunk.levels) {
+            await conn.send(encodeAudio(TAG_LEVELS, id, chunk.levels.subarray(at, at + frameLen)));
+          }
           await conn.send(encodeAudio(TAG_PLAYBACK, id, frame));
         } catch {
           return "failed";

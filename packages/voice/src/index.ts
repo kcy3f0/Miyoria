@@ -55,6 +55,7 @@ export {
   type NodeMessage,
   NodeMessageSchema,
   TAG_CAPTURE,
+  TAG_LEVELS,
   TAG_PLAYBACK,
   VERSION,
   type WireGoLiveState,

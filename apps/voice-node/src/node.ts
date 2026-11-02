@@ -63,6 +63,9 @@ export class VoiceNode {
     this.link.on("down", () => this.onLinkDown());
     this.link.on("message", (msg) => this.onCoreMessage(msg));
     this.link.on("playbackAudio", (play, pcm) => this.onPlaybackAudio(play, pcm));
+    this.link.on("playbackLevels", (play, pcm) => {
+      this.sessionForPlay(play)?.queue?.pushLevels(play, pcm);
+    });
     this.client.on("voiceStateUpdate", (oldState, newState) => this.onVoiceStateUpdate(oldState, newState));
   }
 
@@ -103,7 +106,7 @@ export class VoiceNode {
         this.enqueue(msg.guild, () => this.doLeave(msg.guild));
         break;
       case "play_start":
-        this.doPlayStart(msg.play, msg.guild, msg.sample_rate);
+        this.doPlayStart(msg.play, msg.guild, msg.sample_rate, msg.levels === true);
         break;
       case "golive_start":
         this.goLive.start(msg);
@@ -229,7 +232,7 @@ export class VoiceNode {
     this.dropSession(session, "leave");
   }
 
-  private doPlayStart(play: number, guildId: string, sampleRate: number): void {
+  private doPlayStart(play: number, guildId: string, sampleRate: number, levels = false): void {
     const fail = (error: string): void => {
       this.link.send({ type: "playback", play, state: "failed", error });
     };
@@ -242,7 +245,7 @@ export class VoiceNode {
       fail(`play id ${play} is already in use`);
       return;
     }
-    const r = session.queue.start(play, sampleRate);
+    const r = session.queue.start(play, sampleRate, levels);
     if (!r.ok) {
       fail(r.error);
       return;

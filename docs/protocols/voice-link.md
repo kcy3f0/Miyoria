@@ -23,7 +23,7 @@ Self voice node(`apps/voice-node`,TS)和 Core 的 `voice.link` 模組之間的�
 |---|---|---|
 | `join` | `guild`, `channel?`, `user_id?` | 進語音。給 `channel` 就進那個頻道;只給 `user_id` 就進那個人目前所在的頻道(node 看得到 voice state) |
 | `leave` | `guild` | 離開該伺服器的語音 |
-| `play_start` | `play`(u32), `guild`, `sample_rate` | 開始一段播放;接著用二進位訊框送音訊 |
+| `play_start` | `play`(u32), `guild`, `sample_rate`, `levels?` | 開始一段播放;接著用二進位訊框送音訊。`levels: true`:這段播放另外帶一條**嘴型音軌**(`0x03`,例如歌曲的人聲),嘴型跟它走而不是跟播出的音訊走(舊的 node 會忽略) |
 | `play_end` | `play` | 這段音訊送完了。Node 播完緩衝裡的音訊後回 `playback` `finished` |
 | `play_stop` | `play`, `fade_ms` | 立刻停止(插話 / barge-in),淡出 `fade_ms` 毫秒 |
 | `golive_start` | `guild`, `source`, `channel?`, `width?`, `height?`, `fps?`, `bitrate_kbps?`, `encoder?`, `audio?`, `listen?` | 開始 Go Live,見下面〈Go Live〉 |
@@ -31,6 +31,8 @@ Self voice node(`apps/voice-node`,TS)和 Core 的 `voice.link` 模組之間的�
 | `ping` | | |
 
 二進位 `0x02`(播放音訊):`[0x02][play: u32 LE][PCM s16le 單聲道 …]`。
+
+二進位 `0x03`(嘴型音軌,只用在 `levels: true` 的播放):`[0x03][play: u32 LE][PCM s16le 單聲道 …]`,取樣率同 `sample_rate`。Core 把每個 `0x03` 訊框送在**同長度**的 `0x02` 訊框之前,node 依序對齊;缺的部分當靜音,超過緩衝上限的丟掉。
 
 ## Node → Core
 
@@ -95,7 +97,7 @@ OBS 端:RTMP 設定→串流→自訂,伺服器 `rtmp://127.0.0.1:1935/live`、�
 
 ## 嘴型音量(不在這個協定裡)
 
-voice node 另外把**實際送去 Discord 的 PCM**(重新取樣成 48 kHz 之後、跟播放對時)每 10 ms 算一次 RMS,推給 Stage 的 `STAGE_LEVELS_URL`(預設不啟用,例如 `ws://127.0.0.1:7883/levels`):`{"t":<播放開始起算的 ms>,"rms":0..1}`。`t` 是該 10 ms 視窗的起點、跟音訊自己的時間軸走(補靜音時照樣前進),每段播放從 0 開始;播放結束或被打斷送一筆 `rms: 0`。`rms` 是相對滿刻度的真正 RMS(一般說話約 0.05~0.2),`STAGE_LEVELS_GAIN` 可放大。Stage 沒開時安靜地重連,不影響語音。
+voice node 另外把**實際送去 Discord 的 PCM**(重新取樣成 48 kHz 之後、跟播放對時;帶嘴型音軌的播放改用那條音軌,一樣套用淡出)每 10 ms 算一次 RMS,推給 Stage 的 `STAGE_LEVELS_URL`(預設不啟用,例如 `ws://127.0.0.1:7883/levels`):`{"t":<播放開始起算的 ms>,"rms":0..1}`。`t` 是該 10 ms 視窗的起點、跟音訊自己的時間軸走(補靜音時照樣前進),每段播放從 0 開始;播放結束或被打斷送一筆 `rms: 0`。`rms` 是相對滿刻度的真正 RMS(一般說話約 0.05~0.2),`STAGE_LEVELS_GAIN` 可放大。Stage 沒開時安靜地重連,不影響語音。
 
 ---
 
@@ -120,6 +122,17 @@ voice node 另外把**實際送去 Discord 的 PCM**(重新取樣成 48 kHz 之�
   ```
 - 回應:`200`,`Content-Type: audio/L16; rate=24000; channels=1`,body 是**串流**的原始 PCM s16le(chunked transfer)。標頭 `X-Sample-Rate` 一定要有。Worker 應該在產生第一段音訊後就開始送。
 - `voice` 是 worker 端註冊好的聲音名稱(例如由參考音檔建立的 clone prompt)。
+
+## 歌曲 Worker(`workers/sing`,預設 `127.0.0.1:8005`)
+
+`@miyoria/sing` 用的翻唱服務:點歌 → 下載(yt-dlp)或本機歌庫 → 人聲分離(Demucs)→ Seed-VC 歌聲轉換成她的聲音 → 混音,一次只做一個工作,做好的歌快取在 `data/songs/<id>/`。
+
+- `POST /jobs`(JSON):`{"query"|"url"|"path": "...", "title"?, "artist"?, "pitch"?, "key"?: 0, "force"?: false}`,三選一。`url` 只接受 `SING_URL_HOSTS` 的網域;`path` 是歌庫裡的相對路徑。`pitch` 是人聲移調(半音,省略 = 自動挑八度),`key` 是整首轉調(伴奏跟著移)。回 `{"job": Job}`;已經做過的歌(同一個查詢 / 連結 / 檔案與同樣的音高設定)直接回 `state: "done"`、`cached: true`。
+- `GET /jobs/{id}` → `{"job": Job}`;`DELETE /jobs/{id}` 取消。`Job`:`id`、`state`(`queued` / `running` / `done` / `failed` / `cancelled`)、`stage`(`resolve` / `download` / `separate` / `convert` / `mix` / `lyrics`)、`progress`(0..1)、`error`、`song_id`、`source`、`position`、`song`(做好時的 meta)。
+- `GET /songs`、`GET /songs/{id}` → meta:`title`、`artist`、`duration_s`、`lyrics`(`{synced, lines: [{t, text}]}` 或 `null`,來自 lrclib.net)、`play`(`{sample_rate: 48000, samples}`)、`pitch`、`timings`、`peak_vram_mb`。
+- `GET /songs/{id}/files/{name}`:`mix.wav`、`vocals.wav`、`instrumental.wav`、`lyrics.lrc`,以及 Core 串流用的 `play_mix.pcm` / `play_vocals.pcm`(PCM s16le 單聲道 48 kHz,標頭 `X-Sample-Rate`)。
+- `GET /library` → `{"entries": [{path, title, artist, split}]}`(`split` = 資料夾裡已經有 `vocals.*` + `instrumental.*`)。
+- 標題、歌手、歌詞都來自 YouTube / lrclib / 點歌的人,Core 一律當不可信資料。
 
 ## 共通
 

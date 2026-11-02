@@ -18,7 +18,8 @@ export type SourceEndReason = "drained" | "faded" | "stopped" | "starved" | "ove
 export type WriteResult = "ok" | "ignored" | "overflow";
 
 export type FrameResult =
-  | { kind: "audio"; pcm: Buffer } // FRAME_BYTES of s16le stereo @ 48 kHz
+  // FRAME_BYTES of s16le stereo @ 48 kHz; `levels` (same layout): what lip sync follows instead
+  | { kind: "audio"; pcm: Buffer; levels?: Buffer }
   | { kind: "silence" } // underrun: the player should emit a silence frame
   | { kind: "end"; reason: SourceEndReason };
 
@@ -49,9 +50,25 @@ export class PlaybackSource {
   private pendingEnd: SourceEndReason | undefined;
   private finished: SourceEndReason | undefined;
 
+  private levels: LevelsTrack | undefined;
+
   constructor(opts: SourceOptions) {
     this.opts = opts;
     this.resampler = new Resampler(opts.sampleRate, OUT_RATE);
+  }
+
+  /**
+   * This play has a levels track (e.g. a song's vocal stem): frames carry it as `levels` and
+   * lip sync follows it instead of the audio. Missing levels count as silence.
+   */
+  enableLevels(): void {
+    this.levels ??= new LevelsTrack(this.opts.sampleRate, this.opts.maxBufferBytes);
+  }
+
+  /** Appends mono s16le to the levels track (dropped when there is none or it is full). */
+  writeLevels(bytes: Uint8Array): void {
+    if (this.inputEnded || this.pendingEnd !== undefined || this.finished) return;
+    this.levels?.write(bytes);
   }
 
   /** Why the source ended, once {@link readFrame} has returned `end`. */
@@ -179,16 +196,9 @@ export class PlaybackSource {
       if (this.fadeIdx >= this.fadeTotal) this.pendingEnd = "faded";
     }
 
-    const out = Buffer.allocUnsafe(FRAME_BYTES);
-    const step = (g1 - g0) / FRAME_SAMPLES;
-    for (let i = 0; i < FRAME_SAMPLES; i++) {
-      const g = g0 + step * i;
-      let s = Math.round((mono[i] as number) * g);
-      s = s > 32767 ? 32767 : Math.max(s, -32768);
-      out.writeInt16LE(s, i * 4);
-      out.writeInt16LE(s, i * 4 + 2);
-    }
-    return { kind: "audio", pcm: out };
+    const pcm = stereoFrame(mono, g0, g1);
+    if (!this.levels) return { kind: "audio", pcm };
+    return { kind: "audio", pcm, levels: stereoFrame(this.levels.take(FRAME_SAMPLES), g0, g1) };
   }
 
   private finish(reason: SourceEndReason): FrameResult {
@@ -196,6 +206,7 @@ export class PlaybackSource {
     this.pending.length = 0;
     this.pendingSamples = 0;
     this.fifo.clear();
+    this.levels?.clear();
     return { kind: "end", reason };
   }
 
@@ -216,5 +227,67 @@ export class PlaybackSource {
       this.pendingSamples -= chunk.length;
       this.fifo.push(this.resampler.process(chunk));
     }
+  }
+}
+
+/** One 20 ms frame of interleaved stereo from mono, with a linear gain ramp `g0` → `g1`. */
+function stereoFrame(mono: Int16Array, g0: number, g1: number): Buffer {
+  const out = Buffer.allocUnsafe(FRAME_BYTES);
+  const step = (g1 - g0) / FRAME_SAMPLES;
+  for (let i = 0; i < FRAME_SAMPLES; i++) {
+    const g = g0 + step * i;
+    let s = Math.round((mono[i] ?? 0) * g);
+    s = s > 32767 ? 32767 : Math.max(s, -32768);
+    out.writeInt16LE(s, i * 4);
+    out.writeInt16LE(s, i * 4 + 2);
+  }
+  return out;
+}
+
+/**
+ * The levels track of a play: mono at the play's rate, resampled to 48 kHz and taken frame by
+ * frame alongside the audio. Core sends each levels frame right before its audio frame, so the
+ * two stay aligned; what is missing reads as silence, what overflows is dropped.
+ */
+class LevelsTrack {
+  private readonly resampler: Resampler;
+  private readonly fifo = new SampleFifo();
+  private oddByte: number | undefined;
+
+  constructor(
+    sampleRate: number,
+    private readonly maxBytes: number,
+  ) {
+    this.resampler = new Resampler(sampleRate, OUT_RATE);
+  }
+
+  write(bytes: Uint8Array): void {
+    let data = bytes;
+    if (this.oddByte !== undefined) {
+      const joined = new Uint8Array(bytes.byteLength + 1);
+      joined[0] = this.oddByte;
+      joined.set(bytes, 1);
+      data = joined;
+      this.oddByte = undefined;
+    }
+    if (data.byteLength & 1) {
+      this.oddByte = data[data.byteLength - 1];
+      data = data.subarray(0, data.byteLength - 1);
+    }
+    if (data.byteLength === 0 || this.fifo.length * 2 + data.byteLength > this.maxBytes) return;
+    this.fifo.push(this.resampler.process(bytesToInt16(data)));
+  }
+
+  /** `n` samples, zero padded. */
+  take(n: number): Int16Array {
+    const got = this.fifo.take(n);
+    if (got.length === n) return got;
+    const out = new Int16Array(n);
+    out.set(got);
+    return out;
+  }
+
+  clear(): void {
+    this.fifo.clear();
   }
 }

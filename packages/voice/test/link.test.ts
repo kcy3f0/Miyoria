@@ -1,7 +1,13 @@
 // Voice Link protocol tests against a real server (port of `tests/link.rs`).
 
 import type { AudioChunk, AudioStream } from "@miyoria/speech";
-import { type Event, type EventData, type EventType, isEvent } from "@miyoria/types";
+import {
+  type Event,
+  type EventData,
+  type EventType,
+  isEvent,
+  VoicePlayerKey,
+} from "@miyoria/types";
 import { afterEach, describe, expect, it } from "vitest";
 import { type AudioEvent, GOLIVE_TOPIC, type GoLiveRequest } from "../src/index.js";
 import type { BoundedQueue } from "../src/util.js";
@@ -251,6 +257,28 @@ describe("voice.link", () => {
     await waitUntil(() => playback.state() === "started");
     node.sendJson({ type: "playback", play: id, state: "finished" });
     expect(await playback.wait()).toBe("finished");
+  });
+
+  it("play_with_levels_sends_each_levels_frame_before_its_audio", async () => {
+    const h = await start();
+    const node = await h.node(SELF_ID);
+    const player = h.sup.services.require(VoicePlayerKey);
+
+    const audio = (async function* () {
+      yield { samples: new Int16Array(4800).fill(7), levels: new Int16Array(4800).fill(3) };
+    })();
+    const playback = await player.play("g1", 48_000, audio, { levels: true });
+    const start_ = await node.recvJson();
+    expect(start_).toMatchObject({ type: "play_start", sample_rate: 48_000, levels: true });
+    const tags: number[] = [];
+    for (;;) {
+      const msg = await node.recv();
+      if (msg.kind !== "binary") break;
+      tags.push(msg.data[0] as number);
+      expect(msg.data.readInt16LE(5)).toBe(msg.data[0] === 0x03 ? 3 : 7);
+    }
+    expect(tags).toEqual([0x03, 0x02]);
+    playback.stop(0);
   });
 
   it("play_stop_interrupts", async () => {

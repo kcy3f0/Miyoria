@@ -33,6 +33,7 @@ import {
   type JsonObject,
   type JsonValue,
   type PlaybackState,
+  VoiceFloorKey,
   VoiceSinkKey,
   type VoiceUtterance,
 } from "@miyoria/types";
@@ -587,6 +588,20 @@ describe("voice", () => {
       play: start.play as number,
       fade_ms: 0,
     });
+  });
+
+  it("her_lines_are_dropped_while_a_song_holds_the_channel", async () => {
+    const e = await boot();
+    let holder: string | null = "song";
+    e.h.services.provide("sing", VoiceFloorKey, { holder: (g) => (g === "g1" ? holder : null) });
+    const sink = e.h.services.require(VoiceSinkKey);
+    expect(await sink.speak(voiceCtx, "唱歌的時候說話", null, null)).toBe("interrupted");
+    expect(e.tts.requests).toHaveLength(0);
+    holder = null;
+    const speaking = sink.speak(voiceCtx, "唱完了", null, null);
+    const start = await e.node.recvType("play_start");
+    e.node.sendJson({ type: "playback", play: start.play as number, state: "finished" });
+    expect(await speaking).toBe("completed");
   });
 
   it("health_reports_a_missing_node", async () => {

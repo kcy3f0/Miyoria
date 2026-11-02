@@ -207,6 +207,7 @@ export {
   type SocialSignals,
   SocialSignalsKey,
 } from "./social.js";
+export { parseSongCue, SONG_TOPIC, type SongCue } from "./song.js";
 export { type StreamCurtain, StreamCurtainKey } from "./stream.js";
 export { type Clock, systemClock, type Timestamp, timestampMs, toTimestamp } from "./time.js";
 export {
@@ -222,8 +223,14 @@ export {
 } from "./untrusted.js";
 export {
   type PlaybackState,
+  type PlayChunk,
+  type PlayHandle,
   type SpeakOutcome,
+  type VoiceFloor,
+  VoiceFloorKey,
   type VoiceParticipant,
+  type VoicePlayer,
+  VoicePlayerKey,
   type VoiceSink,
   VoiceSinkKey,
   type VoiceUtterance,

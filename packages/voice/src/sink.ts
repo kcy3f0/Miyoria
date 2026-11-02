@@ -13,6 +13,7 @@ import {
   type PlaybackState,
   type SpeakOutcome,
   type TurnId,
+  VoiceFloorKey,
   type VoiceSink,
 } from "@miyoria/types";
 import type { BargeIn } from "./barge.js";
@@ -157,6 +158,12 @@ export class Speaker implements VoiceSink {
     }
     const text = stripTags(rawText);
     if (text === "") return "completed";
+    // A song holds the channel: the line would wait behind it in the node and come out late.
+    const holder = this.#d.ctx.services.get(VoiceFloorKey)?.holder(guild) ?? null;
+    if (holder !== null) {
+      this.#d.ctx.log.debug({ guild, holder }, "voice channel is held; dropping her line");
+      return "interrupted";
+    }
     let playback: Playback;
     try {
       playback = await this.#start(context, guild, text, emotion, turn, signal);

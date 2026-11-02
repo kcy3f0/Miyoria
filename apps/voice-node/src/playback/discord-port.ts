@@ -41,7 +41,8 @@ export class OpusFrameStream extends Readable {
     try {
       const r = this.source.readFrame();
       if (r.kind === "audio") {
-        this.tap?.frame(r.pcm);
+        // A play with a levels track (a song's vocals) moves her mouth with that, not the mix.
+        this.tap?.frame(r.levels ?? r.pcm);
         this.push(this.encoder.encode(r.pcm, FRAME_SAMPLES)); // already a copy
       } else if (r.kind === "silence") {
         this.tap?.silence(FRAME_SAMPLES);

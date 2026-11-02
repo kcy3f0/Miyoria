@@ -3,10 +3,29 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { defineManifest, errorMessage, type Module, type ModuleContext } from "@miyoria/kernel";
+import { type PlayChunk, type VoicePlayer, VoicePlayerKey } from "@miyoria/types";
 import { WebSocketServer } from "ws";
 import { aborted } from "../util.js";
 import { VoiceLinkError } from "./conn.js";
 import { DEFAULT_BIND, VoiceLink, VoiceLinkConfigSchema, VoiceLinkKey } from "./link.js";
+import type { LeveledChunk } from "./playback.js";
+
+/** `VoicePlayer` (songs and other sounds that are not her speech) over the link. */
+export function voicePlayer(link: VoiceLink): VoicePlayer {
+  return {
+    channel: (guild) => link.channel(guild),
+    play: (guild, sampleRate, audio, options = {}) => {
+      async function* chunks(): AsyncGenerator<LeveledChunk> {
+        for await (const c of audio as AsyncIterable<PlayChunk>) {
+          yield c.levels
+            ? { sampleRate, samples: c.samples, levels: c.levels }
+            : { sampleRate, samples: c.samples };
+        }
+      }
+      return link.play(guild, sampleRate, chunks(), options);
+    },
+  };
+}
 
 /** WebSocket path of the endpoint. */
 export const VOICE_LINK_PATH = "/voice-link";
@@ -115,6 +134,7 @@ export class VoiceLinkModule implements Module {
     ctx.log.info({ addr: `${addr.address}:${addr.port}` }, "voice link listening");
     this.#link = link;
     ctx.provide(VoiceLinkKey, link);
+    ctx.provide(VoicePlayerKey, voicePlayer(link));
 
     // Remember her other accounts (e.g. the bot account) for `isSelf`.
     const ready = ctx.subscribe("platform.ready");

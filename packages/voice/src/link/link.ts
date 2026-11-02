@@ -29,7 +29,7 @@ import {
 } from "../protocol.js";
 import { BoundedQueue, deferred, Watch } from "../util.js";
 import { Conn, closeSocket, type GoLiveStatus, newConnState, VoiceLinkError } from "./conn.js";
-import { type Playback, startPlayback } from "./playback.js";
+import { type LeveledChunk, type Playback, startPlayback } from "./playback.js";
 
 /** Topic of Go Live state changes (`custom` event). */
 export const GOLIVE_TOPIC = "voice.golive";
@@ -304,9 +304,15 @@ export class VoiceLink {
 
   /**
    * Starts playing `audio` (PCM s16le mono at `sampleRate`) in `guild`. The node queues plays,
-   * so this returns before the audio is heard.
+   * so this returns before the audio is heard. With `levels`, chunks may carry a levels track
+   * (`LeveledChunk`) that her lip sync follows instead of the audio.
    */
-  async play(guild: string, sampleRate: number, audio: AudioStream): Promise<Playback> {
+  async play(
+    guild: string,
+    sampleRate: number,
+    audio: AudioStream | AsyncIterable<LeveledChunk>,
+    options: { levels?: boolean } = {},
+  ): Promise<Playback> {
     if (sampleRate === 0) throw new VoiceLinkError("sample rate must not be 0");
     const conn = this.#connFor(guild);
     const id = this.#nextPlay;
@@ -314,7 +320,13 @@ export class VoiceLink {
     const node = new Watch<PlaybackState | null>(null);
     conn.state.plays.set(id, node);
     try {
-      await conn.sendJson({ type: "play_start", play: id, guild, sample_rate: sampleRate });
+      await conn.sendJson({
+        type: "play_start",
+        play: id,
+        guild,
+        sample_rate: sampleRate,
+        ...(options.levels ? { levels: true } : {}),
+      });
     } catch (error) {
       conn.state.plays.delete(id);
       throw error;
