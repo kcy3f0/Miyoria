@@ -9,7 +9,11 @@ import type { ChatMessage, ChatRequest, Usage } from "../types.js";
  * reasoning output (e.g. DeepSeek `reasoning_content`) never goes back. The session id is
  * never part of the body.
  */
-export function requestBody(req: ChatRequest): Record<string, JsonValue> {
+export function requestBody(
+  req: ChatRequest,
+  /** Merged into the body when `req.thinking === false` (the provider's switch). */
+  thinkingOff: Readonly<Record<string, JsonValue>> | null = null,
+): Record<string, JsonValue> {
   const body: Record<string, JsonValue> = {
     model: req.model ?? "",
     messages: req.messages.map(wireMessage),
@@ -27,6 +31,7 @@ export function requestBody(req: ChatRequest): Record<string, JsonValue> {
   if (req.max_tokens != null) body.max_tokens = req.max_tokens;
   if (req.stop && req.stop.length > 0) body.stop = req.stop;
   if (req.json_mode) body.response_format = { type: "json_object" };
+  if (req.thinking === false && thinkingOff) Object.assign(body, thinkingOff);
   return body;
 }
 

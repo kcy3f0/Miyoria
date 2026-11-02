@@ -56,6 +56,9 @@ export const ProviderConfigSchema = z
  *
  * [llm.budget]
  * daily_usd = 2.0
+ *
+ * [llm.thinking]   # reasoning before answering, per purpose; unlisted purposes: off
+ * chat = true
  * ```
  */
 export const LlmConfigSchema = z.object({
@@ -64,6 +67,11 @@ export const LlmConfigSchema = z.object({
   /** Prices keyed by `provider:model`; unpriced models cost 0. */
   pricing: z.record(z.string(), PricingSchema).default({}),
   budget: BudgetConfigSchema.prefault({}),
+  /**
+   * Whether reasoning models think before answering, per purpose. Unlisted purposes do not:
+   * thinking adds seconds before the first word, which matters more for her than depth.
+   */
+  thinking: z.record(z.string(), z.boolean()).default({}),
 });
 export type LlmConfig = z.output<typeof LlmConfigSchema>;
 
@@ -116,6 +124,7 @@ export class LlmModule implements Module {
     const router = new LlmRouter(providers, new Map(Object.entries(this.#config.purposes)), {
       pricing: new Map(Object.entries(this.#config.pricing)),
       budget: this.#config.budget,
+      thinking: new Map(Object.entries(this.#config.thinking)),
     });
     router.setPurposes(this.#overrides);
     return router;

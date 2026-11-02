@@ -43,6 +43,8 @@ export interface LlmRouterOptions {
   metrics?: MetricsRegistry;
   /** Clock of the first-token latency. Default: the system clock. */
   clock?: Clock;
+  /** `[llm.thinking]`: whether reasoning models think, per purpose (default off). */
+  thinking?: ReadonlyMap<string, boolean>;
 }
 
 /** One routed call while it streams. */
@@ -101,6 +103,7 @@ export class LlmRouter {
   readonly #cost: CostTracker;
   readonly #metrics: LlmMetrics;
   readonly #clock: Clock;
+  readonly #thinking: ReadonlyMap<string, boolean>;
 
   constructor(
     providers: ReadonlyMap<string, ChatProvider>,
@@ -113,6 +116,12 @@ export class LlmRouter {
       options.tracker ?? new CostTracker(options.pricing, options.budget ?? budgetConfig());
     this.#metrics = llmMetrics(options.metrics);
     this.#clock = options.clock ?? systemClock;
+    this.#thinking = options.thinking ?? new Map();
+  }
+
+  /** `request.thinking`, else `[llm.thinking]` for the purpose; off when neither says. */
+  #thinkingFor(purpose: string, request: ChatRequest): boolean {
+    return request.thinking ?? this.#thinking.get(purpose) ?? false;
   }
 
   /** Overrides purposes, e.g. with the active profile's `[llm.purposes]`. */
@@ -211,7 +220,10 @@ export class LlmRouter {
       let first: IteratorResult<StreamEvent>;
       const sentAt = this.#clock.now();
       try {
-        const stream = await provider.stream({ ...request, model: model.model }, signal);
+        const stream = await provider.stream(
+          { ...request, model: model.model, thinking: this.#thinkingFor(purpose, request) },
+          signal,
+        );
         iterator = stream[Symbol.asyncIterator]();
         // Only fall back if the model fails before its first event.
         first = await iterator.next();

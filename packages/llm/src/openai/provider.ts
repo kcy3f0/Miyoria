@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { STATUS_CODES } from "node:http";
 import { inspect } from "node:util";
 import { errorMessage, getLogger, isAbortError, sleep } from "@miyoria/kernel";
+import type { JsonValue } from "@miyoria/types";
 import { z } from "zod";
 import type { ProviderConfig, ProviderFactory } from "../module.js";
 import {
@@ -52,6 +53,11 @@ export class OpenAiConfig {
    * is sent when `null` or when the request has no session.
    */
   sessionHeader: string | null = null;
+  /**
+   * Body fields that turn thinking off for requests with `thinking: false` (`null`: none).
+   * `deepseek` and `opencode` default to `{"thinking": {"type": "disabled"}}`.
+   */
+  thinkingOff: Record<string, JsonValue> | null = null;
   /** Max idle time while waiting for response bytes (headers or stream), in ms. */
   timeoutMs = 120_000;
   /**
@@ -105,6 +111,13 @@ export class OpenAiConfig {
     } else if (config.kind === "opencode") {
       out.sessionHeader = OPENCODE_SESSION_HEADER;
     }
+    if (extra.thinking_off !== undefined) {
+      const off = extra.thinking_off;
+      out.thinkingOff =
+        off && Object.keys(off).length > 0 ? (off as Record<string, JsonValue>) : null;
+    } else if (config.kind === "deepseek" || config.kind === "opencode") {
+      out.thinkingOff = { thinking: { type: "disabled" } };
+    }
     if (extra.timeout_secs != null) out.timeoutMs = extra.timeout_secs * 1000;
     if (extra.connect_timeout_secs != null) {
       out.connectTimeoutMs = extra.connect_timeout_secs * 1000;
@@ -121,6 +134,7 @@ export class OpenAiConfig {
       headers: Object.keys(this.headers),
       userAgent: this.userAgent,
       sessionHeader: this.sessionHeader,
+      thinkingOff: this.thinkingOff,
       timeoutMs: this.timeoutMs,
       connectTimeoutMs: this.connectTimeoutMs,
       maxRetries: this.maxRetries,
@@ -140,6 +154,8 @@ const ExtraSchema = z.object({
   headers: z.record(z.string(), z.string()).nullable().optional(),
   user_agent: z.string().nullable().optional(),
   session_header: z.string().nullable().optional(),
+  /** Body fields that turn thinking off; `{}` or null sends nothing. */
+  thinking_off: z.record(z.string(), z.json()).nullable().optional(),
 });
 
 const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
@@ -157,6 +173,7 @@ export class OpenAiProvider implements ChatProvider {
   readonly url: string;
   readonly #headers: Readonly<Record<string, string>>;
   readonly #sessionHeader: string | null;
+  readonly #thinkingOff: Record<string, JsonValue> | null;
   /** Stable for the provider's lifetime, so background requests share one cache route. */
   readonly #fallbackSession = `miyoria-${randomBytes(8).toString("hex")}`;
   readonly #timeoutMs: number;
@@ -186,6 +203,7 @@ export class OpenAiProvider implements ChatProvider {
     }
     this.#headers = headers;
     this.#sessionHeader = config.sessionHeader?.toLowerCase() ?? null;
+    this.#thinkingOff = config.thinkingOff;
     this.#timeoutMs = config.timeoutMs;
     this.#connectTimeoutMs = config.connectTimeoutMs;
     this.#maxRetries = config.maxRetries;
@@ -208,7 +226,7 @@ export class OpenAiProvider implements ChatProvider {
   }
 
   async stream(request: ChatRequest, signal?: AbortSignal): Promise<ChatStream> {
-    const body = JSON.stringify(requestBody(request));
+    const body = JSON.stringify(requestBody(request, this.#thinkingOff));
     log.debug(
       { provider: this.name, model: request.model, url: this.url },
       "chat completion request",

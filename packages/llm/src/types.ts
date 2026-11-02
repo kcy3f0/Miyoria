@@ -63,6 +63,11 @@ export interface ChatRequest {
   /** Ask for a JSON object response when the provider supports it. */
   json_mode?: boolean;
   /**
+   * Whether a reasoning model thinks before answering. The router fills it from
+   * `[llm.thinking]` when unset; `false` makes the provider send its "no thinking" switch.
+   */
+  thinking?: boolean | null;
+  /**
    * Stable id of the conversation this request belongs to (see `contextSession`). Providers
    * may forward it (e.g. as a header) for routing and prompt caching.
    */
