@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/miyoria.webp" width="300" alt="DeepSeek-chan, Miyoria's first character: a whale girl with long blue hair in a maid outfit">
+  <img src="docs/assets/hero.webp" width="100%" alt="Miyoria: an autonomous AI VTuber for Discord. DeepSeek-chan, a whale girl with long blue hair in a maid outfit, stands on the right.">
 </p>
 
 Miyoria
@@ -105,4 +105,4 @@ Every phase on the [roadmap](docs/ROADMAP.md) is implemented. Since November 202
 
 No license has been chosen yet, so all rights are reserved for now.
 
-The portrait at the top is a capture of the [DeepSeek-chan Live2D model](https://vgen.co/KAMIYA/product/deepseek-chan-deepseek-free-live2d-model-layered-psd-psd/1c55a71a-2747-4616-819d-2dc0a934089d) by Kamiya_Ryoko, shown with credit as its license asks. The model files, the PSD and her voice reference are licensed separately and are not part of this repository.
+Original illustration: 神宫凉子 (Kamiya_Ryoko). The banner uses the illustration from the free [DeepSeek-chan Live2D model and layered PSD](https://vgen.co/KAMIYA/product/deepseek-chan-deepseek-free-live2d-model-layered-psd-psd/1c55a71a-2747-4616-819d-2dc0a934089d), credited as its usage guidelines ask; Miyoria did not create the illustration or the model. The model files, the PSD and her voice reference are licensed separately and are not part of this repository.
