@@ -193,8 +193,8 @@ export class Wave {
 
     const values = this.#bars.values;
     const n = values.length;
-    const pitch = 1.05 * rem;
-    const thick = 0.46 * rem;
+    const pitch = 0.74 * rem;
+    const thick = 0.42 * rem;
     const r = thick / 2;
     const rest = 0.5 * rem; // what still shows of a bar at rest, so the column keeps its outline
     const reach = 7.5 * rem;
@@ -208,7 +208,7 @@ export class Wave {
       drawn = true;
       const y = top + i * pitch - r;
       const len = rest + v * reach;
-      ctx.globalAlpha = Math.min(0.72, 0.16 + 0.62 * v);
+      ctx.globalAlpha = Math.min(0.48, 0.08 + 0.45 * v);
       // Flush with the frame edge; only the end that reaches into the picture is round.
       ctx.beginPath();
       ctx.roundRect(-r, y, len + r, thick, r);
