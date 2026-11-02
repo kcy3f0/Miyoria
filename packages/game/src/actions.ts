@@ -1,12 +1,24 @@
 // Capabilities of the game director: `game.start`, `game.stop`, `game.goal` (commands and her
-// tools) and `game.act` (the director's own adapter actions). All go through the gate, so game
-// chat can never turn straight into an action.
+// tools) and `game.act` (the director's own adapter actions, and her in-game chat lines). All go
+// through the gate, so game chat can never turn straight into an action.
+//
+// `game.start` is the whole "go play" flow: it checks that the game is running (and refuses so
+// she can tell the owner when it is not), starts the session (the stage's scene director then
+// switches OBS to the game scene), sets a first goal when given one and, when asked to, also goes
+// live with `stream.start` (its own gate decision, for the same principal).
 
-import { type Capability, CapabilityError, defineCapability } from "@miyoria/actions";
+import {
+  type ActuatorRegistry,
+  type Capability,
+  CapabilityError,
+  defineCapability,
+  deniedText,
+} from "@miyoria/actions";
 import { withTimeout } from "@miyoria/kernel";
 import type { ToolRegistry } from "@miyoria/tools";
-import { actLane, type JsonValue, newId, type Principal } from "@miyoria/types";
+import { actLane, isJsonObject, type JsonValue, newId, type Principal } from "@miyoria/types";
 import { z } from "zod";
+import { GAME_CHAT_MAX, sanitizeGameChat } from "./chat-text.js";
 import type { Placement } from "./director.js";
 import type { GameControl } from "./module.js";
 
@@ -17,6 +29,10 @@ const GAME_LANE = actLane("game");
 const StartArgs = z.object({
   game: z.string().trim().toLowerCase().min(1).nullish(),
   where: z.enum(["auto", "voice", "here", "stream"]).nullish(),
+  /** First goal (a sentence). */
+  goal: z.string().trim().min(1).max(200).nullish(),
+  /** Also go live (Discord Go Live, OBS follows). */
+  stream: z.boolean().nullish(),
 });
 const GoalArgs = z.object({
   text: z.string().trim().min(1).max(200),
@@ -37,6 +53,19 @@ function byOf(principal: Principal, by: string | null | undefined): string {
   return principal.kind === "self" ? "她自己" : principal.kind === "user" ? "聊天室" : "指令";
 }
 
+/**
+ * The act call with its chat line made safe: one short line that never starts with a command
+ * character. Other actions are passed on as they are.
+ */
+export function safeActCall(call: Record<string, unknown>): Record<string, unknown> {
+  if (call.action !== "chat") return call;
+  const args = isJsonObject(call.args as JsonValue) ? (call.args as Record<string, unknown>) : {};
+  const raw = typeof args.message === "string" ? args.message : "";
+  const message = sanitizeGameChat(raw, GAME_CHAT_MAX);
+  if (message === "") throw new CapabilityError("nothing left to say in game chat after filtering");
+  return { ...call, args: { ...args, message } };
+}
+
 export interface GameCapabilityOptions {
   control: GameControl;
   defaultGame: string;
@@ -44,6 +73,42 @@ export interface GameCapabilityOptions {
   permissions: { start: string; stop: string; goal: string };
   toolTimeoutMs: number;
   tools: () => ToolRegistry | undefined;
+  /** For `game.start {stream: true}` (goes live through the gate). */
+  actuators?: ActuatorRegistry | null;
+  /** She is streaming (Go Live or OBS) right now. */
+  live?: () => boolean;
+}
+
+/** `stream.start` for the same principal, in the guild of her voice channel. */
+async function goLive(
+  o: GameCapabilityOptions,
+  principal: Principal,
+  turn: string | null,
+  signal: AbortSignal,
+): Promise<string> {
+  if (!o.actuators) return "沒辦法開台(行動閘門沒有啟用)。";
+  const here = principal.context;
+  const voice = o.control.voiceContext(here?.platform ?? null) ?? o.control.voiceContext();
+  const guild = voice?.scope ?? (here?.kind !== "dm" ? (here?.scope ?? null) : null);
+  if (guild === null) return "沒有開台:不知道要在哪個伺服器開。";
+  const outcome = await o.actuators.invoke(
+    {
+      principal,
+      capability: "stream.start",
+      args: { guild },
+      why: "開始玩遊戲,順便開台",
+      turn,
+    },
+    { signal },
+  );
+  switch (outcome.status) {
+    case "done":
+      return "也開台了。";
+    case "denied":
+      return `沒有開台:${deniedText(outcome.decision.stage)}(${outcome.decision.reason})`;
+    case "failed":
+      return `開台失敗:${outcome.error}`;
+  }
 }
 
 export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
@@ -55,7 +120,9 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
     permission: o.permissions.start,
     tool: {
       name: "game_start",
-      description: `開始直播玩遊戲(導演迴路會自己決定目標與動作)。game 省略 = ${o.defaultGame}。`,
+      description:
+        `開始直播玩遊戲(導演迴路會自己決定目標與動作,直播畫面會自動切到遊戲場景)。game 省略 = ${o.defaultGame}。` +
+        "遊戲沒開時會失敗,那就跟大家說、請擁有者先開遊戲。goal 可以給第一個目標;stream = true 會順便開台(Go Live)。",
       properties: {
         game: { type: "string", description: `遊戲 id,例如 ${o.defaultGame}` },
         where: {
@@ -63,6 +130,8 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
           enum: ["auto", "voice", "here", "stream"],
           description: "實況送到哪裡,通常省略(auto)",
         },
+        goal: { type: "string", description: "第一個目標,一句話(可省略)" },
+        stream: { type: "boolean", description: "也開台(你想讓大家看你玩的時候)" },
       },
     },
     lane: () => GAME_LANE,
@@ -71,7 +140,20 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
       if (here === null) throw new CapabilityError("no context to play in");
       const account = ctx.principal.requester ?? { platform: here.platform, id: "self" };
       const placement: Placement = args.where ?? "auto";
-      return o.control.start(args.game ?? o.defaultGame, here, account, placement);
+      let text = await o.control.start(
+        args.game ?? o.defaultGame,
+        here,
+        account,
+        placement,
+        ctx.signal,
+      );
+      if (args.goal) text += await o.control.goal(args.goal, byOf(ctx.principal, null));
+      if (args.stream === true) {
+        text += await goLive(o, ctx.principal, ctx.request.turn, ctx.signal);
+      } else if (o.live && !o.live()) {
+        text += "(現在沒有在直播;想讓大家看的話可以開台。)";
+      }
+      return text;
     },
   });
 
@@ -122,6 +204,7 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
       if (!tool) throw new CapabilityError(`tool \`${name}\` is not registered`);
       const context = ctx.principal.context;
       if (context === null) throw new CapabilityError("no game context");
+      const call = safeActCall(args.call);
       const result = await withTimeout(
         tool.call(
           {
@@ -133,7 +216,7 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
             priority: "initiative",
             signal: ctx.signal,
           },
-          args.call as JsonValue,
+          call as JsonValue,
         ),
         o.toolTimeoutMs,
       );

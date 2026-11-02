@@ -17,6 +17,7 @@ import {
   type JsonValue,
   newId,
   Principals,
+  serviceKey,
   type Timestamp,
   toTimestamp,
 } from "@miyoria/types";
@@ -45,6 +46,25 @@ const log = getLogger("game");
 export const DECISION_TOPIC = "game.director.decision";
 /** Initiative reason of commentary requests. */
 export const INITIATIVE_REASON = "game";
+/**
+ * Topic of session changes, `{state: "started" | "stopped", game, game_name, context}` (the
+ * stage's scene director switches to the game scene and back on it).
+ */
+export const SESSION_TOPIC = "game.director.session";
+
+/** Whether in-game chat of a game is its own conversation (then the director only notes it). */
+export interface ChatHandled {
+  handles(game: string): boolean;
+}
+
+/** Provided by module `game.chat`. */
+export const GameChatKey = serviceKey<ChatHandled>("GameChat");
+
+/** What `Director.preflight` found out about the game before a session starts. */
+export interface Preflight {
+  /** The adapter reaches the game but she is not in a world yet (main menu, loading). */
+  inMenu: boolean;
+}
 
 /** Persona bits used in the decision prompt. */
 export interface Persona {
@@ -373,6 +393,13 @@ export class Director {
 
   /** Stops all background activity (module stop). */
   close(): void {
+    if (!this.#closed && this.#session) {
+      try {
+        this.#publishSession("stopped", this.#session);
+      } catch (error) {
+        log.debug({ err: errorMessage(error) }, "cannot publish the session end");
+      }
+    }
     this.#closed = true;
     this.#work?.abort();
     this.#work = null;
@@ -466,6 +493,46 @@ export class Director {
 
   // ----- commands -----
 
+  /** A voice channel her voice node is in (on `platform` when given), if any. */
+  voiceContext(platform: string | null = null): ContextKey | null {
+    return this.#voices.find((v) => platform === null || v.platform === platform) ?? null;
+  }
+
+  /**
+   * Checks that the game is running and its adapter is connected before a session starts
+   * (`[modules.game] require_connected`). Throws `GameError` (user-facing, so she can tell the
+   * owner) when the adapter does not reach the game. A missing adapter is left to `start`.
+   */
+  async preflight(game: string, context: ContextKey, signal?: AbortSignal): Promise<Preflight> {
+    if (!this.#cfg.require_connected) return { inMenu: false };
+    const tools = this.#ctx.services.get(ToolRegistryKey);
+    const observe = `game_${game}_observe`;
+    if (!tools?.get(observe)) return { inMenu: false };
+    const name = gameName(tools.get(`game_${game}_act`)?.spec.description ?? null, game);
+    const ctx: ToolContext = {
+      turn: newId(),
+      context,
+      account: { platform: context.platform, id: "game" },
+      principal: Principals.director(context),
+      message: { context, id: "game" },
+      priority: "initiative",
+      signal: signal ?? new AbortController().signal,
+    };
+    let raw: string;
+    try {
+      raw = await callTool(tools, observe, ctx, {}, this.#cfg.tool_timeout_secs * 1000);
+    } catch (error) {
+      throw new GameError(`看不到 ${name} 的狀態（${errorMessage(error)}），沒辦法開始玩。`);
+    }
+    const { state } = splitObservation(raw);
+    if (state?.connected === false) {
+      throw new GameError(
+        `${name} 還沒開，或遊戲裡的模組沒有連上，沒辦法開始玩。請擁有者先在直播機開遊戲並進入世界。`,
+      );
+    }
+    return { inMenu: state?.in_game === false };
+  }
+
   /** Starts a session. Throws `GameError` (user-facing message) when it cannot. */
   start(game: string, placement: Placement, here: ContextKey, invoker: AccountRef): string {
     try {
@@ -558,7 +625,19 @@ export class Director {
       trigger: { text: ["剛開始玩"], important: true },
       lastComment: null,
     };
+    this.#publishSession("started", this.#session);
     return `她開始玩 ${name} 了，實況會在${where}進行。`;
+  }
+
+  #publishSession(state: "started" | "stopped", s: Session): void {
+    this.#ctx.publish(
+      customEvent(SESSION_TOPIC, {
+        state,
+        game: s.game,
+        game_name: s.gameName,
+        context: { ...s.context },
+      }),
+    );
   }
 
   #stop(): string {
@@ -567,6 +646,7 @@ export class Director {
     this.#session = null;
     this.#generation += 1;
     log.info({ game: s.game }, "game session stopped");
+    this.#publishSession("stopped", s);
     const tools = this.#ctx.services.get(ToolRegistryKey);
     if (tools?.get(actTool(s))) {
       const actuators = this.#actuators;
@@ -689,10 +769,22 @@ export class Director {
         this.#nudge({ valence: 0.15, arousal: 0.1, energy: 0.0, reason: "game: advancement" });
         this.#commentEvent(text, true);
         break;
+      case "chat":
+        // Player chat is its own conversation when `game.chat` handles this game: she answers
+        // there, so the director only notes it (as untrusted data for its next decision).
+        if (important && !this.#chatHandled(dataObj)) this.#commentEvent(text, true);
+        break;
       default:
         if (important) this.#commentEvent(text, true);
     }
     if (this.#cfg.trigger_events.includes(kind)) this.#trigger(text, important);
+  }
+
+  /** A player's chat line that `game.chat` turns into a conversation. */
+  #chatHandled(data: JsonObject | null): boolean {
+    const s = this.#session;
+    if (!s || data?.system === true) return false;
+    return this.#ctx.services.get(GameChatKey)?.handles(s.game) ?? false;
   }
 
   #onQueueItem(payload: JsonValue): void {

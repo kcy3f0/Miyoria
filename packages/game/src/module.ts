@@ -16,6 +16,7 @@ import { gameCapabilities } from "./actions.js";
 import { registerCommands } from "./commands.js";
 import { GameConfigSchema } from "./config.js";
 import { Director, type GameStatus, type Persona, type Placement, View } from "./director.js";
+import { LIVE_TOPICS, LiveState } from "./live.js";
 
 /** Prompt contributor key. */
 export const PROMPT_KEY = "game";
@@ -49,14 +50,25 @@ export class GameControl {
     this.#director = director;
   }
 
-  /** Starts a session in `context` (used as-is unless `placement` says otherwise), for `account`. */
+  /**
+   * Starts a session in `context` (used as-is unless `placement` says otherwise), for `account`.
+   * Refuses (`GameError`) when the game is not running or its adapter is not connected.
+   */
   async start(
     game: string,
     context: ContextKey,
     account: AccountRef,
     placement: Placement = "here",
+    signal?: AbortSignal,
   ): Promise<string> {
-    return this.#director.start(game, placement, context, account);
+    const checked = await this.#director.preflight(game, context, signal);
+    const text = this.#director.start(game, placement, context, account);
+    return checked.inMenu ? `${text}（遊戲還在主選單，進入世界後她就會開始動。）` : text;
+  }
+
+  /** A voice channel she is in (on `platform` when given), if any. */
+  voiceContext(platform: string | null = null): ContextKey | null {
+    return this.#director.voiceContext(platform);
   }
 
   async stop(): Promise<string> {
@@ -151,12 +163,15 @@ export class GameModule implements Module {
     const actuators = actuatorsFor(ctx);
     const director = new Director(cfg, ctx, persona, view, actuators);
     const control = new GameControl(director);
+    const live = new LiveState();
     const capabilities = gameCapabilities({
       control,
       defaultGame: cfg.default_game,
       permissions: cfg.permissions,
       toolTimeoutMs: cfg.tool_timeout_secs * 1000,
       tools: () => ctx.services.get(ToolRegistryKey),
+      actuators,
+      live: () => live.live(),
     }).map((c) => actuators.register(c));
 
     let paths: string[] = [];
@@ -181,10 +196,15 @@ export class GameModule implements Module {
       "voice.joined",
       "voice.left",
       "voice.participants",
+      LIVE_TOPICS.golive,
+      LIVE_TOPICS.stage,
     ]);
     ctx.spawn("director", async () => {
       try {
-        for await (const env of events) director.onEvent(env);
+        for await (const env of events) {
+          live.onEvent(env);
+          director.onEvent(env);
+        }
       } finally {
         director.close();
       }

@@ -91,6 +91,11 @@ export const GameConfigSchema = z.object({
   reached_events: z.array(z.string()).default(["goal_reached", "baritone_idle"]),
   /** Event types meaning the current goal failed. */
   failed_events: z.array(z.string()).default(["goal_failed"]),
+  /**
+   * `game start` first checks (with the observe tool) that the game is running and its adapter
+   * connected, and refuses otherwise so she can tell the owner. In the main menu is fine.
+   */
+  require_connected: z.boolean().default(true),
   /** Largest mood change the model may ask for per decision. */
   max_llm_nudge: z.number().default(0.1),
   permissions: GamePermissionsSchema.prefault({}),

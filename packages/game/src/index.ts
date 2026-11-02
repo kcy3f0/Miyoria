@@ -8,6 +8,23 @@
 // commentary with `agent.initiative` (reason `game`); nudges the mood on deaths and
 // achievements; and contributes a `game` prompt section.
 
+export { GAME_ACT, safeActCall } from "./actions.js";
+export {
+  type ChatLine,
+  chatLine,
+  type Delivery,
+  deliveryFor,
+  GameChat,
+  type GameChatConfig,
+  GameChatConfigSchema,
+  GameChatModule,
+  gameChatContext,
+  LINK_TOPIC,
+  playerId,
+  REPLY_ROUTES,
+  type ReplyRoute,
+} from "./chat.js";
+export { GAME_CHAT_MAX, sanitizeGameChat } from "./chat-text.js";
 export { formatStatus, registerCommands } from "./commands.js";
 export {
   defaultGameConfig,
@@ -34,16 +51,21 @@ export {
   verdictDebug,
 } from "./decision.js";
 export {
+  type ChatHandled,
   DECISION_TOPIC,
   Director,
+  GameChatKey,
   GameError,
   type GameStatus,
   type GoalView,
   INITIATIVE_REASON,
   type Persona,
   type Placement,
+  type Preflight,
+  SESSION_TOPIC,
   View,
 } from "./director.js";
+export { LIVE_TOPICS, LiveState } from "./live.js";
 export {
   GameControl,
   GameControlKey,

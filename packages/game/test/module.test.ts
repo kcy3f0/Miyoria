@@ -581,7 +581,8 @@ describe("game director", () => {
 
   it("no_llm_while_the_game_is_unreachable", async () => {
     const llm = new MockProvider("mock").reply(decision("閒晃", null));
-    const h = await Harness.create(llm);
+    // Without the start check, a session can run while the game is unreachable.
+    const h = await Harness.create(llm, { require_connected: false });
     h.observeText = '沒有連上 Minecraft。\n\n狀態:{"connected":false}';
     await h.start();
     await secs(40);
