@@ -133,6 +133,21 @@ token = "${VOICE_LINK_TOKEN:-}"
 bind = "127.0.0.1:7882"
 token = "${STAGE_LINK_TOKEN:-}"
 
+# OBS 智慧場景:每個場景的用途(chat 聊天 / game 遊戲 / brb 暫離 / starting 開場 / ending 結尾)。
+# 第一次看到 OBS 的場景清單時用 fast 模型從名稱判斷(沒有模型就用關鍵字),面板「直播」頁可以改;
+# 這裡寫的最優先,面板不能改。導演:開台 → 開場再到聊天、開始玩遊戲 → 遊戲、直播中沒人講話或她離開語音
+# → 暫離、下播 → 結尾(先停留 ending_ms 再真的停播)。她也可以自己用 stage_scene 換。
+[modules."stage.link".scenes]
+# director = true
+# roles = { chat = "聊天", game = "遊戲", brb = "暫離", starting = "開場", ending = "結尾" }
+# transition = { name = "Fade", duration_ms = 300 }   # 每次切換用的轉場(OBS 裡的名稱)
+# transitions = { game = { name = "Stinger" } }       # 個別用途的轉場(stinger 不用給長度)
+# starting_ms = 30000        # 開場畫面停多久
+# ending_ms = 6000           # 停播前結尾畫面停多久
+# brb_after_ms = 300000      # 直播中多久沒人講話就切暫離(0 = 不切)
+# manual_hold_ms = 120000    # 有人手動切場景後,導演多久不插手
+# min_switch_ms = 8000       # 兩次自動切換至少隔多久
+
 # 擴充套件資料夾(`miyoria ext list` / `miyoria ext dev`)。子資料夾 examples/ 不會載入;
 # 想試範例(/hello)就把 "extensions/examples" 加進來
 [modules.extensions]
@@ -142,6 +157,21 @@ dirs = ["extensions"]
 # [extensions."miyoria.minecraft"]
 # env = { MIYORIA_MC_TOKEN = "${MC_TOKEN:-}" }   # 直接設定值
 # env_pass = ["MIYORIA_MC_*"]                    # 取代 manifest 的 [env] pass
+
+# 遊戲(導演迴路)。`game start` 會先確認遊戲開著、模組連上了,沒開就拒絕(她會說要請你開遊戲)
+# [modules.game]
+# default_game = "minecraft"
+# require_connected = true
+
+# 遊戲內聊天變成獨立的對話(每個世界 / 伺服器一段歷史)。玩家在 Discord 用 /me link 拿代碼,
+# 在遊戲聊天室打 `!link <代碼>` 就跟 Discord 帳號連在一起;沒連的玩家是陌生人。
+# 她在遊戲裡的回話很短、不會下指令;直播中又在語音裡時也用語音說(她可以用 game_chat_reply 自己改)
+[modules."game.chat"]
+# games = ["minecraft"]
+# world = "local"            # 這個世界 / 伺服器的名字(對話情境的 scope;頻道模式可用 "minecraft:local")
+# username = ""              # 她在遊戲裡的名字(別人提到時才知道是在叫她)
+# max_chars = 120            # 她在遊戲聊天室一句最多幾個字
+# reply = "auto"             # auto | chat | voice | both
 
 [modules.voice]
 consent = "opt-out"        # opt-out:預設收音,可用 /voice consent off 退出;opt-in:同意後才收
