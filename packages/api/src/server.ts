@@ -16,6 +16,7 @@ import { servePanel } from "./panel.js";
 import { peopleRoutes } from "./people.js";
 import { roleRoutes } from "./roles.js";
 import { json, type Route } from "./route.js";
+import { sandboxRoutes } from "./sandbox.js";
 import {
   CSRF_HEADER,
   cookieToken,
@@ -97,6 +98,7 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...opsRoutes(state),
     ...innerRoutes(state),
     ...dataRoutes(state),
+    ...sandboxRoutes(state),
     ...metricsRoutes(state, { public: options.metricsPublic ?? false }),
   ];
 }
