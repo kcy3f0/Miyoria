@@ -231,7 +231,45 @@ export function directReason(msg: IncomingMessage, names: readonly string[]): st
     const name = normalize(n);
     return name !== "" && text.includes(name);
   });
-  return found === undefined ? null : `name \`${found}\``;
+  if (found !== undefined) return `name \`${found}\``;
+  const heard = voice ? vocativeName(msg.text, names) : null;
+  return heard === null ? null : `name \`${heard.name}\` (heard \`${heard.word}\`)`;
+}
+
+/**
+ * Speech recognition mangles short English names ("miyo" → "mo", "meo"). A Latin word that
+ * opens an utterance on its own ("mo,你好", "meo 你在嗎") and sounds like one of her Latin names —
+ * same first letter, at most two letters off — is taken as calling her. Only the opening word,
+ * so "mode" or "more" inside a sentence never counts.
+ */
+export function vocativeName(
+  text: string,
+  names: readonly string[],
+): { name: string; word: string } | null {
+  const m = /^\s*([a-z]{2,10})(?=[\s,，、.。!！?？~～]|$)/i.exec(text);
+  const word = m?.[1]?.toLowerCase();
+  if (word === undefined) return null;
+  for (const n of names) {
+    const name = n.toLowerCase();
+    if (!/^[a-z]{3,12}$/.test(name) || name[0] !== word[0]) continue;
+    if (Math.abs(name.length - word.length) > 2) continue;
+    if (editDistance(word, name) <= Math.min(2, name.length - 2)) return { name: n, word };
+  }
+  return null;
+}
+
+/** Levenshtein distance. */
+function editDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      row[j] = Math.min((prev[j] ?? 0) + 1, (row[j - 1] ?? 0) + 1, (prev[j - 1] ?? 0) + cost);
+    }
+    prev = row;
+  }
+  return prev[b.length] ?? 0;
 }
 
 /** A question asked within the voice question window after she spoke. */

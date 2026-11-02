@@ -39,6 +39,7 @@ export {
   talkInterruptScale,
   talkThresholdFactor,
   type VoiceAttention,
+  vocativeName,
 } from "./attention.js";
 export { activenessLabel, modeLabel, personaSummary } from "./commands.js";
 export {

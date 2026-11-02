@@ -20,6 +20,7 @@ import {
   type RandomSource,
   SeededRandom,
   Session,
+  vocativeName,
 } from "../src/index.js";
 import { tacc, tctx, tmsg } from "./fixtures.js";
 
@@ -365,5 +366,23 @@ describe("attention", () => {
       0x6e789e / 2 ** 24,
       0x06c45d / 2 ** 24,
     ]);
+  });
+});
+
+describe("vocativeName", () => {
+  const names = ["DeepSeek", "Miyo", "小鯨魚"];
+  it("hears her name in a mangled opening word", () => {
+    expect(vocativeName("mo,你好。", names)).toEqual({ name: "Miyo", word: "mo" });
+    expect(vocativeName("meo,你好。", names)?.name).toBe("Miyo");
+    expect(vocativeName("Mio 你在嗎", names)?.name).toBe("Miyo");
+    expect(vocativeName("miya!", names)?.name).toBe("Miyo");
+  });
+  it("ignores look-alikes inside sentences and unrelated words", () => {
+    expect(vocativeName("我們 mo 一下", names)).toBeNull();
+    expect(vocativeName("more 東西", names)).toBeNull();
+    expect(vocativeName("mode,你看", names)).toBeNull();
+    expect(vocativeName("me,我覺得", names)).toBeNull();
+    expect(vocativeName("deep,你好", names)).toBeNull();
+    expect(vocativeName("好啊 miyo", names)).toBeNull();
   });
 });
