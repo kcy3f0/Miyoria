@@ -202,6 +202,16 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 - 預設不能連外,只開白名單;CPU、記憶體、執行時間上限。
 - 她寫的工具要你核准才註冊成工具;核准後仍在沙箱裡跑。
 
+**實作狀態(2026-11-02):F 的核心已完成**,在 `@miyoria/sandbox`(模組 `sandbox`,opt-in,預設關閉)。完整的旗標、威脅模型與剩餘風險見 [`packages/sandbox/README.md`](../../packages/sandbox/README.md)。
+
+- `SandboxKey`:`run({ language: "python" | "node", code, files, stdin, timeout_ms, network })`,每次一個新容器(`--rm`、`--network none`、`--read-only` + tmpfs `/tmp`、只有 `/work` 可寫、非 root、`--cap-drop ALL`、`no-new-privileges`、`--pids-limit` / `--memory` / `--cpus` / `ulimit`、牆鐘逾時以容器名稱 `docker kill`、輸出上限、並行上限、啟動時依 label 清掉殘留容器);Docker 沒開時模組 degraded,不會 crash。
+- 工具工作區:每個 profile 一個持久資料夾放她的腳本,執行時可唯讀掛到 `/tools`。
+- `ProposedToolsKey`:自寫工具 `pending → approved / rejected`,核准綁定版本號,核准後以 JSON stdin 在沙箱裡執行。
+- 網路白名單**還沒做**(型別有,呼叫會被拒絕);做法是 internal network + egress proxy,見 README。
+- 環境變數:沙箱的 Docker CLI 與容器都不帶主機的環境變數。外掛繼承 `process.env` 的問題(`ext-host`)**不在這次範圍**,仍待修。
+
+**留給階段 A 接線**:在 `ActuatorRegistry` 註冊 `code.run`、`tool.propose`(`SANDBOX_CAPABILITIES` + `sandboxHandlers`,風險 `high`,走她自己的審核呼叫);核准流程呼叫 `ProposedTools.approve(name, { reviewer, version })`;把 `approvedSpecs()` 註冊成 LLM 工具並同樣過閘門;執行結果當成不可信資料放進 user role(§8.2)。
+
 ### 8.4 緊急停止
 
 `/admin autonomy pause|resume` 與面板開關:暫停心智迴圈與所有 `self` 行動,只剩反應式聊天。
@@ -228,7 +238,7 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 | **C. 心智迴圈** | Mind 模組、內心獨白、意圖、自己發起的回合;talkativeness 取代 attention 數字;initiative 併入 | 會自己找人聊天、偷偷進語音、自己調活躍度、冷場時開話題 |
 | **D. OBS 智慧場景 + Minecraft** | 場景分類與自動轉場;Minecraft 端到端(adapter 準備與模組建置已完成,見 `extensions/minecraft/SETUP.md`);**遊戲內聊天變成獨立對話情境**(有自己的歷史,玩家名稱可用 `/me link` 綁 Discord 帳號以共用好感與記憶,回覆管道由她選:遊戲內打字、直播語音 + 字幕或兩者) | 「去玩 Minecraft」→ 她自己開遊戲、切場景、開台 |
 | **E. 聊天上下文與圖片** | 冷啟動補抓歷史、回覆鏈、看圖(deepseek-v4.1-flash 已支援視覺,直接把圖片當多模態內容送給聊天模型;先實測 OpenCode 端是否接受圖片)、語音頻道文字區改用語音回 | 對話更連貫、看得懂圖片 |
-| **F. 沙箱程式** | 沙箱、`code.run`、自寫工具與核准流程 | 她能自己寫小工具 |
+| **F. 沙箱程式** | 沙箱、`code.run`、自寫工具與核准流程。**核心已完成**(`@miyoria/sandbox`:Docker 沙箱、工具工作區、自寫工具的儲存與生命週期);能力註冊到閘門與核准介面等階段 A(見 8.3) | 她能自己寫小工具 |
 | **G. 反思與學習** | 每日反思(從反應中學:誰喜歡什麼)、長期目標 | 越相處越懂大家 |
 | **最後** | 人設重寫 | — |
 

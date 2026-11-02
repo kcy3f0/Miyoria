@@ -122,7 +122,7 @@ export interface Module {
 
 ### 2.3 三種 module 來源
 
-1. **內建 module**:`packages/*` 的 TS 套件,由 `@miyoria/core` 組裝;用 `[modules.<id>] enabled = false` 關掉。
+1. **內建 module**:`packages/*` 的 TS 套件,由 `@miyoria/core` 組裝;用 `[modules.<id>] enabled = false` 關掉。高風險的 module 是 opt-in(`OPT_IN_MODULES`,目前只有 `sandbox`):沒有寫 `enabled = true` 就不會啟動。
 2. **擴充 module**:跨行程的 extension,宣告 `kind = "module"`,在 Supervisor 裡跟內建 module 一樣管理(見 §9)。**「自己建立子系統」就是走這條路。**
 3. **遠端節點**:Stage、voice node 透過 voice link / stage link 連進 Core 對應的 module(`voice.link`、`stage.link`);節點離線時依賴它的功能降級(例如語音關閉、文字照常)。
 
@@ -795,6 +795,7 @@ CLI 透過 Admin API 操作正在跑的 Core,跟 Panel 用同一套權限。
 - **內容**:可設定的內容政策(依伺服器);輸出前做輕量檢查。
 - **速率與成本**:每人、每頻道限流;預算上限當作硬性煞車。
 - **擴充**:安裝時列出要求的權限;高風險權限(鍵鼠輸入、網路、檔案)要明確同意;跨行程本身不是沙箱,所以要標示信任等級。
+- **她寫的程式**:模組 `sandbox`(`@miyoria/sandbox`,opt-in)在用完即丟的 Docker 容器裡執行:`--network none`、唯讀根目錄、非 root、`--cap-drop ALL`、資源與時間上限、不帶任何主機環境變數,只掛載當次的工作資料夾。服務是 `SandboxKey`(`run`、工具工作區)與 `ProposedToolsKey`(她提出的工具,核准後才能用,仍在沙箱裡跑)。`code.run` / `tool.propose` 是高風險能力,只能經過自主層的閘門呼叫([design/autonomy.md](design/autonomy.md) §8);威脅模型與剩餘風險見 [`packages/sandbox/README.md`](../packages/sandbox/README.md)。
 - **語音**:收音前公告、需要同意、預設不存音訊。
 - **資料權利**:使用者可以匯出、刪除自己的資料。
 
@@ -828,6 +829,7 @@ miyoria/
 │  ├─ ext-host/               # 擴充宿主、JSON-RPC、manifest
 │  ├─ mcp/                    # MCP client / server
 │  ├─ stage/                  # stage link + Stage 節點(VTS、OBS、overlay)
+│  ├─ sandbox/                # Docker 程式沙箱、她的工具工作區、自寫工具(opt-in)
 │  ├─ core/                   # 組裝所有模組、啟動與關機
 │  ├─ sdk/                    # @miyoria/sdk(擴充用)
 │  └─ cli/                    # npm 套件 `miyoria`:CLI,esbuild 打包

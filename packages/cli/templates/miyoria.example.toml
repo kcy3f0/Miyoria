@@ -136,6 +136,21 @@ ambient_factor = 0.5       # 主動插話機率的倍率
 cooldown_ms = 20000        # 她講完後至少隔多久才會再主動開口
 debounce_ms = 700          # 對方講完後等多久(看他是不是還要繼續講)
 
+# ---- 程式沙箱 ----------------------------------------------------------------
+# 她寫的程式在用完即丟、不能連外的 Docker 容器裡執行(需要 Docker Desktop / Docker Engine)。
+# 預設關閉,要明確寫 enabled = true 才會啟動;Docker 沒開時模組顯示 degraded,不影響其他功能。
+# 目前只提供服務,還不是她能叫的工具(code.run / tool.propose 要等自主層的閘門),
+# 安全說明見 packages/sandbox/README.md。
+# [modules.sandbox]
+# enabled = true
+# root = "data/sandbox"          # runs/<id>(每次執行)與 profiles/<profile>/tools(她留下的腳本)
+# default_timeout_ms = 30000
+# max_timeout_ms = 120000
+# max_concurrent = 2
+# keep_runs = 20                 # 保留最近幾次執行的輸出檔
+# images = { python = "python:3.12-slim", node = "node:24-slim" }  # 可釘 digest:...@sha256:<hash>
+# limits = { memory_mb = 256, cpus = 1, pids_limit = 128 }
+
 # ---- Stage 節點(在直播機執行 `miyoria stage`)-------------------------------
 [stage]
 core_url = "ws://127.0.0.1:7882/stage-link"
