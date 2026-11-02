@@ -71,7 +71,7 @@
 
 ## Phase 4:Admin API + Panel
 
-- [x] `@miyoria/api`:REST + SSE、bearer token、稽核;人物、記憶、權限、擴充、MCP、佇列、Stage、語音、花費等路由(見 `apps/panel/API-PLAN.md`)
+- [x] `@miyoria/api`:REST + SSE、bearer token、稽核;人物、記憶、權限、擴充、MCP、佇列、Stage、語音、花費等路由(型別見 `packages/api/src/types.ts`)
 - [x] Core 直接提供面板網頁(`panel_dir`)
 - [x] `apps/panel`:深色極簡(impeccable)、總覽、子系統、決策追蹤、人格編輯 + 歷史、即時事件、人物與好感、記憶、權限、擴充、MCP、佇列、Stage、語音監控
 - [x] CLI 透過 API 操作執行中的 core

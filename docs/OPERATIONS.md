@@ -168,7 +168,7 @@ migration 在 Core 第一次連上資料庫時自動執行,`vector` 擴充也是
 npx miyoria core                   # 或從原始碼:pnpm dev:core
 ```
 
-Core 預設在 `http://127.0.0.1:7878/` 提供管理面板(npm 套件內含;從原始碼要先 `pnpm build:panel`)。
+Core 預設在 `http://127.0.0.1:7878/` 提供管理面板(npm 套件內含;從原始碼要先 `pnpm build:web`)。
 
 Docker:
 
@@ -224,7 +224,21 @@ WORKER_ASR_URL=http://127.0.0.1:8001 WORKER_TTS_URL=http://127.0.0.1:8002 python
 
 Stage 要直接碰 VTube Studio / OBS / 遊戲,所以原生在直播機執行,不放 Docker:`miyoria stage`,讀 `miyoria.toml` 的 `[stage]`(`core_url`、`token` = `STAGE_LINK_TOKEN`、`[stage.vts]`、`[stage.obs]`),協定見 [stage-link.md](protocols/stage-link.md);overlay 見 [apps/overlay/README.md](../apps/overlay/README.md)。
 
-管理面板是靜態檔,由 Core 提供(`[modules.api] panel_dir`,`MIYORIA_PANEL_DIR` 可覆寫):npm 套件與 Docker 映像檔都已內含;從原始碼跑時先 `pnpm build:panel`(輸出 `apps/panel/dist`,Core 預設就讀這裡)。
+管理面板是靜態檔,由 Core 提供(`[modules.api] panel_dir`,`MIYORIA_PANEL_DIR` 可覆寫):npm 套件與 Docker 映像檔都已內含;從原始碼跑時先 `pnpm --filter @miyoria/panel build`(或 `pnpm build:web`,輸出 `apps/panel/dist`,Core 預設就讀這裡)。開發時 `pnpm --filter @miyoria/panel dev`(Vite,`http://localhost:5178`,`/api` 轉給 `MIYORIA_CORE_URL`,預設 `http://127.0.0.1:7878`)。
+
+面板有七頁(側欄可收合,`Ctrl/⌘ + B`;`Ctrl/⌘ + K` 開搜尋,可跳到頁面、人、子系統):
+
+| 頁 | 內容 |
+|---|---|
+| 總覽 | 子系統、今日花費、LLM 呼叫、佇列四個數字;需要注意的項目(失敗或降級的子系統、擴充、MCP,LLM 預算);LLM 用量表 |
+| 動態 | 事件 / 決策 / 轉錄三個分頁,共用同一條 `/api/events` 串流;點一列在側邊面板看細節 |
+| 直播 | OBS 場景、VTS 表情(清單來自 Stage 節點回報)、OBS 推流開關、overlay 網址與預覽;「讓她說」(她不在語音頻道時停用);請求佇列;語音頻道成員與延遲 |
+| 角色 | Persona(對話框編輯、儲存前看 diff、版本比較與還原)/ 記憶(搜尋、編輯、刪除、分頁載入)/ 人(關係、好感調整、稱呼、標籤、備註、封鎖) |
+| 系統 | 子系統 / 擴充套件 / MCP 伺服器;MCP 只能重新連線(開關在 `miyoria.toml`) |
+| 權限 | 指派(選人或輸入帳號 id)、角色的新增 / 編輯 / 刪除、Discord 身分組對應 |
+| 設定 | Core 位址與 token |
+
+側欄底部的圓點是 Core 與事件串流的狀態(滑過看版本與位址)。唯讀帳號(沒有 `admin.panel.write`)看得到所有東西,但修改類的控制項會停用。
 
 ## 5. Discord 設定
 

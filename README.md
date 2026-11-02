@@ -40,7 +40,7 @@ pnpm dev:core               # = miyoria core
 pnpm test                   # 每個套件的 Vitest;pnpm typecheck、pnpm lint 同理
 ```
 
-`pnpm dev <指令>` 等於 `miyoria <指令>`。打包成 npm 套件:`pnpm build:panel && pnpm --filter miyoria build`(esbuild,輸出 `packages/cli/dist/`),`pnpm release:pack` 會產生 tarball。
+`pnpm dev <指令>` 等於 `miyoria <指令>`。打包成 npm 套件:`pnpm build:web && pnpm --filter miyoria build`(esbuild,輸出 `packages/cli/dist/`),`pnpm release:pack` 會產生 tarball。
 
 ### 語音(Phase 2)
 
@@ -52,7 +52,7 @@ pnpm test                   # 每個套件的 Vitest;pnpm typecheck、pnpm lint 
 ### 其他節點與工具
 
 - `miyoria stage`:直播機上的 Stage 節點(VTube Studio、OBS、overlay),見 [docs/protocols/stage-link.md](docs/protocols/stage-link.md)
-- 管理面板:npm 套件已內含;從原始碼用 `pnpm build:panel`,之後 core 會在 http://127.0.0.1:7878/ 提供
+- 管理面板:npm 套件已內含;從原始碼用 `pnpm build:web`,之後 core 會在 http://127.0.0.1:7878/ 提供
 - 擴充套件:`miyoria ext new my-ext`、`miyoria ext dev`
 - Minecraft:[extensions/minecraft/README.md](extensions/minecraft/README.md)
 - Docker:[deploy/README.md](deploy/README.md)

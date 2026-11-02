@@ -9,7 +9,7 @@
 // module is stopped) is `503`. Changes are recorded in the `AuditLog` (actor `"api"` for the
 // token, `discord:<id>` for a session) when there is one.
 //
-// Routes (shapes in `types.ts`; the panel's `API-PLAN.md` has examples):
+// Routes (shapes in `types.ts`):
 //
 // * `GET /api/health` → `{ status, version }`
 // * `GET /api/auth/methods`, `GET /api/auth/oauth/login?next=/#/…`,
