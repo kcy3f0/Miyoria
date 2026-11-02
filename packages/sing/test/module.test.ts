@@ -528,5 +528,9 @@ describe("workerQuery", () => {
     expect(workerQuery("https://youtu.be/abc", 1)).toEqual({ url: "https://youtu.be/abc", key: 1 });
     expect(workerQuery("library:My Song.mp3", 0)).toEqual({ path: "My Song.mp3", key: 0 });
     expect(workerQuery("  Song name ", 0)).toEqual({ query: "Song name", key: 0 });
+    expect(workerQuery("唱歌 https://www.youtube.com/watch?v=PHhHFN3SlcA", 0)).toEqual({
+      url: "https://www.youtube.com/watch?v=PHhHFN3SlcA",
+      key: 0,
+    });
   });
 });

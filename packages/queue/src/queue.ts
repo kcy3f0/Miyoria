@@ -58,6 +58,18 @@ interface State {
   last_vote: VoteResult | null;
 }
 
+const SONG_LINK =
+  /https?:\/\/(?:[a-z0-9-]+\.)*(?:youtube\.com|youtu\.be|soundcloud\.com|bilibili\.com|b23\.tv|nicovideo\.jp|nico\.ms)\//i;
+const SONG_WORDS = /^\s*(?:唱|點歌|点歌|sing\b)/i;
+
+/**
+ * The kind of a request whose kind was left empty: `song` for a music link or text that asks
+ * for a song (「唱…」「點歌…」), else `chat`.
+ */
+export function guessKind(text: string): string {
+  return SONG_LINK.test(text) || SONG_WORDS.test(text) ? "song" : "chat";
+}
+
 function newState(): State {
   return {
     next_id: 0,
@@ -302,7 +314,7 @@ export class RequestQueue {
       throw QueueError.textTooLong(this.config.max_text_chars);
     }
     const kind = req.kind.trim().toLowerCase();
-    req.kind = kind === "" ? "chat" : [...kind].slice(0, 32).join("");
+    req.kind = kind === "" ? guessKind(req.text) : [...kind].slice(0, 32).join("");
     if (this.#social?.attitude(req.requester)?.blocked) throw QueueError.blocked();
     return this.#commit((st, now) => {
       if (pendingTotal(st) >= this.config.max_pending) {

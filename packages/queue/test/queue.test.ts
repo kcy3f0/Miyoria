@@ -2,6 +2,7 @@ import { MemorySettingsStore } from "@miyoria/store";
 import type { AccountRef, Attitude, Clock, Event, JsonValue, SocialSignals } from "@miyoria/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  guessKind,
   type QueueConfig,
   QueueConfigSchema,
   QueueError,
@@ -142,6 +143,21 @@ describe("RequestQueue ordering", () => {
     expect(
       q.submit({ requester: acct("b"), requesterName: "b", kind: "", text: "y" }).item.kind,
     ).toBe("chat");
+  });
+
+  it("a_request_without_a_kind_that_asks_for_a_song_is_a_song", () => {
+    expect(guessKind("唱歌 https://www.youtube.com/watch?v=PHhHFN3SlcA")).toBe("song");
+    expect(guessKind("https://youtu.be/abc")).toBe("song");
+    expect(guessKind("這首 https://music.youtube.com/watch?v=x")).toBe("song");
+    expect(guessKind("點歌 夜に駆ける")).toBe("song");
+    expect(guessKind("唱一首 Lemon")).toBe("song");
+    expect(guessKind("可以去挖鑽石嗎")).toBe("chat");
+    expect(guessKind("看這個 https://example.com/youtube.com/")).toBe("chat");
+    const q = queueWith(cfg(), new TestClock());
+    expect(
+      q.submit({ requester: acct("a"), requesterName: "a", kind: "", text: "點歌 Lemon" }).item
+        .kind,
+    ).toBe("song");
   });
 
   it("affinity_weights_within_a_round_and_blocked_is_refused", () => {

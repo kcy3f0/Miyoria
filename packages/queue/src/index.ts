@@ -10,6 +10,7 @@ export {
 } from "./config.js";
 export { QueueModule, RequestQueueKey } from "./module.js";
 export {
+  guessKind,
   type Publisher,
   QueueSnapshotSchema,
   RequestQueue,

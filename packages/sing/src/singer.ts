@@ -64,12 +64,16 @@ export interface SongRequest extends Omit<NewSong, "query"> {
   query: string;
 }
 
-const LINK = /^https?:\/\/\S+$/i;
+const LINK = /https?:\/\/[^\s<>"'「」]+/i;
 
-/** The worker request for a set list query: a link, `library:<path>`, or a search. */
+/**
+ * The worker request for a set list query: a link (anywhere in it, e.g. 「唱這首 https://…」),
+ * `library:<path>`, or a search.
+ */
 export function workerQuery(query: string, key: number): SongQuery {
   const q = query.trim();
-  if (LINK.test(q)) return { url: q, key };
+  const link = LINK.exec(q)?.[0];
+  if (link !== undefined) return { url: link, key };
   if (q.toLowerCase().startsWith("library:")) return { path: q.slice(8).trim(), key };
   return { query: q, key };
 }
