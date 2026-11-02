@@ -19,12 +19,15 @@ api_key = "${LLM_API_KEY:-}"
 chat = ["deepseek:deepseek-chat"]
 # 高風險動作的自我審核;不設就用 chat 的模型(啟動後第一次審核會記一行警告)
 review = ["deepseek:deepseek-chat"]
+# 她的內心獨白(心智迴圈);不設就用 chat 的模型(會記一行警告)
+mind = ["deepseek:deepseek-chat"]
 
 # 推理模型要不要先思考,依用途(沒列的 = 不思考)。不急的判斷開、要即時的關:
 # 文字回覆會思考、語音回覆一律不思考(agent 每次自己決定,不看這裡的 chat)
 [llm.thinking]
 chat = true          # 文字聊天回覆
 review = true        # 高風險動作的自我審核
+mind = true          # 她的內心獨白(心智迴圈)
 summarizer = true    # 記憶整理
 fast = false         # 要不要插話的快速判斷(語音裡一律不思考)
 
@@ -207,10 +210,13 @@ barge_in = "stop"          # 有人插話時停止說話:stop | ignore
 # mention_users = true
 
 # 語音聊天:比文字更保守,偶爾才插話。也可以用 /voice mode 即時切換
+# 她自己定了多話程度(心智迴圈或「活躍點」)的地方,插話機率、冷卻與門檻都照她的;
+# 下面的倍率只在她沒定的時候用。min_cooldown_ms 是不管她多想講都不能更快的底線
 [modules.agent.voice]
 default_mode = "ambient"
-ambient_factor = 0.5       # 主動插話機率的倍率
+ambient_factor = 0.5       # 主動插話機率的倍率(她沒定多話程度時)
 cooldown_ms = 20000        # 她講完後至少隔多久才會再主動開口
+min_cooldown_ms = 5000     # 她定了多話程度時,冷卻的底線
 debounce_ms = 700          # 對方講完後等多久(看他是不是還要繼續講)
 text_chat = true           # 她在語音頻道裡時,那個頻道文字區打的字她也用說的回
 text_aside = true          # 用說的回時,網址和程式碼改貼到語音頻道的文字區
@@ -250,7 +256,28 @@ boredom_per_hour = 0.15          # 沒事做時無聊上升的速度
 # attention = 0.04
 # curiosity = 0.05
 
+# 她的心智迴圈:有事發生(有人上線 / 進語音、頻道冷掉、語音冷場、她剛講完話)或心跳時,
+# 她自己想一想:寫內心獨白、調整感受與方針、決定要不要主動做事(每件事都要過行動閘門)。
+# 想法時間軸在面板「內心 → 想法」;/admin autonomy pause 會讓她停止思考。
+# 這裡只有成本與頻率的上限,怎麼想、做什麼是她自己決定
+[modules.mind]
+max_calls_per_hour = 12          # 一小時最多想幾次(心跳會依狀況自己放慢 / 加快)
+min_interval_secs = 45           # 兩次之間至少隔多久
+# max_heartbeat_mins = 30        # 心跳最慢多久一次
+# max_intents = 2                # 一次想法最多做幾件事
+# quiet_start_hour = 1           # 深夜安靜時段:心跳變慢,只因心跳醒來時不主動找人
+# quiet_end_hour = 7
+# voice_quiet_secs = 40          # 語音裡聊完後安靜多久算冷場
+
+# 主動發話的觸發(冷場、打招呼、進語音問候、追問)。心智迴圈在跑時會交給她判斷,
+# 下面的每日次數、安靜時段與冷卻仍然是底線
+# [modules.initiative]
+# to_mind = true
+# max_per_day = 12
+# max_per_context_per_day = 4
+
 # ---- 程式沙箱 ----------------------------------------------------------------
+
 # 她寫的程式在用完即丟、不能連外的 Docker 容器裡執行(需要 Docker Desktop / Docker Engine)。
 # 預設關閉,要明確寫 enabled = true 才會啟動;Docker 沒開時模組顯示 degraded,不影響其他功能。
 # Docker 可用時她會多出工具 code_run(跑程式)、tool_propose(把寫好的程式提出成工具)與已核准的
