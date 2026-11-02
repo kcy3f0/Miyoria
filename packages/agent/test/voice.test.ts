@@ -284,6 +284,32 @@ describe("voice", () => {
     expect(prepared[0]?.[0]).toEqual(voiceCtx());
   });
 
+  it("voice_lines_go_to_the_sink_with_the_written_text_and_ask_for_them", async () => {
+    const prepared: [string, string | undefined][] = [];
+    const voiceSink = {
+      speaksIn: "Japanese",
+      prepare: (_c: ContextKey, text: string, spoken?: string) => prepared.push([text, spoken]),
+      speak: async () => "completed" as const,
+    };
+    const mock = new MockProvider("chat").reply(
+      "<voice>えっ、本当に?</voice><emo:happy>欸,真的嗎?<voice>じゃあ行こう!</voice>那走吧!最後一句沒有日文。",
+    );
+    const h = await Harness.build("off", voiceConfig("always"), mock, null, { voiceSink });
+    h.publish(joined());
+    h.publish(utterance("Owen", "我中樂透了"));
+    await wait(3000);
+    // The written text only (subtitles, log); each spoken line goes with its text.
+    expect(texts(h)).toEqual(["欸,真的嗎?", "那走吧!最後一句沒有日文。"]);
+    expect(prepared).toEqual([
+      ["欸,真的嗎?", "えっ、本当に?"],
+      ["那走吧!最後一句沒有日文。", "じゃあ行こう!"],
+    ]);
+    expect(h.sink.speeches()[0]).toEqual(["欸,真的嗎?", "happy"]);
+    const prompt = JSON.stringify(mock.requests()[0]?.messages);
+    expect(prompt).toContain("<voice>");
+    expect(prompt).toContain("用 Japanese 念出來");
+  });
+
   it("first_token_latency_is_published_for_the_monitor", async () => {
     const paced = new Paced([
       [

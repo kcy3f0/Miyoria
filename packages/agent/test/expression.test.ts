@@ -61,6 +61,26 @@ describe("expression", () => {
     expect(p.finish()).toEqual([]);
   });
 
+  it("voice_spans_are_spoken_lines_not_text", () => {
+    const spoken = (t: string): Segment => ({ type: "spoken", text: t });
+    const whole = "<voice>えっ、本当に?</voice>欸,真的嗎?<emo:happy><VOICE>よし!</voice>好!";
+    const expected = [
+      spoken("えっ、本当に?"),
+      text("欸,真的嗎?"),
+      emo("happy"),
+      spoken("よし!"),
+      text("好!"),
+    ];
+    expect(parseChunks([whole])).toEqual(expected);
+    for (let i = 0; i <= whole.length; i++) {
+      expect(parseChunks([whole.slice(0, i), whole.slice(i)]), `split at ${i}`).toEqual(expected);
+    }
+    // Unterminated at the end: still the spoken line. A stray closing tag says nothing.
+    expect(parseChunks(["<voice>途中"])).toEqual([spoken("途中")]);
+    expect(parseChunks(["好</voice>啊"])).toEqual([text("好啊")]);
+    expect(Expression.parse("<voice>はい</voice>好").text).toBe("好");
+  });
+
   it("malformed_tags_are_text", () => {
     expect(parseChunks(["a < b"])).toEqual([text("a < b")]);
     expect(parseChunks(["<3 你"])).toEqual([text("<3 你")]);

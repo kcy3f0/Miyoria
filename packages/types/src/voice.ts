@@ -42,10 +42,17 @@ export type SpeakOutcome = "completed" | "interrupted";
  */
 export interface VoiceSink {
   /**
-   * Hint that `text` will be spoken in `context` soon (it was just queued), so slow preparation
-   * such as translating it can start before its turn. Optional; never required before `speak`.
+   * The language she is heard in when it differs from the one she writes (`tts_translate`);
+   * `null` or absent when she speaks what she writes. A reply can then carry the spoken words
+   * itself (`prepare`'s `spoken`), which saves the translation.
    */
-  prepare?(context: ContextKey, text: string): void;
+  readonly speaksIn?: string | null;
+  /**
+   * Hint that `text` will be spoken in `context` soon (it was just queued), so slow preparation
+   * such as translating it can start before its turn. `spoken`: the words to say for it in
+   * `speaksIn`, when the reply already has them. Optional; never required before `speak`.
+   */
+  prepare?(context: ContextKey, text: string, spoken?: string): void;
   speak(
     context: ContextKey,
     text: string,

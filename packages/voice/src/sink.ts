@@ -61,9 +61,11 @@ function prepend(first: AudioChunk, it: AsyncIterator<AudioChunk>): AudioStream 
 /** The `VoiceSink` provided by the `voice` module. */
 export class Speaker implements VoiceSink {
   readonly #d: SpeakerDeps;
+  readonly speaksIn: string | null;
 
   constructor(deps: SpeakerDeps) {
     this.#d = deps;
+    this.speaksIn = deps.translator?.language ?? null;
   }
 
   #playbackEvent(
@@ -134,9 +136,12 @@ export class Speaker implements VoiceSink {
     return link.play(guild, first.sampleRate, prepend(first, it));
   }
 
-  prepare(_context: ContextKey, rawText: string): void {
+  prepare(_context: ContextKey, rawText: string, spoken?: string): void {
     const text = stripTags(rawText);
-    if (text !== "") this.#d.translator?.prepare(text);
+    if (text === "") return;
+    const said = spoken === undefined ? "" : stripTags(spoken);
+    if (said !== "") this.#d.translator?.provide(text, said);
+    else this.#d.translator?.prepare(text);
   }
 
   async speak(

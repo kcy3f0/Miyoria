@@ -539,6 +539,25 @@ describe("voice", () => {
     expect(e.tts.requests[1]?.text).toBe("壞掉");
   });
 
+  it("a_spoken_line_from_the_reply_is_said_without_a_translation_call", async () => {
+    const asked: ChatRequest[] = [];
+    const router = {
+      async complete(_purpose: string, request: ChatRequest) {
+        asked.push(request);
+        return { text: "ja(?)" } as never;
+      },
+    };
+    const e = await boot({ tts_translate: "Japanese" }, router);
+    const sink = e.h.services.require(VoiceSinkKey);
+    expect(sink.speaksIn).toBe("Japanese");
+    sink.prepare?.(voiceCtx, "真的嗎?", "えっ、本当に?");
+    const speaking = sink.speak(voiceCtx, "真的嗎?", null, null);
+    finish(e.node, (await readPlayback(e.node))[0]);
+    expect(await speaking).toBe("completed");
+    expect(asked.length).toBe(0);
+    expect(e.tts.requests[0]).toMatchObject({ text: "えっ、本当に?", language: "Japanese" });
+  });
+
   it("speak_signal_abort_stops_playback", async () => {
     const e = await boot();
     e.tts.endless = true;

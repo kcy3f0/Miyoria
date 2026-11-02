@@ -1,5 +1,6 @@
 // Speaking in another language: each line is translated right before TTS, the subtitles and the
-// chat log keep the original.
+// chat log keep the original. A voice reply usually writes the spoken line itself
+// (`<voice>…</voice>`, see the agent's `Speech`); only lines without one take a translation call.
 
 import { errorMessage, type Logger } from "@miyoria/kernel";
 import { type LlmRouter, systemMessage, userMessage } from "@miyoria/llm";
@@ -34,11 +35,22 @@ export class SpeechTranslator {
 
   prepare(text: string): void {
     if (text.trim() === "" || this.#pending.has(text)) return;
+    this.#keep(text, this.#run(text));
+  }
+
+  /** The reply already said `text` in the target language: no translation call for it. */
+  provide(text: string, translation: string): void {
+    if (text.trim() === "" || translation.trim() === "") return;
+    this.#pending.delete(text);
+    this.#keep(text, Promise.resolve(translation.trim()));
+  }
+
+  #keep(text: string, translation: Promise<string>): void {
     if (this.#pending.size >= MAX_CACHED) {
       const oldest = this.#pending.keys().next().value;
       if (oldest !== undefined) this.#pending.delete(oldest);
     }
-    this.#pending.set(text, this.#run(text));
+    this.#pending.set(text, translation);
   }
 
   async translate(text: string, signal?: AbortSignal): Promise<string> {

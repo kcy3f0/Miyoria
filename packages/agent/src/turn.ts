@@ -195,6 +195,11 @@ class Speech {
   spoken = "";
   /** Links and code blocks she wrote, for the text chat instead of speech. */
   readonly aside: string[] = [];
+  /**
+   * After a `<voice>` line: the line and the written text that goes with it, collected until the
+   * next one (or a pause, an emotion change, the end) and then said as one piece.
+   */
+  #pair: { spoken: string; text: string } | null = null;
 
   constructor(
     readonly sink: ActionSink,
@@ -207,7 +212,7 @@ class Speech {
     readonly ttlMs: number,
     readonly signal: AbortSignal,
     /** Tells the voice sink a sentence is coming (`VoiceSink.prepare`). */
-    readonly prepare: ((text: string) => void) | null = null,
+    readonly prepare: ((text: string, spoken?: string) => void) | null = null,
   ) {}
 
   /** Her speech was interrupted: nothing more is said. */
@@ -233,7 +238,26 @@ class Speech {
       this.aside.push(part.text);
       return;
     }
+    if (this.#pair !== null) {
+      this.#pair.text += part.text;
+      return;
+    }
     for (const sentence of this.#splitter.push(part.text)) await this.#say(sentence);
+  }
+
+  /** A `<voice>` line: the text before it is complete, the text after it goes with it. */
+  async voiceLine(line: string): Promise<void> {
+    await this.#endPair();
+    const rest = this.#splitter.flush();
+    if (rest !== null) await this.#say(rest);
+    if (line.trim() !== "") this.#pair = { spoken: line, text: "" };
+  }
+
+  async #endPair(): Promise<void> {
+    const pair = this.#pair;
+    if (pair === null) return;
+    this.#pair = null;
+    await this.#say(pair.text.trim() === "" ? pair.spoken : pair.text, pair.spoken);
   }
 
   /**
@@ -241,6 +265,12 @@ class Speech {
    * is said with the previous one first.
    */
   async emotion(emotion: string): Promise<void> {
+    // `<voice>…</voice><emo:x>written` : the emotion belongs to the line just opened.
+    if (this.#pair !== null && this.#pair.text.trim() === "") {
+      this.#emotion = emotion;
+      return;
+    }
+    await this.#endPair();
     const done = this.#splitter.flushComplete();
     if (done !== null) await this.#say(done);
     this.#emotion = emotion;
@@ -248,6 +278,7 @@ class Speech {
 
   /** Says the unfinished rest (end of a response, or a pause). */
   async flush(): Promise<void> {
+    await this.#endPair();
     const rest = this.#splitter.flush();
     if (rest !== null) await this.#say(rest);
   }
@@ -259,12 +290,13 @@ class Speech {
     await this.flush();
   }
 
-  async #say(sentence: string): Promise<void> {
+  async #say(sentence: string, spoken?: string): Promise<void> {
     if (this.stopped()) return;
     // Links taken out may leave double spaces behind.
     const text = filterOutgoing(cleanReply(sentence, this.names)).replace(/[ \t]{2,}/g, " ");
     if (!isSpeakable(text)) return;
-    this.prepare?.(text);
+    const said = spoken === undefined ? "" : filterOutgoing(cleanReply(spoken, this.names)).trim();
+    this.prepare?.(text, said === "" ? undefined : said);
     const action = newAction(
       this.lane,
       this.priority,
@@ -779,6 +811,7 @@ class Turn {
         initiative: this.initiative?.hint ?? null,
         intent: this.intent !== null,
         notes: extras.notes,
+        speaksIn: this.voice ? (services.get(VoiceSinkKey)?.speaksIn ?? null) : null,
       },
       new Date(this.#now),
     );
@@ -826,7 +859,7 @@ class Turn {
         priority,
         cfg.voice.speak_ttl_ms,
         this.signal,
-        voiceSink?.prepare ? (text) => voiceSink.prepare?.(this.key, text) : null,
+        voiceSink?.prepare ? (text, spoken) => voiceSink.prepare?.(this.key, text, spoken) : null,
       );
       await this.#produce(router, messages, priority, speech);
       await this.#postAside(sink, speech.aside, priority);
@@ -1266,6 +1299,9 @@ class Turn {
         break;
       case "pause":
         await out.flush();
+        break;
+      case "spoken":
+        await out.voiceLine(segment.text);
         break;
       case "silence":
         break;

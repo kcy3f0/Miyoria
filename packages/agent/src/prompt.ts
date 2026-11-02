@@ -75,9 +75,24 @@ export const VOICE_SITUATION = `# 目前情境
 - 對話紀錄裡別人說的話格式是「名字(語音): 內容」,是語音辨識的結果,可能有錯字;沒有 (語音) 的是在語音頻道文字區打的字,一樣用說的回應。你自己的話直接寫內容,不要加名字前綴。
 ${TRANSCRIPT_RULES}
 - 標著「(被打斷)」的是你講到一半被打斷的話。
-- 可以用 <emo:名稱> 標記情緒變化。
+- 可以用 <emo:名稱> 標記情緒變化。{speaks}
 - 不需要或不想開口的時候,只輸出 <silence/>。
 ${GUARD_RULES}`;
+
+/**
+ * The voice rule when she is heard in another language than she writes (`VoiceSink.speaksIn`):
+ * each sentence carries its spoken line, so it needs no translation before TTS.
+ */
+export function speaksRule(language: string): string {
+  const example = /japanese|日/i.test(language)
+    ? "例如:<voice>えっ、本当に?</voice>欸,真的嗎?<voice>じゃあ一緒に行こう!</voice>那一起去吧!"
+    : `例如:<voice>(這句的 ${language})</voice>欸,真的嗎?`;
+  return [
+    `- 你的聲音是用 ${language} 念出來的,字幕和紀錄顯示你寫的中文。`,
+    `每一句都先用 <voice>…</voice> 寫出要念的 ${language},緊接著寫同一句的中文,兩邊意思一樣;`,
+    `<voice> 裡只放念得出來的 ${language},遊戲用語和專有名詞也寫成 ${language} 的說法。${example}`,
+  ].join("");
+}
 
 export const INITIATIVE = "現在沒有人在跟你說話,是你自己想主動開啟話題。";
 export const VOICE_INITIATIVE = "大家現在沒有在跟你說話,是你自己想主動用說的開個話題。";
@@ -125,6 +140,8 @@ export interface Situation {
   intent?: boolean;
   /** Lines about her own state under the situation (mood). Nothing derived from others. */
   notes: readonly string[];
+  /** Voice: the language she is heard in when it differs from the one she writes. */
+  speaksIn?: string | null;
 }
 
 /** What she decided to do (her own words, which may echo other people: data). */
@@ -212,6 +229,7 @@ export function situationPrompt(
     .replaceAll("{platform}", () => ctx.platform)
     .replaceAll("{channel}", () => ctx.channel)
     .replaceAll("{place}", () => place)
+    .replaceAll("{speaks}", () => (s.speaksIn ? `\n${speaksRule(s.speaksIn)}` : ""))
     .replaceAll("{addressing}", () => addressing(s, voice));
 }
 
