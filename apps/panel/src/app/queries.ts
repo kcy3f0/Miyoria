@@ -11,6 +11,7 @@ import { isApiError } from "@/api/http";
 import type {
   AdjustPersonRequest,
   AssignRoleRequest,
+  DataCategoryId,
   DecisionsQuery,
   MemoryQuery,
   ModuleAction,
@@ -51,6 +52,7 @@ export const queryKeys = {
   voice: ["voice"] as const,
   self: ["self"] as const,
   world: ["world"] as const,
+  data: ["data"] as const,
 };
 
 /** Errors that retrying cannot fix. */
@@ -330,4 +332,28 @@ export function useSelf() {
 export function useWorld() {
   const api = useApi();
   return useQuery({ queryKey: queryKeys.world, queryFn: ({ signal }) => api.world({ signal }), refetchInterval: poll(5_000) });
+}
+
+// --- data --------------------------------------------------------------------
+
+export function useDataInventory() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.data, queryFn: ({ signal }) => api.dataInventory({ signal }), refetchInterval: poll(30_000) });
+}
+
+/** Deletes and the reset change what every page shows: everything is refetched. */
+export function useDataMutations() {
+  const api = useApi();
+  const qc = useQueryClient();
+  const all = () => void qc.invalidateQueries();
+  return {
+    wipe: useMutation({
+      mutationFn: ({ categories, confirm }: { categories: DataCategoryId[]; confirm?: string }) => api.dataWipe(categories, confirm),
+      onSuccess: all,
+    }),
+    reset: useMutation({
+      mutationFn: ({ confirm, token }: { confirm: string; token: string }) => api.dataReset(confirm, token),
+      onSuccess: all,
+    }),
+  };
 }

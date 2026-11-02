@@ -73,7 +73,14 @@ export interface RequestOptions {
   public?: boolean;
 }
 
-export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+export interface Download {
+  blob: Blob;
+  /** From `Content-Disposition`. */
+  name: string;
+  headers: Headers;
+}
+
+export type FetchLike =(input: string, init?: RequestInit) => Promise<Response>;
 
 /** Joins a base URL and an absolute API path without doubling slashes. */
 export function joinUrl(baseUrl: string, path: string): string {
@@ -168,6 +175,30 @@ export class ApiClient {
     } catch {
       throw new ApiError("bad_response", res.status, path, "回應不是 JSON:API 位址可能指向了別的服務");
     }
+  }
+
+  /** A file response (`Content-Disposition: attachment`): its bytes, name and headers. */
+  async download(method: string, path: string, opts: RequestOptions = {}): Promise<Download> {
+    let res: Response;
+    try {
+      res = await this.fetchImpl(this.url(path, opts.query), {
+        method,
+        headers: this.headers({ Accept: "application/json" }),
+        signal: opts.signal,
+        credentials: "same-origin",
+      });
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") throw e;
+      const reason = e instanceof Error ? e.message : String(e);
+      throw new ApiError("network", 0, path, `無法連線到 Core(${reason})`);
+    }
+    if (!res.ok) {
+      const { message, json } = await readError(res);
+      throw new ApiError(classify(res.status, message, json), res.status, path, message);
+    }
+    const disposition = res.headers.get("content-disposition") ?? "";
+    const name = /filename="([^"]+)"/.exec(disposition)?.[1] ?? "download.json";
+    return { blob: await res.blob(), name, headers: res.headers };
   }
 
   get<T>(path: string, opts?: Omit<RequestOptions, "body">): Promise<T> {

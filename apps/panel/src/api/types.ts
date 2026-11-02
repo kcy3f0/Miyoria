@@ -795,3 +795,72 @@ export interface WorldView {
   voice_channels: VoiceChannelState[];
   channels: ChannelActivity[];
 }
+
+// --- data (`packages/api/src/data.ts`) ----------------------------------------
+
+export type DataCategoryId =
+  | "memories"
+  | "relationships"
+  | "call_names"
+  | "inner"
+  | "mood"
+  | "messages"
+  | "decisions"
+  | "initiative"
+  | "people"
+  | "channels"
+  | "voice_consent"
+  | "privacy"
+  | "queue"
+  | "roles"
+  | "persona"
+  | "proposed_tools"
+  | "extensions"
+  | "module_state"
+  | "other_settings"
+  | "tools_workspace"
+  | "audit"
+  | "llm_usage"
+  | "panel_sessions";
+
+export interface DataPartView {
+  id: string;
+  count: number;
+  updated_at: string | null;
+}
+
+/** One category of `GET /api/data`. */
+export interface DataCategoryView {
+  id: DataCategoryId;
+  count: number;
+  updated_at: string | null;
+  parts: DataPartView[];
+  /** Memories by kind. */
+  breakdown: Record<string, number> | null;
+  /** Shared by every profile on this node. */
+  shared: boolean;
+  /** Never deleted (export only). */
+  kept: boolean;
+  exportable: boolean;
+  /** `typed`: deleting needs the profile id typed. */
+  confirm: "typed" | "simple";
+  /** Deleted along with this one. */
+  requires: DataCategoryId[];
+}
+
+export interface DataInventory {
+  profile: string;
+  at: string;
+  /** May export, delete and reset (`owner.data.manage`). */
+  can_manage: boolean;
+  categories: DataCategoryView[];
+}
+
+export type DataNote = "restart_core" | "consent_cache";
+
+export interface DataWipeResult {
+  deleted: DataCategoryId[];
+  counts: Record<string, number>;
+  failed_modules: string[];
+  notes: DataNote[];
+}

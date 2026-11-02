@@ -20,6 +20,7 @@ export function ConfirmDialog({
   confirmLabel,
   destructive,
   busy,
+  confirmDisabled,
   onConfirm,
   onClose,
   children,
@@ -29,6 +30,8 @@ export function ConfirmDialog({
   confirmLabel: string;
   destructive?: boolean;
   busy?: boolean;
+  /** Keeps the confirm button disabled (e.g. until the profile id is typed). */
+  confirmDisabled?: boolean;
   onConfirm: () => void;
   onClose: () => void;
   children?: ReactNode;
@@ -48,7 +51,7 @@ export function ConfirmDialog({
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
-          <Button writes variant={destructive ? "destructive" : "default"} busy={busy} onClick={onConfirm}>
+          <Button writes variant={destructive ? "destructive" : "default"} busy={busy} disabled={confirmDisabled} onClick={onConfirm}>
             {confirmLabel}
           </Button>
         </AlertDialogFooter>

@@ -7,6 +7,9 @@ import type {
   AssignRoleRequest,
   AuthMethods,
   CostReport,
+  DataCategoryId,
+  DataInventory,
+  DataWipeResult,
   ExtensionInfo,
   McpServerInfo,
   MemoryItem,
@@ -133,6 +136,18 @@ export function createApi(client: ApiClient) {
 
     self: (o?: Opts) => client.get<SelfView>("/api/self", o),
     world: (o?: Opts) => client.get<WorldView>("/api/world", o),
+
+    // her data
+    dataInventory: (o?: Opts) => client.get<DataInventory>("/api/data", o),
+    /** A JSON backup of `categories` (all exportable ones without). */
+    dataExport: (categories?: DataCategoryId[]) =>
+      client.download("GET", "/api/data/export", { query: { categories: categories?.join(",") } }),
+    dataWipe: (categories: DataCategoryId[], confirm?: string) =>
+      client.post<DataWipeResult>("/api/data/wipe", { categories, confirm }),
+    /** The full backup a reset needs; its `x-miyoria-backup-token` header unlocks the reset. */
+    dataBackup: () => client.download("POST", "/api/data/backup"),
+    dataReset: (confirm: string, backupToken: string) =>
+      client.post<DataWipeResult>("/api/data/reset", { confirm, backup_token: backupToken }),
   };
 }
 

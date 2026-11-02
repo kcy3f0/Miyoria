@@ -1,6 +1,7 @@
 import {
   Activity,
   Clapperboard,
+  Database,
   Gauge,
   HeartPulse,
   type LucideIcon,
@@ -18,6 +19,7 @@ export type NavPath =
   | "/inner"
   | "/system"
   | "/access"
+  | "/data"
   | "/settings";
 
 export interface NavItem {
@@ -65,6 +67,7 @@ export const NAV: NavItem[] = [
   { to: "/inner", label: "內心", icon: HeartPulse, tabs: [...INNER_TABS] },
   { to: "/system", label: "系統", icon: Server, tabs: [...SYSTEM_TABS] },
   { to: "/access", label: "權限", icon: ShieldCheck },
+  { to: "/data", label: "資料", icon: Database },
   { to: "/settings", label: "設定", icon: Settings },
 ];
 

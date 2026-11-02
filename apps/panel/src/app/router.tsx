@@ -9,6 +9,7 @@ import {
 import { AccessPage } from "@/pages/access/AccessPage";
 import { ActivityPage } from "@/pages/activity/ActivityPage";
 import { CharacterPage } from "@/pages/character/CharacterPage";
+import { DataPage } from "@/pages/data/DataPage";
 import { InnerPage } from "@/pages/inner/InnerPage";
 import { LivePage } from "@/pages/live/LivePage";
 import { NotFoundPage } from "@/pages/NotFound";
@@ -84,6 +85,7 @@ const routeTree = rootRoute.addChildren([
   innerRoute,
   systemRoute,
   createRoute({ getParentRoute: () => rootRoute, path: "/access", component: AccessPage }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/data", component: DataPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage }),
   moved("/events", "/activity", { tab: "events" }),
   moved("/decisions", "/activity", { tab: "decisions" }),

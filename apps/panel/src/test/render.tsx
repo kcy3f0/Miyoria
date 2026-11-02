@@ -11,7 +11,11 @@ import { SessionProvider, type SessionValue } from "@/app/session";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-export type Handler = (method: string, url: URL, body: unknown) => { status?: number; body?: unknown; text?: string } | undefined;
+export type Handler = (
+  method: string,
+  url: URL,
+  body: unknown,
+) => { status?: number; body?: unknown; text?: string; headers?: Record<string, string> } | undefined;
 
 /** Stubs `fetch` with a router-like handler; unknown routes answer like the Core's fallback. */
 export function mockFetch(handler: Handler) {
@@ -21,7 +25,10 @@ export function mockFetch(handler: Handler) {
     const res = handler(init?.method ?? "GET", url, body) ?? { status: 404, body: { error: "no such endpoint" } };
     const text = res.text ?? (res.body === undefined ? "" : JSON.stringify(res.body));
     const status = res.status ?? 200;
-    return new Response(status === 204 ? null : text, { status, headers: { "content-type": "application/json" } });
+    return new Response(status === 204 ? null : text, {
+      status,
+      headers: { "content-type": "application/json", ...res.headers },
+    });
   });
   vi.stubGlobal("fetch", fn);
   return fn;
