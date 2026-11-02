@@ -136,6 +136,29 @@ export interface VoiceChannelState {
   channel: string;
   name: string | null;
   members: VoiceMember[];
+  /**
+   * How much is being said there (from transcribed utterances, so only known where she
+   * listens); `null`/missing = unknown.
+   */
+  activity?: VoiceActivity | null;
+}
+
+/** Recent conversation in one voice channel. */
+export interface VoiceActivity {
+  /** Utterances of people within the voice activity window. */
+  recent_utterances: number;
+  /** Utterances per minute over the window. */
+  per_minute: number;
+  /** Their last utterance. */
+  last_at: Timestamp | null;
+  /** Seconds since `last_at` at the snapshot's time (`null`: none in the window). */
+  secs_since_last: number | null;
+  /** Display names of recent speakers, most recent first. */
+  recent_speakers: string[];
+  /** People are talking there right now: never a quiet channel. */
+  lively: boolean;
+  /** When she last spoke there. */
+  her_last_at: Timestamp | null;
 }
 
 /** Recent activity of one text context. */

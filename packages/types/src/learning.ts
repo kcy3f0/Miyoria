@@ -45,6 +45,12 @@ export interface ConversationState {
   recap: string;
   /** Her own structured notes: free-form JSON she organizes (topics, threads, plans, ...). */
   notes: JsonObject;
+  /**
+   * When each thread of the notes (a top-level scalar, list item or object member, by an id of
+   * path and content) last appeared or changed. Threads untouched for `stale_thread_mins` are
+   * stale: prompts leave them out. Missing in old states.
+   */
+  touched?: Record<string, Timestamp>;
 }
 
 /** `conversation.folded` payload. */

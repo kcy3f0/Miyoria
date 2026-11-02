@@ -121,6 +121,7 @@ export {
   MindKey,
   type MindStats,
   type MindSuggestion,
+  type RaisedTopic,
   type Thought,
   type ThoughtDecision,
   type ThoughtDigest,
@@ -175,6 +176,7 @@ export {
   type PromptSection,
 } from "./prompt.js";
 export {
+  type AgendaBlock,
   type AgendaInput,
   type AgendaItem,
   type AgendaStatus,
@@ -243,6 +245,7 @@ export {
   type SalientEvent,
   type TimeContext,
   VOICE_STATE_TOPIC,
+  type VoiceActivity,
   type VoiceChannelState,
   type VoiceMember,
   type VoiceSpot,

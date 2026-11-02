@@ -172,6 +172,18 @@ export interface MindStats {
   idle_reason: string | null;
 }
 
+/**
+ * Something she brought up on her own (a self-started line) and what became of it: `waiting`
+ * for a response, `engaged` (someone addressed her within the window) or `ignored`.
+ */
+export interface RaisedTopic {
+  /** What she said (her words, short). */
+  text: string;
+  context: ContextKey | null;
+  at: Timestamp;
+  status: "waiting" | "engaged" | "ignored";
+}
+
 /** Provided by the `mind` module. */
 export interface Mind {
   /** She takes suggestions (running, not paused). */
@@ -183,6 +195,11 @@ export interface Mind {
   /** Digests of older thoughts, newest first. */
   digests?(limit?: number): ThoughtDigest[];
   stats(): MindStats;
+  /**
+   * Topics she raised on her own in `context` recently that nobody picked up, newest first
+   * (her own state: turn prompts tell her not to bring them up again for a while).
+   */
+  unanswered?(context: ContextKey | null): RaisedTopic[];
 }
 
 export const MindKey = serviceKey<Mind>("Mind");

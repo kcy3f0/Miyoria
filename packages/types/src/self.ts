@@ -54,6 +54,20 @@ export interface AgendaItem {
   status: AgendaStatus;
   /** When it was done, dropped or expired. */
   closed_at: Timestamp | null;
+  /**
+   * An action it needs failed: not retried, and not brought up in conversations, until the
+   * situation changes (missing in old records = not blocked).
+   */
+  blocked?: AgendaBlock | null;
+}
+
+/** Why an open agenda item is on hold. */
+export interface AgendaBlock {
+  /** The capability that failed (`game.start`). */
+  capability: string;
+  /** Why, in short (the action's error). */
+  reason: string;
+  at: Timestamp;
 }
 
 /** Her own description of how she feels about someone. */
@@ -120,6 +134,10 @@ export interface SelfState {
   addAgenda(input: AgendaInput): AgendaItem;
   completeAgenda(id: string): AgendaItem | null;
   dropAgenda(id: string): AgendaItem | null;
+  /** Puts an open item on hold (see `AgendaItem.blocked`); `null` when it is not open. */
+  blockAgenda(id: string, block: { capability: string; reason: string }): AgendaItem | null;
+  /** Lifts the hold of an item; `null` when it is not open or not blocked. */
+  unblockAgenda(id: string): AgendaItem | null;
 
   feeling(person: PersonId): Feeling | null;
   feelings(): Feeling[];
