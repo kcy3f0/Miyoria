@@ -111,7 +111,14 @@ export async function singSong(
   const onAbort = () => handle.stop(d.fadeMs);
   signal.addEventListener("abort", onAbort, { once: true });
   const lyricsDone = new AbortController();
-  const lyrics = cueLyrics(d, song, handle, AbortSignal.any([signal, lyricsDone.signal]));
+  const durationMs = Math.round((mix.length / rate) * 1000);
+  const lyrics = cueLyrics(
+    d,
+    song,
+    durationMs,
+    handle,
+    AbortSignal.any([signal, lyricsDone.signal]),
+  );
   try {
     return await handle.wait();
   } finally {
@@ -122,10 +129,14 @@ export async function singSong(
   }
 }
 
-/** Waits for the playback to start, then publishes `started` and each lyrics line on time. */
+/**
+ * Waits for the playback to start, then publishes `started` (with the song's length,
+ * `durationMs`) and each lyrics line on time.
+ */
 async function cueLyrics(
   d: PlayerDeps,
   song: SongMeta,
+  durationMs: number,
   handle: { state(): PlaybackState | null },
   signal: AbortSignal,
 ): Promise<void> {
@@ -138,8 +149,15 @@ async function cueLyrics(
   const video = d.videoDir === null ? null : songVideoPath(d.videoDir, song);
   d.cue(
     video === null
-      ? { state: "started", song: song.id, title: song.title }
-      : { state: "started", song: song.id, title: song.title, video, offset_ms: 0 },
+      ? { state: "started", song: song.id, title: song.title, duration_ms: durationMs }
+      : {
+          state: "started",
+          song: song.id,
+          title: song.title,
+          video,
+          offset_ms: 0,
+          duration_ms: durationMs,
+        },
   );
   const lines = d.lyrics && song.lyrics?.synced ? song.lyrics.lines : [];
   for (let i = 0; i < lines.length; i++) {

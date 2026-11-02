@@ -5,7 +5,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { EventBus, ServiceRegistry, Supervisor } from "@miyoria/kernel";
-import { type ContextKey, customEvent, newId } from "@miyoria/types";
+import { type ContextKey, customEvent, newId, SONG_PREPARE_TOPIC } from "@miyoria/types";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import {
@@ -206,6 +206,41 @@ describe("stage", () => {
       { correlation: turn },
     );
     await waitUntil(() => obs.state.texts.some(([s, t]) => s === "Subtitle" && t === "早安。"));
+
+    // What she is doing reaches the overlay, and a client that connects later gets it too.
+    const overlayWs = (stopped.overlay_url ?? "").replace(/^http/, "ws");
+    const seen: Json[] = [];
+    const early = new WebSocket(`${overlayWs}ws`);
+    cleanup.push(() => early.terminate());
+    early.on("message", (data) => seen.push(JSON.parse(data.toString())));
+    await new Promise<void>((r, j) => early.once("open", () => r()).once("error", j));
+    bus.publish(
+      "sing",
+      customEvent(SONG_PREPARE_TOPIC, {
+        no: 1,
+        title: "夜に駆ける",
+        stage: "download",
+        progress: 0.25,
+        exclusive: null,
+      }),
+    );
+    const activity = {
+      type: "activity",
+      kind: "song_prepare",
+      label: "下載中",
+      detail: "夜に駆ける",
+      progress: 0.25,
+      elapsed_ms: null,
+      duration_ms: null,
+    };
+    await waitUntil(() => seen.some((m) => m.type === "activity"), "activity on the overlay");
+    expect(seen.find((m) => m.type === "activity")).toStrictEqual(activity);
+    const late: Json[] = [];
+    const lateWs = new WebSocket(`${overlayWs}ws`);
+    cleanup.push(() => lateWs.terminate());
+    lateWs.on("message", (data) => late.push(JSON.parse(data.toString())));
+    await waitUntil(() => late.some((m) => m.type === "activity"), "activity for a new client");
+    expect(late.find((m) => m.type === "activity")).toStrictEqual(activity);
 
     controller.abort();
     await Promise.race([

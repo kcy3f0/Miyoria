@@ -1,5 +1,5 @@
-// Overlay HTTP server: `GET /overlay/ws` streams subtitle / emotion / speaking / status JSON,
-// `/overlay/` serves the overlay web app.
+// Overlay HTTP server: `GET /overlay/ws` streams subtitle / emotion / speaking / status /
+// activity JSON, `/overlay/` serves the overlay web app.
 
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -8,7 +8,7 @@ import { extname, join, normalize, resolve, sep } from "node:path";
 import { getLogger } from "@miyoria/kernel";
 import { closeOnAbort, type ServeResult } from "./lipsync.js";
 import { formatAddress, HttpServer } from "./net.js";
-import type { SpeakingState, StageStatus } from "./protocol.js";
+import type { Activity, SpeakingState, StageStatus } from "./protocol.js";
 
 const log = getLogger("stage.overlay");
 
@@ -20,12 +20,29 @@ interface Snapshot {
   subtitle: string | null;
   emotion: string | null;
   notice: string | null;
+  /** The activity shown (not the hidden one), and when it was sent. */
+  activity: { activity: Activity; at: number } | null;
 }
 
-/** Fan-out of overlay messages. New clients first get the latest status, subtitle and emotion. */
+/**
+ * Fan-out of overlay messages. New clients first get the latest status, subtitle, emotion,
+ * notice and activity.
+ */
 export class OverlayHub {
   readonly #listeners = new Set<(text: string) => void>();
-  readonly #snapshot: Snapshot = { status: null, subtitle: null, emotion: null, notice: null };
+  readonly #snapshot: Snapshot = {
+    status: null,
+    subtitle: null,
+    emotion: null,
+    notice: null,
+    activity: null,
+  };
+  readonly #now: () => number;
+
+  /** `now`: the clock a song's `elapsed_ms` is moved on with for new clients (ms). */
+  constructor(now: () => number = Date.now) {
+    this.#now = now;
+  }
 
   #send(text: string): void {
     for (const listener of [...this.#listeners]) listener(text);
@@ -48,6 +65,28 @@ export class OverlayHub {
     const v = JSON.stringify({ type: "notice", text });
     this.#snapshot.notice = text === "" ? null : v;
     this.#send(v);
+  }
+
+  /**
+   * What she is doing (`kind: null` hides it). A client that connects later gets it again with
+   * a song's `elapsed_ms` moved on to that moment.
+   */
+  activity(activity: Activity): void {
+    this.#snapshot.activity = activity.kind === null ? null : { activity, at: this.#now() };
+    this.#send(JSON.stringify({ type: "activity", ...activity }));
+  }
+
+  /** Hides the activity line if it shows anything (Core went away). */
+  clearActivity(): void {
+    if (this.#snapshot.activity === null) return;
+    this.activity({
+      kind: null,
+      label: "",
+      detail: null,
+      progress: null,
+      elapsed_ms: null,
+      duration_ms: null,
+    });
   }
 
   speaking(state: SpeakingState): void {
@@ -80,10 +119,19 @@ export class OverlayHub {
     this.#send(v);
   }
 
-  /** The snapshot for a new client: status, emotion, subtitle, notice (those that exist). */
+  /** The snapshot for a new client: status, emotion, subtitle, notice, activity (those that exist). */
   initial(): string[] {
     const s = this.#snapshot;
-    return [s.status, s.emotion, s.subtitle, s.notice].filter((v): v is string => v !== null);
+    const out = [s.status, s.emotion, s.subtitle, s.notice].filter((v): v is string => v !== null);
+    if (s.activity !== null) {
+      const { activity, at } = s.activity;
+      const elapsed =
+        activity.elapsed_ms === null
+          ? null
+          : Math.round(activity.elapsed_ms + Math.max(this.#now() - at, 0));
+      out.push(JSON.stringify({ type: "activity", ...activity, elapsed_ms: elapsed }));
+    }
+    return out;
   }
 
   /** Receives every message from now on; returns the unsubscribe function. */

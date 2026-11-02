@@ -140,7 +140,7 @@ export async function runStageWith(
   };
 
   try {
-    const overlay = new OverlayHub();
+    const overlay = new OverlayHub(() => clock.now());
     const overlayServer = await serveOverlay(
       config.overlay_bind,
       config.overlay_dir,
@@ -331,6 +331,11 @@ class Stage {
       case "notice":
         this.#overlay.notice(msg.text);
         return;
+      case "activity": {
+        const { type: _, ...activity } = msg;
+        this.#overlay.activity(activity);
+        return;
+      }
       case "song_video":
         if (msg.action === "play") this.#songVideo?.play(msg);
         else this.#songVideo?.stop(msg.song);
@@ -367,6 +372,8 @@ class Stage {
       const status = this.currentStatus();
       const core = this.core.get();
       const changed = this.status.set(status);
+      // Nobody tells the overlay what she is doing without Core.
+      if (!core) this.#overlay.clearActivity();
       if (changed || lastCore !== core) {
         this.#overlay.status(status, core);
         lastCore = core;
