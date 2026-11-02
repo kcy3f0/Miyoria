@@ -159,7 +159,11 @@ function member(id: string, isSelf: boolean): VoiceParticipant {
 function joined(): Event {
   return {
     type: "voice_joined",
-    data: { context: VOICE, participants: [member("Owen", false), member("her", true)] },
+    // Two people besides her: a group, not a one-on-one (where everything is said to her).
+    data: {
+      context: VOICE,
+      participants: [member("Owen", false), member("阿明", false), member("her", true)],
+    },
   };
 }
 

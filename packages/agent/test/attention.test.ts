@@ -198,6 +198,7 @@ describe("attention", () => {
     inputs: IncomingMessage[],
     someoneSpeaking: boolean,
     interruptScale = 0,
+    others: number | null = 3,
   ): Assessment {
     return assess({
       config: cfg,
@@ -209,7 +210,13 @@ describe("attention", () => {
       session,
       inputs,
       now: Date.now(),
-      voice: { someoneSpeaking, ambientFactor: 0.5, questionWindowMs: 8000, interruptScale },
+      voice: {
+        someoneSpeaking,
+        ambientFactor: 0.5,
+        questionWindowMs: 8000,
+        interruptScale,
+        others,
+      },
       affinity: null,
       mood: null,
     });
@@ -235,6 +242,13 @@ describe("attention", () => {
     a = voiceRun(cfg, s, named, true);
     expect(a.direct, a.reasons.join("; ")).toBe(true);
     expect(a.gate).toEqual({ kind: "sample", probability: 1 });
+
+    // Alone with one person in voice: everything they say is said to her.
+    const plain = [msg("voice", "a", "你可以叫我歐文")];
+    a = voiceRun(cfg, sessionWith(plain), plain, false, 0, 1);
+    expect(a.direct, a.reasons.join("; ")).toBe(true);
+    expect(a.reasons).toContain("direct: one-on-one in voice");
+    expect(voiceRun(cfg, sessionWith(plain), plain, false, 0, 2).direct).toBe(false);
 
     // A question right after she spoke addresses her.
     s = sessionWith([]);

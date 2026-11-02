@@ -528,6 +528,7 @@ class Turn {
           ambientFactor: voiceCfg.ambient_factor,
           questionWindowMs: voiceCfg.question_window_ms,
           interruptScale: voiceCfg.interrupt_scale,
+          others: this.session.voiceMembers().length,
         }
       : null;
     const assessment = assess({

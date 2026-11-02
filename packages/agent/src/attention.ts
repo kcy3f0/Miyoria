@@ -103,6 +103,8 @@ export interface VoiceAttention {
   questionWindowMs: number;
   /** Multiplies the ambient probability while someone speaks; 0 = never join in over them. */
   interruptScale: number;
+  /** People in the voice channel besides her (`null` = unknown). */
+  others: number | null;
 }
 
 /** The talkativeness she set for a context (0 = silent, 0.5 = as usual, 1 = very chatty). */
@@ -256,6 +258,8 @@ export function assess(input: AttentionInput): Assessment {
     if (why !== null) break;
   }
   why ??= questionAfterHer(input);
+  // Alone with one person in voice: whatever they say is said to her.
+  if (why === null && input.voice?.others === 1) why = "one-on-one in voice";
   if (why !== null) reasons.push(`direct: ${why}`);
   if (input.affinity !== null) reasons.push(`affinity ${signed(input.affinity, 0)}`);
   const score = salience(input, why !== null, reasons);
