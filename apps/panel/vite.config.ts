@@ -26,17 +26,9 @@ export default defineConfig({
     outDir: "dist",
     sourcemap: true,
     target: "es2022",
-    rollupOptions: {
-      output: {
-        manualChunks: (id) => {
-          if (!id.includes("node_modules")) return undefined;
-          if (/[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return "react";
-          if (id.includes("@tanstack")) return "tanstack";
-          if (id.includes("@radix-ui") || id.includes("cmdk") || id.includes("@floating-ui")) return "radix";
-          return "vendor";
-        },
-      },
-    },
+    // No manualChunks: splitting React from the libraries that import it produced circular chunks
+    // (React's exports were read before its chunk had run, so the page stayed blank).
+    chunkSizeWarningLimit: 1500,
   },
   test: {
     environment: "jsdom",
