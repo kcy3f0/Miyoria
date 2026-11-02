@@ -72,7 +72,7 @@ export const GameConfigSchema = z.object({
   /** Actions that never replace the current goal. */
   instant_actions: z
     .array(z.string())
-    .default(["chat", "look", "attack", "use", "select", "respawn"]),
+    .default(["chat", "look", "attack", "use", "select", "place", "respawn"]),
   /** Game event types that trigger an early decision. */
   trigger_events: z
     .array(z.string())
@@ -83,14 +83,20 @@ export const GameConfigSchema = z.object({
       "goal_reached",
       "goal_failed",
       "baritone_idle",
+      "craft_finished",
+      "craft_failed",
+      "smelt_finished",
+      "smelt_failed",
       "advancement",
       "chat",
       "connected",
     ]),
   /** Event types meaning the current goal was reached. */
-  reached_events: z.array(z.string()).default(["goal_reached", "baritone_idle"]),
+  reached_events: z
+    .array(z.string())
+    .default(["goal_reached", "baritone_idle", "craft_finished", "smelt_finished"]),
   /** Event types meaning the current goal failed. */
-  failed_events: z.array(z.string()).default(["goal_failed"]),
+  failed_events: z.array(z.string()).default(["goal_failed", "craft_failed", "smelt_failed"]),
   /**
    * `game start` first checks (with the observe tool) that the game is running and its adapter
    * connected, and refuses otherwise so she can tell the owner. In the main menu is fine.

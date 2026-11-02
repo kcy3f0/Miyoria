@@ -163,6 +163,10 @@ describe("prompts", () => {
     expect(system).toContain("- mine:挖");
     expect(system).toContain('"goal_status"');
     expect(system).toContain('{"type":"object"}');
+    // plays step by step from what she has, and learns from refusals
+    expect(system).toContain("實際有的東西");
+    expect(system).toContain("不要跳級");
+    expect(system).toContain("讀失敗原因");
     for (const part of ["定時檢查", "挖鐵礦", "mine {}", "蓋房子", "- 死掉了", "血量 20/20"]) {
       expect(user, part).toContain(part);
     }
@@ -246,9 +250,22 @@ describe("goalNote and config", () => {
         status: "game.status",
       },
     });
-    expect(cfg.instant_actions).toEqual(["chat", "look", "attack", "use", "select", "respawn"]);
-    expect(cfg.reached_events).toEqual(["goal_reached", "baritone_idle"]);
-    expect(cfg.failed_events).toEqual(["goal_failed"]);
+    expect(cfg.instant_actions).toEqual([
+      "chat",
+      "look",
+      "attack",
+      "use",
+      "select",
+      "place",
+      "respawn",
+    ]);
+    expect(cfg.reached_events).toEqual([
+      "goal_reached",
+      "baritone_idle",
+      "craft_finished",
+      "smelt_finished",
+    ]);
+    expect(cfg.failed_events).toEqual(["goal_failed", "craft_failed", "smelt_failed"]);
     expect(cfg.trigger_events).toContain("hostile_near");
   });
 });
