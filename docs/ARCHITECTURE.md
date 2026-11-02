@@ -420,11 +420,16 @@ input = []                  # 鍵鼠模擬等高風險權限要列出來,安裝�
 [config]
 schema = "config.schema.json"   # Panel 會依 JSON Schema 自動產生設定表單
 
+[env]
+pass = ["MIYORIA_MC_*"]         # 要從主機環境讀的變數(名稱,或 3 字以上的前綴加 `*`)
+
 [[mcp_servers]]                 # 擴充可以附帶 MCP server
 name = "mc-wiki"
 command = "npx"
 args = ["-y", "some-minecraft-wiki-mcp"]
 ```
+
+**環境變數**:擴充行程**不會**繼承 Core 的整個 `process.env`(裡面有 `LLM_API_KEY`、`DISCORD_BOT_TOKEN`、`MIYORIA_API_TOKEN` 等密鑰)。它只拿到:平台白名單(`PATH`、`PATHEXT`、`SystemRoot`、`TEMP` / `TMP` / `TMPDIR`、`HOME` / `USERPROFILE` / `APPDATA`、語系、時區…,見 `ext-host/src/env.ts` 的 `BASE_ENV`;Windows 上不分大小寫)、manifest `[env] pass` 列出的主機變數、`[extensions."<id>"] env = { NAME = "值" }` 設定的值,以及 `MIYORIA_RPC` / `MIYORIA_EXTENSION_ID`。`[extensions."<id>"] env_pass = [...]` 會**取代** manifest 的 `pass`(擁有者可以縮小或放寬)。刻意不傳:`NODE_OPTIONS`、代理伺服器變數(網址可能帶帳密;需要就用 `env_pass` 或 `env` 明確給)。注意這是減少意外外洩,不是沙箱:擴充仍以你的使用者身分執行,讀得到你的檔案(§17)。
 
 ### 9.3 擴充能提供的東西(contribution points)
 
@@ -778,6 +783,9 @@ extensions/minecraft/
 | `message.dm` | `message_dm` | 私訊:`PlatformSink.openDm` + 排程器 `send_message`(過濾後的文字) | 中 | 內建 |
 | `speak` | — | 在語音頻道說一句話(面板的「說這句話」) | 低 | 內建 |
 | `test.high` | `test_high_risk` | 什麼都不做的高風險佔位(`[modules.actions] test_capability = true` 才有) | 高 | actions |
+| `code.run` | `code_run` | 在離線、用完即丟的 Docker 容器裡跑她寫的 Python / Node(`network` 一律 `none`);輸出以不可信資料區塊回來 | 高 | sandbox(opt-in,Docker 可用時) |
+| `tool.propose` | `tool_propose` | 提出自寫工具;閘門放行 = 核准那個版本 | 高 | sandbox |
+| `sbx.<name>` | `sbx_<name>` | 已核准的自寫工具(雜湊與參數 schema 檢查後在沙箱裡跑) | 中 | sandbox |
 
 **Principal**(`@miyoria/types`):`self`(她自己決定,可記下是誰提議的)、`user`(聊天裡有人要求;是請求,她可以拒絕)、`command`(指令;`override` = 不管她怎麼想)、`panel`(面板 / API,帶 actor)、`director`(遊戲導演)。每個請求是 `{principal, capability, args, why, turn}`。
 
@@ -789,7 +797,7 @@ extensions/minecraft/
 4. **同意**:對方用 `/me privacy` 拒絕私訊(`dm`)或拒絕被她主動找(`approach`,`self` / `director` 發起時)→ 擋;對方自己要求的不算。
 5. **權限**:`user` 的 requester 要有能力的權限節點(現有 RBAC);沒有時她可以用工具參數 `on_own` 改以 `self` 名義做(受她自己的次數限制)。`command` + override 與 `panel` 到這裡就放行。
 6. **預算**:LLM 預算 exhausted 時擋下 `self` / `director`。
-7. **風險**:低 → 放行;中 / 高 → 次數限制(每能力每 24 小時、每人每 24 小時、冷卻;`[modules.actions.medium]` 與 `limits."<能力>"`;預算 degraded 時次數減半、冷卻加倍;只在記憶體);高 → **自我審核**:獨立的 `review` 用途呼叫(thinking 開,JSON),只看結構化請求(principal、requester 的關係數值、能力、參數、理由、底線),不看聊天原文,回 `allow` / `deny` / `uncertain`。`uncertain` 用 `ReplySink` 私訊每位擁有者一張確認卡(允許 / 拒絕按鈕,路由 `autonomy:approve|deny`,節點 `owner.autonomy.approve`),`escalation_timeout_ms`(預設 10 分鐘)內沒人回就拒絕。從回合呼叫的高風險工具會立刻回覆「要先審核」,審核在背景進行。
+7. **風險**:低 → 放行;中 / 高 → 次數限制(每能力每 24 小時、每人每 24 小時、冷卻;`[modules.actions.medium]` 與 `limits."<能力>"`;預算 degraded 時次數減半、冷卻加倍;只在記憶體);高 → **自我審核**:獨立的 `review` 用途呼叫(thinking 開,JSON),只看結構化請求(principal、requester 的關係數值、能力、參數、理由、底線),不看聊天原文,回 `allow` / `deny` / `uncertain`。`uncertain` 用 `ReplySink` 私訊每位擁有者一張確認卡(允許 / 拒絕按鈕,路由 `autonomy:approve|deny`,節點 `owner.autonomy.approve`),`escalation_timeout_ms`(預設 10 分鐘)內沒人回就拒絕。從回合呼叫的高風險工具會立刻回覆「要先審核」,審核在背景進行;結果對她有用的工具(`tool.followup`,例如 `code_run`)會先等 `inline_wait_ms`(預設 8 秒),來得及就直接回結果,來不及就回「還沒有結果」,之後用**後續回合**(`agent_initiative`,reason `action_result`,提示放在不可信資料區塊)告訴她結果或拒絕原因;被 agent 略過(回合進行中、冷卻)時會再試幾次。能力可以提供 `guidance`(給審核看的注意事項)、`describe`(確認卡上取代原始 JSON 的內容與附件,例如程式碼檔)與 `denied`(審核 / 擁有者拒絕後的處理);決定裡的 `reviewer` 記錄是誰判斷的(`self` 或擁有者帳號)。其他 module 可以用 `ActuatorRegistry.addStatus` 在 `/admin autonomy status` 加上自己的狀態行(例如沙箱)。
 
 每個決定(放行或擋下)都寫進稽核紀錄(`actor` = `self` / `user:discord:<id>` / `command:discord:<id>` / `panel:<actor>` / `director`,`action` = `gate.<能力>`,`detail` = 完整決定與原因),並發 `gate.decision` 事件。
 
@@ -858,8 +866,8 @@ CLI 透過 Admin API 操作正在跑的 Core,跟 Panel 用同一套權限。
 - **輸出**:永遠不 mention 身分組、`@everyone`、`@here`,遮蔽像密鑰的字串(§4.4)。
 - **內容**:可設定的內容政策(依伺服器);輸出前做輕量檢查。
 - **速率與成本**:每人、每頻道限流;預算上限當作硬性煞車。
-- **擴充**:安裝時列出要求的權限;高風險權限(鍵鼠輸入、網路、檔案)要明確同意;跨行程本身不是沙箱,所以要標示信任等級。
-- **她寫的程式**:模組 `sandbox`(`@miyoria/sandbox`,opt-in)在用完即丟的 Docker 容器裡執行:`--network none`、唯讀根目錄、非 root、`--cap-drop ALL`、資源與時間上限、不帶任何主機環境變數,只掛載當次的工作資料夾。服務是 `SandboxKey`(`run`、工具工作區)與 `ProposedToolsKey`(她提出的工具,核准後才能用,仍在沙箱裡跑)。`code.run` / `tool.propose` 是高風險能力,只能經過自主層的閘門呼叫([design/autonomy.md](design/autonomy.md) §8);威脅模型與剩餘風險見 [`packages/sandbox/README.md`](../packages/sandbox/README.md)。
+- **擴充**:安裝時列出要求的權限;高風險權限(鍵鼠輸入、網路、檔案)要明確同意;跨行程本身不是沙箱,所以要標示信任等級。擴充行程只拿到白名單內的環境變數,不繼承 Core 的密鑰(§9.2)。`[modules.mcp]` 啟動的 stdio MCP server 目前仍繼承完整環境(加上設定的 `env`),待修。
+- **她寫的程式**:模組 `sandbox`(`@miyoria/sandbox`,opt-in)在用完即丟的 Docker 容器裡執行:`--network none`、唯讀根目錄、非 root、`--cap-drop ALL`、資源與時間上限、不帶任何主機環境變數,只掛載當次的工作資料夾。服務是 `SandboxKey`(`run`、工具工作區)與 `ProposedToolsKey`(她提出的工具,核准後才能用,仍在沙箱裡跑)。Docker 可用時 module 在閘門註冊 `code.run` / `tool.propose`(高風險,她自己審核,有疑慮才問擁有者)與每個已核准工具的 `sbx.<name>`(中風險)(§14.1);程式輸出以不可信資料區塊、截斷後回給她。擁有者:`/admin autonomy status` 看沙箱與自寫工具,`GET /api/sandbox/tools`、`GET /api/sandbox/tools/:name`(含程式碼)、`POST /api/sandbox/tools/:name/approve|reject`(`{ version, note? }`,token 或有 `owner.autonomy.approve` 的面板帳號)。威脅模型與剩餘風險見 [`packages/sandbox/README.md`](../packages/sandbox/README.md)。
 - **語音**:收音前公告、需要同意、預設不存音訊。
 - **資料權利**:使用者可以匯出、刪除自己的資料。
 

@@ -4,7 +4,7 @@ Core 的擴充宿主(`@miyoria/ext-host`,module id `extensions`)和每個擴充�
 
 - **傳輸**:宿主把擴充當子行程啟動,協定走 **stdin / stdout**。**stdout 只能拿來寫協定訊框**;擴充自己的輸出請寫到 stderr(宿主會逐行轉進 Core 的 pino 日誌,logger 名稱 `miyoria_ext`)或用 `log` 方法。SDK 會自動把 `console.log / info / debug` 導到 stderr。
 - **訊息**:JSON-RPC 2.0。雙方都可以送 request 和 notification;request 可以並行,用 `id` 對應 response。
-- **環境變數**:`MIYORIA_RPC=stdio`、`MIYORIA_EXTENSION_ID=<id>`。工作目錄是擴充目錄。
+- **環境變數**:`MIYORIA_RPC=stdio`、`MIYORIA_EXTENSION_ID=<id>`,加上平台白名單(`PATH`、`SystemRoot`、`TEMP`、`HOME`、`APPDATA`、語系…)、manifest `[env] pass` 列出的主機變數與 `[extensions."<id>"] env` 設定的值;**不會**繼承宿主的其他環境變數(見 [ARCHITECTURE.md](../ARCHITECTURE.md) §9.2)。工作目錄是擴充目錄。
 - **啟動指令**(依 manifest 的 `runtime`):
   | runtime | 指令 |
   |---|---|

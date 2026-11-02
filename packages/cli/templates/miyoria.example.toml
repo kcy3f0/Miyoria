@@ -131,6 +131,11 @@ token = "${STAGE_LINK_TOKEN:-}"
 # 想試範例(/hello)就把 "extensions/examples" 加進來
 [modules.extensions]
 dirs = ["extensions"]
+# 擴充只拿到白名單內的環境變數(PATH、TEMP、HOME…加上 manifest [env] pass 列的),拿不到這裡的密鑰。
+# 要多給一個擴充變數:
+# [extensions."miyoria.minecraft"]
+# env = { MIYORIA_MC_TOKEN = "${MC_TOKEN:-}" }   # 直接設定值
+# env_pass = ["MIYORIA_MC_*"]                    # 取代 manifest 的 [env] pass
 
 [modules.voice]
 consent = "opt-out"        # opt-out:預設收音,可用 /voice consent off 退出;opt-in:同意後才收
@@ -147,6 +152,10 @@ barge_in = "stop"          # 有人插話時停止說話:stop | ignore
 # per_day = 30
 # per_person_per_day = 8
 # cooldown_ms = 20000
+# inline_wait_ms = 8000          # 高風險工具(跑程式等)等審核多久;來不及就晚點在後續回合告訴她結果
+# [modules.actions.limits."code.run"]
+# per_day = 50
+# cooldown_ms = 5000
 
 [modules.agent]
 # 頻道模式:off | mention-only | ambient | always。也可以在 Discord 用 /channel mode 即時切換
@@ -183,8 +192,9 @@ boredom_per_hour = 0.15          # 沒事做時無聊上升的速度
 # ---- 程式沙箱 ----------------------------------------------------------------
 # 她寫的程式在用完即丟、不能連外的 Docker 容器裡執行(需要 Docker Desktop / Docker Engine)。
 # 預設關閉,要明確寫 enabled = true 才會啟動;Docker 沒開時模組顯示 degraded,不影響其他功能。
-# 目前只提供服務,還不是她能叫的工具(code.run / tool.propose 要等自主層的閘門),
-# 安全說明見 packages/sandbox/README.md。
+# Docker 可用時她會多出工具 code_run(跑程式)、tool_propose(把寫好的程式提出成工具)與已核准的
+# sbx_<name>;前兩個是高風險,她自己審核,有疑慮才私訊你確認。/admin autonomy status 看狀態,
+# GET /api/sandbox/tools 看她寫的工具。安全說明見 packages/sandbox/README.md。
 # [modules.sandbox]
 # enabled = true
 # root = "data/sandbox"          # runs/<id>(每次執行)與 profiles/<profile>/tools(她留下的腳本)
@@ -192,8 +202,11 @@ boredom_per_hour = 0.15          # 沒事做時無聊上升的速度
 # max_timeout_ms = 120000
 # max_concurrent = 2
 # keep_runs = 20                 # 保留最近幾次執行的輸出檔
+# result_chars = 900             # 程式輸出回給她的字數上限(低於 agent 的 max_tool_result_chars)
+# tool_timeout_ms = 8000         # 她寫的工具每次呼叫的時間上限(低於 agent 的 tool_timeout_ms)
 # images = { python = "python:3.12-slim", node = "node:24-slim" }  # 可釘 digest:...@sha256:<hash>
 # limits = { memory_mb = 256, cpus = 1, pids_limit = 128 }
+# 跑程式的次數上限在 [modules.actions.limits."code.run"](預設每天 30 次、冷卻 20 秒)
 
 # ---- Stage 節點(在直播機執行 `miyoria stage`)-------------------------------
 [stage]

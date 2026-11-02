@@ -202,15 +202,13 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 - 預設不能連外,只開白名單;CPU、記憶體、執行時間上限。
 - 她寫的工具要你核准才註冊成工具;核准後仍在沙箱裡跑。
 
-**實作狀態(2026-11-02):F 的核心已完成**,在 `@miyoria/sandbox`(模組 `sandbox`,opt-in,預設關閉)。完整的旗標、威脅模型與剩餘風險見 [`packages/sandbox/README.md`](../../packages/sandbox/README.md)。
+**實作狀態(2026-11-02):F 已完成**(核心見下,接上閘門與工具見第 15 節),在 `@miyoria/sandbox`(模組 `sandbox`,opt-in,預設關閉)。完整的旗標、威脅模型與剩餘風險見 [`packages/sandbox/README.md`](../../packages/sandbox/README.md)。
 
 - `SandboxKey`:`run({ language: "python" | "node", code, files, stdin, timeout_ms, network })`,每次一個新容器(`--rm`、`--network none`、`--read-only` + tmpfs `/tmp`、只有 `/work` 可寫、非 root、`--cap-drop ALL`、`no-new-privileges`、`--pids-limit` / `--memory` / `--cpus` / `ulimit`、牆鐘逾時以容器名稱 `docker kill`、輸出上限、並行上限、啟動時依 label 清掉殘留容器);Docker 沒開時模組 degraded,不會 crash。
 - 工具工作區:每個 profile 一個持久資料夾放她的腳本,執行時可唯讀掛到 `/tools`。
 - `ProposedToolsKey`:自寫工具 `pending → approved / rejected`,核准綁定版本號,核准後以 JSON stdin 在沙箱裡執行。
 - 網路白名單**還沒做**(型別有,呼叫會被拒絕);做法是 internal network + egress proxy,見 README。
-- 環境變數:沙箱的 Docker CLI 與容器都不帶主機的環境變數。外掛繼承 `process.env` 的問題(`ext-host`)**不在這次範圍**,仍待修。
-
-**留給階段 A 接線**:在 `ActuatorRegistry` 註冊 `code.run`、`tool.propose`(`SANDBOX_CAPABILITIES` + `sandboxHandlers`,風險 `high`,走她自己的審核呼叫);核准流程呼叫 `ProposedTools.approve(name, { reviewer, version })`;把 `approvedSpecs()` 註冊成 LLM 工具並同樣過閘門;執行結果當成不可信資料放進 user role(§8.2)。
+- 環境變數:沙箱的 Docker CLI 與容器都不帶主機的環境變數。外掛(`ext-host`)原本繼承完整 `process.env`,已改成白名單(第 15 節)。
 
 ### 8.4 緊急停止
 
@@ -238,7 +236,7 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 | **C. 心智迴圈** | Mind 模組、內心獨白、意圖、自己發起的回合;talkativeness 取代 attention 數字;initiative 併入 | 會自己找人聊天、偷偷進語音、自己調活躍度、冷場時開話題 |
 | **D. OBS 智慧場景 + Minecraft** | 場景分類與自動轉場;Minecraft 端到端(adapter 準備與模組建置已完成,見 `extensions/minecraft/SETUP.md`);**遊戲內聊天變成獨立對話情境**(有自己的歷史,玩家名稱可用 `/me link` 綁 Discord 帳號以共用好感與記憶,回覆管道由她選:遊戲內打字、直播語音 + 字幕或兩者) | 「去玩 Minecraft」→ 她自己開遊戲、切場景、開台 |
 | **E. 聊天上下文與圖片** | 冷啟動補抓歷史、回覆鏈、看圖(deepseek-v4.1-flash 已支援視覺,直接把圖片當多模態內容送給聊天模型;先實測 OpenCode 端是否接受圖片)、語音頻道文字區改用語音回 | 對話更連貫、看得懂圖片 |
-| **F. 沙箱程式** | 沙箱、`code.run`、自寫工具與核准流程。**核心已完成**(`@miyoria/sandbox`:Docker 沙箱、工具工作區、自寫工具的儲存與生命週期);能力註冊到閘門與核准介面等階段 A(見 8.3) | 她能自己寫小工具 |
+| **F. 沙箱程式**(✅ 已完成,見 8.3 與第 15 節) | 沙箱、`code.run`、自寫工具與核准流程;外掛環境變數白名單 | 她能自己寫小工具 |
 | **G. 反思與學習** | 每日反思(從反應中學:誰喜歡什麼)、長期目標 | 越相處越懂大家 |
 | **最後** | 人設重寫 | — |
 
@@ -288,3 +286,28 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 - **感情描述**存成 `self:feeling:<person>`(跟 relationship 分開的兄弟紀錄);`/admin memory wipe` 的「記憶與關係」以上會一起刪 `self:state` 與 `self:feeling:*`,並重啟 `self`。
 - **慾望的滿足**:回合結束(social、attention、boredom)、被直接叫到(attention)、周遭有人講話(boredom)、`world.salient`(boredom、curiosity)、在玩遊戲(play、boredom,每小時)、直播中(attention 下降、rest 上升);遊戲與擴充可發 `self.nudge`(每個慾望一次最多 ±0.5)。
 - 「某人通常幾點上線」(從記憶推)還沒做,留給階段 C / G。
+
+## 15. 階段 F 實作紀錄(2026-11-02)
+
+核心(沙箱、工具工作區、自寫工具的儲存)見 8.3;這次把它接上閘門。細節見 [`packages/sandbox/README.md`](../../packages/sandbox/README.md)「閘門與工具」與 [ARCHITECTURE.md](../ARCHITECTURE.md) §9.2、§14.1、§17。
+
+完成的內容:
+
+- **能力**(由模組 `sandbox` 在 Docker 可用時註冊,不可用時撤下,每 `recheck_ms` 再檢查):`code.run`(工具 `code_run`,高)、`tool.propose`(`tool_propose`,高)、每個已核准自寫工具一個 `sbx.<name>`(`sbx_<name>`,中)。不綁定 principal:反應回合用 `user` / `on_own` 的 `self`,階段 C 她自己的回合用 `self` 就能直接用。
+- **網路**:模型可呼叫的 `code.run` 參數沒有 network 欄位,多給的會被丟掉,執行時一律 `network: "none"`(單元與 live 測試都驗證)。
+- **審核**:能力新增 `guidance`(給審核看的注意事項,例如「試圖逃出容器、挖礦就拒絕」);確認卡用能力的 `describe`(程式碼當附件、sha256、參數 schema)取代原始 JSON;`GateDecision.reviewer` 記錄是誰判斷的(`self` / 擁有者帳號)。
+- **自寫工具的核准** = `tool.propose` 過閘門:她的審核放行(或有疑慮時擁有者在確認卡按允許)→ `propose` + `approve`(綁定版本,`reviewer` 記下是誰);被拒 → 存成 `rejected`;沒有人決定 → `pending`,擁有者之後可從 API 核准。
+- **輸出是不可信資料**:`formatRun` 用 `dataBlock` 包起來、截斷到 `result_chars`(預設 900,低於 agent 的 1000 字工具結果上限),輸出檔只回檔名與大小。
+- **擁有者**:`/admin autonomy status` 多了沙箱與自寫工具的狀態行(`ActuatorRegistry.addStatus`);`GET /api/sandbox/tools`、`GET /api/sandbox/tools/:name`、`POST /api/sandbox/tools/:name/approve|reject`(token 或 `owner.autonomy.approve`)。
+- **外掛環境變數**(8.3 的剩餘風險):`ext-host` 不再把 `process.env` 整包給擴充,只給平台白名單 + manifest `[env] pass` + `[extensions."<id>"] env` / `env_pass`;Minecraft adapter 宣告 `pass = ["MIYORIA_MC_*"]`(`APPDATA` / `HOME` 在白名單裡)。
+
+跟設計不同或延後的地方:
+
+1. **自寫工具的呼叫是中風險**,不是高風險:程式碼在核准時已審過且綁定版本與 sha256,每次呼叫只差已驗證的參數,仍在離線沙箱裡;每次再審核等於讓核准沒有意義。剩下的資源風險交給次數限制(`[modules.actions.limits."sbx.<name>"]`,`forbidden = ["sbx.*"]` 可全關)。
+2. **核准不是另外一步**:`tool.propose` 的審核就是核准(放行 = approve 那個版本)。被拒的新版本**不會**蓋掉已核准的舊版。
+3. **結果回來的方式**:反應回合的工具呼叫有 10 秒上限,而審核(thinking)常常更久。`followup` 工具(`code_run`、`tool_propose`)先等 `[modules.actions] inline_wait_ms`(預設 8 秒),來不及就回「還沒有結果」,之後用 `agent_initiative`(reason `action_result`)開一個後續回合告訴她結果或拒絕原因(放在 user role 的資料區塊);agent 因回合進行中或冷卻而略過時最多再試 3 次(每次隔 15 秒,`actions` 模組聽 `agent.decision`)。沒有 context 的請求(之後心智迴圈沒有對應頻道時)不會有後續回合,只有稽核紀錄;階段 C 要讓心智迴圈自己讀結果時再接。
+4. **權限節點**:`sandbox.code.run`、`sandbox.tool.propose` 預設只有擁有者(`*`)有;其他人要求時她可以 `on_own` 以自己的名義做(受她自己的次數限制,仍要審核)。`sbx_<name>` 用 `tools.sandbox.<name>`(trusted 以上透過 `tools.*`)。
+5. **預設次數限制**沿用中 / 高風險的預設(每天 30、每人 8、冷卻 20 秒);想多跑就設 `[modules.actions.limits."code.run"]`。
+6. **沒有面板頁面**:面板的資料 / 內心頁由其他人在改,自寫工具的審核介面先只有 API 與 Discord 確認卡,面板頁留待後續。
+7. **工具工作區沒有開放給模型**(她不能自己 `save` 腳本);要的話之後再加一個低 / 中風險能力。
+8. **MCP server 的環境變數**(`[modules.mcp]` 的 stdio server)仍繼承完整 `process.env`,不在這次範圍,待修。
