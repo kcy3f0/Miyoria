@@ -190,15 +190,18 @@ class RealBackend:
         self.max_s = env_float("SING_MAX_SECONDS", 480)
         here = Path(__file__).resolve().parent
         self.seedvc_dir = Path(os.environ.get("SING_SEEDVC_DIR", here.parent / "models" / "seed-vc"))
-        self.ref_path = Path(os.environ.get("SING_REF", here.parent / "voices" / "deepseek-chan" / "ref.wav"))
+        self.ref_paths = ref_paths(os.environ.get("SING_REF") or str(here.parent / "voices" / "deepseek-chan" / "ref.wav"))
+        self.f0_clean = os.environ.get("SING_F0_CLEAN", "1") != "0"
         if not (self.seedvc_dir / "modules").exists():
             raise RuntimeError(f"Seed-VC not found at {self.seedvc_dir} (set SING_SEEDVC_DIR)")
-        if not self.ref_path.exists():
-            raise RuntimeError(f"reference voice not found at {self.ref_path} (set SING_REF)")
+        if not self.ref_paths:
+            raise RuntimeError("reference voice not found (set SING_REF to a file, a list or a folder)")
         self.model_name = f"seed-vc-f0-44k+{self.separator}"
         self._vc: Any = None
         self._demucs: Any = None
+        self._ref: Any = None
         self._ref_f0: float | None = None
+        self.transposer = "rubberband" if ffmpeg_has_filter("rubberband") else "librosa"
 
     # ── resolve / fetch ──────────────────────────────────────────────────
 
@@ -408,10 +411,23 @@ class RealBackend:
         vc = self._load_vc()
         return vc.median_f0(mono, sr)
 
+    def f0_stats(self, mono, sr: int) -> tuple[float, float] | None:
+        """(median, 95th percentile) of the (cleaned) voiced F0."""
+        from pitch import f0_stats
+
+        return f0_stats(self._load_vc().f0(mono, sr, clean=self.f0_clean))
+
+    def reference(self):
+        """Her reference voice, mono: one file, or several clips joined with short pauses (a
+        longer reference gives the model more of her), at most REF_MAX_S."""
+        if self._ref is None:
+            self._ref = join_clips(self.ref_paths)
+        return self._ref
+
     def ref_f0(self) -> float | None:
         if self._ref_f0 is None:
-            x, sr = read_audio(self.ref_path)
-            self._ref_f0 = self.median_f0(x.mean(axis=1), sr)
+            mono, sr = self.reference()
+            self._ref_f0 = self.median_f0(mono, sr)
         return self._ref_f0
 
     def convert(self, vocals_wav: Path, out_wav: Path, shift: int, progress: Progress,
@@ -419,9 +435,9 @@ class RealBackend:
         try:
             vc = self._load_vc()
             x, sr = read_audio(vocals_wav)
-            ref, rsr = read_audio(self.ref_path)
-            y = vc.convert(x.mean(axis=1), sr, ref.mean(axis=1), rsr, shift, self.steps, self.cfg_rate,
-                           progress, cancelled)
+            ref, rsr = self.reference()
+            y = vc.convert(x.mean(axis=1), sr, ref, rsr, shift, self.steps, self.cfg_rate,
+                           progress, cancelled, clean=self.f0_clean)
             y = vocal_gate(x.mean(axis=1), y)
             write_wav(out_wav, y, SR)
         finally:
@@ -436,13 +452,90 @@ class RealBackend:
     # ── key change of the instrumental ───────────────────────────────────
 
     def transpose(self, x, sr: int, semitones: int):
+        """The instrumental moved by ``semitones``: Rubber Band (ffmpeg's ``rubberband`` filter,
+        far cleaner on drums and chords), else librosa's phase vocoder."""
         if semitones == 0:
             return x
+        if self.transposer == "rubberband":
+            try:
+                return rubberband_shift(x, sr, semitones)
+            except JobError as e:
+                log.warning("rubberband failed, using librosa: %s", e)
         import librosa
         import numpy as np
 
         return np.stack([librosa.effects.pitch_shift(x[:, c], sr=sr, n_steps=semitones) for c in range(x.shape[1])],
                         axis=1)
+
+
+REF_MAX_S = 25.0  # what the conversion uses of the reference at most
+REF_PAUSE_S = 0.3
+
+
+def ref_paths(spec: str) -> list[Path]:
+    """``SING_REF``: a file, files separated by ``;``, or a folder (its audio files, sorted)."""
+    from songs import AUDIO_EXTS
+
+    out: list[Path] = []
+    for part in (p.strip() for p in spec.split(";")):
+        if not part:
+            continue
+        p = Path(part)
+        if p.is_dir():
+            out += sorted(q for q in p.iterdir() if q.suffix.lower() in AUDIO_EXTS and q.is_file())
+        elif p.is_file():
+            out.append(p)
+    return out
+
+
+def join_clips(paths: list[Path], max_s: float = REF_MAX_S, pause_s: float = REF_PAUSE_S):
+    """(mono float32, sample rate of the first clip): the clips in order with ``pause_s`` of
+    silence between them, cut at ``max_s``."""
+    import numpy as np
+
+    parts, rate = [], None
+    for p in paths:
+        x, sr = read_audio(p)
+        mono = x.mean(axis=1)
+        if rate is None:
+            rate = sr
+        elif sr != rate:
+            import librosa
+
+            mono = librosa.resample(mono, orig_sr=sr, target_sr=rate)
+        if parts:
+            parts.append(np.zeros(int(pause_s * rate), dtype=np.float32))
+        parts.append(mono.astype(np.float32))
+    if rate is None:
+        raise JobError("no reference voice")
+    return np.concatenate(parts)[: int(max_s * rate)], rate
+
+
+def ffmpeg_has_filter(name: str) -> bool:
+    try:
+        r = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return any(line.split()[1:2] == [name] for line in r.stdout.splitlines() if line.strip())
+
+
+def rubberband_shift(x, sr: int, semitones: int):
+    """(frames, channels) float32 moved by ``semitones`` with ffmpeg's Rubber Band filter, same
+    length, 32-bit float through the pipe (no clipping)."""
+    import numpy as np
+
+    frames, channels = x.shape
+    cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "f32le", "-ar", str(sr),
+           "-ac", str(channels), "-i", "pipe:0",
+           "-af", f"rubberband=pitch={2 ** (semitones / 12):.8f}:pitchq=quality:channels=together",
+           "-f", "f32le", "-ar", str(sr), "-ac", str(channels), "pipe:1"]
+    r = subprocess.run(cmd, input=np.ascontiguousarray(x, dtype="<f4").tobytes(), capture_output=True)
+    if r.returncode != 0:
+        raise JobError(f"ffmpeg rubberband: {r.stderr.decode('utf-8', 'replace').strip()[:300]}")
+    y = np.frombuffer(r.stdout, dtype="<f4").reshape(-1, channels)
+    if y.shape[0] < frames:
+        y = np.pad(y, ((0, frames - y.shape[0]), (0, 0)))
+    return y[:frames].copy()
 
 
 def mix_song(vocals_src: Path, vocals_conv: Path, inst_wav: Path, key: int, out_dir: Path, backend: RealBackend,

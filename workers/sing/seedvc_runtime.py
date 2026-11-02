@@ -4,7 +4,9 @@ vendored: the repo is downloaded next to the worker, see ``SING_SEEDVC_DIR``).
 
 Differences from upstream: weights are cached under ``<seedvc>/checkpoints`` without changing
 the working directory, the pitch shift is given in semitones by the caller (the worker's auto
-key picks it), and conversion reports progress and can be cancelled between chunks.
+key picks it), the source's F0 contour is cleaned before it conditions the model (``pitch.py``:
+octave errors, spikes and dropouts at the top of the range are what cracks high notes), and
+conversion reports progress and can be cancelled between chunks.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import torch
 import torchaudio
 import yaml
 from engine import Cancelled
+from pitch import clean_f0
 from huggingface_hub import hf_hub_download
 
 log = logging.getLogger("miyoria.sing.seedvc")
@@ -113,10 +116,11 @@ class SeedVcSinger:
             done += 30 * 16000 if done == 0 else chunk.size(-1) - 16000 * overlap
         return torch.cat(parts, dim=1)
 
-    def f0(self, mono: np.ndarray, sr: int) -> np.ndarray:
+    def f0(self, mono: np.ndarray, sr: int, clean: bool = False) -> np.ndarray:
         x = torch.from_numpy(np.ascontiguousarray(mono, dtype=np.float32))
         w16 = torchaudio.functional.resample(x[None], sr, 16000)[0]
-        return self.rmvpe.infer_from_audio(w16, thred=0.03)
+        f = self.rmvpe.infer_from_audio(w16, thred=0.03)
+        return clean_f0(f) if clean else f
 
     def median_f0(self, mono: np.ndarray, sr: int) -> float | None:
         f = self.f0(mono, sr)
@@ -129,7 +133,8 @@ class SeedVcSinger:
 
     @torch.no_grad()
     def convert(self, source: np.ndarray, sr: int, ref: np.ndarray, ref_sr: int, shift: int, steps: int,
-                cfg_rate: float, progress: Callable[[float], None], cancelled: Callable[[], bool]) -> np.ndarray:
+                cfg_rate: float, progress: Callable[[float], None], cancelled: Callable[[], bool],
+                clean: bool = True) -> np.ndarray:
         import librosa
 
         dev = self.device
@@ -152,8 +157,12 @@ class SeedVcSinger:
         feat2 = feat2 - feat2.mean(dim=0, keepdim=True)
         style2 = self.campplus(feat2.unsqueeze(0))
 
-        f0_ori = torch.from_numpy(self.rmvpe.infer_from_audio(r16[0], thred=0.03)).to(dev)[None]
-        f0_alt = torch.from_numpy(self.rmvpe.infer_from_audio(w16[0], thred=0.03)).to(dev)[None]
+        f0_ori_np = self.rmvpe.infer_from_audio(r16[0], thred=0.03)
+        f0_alt_np = self.rmvpe.infer_from_audio(w16[0], thred=0.03)
+        if clean:
+            f0_ori_np, f0_alt_np = clean_f0(f0_ori_np), clean_f0(f0_alt_np)
+        f0_ori = torch.from_numpy(np.ascontiguousarray(f0_ori_np)).to(dev)[None]
+        f0_alt = torch.from_numpy(np.ascontiguousarray(f0_alt_np)).to(dev)[None]
         shifted = f0_alt.clone()
         if shift:
             shifted[f0_alt > 1] = f0_alt[f0_alt > 1] * (2 ** (shift / 12))
