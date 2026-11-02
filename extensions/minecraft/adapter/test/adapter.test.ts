@@ -46,12 +46,14 @@ describe("summary", () => {
     const text = summarize(SNAPSHOT);
     expect(text).toContain("血量 17.5/20、飢餓 18/20");
     expect(text).toContain("位置 (100, 64, -21)・主世界・平原");
-    expect(text).toContain("白天、晴天");
+    expect(text).toContain("白天(約 5 分鐘後天黑)、晴天");
     expect(text).toContain("手上:鐵鎬(耐久 88%)");
     expect(text).toContain("背包:鵝卵石×84、蘋果×3、鐵鎬×1(空格 32)");
     expect(text).toContain("看著:橡木原木(2.4 格)");
     expect(text).toContain("附近:殭屍 3 格(敵對)、玩家 Steve 8 格、牛 12 格");
-    expect(text).toContain("值得注意的方塊:鑽石礦×2 40 格、箱子×1 5 格");
+    expect(text).toContain("看得到的方塊:鑽石礦×2 40 格、箱子×1 5 格");
+    expect(text).toContain("最好的鎬:鐵鎬");
+    expect(text).toContain("食物:蘋果×3");
     expect(text).toContain("Baritone 執行中(Mine)");
   });
 
@@ -164,6 +166,9 @@ describe("MinecraftAdapter", () => {
       "farm",
       "build",
       "get",
+      "craft",
+      "smelt",
+      "place",
       "chat",
       "stop",
       "look",
@@ -211,7 +216,8 @@ describe("MinecraftAdapter", () => {
       message: "參數不對:slot must be 0-8",
     });
     expect(await adapter.act({ name: "goto", args: {} })).toMatchObject({ ok: false });
-    expect(mod.requests).toHaveLength(2);
+    // observe (her pickaxe, for the mine check), mine, select_slot
+    expect(mod.requests.map((r) => r.type)).toEqual(["observe", "baritone", "select_slot"]);
   });
 
   it("checks capabilities before sending", async () => {

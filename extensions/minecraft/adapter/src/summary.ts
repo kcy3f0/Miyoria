@@ -1,6 +1,7 @@
 // Turns the mod's `observe` snapshot into a short Traditional Chinese summary
 // for the model plus a compact structured state (ids kept for actions).
 
+import { pickaxeTier, toolLine } from "./harvest.js";
 import { zh } from "./names.js";
 
 interface Pos {
@@ -64,6 +65,8 @@ export interface Snapshot {
   nearby_blocks?: NotableBlock[];
   baritone?: { available?: boolean; busy?: boolean; process?: string | null; goal?: string | null };
   altoclef?: { available?: boolean; busy?: boolean | null };
+  /** A craft / smelt job of the mod's workbench. */
+  crafting?: { kind: string; item: string | null } | null;
 }
 
 const MAX_INVENTORY = 16;
@@ -74,6 +77,44 @@ const PHASES: Record<string, string> = { day: "白天", dusk: "黃昏", night: "
 const WEATHER: Record<string, string> = { clear: "晴天", rain: "下雨", thunder: "雷雨" };
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
+
+/** Things she can eat, to tell "has food" from "starving with an inventory full of stone". */
+const FOOD = new Set([
+  "apple",
+  "bread",
+  "carrot",
+  "potato",
+  "baked_potato",
+  "beetroot",
+  "sweet_berries",
+  "glow_berries",
+  "melon_slice",
+  "cookie",
+  "pumpkin_pie",
+  "mushroom_stew",
+  "dried_kelp",
+  "golden_carrot",
+  "golden_apple",
+  "beef",
+  "porkchop",
+  "chicken",
+  "mutton",
+  "rabbit",
+  "cod",
+  "salmon",
+]);
+const isFood = (id: string) => FOOD.has(id) || id.startsWith("cooked_");
+
+/** "約 3 分鐘後天黑" style hint from the time of day (20 ticks = 1 s; a day is 24000 ticks). */
+function untilNext(phase: string | undefined, time: number | undefined): string {
+  if (time === undefined) return "";
+  const t = ((time % 24000) + 24000) % 24000;
+  const mins = (ticks: number) => Math.max(1, Math.round(ticks / 1200));
+  if (phase === "day") return `(約 ${mins(12000 - t)} 分鐘後天黑)`;
+  if (phase === "dusk") return "(快天黑了)";
+  if (phase === "night") return `(約 ${mins(23000 - t)} 分鐘後天亮)`;
+  return "";
+}
 
 function stack(s: Stack): string {
   const count = s.count > 1 ? `×${s.count}` : "";
@@ -87,7 +128,7 @@ function pos(p: Pos): string {
 
 /** Whether Baritone or AltoClef is working on something. */
 export function isBusy(s: Snapshot): boolean {
-  return s.baritone?.busy === true || s.altoclef?.busy === true;
+  return s.baritone?.busy === true || s.altoclef?.busy === true || !!s.crafting;
 }
 
 /** Summary lines in Traditional Chinese. */
@@ -96,7 +137,7 @@ export function summarize(s: Snapshot): string {
   if (s.health !== undefined) {
     const max = s.max_health ?? 20;
     const vitals = [`血量 ${round1(s.health)}/${max}`];
-    if (s.food !== undefined) vitals.push(`飢餓 ${s.food}/20`);
+    if (s.food !== undefined) vitals.push(`飢餓 ${s.food}/20${s.food <= 6 ? "(餓了,先吃東西)" : ""}`);
     if (s.air !== undefined && s.air < 300) vitals.push(`氧氣 ${Math.max(0, Math.round(s.air / 30))}/10`);
     lines.push(vitals.join("、"));
   }
@@ -107,7 +148,7 @@ export function summarize(s: Snapshot): string {
   if (s.biome) where.push(zh(s.biome));
   if (where.length) lines.push(where.join("・"));
   const time: string[] = [];
-  if (s.time_phase) time.push(PHASES[s.time_phase] ?? s.time_phase);
+  if (s.time_phase) time.push(`${PHASES[s.time_phase] ?? s.time_phase}${untilNext(s.time_phase, s.time_of_day)}`);
   if (s.weather) time.push(WEATHER[s.weather] ?? s.weather);
   if (time.length) lines.push(time.join("、"));
 
@@ -122,6 +163,11 @@ export function summarize(s: Snapshot): string {
     lines.push(`背包:${shown.join("、")}${more}${free}`);
   } else if (s.inventory) {
     lines.push("背包:空的");
+  }
+  if (s.inventory) {
+    lines.push(toolLine(s.inventory));
+    const food = inventory.filter(([id]) => isFood(id)).map(([id, n]) => `${zh(id)}×${n}`);
+    lines.push(`食物:${food.length ? food.join("、") : "沒有"}`);
   }
 
   const look = s.looking_at;
@@ -149,7 +195,9 @@ export function summarize(s: Snapshot): string {
       const dist = b.distance === undefined ? "" : ` ${Math.round(b.distance)} 格`;
       return `${zh(b.block)}×${b.count}${dist}`;
     });
-    lines.push(`值得注意的方塊:${shown.join("、")}`);
+    lines.push(`看得到的方塊:${shown.join("、")}`);
+  } else if (s.nearby_blocks) {
+    lines.push("看得到的方塊:沒有特別的");
   }
 
   const activity: string[] = [];
@@ -157,6 +205,9 @@ export function summarize(s: Snapshot): string {
   else if (s.baritone?.busy) activity.push(`Baritone 執行中(${s.baritone.process ?? "?"})`);
   else if (s.baritone) activity.push("Baritone 閒置");
   if (s.altoclef?.busy) activity.push("AltoClef 任務進行中");
+  if (s.crafting) {
+    activity.push(s.crafting.kind === "craft" ? `正在合成 ${zh(s.crafting.item)}` : "正在用熔爐");
+  }
   if (activity.length) lines.push(activity.join("、"));
   return lines.join("\n");
 }
@@ -176,6 +227,7 @@ export function compactState(s: Snapshot): Record<string, unknown> {
     time: s.time_phase,
     weather: s.weather,
     held: s.held_item?.item ?? null,
+    pickaxe_tier: s.inventory ? pickaxeTier(s.inventory) : undefined,
     inventory: Object.fromEntries(
       Object.entries(s.inventory ?? {})
         .sort((a, b) => b[1] - a[1])
@@ -195,6 +247,7 @@ export function compactState(s: Snapshot): Record<string, unknown> {
     })),
     baritone: s.baritone ? { busy: s.baritone.busy ?? false, process: s.baritone.process ?? null } : undefined,
     altoclef: s.altoclef?.available ? { busy: s.altoclef.busy ?? null } : undefined,
+    crafting: s.crafting ?? undefined,
   };
   for (const key of Object.keys(state)) if (state[key] === undefined) delete state[key];
   return state;

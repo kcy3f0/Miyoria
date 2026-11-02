@@ -33,6 +33,20 @@ const str = (v: unknown): string | undefined => (typeof v === "string" && v !== 
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
+/** The mod's (English) reason a craft / smelt job stopped, in Traditional Chinese where known. */
+function failure(d: Record<string, unknown>): string {
+  const error = str(d.error) ?? "不明原因";
+  if (d.cancelled === true || error === "stopped") return "被叫停了";
+  if (error === "inventory full") return "背包滿了";
+  if (error.startsWith("ran out of ")) return `${zh(error.slice("ran out of ".length).replace(/\+$/, ""))}不夠了`;
+  if (error.startsWith("could not open")) return "打不開(要站在旁邊、面前沒擋住)";
+  if (error.startsWith("the furnace is still smelting ")) {
+    return `熔爐還在燒別的(${zh(error.slice("the furnace is still smelting ".length))}),等它燒完先拿出來`;
+  }
+  if (error.includes("screen was closed")) return "畫面被關掉了";
+  return error;
+}
+
 function event(type: string, data: Record<string, unknown>, text: string, important = false): GameEvent {
   return { type, data: { ...data, text }, important };
 }
@@ -82,7 +96,32 @@ export function mapEvent(e: BridgeEvent, opts: EventOptions = {}): GameEvent | n
       return event("goal_failed", d, "找不到路,目標失敗");
     case "baritone_idle":
       if (d.altoclef_done === true) return event("baritone_idle", d, "AltoClef 任務做完了,停下來");
+      if (d.reason === "nothing_visible") {
+        return event("baritone_idle", d, "看得到的都挖完了(附近看不到更多),停下來");
+      }
       return event("baritone_idle", d, d.cancelled === true ? "Baritone 被叫停了" : "Baritone 做完了,停下來");
+    case "craft_finished": {
+      const crafted = num(d.crafted) ?? 0;
+      const requested = num(d.requested);
+      const short = requested !== undefined && crafted < requested ? `(材料只夠做 ${crafted} 個)` : "";
+      return event("craft_finished", d, `做好了 ${zh(str(d.item))}×${crafted}${short}`);
+    }
+    case "craft_failed":
+      return event("craft_failed", d, `合成 ${zh(str(d.item))} 失敗:${failure(d)}`, d.cancelled !== true);
+    case "smelt_finished": {
+      const parts: string[] = [];
+      const taken = Object.entries((d.collected as Record<string, number> | undefined) ?? {});
+      if (taken.length) parts.push(`從熔爐拿出 ${taken.map(([id, n]) => `${zh(id)}×${n}`).join("、")}`);
+      const count = num(d.count);
+      if (str(d.item) && count) {
+        const fuel = str(d.fuel) && num(d.fuel_count) ? `,燃料 ${zh(str(d.fuel))}×${num(d.fuel_count)}` : "";
+        const secs = num(d.ready_in_secs);
+        parts.push(`把 ${zh(str(d.item))}×${count} 放進熔爐${fuel}${secs ? `,約 ${secs} 秒後再 smelt 一次拿出來` : ""}`);
+      }
+      return event("smelt_finished", d, parts.length ? parts.join(";") : "熔爐裡沒有燒好的東西");
+    }
+    case "smelt_failed":
+      return event("smelt_failed", d, `熔爐:${failure(d)}`, d.cancelled !== true);
     default:
       return SEGMENT.test(e.name) ? { type: e.name, data: d } : null;
   }

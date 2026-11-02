@@ -4,6 +4,7 @@ import type { ActionResult, GameAction, GameAdapter, GameEvent, GameInfo, GameOb
 import { ACTIONS, ActionError, describeAction, errorText, toRequests } from "./actions.js";
 import { BridgeError, type BridgeClient, type BridgeEvent } from "./bridge.js";
 import { type EventOptions, mapEvent } from "./events.js";
+import { GUIDE } from "./guide.js";
 import { type Snapshot, compactState, summarize } from "./summary.js";
 
 export const GAME_ID = "minecraft";
@@ -25,7 +26,8 @@ export type Task = "goto" | "baritone" | "altoclef" | null;
 export function taskOf(requests: ReturnType<typeof toRequests>): Task | undefined {
   let task: Task | undefined;
   for (const r of requests) {
-    if (r.type === "stop") task = null;
+    // crafting and the furnace stop Baritone first (she stands still to use them)
+    if (r.type === "stop" || r.type === "craft" || r.type === "smelt") task = null;
     else if (r.type === "altoclef") task = "altoclef";
     else if (r.type === "baritone") {
       const command = r.params.command;
@@ -141,7 +143,7 @@ export class MinecraftAdapter implements GameAdapter {
   }
 
   describe(): GameInfo {
-    return { id: GAME_ID, name: "Minecraft", actions: ACTIONS };
+    return { id: GAME_ID, name: "Minecraft", actions: ACTIONS, guide: GUIDE };
   }
 
   async observe(): Promise<GameObservation> {
@@ -169,7 +171,10 @@ export class MinecraftAdapter implements GameAdapter {
   async act(action: GameAction): Promise<ActionResult> {
     let requests: ReturnType<typeof toRequests>;
     try {
-      requests = toRequests(action, { allowCommands: this.#opts.allowCommands });
+      requests = toRequests(action, {
+        allowCommands: this.#opts.allowCommands,
+        inventory: action.name === "mine" ? await this.#inventory() : undefined,
+      });
     } catch (error) {
       if (error instanceof ActionError) return { ok: false, message: error.message };
       throw error;
@@ -191,6 +196,16 @@ export class MinecraftAdapter implements GameAdapter {
     const task = taskOf(requests);
     if (task !== undefined) this.#task = task;
     return { ok: true, message: describeAction(action), data: results.length === 1 ? results[0] : results };
+  }
+
+  /** Her inventory right now, for the `mine` tool check; `undefined` when it cannot be read. */
+  async #inventory(): Promise<Record<string, number> | undefined> {
+    if (!this.#bridge.ready) return undefined;
+    try {
+      return ((await this.#bridge.request("observe")) as Snapshot).inventory;
+    } catch {
+      return undefined; // the mine request itself will report what is wrong
+    }
   }
 
   events(): AsyncIterable<GameEvent> {

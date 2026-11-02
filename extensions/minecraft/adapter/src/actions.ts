@@ -3,6 +3,8 @@
 // events (`goal_reached`, `baritone_idle`, ...) or shows in `observe`.
 
 import type { GameAction, GameActionSpec, JsonSchema } from "@miyoria/sdk";
+import { harvestProblem } from "./harvest.js";
+import { zh } from "./names.js";
 
 const int = (description: string): JsonSchema => ({ type: "integer", description });
 const str = (description: string): JsonSchema => ({ type: "string", description });
@@ -16,7 +18,7 @@ const xyz = obj({ x: int("x"), y: int("y"), z: int("z") }, ["x", "y", "z"]);
 export const ACTIONS: GameActionSpec[] = [
   {
     name: "goto",
-    description: "用 Baritone 走到座標({x,y,z} 或只給 {x,z}),或走到最近的某種方塊旁({block})",
+    description: "用 Baritone 走到座標({x,y,z} 或只給 {x,z}),或走到最近一個你看得到的某種方塊旁({block},不會透視)",
     parameters: obj({
       x: int("x"),
       y: int("y(可省略)"),
@@ -27,7 +29,8 @@ export const ACTIONS: GameActionSpec[] = [
   },
   {
     name: "mine",
-    description: "用 Baritone 蒐集 / 挖某些方塊,count 省略 = 一直挖到 stop",
+    description:
+      "用 Baritone 挖你看得到的某些方塊(不會透視,挖著挖著看到新的會繼續);要有對的鎬:石頭要木鎬、鐵礦要石鎬、鑽石要鐵鎬;count 省略 = 挖到 stop 或看得到的都挖完",
     parameters: obj({
       blocks: { type: "array", items: { type: "string" }, description: "方塊 id,例如 [\"iron_ore\",\"deepslate_iron_ore\"]" },
       block: str("單一方塊 id"),
@@ -57,8 +60,25 @@ export const ACTIONS: GameActionSpec[] = [
   {
     name: "get",
     description:
-      "用 AltoClef 取得物品(自動砍樹、挖礦、合成…),例如 {item:\"iron_pickaxe\"};狀態的 capabilities.altoclef 為 true 才能用",
+      "用 AltoClef 取得物品(自動砍樹、挖礦、合成…),例如 {item:\"iron_pickaxe\"};狀態的 capabilities.altoclef 為 true 才能用,不然用 craft / smelt 自己做",
     parameters: obj({ item: str("物品 id"), count: int("數量,預設 1") }, ["item"]),
+  },
+  {
+    name: "craft",
+    description:
+      "合成物品:小配方用背包的 2x2 格,3x3 配方(鎬、劍、熔爐…)要站在工作台旁;例如 {item:\"oak_planks\",count:4}。材料不夠會說缺什麼",
+    parameters: obj({ item: str("要做的物品 id"), count: int("要幾個(成品數,預設 1)") }, ["item"]),
+  },
+  {
+    name: "smelt",
+    description:
+      "用旁邊的熔爐燒東西:把 item 和燃料放進去(會自動挑煤炭 / 木材),燒好(每個約 10 秒)要再 smelt 一次拿出來;不給 item = 只拿出燒好的",
+    parameters: obj({ item: str("要燒的物品 id,例如 raw_iron"), count: int("幾個(預設全部)"), fuel: str("燃料 id(可省略)") }),
+  },
+  {
+    name: "place",
+    description: "把背包裡的一個方塊放在腳邊的地上(例如工作台、熔爐)",
+    parameters: obj({ item: str("方塊 id,例如 crafting_table") }, ["item"]),
   },
   {
     name: "chat",
@@ -93,6 +113,8 @@ export interface BridgeRequest {
 
 export interface MapOptions {
   allowCommands?: boolean;
+  /** Her inventory (`item id → count`) when known; `mine` refuses blocks her pickaxe cannot harvest. */
+  inventory?: Record<string, number>;
 }
 
 /** Thrown for arguments the model got wrong; the message goes back to it. */
@@ -138,6 +160,12 @@ export function toRequests(action: GameAction, opts: MapOptions = {}): BridgeReq
       const single = id(a.block);
       if (single) list.push(single);
       if (!list.length) throw new ActionError("mine 要給 blocks(方塊 id 陣列)或 block");
+      if (opts.inventory) {
+        for (const block of list) {
+          const problem = harvestProblem(block, opts.inventory);
+          if (problem) throw new ActionError(problem);
+        }
+      }
       const count = num(a.count);
       return [baritone("mine", { blocks: [...new Set(list)], ...(count ? { count: Math.max(0, Math.round(count)) } : {}) })];
     }
@@ -172,6 +200,27 @@ export function toRequests(action: GameAction, opts: MapOptions = {}): BridgeReq
       if (!item || !/^[a-z0-9_:]+$/.test(item)) throw new ActionError("get 要給 item(物品 id)");
       const count = Math.max(1, Math.round(num(a.count) ?? 1));
       return [{ type: "altoclef", params: { command: `get ${item} ${count}` } }];
+    }
+    case "craft": {
+      const item = id(a.item);
+      if (!item || !/^[a-z0-9_:]+$/.test(item)) throw new ActionError("craft 要給 item(物品 id)");
+      const count = Math.min(64, Math.max(1, Math.round(num(a.count) ?? 1)));
+      return [{ type: "craft", params: { item, count } }];
+    }
+    case "smelt": {
+      const params: Record<string, unknown> = {};
+      const item = id(a.item);
+      if (item) params.item = item;
+      const count = num(a.count);
+      if (item && count !== undefined) params.count = Math.min(64, Math.max(1, Math.round(count)));
+      const fuel = id(a.fuel);
+      if (item && fuel) params.fuel = fuel;
+      return [{ type: "smelt", params }];
+    }
+    case "place": {
+      const item = id(a.item);
+      if (!item) throw new ActionError("place 要給 item(方塊 id)");
+      return [{ type: "place", params: { item } }];
     }
     case "chat": {
       const message = text(a.message);
@@ -242,6 +291,12 @@ export function describeAction(action: GameAction): string {
       return `開始蓋 ${a.schematic}`;
     case "get":
       return `用 AltoClef 取得 ${a.item}${a.count ? ` ×${a.count}` : ""}`;
+    case "craft":
+      return `開始合成 ${zh(String(a.item))}${a.count ? ` ×${a.count}` : ""}`;
+    case "smelt":
+      return a.item ? `把 ${zh(String(a.item))} 放進熔爐` : "去熔爐拿東西";
+    case "place":
+      return `放下 ${zh(String(a.item))}`;
     case "chat":
       return `說了:${a.message}`;
     case "stop":
@@ -251,9 +306,42 @@ export function describeAction(action: GameAction): string {
   }
 }
 
+/** `"oak_log/birch_log"` → `"橡木原木、樺木原木"`. */
+const names = (ids: string): string => ids.split("/").map(zh).join("、");
+
+/** `"stick x2, oak_planks+ x3"` (the mod's `missing_items` list) → `"木棒×2、橡木材(或同類)×3"`. */
+function missingList(list: string): string {
+  return [...list.matchAll(/([a-z0-9_:]+)(\+?) x(\d+)/g)]
+    .map(([, item, similar, n]) => (item === "fuel" ? "燃料(煤炭、木炭、木材或原木)" : `${zh(item)}${similar ? "(或同類)" : ""}×${n}`))
+    .join("、");
+}
+
 /** Mod error code → message for the model. */
 export function errorText(code: string, message: string): string {
   switch (code) {
+    case "not_visible": {
+      const what = /^no (\S+) in sight/.exec(message)?.[1];
+      return `附近看不到${what ? names(what) : "那種方塊"}(只能找、挖你親眼看得到的,不會透視)。換個地方 explore,或去地表、洞穴裡找`;
+    }
+    case "too_far": {
+      const m = /nearest (\S+) in sight is (\d+) blocks away at (-?\d+),(-?\d+),(-?\d+)/.exec(message);
+      if (!m) return `太遠了:${message}`;
+      const [, what, dist, x, y, z] = m;
+      return `看得到的${zh(what)}在 ${dist} 格外(${x}, ${y}, ${z}),先 goto {"block":"${what}"} 走過去再做`;
+    }
+    case "missing_items": {
+      const list = /^missing (.*?)(;|$)/.exec(message)?.[1] ?? "";
+      const table = message.includes("crafting_table") ? ",而且要站在工作台旁邊做" : "";
+      return `材料不夠:還缺 ${missingList(list) || list}${table}`;
+    }
+    case "needs_station": {
+      const furnace = message.includes("furnace");
+      return furnace
+        ? "附近沒有看得到的熔爐:先用 8 個鵝卵石 craft furnace,再 place 放下來"
+        : "這個配方要用工作台(3x3),附近沒有看得到的工作台:先 craft crafting_table,再 place 放下來";
+    }
+    case "busy":
+      return "上一個合成 / 熔爐動作還沒做完,等它結束(或 stop)";
     case "not_connected":
       return "沒有連上 Minecraft(遊戲沒開,或 miyoria-bridge 模組沒載入)";
     case "not_in_game":
