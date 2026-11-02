@@ -2,6 +2,7 @@
 // schema and an executor. Every caller (her tools, slash commands, the panel, the game
 // director) goes through `ActuatorRegistry.invoke`, which runs the gate first.
 
+import type { ReplyFile } from "@miyoria/commands";
 import type { ServiceLookup } from "@miyoria/kernel";
 import type {
   AccountRef,
@@ -31,12 +32,37 @@ export interface CapabilityTool {
   /** JSON Schema `properties` of the arguments (the registry adds `why` and `on_own`). */
   properties: JsonObject;
   required?: string[];
+  /**
+   * High risk only: the result matters to her (e.g. program output). The tool waits up to
+   * `[modules.actions] inline_wait_ms` for the review and the run; when that is not enough it
+   * answers "pending" and the outcome comes back later as a follow-up turn (`agent_initiative`,
+   * reason `action_result`). Without it a high-risk tool only says the request is under review.
+   */
+  followup?: boolean;
+}
+
+/** What the owners' approval card shows instead of the raw arguments. */
+export interface ApprovalDetail {
+  /** Plain lines (escaped by the card). */
+  lines: string[];
+  /** Attachments, e.g. the program to approve. */
+  files?: ReplyFile[];
+}
+
+/** What `Capability.denied` gets. */
+export interface DeniedContext {
+  principal: Principal;
+  request: ActionRequest;
+  decision: GateDecision;
+  services: ServiceLookup;
 }
 
 /** What an executor gets besides its arguments. */
 export interface ExecContext {
   principal: Principal;
   request: ActionRequest;
+  /** The gate's decision that allowed this run (who reviewed it: `decision.reviewer`). */
+  decision: GateDecision;
   services: ServiceLookup;
   signal: AbortSignal;
 }
@@ -64,6 +90,11 @@ export interface Capability<A = unknown> {
   readonly tool?: CapabilityTool | null;
   /** Consent the `target` can withdraw. */
   readonly consent?: ConsentKind | null;
+  /**
+   * High risk: what the self-review should know about this capability (what is safe, what to
+   * refuse). Shown to the review next to `summary`.
+   */
+  readonly guidance?: string;
   /** How long a run queued from a turn may wait in its lane (ms). Default 60 000. */
   readonly ttlMs?: number;
   /** Guild the action happens in, for the cross-guild prohibition. */
@@ -74,7 +105,14 @@ export interface Capability<A = unknown> {
   lane?(args: A, principal: Principal): LaneKey | null;
   /** Checks against live state after the schema (e.g. the scene exists); returns why not. */
   check?(args: A, principal: Principal): string | null;
+  /** The owners' approval card shows this instead of the raw JSON arguments. */
+  describe?(args: A): ApprovalDetail;
   execute(args: A, ctx: ExecContext): Promise<ActionResult | string>;
+  /**
+   * Called after the gate refused a request at the `review` or `escalation` stage (e.g. to keep
+   * a proposal for the owners to look at later). Errors are logged, never returned.
+   */
+  denied?(args: A, ctx: DeniedContext): Promise<void>;
 }
 
 export function defineCapability<A>(capability: Capability<A>): Capability<A> {
@@ -118,6 +156,11 @@ export interface GateDecision {
   allowed: boolean;
   stage: GateStage;
   reason: string;
+  /**
+   * Who made the call at the `review` / `escalation` stage: `self` (her own review) or the
+   * owner who answered (`discord:<id>`); `null` at other stages and when no owner answered.
+   */
+  reviewer: string | null;
 }
 
 export type ActionOutcome =

@@ -81,6 +81,13 @@ export class ActionsModule implements Module {
     );
     commands.attach(ctx);
     this.#commands = commands;
+    // Skipped follow-ups (a turn in flight, her cooldown) are tried again.
+    const decisions = ctx.subscribe(["agent.decision"]);
+    ctx.spawn("followups", async () => {
+      for await (const env of decisions) {
+        if (env.event.type === "agent_decision") registry.followups.onDecision(env.event.data);
+      }
+    });
   }
 
   async stop(): Promise<void> {

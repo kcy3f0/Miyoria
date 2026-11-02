@@ -55,6 +55,12 @@ export const ActionsConfigSchema = z.object({
   review_timeout_ms: z.number().int().positive().default(45_000),
   /** How long the owners have to answer an approval card; no answer = denied. */
   escalation_timeout_ms: z.number().int().positive().default(600_000),
+  /**
+   * How long a high-risk tool whose result matters (`followup`, e.g. `code.run`) waits for the
+   * review and the run before answering "pending"; the result then comes back as a follow-up
+   * turn. Keep it below `[modules.agent] tool_timeout_ms` (10 000).
+   */
+  inline_wait_ms: z.number().int().nonnegative().default(8000),
   /** Register the placeholder high-risk capability `test.high` (for trying the review flow). */
   test_capability: z.boolean().default(false),
 });

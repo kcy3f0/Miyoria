@@ -27,7 +27,7 @@ export const NODE_VIEW = "admin.autonomy.view";
 export const NODE_APPROVE = "owner.autonomy.approve";
 export const NODE_PRIVACY = "me.privacy";
 
-function statusReply(registry: ActuatorRegistry): CommandReply {
+async function statusReply(registry: ActuatorRegistry): Promise<CommandReply> {
   const cfg = registry.config;
   const pending = registry.escalations.list();
   const lines = [
@@ -36,6 +36,7 @@ function statusReply(registry: ActuatorRegistry): CommandReply {
   ];
   if (cfg.forbidden.length > 0) lines.push(`禁止：${cfg.forbidden.join("、")}`);
   if (pending.length > 0) lines.push(`等待確認：${pending.map(([, s]) => s).join("、")}`);
+  lines.push(...(await registry.statusLines()));
   return cardReply([{ type: "text", text: lines.join("\n") }], {
     title: "自主行動",
     accent: registry.paused ? "warn" : "success",

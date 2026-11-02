@@ -20,7 +20,7 @@ import {
   type Principal,
   principalActor,
 } from "@miyoria/types";
-import type { Capability, Risk } from "./capability.js";
+import type { ApprovalDetail, Capability, Risk } from "./capability.js";
 
 export type ReviewVerdict = "allow" | "deny" | "uncertain";
 
@@ -38,6 +38,8 @@ export interface ReviewInput {
   requester: Attitude | null;
   capability: string;
   summary: string;
+  /** What the capability's owner says the review should weigh (`Capability.guidance`). */
+  guidance?: string | null;
   risk: Risk;
   args: JsonValue;
   why: string | null;
@@ -79,6 +81,7 @@ export function reviewMessages(input: ReviewInput): ChatMessage[] {
     requester_relationship: attitudeJson(input.requester),
     capability: input.capability,
     summary: input.summary,
+    ...(input.guidance ? { capability_guidance: input.guidance } : {}),
     risk: input.risk,
     args: JSON.parse(escapeData(JSON.stringify(input.args))) as JsonValue,
     why: input.why === null ? null : escapeData(input.why),
@@ -192,7 +195,14 @@ export function approvalCard(
   args: JsonValue,
   why: string | null,
   review: string,
+  /** The capability's own view of the arguments (`Capability.describe`). */
+  detail: ApprovalDetail | null = null,
 ): CommandReply {
+  const shown =
+    detail === null
+      ? [`參數：${cut(escapeData(JSON.stringify(args)), MAX_CARD_ARGS)}`]
+      : detail.lines.map((l) => cut(escapeData(l), MAX_CARD_ARGS));
+  const files = detail?.files ?? [];
   const blocks: CardBlock[] = [
     { type: "text", text: `她想做一件高風險的事，審核結果是「不確定」，需要你決定。` },
     {
@@ -200,10 +210,11 @@ export function approvalCard(
       text: [
         `動作：${capability.summary}（${capability.name}）`,
         `發起：${principalActor(principal)}`,
-        `參數：${escapeData(JSON.stringify(args))}`,
+        ...shown,
         `理由：${why === null ? "—" : escapeData(why)}`,
       ].join("\n"),
     },
+    ...files.map((f): CardBlock => ({ type: "file", name: f.name })),
     { type: "muted", text: `審核意見：${review === "" ? "—" : escapeData(review)}` },
     {
       type: "buttons",
@@ -213,7 +224,19 @@ export function approvalCard(
       ],
     },
   ];
-  return cardReply(blocks, { title: "需要你的確認", accent: "warn" });
+  return cardReply(blocks, {
+    title: "需要你的確認",
+    accent: "warn",
+    ...(files.length > 0 ? { files } : {}),
+  });
+}
+
+/** Longest argument text on the card (Discord allows 4000 characters per message). */
+const MAX_CARD_ARGS = 1500;
+
+function cut(text: string, max: number): string {
+  const chars = [...text];
+  return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : text;
 }
 
 /** The card after an answer (no buttons). */

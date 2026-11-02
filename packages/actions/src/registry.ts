@@ -24,6 +24,7 @@ import {
   ActionSinkKey,
   type ActuatorExecutor,
   AuthorizerKey,
+  accountRefString,
   type Clock,
   customEvent,
   type Event,
@@ -46,12 +47,14 @@ import {
   type ActionOutcome,
   type ActionRequest,
   type ActionResult,
+  type ApprovalDetail,
   type Capability,
   type ExecContext,
   type GateDecision,
   type GateStage,
 } from "./capability.js";
 import { type ActionsConfig, capabilityMatches, defaultActionsConfig } from "./config.js";
+import { Followups, followupHint } from "./followup.js";
 import { PRIVACY_PROFILE, Privacy } from "./privacy.js";
 import { effectiveLimits, RateLimiter, tightened } from "./rate.js";
 import { approvalCard, Escalations, parseReview, reviewMessages } from "./review.js";
@@ -91,15 +94,33 @@ interface Verdict {
   allowed: boolean;
   stage: GateStage;
   reason: string;
+  reviewer: string | null;
 }
 
-const allow = (stage: GateStage, reason: string): Verdict => ({ allowed: true, stage, reason });
-const deny = (stage: GateStage, reason: string): Verdict => ({ allowed: false, stage, reason });
+const allow = (stage: GateStage, reason: string, reviewer: string | null = null): Verdict => ({
+  allowed: true,
+  stage,
+  reason,
+  reviewer,
+});
+const deny = (stage: GateStage, reason: string, reviewer: string | null = null): Verdict => ({
+  allowed: false,
+  stage,
+  reason,
+  reviewer,
+});
+
+/** `GateDecision.reviewer` of her own review. */
+export const SELF_REVIEWER = "self";
+
+/** Extra lines for `/admin autonomy status` (e.g. the sandbox's state). */
+export type StatusProvider = () => string[] | Promise<string[]>;
 
 interface Ticket {
   capability: Capability;
   args: unknown;
   request: ActionRequest;
+  decision: GateDecision;
   resolve: (result: ActionResult) => void;
   reject: (error: unknown) => void;
 }
@@ -147,6 +168,7 @@ export class ActuatorRegistry implements ActuatorExecutor {
   readonly #clock: Clock;
   readonly #capabilities = new Map<string, Capability>();
   readonly #tickets = new Map<string, Ticket>();
+  readonly #status = new Map<string, StatusProvider>();
   #config: ActionsConfig = defaultActionsConfig();
   #paused = false;
   #name = "她";
@@ -154,6 +176,8 @@ export class ActuatorRegistry implements ActuatorExecutor {
   readonly rate = new RateLimiter();
   readonly privacy: Privacy;
   readonly escalations = new Escalations();
+  /** Late outcomes of `followup` tools, delivered as follow-up turns. */
+  readonly followups: Followups;
 
   constructor(options: ActuatorRegistryOptions) {
     this.#services = options.services;
@@ -161,6 +185,10 @@ export class ActuatorRegistry implements ActuatorExecutor {
     this.#publish = options.publish ?? (() => {});
     this.#clock = options.clock ?? systemClock;
     this.privacy = new Privacy(options.services);
+    this.followups = new Followups(
+      (event) => this.#publish(event),
+      () => this.#clock.now(),
+    );
     if (options.builtins ?? true) {
       for (const capability of builtinCapabilities()) this.register(capability);
     }
@@ -230,6 +258,30 @@ export class ActuatorRegistry implements ActuatorExecutor {
   }
 
   /**
+   * Adds lines to `/admin autonomy status` under `name` (replacing an earlier provider of that
+   * name); returns the remove function.
+   */
+  addStatus(name: string, provider: StatusProvider): () => void {
+    this.#status.set(name, provider);
+    return () => {
+      if (this.#status.get(name) === provider) this.#status.delete(name);
+    };
+  }
+
+  /** Every status provider's lines, by provider name; a failing provider shows its error. */
+  async statusLines(): Promise<string[]> {
+    const out: string[] = [];
+    for (const [name, provider] of [...this.#status].sort(([a], [b]) => a.localeCompare(b))) {
+      try {
+        out.push(...(await provider()));
+      } catch (error) {
+        out.push(`${name}:無法取得狀態(${errorMessage(error)})`);
+      }
+    }
+    return out;
+  }
+
+  /**
    * Runs the gate, records its decision and executes the request when allowed. Never throws for
    * a refusal or a failing executor (see the outcome's `status`); rethrows only an abort.
    */
@@ -255,7 +307,12 @@ export class ActuatorRegistry implements ActuatorExecutor {
     }
     const decision = this.#decision(request, capability, verdict);
     await this.#record(decision);
-    if (!decision.allowed || !parsed.success) return { status: "denied", decision };
+    if (!decision.allowed || !parsed.success) {
+      if (parsed.success && (decision.stage === "review" || decision.stage === "escalation")) {
+        await this.#denied(capability, parsed.data, request, decision);
+      }
+      return { status: "denied", decision };
+    }
     this.#count(capability, parsed.data, request);
     const args = parsed.data;
     try {
@@ -265,11 +322,20 @@ export class ActuatorRegistry implements ActuatorExecutor {
           : null;
       const result =
         lane !== null && options.priority !== undefined
-          ? await this.#queue(capability, args, request, lane, options.priority, options.signal)
+          ? await this.#queue(
+              capability,
+              args,
+              request,
+              decision,
+              lane,
+              options.priority,
+              options.signal,
+            )
           : await this.#execute(
               capability,
               args,
               request,
+              decision,
               options.signal ?? new AbortController().signal,
             );
       return { status: "done", decision, result };
@@ -287,15 +353,40 @@ export class ActuatorRegistry implements ActuatorExecutor {
     capability: Capability,
     args: unknown,
     request: ActionRequest,
+    decision: GateDecision,
     signal: AbortSignal,
   ): Promise<ActionResult> {
     const ctx: ExecContext = {
       principal: request.principal,
       request,
+      decision,
       services: this.#services,
       signal,
     };
     return normalize(await capability.execute(args, ctx));
+  }
+
+  /** The capability's `denied` hook (errors are logged). */
+  async #denied(
+    capability: Capability,
+    args: unknown,
+    request: ActionRequest,
+    decision: GateDecision,
+  ): Promise<void> {
+    if (!capability.denied) return;
+    try {
+      await capability.denied(args, {
+        principal: request.principal,
+        request,
+        decision,
+        services: this.#services,
+      });
+    } catch (error) {
+      log.warn(
+        { capability: capability.name, err: errorMessage(error) },
+        "the capability's denied hook failed",
+      );
+    }
   }
 
   /** Submits an `actuate` action and waits for the scheduler to run (or drop) it. */
@@ -303,17 +394,24 @@ export class ActuatorRegistry implements ActuatorExecutor {
     capability: Capability,
     args: unknown,
     request: ActionRequest,
+    decision: GateDecision,
     lane: LaneKey,
     priority: Priority,
     signal: AbortSignal | undefined,
   ): Promise<ActionResult> {
     const sink = this.#services.get(ActionSinkKey);
     if (!sink) {
-      return this.#execute(capability, args, request, signal ?? new AbortController().signal);
+      return this.#execute(
+        capability,
+        args,
+        request,
+        decision,
+        signal ?? new AbortController().signal,
+      );
     }
     const ticket = newId();
     const done = new Promise<ActionResult>((resolve, reject) => {
-      this.#tickets.set(ticket, { capability, args, request, resolve, reject });
+      this.#tickets.set(ticket, { capability, args, request, decision, resolve, reject });
     });
     // Nobody may be waiting any more when it settles (the turn was aborted).
     done.catch(() => undefined);
@@ -337,13 +435,34 @@ export class ActuatorRegistry implements ActuatorExecutor {
     return abortable(done, signal);
   }
 
+  /**
+   * Tells her the late outcome of a `followup` request: a follow-up turn in the context she
+   * asked from (nothing without one, e.g. a mind turn without a chat).
+   */
+  followup(capability: Capability, request: ActionRequest, outcome: ActionOutcome): void {
+    const context = request.principal.context;
+    if (context === null) {
+      log.info(
+        { capability: capability.name, status: outcome.status },
+        "no context for the follow-up of a late result",
+      );
+      return;
+    }
+    const requester = request.principal.requester;
+    this.followups.deliver(
+      context,
+      followupHint(capability, request, outcome),
+      requester === null ? [] : [requester],
+    );
+  }
+
   /** `ActuatorExecutor`: the scheduler runs a queued request. */
   async run(ticket: string, signal: AbortSignal): Promise<string> {
     const t = this.#tickets.get(ticket);
     if (!t) throw new ActionDroppedError(`unknown or settled ticket \`${ticket}\``);
     this.#tickets.delete(ticket);
     try {
-      const result = await this.#execute(t.capability, t.args, t.request, signal);
+      const result = await this.#execute(t.capability, t.args, t.request, t.decision, signal);
       t.resolve(result);
       return result.text;
     } catch (error) {
@@ -373,6 +492,7 @@ export class ActuatorRegistry implements ActuatorExecutor {
       allowed: verdict.allowed,
       stage: verdict.stage,
       reason: verdict.reason,
+      reviewer: verdict.reviewer,
     };
   }
 
@@ -551,6 +671,7 @@ export class ActuatorRegistry implements ActuatorExecutor {
       requester: attitude,
       capability: capability.name,
       summary: capability.summary,
+      guidance: capability.guidance ?? null,
       risk: capability.risk,
       args: request.args,
       why: request.why,
@@ -584,9 +705,22 @@ export class ActuatorRegistry implements ActuatorExecutor {
       signal?.removeEventListener("abort", onAbort);
     }
     const reason = reply.reason === "" ? reply.verdict : reply.reason;
-    if (reply.verdict === "allow") return allow("review", reason);
-    if (reply.verdict === "deny") return deny("review", reason);
+    if (reply.verdict === "allow") return allow("review", reason, SELF_REVIEWER);
+    if (reply.verdict === "deny") return deny("review", reason, SELF_REVIEWER);
     return this.#escalate(capability, request, reason, signal);
+  }
+
+  /** The capability's card view of `args` (already accepted by its schema), if it has one. */
+  #describe(capability: Capability, args: JsonValue): ApprovalDetail | null {
+    if (!capability.describe) return null;
+    const parsed = capability.args.safeParse(args);
+    if (!parsed.success) return null;
+    try {
+      return capability.describe(parsed.data);
+    } catch (error) {
+      log.warn({ err: errorMessage(error) }, "cannot describe the request for the card");
+      return null;
+    }
   }
 
   /** Sends the approval card to every reachable owner and waits for the first answer. */
@@ -610,7 +744,15 @@ export class ActuatorRegistry implements ActuatorExecutor {
       this.#config.escalation_timeout_ms,
       signal,
     );
-    const card = approvalCard(id, capability, request.principal, request.args, request.why, review);
+    const card = approvalCard(
+      id,
+      capability,
+      request.principal,
+      request.args,
+      request.why,
+      review,
+      this.#describe(capability, request.args),
+    );
     let sent = 0;
     for (const owner of owners) {
       try {
@@ -622,9 +764,10 @@ export class ActuatorRegistry implements ActuatorExecutor {
     }
     if (sent === 0) this.escalations.cancel(id, "the approval card could not be sent");
     const result = await answer;
+    const by = result.by === null ? null : accountRefString(result.by);
     return result.approved
-      ? allow("escalation", result.reason)
-      : deny("escalation", `uncertain (${review}); ${result.reason}`);
+      ? allow("escalation", result.reason, by)
+      : deny("escalation", `uncertain (${review}); ${result.reason}`, by);
   }
 }
 
