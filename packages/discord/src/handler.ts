@@ -6,10 +6,15 @@ import { errorMessage, getLogger, type ModuleContext } from "@miyoria/kernel";
 import {
   type AccountRef,
   type ContextKind,
+  customEvent,
+  type JsonValue,
   type PlatformHistories,
   type PlatformSinks,
   PresencePrivacyKey,
   type QuotedMessage,
+  REACTION_TOPIC,
+  type ReactionEvent,
+  toTimestamp,
 } from "@miyoria/types";
 import {
   type ChannelType,
@@ -65,6 +70,12 @@ export interface GuildLike {
   };
   presences: { cache: { values(): Iterable<PresenceLike> } };
   voiceStates: { cache: { values(): Iterable<VoiceStateLike> } };
+}
+
+/** The parts of a discord.js `MessageReaction` the bridge reads. */
+export interface ReactionLike {
+  emoji: { name: string | null; id: string | null };
+  message: { id: string; channelId: string; guildId: string | null };
 }
 
 /** State shared by the gateway handler and the module. */
@@ -137,6 +148,12 @@ export class GatewayBridge {
         });
       }),
     );
+    client.on(Events.MessageReactionAdd, (reaction, user) =>
+      this.guard("reaction", () => this.onReaction(client, reaction, user, true)),
+    );
+    client.on(Events.MessageReactionRemove, (reaction, user) =>
+      this.guard("reaction", () => this.onReaction(client, reaction, user, false)),
+    );
     client.on(Events.ThreadCreate, (thread) => {
       this.shared.rememberKind(thread.id, kindOf(thread.type));
     });
@@ -190,6 +207,32 @@ export class GatewayBridge {
     const update = presenceUpdate(presence, initial);
     if (update === null || !this.presenceAllowed(update.account)) return;
     this.ctx.publish(presenceEvent(update));
+  }
+
+  /** A reaction added or removed (`platform.reaction`; feedback on her messages). */
+  async onReaction(
+    client: Client,
+    reaction: ReactionLike,
+    user: { id: string; bot?: boolean | null; username?: string | null },
+    added: boolean,
+  ): Promise<void> {
+    if (this.shared.selfIds.has(user.id) || user.bot) return;
+    const message = reaction.message;
+    const emoji = reaction.emoji.name ?? reaction.emoji.id ?? "";
+    if (emoji === "") return;
+    const kind = await this.channelKind(client, message.guildId ?? null, message.channelId);
+    const event: ReactionEvent = {
+      message: {
+        context: contextKey(message.guildId ?? null, message.channelId, kind),
+        id: message.id,
+      },
+      account: account(user.id),
+      display_name: user.username ?? null,
+      emoji,
+      added,
+      at: toTimestamp(Date.now()),
+    };
+    this.ctx.publish(customEvent(REACTION_TOPIC, event as unknown as JsonValue));
   }
 
   onVoiceState(state: VoiceStateLike, initial: boolean): void {

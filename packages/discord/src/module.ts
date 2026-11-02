@@ -56,7 +56,10 @@ export function intents(options: { presence?: boolean } = {}): number {
     GatewayIntentBits.MessageContent |
     GatewayIntentBits.GuildMessageTyping |
     GatewayIntentBits.DirectMessageTyping |
-    GatewayIntentBits.GuildVoiceStates;
+    GatewayIntentBits.GuildVoiceStates |
+    // Reactions to her messages are feedback she learns from (not privileged).
+    GatewayIntentBits.GuildMessageReactions |
+    GatewayIntentBits.DirectMessageReactions;
   return options.presence
     ? base | GatewayIntentBits.GuildPresences | GatewayIntentBits.GuildMembers
     : base;
@@ -69,7 +72,14 @@ export function intents(options: { presence?: boolean } = {}): number {
 export function createClient(options: { presence?: boolean } = {}): Client {
   return new Client({
     intents: intents(options),
-    partials: [Partials.Channel, Partials.User, Partials.GuildMember],
+    // Message and reaction partials: reactions on messages that are not cached any more.
+    partials: [
+      Partials.Channel,
+      Partials.User,
+      Partials.GuildMember,
+      Partials.Message,
+      Partials.Reaction,
+    ],
     makeCache: Options.cacheWithLimits({
       ...Options.DefaultMakeCacheSettings,
       MessageManager: 100,

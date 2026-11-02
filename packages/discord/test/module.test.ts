@@ -24,6 +24,8 @@ describe("DiscordBotModule", () => {
       GatewayIntentBits.GuildMessageTyping,
       GatewayIntentBits.DirectMessageTyping,
       GatewayIntentBits.GuildVoiceStates,
+      GatewayIntentBits.GuildMessageReactions,
+      GatewayIntentBits.DirectMessageReactions,
     ]) {
       expect(bits & intent, String(intent)).toBe(intent);
     }
