@@ -247,7 +247,8 @@ Stage 要直接碰 VTube Studio / OBS / 遊戲,所以原生在直播機執行,�
 ### 官方 bot 帳號(文字 + 指令)
 
 1. 到 <https://discord.com/developers/applications> 建立 Application,在 **Bot** 頁籤新增 bot,複製 token 放進 `.env` 的 `DISCORD_BOT_TOKEN`。
-2. **Bot → Privileged Gateway Intents** 打開 **Message Content Intent**。沒開的話 gateway 會拒絕連線,模組會一直失敗。
+2. **Bot → Privileged Gateway Intents** 打開 **Message Content Intent**、**Presence Intent** 與 **Server Members Intent**(後兩個讓她知道誰在線、在玩什麼、誰在哪個語音頻道,見 `world` 模組)。沒開的話 gateway 會拒絕連線(close code 4014),模組會一直失敗,日誌會寫哪裡要開;不想開 Presence / Server Members 就在 `[modules."platform.discord.bot"]` 設 `presence_intents = false`(她仍看得到語音狀態,但不知道誰在線、在做什麼)。Bot 在 100 個伺服器以上時這兩個 intent 要經過 Discord 審核。
+   - presence 只在各自的伺服器裡用(`[modules.world] guilds` 可以限定只看哪些伺服器),不會出現在私訊或其他伺服器的對話;每個人都能用 `/me privacy presence:off` 讓她完全不讀自己的狀態(紀錄存在 `privacy:<platform>:<id>`)。
 3. **OAuth2 → URL Generator** 勾 scope `bot` 與 `applications.commands`,權限:View Channels、Send Messages、Send Messages in Threads、Read Message History、Add Reactions。用產生的網址邀請進伺服器。
 4. 在 Discord 打開開發者模式(設定 → 進階),對自己按右鍵「複製使用者 ID」,填到 `MIYORIA_OWNER_ID`(擁有者權限)。
 5. 想讓 slash command 立刻生效,把伺服器 id 填進 `miyoria.toml` 的 `[modules."platform.discord.bot"] command_guilds`;留空是全域註冊,最多要等一小時。

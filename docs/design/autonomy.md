@@ -1,6 +1,6 @@
 # 自主層設計(草案)
 
-> 狀態:**已確認方向**(2026-11-02),第 12 節的決定已定案;從階段 A 開始實作。這份文件描述把 DeepSeek-chan 從「被叫才醒來的聊天機器人」改成「有自己內心、自己決定做事的角色」的架構改動。終極目標是 Neuro-sama 等級的自主 AI VTuber。現有架構見 [ARCHITECTURE.md](../ARCHITECTURE.md)。
+> 狀態:**已確認方向**(2026-11-02),第 12 節的決定已定案;從階段 A 開始實作。**階段 B(感知與自我)已完成**,實作與偏差見第 13 節。這份文件描述把 DeepSeek-chan 從「被叫才醒來的聊天機器人」改成「有自己內心、自己決定做事的角色」的架構改動。終極目標是 Neuro-sama 等級的自主 AI VTuber。現有架構見 [ARCHITECTURE.md](../ARCHITECTURE.md)。
 
 ## 0. 原則
 
@@ -234,7 +234,7 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 | 階段 | 內容 | 完成後能做到 |
 |---|---|---|
 | **A. 閘門與行動工具** | ActuatorRegistry、Gate、principal;防 injection 第一步(不可信內容移出 system、輸出過濾、記憶來源);包裝 voice / stream / scene / game 成工具,反應回合可用;指令與面板改走閘門 | 「姐姐可以來語音嗎」「開台吧」她會自己判斷要不要做 |
-| **B. 感知與自我** | WorldState(presence、voice states)、SelfState(慾望、方針、議程、感情描述)、面板「內心」頁雛形 | 她知道誰在線、在做什麼;有自己的狀態 |
+| **B. 感知與自我**(已完成) | WorldState(presence、voice states)、SelfState(慾望、方針、議程、感情描述)、面板「內心」頁雛形 | 她知道誰在線、在做什麼;有自己的狀態 |
 | **C. 心智迴圈** | Mind 模組、內心獨白、意圖、自己發起的回合;talkativeness 取代 attention 數字;initiative 併入 | 會自己找人聊天、偷偷進語音、自己調活躍度、冷場時開話題 |
 | **D. OBS 智慧場景 + Minecraft** | 場景分類與自動轉場;Minecraft 端到端(adapter 準備與模組建置已完成,見 `extensions/minecraft/SETUP.md`);**遊戲內聊天變成獨立對話情境**(有自己的歷史,玩家名稱可用 `/me link` 綁 Discord 帳號以共用好感與記憶,回覆管道由她選:遊戲內打字、直播語音 + 字幕或兩者) | 「去玩 Minecraft」→ 她自己開遊戲、切場景、開台 |
 | **E. 聊天上下文與圖片** | 冷啟動補抓歷史、回覆鏈、看圖(deepseek-v4.1-flash 已支援視覺,直接把圖片當多模態內容送給聊天模型;先實測 OpenCode 端是否接受圖片)、語音頻道文字區改用語音回 | 對話更連貫、看得懂圖片 |
@@ -250,3 +250,18 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 4. **沙箱**:Docker(評估見 8.3)。
 5. **看圖**:deepseek-v4.1-flash 已支援視覺,直接用聊天模型看圖,不另接模型。
 6. **thinking**:不急的判斷開(心智迴圈、審核、記憶整理);即時回應關(語音回覆等)。
+
+## 13. 階段 B 實作紀錄(2026-11-02)
+
+已完成:`@miyoria/world`(模組 `world`,`WorldStateKey` + `PresencePrivacyKey`)、`@miyoria/self`(模組 `self`,`SelfStateKey`)、Bot 的 presence / members / voice states、`/me privacy`、prompt 段落 `world` 與 `self`、`GET /api/self`、`GET /api/world`、面板「內心」頁(狀態 · 感情 · 世界;之後的內心獨白時間軸可以再加一個分頁)。服務介面在 `@miyoria/types` 的 `world.ts`、`self.ts`、`privacy.ts`,階段 A 的工具與階段 C 的心智迴圈直接用。
+
+與設計的差異 / 補充:
+
+- **Presence 事件用 custom 事件**(`platform.presence`、`platform.voice_state`、`platform.member`),沒有加進 `Event` union,避免和階段 A 同時改 `event.ts`;payload 由 `world` 用 zod 驗證。
+- **隱私在源頭擋**:不同意的人的 presence 在 bot 發布前就丟掉,`world` 也會清掉已知的資料;沒有 `world` 模組時 bot 一律不發布 presence(fail closed)。隱私紀錄是每個帳號一筆 `privacy:<platform>:<id>`(`_global`),欄位合併寫入,階段 A 的「不要主動找我 / 不要私訊我」可以加在同一筆(`mergePrivacy`)。語音狀態(誰在哪個語音頻道)不算 presence,伺服器裡的人本來就看得到,不受 opt-out 影響。
+- **伺服器隔離**:`world` 的 prompt 只放對話所在伺服器的人、語音頻道與頻道;私訊不放 world 段落。`[modules.world] guilds` 可限定只看哪些伺服器。
+- **`presence_intents`**(預設 `true`):沒在 Developer Portal 開 Presence / Server Members intent 的部署可以設 `false`,只保留語音狀態。
+- **SelfState 的範圍(ContextScope)**是字串:`contextKeyString(context)` / `<platform>:<guild>` / `voice` / `text` / `*`,`talkativeness(context)` 取最細的未過期設定。`until` 上限 `max_talkativeness_hours`(預設 24)。
+- **感情描述**存成 `self:feeling:<person>`(跟 relationship 分開的兄弟紀錄);`/admin memory wipe` 的「記憶與關係」以上會一起刪 `self:state` 與 `self:feeling:*`,並重啟 `self`。
+- **慾望的滿足**:回合結束(social、attention、boredom)、被直接叫到(attention)、周遭有人講話(boredom)、`world.salient`(boredom、curiosity)、在玩遊戲(play、boredom,每小時)、直播中(attention 下降、rest 上升);遊戲與擴充可發 `self.nudge`(每個慾望一次最多 ±0.5)。
+- 「某人通常幾點上線」(從記憶推)還沒做,留給階段 C / G。

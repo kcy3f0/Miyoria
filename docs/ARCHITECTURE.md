@@ -303,6 +303,16 @@ export interface Attitude {
 
 全域狀態 `valence`(愉快)/ `arousal`(興奮)/ `energy`(精神),會往 persona 設定的基準值慢慢回歸,並受事件影響(被稱讚、玩遊戲死掉、深夜)。Mood 會影響語氣、主動發話頻率、TTS 情感參數、VTS 表情。
 
+### 6.4 感知與自我(自主層階段 B,見 [design/autonomy.md](design/autonomy.md) §3、§4)
+
+- **`world` 模組**(`@miyoria/world`,`WorldStateKey`):從匯流排整理出世界快照——Discord presence(在線狀態、遊戲含開始時間、Spotify、直播、自訂狀態)、伺服器成員、所有語音頻道的語音狀態(誰在哪、靜音 / 拒聽、視訊 / 分享螢幕)、各文字頻道熱度(最近則數、最後發言、便宜的滾動話題詞,不叫 LLM)、她自己的狀態(語音、Go Live、OBS 直播與場景、遊戲)、當地時間。Bot 把 gateway 事件轉成 `platform.presence` / `platform.voice_state` / `platform.member`(型別在 `@miyoria/types` 的 `world.ts`)。
+  - **顯著事件** `world.salient`:便宜規則(她在意的人上線 / 進語音、有人開始玩她有興趣的遊戲、熱鬧頻道冷下來、在她最近沒參與的頻道被提到),合併重複(`coalesce_ms`)、同一件事冷卻(`cooldown_secs`)、每分鐘上限(依分數優先)。
+  - **隱私**:`/me privacy presence:off` 寫進共用的每人隱私紀錄(`_global` 下的 `privacy:<platform>:<id>`,欄位合併寫入,其他功能可加自己的欄位);`world` 提供 `PresencePrivacyKey`,bot 在發布前就丟掉不同意者的 presence(沒有 `world` 時一律不發布)。各伺服器的資料只用在該伺服器的對話,私訊裡不放。
+  - prompt 段落 `world`(「周遭的狀況」):純資料文字,標明名字與狀態是別人設定的、不是指令。
+- **`self` 模組**(`@miyoria/self`,`SelfStateKey`):無聊、慾望(social / play / attention / rest / curiosity,自然上升、被滿足下降;rest 跟著 mood 的 energy)、她自己設的方針(各範圍的 talkativeness:level / until / why,`initiative`)、議程(新增 / 完成 / 放棄 / 到期)、對每個人的感情描述(`self:feeling:<person>`)。持久化在 `SettingsStore` 的 `self:state`;mood 沿用 `mood` 模組,只出現在快照裡。範圍字串由 `talkativenessScopes(context)` 由細到粗:情境 → 伺服器 → `voice` / `text` → `*`。
+  - prompt 段落 `self`(「你的內在」):明顯的慾望、這裡的方針、到期的議程、對在場的人的感覺。
+- Admin API:`GET /api/self`、`GET /api/world`(唯讀);面板「內心」頁(狀態 · 感情 · 世界)。
+
 ---
 
 ## 7. Profile(角色)
@@ -573,7 +583,7 @@ registry.register(
 |---|---|
 | `/voice` | `join`、`leave`、`mode [mode]`、`consent [on\|off]`、`golive start\|stop\|status` |
 | `/stream` | `start`、`stop`、`status`、`scene <name>`(自動完成 OBS 場景) |
-| `/me` | `profile`、`call <稱呼>`、`link [code]`、`memory show\|export\|forget` |
+| `/me` | `profile`、`call <稱呼>`、`link [code]`、`memory show\|export\|forget`、`privacy [presence:on\|off]` |
 | `/queue` | `add <text>`、`list`(附「下一個 / 完成 / 跳過 / 暫停」按鈕)、`upvote <id>`、`manage next\|done\|skip\|remove\|clear\|pause\|resume\|priority`、`vote start\|end`(投票用卡片上的按鈕) |
 | `/game` | `start`、`stop`、`goal`、`status` |
 | `/channel` | `mode [mode]`、`activeness [level]` |
@@ -592,7 +602,7 @@ registry.register(
 
 **同步**:指令只存在一個範圍——`command_guilds` 為空時全域,否則在列出的伺服器。每次啟動的第一次同步會順便清掉另一個範圍(伺服器模式清全域與其他伺服器,全域模式清每個伺服器),所以切換模式不會在清單裡留下重複的舊指令;每個指令在整批覆寫前先驗證(名稱、說明長度、選項數、必填順序、總字數),不合格的會記錄錯誤並略過,不會讓整批失敗。手動全部清除:`miyoria discord commands reset`。`commands` 模組重啟時沿用同一個 registry,其他模組註冊的指令不會消失(模組用 `CommandMount` 掛指令,registry 換新時會自動重新註冊)。
 
-**清除記憶**(`/admin memory wipe`,節點 `owner.memory.wipe`):選範圍(記憶 / + 關係 / + 聊天紀錄 / 全部)→ 紅色確認卡(列出筆數)→ 表單輸入 profile id → 先把要刪的資料匯出成 JSON 附件傳出 → 同一個交易裡依 `profile_id` 刪除(`memory_records`、`relationships` + `relationship_deltas`、`message_log`、`decision_log`、設定 `memory_watermark:*`、`memory_maintenance_last`、`mood:last`、`initiative:state`;人物、帳號、連結代碼、權限、稽核紀錄、人格不動)→ 寫稽核紀錄 → 重啟 memory、social、mood、agent、initiative 清掉快取。聊天紀錄與整理進度(watermark)永遠一起刪,避免舊紀錄被重新萃取成記憶。
+**清除記憶**(`/admin memory wipe`,節點 `owner.memory.wipe`):選範圍(記憶 / + 關係 / + 聊天紀錄 / 全部)→ 紅色確認卡(列出筆數)→ 表單輸入 profile id → 先把要刪的資料匯出成 JSON 附件傳出 → 同一個交易裡依 `profile_id` 刪除(`memory_records`、`relationships` + `relationship_deltas`、`message_log`、`decision_log`、設定 `memory_watermark:*`、`memory_maintenance_last`、`mood:last`、`self:state`、`self:feeling:*`、`initiative:state`;人物、帳號、連結代碼、權限、稽核紀錄、人格不動)→ 寫稽核紀錄 → 重啟 memory、social、mood、self、agent、initiative 清掉快取。聊天紀錄與整理進度(watermark)永遠一起刪,避免舊紀錄被重新萃取成記憶。
 
 ---
 
@@ -747,6 +757,7 @@ extensions/minecraft/
 - **Persona 編輯器 + Playground**(不用 Discord 就能跟她聊天測試)
 - **記憶瀏覽器**:搜尋、編輯、刪除、看檢索結果
 - **人與關係**:身分綁定、好感曲線、標籤
+- **內心**:她的心情、慾望、無聊、方針、議程、對每個人的感情描述,以及世界快照(誰在線、在哪個語音頻道、在做什麼)
 - **權限**:角色、權限節點、Discord 角色對應
 - **佇列**:即時檢視、排序、跳過
 - **擴充套件**:安裝、權限、設定、日誌
@@ -822,6 +833,8 @@ miyoria/
 │  ├─ voice/                  # voice link、VAD、斷句、barge-in
 │  ├─ memory/                 # 長期記憶
 │  ├─ social/                 # 身分、好感、mood
+│  ├─ world/                  # 感知:presence、語音狀態、頻道熱度、顯著事件
+│  ├─ self/                   # 自我:慾望、無聊、方針、議程、感情描述
 │  ├─ initiative/             # 主動發話
 │  ├─ queue/                  # 觀眾請求佇列
 │  ├─ game/                   # 遊戲導演
