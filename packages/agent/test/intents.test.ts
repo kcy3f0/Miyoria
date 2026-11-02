@@ -310,7 +310,7 @@ describe("talkativeness", () => {
   it("decides whether she joins in in text", async () => {
     const chat = new MockProvider("chat").reply("我也覺得");
     const config = { attention: { llm_check: false, cooldown_ms: 0 } };
-    const r = await rig("ambient", config, chat);
+    const r = await rig("lively", config, chat);
     const self = new FakeSelf();
     r.h.sup.services.provide("self", SelfStateKey, self.asSelf());
     const c = channel("c");
@@ -360,5 +360,60 @@ describe("talkativeness", () => {
     const decisions = r.h.traces();
     expect(decisions.at(-1)?.respond, decisions.at(-1)?.reasons.join("; ")).toBe(true);
     expect(r.h.sink.speeches().map(([t]) => t)).toContain("我們可以去吃拉麵");
+  });
+});
+
+describe("channel levels", () => {
+  const initiative = (context: ContextKey, reason: string): Event => ({
+    type: "agent_initiative",
+    data: { context, reason, hint: "", about: [] },
+  });
+
+  it("quiet bounds her own starts there: intents and initiative, not game commentary", async () => {
+    const chat = new MockProvider("chat").reply("欸大家").reply("這關好難").reply("我又來了");
+    const config = { attention: { llm_check: false, cooldown_ms: 0 } };
+    const r = await rig("quiet", config, chat);
+    const c = channel("c");
+    expect(r.intents.ceiling?.(c)).toEqual({ mode: "quiet", label: "安靜", blocked: null });
+    expect(r.intents.ceiling?.(VOICE)).toBeNull();
+
+    expect((await r.intents.submit(intent("chat.start", c))).status).toBe("started");
+    await wait(100);
+    expect(r.h.sink.texts()).toEqual(["欸大家"]);
+    // She is told the channel's level (system: the owner's setting).
+    const system = chat
+      .requests()[0]
+      ?.messages.filter((m) => m.role === "system")
+      .map((m) => m.content)
+      .join("\n");
+    expect(system).toContain("這個頻道的聊天等級是「安靜」");
+
+    // Past `chat.start`'s own cooldown, but within the level's gap.
+    await wait(2 * 60_000);
+    expect(r.intents.ceiling?.(c)?.blocked).toMatch(/^level quiet: .*next in \d+ min$/);
+    const again = await r.intents.submit(intent("chat.start", c));
+    expect(again.status).toBe("failed");
+    expect(again.detail).toContain("level quiet");
+    r.h.drain();
+    r.h.publish(initiative(c, "idle_channel"));
+    await wait(100);
+    expect(r.h.traces().at(-1)?.reasons[1]).toMatch(/^skipped: level quiet/);
+    // Live game commentary is not her starting a conversation.
+    r.h.publish(initiative(c, "game"));
+    await wait(100);
+    expect(r.h.sink.texts()).toEqual(["欸大家", "這關好難"]);
+
+    // A normal channel has no gap of its own.
+    await r.h.handle().setChannelMode(channel("n"), "normal");
+    expect(r.intents.ceiling?.(channel("n"))).toEqual({
+      mode: "normal",
+      label: "一般",
+      blocked: null,
+    });
+
+    await wait(3 * 60 * 60_000);
+    expect((await r.intents.submit(intent("chat.start", c))).status).toBe("started");
+    await wait(100);
+    expect(r.h.sink.texts().at(-1)).toBe("我又來了");
   });
 });

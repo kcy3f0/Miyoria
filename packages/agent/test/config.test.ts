@@ -15,21 +15,21 @@ const ctx: ContextKey = { platform: "discord", scope: "g1", channel: "c1", kind:
 describe("config", () => {
   it("mode_resolution_order", () => {
     const cfg = defaultAgentConfig();
-    expect(modeFor(cfg, ctx, "ambient")).toBe("ambient");
+    expect(modeFor(cfg, ctx, "normal")).toBe("normal");
     cfg.default_mode = "mention-only";
-    expect(modeFor(cfg, ctx, "ambient")).toBe("mention-only");
+    expect(modeFor(cfg, ctx, "normal")).toBe("mention-only");
     cfg.channels.c1 = "always";
-    expect(modeFor(cfg, ctx, "ambient")).toBe("always");
+    expect(modeFor(cfg, ctx, "normal")).toBe("always");
     cfg.channels["discord:g1"] = "off";
-    expect(modeFor(cfg, ctx, "ambient")).toBe("off");
-    cfg.channels["discord:g1:c1"] = "ambient";
-    expect(modeFor(cfg, ctx, "off")).toBe("ambient");
+    expect(modeFor(cfg, ctx, "normal")).toBe("off");
+    cfg.channels["discord:g1:c1"] = "normal";
+    expect(modeFor(cfg, ctx, "off")).toBe("normal");
   });
 
   it("voice_contexts_have_their_own_default_mode", () => {
     const voice: ContextKey = { platform: "discord", scope: "g1", channel: "v1", kind: "voice" };
     const cfg = AgentConfigSchema.parse({ default_mode: "always" });
-    expect(modeFor(cfg, voice, "off")).toBe("ambient");
+    expect(modeFor(cfg, voice, "off")).toBe("normal");
     cfg.voice.default_mode = "mention-only";
     expect(modeFor(cfg, voice, "off")).toBe("mention-only");
     cfg.channels.v1 = "off";
@@ -126,7 +126,7 @@ describe("config", () => {
       voice: {
         debounce_ms: 700,
         max_debounce_ms: 2500,
-        default_mode: "ambient",
+        default_mode: "normal",
         ambient_factor: 0.5,
         cooldown_ms: 20_000,
         min_cooldown_ms: 5000,

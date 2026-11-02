@@ -106,23 +106,23 @@ describe("attention", () => {
     const a = run(cfg, "mention-only", s, named);
     expect(a.direct).toBe(true);
     expect(a.gate).toEqual({ kind: "sample", probability: 1 });
-    expect(run(cfg, "ambient", s, named).gate).toEqual({ kind: "sample", probability: 1 });
+    expect(run(cfg, "normal", s, named).gate).toEqual({ kind: "sample", probability: 1 });
   });
 
   it("ambient_scoring_and_gray_zone", () => {
     let cfg = config({ keywords: ["鯨魚"] });
     const busy = busyChatter();
     const s = sessionWith(busy);
-    let a = run(cfg, "ambient", s, busy.slice(5));
+    let a = run(cfg, "normal", s, busy.slice(5));
     expect(a.gate, a.reasons.join("; ")).toEqual({ kind: "ignore" });
 
     const q = [msg("channel", "p1", "你們看過鯨魚嗎?")];
     const s2 = sessionWith(busy);
     s2.recordMessage(q[0] as IncomingMessage, false);
-    a = run(cfg, "ambient", s2, q);
+    a = run(cfg, "normal", s2, q);
     expect(a.gate, a.reasons.join("; ")).toEqual({ kind: "ask_llm" });
     cfg = { ...cfg, llm_check: false };
-    expect(run(cfg, "ambient", s2, q).gate.kind).toBe("sample");
+    expect(run(cfg, "normal", s2, q).gate.kind).toBe("sample");
   });
 
   it("follow_up_cooldown_and_share", () => {
@@ -131,17 +131,17 @@ describe("attention", () => {
     s.recordOwn("Her", me, "早啊", newId(), Date.now());
     const reply = [msg("channel", "a", "妳今天幹嘛")];
     s.recordMessage(reply[0] as IncomingMessage, false);
-    let a = run(cfg, "ambient", s, reply);
+    let a = run(cfg, "normal", s, reply);
     expect(a.reasons.some((r) => r.startsWith("follow-up"))).toBe(true);
     expect(sample(a)).toBeGreaterThanOrEqual(0.6);
 
     const strict = { ...cfg, cooldown_ms: 60_000 };
-    a = run(strict, "ambient", s, reply);
+    a = run(strict, "normal", s, reply);
     expect(a.gate).toEqual({ kind: "ignore" });
     expect(a.reasons.some((r) => r.startsWith("cooldown"))).toBe(true);
 
     for (let i = 0; i < 10; i++) s.recordOwn("Her", me, "spam", newId(), Date.now());
-    a = run(cfg, "ambient", s, reply);
+    a = run(cfg, "normal", s, reply);
     expect(a.gate).toEqual({ kind: "ignore" });
     expect(a.reasons.some((r) => r.startsWith("anti-spam"))).toBe(true);
   });
@@ -152,8 +152,8 @@ describe("attention", () => {
     const q = [msg("channel", "p1", "昨天去看了深海紀錄片")];
     const s = sessionWith(busy);
     s.recordMessage(q[0] as IncomingMessage, false);
-    const plain = run(cfg, "ambient", s, q);
-    const a = runWith(cfg, "ambient", "medium", ["Minecraft", "深海"], s, q);
+    const plain = run(cfg, "normal", s, q);
+    const a = runWith(cfg, "normal", "medium", ["Minecraft", "深海"], s, q);
     expect(a.score, a.reasons.join("; ")).toBeGreaterThan(plain.score + 0.15);
     expect(a.reasons.some((r) => r.includes("topic `深海`"))).toBe(true);
   });
@@ -171,24 +171,24 @@ describe("attention", () => {
     const cfg = config({ llm_check: false, cooldown_ms: 10_000 });
     const q = [msg("channel", "a", "你們看過鯨魚嗎?")];
     let s = sessionWith(q);
-    const medium = sample(run(cfg, "ambient", s, q));
-    const low = sample(runWith(cfg, "ambient", "low", [], s, q));
-    const high = sample(runWith(cfg, "ambient", "high", [], s, q));
+    const medium = sample(run(cfg, "normal", s, q));
+    const low = sample(runWith(cfg, "normal", "low", [], s, q));
+    const high = sample(runWith(cfg, "normal", "high", [], s, q));
     expect(Math.abs(low - medium * 0.5)).toBeLessThan(1e-6);
     expect(Math.abs(high - Math.min(medium * 1.6, 1))).toBeLessThan(1e-6);
 
     // Direct turns are not scaled.
     const named = [msg("channel", "a", "小鯨魚早安")];
-    let a = runWith(cfg, "ambient", "low", [], s, named);
+    let a = runWith(cfg, "normal", "low", [], s, named);
     expect(a.gate).toEqual({ kind: "sample", probability: 1 });
 
     // She spoke 7s ago: inside the normal cooldown, outside the high one.
     s = sessionWith(q);
     s.recordOwn("Her", me, "嗯", newId(), Date.now() - 7000);
     s.recordMessage(q[0] as IncomingMessage, false);
-    a = run(cfg, "ambient", s, q);
+    a = run(cfg, "normal", s, q);
     expect(a.reasons.some((r) => r.startsWith("cooldown"))).toBe(true);
-    a = runWith(cfg, "ambient", "high", [], s, q);
+    a = runWith(cfg, "normal", "high", [], s, q);
     expect(a.reasons.some((r) => r.startsWith("cooldown"))).toBe(false);
     expect(a.gate.kind).toBe("sample");
   });
@@ -203,7 +203,7 @@ describe("attention", () => {
   ): Assessment {
     return assess({
       config: cfg,
-      mode: "ambient",
+      mode: "normal",
       activeness: "medium",
       names: NAMES,
       interests: [],
@@ -227,7 +227,7 @@ describe("attention", () => {
     const cfg = config({ llm_check: false, cooldown_ms: 0 });
     const q = [msg("voice", "a", "你們看過鯨魚嗎?")];
     let s = sessionWith(q);
-    const text = sample(run(cfg, "ambient", s, q));
+    const text = sample(run(cfg, "normal", s, q));
     const voice = sample(voiceRun(cfg, s, q, false));
     expect(Math.abs(voice - text * 0.5)).toBeLessThan(1e-6);
     // With interrupt_scale 0 she never joins in while someone speaks...
@@ -259,7 +259,7 @@ describe("attention", () => {
     a = voiceRun(cfg, s, follow, false);
     expect(a.direct, a.reasons.join("; ")).toBe(true);
     // In text, the same question is not direct.
-    expect(run(cfg, "ambient", s, follow).direct).toBe(false);
+    expect(run(cfg, "normal", s, follow).direct).toBe(false);
     const late = { ...(follow[0] as IncomingMessage), ts: toTimestamp(Date.now() + 30_000) };
     expect(voiceRun(cfg, s, [late], false).direct).toBe(false);
 
@@ -276,9 +276,7 @@ describe("attention", () => {
     ).toBe(false);
     expect(a.reasons).toContain("follow-up to her +0.35");
     const inText = [msg("channel", "a", "我也是耶")];
-    expect(run(slow, "ambient", s, inText).reasons.some((r) => r.startsWith("cooldown"))).toBe(
-      true,
-    );
+    expect(run(slow, "normal", s, inText).reasons.some((r) => r.startsWith("cooldown"))).toBe(true);
   });
 
   it("affinity_and_energy_scale_ambient_turns", () => {
@@ -294,7 +292,7 @@ describe("attention", () => {
     ) =>
       assess({
         config: cfg,
-        mode: "ambient",
+        mode: "normal",
         activeness: "medium",
         names,
         interests: [],

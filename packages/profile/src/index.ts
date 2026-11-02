@@ -36,8 +36,8 @@ export const MoodBaselineSchema = z.object({
 });
 
 export const BehaviorConfigSchema = z.object({
-  /** `off` | `mention-only` | `ambient` | `always` */
-  default_channel_mode: z.string().default("mention-only"),
+  /** `off` | `mention-only` | `quiet` | `normal` | `lively` | `always` (old: `ambient` = `normal`) */
+  default_channel_mode: z.string().default("quiet"),
   /** `low` | `medium` | `high` */
   initiative: z.string().default("medium"),
   /** Max share of recent messages that may be hers (anti-spam). */

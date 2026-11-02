@@ -157,6 +157,11 @@ export class AgentHandle {
     return this.#overrides.modes.get(contextKeyString(context)) ?? null;
   }
 
+  /** Every runtime mode override, keyed by `contextKeyString`. */
+  channelModeOverrides(): [string, ChannelMode][] {
+    return [...this.#overrides.modes.entries()];
+  }
+
   /** Mode from config and profile only (what `reset` goes back to). */
   configuredChannelMode(context: ContextKey): ChannelMode {
     const raw = this.#persona.read((p) => p.manifest.behavior.default_channel_mode);

@@ -27,6 +27,7 @@ import {
   type TurnId,
 } from "@miyoria/types";
 import { maxDebounceMs, voiceMaxDebounceMs } from "./config.js";
+import { UNCAPPED_INITIATIVES } from "./levels.js";
 import type { Agent, Inbox, Initiative, Input, IntentTurn } from "./runtime.js";
 import type { Session } from "./session.js";
 import { runTurn } from "./turn.js";
@@ -235,6 +236,13 @@ export class Coordinator {
       this.#agent.intentSkipped(this.#key, input, "expired");
       return null;
     }
+    // The channel's level (checked again: another start may have come first).
+    const blocked = this.#agent.startBlocked(this.#key);
+    if (blocked !== null) {
+      this.#agent.intentSkipped(this.#key, input, blocked);
+      return null;
+    }
+    this.#agent.noteStart(this.#key);
     return this.#start([], null, signal, input);
   }
 
@@ -310,8 +318,9 @@ export class Coordinator {
     }
     // Live game commentary is rate-limited by the game director itself.
     const last = initiative.reason === "game" ? null : this.#session.lastSelfAt();
+    const capped = !UNCAPPED_INITIATIVES.includes(initiative.reason);
     if (last !== null) {
-      const cooldown = this.#agent.ambientCooldownMs(this.#key);
+      const cooldown = this.#agent.ambientCooldownMs(this.#key, capped);
       const since = this.#now - last;
       if (since < cooldown) {
         this.#agent.initiativeSkipped(
@@ -321,6 +330,14 @@ export class Coordinator {
         );
         return null;
       }
+    }
+    if (capped) {
+      const blocked = this.#agent.startBlocked(this.#key);
+      if (blocked !== null) {
+        this.#agent.initiativeSkipped(this.#key, initiative.reason, blocked);
+        return null;
+      }
+      this.#agent.noteStart(this.#key);
     }
     return this.#start([], initiative, this.#agent.ctx.signal);
   }

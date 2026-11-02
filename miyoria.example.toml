@@ -201,9 +201,12 @@ barge_in = "stop"          # 有人插話時停止說話:stop | ignore
 # cooldown_ms = 5000
 
 [modules.agent]
-# 頻道模式:off | mention-only | ambient | always。也可以在 Discord 用 /channel mode 即時切換
-# default_mode = "ambient"
-# channels = { "<channel id>" = "always", "discord:<guild id>" = "mention-only" }
+# 文字頻道的聊天等級:off(關閉)| mention-only(只回提及)| quiet(安靜)| normal(一般)| lively(活躍)
+# (always = 每則都回,測試用;舊的 ambient = normal)。等級是上限:她在等級之內自己決定要多話,
+# 有人請她安靜點她也會自己調。沒設定的頻道用 profile 的 default_channel_mode(預設 quiet)。
+# 也可以在 Discord 用 /channel mode 或面板「內心 → 世界」即時切換
+# default_mode = "quiet"
+# channels = { "<channel id>" = "lively", "discord:<guild id>" = "mention-only" }
 # 對話紀錄:最多幾個字進 prompt(舊的先丟)、單則上限;她寫 @名字 會變成真的 tag
 # max_prompt_chars = 16000
 # max_entry_chars = 2000
@@ -213,7 +216,7 @@ barge_in = "stop"          # 有人插話時停止說話:stop | ignore
 # 她自己定了多話程度(心智迴圈或「活躍點」)的地方,插話機率、冷卻與門檻都照她的;
 # 下面的倍率只在她沒定的時候用。min_cooldown_ms 是不管她多想講都不能更快的底線
 [modules.agent.voice]
-default_mode = "ambient"
+default_mode = "normal"    # off | mention-only | normal | always(語音沒有安靜 / 活躍之分)
 ambient_factor = 0.5       # 主動插話機率的倍率(她沒定多話程度時)
 cooldown_ms = 20000        # 她講完後至少隔多久才會再主動開口
 min_cooldown_ms = 5000     # 她定了多話程度時,冷卻的底線

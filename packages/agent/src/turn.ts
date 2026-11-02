@@ -63,12 +63,13 @@ import {
 } from "@miyoria/types";
 import { assess, decide as sample, type TalkLevel, type VoiceAttention } from "./attention.js";
 import type { AttentionConfig, ChannelMode } from "./config.js";
-import { typingRefreshMs } from "./config.js";
+import { AMBIENT_MODES, typingRefreshMs } from "./config.js";
 import { gather } from "./contributors.js";
 import type { TurnFlags } from "./coordinator.js";
 import { Expression, ExpressionParser, type Segment } from "./expression.js";
 import { voiceScope } from "./handle.js";
 import { awaitBackfill, replyParents } from "./history.js";
+import { ceilingFor, levelHint } from "./levels.js";
 import { linkMentions, type MentionTarget } from "./mentions.js";
 import { agentTurns } from "./metrics.js";
 import {
@@ -497,7 +498,9 @@ class Turn {
     });
     const shift = lessons.talkShift(this.key, people);
     if (shift === 0) return base;
-    const level = Math.min(Math.max((base?.level ?? 0.5) + shift, 0), 1);
+    // Without her own setting, lessons shift the level's default (the level caps the result).
+    const usual = this.agent.ceiling(this.key)?.defaultTalk ?? 0.5;
+    const level = Math.min(Math.max((base?.level ?? usual) + shift, 0), 1);
     return { level, scope: `${base?.scope ?? "default"}+lessons` };
   }
 
@@ -510,7 +513,8 @@ class Turn {
     const configured = this.agent.handle.channelMode(this.key);
     // Short on budget: no joining in, no fast-model checks.
     const mode: ChannelMode =
-      budget !== "ok" && configured === "ambient" ? "mention-only" : configured;
+      budget !== "ok" && AMBIENT_MODES.includes(configured) ? "mention-only" : configured;
+    const ceiling = ceilingFor(mode, this.key);
     const activeness = this.agent.handle.activeness(this.key);
     const talkativeness = this.#talkativeness();
     const affinity = this.#speakerAffinity();
@@ -545,6 +549,7 @@ class Turn {
       mode,
       activeness,
       talkativeness,
+      ceiling,
       names,
       interests,
       maxShare,
@@ -656,6 +661,9 @@ class Turn {
     if (mood !== null) extras.notes.push(moodHint(mood));
     const her = this.agent.ctx.services.get(WorldStateKey)?.snapshot().her ?? null;
     if (her !== null) extras.notes.push(herStatusHint(her));
+    // The owner's ceiling for this channel, so she knows it when asked to be quieter or chattier.
+    const level = levelHint(this.agent.handle.channelMode(this.key), this.key);
+    if (level !== null) extras.notes.push(level);
     // Her own state: what she raised here herself that nobody picked up (not to repeat it).
     const unanswered = unansweredHint(
       this.agent.ctx.services.get(MindKey)?.unanswered?.(this.key) ?? [],

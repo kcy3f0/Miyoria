@@ -122,6 +122,7 @@ export {
   type MindStats,
   type MindSuggestion,
   type RaisedTopic,
+  type TalkCeiling,
   type Thought,
   type ThoughtDecision,
   type ThoughtDigest,

@@ -636,9 +636,9 @@ describe("agent module", () => {
     const mock = new MockProvider("chat").reply("好");
     const h = await Harness.create("off", noCheck(), mock);
     const c = channel("c");
-    await h.handle().setChannelMode(c, "ambient");
+    await h.handle().setChannelMode(c, "normal");
     await h.sup.restart("agent");
-    expect(h.handle().channelMode(c)).toBe("ambient");
+    expect(h.handle().channelMode(c)).toBe("normal");
   });
 
   it("agent_commands", async () => {
@@ -651,7 +651,7 @@ describe("agent module", () => {
 
     // Everyone may look at the setting (view node); the card carries a select to change it.
     let shown = await run(command("channel mode", "阿明"));
-    expect(shown.text).toContain("`ambient`");
+    expect(shown.text).toContain("`normal`");
     expect(shown.text).toContain("（預設）");
     expect(reg.get(["channel", "mode"])?.ephemeral).toBe(true);
     const select = shown.card?.blocks.find((b) => b.type === "select");
@@ -666,7 +666,7 @@ describe("agent module", () => {
       values: ["off"],
     });
     expect(viaSelect?.result.type).toBe("reply");
-    expect(handle.channelMode(c)).toBe("ambient");
+    expect(handle.channelMode(c)).toBe("normal");
 
     const bad = await run(command("channel mode", "Owen", { mode: "loud" }));
     expect(bad.tone).toBe("warn");
@@ -677,7 +677,7 @@ describe("agent module", () => {
     expect(shown.text).toContain("`mention-only`");
     expect(shown.text).toContain("（已自訂）");
     const reset = await run(command("channel mode", "Owen", { mode: "reset" }));
-    expect(reset.text).toContain("恢復為預設：`ambient`");
+    expect(reset.text).toContain("恢復為預設：`normal`");
     expect(handle.channelModeOverride(c)).toBeNull();
     const picked = await reg.dispatchComponent({
       ...command("x", "Owen"),

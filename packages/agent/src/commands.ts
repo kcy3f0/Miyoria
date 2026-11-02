@@ -5,6 +5,10 @@
 // one (`admin.channel.mode`, ...): the command's node lets you look, changing (the argument or
 // the select on the card) also needs the change node.
 //
+// `/channel mode` sets the channel's level (關閉 / 只回提及 / 安靜 / 一般 / 活躍, and 每則都回 for
+// tests), a ceiling on how much she talks there (`levels.ts`); `/voice mode` offers the modes
+// that differ in voice.
+//
 // The voice module registers the other `voice` commands (`join`, `leave`, `consent`, `golive`).
 
 import {
@@ -24,8 +28,15 @@ import {
 } from "@miyoria/commands";
 import { errorMessage, getLogger, type ServiceLookup } from "@miyoria/kernel";
 import type { ContextKey } from "@miyoria/types";
-import { type Activeness, type ChannelMode, parseActiveness, parseChannelMode } from "./config.js";
+import {
+  type Activeness,
+  CHANNEL_MODES,
+  type ChannelMode,
+  parseActiveness,
+  parseChannelMode,
+} from "./config.js";
 import type { AgentHandle } from "./handle.js";
+import { modeDescription, modeLabel } from "./levels.js";
 import type { PersonaHandle } from "./persona.js";
 import { charCount } from "./util.js";
 
@@ -38,9 +49,11 @@ export const PATHS = [
   "voice mode",
 ] as const;
 const NOT_SAVED = "設定沒有寫入資料庫，重新啟動後會恢復原狀。";
-const MODES: readonly ChannelMode[] = ["off", "mention-only", "ambient", "always"];
+/** In voice `quiet` and `lively` act like `normal`, so they are not offered there. */
+const VOICE_MODES: readonly ChannelMode[] = ["off", "mention-only", "normal", "always"];
 const LEVELS: readonly Activeness[] = ["low", "medium", "high"];
-const MODE_CHOICES = [...MODES, "reset"];
+const LEVEL_NOTE =
+  "等級是上限：她在等級之內自己決定要多話，有人請她安靜或多聊時她會自己調整（最多一天），但不會超過這裡的設定。";
 
 const NODES = {
   modeView: "channel.mode.view",
@@ -94,19 +107,6 @@ function unregister(registry: CommandRegistry): void {
   for (const path of PATHS) registry.unregister(path);
 }
 
-export function modeLabel(mode: ChannelMode): string {
-  switch (mode) {
-    case "off":
-      return "不說話";
-    case "mention-only":
-      return "被提及才回覆";
-    case "ambient":
-      return "會主動加入對話";
-    case "always":
-      return "每則訊息都回覆";
-  }
-}
-
 export function activenessLabel(level: Activeness): string {
   switch (level) {
     case "low":
@@ -147,6 +147,10 @@ interface Setting<T extends string> {
   subject: string;
   values: readonly T[];
   label: (value: T) => string;
+  /** One line about a value (the select's option description). */
+  describe?: (value: T) => string;
+  /** Shown under the current value. */
+  hint?: string;
   parse: (raw: string) => T;
   current: (ctx: ContextKey) => T;
   override: (ctx: ContextKey) => T | null;
@@ -165,6 +169,10 @@ function settingCard<T extends string>(
   const blocks: CardBlock[] = [
     { type: "text", text: `${s.subject}：\`${current}\` ${s.label(current)}${source}` },
   ];
+  const about = s.describe?.(current);
+  if (about || s.hint) {
+    blocks.push({ type: "muted", text: [about, s.hint].filter(Boolean).join("\n") });
+  }
   if (note) blocks.push({ type: "muted", text: note });
   blocks.push({
     type: "select",
@@ -173,8 +181,9 @@ function settingCard<T extends string>(
       placeholder: "變更設定…",
       options: [
         ...s.values.map((v) => ({
-          label: `${v}（${s.label(v)}）`,
+          label: `${s.label(v)}（${v}）`,
           value: v,
+          ...(s.describe ? { description: s.describe(v) } : {}),
           default: v === current,
         })),
         { label: "恢復預設", value: "reset" },
@@ -242,12 +251,20 @@ function settingRoute<T extends string>(
 }
 
 function register(registry: CommandRegistry, handle: AgentHandle, persona: PersonaHandle): void {
-  const modeSetting = (title: string, subject: string, setNode: string, route: string) =>
+  const modeSetting = (
+    title: string,
+    subject: string,
+    values: readonly ChannelMode[],
+    setNode: string,
+    route: string,
+    text: Pick<Setting<ChannelMode>, "describe" | "hint"> = {},
+  ) =>
     ({
       title,
       subject,
-      values: MODES,
+      values,
       label: modeLabel,
+      ...text,
       parse: parseChannelMode,
       current: (ctx) => handle.channelMode(ctx),
       override: (ctx) => handle.channelModeOverride(ctx),
@@ -256,7 +273,14 @@ function register(registry: CommandRegistry, handle: AgentHandle, persona: Perso
       route,
     }) satisfies Setting<ChannelMode>;
 
-  const channelMode = modeSetting("聊天模式", "她在這個頻道的聊天模式", NODES.modeSet, R.mode);
+  const channelMode = modeSetting(
+    "聊天等級",
+    "她在這個頻道的聊天等級",
+    CHANNEL_MODES,
+    NODES.modeSet,
+    R.mode,
+    { describe: modeDescription, hint: LEVEL_NOTE },
+  );
   const activeness: Setting<Activeness> = {
     title: "主動程度",
     subject: "她在這個頻道主動發話的程度",
@@ -269,7 +293,13 @@ function register(registry: CommandRegistry, handle: AgentHandle, persona: Perso
     setNode: NODES.activenessSet,
     route: R.activeness,
   };
-  const voiceMode = modeSetting("語音模式", "她在語音頻道的聊天模式", NODES.voiceSet, R.voice);
+  const voiceMode = modeSetting(
+    "語音模式",
+    "她在語音頻道的聊天模式",
+    VOICE_MODES,
+    NODES.voiceSet,
+    R.voice,
+  );
 
   const here =
     <T extends string>(s: Setting<T>) =>
@@ -284,15 +314,13 @@ function register(registry: CommandRegistry, handle: AgentHandle, persona: Perso
   };
 
   registry.register(
-    commandSpec("channel mode", "查看或設定她在這個頻道的聊天模式", {
+    commandSpec("channel mode", "查看或設定她在這個頻道的聊天等級（她多話的上限）", {
       args: [
         argSpec(
           "mode",
-          "off / mention-only / ambient / always / reset（恢復預設）",
-          ArgKind.choice(MODE_CHOICES),
-          {
-            required: false,
-          },
+          "off 關閉 / mention-only 只回提及 / quiet 安靜 / normal 一般 / lively 活躍 / reset 恢復預設",
+          ArgKind.choice([...CHANNEL_MODES, "reset"]),
+          { required: false },
         ),
       ],
       permission: NODES.modeView,
@@ -303,7 +331,7 @@ function register(registry: CommandRegistry, handle: AgentHandle, persona: Perso
   );
 
   registry.register(
-    commandSpec("channel activeness", "查看或設定她在這個頻道主動發話的程度", {
+    commandSpec("channel activeness", "查看或設定她在這個頻道主動發話的程度（不超過聊天等級）", {
       args: [
         argSpec(
           "level",
@@ -324,11 +352,9 @@ function register(registry: CommandRegistry, handle: AgentHandle, persona: Perso
       args: [
         argSpec(
           "mode",
-          "off / mention-only / ambient / always / reset（恢復預設）",
-          ArgKind.choice(MODE_CHOICES),
-          {
-            required: false,
-          },
+          "off 關閉 / mention-only 只回提及 / normal 一般 / always 每則都回 / reset 恢復預設",
+          ArgKind.choice([...VOICE_MODES, "reset"]),
+          { required: false },
         ),
       ],
       permission: NODES.voiceView,

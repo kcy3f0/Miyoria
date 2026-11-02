@@ -14,6 +14,10 @@
 // Without one, the configured activeness and voice numbers apply as before. The hard limits
 // stay config: her maximum share of recent messages and a minimum cooldown.
 //
+// In text channels the owner's level (`quiet` / `normal` / `lively`, `levels.ts`) is a ceiling
+// on all of that: her talkativeness is capped to the level's, so is the whole ambient
+// multiplier, and the level adds a minimum score, a longer cooldown and a lower share limit.
+//
 // Voice turns add `VoiceAttention`: a question right after she spoke addresses her, she never
 // joins in while someone is speaking and ambient probabilities are scaled down.
 
@@ -25,6 +29,7 @@ import {
   cooldownFactor,
   probabilityFactor,
 } from "./config.js";
+import { type Ceiling, cappedTalk } from "./levels.js";
 import type { Session } from "./session.js";
 import {
   affinityAmbientFactor,
@@ -147,6 +152,8 @@ export interface AttentionInput {
    * factor and interrupt scale. `null`: she set none.
    */
   talkativeness?: TalkLevel | null;
+  /** The owner's level for this text channel (`ceilingFor`); `null`: none (voice, tests). */
+  ceiling?: Ceiling | null;
   names: readonly string[];
   /** The profile's interests; matched like `config.keywords`. */
   interests: readonly string[];
@@ -169,13 +176,35 @@ function clamp01(x: number): number {
 }
 
 /**
+ * Ambient multiplier of her talkativeness under a level, before affinity and energy: ×4^(2T−1)
+ * of her capped talkativeness T, or (`level` `null`: she set none) the level's default scaled
+ * by activeness; never above the level's maximum.
+ */
+export function ceilingFactor(
+  ceiling: Ceiling,
+  level: number | null,
+  activeness: Activeness,
+): number {
+  const factor =
+    level === null
+      ? talkFactor(ceiling.defaultTalk) * probabilityFactor(activeness)
+      : talkFactor(cappedTalk(ceiling, level));
+  return Math.min(factor, talkFactor(ceiling.maxTalk));
+}
+
+/**
  * Multiplier for ambient probabilities: her talkativeness (or activeness and the voice
- * factor), affinity and energy.
+ * factor), affinity and energy; under a level never above the level's maximum.
  */
 export function ambientScale(input: AttentionInput): number {
   const affinity = input.affinity === null ? 1 : affinityAmbientFactor(input.affinity);
   const energy = input.mood === null ? 1 : energyProbabilityFactor(input.mood);
   const talk = input.talkativeness ?? null;
+  const ceiling = input.ceiling ?? null;
+  if (ceiling !== null) {
+    const factor = ceilingFactor(ceiling, talk?.level ?? null, input.activeness);
+    return Math.min(factor * affinity * energy, talkFactor(ceiling.maxTalk));
+  }
   if (talk !== null) {
     const speaking = input.voice?.someoneSpeaking ? talkInterruptScale(talk.level) : 1;
     return talkFactor(talk.level) * speaking * affinity * energy;
@@ -188,7 +217,9 @@ export function ambientScale(input: AttentionInput): number {
 
 /**
  * Minimum time (ms) between her ambient replies: the base cooldown scaled by her talkativeness
- * (never below `minMs`) or by activeness, and by her energy.
+ * (never below `minMs`) or by activeness, and by her energy. Under a level her talkativeness is
+ * capped (the level's default while she set none, with activeness); the level's own floor
+ * (`Ceiling.minCooldownMs`) is applied by `assess`.
  */
 export function ambientCooldown(
   baseMs: number,
@@ -196,10 +227,15 @@ export function ambientCooldown(
   activeness: Activeness,
   talk: TalkLevel | null,
   mood: Mood | null,
+  ceiling: Ceiling | null = null,
 ): number {
   const energy = mood === null ? 1 : energyCooldownFactor(mood);
-  if (talk === null) return Math.trunc(baseMs * cooldownFactor(activeness) * energy);
-  return Math.max(Math.trunc(baseMs * talkCooldownFactor(talk.level) * energy), minMs);
+  if (talk === null) {
+    const level = ceiling === null ? 1 : talkCooldownFactor(ceiling.defaultTalk);
+    return Math.trunc(baseMs * level * cooldownFactor(activeness) * energy);
+  }
+  const level = ceiling === null ? talk.level : cappedTalk(ceiling, talk.level);
+  return Math.max(Math.trunc(baseMs * talkCooldownFactor(level) * energy), minMs);
 }
 
 /** Ambient probability after `ambientScale`, clamped. */
@@ -317,7 +353,9 @@ export function assess(input: AttentionInput): Assessment {
     case "always":
       return done({ kind: "sample", probability: 1 });
     case "mention-only":
-    case "ambient":
+    case "quiet":
+    case "normal":
+    case "lively":
       if (direct) {
         if (input.affinity !== null && input.affinity <= IGNORE_DIRECT_AFFINITY) {
           reasons.push("very low affinity: may ignore");
@@ -331,8 +369,14 @@ export function assess(input: AttentionInput): Assessment {
   }
 
   const talk = input.talkativeness ?? null;
+  const ceiling = input.ceiling ?? null;
+  if (ceiling !== null) reasons.push(`level ${ceiling.mode}`);
   if (talk !== null) {
-    reasons.push(`talkativeness ${fixed(talk.level, 2)} (${talk.scope})`);
+    const capped = ceiling !== null && talk.level > ceiling.maxTalk;
+    reasons.push(
+      `talkativeness ${fixed(talk.level, 2)} (${talk.scope})` +
+        (capped ? ` capped to ${fixed(ceiling.maxTalk, 2)}` : ""),
+    );
     if (talk.level <= SILENT_TALKATIVENESS) {
       reasons.push("she wants to stay quiet here");
       return done({ kind: "ignore" });
@@ -356,25 +400,35 @@ export function assess(input: AttentionInput): Assessment {
     activeness,
     talk,
     input.mood,
+    ceiling,
   );
   const last = input.session.lastSelfAt();
+  const follows = followsHer(input);
   // In voice, someone answering what she just said is a conversation, not her butting in.
-  const answeringHer = input.voice !== null && followsHer(input);
+  const answeringHer = input.voice !== null && follows;
   if (last !== null && !answeringHer) {
     const since = input.now - last;
     if (since < cooldownMs) {
       reasons.push(`cooldown (${since}ms since she spoke)`);
       return done({ kind: "ignore" });
     }
+    // The level's long cooldown is about joining in again, not about keeping a conversation.
+    if (ceiling !== null && !follows && since < ceiling.minCooldownMs) {
+      reasons.push(`level cooldown (${since}ms since she spoke)`);
+      return done({ kind: "ignore" });
+    }
   }
   const share = input.session.selfShare(cfg.recent_window);
-  if (share > input.maxShare) {
-    reasons.push(`anti-spam: her share ${fixed(share, 2)} > ${fixed(input.maxShare, 2)}`);
+  const maxShare = Math.min(input.maxShare, ceiling?.maxShare ?? 1);
+  if (share > maxShare) {
+    reasons.push(`anti-spam: her share ${fixed(share, 2)} > ${fixed(maxShare, 2)}`);
     return done({ kind: "ignore" });
   }
-  const threshold = talk === null ? 1 : talkThresholdFactor(talk.level);
-  const grayLow = cfg.gray_low * threshold;
-  const grayHigh = cfg.gray_high * threshold;
+  const level =
+    talk === null ? null : ceiling === null ? talk.level : cappedTalk(ceiling, talk.level);
+  const threshold = level === null ? 1 : talkThresholdFactor(level);
+  const grayLow = Math.max(cfg.gray_low * threshold, ceiling?.minScore ?? 0);
+  const grayHigh = Math.max(cfg.gray_high * threshold, grayLow);
   if (score < grayLow) {
     reasons.push(`score ${fixed(score, 2)} < ${fixed(grayLow, 2)}`);
     return done({ kind: "ignore" });

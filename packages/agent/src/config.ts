@@ -3,24 +3,46 @@
 import { type ContextKey, contextKeyString as contextDisplay } from "@miyoria/types";
 import { z } from "zod";
 
-/** How willing she is to talk in a channel. */
+/**
+ * How much she may talk in a channel: the owner's guardrail (docs/design/autonomy.md §21).
+ * `quiet` / `normal` / `lively` are ceilings: she still decides with her own talkativeness, but
+ * never above the level's limits (`levels.ts`). In voice contexts the three behave alike (the
+ * voice numbers apply).
+ */
 export type ChannelMode =
   /** Never replies. */
   | "off"
   /** Replies only when directly addressed. */
   | "mention-only"
-  /** Replies when addressed and sometimes joins in on her own. */
-  | "ambient"
+  /** Replies when addressed; joins in rarely, starts conversations very rarely. */
+  | "quiet"
+  /** Replies when addressed and sometimes joins in on her own (the old `ambient`). */
+  | "normal"
+  /** Joins in and starts conversations more readily. */
+  | "lively"
   /** Replies to every turn. */
   | "always";
 
-export const CHANNEL_MODES: readonly ChannelMode[] = ["off", "mention-only", "ambient", "always"];
+export const CHANNEL_MODES: readonly ChannelMode[] = [
+  "off",
+  "mention-only",
+  "quiet",
+  "normal",
+  "lively",
+  "always",
+];
+
+/** Modes that let her join in on her own (the ceiling levels). */
+export const AMBIENT_MODES: readonly ChannelMode[] = ["quiet", "normal", "lively"];
 
 export class ParseError extends Error {
   override readonly name = "ParseError";
 }
 
-/** Lenient parse (`Mention_Only`, `mention`, ...). Throws `ParseError`. */
+/**
+ * Lenient parse (`Mention_Only`, `mention`, ...). The old `ambient` is `normal`. Throws
+ * `ParseError`.
+ */
 export function parseChannelMode(s: string): ChannelMode {
   const v = s.trim().toLowerCase().replaceAll("_", "-");
   switch (v) {
@@ -29,8 +51,13 @@ export function parseChannelMode(s: string): ChannelMode {
     case "mention-only":
     case "mention":
       return "mention-only";
+    case "quiet":
+      return "quiet";
+    case "normal":
     case "ambient":
-      return "ambient";
+      return "normal";
+    case "lively":
+      return "lively";
     case "always":
       return "always";
     default:
@@ -78,7 +105,10 @@ export function scaleByActiveness(level: Activeness, probability: number): numbe
   return clamp01(probability * probabilityFactor(level));
 }
 
-export const ChannelModeSchema = z.enum(["off", "mention-only", "ambient", "always"]);
+/** A channel mode in config; also accepts the old `ambient` (= `normal`). */
+export const ChannelModeSchema = z
+  .enum(["off", "mention-only", "quiet", "normal", "lively", "always", "ambient"])
+  .transform((v): ChannelMode => (v === "ambient" ? "normal" : v));
 export const ActivenessSchema = z.enum(["low", "medium", "high"]);
 
 /** `[modules.agent.attention]`: when she replies. */
@@ -122,8 +152,11 @@ export const VoiceConfigSchema = z.object({
    * extended up to this.
    */
   max_debounce_ms: z.number().int().nonnegative().default(2500),
-  /** Mode of voice contexts without a `channels` entry or runtime override. */
-  default_mode: ChannelModeSchema.default("ambient"),
+  /**
+   * Mode of voice contexts without a `channels` entry or runtime override. `quiet` and `lively`
+   * act like `normal` in voice.
+   */
+  default_mode: ChannelModeSchema.default("normal"),
   /**
    * Multiplies the reply probability of ambient voice turns (only while she has not set her own
    * talkativeness for voice).

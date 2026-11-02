@@ -440,7 +440,7 @@ describe("voice", () => {
     h.publish(joined());
     await wait(10);
     const shown = await run(command("voice mode", "Owen"));
-    expect(shown.text).toContain("`ambient`");
+    expect(shown.text).toContain("`normal`");
     expect(shown.text).toContain("（預設）");
 
     const denied = await run(command("voice mode", "阿明", { mode: "off" }));
@@ -449,14 +449,14 @@ describe("voice", () => {
     await run(command("voice mode", "Owen", { mode: "mention-only" }));
     const v = voiceCtx();
     expect(handle.channelMode(v)).toBe("mention-only");
-    expect(handle.channelMode(channel("c"))).toBe("ambient");
+    expect(handle.channelMode(channel("c"))).toBe("normal");
     // The mode applies to the voice context.
     h.publish(utterance("Owen", "你們看過鯨魚嗎?"));
     await wait(3000);
     expect(h.decisions()).toEqual([false]);
 
     const reset = await run(command("voice mode", "Owen", { mode: "reset" }));
-    expect(reset.text).toContain("`ambient`");
+    expect(reset.text).toContain("`normal`");
     expect(handle.channelModeOverride(v)).toBeNull();
 
     h.publish({ type: "voice_left", data: { context: v, reason: "kicked" } });

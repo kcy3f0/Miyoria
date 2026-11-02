@@ -27,7 +27,7 @@ describe("Profile", () => {
       language: { primary: "zh-TW", secondary: [] },
       mood: { valence: 0.2, arousal: 0.5, energy: 0.7 },
       behavior: {
-        default_channel_mode: "mention-only",
+        default_channel_mode: "quiet",
         initiative: "medium",
         max_share_of_recent: 0.3,
       },

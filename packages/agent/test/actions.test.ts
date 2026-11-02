@@ -5,7 +5,12 @@ import { ActuatorRegistry } from "@miyoria/actions";
 import { ServiceRegistry } from "@miyoria/kernel";
 import { MockProvider } from "@miyoria/llm";
 import { type ToolContext, ToolRegistry } from "@miyoria/tools";
-import { type AccountRef, Principals } from "@miyoria/types";
+import {
+  type AccountRef,
+  Principals,
+  type SelfState,
+  type TalkativenessInput,
+} from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { activenessCapability } from "../src/actions.js";
 import { channel, Harness, incoming, noCheck, Probe } from "./harness.js";
@@ -50,6 +55,42 @@ describe("channel.activeness", () => {
     vi.advanceTimersByTime(10 * 60_000);
     expect(handle.activeness(c), "reverted").toBe(before);
     await expect(tool?.call(ctx, { level: "loud", on_own: true })).rejects.toThrow(/invalid/);
+  });
+
+  it("with `self`: her talkativeness, silent to high, for up to a day, under the level", async () => {
+    const h = await Harness.create("quiet", noCheck(), new MockProvider("chat").reply("好"));
+    const c = channel("c");
+    const set: [string, TalkativenessInput][] = [];
+    const self = {
+      setTalkativeness: (scope: string, input: TalkativenessInput) => set.push([scope, input]),
+    } as unknown as SelfState;
+    const tools = new ToolRegistry();
+    const registry = new ActuatorRegistry({ services: h.sup.services, tools, builtins: false });
+    registry.register(activenessCapability(h.handle(), { now: () => Date.now() }, () => self));
+    const ctx: ToolContext = {
+      turn: "01JC0000000000000000000000",
+      context: c,
+      account: OWEN,
+      principal: Principals.user(OWEN, c),
+      message: { context: c, id: "m" },
+      priority: "direct",
+      signal: new AbortController().signal,
+    };
+    const tool = tools.get("channel_activeness");
+    // 「安靜點」: she decides how quiet and for how long.
+    expect(await tool?.call(ctx, { level: "silent", minutes: 120, on_own: true })).toContain(
+      "for 120 min",
+    );
+    // 「可以多聊」 in a quiet channel: hers is set, the level caps it.
+    const more = await tool?.call(ctx, { level: "high", minutes: 1440, on_own: true });
+    expect(more).toContain("capped by the channel level quiet (安靜)");
+    expect(set.map(([scope, t]) => [scope, t.level, t.forMs])).toEqual([
+      ["test:guild:c", 0, 120 * 60_000],
+      ["test:guild:c", 0.85, 24 * 60 * 60_000],
+    ]);
+    await expect(tool?.call(ctx, { level: "low", minutes: 1441, on_own: true })).rejects.toThrow(
+      /invalid/,
+    );
   });
 
   it("tool calls in a reactive turn run for the speaker", async () => {

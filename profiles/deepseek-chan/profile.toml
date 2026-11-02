@@ -24,7 +24,7 @@ arousal = 0.5   # 0..1 興奮程度
 energy  = 0.7   # 0..1 精神
 
 [behavior]
-default_channel_mode = "ambient"
+default_channel_mode = "quiet"   # 沒設定的文字頻道的聊天等級:off / mention-only / quiet / normal / lively
 initiative = "medium"
 max_share_of_recent = 0.3
 

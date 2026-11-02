@@ -20,8 +20,10 @@ import {
   type JsonValue,
   newId,
   Principals,
+  type TalkCeiling,
   type TurnId,
 } from "@miyoria/types";
+import { modeLabel } from "./levels.js";
 import type { Agent, IntentTurn } from "./runtime.js";
 
 export class AgentIntents implements IntentSink {
@@ -39,6 +41,13 @@ export class AgentIntents implements IntentSink {
     const input = this.#waiting.get(turn) ?? null;
     this.#waiting.delete(turn);
     return input;
+  }
+
+  /** The level of a text channel and whether it lets her start talking there now. */
+  ceiling(context: ContextKey): TalkCeiling | null {
+    if (context.kind === "voice" || context.kind === "dm") return null;
+    const mode = this.agent.handle.channelMode(context);
+    return { mode, label: modeLabel(mode), blocked: this.agent.startBlocked(context) };
   }
 
   async submit(intent: Intent, signal?: AbortSignal): Promise<IntentOutcome> {

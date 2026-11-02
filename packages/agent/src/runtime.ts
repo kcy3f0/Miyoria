@@ -31,6 +31,7 @@ import type { AgentConfig } from "./config.js";
 import { Coordinator } from "./coordinator.js";
 import type { AgentHandle } from "./handle.js";
 import { startBackfill } from "./history.js";
+import { type Ceiling, ceilingFor, UNCAPPED_INITIATIVES } from "./levels.js";
 import { agentTurns } from "./metrics.js";
 import type { PersonaHandle } from "./persona.js";
 import { Session } from "./session.js";
@@ -40,6 +41,7 @@ import { type FetchLike, ImageLoader } from "./vision.js";
 
 /** Module whose restart means the agent commands must be registered again. */
 const COMMANDS_MODULE = "commands";
+const MINUTE_MS = 60_000;
 
 /** An `agent.initiative` request. */
 export interface Initiative {
@@ -139,6 +141,11 @@ export class Agent {
   readonly images: ImageLoader;
   /** Intents waiting for her to arrive in a voice channel (after `voice.join`), by context. */
   readonly #arrivals = new Map<string, IntentTurn>();
+  /**
+   * When she last started a conversation herself in a text channel (clock ms), by context: the
+   * level's gap between starts. In memory only.
+   */
+  readonly #starts = new Map<string, number>();
 
   constructor(
     readonly ctx: ModuleContext,
@@ -366,12 +373,40 @@ export class Agent {
 
   #intentBlocked(context: ContextKey): string | null {
     // The owner's channel mode stays a guardrail; a DM she opens herself has no mode.
-    if (context.kind !== "dm") {
-      const mode = this.handle.channelMode(context);
-      if (mode === "off" || mode === "mention-only") return `mode ${mode}`;
-    }
+    const why = this.startBlocked(context);
+    if (why !== null) return why;
     const budget = this.handle.llmBudget();
     return budget === "ok" ? null : `llm budget ${budget}`;
+  }
+
+  /** The owner's level for `context` as a ceiling (`null`: voice, DMs, off / mention-only). */
+  ceiling(context: ContextKey): Ceiling | null {
+    return ceilingFor(this.handle.channelMode(context), context);
+  }
+
+  /**
+   * Why the channel's mode or level does not let her start a conversation in `context` now
+   * (`off` / `mention-only`, or the level's gap since her last start there), or `null`. DMs
+   * she opens herself have no mode.
+   */
+  startBlocked(context: ContextKey): string | null {
+    if (context.kind === "dm") return null;
+    const mode = this.handle.channelMode(context);
+    if (mode === "off" || mode === "mention-only") return `mode ${mode}`;
+    const gap = ceilingFor(mode, context)?.startGapMs ?? 0;
+    const last = this.#starts.get(contextId(context));
+    if (gap <= 0 || last === undefined) return null;
+    const left = last + gap - this.ctx.clock.now();
+    if (left <= 0) return null;
+    const ago = Math.max(Math.round((gap - left) / MINUTE_MS), 0);
+    const next = Math.max(Math.ceil(left / MINUTE_MS), 1);
+    return `level ${mode}: she started talking here ${ago} min ago; next in ${next} min`;
+  }
+
+  /** She starts a conversation herself in `context` now (for the level's gap). */
+  noteStart(context: ContextKey): void {
+    if (context.kind === "dm" || context.kind === "voice") return;
+    this.#starts.set(contextId(context), this.ctx.clock.now());
   }
 
   /** Publishes the decision not to open (or to drop) one of her intents. */
@@ -445,6 +480,14 @@ export class Agent {
     const mode = this.handle.channelMode(context);
     if (mode === "off" || mode === "mention-only") {
       this.initiativeSkipped(context, initiative.reason, `mode ${mode}`);
+      return;
+    }
+    // The level's gap between her own starts (not for game commentary or action results).
+    const gap = UNCAPPED_INITIATIVES.includes(initiative.reason)
+      ? null
+      : this.startBlocked(context);
+    if (gap !== null) {
+      this.initiativeSkipped(context, initiative.reason, gap);
       return;
     }
     const budget = this.handle.llmBudget();
@@ -536,19 +579,23 @@ export class Agent {
 
   /**
    * Minimum time (ms) since she last spoke before she starts a conversation in `context`: the
-   * attention cooldown scaled by her talkativeness (or activeness) and energy.
+   * attention cooldown scaled by her talkativeness (or activeness) and energy, under the
+   * channel's level; with `levelFloor` at least the level's long cooldown.
    */
-  ambientCooldownMs(context: ContextKey): number {
+  ambientCooldownMs(context: ContextKey, levelFloor = false): number {
     const voice = context.kind === "voice";
     const base = voice ? this.config.voice.cooldown_ms : this.config.attention.cooldown_ms;
     const min = voice ? this.config.voice.min_cooldown_ms : this.config.attention.min_cooldown_ms;
-    return ambientCooldown(
+    const ceiling = this.ceiling(context);
+    const ms = ambientCooldown(
       base,
       min,
       this.handle.activeness(context),
       this.talkativeness(context),
       this.mood(),
+      ceiling,
     );
+    return levelFloor && ceiling !== null ? Math.max(ms, ceiling.minCooldownMs) : ms;
   }
 
   isSelf(account: AccountRef): boolean {

@@ -56,9 +56,24 @@ export interface IntentOutcome {
   turn: TurnId | null;
 }
 
+/**
+ * The owner's level for a text channel, the ceiling on her talking there
+ * (docs/design/autonomy.md §21).
+ */
+export interface TalkCeiling {
+  /** `off`, `mention-only`, `quiet`, `normal`, `lively` or `always`. */
+  mode: string;
+  /** In words (`安靜`). */
+  label: string;
+  /** Why she may not start a conversation there on her own now (`null`: she may). */
+  blocked: string | null;
+}
+
 /** Provided by the agent: runs her intents (gate first, then her own turn). */
 export interface IntentSink {
   submit(intent: Intent, signal?: AbortSignal): Promise<IntentOutcome>;
+  /** The level of the text channel `context` (`null` for voice channels and DMs). */
+  ceiling?(context: ContextKey): TalkCeiling | null;
 }
 
 export const IntentSinkKey = serviceKey<IntentSink>("IntentSink");

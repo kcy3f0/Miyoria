@@ -25,6 +25,7 @@ export {
   ambientProbability,
   ambientScale,
   assess,
+  ceilingFactor,
   decide,
   directReason,
   type Gate,
@@ -41,13 +42,14 @@ export {
   type VoiceAttention,
   vocativeName,
 } from "./attention.js";
-export { activenessLabel, modeLabel, personaSummary } from "./commands.js";
+export { activenessLabel, personaSummary } from "./commands.js";
 export {
   ACTIVENESS_LEVELS,
   type Activeness,
   ActivenessSchema,
   type AgentConfig,
   AgentConfigSchema,
+  AMBIENT_MODES,
   type AttentionConfig,
   AttentionConfigSchema,
   activenessFor,
@@ -89,6 +91,16 @@ export {
 } from "./handle.js";
 export { awaitBackfill, backfillLimit, replyParents, startBackfill } from "./history.js";
 export { AgentIntents } from "./intents.js";
+export {
+  CEILINGS,
+  type Ceiling,
+  cappedTalk,
+  ceilingFor,
+  levelHint,
+  modeDescription,
+  modeLabel,
+  UNCAPPED_INITIATIVES,
+} from "./levels.js";
 export { linkMentions, type MentionTarget } from "./mentions.js";
 export { AgentModule } from "./module.js";
 export { PersonaHandle, PersonaHandleKey } from "./persona.js";
