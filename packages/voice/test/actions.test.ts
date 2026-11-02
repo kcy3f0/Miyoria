@@ -190,10 +190,24 @@ describe("joinTarget", () => {
     });
   });
 
-  it("has nobody to follow without a requester", () => {
-    expect(joinTarget("g1", { kind: "self", requester: null } as never, undefined)).toEqual({
-      channel: null,
-      follow: null,
-    });
+  it("on her own idea joins the busiest voice channel of the server", () => {
+    const self = { kind: "self", requester: null } as never;
+    expect(joinTarget("g1", self, undefined)).toEqual({ channel: null, follow: null });
+    const member = (self: boolean) => ({ is_self: self });
+    const world = {
+      snapshot: () => ({
+        voice_channels: [
+          { guild: "g1", channel: "quiet", members: [member(true)] },
+          { guild: "g1", channel: "two", members: [member(false), member(false)] },
+          { guild: "g1", channel: "one", members: [member(false)] },
+          {
+            guild: "g2",
+            channel: "elsewhere",
+            members: [member(false), member(false), member(false)],
+          },
+        ],
+      }),
+    } as never;
+    expect(joinTarget("g1", self, world)).toEqual({ channel: "two", follow: null });
   });
 });

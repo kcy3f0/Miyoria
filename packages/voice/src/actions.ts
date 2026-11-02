@@ -55,7 +55,15 @@ export function joinTarget(
   world: WorldState | undefined,
 ): { channel: string | null; follow: string | null } {
   const requester = principal.requester ?? null;
-  if (requester === null) return { channel: null, follow: null };
+  if (requester === null) {
+    // Nobody asked (her own idea): the voice channel of this server with the most people in it.
+    const busiest = (world?.snapshot().voice_channels ?? [])
+      .filter((c) => c.guild === guild)
+      .map((c) => ({ channel: c.channel, people: c.members.filter((m) => !m.is_self).length }))
+      .filter((c) => c.people > 0)
+      .sort((a, b) => b.people - a.people)[0];
+    return { channel: busiest?.channel ?? null, follow: null };
+  }
   const spot = world?.person(requester)?.voice ?? null;
   if (spot !== null && spot.guild === guild && spot.platform === requester.platform) {
     return { channel: spot.channel, follow: null };
