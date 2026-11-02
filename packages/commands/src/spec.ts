@@ -1,4 +1,5 @@
 import type { AccountRef, ContextKey, Subject } from "@miyoria/types";
+import type { CommandReply } from "./reply.js";
 
 /** Thrown for malformed command specs, conflicting registrations and bad account strings. */
 export class CommandError extends Error {
@@ -41,6 +42,11 @@ export interface ArgSpec {
   description: string;
   kind: ArgKind;
   required: boolean;
+  /**
+   * The platform asks for suggestions while the user types (Discord autocomplete). Set by the
+   * registry for string arguments that have an autocomplete handler.
+   */
+  autocomplete?: boolean;
 }
 
 /** `ArgSpec::new` (required) / `.optional()` (`{ required: false }`). */
@@ -62,11 +68,12 @@ export interface CommandSpec {
   path: string[];
   description: string;
   args: ArgSpec[];
-  /** Permission node, e.g. `"admin.module.toggle"` (`""` = everyone). See `requiredRole`. */
+  /** Permission node, e.g. `"admin.module.toggle"` (`""` = everyone). See `nodes.ts`. */
   permission: string;
   /**
-   * Default visibility of the reply. Used when a platform must acknowledge the command before
-   * the handler finished (e.g. Discord deferral).
+   * Visibility of the reply: `true` = only the invoker sees it (queries, settings, admin),
+   * `false` = the channel sees it (result cards meant for everyone). Warnings and errors are
+   * always ephemeral; see `replyEphemeral`.
    */
   ephemeral: boolean;
 }
@@ -90,6 +97,18 @@ export function commandSpec(
     permission: options.permission ?? "",
     ephemeral: options.ephemeral ?? false,
   };
+}
+
+/** Where a top-level command may be used and who sees it by default. */
+export interface GroupInfo {
+  description: string;
+  /** Only in servers (Discord: no DM context). */
+  guild_only: boolean;
+  /**
+   * Platform-native first gate (Discord: `default_member_permissions`). `manage_guild` hides the
+   * command from members without Manage Server; the permission node is still checked.
+   */
+  member_permission: "manage_guild" | null;
 }
 
 /** The path joined with spaces. */
@@ -134,6 +153,12 @@ function own<T>(record: Record<string, T>, key: string): T | undefined {
   return Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
+/** Checks another permission node for the invoker (bound by the registry). */
+export type NodeCheck = (node: string) => Promise<boolean>;
+
+/** Sends an extra message while a handler runs (bound by the platform, where supported). */
+export type FollowUp = (reply: CommandReply) => Promise<void>;
+
 /** An `InvocationData` with defaults applied and the Rust helper methods. */
 export class Invocation implements InvocationData {
   path: string[];
@@ -144,6 +169,8 @@ export class Invocation implements InvocationData {
   invoker_is_guild_admin: boolean;
   platform_roles: string[];
   resolved_users: Record<string, ResolvedUser>;
+  #check: NodeCheck | null = null;
+  #followUp: FollowUp | null = null;
 
   constructor(data: InvocationData) {
     this.path = [...data.path];
@@ -176,6 +203,35 @@ export class Invocation implements InvocationData {
   withArg(name: string, value: ArgValue): this {
     this.args[name] = value;
     return this;
+  }
+
+  /** @internal Set by the registry before the handler runs. */
+  bindCheck(check: NodeCheck): void {
+    this.#check = check;
+  }
+
+  /** @internal Set by the platform. */
+  bindFollowUp(followUp: FollowUp | null): void {
+    this.#followUp = followUp;
+  }
+
+  /**
+   * May the invoker use `node`? For checks that depend on the arguments (e.g. tagging someone
+   * `owner` needs `owner.person.tag`); the command's own node was checked already.
+   */
+  allowed(node: string): Promise<boolean> {
+    return this.#check ? this.#check(node) : Promise.resolve(false);
+  }
+
+  /** Whether `followUp` works on this platform. */
+  canFollowUp(): boolean {
+    return this.#followUp !== null;
+  }
+
+  /** Sends an extra message (e.g. a backup file before a destructive step). */
+  async followUp(reply: CommandReply): Promise<void> {
+    if (!this.#followUp) throw new CommandError("this platform cannot send follow-up messages");
+    await this.#followUp(reply);
   }
 
   /** The invoker as an authorization subject in the invocation's context. */
@@ -235,14 +291,3 @@ export class Invocation implements InvocationData {
     return typeof value === "boolean" ? value : null;
   }
 }
-
-export interface CommandReply {
-  text: string;
-  /** Only the invoker sees the reply, where the platform supports it. */
-  ephemeral: boolean;
-}
-
-export const CommandReply = {
-  public: (text: string): CommandReply => ({ text, ephemeral: false }),
-  ephemeral: (text: string): CommandReply => ({ text, ephemeral: true }),
-} as const;

@@ -16,6 +16,7 @@ import {
   normalizeArgs,
   Permissions,
   parseAccount,
+  replyEphemeral,
 } from "../src/index.js";
 import { inv } from "./helpers.js";
 
@@ -66,7 +67,7 @@ describe("command registry", () => {
     ];
     for (const args of cases) {
       const reply = await reg.dispatch(inv("echo", "5", args));
-      expect(reply.ephemeral, JSON.stringify(args)).toBe(true);
+      expect(replyEphemeral(false, reply), JSON.stringify(args)).toBe(true);
       expect(reply.text, JSON.stringify(args)).toContain("參數");
     }
   });
@@ -77,11 +78,12 @@ describe("command registry", () => {
       CommandReply.public("ok"),
     );
     const unknown = await reg.dispatch(inv("nope", "5"));
-    expect(unknown.ephemeral).toBe(true);
+    expect(unknown.tone).toBe("warn");
     expect(unknown.text).toContain("nope");
 
     const denied = await reg.dispatch(inv("admin secret", "5"));
-    expect(denied).toEqual(CommandReply.ephemeral("你沒有權限做這個啦。"));
+    expect(denied.tone).toBe("error");
+    expect(denied.text).toBe("你沒有使用這個指令的權限。\n需要權限：admin.secret");
 
     const asAdmin = inv("admin secret", "5");
     asAdmin.invoker_is_guild_admin = true;
@@ -89,11 +91,12 @@ describe("command registry", () => {
     expect((await reg.dispatch(inv("admin secret", "1"))).text).toBe("ok");
   });
 
-  it("owner_only_denial_uses_the_owner_text", async () => {
+  it("owner_only_denial_names_the_node", async () => {
     const reg = registry();
     reg.register(commandSpec("shutdown", "x", { permission: "owner.shutdown" }), ok);
     const denied = await reg.dispatch(inv("shutdown", "5"));
-    expect(denied).toEqual(CommandReply.ephemeral("這個只有我的主人能用,你、你又不是!"));
+    expect(denied.text).toContain("owner.shutdown");
+    expect(replyEphemeral(false, denied)).toBe(true);
   });
 
   it("normalizes_user_and_role_args", () => {
@@ -251,7 +254,9 @@ describe("command registry", () => {
     reg.setGroupDescription("admin module", "管理模組");
     expect(reg.groupDescription(["admin", "module"])).toBe("管理模組");
     expect(reg.groupDescription("admin module")).toBe("管理模組");
-    expect(reg.groupDescription("admin")).toBeUndefined();
+    expect(reg.groupDescription("admin")).toBe("管理：模組、權限、她認識的人與記憶");
+    expect(reg.groupInfo("admin")?.member_permission).toBe("manage_guild");
+    expect(reg.groupDescription("nothing")).toBeUndefined();
   });
 
   it("specs_are_ordered_by_path_and_serialize_like_legacy", () => {
@@ -270,15 +275,15 @@ describe("command registry", () => {
   it("argument_coercion_edge_cases", () => {
     const spec = echoSpec();
     expect(normalizeArgs(spec, { text: "a", times: " +5 " }).times).toBe(5);
-    expect(() => normalizeArgs(spec, { text: "a", times: "1.5" })).toThrow("「times」要是整數");
-    expect(() => normalizeArgs(spec, { text: "a", times: 1.5 })).toThrow("「times」的型別不對");
+    expect(() => normalizeArgs(spec, { text: "a", times: "1.5" })).toThrow("「times」必須是整數");
+    expect(() => normalizeArgs(spec, { text: "a", times: 1.5 })).toThrow("「times」的型別不正確");
     expect(normalizeArgs(spec, { text: "a", loud: " Yes " }).loud).toBe(true);
     expect(normalizeArgs(spec, { text: "a", loud: "OFF" }).loud).toBe(false);
-    expect(() => normalizeArgs(spec, { text: "a", loud: "maybe" })).toThrow("要是 true 或 false");
+    expect(() => normalizeArgs(spec, { text: "a", loud: "maybe" })).toThrow("必須是 true 或 false");
     expect(() => normalizeArgs(spec, { text: "a", mood: "sad" })).toThrow(
-      "「mood」只能是 happy / grumpy 其中之一",
+      "「mood」只能是 happy、grumpy 其中之一",
     );
-    expect(() => normalizeArgs(spec, {})).toThrow("少了「text」");
+    expect(() => normalizeArgs(spec, {})).toThrow("缺少「text」");
     expect(() => normalizeArgs(spec, { text: "a", zzz: 1, aaa: 2 })).toThrow(
       "「aaa」不是這個指令的參數",
     );
@@ -329,7 +334,7 @@ describe("command registry services", () => {
     expect(preloaded).toHaveLength(1);
     expect(preloaded[0]?.account).toEqual(parseAccount("discord:1"));
     // `open` is not an admin node: not audited (and denied by this authorizer).
-    expect((await reg.dispatch(inv("open", "1"))).ephemeral).toBe(true);
+    expect((await reg.dispatch(inv("open", "1"))).tone).toBe("error");
     expect(audit.entries).toHaveLength(1);
     const [entry] = audit.entries;
     expect(entry).toMatchObject({

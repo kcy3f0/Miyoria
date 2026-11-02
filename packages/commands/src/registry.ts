@@ -12,17 +12,31 @@ import {
   systemClock,
   toTimestamp,
 } from "@miyoria/types";
-import { Permissions, type Role, requiredRole } from "./perms.js";
+import {
+  type AnyComponentRoute,
+  type AutocompleteHandler,
+  type Choice,
+  ComponentInvocation,
+  type ComponentInvocationData,
+  type ComponentResult,
+  componentSegments,
+  validateRoute,
+} from "./components.js";
+import { isAdminNode } from "./nodes.js";
+import { Permissions } from "./perms.js";
+import { type CommandReply, notice, replyEphemeral } from "./reply.js";
 import {
   type ArgValue,
   CommandError,
-  CommandReply,
   type CommandSpec,
   commandName,
+  type FollowUp,
+  type GroupInfo,
   Invocation,
   type InvocationData,
   splitPath,
 } from "./spec.js";
+import { COMMAND_GROUPS, groupInfo } from "./tree.js";
 
 const log = getLogger("commands.registry");
 
@@ -36,9 +50,14 @@ export interface AuthorizerPreload {
 
 export const AuthorizerPreloadKey = serviceKey<AuthorizerPreload>("AuthorizerPreload");
 
+/** The command registry service, provided by the `commands` module. */
+export const CommandRegistryKey = serviceKey<CommandRegistry>("CommandRegistry");
+
 /** Deepest supported command path (Discord: group / subcommand group / subcommand). */
 export const MAX_PATH_DEPTH = 3;
 const MAX_NAME_LEN = 32;
+/** Discord shows at most 25 autocomplete suggestions. */
+const MAX_CHOICES = 25;
 
 export type HandlerResult = CommandReply | Promise<CommandReply>;
 export type CommandHandler = (invocation: Invocation) => HandlerResult;
@@ -48,10 +67,46 @@ export class CommandArgError extends Error {
   override readonly name = "CommandArgError";
 }
 
+/** What a command brings besides its handler. */
+export interface RegisterOptions {
+  /** Buttons, selects and modals of the command's replies. */
+  components?: readonly AnyComponentRoute[];
+  /** Suggestion handlers of string arguments, by argument name. */
+  autocomplete?: Readonly<Record<string, AutocompleteHandler>>;
+}
+
 interface Entry {
   spec: CommandSpec;
   handler: CommandHandler;
+  routes: AnyComponentRoute[];
+  autocomplete: Map<string, AutocompleteHandler>;
 }
+
+/** The answer to a component interaction, with the visibility of `reply` answers. */
+export interface ComponentOutcome {
+  result: ComponentResult;
+  ephemeral: boolean;
+}
+
+/** What the platform can do for a handler while it runs. */
+export interface DispatchIo {
+  /** Sends an extra message (see `Invocation.followUp`). */
+  followUp?: FollowUp;
+}
+
+// ---- system text --------------------------------------------------------------------------
+
+export const TEXT = {
+  unknownCommand: (name: string) => `找不到指令「/${name}」。`,
+  denied: "你沒有使用這個指令的權限。",
+  deniedDetail: (node: string) => `需要權限：${node}`,
+  badArgs: (message: string) => `參數有誤：${message}。`,
+  staleControl: "這個控制項已失效，請重新執行指令。",
+  expired: "這個面板已過期，請重新執行指令。",
+  notInitiator: "只有執行指令的人可以操作這個面板。",
+  badControl: "控制項資料無效。",
+  refused: "你不能進行這個操作。",
+} as const;
 
 /**
  * Observes `CommandRegistry.version()` changes, like a Rust `watch::Receiver`: several changes
@@ -129,16 +184,17 @@ export interface CommandRegistryOptions {
 }
 
 /**
- * Every registered command. Provided as the `CommandRegistryKey` service by the `commands`
- * module; other modules may register commands at any time and platforms watch `subscribe()`
- * to re-sync.
+ * Every registered command and its component routes. Provided as the `CommandRegistryKey`
+ * service by the `commands` module; other modules may register commands at any time and
+ * platforms watch `subscribe()` to re-sync.
  */
 export class CommandRegistry {
   readonly #perms: Permissions;
   #services: ServiceLookup | null;
   readonly #clock: Clock;
   readonly #entries = new Map<string, Entry>();
-  readonly #groups = new Map<string, string>();
+  readonly #groups = new Map<string, GroupInfo>();
+  readonly #routes = new Map<string, { owner: string; route: AnyComponentRoute }>();
   readonly #subscriptions = new Set<VersionSubscription>();
   #version = 0;
 
@@ -146,6 +202,9 @@ export class CommandRegistry {
     this.#perms = perms;
     this.#services = options.services ?? null;
     this.#clock = options.clock ?? systemClock;
+    for (const [path, init] of Object.entries(COMMAND_GROUPS)) {
+      this.#groups.set(path, groupInfo(init));
+    }
   }
 
   /**
@@ -162,12 +221,14 @@ export class CommandRegistry {
   }
 
   /**
-   * Registers (or replaces) the command at `spec.path`.
+   * Registers (or replaces) the command at `spec.path` with its component routes and
+   * autocomplete handlers.
    *
-   * Throws `CommandError` if the spec is malformed or if its path is a prefix of another
-   * command's path (or the other way round), which hierarchical platforms cannot represent.
+   * Throws `CommandError` if the spec is malformed, if its path is a prefix of another
+   * command's path (or the other way round), which hierarchical platforms cannot represent, or
+   * if one of its component routes belongs to another command.
    */
-  register(spec: CommandSpec, handler: CommandHandler): void {
+  register(spec: CommandSpec, handler: CommandHandler, options: RegisterOptions = {}): void {
     validateSpec(spec);
     const key = spec.path.join(" ");
     for (const other of this.#entries.values()) {
@@ -178,28 +239,87 @@ export class CommandRegistry {
         );
       }
     }
-    this.#entries.set(key, { spec: structuredClone(spec), handler });
+    const routes = [...(options.components ?? [])];
+    const seen = new Set<string>();
+    for (const route of routes) {
+      validateRoute(route.route);
+      if (seen.has(route.route)) {
+        throw new CommandError(
+          `command \`${commandName(spec)}\` declares route \`${route.route}\` twice`,
+        );
+      }
+      seen.add(route.route);
+      const taken = this.#routes.get(route.route);
+      if (taken && taken.owner !== key) {
+        throw new CommandError(
+          `component route \`${route.route}\` of \`${commandName(spec)}\` is already used by \`${taken.owner}\``,
+        );
+      }
+    }
+    const stored = structuredClone(spec);
+    const autocomplete = new Map(Object.entries(options.autocomplete ?? {}));
+    for (const [name] of autocomplete) {
+      const arg = stored.args.find((a) => a.name === name);
+      if (arg?.kind.type !== "string") {
+        throw new CommandError(
+          `command \`${commandName(spec)}\`: autocomplete needs a string argument \`${name}\``,
+        );
+      }
+      arg.autocomplete = true;
+    }
+    for (const arg of stored.args) {
+      if (arg.autocomplete && !autocomplete.has(arg.name)) delete arg.autocomplete;
+    }
+
+    this.#dropRoutes(key);
+    for (const route of routes) this.#routes.set(route.route, { owner: key, route });
+    this.#entries.set(key, { spec: stored, handler, routes, autocomplete });
     this.#bump();
   }
 
-  /** Removes the command at the space separated `path`. */
+  /** Removes the command at the space separated `path` (and its component routes). */
   unregister(path: string): boolean {
-    const removed = this.#entries.delete(splitPath(path).join(" "));
-    if (removed) this.#bump();
+    const key = splitPath(path).join(" ");
+    const removed = this.#entries.delete(key);
+    if (removed) {
+      this.#dropRoutes(key);
+      this.#bump();
+    }
     return removed;
+  }
+
+  #dropRoutes(owner: string): void {
+    for (const [name, route] of this.#routes) {
+      if (route.owner === owner) this.#routes.delete(name);
+    }
   }
 
   /**
    * Sets the description of a command group such as `"admin"` or `"admin module"` (platforms
-   * need one for each parent level).
+   * need one for each parent level), keeping its other settings.
    */
   setGroupDescription(path: string, description: string): void {
-    this.#groups.set(splitPath(path).join(" "), description);
+    const key = splitPath(path).join(" ");
+    const current = this.#groups.get(key);
+    this.#groups.set(key, current ? { ...current, description } : groupInfo({ description }));
+    this.#bump();
+  }
+
+  /** Sets a group's description and platform gates. */
+  setGroup(path: string, info: Partial<GroupInfo> & { description: string }): void {
+    this.#groups.set(splitPath(path).join(" "), groupInfo(info));
     this.#bump();
   }
 
   groupDescription(path: string | readonly string[]): string | undefined {
-    return this.#groups.get(typeof path === "string" ? splitPath(path).join(" ") : path.join(" "));
+    return this.groupInfo(path)?.description;
+  }
+
+  groupInfo(path: string | readonly string[]): GroupInfo | undefined {
+    const info = this.#groups.get(
+      typeof path === "string" ? splitPath(path).join(" ") : path.join(" "),
+    );
+    return info ? { ...info } : undefined;
   }
 
   /** All registered commands, ordered by path. */
@@ -213,6 +333,11 @@ export class CommandRegistry {
   get(path: readonly string[]): CommandSpec | undefined {
     const entry = this.#entries.get(path.join(" "));
     return entry ? structuredClone(entry.spec) : undefined;
+  }
+
+  /** Every registered component route name, sorted. */
+  routes(): string[] {
+    return [...this.#routes.keys()].sort();
   }
 
   /** Increases on every registration change. */
@@ -235,34 +360,40 @@ export class CommandRegistry {
     this.#subscriptions.delete(subscription);
   }
 
+  /** Commands the invoker of `data` may run (its `path` and `args` are ignored). */
+  async permitted(data: InvocationData): Promise<CommandSpec[]> {
+    const invocation = Invocation.from(data);
+    const out: CommandSpec[] = [];
+    for (const spec of this.specs()) {
+      if (await this.#allows(invocation, spec.permission)) out.push(spec);
+    }
+    return out;
+  }
+
   /**
    * Checks permissions and arguments, then runs the handler.
    *
-   * Unknown commands, permission denials and invalid arguments become ephemeral replies; only
-   * handler failures are thrown.
+   * Unknown commands, permission denials and invalid arguments become warning / error notices;
+   * only handler failures are thrown.
    */
-  async dispatch(data: InvocationData): Promise<CommandReply> {
+  async dispatch(data: InvocationData, io: DispatchIo = {}): Promise<CommandReply> {
     const invocation = Invocation.from(data);
     const entry = this.#entries.get(invocation.path.join(" "));
-    if (!entry) {
-      return CommandReply.ephemeral(
-        `沒有「${invocation.path.join(" ")}」這個指令啦,你是不是打錯了?`,
-      );
-    }
+    if (!entry) return notice("warn", TEXT.unknownCommand(invocation.path.join(" ")));
     const { spec, handler } = entry;
     const audit = isAdminNode(spec.permission) ? this.#service(AuditLogKey) : undefined;
     if (!(await this.#allows(invocation, spec.permission))) {
       if (audit) await this.#appendAudit(audit, invocation, false, "denied");
-      return CommandReply.ephemeral(denial(requiredRole(spec.permission)));
+      return denied(spec.permission);
     }
     try {
       invocation.args = normalizeArgs(spec, invocation.args);
     } catch (error) {
-      if (error instanceof CommandArgError) {
-        return CommandReply.ephemeral(`${error.message}……參數要好好給我啦。`);
-      }
+      if (error instanceof CommandArgError) return notice("warn", TEXT.badArgs(error.message));
       throw error;
     }
+    invocation.bindCheck((node) => this.#allows(invocation, node));
+    invocation.bindFollowUp(io.followUp ?? null);
     if (!audit) return await handler(invocation);
     const record = new Invocation(invocation);
     let reply: CommandReply;
@@ -274,6 +405,91 @@ export class CommandRegistry {
     }
     await this.#appendAudit(audit, record, true, null);
     return reply;
+  }
+
+  /**
+   * Routes a button / select / modal interaction. Returns `null` for component ids Miyoria did
+   * not make (they may belong to someone else). Refusals become ephemeral notices; handler
+   * failures are thrown.
+   */
+  async dispatchComponent(
+    data: ComponentInvocationData,
+    io: DispatchIo = {},
+  ): Promise<ComponentOutcome | null> {
+    const segments = componentSegments(data.custom_id);
+    if (segments === null) return null;
+    const found = this.#findRoute(segments);
+    const refuse = (reply: CommandReply): ComponentOutcome => ({
+      result: { type: "reply", reply },
+      ephemeral: true,
+    });
+    if (!found) return refuse(notice("warn", TEXT.staleControl));
+    const { name, params, owner, route } = found;
+    const entry = this.#entries.get(owner);
+    if (!entry) return refuse(notice("warn", TEXT.staleControl));
+    const inv = new ComponentInvocation(data, entry.spec.path, name, params);
+    const nodes = [entry.spec.permission, ...(route.permission ? [route.permission] : [])];
+    const auditNode = nodes.find(isAdminNode);
+    const audit = auditNode !== undefined ? this.#service(AuditLogKey) : undefined;
+    for (const node of nodes) {
+      if (!(await this.#allows(inv, node))) {
+        if (audit) await this.#appendAudit(audit, inv, false, "denied", name);
+        return refuse(denied(node));
+      }
+    }
+    const session = inv.session;
+    if (route.requiresSession && session === null) return refuse(notice("warn", TEXT.expired));
+    if (session?.initiator_only && !sameInvoker(session.initiator, inv)) {
+      return refuse(notice("warn", TEXT.notInitiator));
+    }
+    const parsed = route.parse ? route.parse(params) : params;
+    if (parsed === null) return refuse(notice("error", TEXT.badControl));
+    if (route.require && !(await route.require(parsed, inv))) {
+      return refuse(notice("error", TEXT.refused));
+    }
+    inv.bindCheck((node) => this.#allows(inv, node));
+    inv.bindFollowUp(io.followUp ?? null);
+    let result: ComponentResult;
+    try {
+      result = await route.handle(inv, parsed);
+    } catch (error) {
+      if (audit) await this.#appendAudit(audit, inv, false, null, name);
+      throw error;
+    }
+    if (audit) await this.#appendAudit(audit, inv, true, null, name);
+    const ephemeral =
+      result.type === "reply" ? replyEphemeral(route.ephemeral ?? true, result.reply) : true;
+    return { result, ephemeral };
+  }
+
+  /** The longest registered route that prefixes `segments`. */
+  #findRoute(
+    segments: readonly string[],
+  ): { name: string; params: string[]; owner: string; route: AnyComponentRoute } | null {
+    for (let n = segments.length; n >= 1; n--) {
+      const name = segments.slice(0, n).join(":");
+      const hit = this.#routes.get(name);
+      if (hit) return { name, params: segments.slice(n), owner: hit.owner, route: hit.route };
+    }
+    return null;
+  }
+
+  /**
+   * Suggestions for argument `name` of the command in `data`, while the user typed `value`.
+   * Empty when the command, the handler or the permission is missing.
+   */
+  async autocomplete(data: InvocationData, name: string, value: string): Promise<Choice[]> {
+    const invocation = Invocation.from(data);
+    const entry = this.#entries.get(invocation.path.join(" "));
+    const handler = entry?.autocomplete.get(name);
+    if (!entry || !handler) return [];
+    if (!(await this.#allows(invocation, entry.spec.permission))) return [];
+    invocation.bindCheck((node) => this.#allows(invocation, node));
+    const choices = await handler(invocation, value);
+    return choices.slice(0, MAX_CHOICES).map((c) => ({
+      name: truncateChars(c.name, 100),
+      value: truncateChars(c.value, 100),
+    }));
   }
 
   /** Checks `node` with the `Authorizer` service if there is one, otherwise with `Permissions`. */
@@ -295,11 +511,19 @@ export class CommandRegistry {
     inv: Invocation,
     ok: boolean,
     outcome: string | null,
+    route: string | null = null,
   ): Promise<void> {
     const detail: JsonObject = {
       args: sortedArgs(inv.args),
       context: contextKeyString(inv.context),
     };
+    if (route !== null) {
+      detail.component = route;
+      if (inv instanceof ComponentInvocation) {
+        detail.params = [...inv.params];
+        if (inv.values.length > 0) detail.values = [...inv.values];
+      }
+    }
     if (outcome !== null) detail.outcome = outcome;
     const entry = {
       id: newId(),
@@ -323,10 +547,17 @@ export class CommandRegistry {
   }
 }
 
-/** `admin.*` and `owner.*` nodes are audited. */
-function isAdminNode(node: string): boolean {
-  const root = node.split(".")[0];
-  return root === "admin" || root === "owner";
+function denied(node: string): CommandReply {
+  return notice("error", TEXT.denied, node === "" ? null : TEXT.deniedDetail(node));
+}
+
+function sameInvoker(initiator: { platform: string; id: string }, inv: Invocation): boolean {
+  return initiator.platform === inv.invoker.platform && initiator.id === inv.invoker.id;
+}
+
+function truncateChars(s: string, max: number): string {
+  const chars = [...s];
+  return chars.length <= max ? s : `${chars.slice(0, max - 1).join("")}…`;
 }
 
 /** Args as a JSON object with ascending keys (Rust serialized a `BTreeMap`). */
@@ -334,10 +565,6 @@ function sortedArgs(args: Record<string, ArgValue>): JsonObject {
   const out: JsonObject = {};
   for (const key of Object.keys(args).sort()) out[key] = args[key] as ArgValue;
   return out;
-}
-
-function denial(required: Role): string {
-  return required === "owner" ? "這個只有我的主人能用,你、你又不是!" : "你沒有權限做這個啦。";
 }
 
 function startsWith(path: readonly string[], prefix: readonly string[]): boolean {
@@ -405,7 +632,7 @@ export function normalizeArgs(
   for (const arg of spec.args) {
     const value = Object.hasOwn(args, arg.name) ? args[arg.name] : undefined;
     if (value === undefined) {
-      if (arg.required) throw new CommandArgError(`少了「${arg.name}」`);
+      if (arg.required) throw new CommandArgError(`缺少「${arg.name}」`);
       continue;
     }
     out[arg.name] = coerce(arg.name, arg.kind, value);
@@ -428,7 +655,7 @@ function coerce(
         const trimmed = value.trim();
         const parsed = Number(trimmed);
         if (INTEGER.test(trimmed) && Number.isSafeInteger(parsed)) return parsed;
-        throw new CommandArgError(`「${name}」要是整數`);
+        throw new CommandArgError(`「${name}」必須是整數`);
       }
       break;
     case "boolean":
@@ -446,33 +673,33 @@ function coerce(
           case "0":
             return false;
           default:
-            throw new CommandArgError(`「${name}」要是 true 或 false`);
+            throw new CommandArgError(`「${name}」必須是 true 或 false`);
         }
       }
       break;
     case "user":
       if (typeof value === "string") {
         const id = mentionId(value, ["<@!", "<@"]);
-        if (id === null) throw new CommandArgError(`「${name}」要是一個使用者`);
+        if (id === null) throw new CommandArgError(`「${name}」必須是一位使用者`);
         return id;
       }
       break;
     case "role":
       if (typeof value === "string") {
         const id = mentionId(value, ["<@&"]);
-        if (id === null) throw new CommandArgError(`「${name}」要是一個身分組`);
+        if (id === null) throw new CommandArgError(`「${name}」必須是一個身分組`);
         return id;
       }
       break;
     case "choice":
       if (typeof value === "string") {
         if (kind.choices.includes(value)) return value;
-        throw new CommandArgError(`「${name}」只能是 ${kind.choices.join(" / ")} 其中之一`);
+        throw new CommandArgError(`「${name}」只能是 ${kind.choices.join("、")} 其中之一`);
       }
       break;
   }
   log.warn({ arg: name, kind, value }, "argument has the wrong type");
-  throw new CommandArgError(`「${name}」的型別不對`);
+  throw new CommandArgError(`「${name}」的型別不正確`);
 }
 
 /**
