@@ -11,8 +11,10 @@ Self voice node(`apps/voice-node`,TS)和 Core 的 `voice.link` 模組之間的�
 1. Node 連上後 5 秒內送出:
    ```json
    {"type":"hello","version":1,"token":"<VOICE_LINK_TOKEN>","node":"voice-node",
-    "self_account":{"platform":"discord","id":"<self 帳號 user id>"}}
+    "self_account":{"platform":"discord","id":"<self 帳號 user id>"},
+    "capabilities":["play_duck","play_pause"]}
    ```
+   `capabilities`(可選,字串陣列,預設空)是這個 node 支援的**選用功能**,Core 只會對宣告過的 node 送對應的訊息,所以新的 Core 配舊的 node(或反過來)照常運作,版本號不變(仍是 1)。目前有:`play_duck`(`play_duck`)、`play_pause`(`play_pause` + `play_resume`)。不認得的名稱忽略。
 2. Core 回 `{"type":"welcome","session":"<ulid>"}`。token 錯誤時用 close code `4401` 關閉;版本不符用 `4400`。
 3. 同一個 `self_account` 只允許一條連線,新的連線會取代舊的(舊的用 `4409` 關閉)。
 4. 心跳:Core 每 15 秒送 `{"type":"ping"}`,node 回 `{"type":"pong"}`;45 秒沒回應就斷線。
@@ -26,9 +28,16 @@ Self voice node(`apps/voice-node`,TS)和 Core 的 `voice.link` 模組之間的�
 | `play_start` | `play`(u32), `guild`, `sample_rate`, `levels?` | 開始一段播放;接著用二進位訊框送音訊。`levels: true`:這段播放另外帶一條**嘴型音軌**(`0x03`,例如歌曲的人聲),嘴型跟它走而不是跟播出的音訊走(舊的 node 會忽略) |
 | `play_end` | `play` | 這段音訊送完了。Node 播完緩衝裡的音訊後回 `playback` `finished` |
 | `play_stop` | `play`, `fade_ms` | 立刻停止(插話 / barge-in),淡出 `fade_ms` 毫秒 |
+| `play_duck` | `play`, `gain`(0~1), `fade_ms` | 把這段播放的音量設成 `gain`(1 = 原音量),用 `fade_ms` 毫秒漸變;之後一直維持到再次設定。別人在講話(不是在跟她說話)時 Core 先把她降音量,不用停。需要 capability `play_duck` |
+| `play_pause` | `play`, `fade_ms` | 淡出 `fade_ms` 毫秒後**暫停**:緩衝裡的音訊原封不動留著、不計入「沒收到音訊」逾時,node 持續送靜音。超過 30 秒(node 的 `maxPauseMs`)沒有 `play_resume` 就當被打斷(`playback` `interrupted`)。需要 capability `play_pause` |
+| `play_resume` | `play`, `fade_ms` | 繼續暫停的播放,`fade_ms` 毫秒淡入(回到 `play_duck` 設的音量)。需要 capability `play_pause` |
 | `golive_start` | `guild`, `source`, `channel?`, `width?`, `height?`, `fps?`, `bitrate_kbps?`, `encoder?`, `audio?`, `listen?` | 開始 Go Live,見下面〈Go Live〉 |
 | `golive_stop` | `guild` | 停止 Go Live |
 | `ping` | | |
+
+`play_duck` / `play_pause` / `play_resume` 對已經結束或不存在的 `play` 無作用;`gain` 超出 0~1、`fade_ms` 為負數的訊息被拒絕(node 回 `error`)。`fade_ms` 上限 10 秒,省略視為 0。音量調整同樣套用在嘴型音量上(她小聲嘴就小動)。
+
+**選擇性 barge-in(Core 端的規則,node 只負責執行上面的訊息)**:別人講話時 Core 先對播放送 `play_duck`;這回合要回的人講超過 `barge_in_ms` 就送 `play_pause`;語音辨識(ASR)回來後,如果是叫她名字、或要回的人說了實質內容就送 `play_stop`,否則(「嗯」、回音、跟她無關的話)送 `play_resume` 與 `play_duck` `gain: 1`,她接著講完剩下的句子。node 不宣告這兩個 capability(舊 node)時,Core 不送 duck、把「暫停」改成 `play_stop`(等於以前的行為)。這些決定都會以 `voice.barge_in` 事件(`{context, turn, account, action: duck|pause|resume|stop, reason}`)發到 Core 的事件匯流排。
 
 二進位 `0x02`(播放音訊):`[0x02][play: u32 LE][PCM s16le 單聲道 …]`。
 
