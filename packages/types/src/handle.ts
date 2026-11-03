@@ -37,8 +37,11 @@ export interface HandleEntry {
  * persists new rows in the background. The only place handles are assigned.
  */
 export interface HandleDirectory {
-  /** The account's handle, assigned from `displayName` (and persisted) on first sight. */
-  ofAccount(account: AccountRef, displayName: string): Handle;
+  /**
+   * The account's handle, assigned from `displayName` (and persisted) on first sight. A caller
+   * that knows which person the account belongs to passes it, so `ofPerson` can answer.
+   */
+  ofAccount(account: AccountRef, displayName: string, person?: PersonId | null): Handle;
   /** The person's handle, `null` when none of their accounts was seen yet. */
   ofPerson(person: PersonId): Handle | null;
   /** The row of `handle` (exact match), or `null`. */

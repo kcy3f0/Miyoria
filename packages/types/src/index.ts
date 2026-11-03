@@ -470,3 +470,9 @@ export {
   type VoiceBargeInAction,
   type VoiceBargeInReason,
 } from "./voice-barge.js";
+export {
+  hasEphemeralHandle,
+  type RepairOptions,
+  repairHandleJson,
+  repairHandleText,
+} from "./handle-text.js";
