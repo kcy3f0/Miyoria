@@ -1,9 +1,18 @@
 // Overlay settings from the query string, e.g.
 //   /overlay/?show=subtitles,queue&cps=16&scale=1.1&ws=ws://192.168.1.20:7884/overlay/ws
+//   /overlay/?layer=backdrop&layout=sing   (the background under the scene's sources)
 import { DEFAULT_CPS } from "./typewriter.js";
 
 export const SECTIONS = ["subtitles", "emotion", "status", "queue", "wave", "activity"] as const;
 export type Section = (typeof SECTIONS)[number];
+
+/** Which layer of the scene this page is: the overlay on top, or the background under everything. */
+export const LAYERS = ["overlay", "backdrop"] as const;
+export type Layer = (typeof LAYERS)[number];
+
+/** Scene layouts: `sing` frames the song video top left and leaves the bottom right to her. */
+export const LAYOUTS = ["default", "sing"] as const;
+export type Layout = (typeof LAYOUTS)[number];
 
 export interface OverlayConfig {
   ws: string;
@@ -16,6 +25,8 @@ export interface OverlayConfig {
   debug: boolean;
   /** Play a scripted feed instead of connecting (for design work and OBS previews). */
   demo: boolean;
+  layer: Layer;
+  layout: Layout;
 }
 
 /** Same host that served the page, so the overlay works from another PC; falls back to the Stage default. */
@@ -30,6 +41,11 @@ function num(raw: string | null, fallback: number, min: number, max: number): nu
   if (raw === null || raw.trim() === "") return fallback;
   const n = Number(raw);
   return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
+}
+
+function pick<T extends string>(raw: string | null, options: readonly T[]): T {
+  const v = raw?.trim().toLowerCase();
+  return (options as readonly string[]).includes(v ?? "") ? (v as T) : (options[0] as T);
 }
 
 function flag(raw: string | null): boolean {
@@ -57,5 +73,7 @@ export function parseConfig(search: string, loc?: Pick<Location, "protocol" | "h
     scale: num(q.get("scale"), 1, 0.4, 3),
     debug: flag(q.get("debug")),
     demo: flag(q.get("demo")),
+    layer: pick(q.get("layer"), LAYERS),
+    layout: pick(q.get("layout"), LAYOUTS),
   };
 }

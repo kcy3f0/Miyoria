@@ -1,5 +1,6 @@
 // Overlay HTTP server: `GET /overlay/ws` streams subtitle / emotion / speaking / status /
-// activity JSON, `/overlay/` serves the overlay web app.
+// activity JSON, `/overlay/` serves the overlay web app and `/overlay/backdrop` the stream's
+// background picture (`overlay_backdrop`, for the overlay's backdrop layer).
 
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -175,34 +176,14 @@ function notFound(res: ServerResponse): void {
   res.writeHead(404, { "content-type": "text/plain" }).end("Not Found");
 }
 
-/** `/overlay/<rest>` → a file under `root` (with `index.html` for directories). */
-async function serveFile(root: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    res.writeHead(405, { allow: "GET, HEAD" }).end();
-    return;
-  }
-  const rawPath = (req.url ?? "/").split("?")[0] ?? "/";
-  if (rawPath === "/overlay") {
-    res.writeHead(308, { location: "/overlay/" }).end();
-    return;
-  }
-  if (!rawPath.startsWith("/overlay/")) return notFound(res);
-  let rel: string;
-  try {
-    rel = decodeURIComponent(rawPath.slice("/overlay/".length));
-  } catch {
-    return notFound(res);
-  }
-  if (rel.includes("\0")) return notFound(res);
-  let path = resolve(root, normalize(rel));
-  if (path !== root && !path.startsWith(root + sep)) return notFound(res);
+/** The background picture's path under `/overlay/`. */
+export const BACKDROP_PATH = "backdrop";
+
+/** Sends the file at `path` (404 when it is not one). */
+async function sendFile(path: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
   let info: Awaited<ReturnType<typeof stat>>;
   try {
     info = await stat(path);
-    if (info.isDirectory()) {
-      path = join(path, "index.html");
-      info = await stat(path);
-    }
   } catch {
     return notFound(res);
   }
@@ -220,20 +201,58 @@ async function serveFile(root: string, req: IncomingMessage, res: ServerResponse
     .pipe(res);
 }
 
+/**
+ * `/overlay/<rest>` → a file under `root` (with `index.html` for directories), or the backdrop
+ * picture (the owner's config, wherever it is) at `/overlay/backdrop`.
+ */
+async function serveFile(
+  root: string,
+  backdrop: string | null,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    res.writeHead(405, { allow: "GET, HEAD" }).end();
+    return;
+  }
+  const rawPath = (req.url ?? "/").split("?")[0] ?? "/";
+  if (rawPath === "/overlay") {
+    res.writeHead(308, { location: "/overlay/" }).end();
+    return;
+  }
+  if (!rawPath.startsWith("/overlay/")) return notFound(res);
+  let rel: string;
+  try {
+    rel = decodeURIComponent(rawPath.slice("/overlay/".length));
+  } catch {
+    return notFound(res);
+  }
+  if (rel.includes("\0")) return notFound(res);
+  if (rel === BACKDROP_PATH) {
+    return backdrop === null ? notFound(res) : sendFile(backdrop, req, res);
+  }
+  let path = resolve(root, normalize(rel));
+  if (path !== root && !path.startsWith(root + sep)) return notFound(res);
+  if (await isDir(path)) path = join(path, "index.html");
+  return sendFile(path, req, res);
+}
+
 /** Serves the overlay on `bind` until `signal` aborts. */
 export async function serveOverlay(
   bind: string,
   dir: string,
   hub: OverlayHub,
   signal: AbortSignal,
+  backdrop: string | null = null,
 ): Promise<ServeResult> {
   const root = resolve(dir);
+  const picture = backdrop === null ? null : resolve(backdrop);
   if (!(await isDir(root))) {
     log.warn({ dir }, "overlay directory not found; only /overlay/ws is served");
   }
   const server = await HttpServer.listen(bind, "the overlay server", {
     onRequest(req, res) {
-      serveFile(root, req, res).catch(() => {
+      serveFile(root, picture, req, res).catch(() => {
         if (!res.headersSent) res.writeHead(500).end();
         else res.destroy();
       });

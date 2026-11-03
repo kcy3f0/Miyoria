@@ -386,6 +386,7 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 [stage]
 core_url = "ws://127.0.0.1:7882/stage-link"
 token = "${STAGE_LINK_TOKEN:-}"
+# overlay_backdrop = "data/stage/backdrop.jpg"   # 直播背景圖(overlay 的 ?layer=backdrop 會模糊、壓暗它)
 
 [stage.vts]
 enabled = true                 # VTube Studio:設定 → 開啟 API(port 8001)

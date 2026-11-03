@@ -37,6 +37,16 @@
   /* Distance things travel when they enter or leave. */
   --shift: 0.45rem;
 
+  /*
+   * The sing layout's song video: OBS puts it at this rectangle (1504x846 at 48,48 in 1080p), the
+   * backdrop frames it in a glass bezel, and the overlay keeps its pieces clear of it.
+   */
+  --pad: 3rem;
+  --video-w: 94rem;
+  --video-h: 52.875rem;
+  --video-r: 0.875rem;
+  --bezel: 0.5rem;
+
   --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft JhengHei UI", "Noto Sans TC", "PingFang TC",
     system-ui, sans-serif;
 }
@@ -220,8 +230,8 @@ body {
   display: flex;
   align-items: center;
   gap: 0.65rem;
-  height: 2.6rem;
-  padding: 0 1.15rem 0.2rem 1rem;
+  height: 3.1rem;
+  padding: 0 1.15rem 0.55rem 1rem;
   overflow: hidden;
   background: var(--plate);
   border: 1px solid var(--plate-edge);
@@ -296,13 +306,13 @@ body {
   white-space: nowrap;
 }
 
-/* The progress bar: a thin track along the bottom, inside the capsule's rounded shape. */
+/* The progress bar: a track along the bottom, inside the capsule's rounded shape. */
 .activity__track {
   position: absolute;
   left: 1rem;
   right: 1.15rem;
-  bottom: 0.42rem;
-  height: 0.16rem;
+  bottom: 0.5rem;
+  height: 0.3rem;
   overflow: hidden;
   border-radius: 999px;
   background: oklch(1 0 0 / 0.1);
@@ -359,6 +369,98 @@ body {
   to {
     transform: scaleX(1);
   }
+}
+
+/* ── sing layout (the song video top left, her model bottom right) ──── */
+
+/* Subtitles sit low on the video, like a film's. */
+[data-layout="sing"] .subtitle {
+  left: calc(var(--pad) + var(--video-w) / 2);
+  bottom: calc(100% - var(--pad) - var(--video-h) + 1.75rem);
+  max-width: calc(var(--video-w) - 6rem);
+}
+
+/* The capsule sits just under the video, flush with its left edge. */
+[data-layout="sing"] .activity {
+  top: calc(var(--pad) + var(--video-h) + var(--bezel) + 1rem);
+  bottom: auto;
+  left: calc(var(--pad) - var(--bezel));
+}
+
+/*
+ * The voice bars lie along the bottom edge under the video: the column turned a quarter left, so
+ * the bars stand on the frame's bottom edge and grow up.
+ */
+[data-layout="sing"] .wave {
+  top: 100%;
+  left: var(--pad);
+  width: 7rem;
+  height: var(--video-w);
+  transform: rotate(-90deg);
+  transform-origin: 0 0;
+}
+
+[data-layout="sing"] .panel {
+  top: var(--pad);
+  right: var(--pad);
+}
+
+/* ── backdrop layer (?layer=backdrop: under every other source) ───────── */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 90% at 30% 20%, oklch(0.26 0.03 265), transparent 70%),
+    oklch(0.14 0.018 270);
+}
+
+/* Larger than the frame, so the blur has no soft edge. */
+.backdrop__art {
+  position: absolute;
+  top: -3rem;
+  left: -3rem;
+  width: calc(100% + 6rem);
+  height: calc(100% + 6rem);
+  object-fit: cover;
+  filter: blur(0.7rem) saturate(1.35);
+}
+
+/* Dims the picture, a little more towards the bottom where the captions and capsule sit. */
+.backdrop__shade {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(140% 110% at 50% 35%, transparent 35%, oklch(0.1 0.03 265 / 0.45)),
+    linear-gradient(180deg, oklch(0.18 0.035 265 / 0.5), oklch(0.12 0.03 265 / 0.72));
+}
+
+/* The glass the song video sits in: a frosted rim around it, a hairline edge, a soft shadow. */
+.bezel {
+  position: absolute;
+  top: calc(var(--pad) - var(--bezel));
+  left: calc(var(--pad) - var(--bezel));
+  box-sizing: border-box;
+  width: calc(var(--video-w) + 2 * var(--bezel));
+  height: calc(var(--video-h) + 2 * var(--bezel));
+  border: 1px solid oklch(1 0 0 / 0.22);
+  border-radius: calc(var(--video-r) + var(--bezel));
+  background: oklch(1 0 0 / 0.08);
+  box-shadow:
+    0 1.6rem 4rem oklch(0 0 0 / 0.42),
+    inset 0 1px 0 oklch(1 0 0 / 0.14);
+  backdrop-filter: blur(1.5rem) saturate(1.3);
+}
+
+/* The screen itself, seen between songs (the video covers it while one plays). */
+.bezel::after {
+  content: "";
+  position: absolute;
+  inset: calc(var(--bezel) - 1px);
+  border-radius: var(--video-r);
+  background: oklch(0.1 0.015 265 / 0.45);
+  box-shadow: inset 0 0 0 1px oklch(0 0 0 / 0.25);
 }
 
 /* ── side panel ───────────────────────────────────────────────────────── */

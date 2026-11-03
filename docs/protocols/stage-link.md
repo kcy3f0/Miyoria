@@ -205,6 +205,7 @@ Voice node(跟 Stage 在同一台直播機)播放她的聲音時,把播放中的
 Stage 的 HTTP 伺服器(`[stage] overlay_bind`,預設 `127.0.0.1:7884`):
 
 - `GET /overlay/`:靜態檔案,來自 `[stage] overlay_dir`(預設 `apps/overlay/dist`)。OBS browser source 指向 `http://127.0.0.1:7884/overlay/`。
+- `GET /overlay/backdrop`:直播背景圖,`[stage] overlay_backdrop` 指定的檔案(任何路徑);沒設定時 404,背景層就只畫深色漸層。
 - `GET /overlay/ws`:WebSocket,Stage → overlay 單向推送 JSON。連上時先收到最新的 `status`、`emotion`、`subtitle`(有的話),之後即時推送:
 
 ```json

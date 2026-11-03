@@ -324,6 +324,26 @@ describe("stage", () => {
     ws.terminate();
   });
 
+  it("overlay_serves_the_backdrop_picture", async () => {
+    const d = dir();
+    writeFileSync(join(d, "index.html"), "<p>overlay</p>");
+    const pictures = dir();
+    const picture = join(pictures, "snow.png");
+    writeFileSync(picture, "PNG");
+    const controller = new AbortController();
+    cleanup.push(() => controller.abort());
+    const hub = new OverlayHub();
+    const { addr } = await serveOverlay("127.0.0.1:0", d, hub, controller.signal, picture);
+    const res = await httpGet(addr, "/overlay/backdrop");
+    expect(res.startsWith("HTTP/1.1 200")).toBe(true);
+    expect(res.toLowerCase()).toContain("content-type: image/png");
+    expect(res.endsWith("PNG")).toBe(true);
+
+    // No picture configured: 404, and the page draws its gradient.
+    const bare = await serveOverlay("127.0.0.1:0", d, hub, controller.signal);
+    expect((await httpGet(bare.addr, "/overlay/backdrop")).startsWith("HTTP/1.1 404")).toBe(true);
+  });
+
   it("overlay_serves_files_and_events", async () => {
     const d = dir();
     writeFileSync(join(d, "index.html"), "<p>overlay</p>");

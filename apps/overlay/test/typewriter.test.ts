@@ -112,6 +112,12 @@ describe("parseConfig", () => {
     expect(parseConfig("?demo&debug=1", loc)).toMatchObject({ demo: true, debug: true });
     expect(parseConfig("?demo=0&debug=false", loc)).toMatchObject({ demo: false, debug: false });
   });
+
+  it("layer= and layout= pick a known value, else the overlay in the default layout", () => {
+    expect(parseConfig("", loc)).toMatchObject({ layer: "overlay", layout: "default" });
+    expect(parseConfig("?layer=Backdrop&layout=sing", loc)).toMatchObject({ layer: "backdrop", layout: "sing" });
+    expect(parseConfig("?layer=top&layout=karaoke", loc)).toMatchObject({ layer: "overlay", layout: "default" });
+  });
 });
 
 describe("defaultWsUrl", () => {

@@ -56,6 +56,8 @@ export const StageConfigSchema = z.object({
   overlay_bind: z.string().default("127.0.0.1:7884"),
   /** Overlay web app files. */
   overlay_dir: z.string().default("apps/overlay/dist"),
+  /** The stream's background picture (the overlay's `?layer=backdrop`); none: a dark gradient. */
+  overlay_backdrop: z.string().trim().min(1).nullable().default(null),
   /** Core is considered gone after this long without traffic. */
   peer_timeout_ms: z.number().int().nonnegative().default(45_000),
   vts: VtsConfigSchema.prefault({}),
@@ -146,6 +148,7 @@ export async function runStageWith(
       config.overlay_dir,
       overlay,
       tasks.signal,
+      config.overlay_backdrop,
     );
     background.push(overlayServer.done);
 

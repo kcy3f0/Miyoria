@@ -213,7 +213,8 @@ export class Wave {
     const thick = 0.42 * rem;
     const r = thick / 2;
     const rest = 0.5 * rem; // what still shows of a bar at rest, so the column keeps its outline
-    const reach = 7.5 * rem;
+    // The strip's width less the rest length and a margin (7.5rem in the 10rem column).
+    const reach = Math.max(rem, this.#width - rest - 2 * rem);
     const top = this.#height / 2 - (pitch * (n - 1)) / 2;
     let drawn = false;
 
