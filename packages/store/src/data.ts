@@ -210,13 +210,15 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
   category(
     "inner",
     // @miyoria/self `STATE_KEY`, `FEELING_PREFIX`; @miyoria/mind's thought journal and its
-    // digests (`THOUGHT_PREFIX`, `DIGEST_PREFIX`)
+    // digests (`THOUGHT_PREFIX`, `DIGEST_PREFIX`), her goals and plan state (`GOAL_PREFIX`,
+    // `GOAL_MIGRATION_KEY` and `PLAN_STATE_KEY` under `mind:plan:`)
     [
       settings("self_state", "active", ["self:state"]),
       settings("self_feelings", "active", [], ["self:feeling:"]),
       settings("self_cards_migration", "active", ["self:cards:migration"]),
       settings("mind_thoughts", "active", [], ["mind:thought:"]),
       settings("mind_digests", "active", [], ["mind:digest:"]),
+      settings("mind_goals", "active", [], ["mind:goal:", "mind:plan:"]),
     ],
     { modules: ["self", "mind"] },
   ),
