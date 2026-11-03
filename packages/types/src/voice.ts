@@ -52,7 +52,7 @@ export interface VoiceSink {
    * such as translating it can start before its turn. `spoken`: the words to say for it in
    * `speaksIn`, when the reply already has them. Optional; never required before `speak`.
    */
-  prepare?(context: ContextKey, text: string, spoken?: string): void;
+  prepare?(context: ContextKey, text: string, spoken?: string, emotion?: string | null): void;
   speak(
     context: ContextKey,
     text: string,

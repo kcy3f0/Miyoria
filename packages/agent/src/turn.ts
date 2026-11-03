@@ -286,7 +286,9 @@ class Speech {
     readonly ttlMs: number,
     readonly signal: AbortSignal,
     /** Tells the voice sink a sentence is coming (`VoiceSink.prepare`). */
-    readonly prepare: ((text: string, spoken?: string) => void) | null = null,
+    readonly prepare:
+      | ((text: string, spoken?: string, emotion?: string | null) => void)
+      | null = null,
     /** She is heard in another language and writes `<voice>` lines (`VoiceSink.speaksIn`). */
     readonly bilingual = false,
     /** A `<voice>` line written first goes out as soon as it is complete. */
@@ -424,7 +426,7 @@ class Speech {
       .replace(/[ \t]{2,}/g, " ")
       .trim();
     if (!isSpeakable(said)) return false;
-    this.prepare?.(said, said);
+    this.prepare?.(said, said, this.#emotion);
     await this.#submit(said);
     return true;
   }
@@ -452,7 +454,7 @@ class Speech {
     const text = filterOutgoing(cleanReply(sentence, this.names)).replace(/[ \t]{2,}/g, " ");
     if (!isSpeakable(text)) return;
     const said = spoken === undefined ? "" : filterOutgoing(cleanReply(spoken, this.names)).trim();
-    this.prepare?.(text, said === "" ? undefined : said);
+    this.prepare?.(text, said === "" ? undefined : said, emotion);
     const action = newAction(
       this.lane,
       this.priority,
@@ -1260,7 +1262,9 @@ class Turn {
         priority,
         cfg.voice.speak_ttl_ms,
         this.signal,
-        voiceSink?.prepare ? (text, spoken) => voiceSink.prepare?.(this.key, text, spoken) : null,
+        voiceSink?.prepare
+          ? (text, spoken, emotion) => voiceSink.prepare?.(this.key, text, spoken, emotion)
+          : null,
         Boolean(voiceSink?.speaksIn),
         cfg.voice.voice_first,
         () => this.#output(),
