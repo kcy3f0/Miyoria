@@ -17,6 +17,7 @@ import type {
   DataCategoryId,
   DecisionsQuery,
   GameStartRequest,
+  LlmCallsQuery,
   MemoryQuery,
   ModuleAction,
   ModuleInfo,
@@ -539,6 +540,54 @@ export function useTelemetry(minutes: number) {
     queryKey: queryKeys.telemetry(minutes),
     queryFn: ({ signal }) => api.telemetry(minutes, { signal }),
     refetchInterval: poll(60_000),
+    placeholderData: (prev) => prev,
+  });
+}
+
+/** One thought in full (what it saw, the reasoning). */
+export function useThought(id: string | undefined) {
+  const api = useApi();
+  return useQuery({
+    queryKey: [...queryKeys.thoughts, "one", id ?? ""],
+    queryFn: ({ signal }) => api.thought(id ?? "", { signal }),
+    enabled: Boolean(id),
+    refetchInterval: poll(10_000),
+  });
+}
+
+const LLM_PAGE = 100;
+
+/** The call inspector, newest first, one page at a time. */
+export function useLlmCalls(q: LlmCallsQuery) {
+  const api = useApi();
+  return useInfiniteQuery({
+    queryKey: ["llm", "calls", q],
+    queryFn: ({ signal, pageParam }) => api.llmCalls(q, LLM_PAGE, pageParam, { signal }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next_cursor,
+    refetchInterval: poll(10_000),
+    // A new filter keeps the old rows until the new ones arrive.
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useLlmCall(id: string | undefined) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["llm", "call", id ?? ""],
+    queryFn: ({ signal }) => api.llmCall(id ?? "", { signal }),
+    enabled: Boolean(id),
+    refetchInterval: (query) => (query.state.data?.call.status === "streaming" ? 2_000 : false),
+  });
+}
+
+/** Breakdowns of the calls in the last `minutes` (`null`: every kept call). */
+export function useLlmStats(minutes: number | null) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["llm", "stats", minutes],
+    queryFn: ({ signal }) => api.llmStats(minutes, { signal }),
+    refetchInterval: poll(30_000),
     placeholderData: (prev) => prev,
   });
 }

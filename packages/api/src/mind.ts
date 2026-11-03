@@ -66,7 +66,14 @@ export function mindRoutes(state: ApiState): Route[] {
         const limit = Number.isFinite(raw)
           ? Math.min(Math.max(Math.trunc(raw), 1), MAX_THOUGHTS)
           : DEFAULT_THOUGHTS;
-        return json(mind.thoughts(limit));
+        // What each thought saw and the reasoning are large: `GET /api/mind/thoughts/{id}`.
+        return json(
+          mind.thoughts(limit).map(({ input: _input, reasoning, ...t }) => ({
+            ...t,
+            has_input: _input != null,
+            has_reasoning: reasoning != null && reasoning !== "",
+          })),
+        );
       },
     },
     {

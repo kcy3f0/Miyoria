@@ -60,6 +60,11 @@ import type {
   GameStartRequest,
   SongsState,
   TelemetryView,
+  LlmCallDetail,
+  LlmCallRecord,
+  LlmCallsPage,
+  LlmCallsQuery,
+  LlmCallStats,
 } from "./types";
 
 type Opts = { signal?: AbortSignal };
@@ -198,6 +203,29 @@ export function createApi(client: ApiClient) {
     gameStart: (req: GameStartRequest) => client.post<ControlResult>("/api/game/start", req),
     gameStop: () => client.post<ControlResult>("/api/game/stop", {}),
     gameGoal: (text: string) => client.post<ControlResult>("/api/game/goal", { text }),
+
+    thought: (id: string, o?: Opts) => client.get<Thought>(`/api/mind/thoughts/${seg(id)}`, o),
+    llmCalls: (q: LlmCallsQuery, limit: number, before: string | null, o?: Opts) =>
+      client.get<LlmCallsPage>("/api/llm/calls", {
+        ...o,
+        query: {
+          purpose: q.purpose,
+          model: q.model,
+          module: q.module,
+          status: q.status,
+          trouble: q.trouble ? "true" : undefined,
+          thought: q.thought,
+          turn: q.turn,
+          since: q.since,
+          q: q.q,
+          limit,
+          before: before ?? undefined,
+        },
+      }),
+    llmCall: (id: string, o?: Opts) =>
+      client.get<{ call: LlmCallRecord; detail: LlmCallDetail | null }>(`/api/llm/calls/${seg(id)}`, o),
+    llmStats: (minutes: number | null, o?: Opts) =>
+      client.get<LlmCallStats>("/api/llm/stats", { ...o, query: { minutes: minutes ?? undefined } }),
 
     telemetry: (minutes: number, o?: Opts) =>
       client.get<TelemetryView>("/api/telemetry", { ...o, query: { minutes } }),

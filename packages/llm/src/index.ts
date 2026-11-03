@@ -8,6 +8,24 @@
 //   provides the router as `LlmRouterKey`.
 
 export {
+  callUsage,
+  clip,
+  type LlmCallDetail,
+  type LlmCallFilter,
+  LlmCallLog,
+  type LlmCallRecord,
+  type LlmCallStats,
+  type LlmCallStatus,
+  type LlmCallUsage,
+  type LlmFallback,
+  type LlmGroupStats,
+  type LlmHourStats,
+  type LlmMessageView,
+  MAX_CALLS,
+  MAX_DETAILS,
+  redactSecrets,
+} from "./calls.js";
+export {
   BUDGET_TOPIC,
   type BudgetConfig,
   BudgetConfigSchema,
@@ -59,6 +77,13 @@ export {
   StructuredOutputError,
   type StructuredResult,
 } from "./structured.js";
+export {
+  collectRetries,
+  currentLlmTag,
+  type LlmCallTag,
+  noteProviderRetry,
+  withLlmTag,
+} from "./trace.js";
 export {
   assistantMessage,
   BudgetExhaustedError,

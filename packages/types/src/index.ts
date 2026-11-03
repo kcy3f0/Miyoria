@@ -126,6 +126,8 @@ export {
   type Thought,
   type ThoughtDecision,
   type ThoughtDigest,
+  type ThoughtEffects,
+  type ThoughtInput,
   type ThoughtIntent,
   type ThoughtTrigger,
   type ThoughtTriggerKind,

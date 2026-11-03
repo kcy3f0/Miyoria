@@ -25,7 +25,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { notify } from "@/lib/notify";
-import { LlmTab } from "./LlmTab";
 
 const route = getRouteApi("/system");
 
@@ -459,15 +458,10 @@ export function SystemPage() {
             </TabsTrigger>
           ))}
         </TabsList>
-        {tab !== "llm" && (
-          <Toolbar>
-            <SearchInput value={text} onChange={setText} placeholder="搜尋名稱或 id" label="搜尋" />
-            {tab === "modules" && <ModuleFilter value={filter} onChange={setFilter} />}
-          </Toolbar>
-        )}
-        <TabsContent value="llm">
-          <LlmTab />
-        </TabsContent>
+        <Toolbar>
+          <SearchInput value={text} onChange={setText} placeholder="搜尋名稱或 id" label="搜尋" />
+          {tab === "modules" && <ModuleFilter value={filter} onChange={setFilter} />}
+        </Toolbar>
         <TabsContent value="modules">
           <ModulesTab filterText={needle} filter={filter} />
         </TabsContent>

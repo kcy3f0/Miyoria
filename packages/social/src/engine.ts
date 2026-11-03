@@ -4,7 +4,7 @@
 // Callers pass `now` (epoch ms) explicitly so everything is testable without a clock.
 
 import { getLogger, SerialQueue } from "@miyoria/kernel";
-import { type LlmRouter, sessionId } from "@miyoria/llm";
+import { type LlmRouter, sessionId, withLlmTag } from "@miyoria/llm";
 import type {
   IdentityStore,
   MemoryRecordStore,
@@ -585,7 +585,9 @@ export class Social implements SocialSignals {
       ...appraisalRequest(this.herName, snapshot.lines, names),
       session: this.#llmSession(),
     };
-    const response = await router.complete(this.config.llm_purpose, request, signal);
+    const response = await withLlmTag({ module: "social", label: "appraisal" }, () =>
+      router.complete(this.config.llm_purpose, request, signal),
+    );
     const results = parseAppraisal(response.text);
     let applied = 0;
     for (const result of results) {
@@ -656,7 +658,9 @@ export class Social implements SocialSignals {
         ...notesRequest(this.herName, name, old, lines),
         session: this.#llmSession(),
       };
-      const response = await router.complete(this.config.llm_purpose, request, signal);
+      const response = await withLlmTag({ module: "social", label: "notes" }, () =>
+        router.complete(this.config.llm_purpose, request, signal),
+      );
       const notes = parseNotes(response.text);
       if (notes === null || notes === old) return false;
       await this.#modifyInner(person, "notes: refresh", now, false, (r) => {

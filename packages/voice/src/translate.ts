@@ -3,7 +3,7 @@
 // (`<voice>…</voice>`, see the agent's `Speech`); only lines without one take a translation call.
 
 import { errorMessage, type Logger } from "@miyoria/kernel";
-import { type LlmRouter, systemMessage, userMessage } from "@miyoria/llm";
+import { type LlmRouter, systemMessage, userMessage, withLlmTag } from "@miyoria/llm";
 
 /** Translations kept for lines that were prepared but not spoken yet (or spoken twice). */
 const MAX_CACHED = 32;
@@ -89,12 +89,14 @@ export class SpeechTranslator {
 
   async #run(text: string): Promise<string> {
     try {
-      const response = await this.router.complete(this.purpose, {
-        messages: [systemMessage(translatePrompt(this.language)), userMessage(text)],
-        temperature: 0.3,
-        max_tokens: 400,
-        thinking: false,
-      });
+      const response = await withLlmTag({ module: "voice", label: "translate" }, () =>
+        this.router.complete(this.purpose, {
+          messages: [systemMessage(translatePrompt(this.language)), userMessage(text)],
+          temperature: 0.3,
+          max_tokens: 400,
+          thinking: false,
+        }),
+      );
       const out = response.text.trim();
       if (out === "") throw new Error("empty translation");
       return out;

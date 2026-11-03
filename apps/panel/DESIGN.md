@@ -5,8 +5,9 @@ Geist, shadcn/ui (new-york, neutral). The owner glances at it beside Discord, OB
 terminal on a streaming desk at night. Brand lives in one precise detail — the DeepSeek-blue
 accent on focus, selection, "her", her chart series and the crescent mark — never in decoration.
 
-Minimal here means restrained chrome around dense, real data, not bare pages: every page leads
-with state, then trends drawn as charts, then the controls that change them.
+"Vercel style" is the palette only. The panel is detailed on purpose: every page leads with
+state, then trends drawn as charts, then the controls that change them, and anything that has
+detail (an LLM call, a thought) opens in full with nothing left out.
 
 Tokens: `src/index.css` (`:root` variables + Tailwind v4 `@theme inline`). Primitives:
 `src/components/ui/*` (shadcn, Radix per component). App components: `src/components/*`.
@@ -60,7 +61,7 @@ numbers use `tabular-nums`; standalone headline values keep proportional figures
 ## Layout
 
 - Shell: shadcn `Sidebar` (15 rem, collapses to 3.25 rem icons, `⌘/Ctrl+B`; off-canvas
-  sheet below `md`). Nine items: 總覽 · 動態 · 直播 · 角色 · 內心 · 系統 · 權限 · 資料 · 設定. A pulsing red
+  sheet below `md`). Ten items: 總覽 · 動態 · 直播 · 角色 · 內心 · LLM · 系統 · 權限 · 資料 · 設定. A pulsing red
   dot on 直播 while she is live, a count on 內心 while approvals wait. Footer: one status dot
   for Core + event stream (tooltip: version, stream state, host), the Discord user (or "Admin
   token") and logout.
@@ -80,6 +81,19 @@ numbers use `tabular-nums`; standalone headline values keep proportional figures
 - 直播: a two-column control deck — 畫面 (OBS stream, scenes as a radio grid, expressions as
   chips), 歌單, 請求佇列, 場景用途 on the left; 語音 (join / leave / Go Live), 讓她說, 遊戲,
   聊天等級 (with a per-channel mute) on the right.
+
+- LLM (`/llm`): 概況 (a six-cell KPI strip — calls, cost, tokens, cache hit, error rate,
+  first-token p50/p95 — cost and tokens per hour, tables per purpose, model with its price,
+  and module, the latency distribution, finish reasons and error kinds, the costliest and
+  slowest calls), 呼叫 (the call inspector: filters in one row — search, purpose, model,
+  module, status, time, "only calls that had trouble" — a dense table, load more), 價格與用量
+  (the `[llm.pricing]` table, models seen without a price in red, spend, telemetry trends).
+- Detail sheets (`sm:max-w-3xl`): an LLM call (facts, time and usage cells, the cost line by
+  line at the price charged, fallbacks and retries, the model's reasoning, the response, every
+  message with role, length and copy; long texts fold) and a thought (why, what she thought,
+  the reasoning, every change, each intent's lifecycle as a timeline with gate decisions and
+  what she said, what she saw, her LLM calls). The sheet is in the URL (`?call=`,
+  `?thought=`), so a call links to its thought and a thought to its calls.
 
 ## Charts
 

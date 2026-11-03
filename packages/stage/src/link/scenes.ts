@@ -14,7 +14,7 @@
 // the model's answer only counts when it names a listed scene exactly.
 
 import { errorMessage, getLogger } from "@miyoria/kernel";
-import type { LlmRouter } from "@miyoria/llm";
+import { type LlmRouter, withLlmTag } from "@miyoria/llm";
 import type { SettingsStore } from "@miyoria/store";
 import { dataBlock, isJsonObject, type JsonValue, serviceKey } from "@miyoria/types";
 import { z } from "zod";
@@ -326,20 +326,22 @@ export class SceneRoles {
     );
     try {
       const { system, user } = classifyMessages(scenes);
-      const response = await router.complete(
-        this.#config.classify_purpose,
-        {
-          messages: [
-            { role: "system", content: system, name: null, tool_calls: [], tool_call_id: null },
-            { role: "user", content: user, name: null, tool_calls: [], tool_call_id: null },
-          ],
-          temperature: 0,
-          max_tokens: 400,
-          json_mode: true,
-          thinking: false,
-          session: "stage-scenes",
-        },
-        controller.signal,
+      const response = await withLlmTag({ module: "stage", label: "scenes" }, () =>
+        router.complete(
+          this.#config.classify_purpose,
+          {
+            messages: [
+              { role: "system", content: system, name: null, tool_calls: [], tool_call_id: null },
+              { role: "user", content: user, name: null, tool_calls: [], tool_call_id: null },
+            ],
+            temperature: 0,
+            max_tokens: 400,
+            json_mode: true,
+            thinking: false,
+            session: "stage-scenes",
+          },
+          controller.signal,
+        ),
       );
       return { auto: parseClassification(response.text, scenes), by: "llm" };
     } catch (error) {
