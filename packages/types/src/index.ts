@@ -444,6 +444,7 @@ export {
   reasoningEnabled,
   reasoningFor,
 } from "./reasoning.js";
+export { type SceneRule, type SceneRuleInput, SceneRuleKey } from "./scene-rule.js";
 export {
   isTaskFailureCode,
   isTerminalTaskEvent,
