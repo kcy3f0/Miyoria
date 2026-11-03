@@ -6,10 +6,12 @@ import type { ReplyFile } from "@miyoria/commands";
 import type { ServiceLookup } from "@miyoria/kernel";
 import type {
   AccountRef,
+  ActivityRequest,
   JsonObject,
   JsonValue,
   LaneKey,
   Principal,
+  TaskId,
   Timestamp,
   TurnId,
 } from "@miyoria/types";
@@ -66,6 +68,11 @@ export interface ExecContext {
   decision: GateDecision;
   services: ServiceLookup;
   signal: AbortSignal;
+  /**
+   * The ActivityManager task this run is a step of (`null` / missing: a plain call). Set when
+   * the manager executes a routed request (see `Capability.activity`).
+   */
+  task?: TaskId | null;
 }
 
 /** An executor's result: a short text (for her or the command) and optional details. */
@@ -109,6 +116,15 @@ export interface Capability<A = unknown> {
   target?(args: A, principal: Principal): AccountRef | null;
   /** Scheduler lane for runs requested from a turn; `null` runs directly. */
   lane?(args: A, principal: Principal): LaneKey | null;
+  /**
+   * The ActivityManager transitions this request stands for (v2 §3.2; `voice.join` →
+   * `ensure_voice`, `game.start` → `start`, ...). When the app runs an ActivityManager (it
+   * installs itself as the registry's `ActivityRouter`), a call the gate allowed is handed to it
+   * instead of executing here: the manager serializes it with everything else that touches the
+   * same resource, answers idempotently, and runs `execute` itself as a step of its task.
+   * `null` (or no hook): execute as usual.
+   */
+  activity?(args: A, principal: Principal): ActivityRequest[] | null;
   /** Checks against live state after the schema (e.g. the scene exists); returns why not. */
   check?(args: A, principal: Principal): string | null;
   /** The owners' approval card shows this instead of the raw JSON arguments. */
