@@ -74,6 +74,14 @@
 
 **單一 renderer(item 18)**:W1 的編譯器直接從服務 render `SELF_BLOCK_KEYS`(心情、在做什麼、方針、議程、Ledger、notice);「在場的人」由 W1 render 成**一個** data 段落(每人一行:handle、`relationshipLabel`、她的感覺一句)。現有 contributor 中跟它重複的(key `mood` — `social/src/mood.ts:426`;`emotion`、`self` — `self/src/prompt.ts:128`、`:48`;`social` — `social/src/prompt.ts:9`;`world` 裡她自己的狀態)由 W1 在編譯器裡**忽略**(列在 agent 自己的 superseded 清單),W4 之後再刪掉那些 contributor。
 
+**W1 實作紀錄**:
+
+- 回合擁有權在 `agent/src/focus.ts`(`selectFocus`、`callKind`、`TurnFocusBoard` = `TurnFocusViewKey`)與 `coordinator.ts`(只用 `inputDisposition()`)。`NewInputFacts` 追加了可選的 `selfStarted`:她自己開的回合(initiative / intent / notice)遇到有人叫她就讓出(`cancelled{cause: "superseded"}`)。
+- `agent.turn.outcome`:正常結束的回合由 turn 發,被取消的(`input` / `superseded` / `shutdown`,intent 的 `expired` / `superseded`)由 coordinator 發;`barge_in` 從 `voice.barge_in`(`action: "stop"`、`turn`、`account`)記下是誰。`core/src/recorder.ts` 用 `store.decisions.appendOutcome?.({id, profile, ts, outcome})` 寫入——**需要 W5 在 `DecisionLog` 加這個 optional 方法**(形狀見 `recorder.ts` 的 `TurnOutcomeEntry`)。
+- 編譯器在 `agent/src/compiler.ts`(預算、`SUPERSEDED`、`SavedPrompts` = `SavedPromptsKey`、topic `agent.prompt`)與 `self-block.ts`(每個概念一個 renderer,服務不在就 fallback)。順序維持前綴快取友善:`[system 人設 + 規則] [user 範例對話] [history] [user 資料 + 要回的訊息] [system 情境 + 你自己的狀態]`。面板要看 prompt 的 API 路由還沒做(`packages/api` 不屬於 W1):讀 `SavedPromptsKey.recent(context, n)` / `get(turn)` 即可。
+- 雙語語音先寫 `<voice>`,寫完立刻送 TTS(speak 的 text 是那句日文,`prepare(line, line)`),中文寫完後發 `agent.subtitle {turn, context, spoken, text}`、歷史改成中文。**Stage 字幕要換成中文需要 W3 訂閱 `agent.subtitle`**(現在字幕先顯示日文);`[modules.agent.voice] voice_first = false` 回到舊行為。
+- Attention 只改了「回她剛說的話」跳過安靜檢查與 level 冷卻、talkativeness 下限(`attention.talk_floor`)、有 `AffectStateKey` 時用 `biases.talkativeness` 取代好感 / 精力乘數;冷卻、level 間隔、initiative 的 busy / cooldown / `startBlocked` 都還在(W6 的 seam,註解有標)。
+
 ### W2 Voice(barge-in、ducking、回音排除、TTS 預取、唱歌 / GPU)
 
 **擁有**:`packages/voice/**`(**除了** `packages/voice/src/actions.ts`,那是 W3 的)、`apps/voice-node/**`、`docs/protocols/voice-link.md`;需要時可改 `packages/sing` 裡 `VoiceFloor` / `SpeechPause` 的提供端(只限那部分)。
