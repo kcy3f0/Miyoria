@@ -38,8 +38,9 @@ export interface CapabilityTool {
   /**
    * High risk only: the result matters to her (e.g. program output). The tool waits up to
    * `[modules.actions] inline_wait_ms` for the review and the run; when that is not enough it
-   * answers "pending" and the outcome comes back later as a follow-up turn (`agent_initiative`,
-   * reason `action_result`). Without it a high-risk tool only says the request is under review.
+   * answers "pending" and the outcome comes back later as a follow-up turn (an impulse of source
+   * `followup`, reason `action_result`). Without it a high-risk tool only says the request is
+   * under review.
    */
   followup?: boolean;
 }
