@@ -165,7 +165,11 @@ export interface GoalFacts {
   pending: boolean;
   action: ActionCall | null;
   ageMs: number;
-  sinceIssuedMs: number;
+  /**
+   * Its task is still running (started, no `done` / `failed` yet). This is the executor's word,
+   * not a guess from `busy` or a settle time.
+   */
+  running: boolean;
 }
 
 /**
@@ -198,16 +202,14 @@ function sameText(a: string, b: string): boolean {
 }
 
 /**
- * The anti-spam rule: let the bot work, switch goals only when the current one finished, the
- * bot is idle, something important happened or the goal is old enough. `busy` is `null` when
- * the adapter does not report it.
+ * The anti-spam rule: let the goal's task work, switch goals only when it ended, something
+ * important happened or the goal is old enough.
  */
 export function judge(
   cfg: GameConfig,
   goal: GoalFacts | null,
   proposal: ActionCall,
   proposedGoal: string | null,
-  busy: boolean | null,
   important: boolean,
 ): Verdict {
   if (cfg.session_actions.includes(proposal.name)) {
@@ -216,42 +218,26 @@ export function judge(
   if (cfg.instant_actions.includes(proposal.name)) return { type: "step" };
   if (!goal) return { type: "replace" };
   if (goal.pending) return { type: "step" };
-  const idle = busy === false;
-  const settled = goal.sinceIssuedMs >= cfg.settle_secs * 1000;
+  const ended = !goal.running;
   const minGoal = cfg.min_goal_secs * 1000;
   if (goal.action?.equals(proposal)) {
-    return idle && settled
+    return ended
       ? { type: "step" }
-      : { type: "keep", why: "same action, the bot is still on it" };
+      : { type: "keep", why: "same action, its task is still running" };
   }
   if (goal.locked) {
-    return (idle && settled) || important || goal.sinceIssuedMs >= minGoal
+    return ended || important || goal.ageMs >= minGoal
       ? { type: "step" }
       : { type: "keep", why: "a requested goal is still running" };
   }
   const sameGoal = proposedGoal !== null && sameText(proposedGoal, goal.text);
   if (sameGoal) {
-    return (idle && settled) || important
+    return ended || important
       ? { type: "step" }
-      : { type: "keep", why: "same goal, the bot is still on it" };
+      : { type: "keep", why: "same goal, its task is still running" };
   }
-  if ((idle && settled) || important || goal.ageMs >= minGoal) return { type: "replace" };
+  if (ended || important || goal.ageMs >= minGoal) return { type: "replace" };
   return { type: "keep", why: "too soon to switch goals" };
-}
-
-/** Splits an observation tool result (`summary\n\n狀態:{json}`) into the summary and the state. */
-export function splitObservation(raw: string): { summary: string; state: JsonObject | null } {
-  const mark = "\n\n狀態:";
-  const i = raw.lastIndexOf(mark);
-  if (i < 0) return { summary: raw.trim(), state: null };
-  let state: JsonObject | null = null;
-  try {
-    const value: unknown = JSON.parse(raw.slice(i + mark.length));
-    if (isObject(value)) state = value;
-  } catch {
-    // Not JSON: the whole text is the summary's tail, state unknown.
-  }
-  return { summary: raw.slice(0, i).trim(), state };
 }
 
 /** Parts of the decision prompt. */
@@ -280,7 +266,7 @@ export function prompts(p: PromptParts): { system: string; user: string } {
     "你現在是遊戲的「慢迴路」:每隔一段時間看一次遊戲狀態,決定高階目標和下一個動作;" +
     "細節交給遊戲那邊,你只下高階動作。這個遊戲怎麼玩寫在最後的動作說明裡。\n" +
     "規則:\n" +
-    "- 目標還在進行(狀態 busy 為 true)而且沒出事,就不要換目標,action 給 null,讓 bot 繼續做。\n" +
+    "- 目標還在進行(目前目標寫著「進行中」)而且沒出事,就不要換目標,action 給 null,讓遊戲那邊繼續做。\n" +
     '- 有觀眾或主人指定的目標時,優先把它完成;完成了 goal_status 給 "done",做不到給 "failed"。\n' +
     "- 看遊戲狀態裡實際有什麼,選下一個現在就做得到的動作。\n" +
     "- 動作失敗時讀失敗原因(例如缺什麼、看不到、太遠),先處理原因,不要重試同一個動作。\n" +

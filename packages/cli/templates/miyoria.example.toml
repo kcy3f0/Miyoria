@@ -171,6 +171,7 @@ token = "${STAGE_LINK_TOKEN:-}"
 # 想試範例(/hello)就把 "extensions/examples" 加進來
 [modules.extensions]
 dirs = ["extensions"]
+# task_grace_ms = 5000      # 擴充的任務超過預算這麼久還沒回報結束,主機就判它逾時
 # 擴充只拿到白名單內的環境變數(PATH、TEMP、HOME…加上 manifest [env] pass 列的),拿不到這裡的密鑰。
 # 要多給一個擴充變數:
 # [extensions."miyoria.minecraft"]
@@ -181,6 +182,8 @@ dirs = ["extensions"]
 # [modules.game]
 # default_game = "minecraft"
 # require_connected = true
+# task_budget_secs = 240     # 一個目標(任務)的預算;遊戲沒建議時用這個,不超過 max_goal_secs
+# directed_games = ["minecraft"]   # 導演只玩有目標的遊戲(Threads 已關閉,不再由導演驅動)
 
 # 唱歌(點歌):歌曲 worker(workers/sing,見 workers/README.md 第 9 節)用她的聲音翻唱。
 # 有人點歌她自己決定要不要唱、什麼時候唱;/queue song request 是強制(好了、她有空就唱)。

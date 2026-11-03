@@ -5,7 +5,7 @@
 import { ActuatorRegistry, ActuatorRegistryKey, type GateDecision } from "@miyoria/actions";
 import { Supervisor } from "@miyoria/kernel";
 import { type Social, SocialKey } from "@miyoria/social";
-import { type Tool, type ToolContext, ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
+import { type ToolContext, ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
 import {
   type AccountRef,
   type ContextKey,
@@ -15,7 +15,6 @@ import {
   type JsonValue,
   PlatformSinks,
   PlatformSinksKey,
-  type Principal,
   Principals,
   PromptContributors,
   PromptContributorsKey,
@@ -35,6 +34,7 @@ import {
   playerId,
   sanitizeGameChat,
 } from "../src/index.js";
+import { FakeExecutor, FakeExecutors } from "./fake-executor.js";
 
 const MC: ContextKey = gameChatContext("minecraft", "local");
 const VOICE: ContextKey = { platform: "discord", scope: "g1", channel: "voice1", kind: "voice" };
@@ -53,10 +53,9 @@ class Chat {
   readonly messages: IncomingMessage[] = [];
   readonly ready: AccountRef[] = [];
   readonly links: JsonValue[] = [];
-  readonly typed: { message: JsonValue; principal: Principal | undefined }[] = [];
+  readonly exec: FakeExecutor;
   readonly spoken: { context: ContextKey; text: string }[] = [];
   readonly redeemed: { account: AccountRef; name: string; code: string }[] = [];
-  actReply = "成功:說了";
 
   private constructor() {
     this.registry = new ActuatorRegistry({
@@ -69,16 +68,7 @@ class Chat {
         }
       },
     });
-    const act: Tool = {
-      spec: { name: "game_minecraft_act", description: "動作", parameters: { type: "object" } },
-      call: async (ctx: ToolContext, args) => {
-        const a = args as { action?: string; args?: { message?: JsonValue } };
-        if (a.action === "chat")
-          this.typed.push({ message: a.args?.message ?? null, principal: ctx.principal });
-        return this.actReply;
-      },
-    };
-    this.tools.register(act);
+    this.exec = new FakeExecutor((e) => this.sup.bus.publish("ext.miyoria.minecraft", e));
     const sub = this.sup.bus.subscribe("*");
     void (async () => {
       for await (const env of sub) {
@@ -95,6 +85,7 @@ class Chat {
     const s = c.sup.services;
     s.provide("app", ActuatorRegistryKey, c.registry);
     s.provide("app", ToolRegistryKey, c.tools);
+    new FakeExecutors(c.exec).provide(s);
     s.provide("app", PlatformSinksKey, c.sinks);
     s.provide("app", PromptContributorsKey, c.prompts);
     const voice: VoiceSink = {
@@ -121,6 +112,13 @@ class Chat {
     await c.sup.startAll();
     await settle();
     return c;
+  }
+
+  /** Her lines typed in game chat (the executor's `chat` tasks). */
+  get typed(): { message: JsonValue }[] {
+    return this.exec.starts
+      .filter((t) => t.goal === "chat")
+      .map((t) => ({ message: (t.args.message as JsonValue) ?? null }));
   }
 
   async publish(event: Event): Promise<void> {
@@ -281,17 +279,20 @@ describe("game chat module", () => {
     });
     expect(c.typed).toHaveLength(1);
     expect(c.typed[0]?.message).toBe("give @s diamond 64…");
-    expect(c.typed[0]?.principal?.kind).toBe("self");
-    expect(c.gate.at(-1)).toMatchObject({ capability: "game.act", allowed: true });
+    expect(c.gate.at(-1)).toMatchObject({
+      capability: "game.act",
+      allowed: true,
+      principal: { kind: "self" },
+    });
     expect(c.spoken).toEqual([]);
     expect(await sink?.describe?.(MC)).toBe("Minecraft / local");
 
-    // A failing adapter makes the send fail (the scheduler records it).
-    c.actReply = "失敗:沒有連上 Minecraft";
+    // A failing chat task makes the send fail (the scheduler records it).
+    c.exec.autoEnd = () => ({ type: "failed", code: "disconnected", detail: "沒有連上 Minecraft" });
     await expect(sink?.send(MC, { text: "嗨", reply_to: null })).rejects.toThrow(/沒有連上/);
 
     // Paused autonomy: she does not type in game chat (the director is frozen too).
-    c.actReply = "成功";
+    c.exec.autoEnd = () => ({ type: "done", detail: "好" });
     await c.registry.setPaused(true);
     await expect(sink?.send(MC, { text: "嗨", reply_to: null })).rejects.toThrow(/gate refused/);
     await c.stop();

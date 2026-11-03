@@ -12,8 +12,13 @@
 // transitions: one start at a time (no second preflight, no "已經在玩" race between the panel and
 // a turn), her tool answers at once ("開始了,task 7") instead of holding the `act:game` lane for
 // the whole launch, a stop cancels a launch in progress, and `stream: true` is an `ensure_live`
-// of its own. The adapter's raw tools (`game_<id>_observe` / `_act`) live in the gated tool
-// registry (`GatedToolsKey`), never in the chat turns' tool list; `game.act` is how they are used.
+// of its own.
+//
+// `game.act` starts one task on the game's executor (v2 §3.8: the adapter's `TaskExecutor`,
+// found in `TaskExecutorsKey`): the director passes the task id and budget and returns once it is
+// accepted (its end arrives as `game.<id>.task.done|failed`); other callers (game chat, the
+// launch) wait for the end. Either way the outcome carries a failure code (`GameTaskError`),
+// never a "失敗" prefix to look for. There are no raw adapter tools any more.
 
 import {
   type ActuatorRegistry,
@@ -22,21 +27,23 @@ import {
   defineCapability,
   deniedText,
 } from "@miyoria/actions";
-import { withTimeout } from "@miyoria/kernel";
-import type { ToolRegistry } from "@miyoria/tools";
 import {
   ActivityManagerKey,
   type ActivityRequest,
   actLane,
   isJsonObject,
+  type JsonObject,
   type JsonValue,
+  MAX_TASK_BUDGET_S,
   newId,
   type Principal,
+  type TaskSpec,
 } from "@miyoria/types";
 import { z } from "zod";
 import { GAME_CHAT_MAX, sanitizeGameChat } from "./chat-text.js";
 import type { Placement } from "./director.js";
 import type { GameControl } from "./module.js";
+import { budgetFor, codeOf, GameTaskError, gameExecutor, offersGoal, runTask } from "./tasks.js";
 
 export const GAME_ACT = "game.act";
 
@@ -58,7 +65,20 @@ const GoalArgs = z.object({
 const NoArgs = z.object({});
 const ActArgs = z.object({
   game: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/),
+  /** `{action, args}`: the goal and its arguments. */
   call: z.record(z.string(), z.unknown()),
+  /** The task id and budget (the director picks them); missing: a new id, the goal's budget. */
+  task: z
+    .object({
+      id: z.string().min(1).max(64),
+      budget_s: z.number().positive().max(MAX_TASK_BUDGET_S),
+    })
+    .nullish(),
+  /**
+   * `false`: return once the executor accepted the task (the director; the end comes as task
+   * events). Default: wait for the end and answer with it.
+   */
+  wait: z.boolean().nullish(),
 });
 type StartArgs = z.output<typeof StartArgs>;
 type GoalArgs = z.output<typeof GoalArgs>;
@@ -87,10 +107,11 @@ export interface GameCapabilityOptions {
   defaultGame: string;
   /** Permission nodes of `start` / `stop` / `goal` (from `[modules.game] permissions`). */
   permissions: { start: string; stop: string; goal: string };
+  /** One control call to the executor (`task.start` acceptance), `tool_timeout_secs`. */
   toolTimeoutMs: number;
-  tools: () => ToolRegistry | undefined;
-  /** The gated tool registry (`GatedToolsKey`), where the adapter's raw tools are. */
-  gated?: () => ToolRegistry | undefined;
+  /** Budget of a task whose goal suggests none (`task_budget_secs`) and the cap (`max_goal_secs`). */
+  taskBudgetSecs?: number;
+  maxBudgetSecs?: number;
   /** For `game.start {stream: true}` (goes live through the gate). */
   actuators?: ActuatorRegistry | null;
   /** She is streaming (Go Live or OBS) right now. */
@@ -132,6 +153,10 @@ async function goLive(
     case "failed":
       return `開台失敗:${outcome.error}`;
   }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
@@ -180,12 +205,14 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
       if (here === null) throw new CapabilityError("no context to play in");
       const account = ctx.principal.requester ?? { platform: here.platform, id: "self" };
       const placement: Placement = args.where ?? "auto";
+      // Run by the ActivityManager, its task id is the launch task's id too (one id end to end).
       let text = await o.control.start(
         args.game ?? o.defaultGame,
         here,
         account,
         placement,
         ctx.signal,
+        ctx.task ?? null,
       );
       if (args.goal) text += await o.control.goal(args.goal, byOf(ctx.principal, null));
       // Run by the ActivityManager, going live is a transition of its own (`ensure_live`).
@@ -248,34 +275,41 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
     args: ActArgs,
     permission: null,
     async execute(args, ctx) {
-      const name = `game_${args.game}_act`;
-      const tool = o.gated?.()?.get(name) ?? o.tools()?.get(name);
-      if (!tool) throw new CapabilityError(`tool \`${name}\` is not registered`);
-      const context = ctx.principal.context;
-      if (context === null) throw new CapabilityError("no game context");
-      const call = safeActCall(args.call);
-      // Timing out aborts the call too (the extension is told to cancel it), so a late action
-      // never lands after she was told it failed.
-      const timeout = new AbortController();
-      const running = tool.call(
-        {
-          turn: ctx.request.turn ?? newId(),
-          context,
-          account: ctx.principal.requester ?? { platform: context.platform, id: "game" },
-          principal: ctx.principal,
-          message: { context, id: "game" },
-          priority: "initiative",
-          signal: AbortSignal.any([ctx.signal, timeout.signal]),
-        },
-        call as JsonValue,
-      );
-      running.catch(() => undefined);
-      const result = await withTimeout(running, o.toolTimeoutMs);
-      if (result === undefined) {
-        timeout.abort(new CapabilityError(`tool \`${name}\` timed out`));
-        throw new CapabilityError(`tool \`${name}\` timed out`);
+      const executor = gameExecutor(ctx.services, args.game);
+      if (!executor) {
+        throw new GameTaskError(
+          "precondition",
+          `${args.game} 的遊戲 adapter 沒有在執行(沒有任務執行器)`,
+        );
       }
-      return result;
+      const call = safeActCall(args.call);
+      const goal = typeof call.action === "string" ? call.action : "";
+      if (!offersGoal(executor.info, goal)) {
+        throw new GameTaskError("invalid", `沒有「${goal}」這個動作`);
+      }
+      const goalArgs = isJsonObject(call.args as JsonValue) ? (call.args as JsonObject) : {};
+      const spec: TaskSpec = {
+        id: args.task?.id ?? newId(),
+        goal,
+        args: goalArgs,
+        budget_s:
+          args.task?.budget_s ??
+          budgetFor(executor.info, goal, o.taskBudgetSecs ?? 240, o.maxBudgetSecs ?? 600),
+      };
+      if (args.wait === false) {
+        // Accepted is all the caller waits for; giving up aborts the start (and cancels it).
+        const deadline = AbortSignal.timeout(Math.max(o.toolTimeoutMs, 1));
+        try {
+          await executor.start(spec, AbortSignal.any([ctx.signal, deadline]));
+        } catch (error) {
+          const code = deadline.aborted && !ctx.signal.aborted ? "timeout" : codeOf(error);
+          throw new GameTaskError(code, `沒辦法開始 ${goal}:${errorText(error)}`, { cause: error });
+        }
+        return { text: `開始了(task ${spec.id})`, data: { task: spec.id } };
+      }
+      const end = await runTask(executor, spec, ctx.signal);
+      if (end.type === "failed") throw new GameTaskError(end.code, end.detail);
+      return { text: end.detail === "" ? "好了" : end.detail, data: { task: spec.id } };
     },
   });
 

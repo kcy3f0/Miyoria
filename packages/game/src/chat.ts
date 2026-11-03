@@ -326,8 +326,8 @@ export class GameChat implements ChatHandled {
     );
     if (outcome.status === "denied")
       throw new Error(`the gate refused: ${outcome.decision.reason}`);
+    // `game.act` waits for the chat task's end; a failure (with its code) comes back as `failed`.
     if (outcome.status === "failed") throw new Error(outcome.error);
-    if (outcome.result.text.startsWith("失敗")) throw new Error(outcome.result.text);
   }
 
   /** Delivers one reply of hers in `context` (the platform sink's `send`). */

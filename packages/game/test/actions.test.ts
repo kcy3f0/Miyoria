@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import { gameCapabilities } from "../src/actions.js";
 import type { GameControl, Placement } from "../src/index.js";
 import { GameError } from "../src/index.js";
+import { FakeExecutor, FakeExecutors } from "./fake-executor.js";
 
 const CTX: ContextKey = { platform: "discord", scope: "g1", channel: "c1", kind: "channel" };
 const OWEN: AccountRef = { platform: "discord", id: "7" };
@@ -54,7 +55,6 @@ function setup(nodes: string[]) {
     defaultGame: "minecraft",
     permissions: { start: "game.start", stop: "game.stop", goal: "game.goal" },
     toolTimeoutMs: 1000,
-    tools: () => undefined,
   })) {
     registry.register(c);
   }
@@ -67,7 +67,7 @@ function setup(nodes: string[]) {
     priority: "direct",
     signal: new AbortController().signal,
   };
-  return { calls, tools, registry, ctx };
+  return { calls, tools, registry, ctx, services };
 }
 
 describe("game capabilities", () => {
@@ -97,6 +97,73 @@ describe("game capabilities", () => {
       turn: null,
     });
     expect(out.status).toBe("failed");
-    expect(out.status === "failed" && out.error).toContain("game_minecraft_act");
+    expect(out.status === "failed" && out.error).toContain("沒有任務執行器");
+  });
+
+  it("game.act starts one task; waiting answers with its end and its code", async () => {
+    const s = setup([]);
+    const published: unknown[] = [];
+    const exec = new FakeExecutor((e) => published.push(e));
+    new FakeExecutors(exec).provide(s.services);
+    const act = (args: Record<string, unknown>, signal?: AbortSignal) =>
+      s.registry.invoke(
+        {
+          principal: Principals.director(CTX),
+          capability: "game.act",
+          args: { game: "minecraft", ...args } as never,
+          why: null,
+          turn: null,
+        },
+        signal ? { signal } : {},
+      );
+
+    // The director: its own id and budget, back once accepted.
+    const started = await act({
+      call: { action: "mine", args: { block: "stone" } },
+      task: { id: "01T1", budget_s: 42 },
+      wait: false,
+    });
+    expect(started).toMatchObject({ status: "done", result: { data: { task: "01T1" } } });
+    expect(exec.starts.at(-1)).toEqual({
+      id: "01T1",
+      goal: "mine",
+      args: { block: "stone" },
+      budget_s: 42,
+    });
+    expect(exec.running.has("01T1")).toBe(true);
+
+    // Waiting (game chat): the end's detail, or the failure with its code; the goal's budget.
+    const said = await act({ call: { action: "chat", args: { message: "/kill 哈囉" } } });
+    expect(said).toMatchObject({ status: "done", result: { text: "好" } });
+    expect(exec.starts.at(-1)).toMatchObject({
+      goal: "chat",
+      args: { message: "kill 哈囉" },
+      budget_s: 10,
+    });
+    exec.autoEnd = () => ({ type: "failed", code: "unreachable", detail: "找不到路" });
+    const failed = await act({ call: { action: "goto", args: { x: 1 } } });
+    expect(failed.status).toBe("failed");
+    expect(failed.status === "failed" && failed.error).toBe("找不到路");
+    expect(failed.status === "failed" && (failed.cause as { code?: string }).code).toBe(
+      "unreachable",
+    );
+    expect(exec.starts.at(-1)?.budget_s).toBe(240);
+
+    // Unknown goals never reach the executor.
+    const unknown = await act({ call: { action: "fly", args: {} } });
+    expect(unknown.status === "failed" && (unknown.cause as { code?: string }).code).toBe(
+      "invalid",
+    );
+
+    // Cancel propagates: aborting a waiting call cancels its task.
+    exec.autoEnd = () => null;
+    const controller = new AbortController();
+    const waiting = act({ call: { action: "goto", args: { x: 2 } } }, controller.signal);
+    await new Promise((r) => setTimeout(r, 5));
+    const id = exec.last().id;
+    controller.abort(new Error("turn cancelled"));
+    await waiting.catch(() => undefined);
+    expect(exec.cancels).toContain(id);
+    expect(exec.running.has(id)).toBe(false);
   });
 });

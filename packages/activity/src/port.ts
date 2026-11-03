@@ -13,14 +13,15 @@ import {
   deniedText,
 } from "@miyoria/actions";
 import { errorMessage, isAbortError, type ServiceLookup } from "@miyoria/kernel";
-import type {
-  JsonObject,
-  LaneKey,
-  Principal,
-  Priority,
-  TaskFailureCode,
-  TaskId,
-  TurnId,
+import {
+  isTaskFailureCode,
+  type JsonObject,
+  type LaneKey,
+  type Principal,
+  type Priority,
+  type TaskFailureCode,
+  type TaskId,
+  type TurnId,
 } from "@miyoria/types";
 
 /** The capability a routed request came with; runs it bypassing the gate. */
@@ -65,6 +66,9 @@ export class StepError extends Error {
 export function failureCode(error: unknown): TaskFailureCode {
   if (error instanceof StepError) return error.code;
   if (isAbortError(error)) return "cancelled";
+  // An executor's own code (the game's `GameError` / `GameTaskError` from its task events).
+  const code = (error as { code?: unknown } | null)?.code;
+  if (error instanceof Error && isTaskFailureCode(code)) return code;
   const name = error instanceof Error ? error.name : "";
   if (name === "ActionDroppedError") return "cancelled";
   if (name === "ActionDeniedError") return "denied";
