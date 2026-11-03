@@ -15,8 +15,8 @@ import {
   type PersonId,
   type ProfileId,
   type Timestamp,
-  toTimestamp,
   type TurnOutcomeRecord,
+  toTimestamp,
 } from "@miyoria/types";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {

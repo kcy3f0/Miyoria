@@ -100,7 +100,7 @@ describe("StoredHandleDirectory", () => {
     await settings.set(GLOBAL_SETTINGS_PROFILE, "handle:discord:1", {
       handle: "u1",
       person: null,
-      account: acct("1"),
+      account: { ...acct("1") },
       display_name: "u1",
       created_at: "2026-11-01T00:00:00.000Z",
     });

@@ -55,7 +55,7 @@ describe.each(BACKENDS)("retrieval (%s store)", (backend) => {
     const scopes = visibleScopes(guildCtx("g1", "c1"), [acct("2")], [owen]);
 
     let got = await e.engine.recall(scopes, [owen], "拉麵", PROMPT_KINDS, 8, now);
-    let ids = got.map((r) => r.record.id);
+    const ids = got.map((r) => r.record.id);
     expect(ids[0], "text + subject wins").toBe(ramen);
     expect(ids.indexOf(newRamen), "recency breaks the tie").toBeLessThan(ids.indexOf(oldRamen));
     expect(ids.indexOf(oldRamen)).toBeGreaterThanOrEqual(0);
