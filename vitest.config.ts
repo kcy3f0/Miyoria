@@ -5,6 +5,12 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    projects: ["packages/*", "apps/overlay", "apps/voice-node", "extensions/minecraft/adapter"],
+    projects: [
+      "packages/*",
+      "apps/overlay",
+      "apps/voice-node",
+      "extensions/minecraft/adapter",
+      "extensions/osu",
+    ],
   },
 });
