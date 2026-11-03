@@ -57,7 +57,7 @@ export {
   type TierLimit,
 } from "./config.js";
 export {
-  FOLLOWUP_ATTEMPTS,
+  FOLLOWUP_MAX_AGE_MS,
   FOLLOWUP_REASON,
   FOLLOWUP_RETRY_MS,
   Followups,

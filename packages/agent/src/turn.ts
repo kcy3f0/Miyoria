@@ -566,9 +566,7 @@ class Turn {
    * the latest one. Someone chatting right after a request must not become its requester.
    */
   #requester(): IncomingMessage | undefined {
-    return (
-      this.inputs.findLast((m) => m.mentions_self || m.reply_to_self) ?? this.inputs.at(-1)
-    );
+    return this.inputs.findLast((m) => m.mentions_self || m.reply_to_self) ?? this.inputs.at(-1);
   }
 
   #speakerAffinity(): number | null {
@@ -947,21 +945,28 @@ class Turn {
     const stopTyping = () => typing.abort();
     this.signal.addEventListener("abort", stopTyping, { once: true });
     const typingLoop = this.#keepTyping(sink, lane, priority, typing.signal);
+    // What she writes alongside a tool call ("好，我寫寫看，等我一下") goes out at once, so a
+    // slow tool never leaves the person waiting in silence.
+    const early: string[] = [];
+    const interim = async (e: Expression) => {
+      const text = this.#linkMentions(filterOutgoing(cleanReply(e.text, names)));
+      if (text !== "") early.push(await this.#sendText(sink, text, direct, priority));
+    };
     let expression: Expression;
     try {
-      expression = await this.#produce(router, messages, priority, null);
+      expression = await this.#produce(router, messages, priority, null, interim);
     } finally {
       typing.abort();
       this.signal.removeEventListener("abort", stopTyping);
       await typingLoop;
     }
     if (expression.isSilent()) {
-      this.agent.log.debug({ turn: this.turn }, "she chose silence");
-      return "";
+      if (early.length === 0) this.agent.log.debug({ turn: this.turn }, "she chose silence");
+      return early.join("\n");
     }
     const text = this.#linkMentions(filterOutgoing(cleanReply(expression.text, names)));
-    if (text === "") return "";
-    return await this.#sendText(sink, text, direct, priority);
+    if (text === "") return early.join("\n");
+    return [...early, await this.#sendText(sink, text, direct, priority)].join("\n");
   }
 
   /** `@name` of people in this conversation as the platform's mentions (`mention_users`). */
@@ -1110,16 +1115,17 @@ class Turn {
    * Runs the model, executing tool calls for up to `max_tool_steps` rounds, and returns the
    * reply to send.
    *
-   * Text written alongside tool calls is kept in the conversation sent back to the model but
-   * only used as the reply if the final response has none, so it is never sent twice. With
-   * `speech` (voice), all text is spoken as it streams in, including text written alongside
-   * tool calls.
+   * Text written alongside tool calls is kept in the conversation sent back to the model. With
+   * `interim` (text) it is sent at once, before the tools run; otherwise it is only used as the
+   * reply if the final response has none, so it is never sent twice. With `speech` (voice), all
+   * text is spoken as it streams in, including text written alongside tool calls.
    */
   async #produce(
     router: LlmRouter,
     initial: ChatMessage[],
     priority: Priority,
     speech: Speech | null,
+    interim: ((expression: Expression) => Promise<void>) | null = null,
   ): Promise<Expression> {
     const cfg = this.agent.config;
     // Reactive turns and the turns she starts herself act; initiative turns only talk.
@@ -1152,7 +1158,10 @@ class Turn {
         }
         return earlier !== null && expression.isSilent() ? earlier : expression;
       }
-      if (!expression.isSilent()) earlier = expression;
+      if (!expression.isSilent()) {
+        if (interim) await interim(expression);
+        else earlier = expression;
+      }
       messages.push(assistantMessage(raw, calls));
       for (const call of calls) {
         const result = await this.#runTool(call, priority);

@@ -1,8 +1,8 @@
 // Follow-ups: the outcome of a high-risk request whose result matters (`tool.followup`, e.g.
 // `code.run`) that was not ready while the tool call could wait. It comes back to her as an
 // `agent_initiative` (reason `action_result`) in the context she asked from; the agent wraps the
-// hint in an untrusted data block. When the agent skips the initiative (a turn in flight, her
-// cooldown), the delivery is tried again a few times.
+// hint in an untrusted data block. When the agent skips the initiative (a turn in flight, people
+// still talking), the delivery is tried again every few seconds until it is too old to matter.
 
 import { getLogger } from "@miyoria/kernel";
 import {
@@ -21,10 +21,10 @@ const log = getLogger("actions.followup");
 export const FOLLOWUP_REASON = "action_result";
 /** Longest follow-up hint, in characters. */
 export const MAX_FOLLOWUP_CHARS = 1500;
-/** Deliveries per follow-up (the first one included). */
-export const FOLLOWUP_ATTEMPTS = 4;
+/** A follow-up still undelivered this long after the first try is given up. */
+export const FOLLOWUP_MAX_AGE_MS = 10 * 60_000;
 /** Wait before trying a skipped delivery again. */
-export const FOLLOWUP_RETRY_MS = 15_000;
+export const FOLLOWUP_RETRY_MS = 5_000;
 /** A delivery not reported as skipped within this time is taken as delivered. */
 const SKIP_WINDOW_MS = 10_000;
 
@@ -33,6 +33,7 @@ interface Delivery {
   hint: string;
   about: AccountRef[];
   attempts: number;
+  firstAt: number;
   sentAt: number;
 }
 
@@ -89,7 +90,7 @@ export class Followups {
   /** Asks the agent for a turn in `context` with `hint`. */
   deliver(context: ContextKey, hint: string, about: AccountRef[] = []): void {
     if (this.#closed) return;
-    this.#send({ context, hint, about, attempts: 0, sentAt: 0 });
+    this.#send({ context, hint, about, attempts: 0, firstAt: this.#now(), sentAt: 0 });
   }
 
   #send(d: Delivery): void {
@@ -111,15 +112,18 @@ export class Followups {
     }
   }
 
-  /** An `agent.decision`: a skipped follow-up is tried again later (a few times). */
+  /** An `agent.decision`: a skipped follow-up is tried again shortly, until it is too old. */
   onDecision(trace: DecisionTrace): void {
     if (trace.respond || !trace.reasons.includes(`initiative:${FOLLOWUP_REASON}`)) return;
     this.#prune();
     const i = this.#pending.findIndex((d) => contextKeyEquals(d.context, trace.context));
     if (i < 0) return;
     const [d] = this.#pending.splice(i, 1) as [Delivery];
-    if (d.attempts >= FOLLOWUP_ATTEMPTS) {
-      log.info({ reasons: trace.reasons }, "giving up on a follow-up the agent kept skipping");
+    if (this.#now() - d.firstAt >= FOLLOWUP_MAX_AGE_MS) {
+      log.info(
+        { reasons: trace.reasons, attempts: d.attempts },
+        "giving up on a follow-up the agent kept skipping",
+      );
       return;
     }
     const timer = setTimeout(() => {

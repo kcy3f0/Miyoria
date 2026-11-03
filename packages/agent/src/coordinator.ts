@@ -316,8 +316,12 @@ export class Coordinator {
       this.#agent.initiativeSkipped(this.#key, initiative.reason, busy);
       return null;
     }
-    // Live game commentary is rate-limited by the game director itself.
-    const last = initiative.reason === "game" ? null : this.#session.lastSelfAt();
+    // Live game commentary is rate-limited by the game director itself, and a result someone
+    // is waiting for (`action_result`) is no chatter to space out.
+    const last =
+      initiative.reason === "game" || initiative.reason === "action_result"
+        ? null
+        : this.#session.lastSelfAt();
     const capped = !UNCAPPED_INITIATIVES.includes(initiative.reason);
     if (last !== null) {
       const cooldown = this.#agent.ambientCooldownMs(this.#key, capped);

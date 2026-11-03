@@ -418,8 +418,8 @@ describe("agent module", () => {
     await wait(3000);
 
     expect(h.sink.reactions()).toEqual([[msg.id, "🐋"]]);
-    // Text from the tool-call response is not sent on its own.
-    expect(h.sink.texts()).toEqual(["才不是為了你按的。"]);
+    // Text from the tool-call response goes out before the tool runs, the final reply after.
+    expect(h.sink.texts()).toEqual(["哼,", "才不是為了你按的。"]);
 
     const requests = mock.requests();
     expect(requests.length).toBe(2);

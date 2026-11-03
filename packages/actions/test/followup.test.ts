@@ -8,7 +8,7 @@ import {
   type Capability,
   type CapabilityTool,
   defineCapability,
-  FOLLOWUP_ATTEMPTS,
+  FOLLOWUP_MAX_AGE_MS,
   FOLLOWUP_REASON,
   FOLLOWUP_RETRY_MS,
   Followups,
@@ -106,7 +106,7 @@ describe("followup tools", () => {
 });
 
 describe("Followups", () => {
-  it("retries_skipped_deliveries_a_few_times", () => {
+  it("retries_skipped_deliveries_until_they_are_too_old", () => {
     vi.useFakeTimers();
     const events: Event[] = [];
     const f = new Followups(
@@ -122,21 +122,23 @@ describe("Followups", () => {
       score: 0,
       reasons: [`initiative:${FOLLOWUP_REASON}`, "skipped: a turn is in flight"],
     };
-    for (let i = 1; i < FOLLOWUP_ATTEMPTS; i++) {
+    // A long busy stretch (her own long turn, people talking) does not lose the result.
+    const tries = Math.floor(FOLLOWUP_MAX_AGE_MS / FOLLOWUP_RETRY_MS);
+    for (let i = 1; i <= tries; i++) {
       f.onDecision(skipped);
       vi.advanceTimersByTime(FOLLOWUP_RETRY_MS);
       expect(initiatives(events)).toHaveLength(i + 1);
     }
-    // Gives up after the last attempt.
+    // Gives up once it is too old to matter.
     f.onDecision(skipped);
     vi.advanceTimersByTime(FOLLOWUP_RETRY_MS * 2);
-    expect(initiatives(events)).toHaveLength(FOLLOWUP_ATTEMPTS);
+    expect(initiatives(events)).toHaveLength(tries + 1);
     // Other initiatives and other contexts are not its business.
     f.deliver(CTX, "again");
     f.onDecision({ ...skipped, reasons: ["initiative:idle_channel", "skipped"] });
     f.onDecision({ ...skipped, context: { ...CTX, channel: "c2" } });
     vi.advanceTimersByTime(FOLLOWUP_RETRY_MS);
-    expect(initiatives(events)).toHaveLength(FOLLOWUP_ATTEMPTS + 1);
+    expect(initiatives(events)).toHaveLength(tries + 2);
     f.close();
   });
 });
