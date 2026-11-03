@@ -138,9 +138,20 @@ export function baseChange(kind: EventKind, scale: number): [number, number] {
     case "harassment":
       return [-5.0, -3.0];
     case "flirt_too_far":
-      // Dirty jokes are not held against people (the owner lifted that limit); only the label stays.
-      return [0, 0];
+      // Full weight from a stranger; `flirtWeight` scales it by how close they are.
+      return [-2.0, -1.5];
   }
+}
+
+/** Affinity from which sexual jokes cost nothing (friends; the owner's floor is 30). */
+export const FLIRT_FREE_AFFINITY = 30;
+
+/**
+ * How much a `flirt_too_far` counts against someone with `affinity`: 1 for strangers and people
+ * she dislikes, falling to 0 at `FLIRT_FREE_AFFINITY` (from friends it is just teasing).
+ */
+export function flirtWeight(affinity: number): number {
+  return Math.min(Math.max((FLIRT_FREE_AFFINITY - affinity) / FLIRT_FREE_AFFINITY, 0), 1);
 }
 
 /**

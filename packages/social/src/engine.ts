@@ -53,6 +53,7 @@ import {
   type EventKind,
   eventKindOrder,
   familiarityChange,
+  flirtWeight,
   hasTag,
   isBlocked,
   isOwner,
@@ -717,7 +718,12 @@ export class Social implements SocialSignals {
       const ledger = this.#ledgers.get(person);
       if (ledger) {
         for (const [source, kind, scale] of events) {
-          const [a, t] = ledger.take(kind, baseChange(kind, scale), this.config);
+          let base = baseChange(kind, scale);
+          if (kind === "flirt_too_far") {
+            const w = flirtWeight(r.affinity);
+            base = [base[0] * w, base[1] * w];
+          }
+          const [a, t] = ledger.take(kind, base, this.config);
           const [da, dt] = apply(r, a, t, 0, this.config);
           if (nonzero(da) || nonzero(dt)) {
             rows.push([row(now, da, dt, 0, `${source}: ${kind}`), kind]);
