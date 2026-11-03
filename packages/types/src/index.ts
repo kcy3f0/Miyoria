@@ -408,6 +408,7 @@ export {
   repairHandleJson,
   repairHandleText,
 } from "./handle-text.js";
+export { CORE_CHARS, CORE_SENTENCES, characterCore } from "./persona-core.js";
 export {
   type Desire,
   GOAL_TOPIC,
