@@ -138,7 +138,8 @@ export function baseChange(kind: EventKind, scale: number): [number, number] {
     case "harassment":
       return [-5.0, -3.0];
     case "flirt_too_far":
-      return [-2.0, -1.5];
+      // Dirty jokes are not held against people (the owner lifted that limit); only the label stays.
+      return [0, 0];
   }
 }
 
