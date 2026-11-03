@@ -127,9 +127,12 @@ export class Core {
     return this.supervisor.services;
   }
 
-  /** @internal Started by `buildCore` before any module runs. */
-  persistModuleState(): void {
-    this.#persistTask = persistModuleState(this.bus, this.store, this.#persist.signal);
+  /**
+   * @internal Started by `buildCore` before any module runs. `wanted` says whether the config
+   * file enables a module: only those can be disabled at runtime.
+   */
+  persistModuleState(wanted: (module: string) => boolean = () => true): void {
+    this.#persistTask = persistModuleState(this.bus, this.store, wanted, this.#persist.signal);
   }
 
   /** Starts every enabled module and logs those that are not running. */
@@ -259,7 +262,7 @@ export async function buildCoreWith(
   }
 
   const core = new Core(supervisor, store, profileDisplayName, profileId);
-  core.persistModuleState();
+  core.persistModuleState((id) => moduleEnabled(config, id));
   return core;
 }
 
@@ -269,15 +272,25 @@ function tokenMissing(section: JsonValue | null): boolean {
   return typeof token !== "string" || token === "";
 }
 
-/** Remembers runtime enable / disable so it survives restarts. */
-async function persistModuleState(bus: EventBus, store: Store, signal: AbortSignal): Promise<void> {
+/**
+ * Remembers runtime enable / disable so it survives restarts. A module the config file leaves
+ * off is not remembered as disabled: that would keep it off after the config turns it on.
+ */
+async function persistModuleState(
+  bus: EventBus,
+  store: Store,
+  wanted: (module: string) => boolean,
+  signal: AbortSignal,
+): Promise<void> {
   const sub = bus.subscribe("system.module.state", { signal });
   for await (const env of sub) {
     if (env.event.type !== "module_state_changed") continue;
     const { module, state } = env.event.data;
     let enabled: boolean;
-    if (state === "disabled") enabled = false;
-    else if (state === "running") enabled = true;
+    if (state === "disabled") {
+      if (!wanted(module)) continue;
+      enabled = false;
+    } else if (state === "running") enabled = true;
     else continue;
     try {
       await store.moduleState.set(module, enabled);

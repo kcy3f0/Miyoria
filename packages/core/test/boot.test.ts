@@ -127,6 +127,17 @@ describe("buildCore", () => {
     await waitFor(async () => (await store.moduleState.get("speech")) === true);
   });
 
+  it("does_not_remember_a_module_the_config_leaves_off_as_disabled", async () => {
+    const store = await openStore("memory://");
+    core = await buildCoreWith(catalog(), config("[modules.mood]\nenabled = false\n"), { store });
+    await core.start();
+    await core.supervisor.disable("llm");
+    await waitFor(async () => (await store.moduleState.get("llm")) === false);
+    // Off only because of the config: turning it on there must be enough.
+    expect(await store.moduleState.get("mood")).toBeNull();
+    expect(await store.moduleState.get("sandbox")).toBeNull();
+  });
+
   it("applies_persona_overrides_from_the_store", async () => {
     const store = await openStore("memory://");
     await store.personaOverrides.set("deepseek-chan", "identity", "改過的身分", "test");
