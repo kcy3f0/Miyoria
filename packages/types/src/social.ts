@@ -18,6 +18,14 @@ export interface Attitude {
   label: string;
   /** How she addresses them, if set. */
   call_name: string | null;
+  /** Tagged `owner` (missing from older producers). */
+  owner?: boolean;
+  /** Last display name of the person (untrusted; missing from older producers). */
+  display_name?: string | null;
+  /** How many of their lines she has seen (missing from older producers). */
+  interactions?: number;
+  /** When they last spoke (missing from older producers). */
+  last_interaction?: Timestamp | null;
 }
 
 /** Provided by the social module; the agent uses it in attention. Must answer from memory. */

@@ -351,6 +351,21 @@ export {
   relationshipLabel,
 } from "./affect.js";
 export {
+  AFFECT_BOND_TOPIC,
+  type AffectBondPayload,
+  circadianEnergy,
+  deriveMood,
+  emotionsLine,
+  intensityWord,
+  localHour,
+  type MoodInputs,
+  moodLine,
+  nightShape,
+  renderAffectMood,
+  renderPeople,
+  renderPersonLine,
+} from "./affect-mood.js";
+export {
   ARBITER_DECISION_TOPIC,
   ARBITER_IMPULSE_TOPIC,
   type Arbiter,

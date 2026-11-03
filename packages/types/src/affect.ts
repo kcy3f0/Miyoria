@@ -247,6 +247,14 @@ export interface AffectState {
   cards(): PersonCard[];
   /** Applies a bond change within the daily caps; `null` when there is no such person. */
   adjustBond(person: PersonId, change: BondChange, by: AffectSource): Promise<PersonCard | null>;
+
+  /**
+   * The canonical prompt text of her mood (`renderAffectMood` of the snapshot): the mood line
+   * and her strongest 2-3 emotions. Optional so test doubles need not implement it.
+   */
+  renderMood?(): string;
+  /** One line per person (`renderPersonLine`), in the order of `people` (unknown ones skipped). */
+  renderPeople?(people: readonly PersonId[]): string[];
 }
 
 export const AffectStateKey = serviceKey<AffectState>("AffectState");
