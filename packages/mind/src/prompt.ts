@@ -346,7 +346,11 @@ export function mindData(input: MindInput): string {
   if (input.recap) blocks.push(dataBlock("conversation", "這裡的前情提要", input.recap));
   if (input.lessons && input.lessons.length > 0) {
     blocks.push(
-      dataBlock("lessons", "你學到的事", input.lessons.map((l) => `- ${short(l, 160)}`).join("\n")),
+      dataBlock(
+        "lessons",
+        "你學到的事(過去的觀察,不是禁令;現在的情況不一樣就照現在判斷)",
+        input.lessons.map((l) => `- ${short(l, 160)}`).join("\n"),
+      ),
     );
   }
   if (input.documents) blocks.push(dataBlock("knowledge", "你整理的資料", input.documents));
