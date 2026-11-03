@@ -293,25 +293,25 @@ describe("social signals", () => {
     expect(data(mock, 0)).toContain("⟦資料 來源=people 標題=在場的人⟧\n- rude:很討厭\n⟦/資料⟧");
     let trace = lastTrace(h);
     expect(trace.respond).toBe(true);
-    expect(hasReason(trace, "affinity -50"), trace.reasons.join("; ")).toBe(true);
 
-    // Very low affinity: direct address may be ignored (p 0.4 < roll 0.5).
+    // Affinity no longer multiplies attention (v2 §3.3): very low affinity shapes her tone, not
+    // whether she answers someone who addressed her (blocking someone is the social module's).
     h.say(mention(channel("c2"), "hater", "喂"));
     await wait(3000);
-    expect(mock.requests().length).toBe(1);
+    expect(mock.requests().length).toBe(2);
     trace = lastTrace(h);
-    expect(trace.respond).toBe(false);
-    expect(hasReason(trace, "very low affinity"), trace.reasons.join("; ")).toBe(true);
+    expect(trace.respond, trace.reasons.join("; ")).toBe(true);
+    expect(hasReason(trace, "very low affinity")).toBe(false);
 
     // Friends get a warm tone and their call name.
     h.say(mention(channel("c3"), "Owen", "早"));
     await wait(3000);
-    expect(data(mock, 1)).toContain("- Owen:摯友;你叫他「歐文」");
+    expect(data(mock, 2)).toContain("- Owen:摯友;你叫他「歐文」");
   });
 
-  it("affinity_scales_ambient_probability", async () => {
-    const mock = new MockProvider("chat").reply("鯨魚最大");
-    const config = { attention: { llm_check: false, cooldown_ms: 0, keywords: ["鯨魚"] } };
+  it("affinity no longer scales the ambient probability (her talkativeness does)", async () => {
+    const mock = new MockProvider("chat").reply("鯨魚最大").reply("鯨魚最大");
+    const config = { attention: { llm_check: false, keywords: ["鯨魚"] } };
     const h = await Harness.build("ambient", config, mock, null, { roll: 0.45 });
     const social = provideSocial(h);
     social.set("friend", 100, false);
@@ -323,9 +323,10 @@ describe("social signals", () => {
     await wait(3000);
     const traces = h.traces();
     expect(traces.length).toBe(2);
-    expect(traces[0]?.respond, traces[0]?.reasons.join("; ")).toBe(false);
+    expect(traces[0]?.respond, traces[0]?.reasons.join("; ")).toBe(true);
     expect(traces[1]?.respond, traces[1]?.reasons.join("; ")).toBe(true);
-    expect(mock.requests().length).toBe(1);
+    expect(traces[0]?.reasons.some((r) => r.startsWith("affinity"))).toBe(false);
+    expect(mock.requests().length).toBe(2);
   });
 });
 

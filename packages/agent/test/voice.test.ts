@@ -148,12 +148,8 @@ describe("voice", () => {
   it("no_reply_while_someone_is_speaking", async () => {
     const mock = new MockProvider("chat").reply("我看過喔。");
     const cfg = voiceConfig("ambient");
-    // interrupt_scale 0: never join in over someone (the default only lowers the chance).
-    const h = await Harness.create(
-      "off",
-      { ...cfg, voice: { ...cfg.voice, interrupt_scale: 0 } },
-      mock,
-    );
+    // She never joins in over someone (the voice prefilter; no interrupt scale any more).
+    const h = await Harness.create("off", cfg, mock);
     h.publish(joined());
 
     // Speaking extends the debounce: the turn waits for the transcript.

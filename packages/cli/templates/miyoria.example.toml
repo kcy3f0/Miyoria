@@ -270,14 +270,11 @@ barge_in = "selective"     # 有人插話時:selective(只有這回合要回的�
 # 合併後的 talkativeness 下限(她自己明確設成 0 除外;別人在回她剛說的話時一律不擋)
 # attention = { talk_floor = 0.15 }
 
-# 語音聊天:比文字更保守,偶爾才插話。也可以用 /voice mode 即時切換
-# 她自己定了多話程度(心智迴圈或「活躍點」)的地方,插話機率、冷卻與門檻都照她的;
-# 下面的倍率只在她沒定的時候用。min_cooldown_ms 是不管她多想講都不能更快的底線
+# 語音聊天。也可以用 /voice mode 即時切換。要不要插話 = 她的多話程度(心智迴圈或「活躍點」)
+# × 佔比上限;有人還在講話時她不插嘴。舊的 ambient_factor、cooldown_ms、min_cooldown_ms、
+# interrupt_scale 已經拿掉(留著也能讀,只會警告);她自己多久開一次口由 [modules.arbiter] 決定
 [modules.agent.voice]
 default_mode = "normal"    # off | mention-only | normal | always(語音沒有安靜 / 活躍之分)
-ambient_factor = 0.5       # 主動插話機率的倍率(她沒定多話程度時)
-cooldown_ms = 20000        # 她講完後至少隔多久才會再主動開口
-min_cooldown_ms = 5000     # 她定了多話程度時,冷卻的底線
 debounce_ms = 700          # 對方講完後等多久(看他是不是還要繼續講)
 text_chat = true           # 她在語音頻道裡時,那個頻道文字區打的字她也用說的回
 text_aside = true          # 用說的回時,網址和程式碼改貼到語音頻道的文字區

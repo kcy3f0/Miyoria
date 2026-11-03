@@ -1,34 +1,10 @@
 import { describe, expect, it } from "vitest";
-import {
-  affinityAmbientFactor,
-  affinityDirectFactor,
-  energyCooldownFactor,
-  energyProbabilityFactor,
-  herStatusHint,
-  moodHint,
-  parseBudgetState,
-  shownHint,
-} from "../src/index.js";
+import { herStatusHint, moodHint, parseBudgetState, shownHint } from "../src/index.js";
 
 describe("signals", () => {
-  it("affinity_factors", () => {
-    expect(affinityAmbientFactor(-100)).toBeCloseTo(0.3, 5);
-    expect(affinityAmbientFactor(-500)).toBeCloseTo(0.3, 5);
-    expect(affinityAmbientFactor(0)).toBeCloseTo(1.0, 5);
-    expect(affinityAmbientFactor(50)).toBeCloseTo(1.2, 5);
-    expect(affinityAmbientFactor(100)).toBeCloseTo(1.4, 5);
-    expect(affinityDirectFactor(-79)).toBeCloseTo(1.0, 5);
-    expect(affinityDirectFactor(-80)).toBeCloseTo(0.4, 5);
-    expect(affinityDirectFactor(100)).toBeCloseTo(1.1, 5);
-  });
-
-  it("mood_factors_and_hint", () => {
+  it("mood_hint", () => {
     const tired = { valence: -0.5, arousal: 0.1, energy: 0.0 };
     const fresh = { valence: 0.8, arousal: 0.9, energy: 1.0 };
-    expect(energyProbabilityFactor(tired)).toBeCloseTo(0.7, 5);
-    expect(energyProbabilityFactor(fresh)).toBeCloseTo(1.3, 5);
-    expect(energyCooldownFactor(tired)).toBeCloseTo(1.3, 5);
-    expect(energyCooldownFactor(fresh)).toBeCloseTo(0.7, 5);
     expect(moodHint(tired)).toBe("你現在的狀態:心情不太好、平靜、有點累");
     expect(moodHint(fresh)).toBe("你現在的狀態:心情不錯、有點興奮、精神很好");
   });

@@ -437,19 +437,17 @@ describe("attention: replying to her", () => {
       inputs,
       now: Date.now(),
       voice: null,
-      affinity: null,
-      mood: null,
     });
   }
 
-  it("skips_her_quiet_setting_and_the_level_cooldown", () => {
+  it("skips_her_quiet_setting", () => {
     const s = new Session(tctx(), 50);
     s.recordMessage(m("Owen", "妳在幹嘛"), false);
     s.recordOwn("Her", tacc("her"), "在發呆啊", newId(), Date.now() - 30_000);
     const reply = [m("Owen", "那妳要不要一起玩?")];
     s.recordMessage(reply[0] as IncomingMessage, false);
     const a = run(s, reply, 0.02);
-    expect(a.reasons).toContain("replying to her: skips quiet and level checks");
+    expect(a.reasons).toContain("replying to her: skips her quiet setting");
     expect(a.reasons).not.toContain("she wants to stay quiet here");
     expect(a.reasons.some((r) => r.startsWith("level cooldown"))).toBe(false);
     expect(a.gate.kind, a.reasons.join("; ")).toBe("sample");

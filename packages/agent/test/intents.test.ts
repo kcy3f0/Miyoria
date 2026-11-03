@@ -318,7 +318,8 @@ describe("talkativeness", () => {
     await wait(3000);
     expect(r.h.decisions(), "unset: the configured numbers").toEqual([false]);
     self.level = 1;
-    r.h.say(incoming(c, "Owen", "哈哈"));
+    // (Her talkativeness scales the probability, not the score thresholds any more.)
+    r.h.say(incoming(c, "Owen", "真的嗎?"));
     await wait(3000);
     const [trace] = r.h.traces();
     expect(trace?.respond, trace?.reasons.join("; ")).toBe(true);
@@ -329,7 +330,7 @@ describe("talkativeness", () => {
     await wait(3000);
     const replying = r.h.traces()[0];
     expect(replying?.respond, replying?.reasons.join("; ")).toBe(true);
-    expect(replying?.reasons).toContain("replying to her: skips quiet and level checks");
+    expect(replying?.reasons).toContain("replying to her: skips her quiet setting");
     // ... but chatter later on is.
     await wait(200_000);
     r.h.say(incoming(c, "Owen", "鯨魚是什麼?"));

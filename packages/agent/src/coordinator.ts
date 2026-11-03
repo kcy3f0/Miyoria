@@ -25,7 +25,7 @@
 // turn in flight, no debounce pending, no speech of hers still queued. While the Arbiter runs
 // that is all the coordinator decides (the Arbiter retries a busy place); every rule (cooldowns,
 // the level's gap, caps) is the Arbiter's. Without it the old checks apply here: her last words
-// older than the ambient cooldown and the level's gap.
+// a few seconds old and the level's gap.
 //
 // An intent (something her mind loop decided) waits instead: it never interrupts a turn in
 // flight, waiting messages or her queued speech (nor, in voice, someone still talking) and
@@ -409,7 +409,7 @@ export class Coordinator {
         : this.#session.lastSelfAt();
     const capped = !UNCAPPED_INITIATIVES.includes(initiative.reason);
     if (last !== null) {
-      const cooldown = this.#agent.ambientCooldownMs(this.#key, capped);
+      const cooldown = this.#agent.afterSpeechMs(this.#key);
       const since = this.#now - last;
       if (since < cooldown) {
         this.#agent.initiativeSkipped(

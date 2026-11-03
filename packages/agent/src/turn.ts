@@ -807,25 +807,12 @@ class Turn {
   }
 
   /**
-   * Mean affinity of the turn's speakers (unknown people count as 0), if social signals are
-   * available.
-   */
-  /**
    * The message her tools act for: the latest one that @-mentions her or replies to her, else
    * the latest one. Someone chatting right after a request must not become its requester.
    */
   #requester(): IncomingMessage | undefined {
     const pool = this.#focused;
     return pool.findLast((m) => m.mentions_self || m.reply_to_self) ?? pool.at(-1);
-  }
-
-  #speakerAffinity(): number | null {
-    const social = this.social;
-    if (!social) return null;
-    const authors = this.#authors();
-    if (authors.length === 0) return null;
-    const sum = authors.reduce((acc, a) => acc + (social.attitude(a)?.affinity ?? 0), 0);
-    return sum / authors.length;
   }
 
   /**
@@ -864,16 +851,12 @@ class Turn {
     const ceiling = ceilingFor(mode, this.key);
     const activeness = this.agent.handle.activeness(this.key);
     const talkativeness = this.#talkativeness();
-    const affinity = this.#speakerAffinity();
-    const mood = this.agent.mood();
     const voiceCfg = cfg.voice;
     let attentionCfg: AttentionConfig;
     let maxShare: number;
     if (this.voice) {
       attentionCfg = {
         ...cfg.attention,
-        cooldown_ms: voiceCfg.cooldown_ms,
-        min_cooldown_ms: voiceCfg.min_cooldown_ms,
         llm_check: voiceCfg.llm_check,
         gray_low: voiceCfg.gray_low,
       };
@@ -885,9 +868,7 @@ class Turn {
     const voice: VoiceAttention | null = this.voice
       ? {
           someoneSpeaking: this.session.someoneSpeaking(),
-          ambientFactor: voiceCfg.ambient_factor,
           questionWindowMs: voiceCfg.question_window_ms,
-          interruptScale: voiceCfg.interrupt_scale,
           others: this.session.voiceMembers().length,
         }
       : null;
@@ -904,9 +885,6 @@ class Turn {
       inputs: this.inputs,
       now: this.#now,
       voice,
-      affinity,
-      mood,
-      affectBiased: this.agent.ctx.services.get(AffectStateKey) !== undefined,
     });
     const reasons = assessment.reasons;
     if (mode !== configured) reasons.push(`llm budget ${budget}: as mention-only`);

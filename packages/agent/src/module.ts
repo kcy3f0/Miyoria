@@ -9,7 +9,7 @@ import { activenessCapability, chatCapabilities } from "./actions.js";
 import { type RandomSource, SeededRandom } from "./attention.js";
 import { AgentCommands } from "./commands.js";
 import { SavedPromptsKey } from "./compiler.js";
-import { AgentConfigSchema } from "./config.js";
+import { AgentConfigSchema, deprecatedAgentKeys } from "./config.js";
 import {
   AgentHandle,
   AgentHandleKey,
@@ -124,6 +124,13 @@ export class AgentModule implements Module {
 
   async start(ctx: ModuleContext): Promise<void> {
     const config = ctx.config(AgentConfigSchema);
+    const gone = deprecatedAgentKeys(ctx.rawConfig);
+    if (gone.length > 0) {
+      ctx.log.warn(
+        { keys: gone },
+        "[modules.agent] keys are deprecated and ignored: attention cooldowns and multipliers are gone (when she starts something on her own is [modules.arbiter])",
+      );
+    }
     const random =
       this.#random ??
       (config.seed !== null ? new SeededRandom(config.seed) : SeededRandom.fromEntropy());

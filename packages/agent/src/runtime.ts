@@ -49,7 +49,7 @@ import {
   v2Event,
   v2Payload,
 } from "@miyoria/types";
-import { ambientCooldown, type RandomSource, type TalkLevel } from "./attention.js";
+import type { RandomSource, TalkLevel } from "./attention.js";
 import type { AgentCommands } from "./commands.js";
 import { PROMPT_TOPIC, SavedPrompts } from "./compiler.js";
 import type { AgentConfig } from "./config.js";
@@ -68,6 +68,9 @@ import { type FetchLike, ImageLoader } from "./vision.js";
 /** Module whose restart means the agent commands must be registered again. */
 const COMMANDS_MODULE = "commands";
 const MINUTE_MS = 60_000;
+/** Without the Arbiter, an initiative waits this long after she spoke (text / voice). */
+const LEGACY_AFTER_SPEECH_TEXT_MS = 5_000;
+const LEGACY_AFTER_SPEECH_VOICE_MS = 20_000;
 /** How long the Arbiter waits for a coordinator to take (or refuse) an impulse's turn. */
 const OPEN_TIMEOUT_MS = 5_000;
 /** Topic of the voice module's barge-in reports (`packages/voice/src/topics.ts`, W2). */
@@ -894,24 +897,11 @@ export class Agent {
   }
 
   /**
-   * Minimum time (ms) since she last spoke before she starts a conversation in `context`: the
-   * attention cooldown scaled by her talkativeness (or activeness) and energy, under the
-   * channel's level; with `levelFloor` at least the level's long cooldown.
+   * Without the Arbiter: how long after she spoke an initiative waits in `context` (the
+   * Arbiter's `after_speech_*_secs` defaults).
    */
-  ambientCooldownMs(context: ContextKey, levelFloor = false): number {
-    const voice = context.kind === "voice";
-    const base = voice ? this.config.voice.cooldown_ms : this.config.attention.cooldown_ms;
-    const min = voice ? this.config.voice.min_cooldown_ms : this.config.attention.min_cooldown_ms;
-    const ceiling = this.ceiling(context);
-    const ms = ambientCooldown(
-      base,
-      min,
-      this.handle.activeness(context),
-      this.talkativeness(context),
-      this.mood(),
-      ceiling,
-    );
-    return levelFloor && ceiling !== null ? Math.max(ms, ceiling.minCooldownMs) : ms;
+  afterSpeechMs(context: ContextKey): number {
+    return context.kind === "voice" ? LEGACY_AFTER_SPEECH_VOICE_MS : LEGACY_AFTER_SPEECH_TEXT_MS;
   }
 
   isSelf(account: AccountRef): boolean {

@@ -207,21 +207,21 @@ interface Stimulus {
    - 被封鎖或冷處理名單 → 忽略
    - 頻道的聊天等級:`off`(關閉)/ `mention-only`(只回提及)/ `quiet`(安靜)/ `normal`(一般,舊的 `ambient`)/ `lively`(活躍)/ `always`(每則都回,測試用)。文字頻道的 `quiet` / `normal` / `lively` 是上限,見下面與 [design/autonomy.md](design/autonomy.md) §21
    - 直接叫她(@、回覆、DM、叫名字)→ 一定進候選,而且優先
-   - 冷卻時間;她在近期訊息的佔比上限(例如最近 20 則最多 30% 是她,避免洗版)
+   - 她在近期訊息的佔比上限(例如最近 20 則最多 30% 是她,避免洗版);語音裡有人還在講話時不插嘴
 2. **Salience 評分**(特徵加權,不花錢):被叫到、問句、話題跟她的興趣或記憶相關、說話者的好感與熟悉度、目前 mood/energy、她正在做的事(玩遊戲時比較不會插話)
 3. **快速 LLM 判斷**(只用在 ambient 且分數落在灰色地帶時):`fast` 等級的模型讀短上下文,回傳 `{respond: bool, urgency, reason}`
 
-最後由 `respond_probability = f(score, affinity, mood, budget)` 抽樣,讓她的行為不會死板。生成階段的 LLM 也可以輸出 `<silence/>` 主動選擇不回。
+最後由 `respond_probability = score × 4^(2L−1)`(L = 她的 talkativeness)抽樣,讓她的行為不會死板。生成階段的 LLM 也可以輸出 `<silence/>` 主動選擇不回。
 
-**多話程度是她自己的**([design/autonomy.md](design/autonomy.md) §6):她在 `SelfState` 給這個情境(或伺服器、`voice` / `text`、`*`)定了 talkativeness L 時,attention 用它取代 activeness 與語音的 `ambient_factor` / `interrupt_scale`:插話機率 ×4^(2L−1)、冷卻 ×4^(1−2L)(不低於 `min_cooldown_ms`:文字 2 秒、語音 5 秒)、灰色地帶門檻 ×2^(1−2L)、語音裡別人還在講時 ×(0.2 + 0.6L),L ≤ 0.05 不插話。她沒定時照舊用設定的數字。近期佔比上限與最小冷卻是人設的底線;`interrupt_scale = 0` 仍代表永遠不壓過別人。`channel_activeness` 工具(有人說「活躍點」「安靜點」,`silent` / `low` / `medium` / `high`,最多一天)會設定該情境的 talkativeness。
+**多話程度是她自己的**([design/autonomy.md](design/autonomy.md) §6,v2 §3.3):attention 只留便宜的前置過濾(被叫到、名字、語音裡有人還在講就不插嘴)與「她的 talkativeness L × 佔比上限」,灰色區才問 `fast` 模型。L 是她在 `SelfState` 給這個情境(或伺服器、`voice` / `text`、`*`)定的值,加上 lesson 與情緒(`AffectSnapshot.biases`)的偏移與下限;她沒定時用等級的預設,設定的 activeness 只是把預設往下 / 往上移(−0.25 / +0.17)。插話機率 = 分數 × 4^(2L−1),L ≤ 0.05 不插話。好感、精力、activeness 倍率、語音的 `ambient_factor` / `interrupt_scale` 與所有冷卻都拿掉了(舊設定鍵照樣能讀,會警告);她自己多久開一次口是 Arbiter 的規則。`channel_activeness` 工具(有人說「活躍點」「安靜點」,`silent` / `low` / `medium` / `high`,最多一天)會設定該情境的 talkativeness。
 
-**聊天等級是上限**(`agent/src/levels.ts`,只用在文字頻道,語音不變):她的 talkativeness(含學到的事的調整)被限制在等級的上限內,整個插話倍率也不超過上限;她沒定時用等級的預設。等級另外加上最低分數、較長的冷卻(接著她剛說的話不算)、較低的佔比上限,以及她自己開話題(心智迴圈的 `chat.start` 與其他在那裡開口的意圖、initiative 回合;遊戲實況與動作結果不算)的最小間隔:
+**聊天等級是上限**(`agent/src/levels.ts`,只用在文字頻道,語音不變):她的 talkativeness(含學到的事的調整)被限制在等級的上限內,整個插話倍率也不超過上限;她沒定時用等級的預設。等級另外加上最低分數、較低的佔比上限,以及她自己開話題(她的 `chat.start` 意圖;唱歌報幕、遊戲實況與動作結果不算)的最小間隔(Arbiter 的規則之一):
 
-| 等級 | talkativeness 上限 / 沒定時 | 插話倍率 | 最低分數 | 冷卻下限 | 佔比上限 | 自己開話題間隔 |
-|---|---|---|---|---|---|---|
-| `quiet` 安靜 | 0.5 / 0.25 | ×0.5,最多 ×1 | 0.45 | 10 分鐘 | 15% | 3 小時 |
-| `normal` 一般 | 0.75 / 0.5 | ×1,最多 ×2 | (`gray_low`) | (`cooldown_ms`) | (profile) | (mind / initiative 自己的) |
-| `lively` 活躍 | 1 / 0.65 | ×1.5,最多 ×4 | (`gray_low`) | (`cooldown_ms`) | (profile) | (mind / initiative 自己的) |
+| 等級 | talkativeness 上限 / 沒定時 | 插話倍率 | 最低分數 | 佔比上限 | 自己開話題間隔 |
+|---|---|---|---|---|---|
+| `quiet` 安靜 | 0.5 / 0.25 | ×0.5,最多 ×1 | 0.45 | 15% | 3 小時 |
+| `normal` 一般 | 0.75 / 0.5 | ×1,最多 ×2 | (`gray_low`) | (profile) | (`[modules.arbiter]` 的間隔) |
+| `lively` 活躍 | 1 / 0.65 | ×1.5,最多 ×4 | (`gray_low`) | (profile) | (`[modules.arbiter]` 的間隔) |
 
 沒設定的頻道預設 `quiet`(profile 的 `behavior.default_channel_mode`)。她的回合情境(system)會寫這個頻道的等級;心智迴圈的地點也會標出等級與「現在不能主動開口」。
 

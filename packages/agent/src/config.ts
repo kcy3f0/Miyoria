@@ -86,40 +86,18 @@ export function parseActiveness(s: string): Activeness {
   }
 }
 
-/** Multiplier for the reply probability of ambient turns. */
-export function probabilityFactor(level: Activeness): number {
-  return level === "low" ? 0.5 : level === "high" ? 1.6 : 1.0;
-}
-
-/** Multiplier for the ambient cooldown. */
-export function cooldownFactor(level: Activeness): number {
-  return level === "low" ? 2.0 : level === "high" ? 0.5 : 1.0;
-}
-
-function clamp01(x: number): number {
-  return Math.min(Math.max(x, 0), 1);
-}
-
-/** Scales an ambient reply probability, clamped to `[0, 1]`. */
-export function scaleByActiveness(level: Activeness, probability: number): number {
-  return clamp01(probability * probabilityFactor(level));
-}
-
 /** A channel mode in config; also accepts the old `ambient` (= `normal`). */
 export const ChannelModeSchema = z
   .enum(["off", "mention-only", "quiet", "normal", "lively", "always", "ambient"])
   .transform((v): ChannelMode => (v === "ambient" ? "normal" : v));
 export const ActivenessSchema = z.enum(["low", "medium", "high"]);
 
-/** `[modules.agent.attention]`: when she replies. */
+/**
+ * `[modules.agent.attention]`: when she replies. Only the prefilter, the score thresholds, the
+ * share cap and the gray-zone check: cooldowns and the other multipliers are gone (see
+ * `DEPRECATED_AGENT_KEYS`).
+ */
 export const AttentionConfigSchema = z.object({
-  /** Minimum time between her replies to turns that did not address her. */
-  cooldown_ms: z.number().int().nonnegative().default(5000),
-  /**
-   * Hard floor of that cooldown when she sets her own talkativeness (which scales it): however
-   * chatty she wants to be, never faster than this.
-   */
-  min_cooldown_ms: z.number().int().nonnegative().default(2000),
   /** Window (in messages) for the anti-spam share check. */
   recent_window: z.number().int().nonnegative().default(20),
   /** Overrides the profile's `behavior.max_share_of_recent`. */
@@ -164,29 +142,10 @@ export const VoiceConfigSchema = z.object({
    * act like `normal` in voice.
    */
   default_mode: ChannelModeSchema.default("normal"),
-  /**
-   * Multiplies the reply probability of ambient voice turns (only while she has not set her own
-   * talkativeness for voice).
-   */
-  ambient_factor: z.number().default(0.5),
-  /**
-   * Minimum time between her replies to voice turns that did not address her, counted from
-   * when she last spoke.
-   */
-  cooldown_ms: z.number().int().nonnegative().default(20_000),
-  /** Hard floor of the voice cooldown when her own talkativeness scales it. */
-  min_cooldown_ms: z.number().int().nonnegative().default(5000),
   /** Her maximum share of recent voice history for ambient turns. */
   max_share_of_recent: z.number().default(0.2),
   /** A question this soon after she spoke counts as addressed to her. */
   question_window_ms: z.number().int().nonnegative().default(8000),
-  /**
-   * Multiplies the ambient reply probability while someone else is still talking (in a busy
-   * channel someone nearly always is). 0 = never join in over someone (also when she set her
-   * own talkativeness, which otherwise decides this); direct address and questions to her are
-   * not affected.
-   */
-  interrupt_scale: z.number().min(0).max(1).default(0.35),
   /**
    * Below this salience an ambient voice turn is ignored (text uses `attention.gray_low`).
    * Lower than in text: spoken chatter rarely carries the cues that raise the score.
@@ -385,6 +344,34 @@ export const AgentConfigSchema = z.object({
   prompt: PromptConfigSchema.prefault({}),
 });
 export type AgentConfig = z.output<typeof AgentConfigSchema>;
+
+/**
+ * Keys of `[modules.agent]` that are gone (attention's cooldowns and multipliers, v2 §3.3): an
+ * old `miyoria.toml` that still has them loads (they are ignored) with a deprecation warning.
+ */
+export const DEPRECATED_AGENT_KEYS: readonly string[] = [
+  "attention.cooldown_ms",
+  "attention.min_cooldown_ms",
+  "voice.ambient_factor",
+  "voice.cooldown_ms",
+  "voice.min_cooldown_ms",
+  "voice.interrupt_scale",
+];
+
+/** The deprecated keys `raw` (the `[modules.agent]` section) still sets. */
+export function deprecatedAgentKeys(raw: unknown): string[] {
+  const obj = (v: unknown): Record<string, unknown> | null =>
+    v !== null && typeof v === "object" && !Array.isArray(v)
+      ? (v as Record<string, unknown>)
+      : null;
+  const root = obj(raw);
+  if (root === null) return [];
+  return DEPRECATED_AGENT_KEYS.filter((path) => {
+    const [section, key] = path.split(".") as [string, string];
+    const part = obj(root[section]);
+    return part !== null && Object.hasOwn(part, key);
+  });
+}
 
 /** The defaults (Rust `AgentConfig::default()`). */
 export function defaultAgentConfig(): AgentConfig {

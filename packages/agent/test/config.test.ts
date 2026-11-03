@@ -4,10 +4,10 @@ import {
   AgentConfigSchema,
   activenessFor,
   defaultAgentConfig,
+  deprecatedAgentKeys,
   modeFor,
   parseActiveness,
   parseChannelMode,
-  scaleByActiveness,
 } from "../src/index.js";
 
 const ctx: ContextKey = { platform: "discord", scope: "g1", channel: "c1", kind: "channel" };
@@ -51,11 +51,28 @@ describe("config", () => {
     cfg.activeness["discord:g1"] = "high";
     expect(activenessFor(cfg, ctx, "low")).toBe("high");
 
-    expect(scaleByActiveness("low", 0.6)).toBeCloseTo(0.3, 6);
-    expect(scaleByActiveness("medium", 0.6)).toBeCloseTo(0.6, 6);
-    expect(scaleByActiveness("high", 0.8)).toBeCloseTo(1.0, 6);
     expect(parseActiveness("HIGH")).toBe("high");
     expect(() => parseActiveness("loud")).toThrow("unknown activeness `loud`");
+  });
+
+  it("old attention cooldowns and multipliers still load, flagged as deprecated", () => {
+    const raw = {
+      attention: { cooldown_ms: 5000, min_cooldown_ms: 2000, talk_floor: 0.2 },
+      voice: { ambient_factor: 0.5, cooldown_ms: 20_000, interrupt_scale: 0.35, debounce_ms: 600 },
+    };
+    const parsed = AgentConfigSchema.parse(raw);
+    expect(parsed.attention.talk_floor).toBe(0.2);
+    expect(parsed.voice.debounce_ms).toBe(600);
+    expect("cooldown_ms" in parsed.attention).toBe(false);
+    expect(deprecatedAgentKeys(raw)).toEqual([
+      "attention.cooldown_ms",
+      "attention.min_cooldown_ms",
+      "voice.ambient_factor",
+      "voice.cooldown_ms",
+      "voice.interrupt_scale",
+    ]);
+    expect(deprecatedAgentKeys({ attention: { talk_floor: 0.1 } })).toEqual([]);
+    expect(deprecatedAgentKeys(null)).toEqual([]);
   });
 
   it("parses_modes", () => {
@@ -111,8 +128,6 @@ describe("config", () => {
       max_context_chars: 4000,
       budget_notice_interval_ms: 3_600_000,
       attention: {
-        cooldown_ms: 5000,
-        min_cooldown_ms: 2000,
         recent_window: 20,
         max_share_of_recent: null,
         keywords: [],
@@ -129,12 +144,8 @@ describe("config", () => {
         direct_debounce_ms: 400,
         max_debounce_ms: 2500,
         default_mode: "normal",
-        ambient_factor: 0.5,
-        cooldown_ms: 20_000,
-        min_cooldown_ms: 5000,
         max_share_of_recent: 0.2,
         question_window_ms: 8000,
-        interrupt_scale: 0.35,
         gray_low: 0.15,
         llm_check: false,
         speak_ttl_ms: 30_000,

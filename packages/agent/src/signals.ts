@@ -22,9 +22,6 @@ export const BUDGET_TOPIC = "llm.budget";
  */
 export const EXHAUSTED_LINE = "哼……今天的能量用完了啦,才、才不是想偷懶!明天再陪你們聊。";
 
-/** At or below this affinity she may ignore even direct address. */
-export const IGNORE_DIRECT_AFFINITY = -80.0;
-
 /**
  * State of the LLM budget as reported on `llm.budget`.
  * `degraded`: save tokens (ambient channels act like mention-only, no initiative).
@@ -37,37 +34,6 @@ export function parseBudgetState(s: string): BudgetState {
   const v = s.trim().toLowerCase();
   if (v === "ok" || v === "degraded" || v === "exhausted") return v;
   throw new ParseError(`unknown budget state \`${v}\``);
-}
-
-function clamp(x: number, lo: number, hi: number): number {
-  return Math.min(Math.max(x, lo), hi);
-}
-
-/** Multiplier for ambient reply probabilities: ×0.3 at affinity -100, ×1 at 0, ×1.4 at +100. */
-export function affinityAmbientFactor(affinity: number): number {
-  const a = clamp(affinity, -100, 100) / 100;
-  return a >= 0 ? 1 + 0.4 * a : 1 + 0.7 * a;
-}
-
-/**
- * Multiplier for the reply probability of direct address: she answers people she dislikes
- * (coldly), unless affinity is at or below -80.
- */
-export function affinityDirectFactor(affinity: number): number {
-  const a = clamp(affinity, -100, 100);
-  if (a <= IGNORE_DIRECT_AFFINITY) return 0.4;
-  if (a > 0) return 1 + (0.1 * a) / 100;
-  return 1;
-}
-
-/** Multiplier for ambient reply probabilities: ×0.7 when exhausted, ×1.3 with full energy. */
-export function energyProbabilityFactor(mood: Mood): number {
-  return 0.7 + 0.6 * clamp(mood.energy, 0, 1);
-}
-
-/** Multiplier for the ambient cooldown: ×1.3 when tired, ×0.7 with full energy. */
-export function energyCooldownFactor(mood: Mood): number {
-  return 1.3 - 0.6 * clamp(mood.energy, 0, 1);
 }
 
 /** Her actual voice / stream / game state, for the situation (so she never claims otherwise). */
