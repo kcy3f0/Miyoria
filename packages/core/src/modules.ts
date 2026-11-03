@@ -10,6 +10,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { ActionsModule } from "@miyoria/actions";
+import { ActivityModule } from "@miyoria/activity";
 import { AgentModule, PersonaHandleKey } from "@miyoria/agent";
 import { ApiModule, avatarEmotions } from "@miyoria/api";
 import { AuthConfigSchema, AuthModule } from "@miyoria/auth";
@@ -124,6 +125,7 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
     new CommandsModule({ owners: authOwners(config) }),
     new AuthModule(),
     new ActionsModule(profile.displayName),
+    new ActivityModule(),
     SocialModule.fromProfile(profile),
     new MoodModule(profileId, profile.manifest.mood),
     new WorldModule({

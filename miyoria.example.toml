@@ -254,6 +254,21 @@ barge_in = "selective"     # 有人插話時:selective(只有這回合要回的�
 # per_day = 50
 # cooldown_ms = 5000
 
+# 她在做什麼(ActivityManager):語音、直播、活動(遊戲 / 唱歌)只有這一個主人。她的工具、指令、
+# 面板、導演都經過它:重複的要求不會重做、同一件事一次只做一個;工具立刻回「開始了,task …」,
+# 做好或失敗(含原因,例如「開台失敗:OBS 沒開」)再通知她。開台 = Go Live + OBS 兩步;離開語音前先關台,
+# 等她把話講完才離開。
+[modules.activity]
+# golive_timeout_ms = 60000      # Go Live 多久沒開始就算失敗
+# obs = true                     # 連著直播機時 OBS 是開台的第二步(過閘門);false = 只有 Go Live
+# obs_start_delay_ms = 3000      # Go Live 開了之後等多久才按 OBS 開始直播
+# obs_attempts = 3
+# voice_timeout_ms = 20000       # 進 / 離開語音等確認的時間
+# speech_wait_ms = 30000         # 離開語音前最多等她把那一輪話講完多久
+# game_timeout_ms = 300000       # 遊戲最多開多久(含啟動器與載入世界)
+# failed_hold_ms = 120000        # 失敗的活動(例如遊戲斷線)留著給大家看多久
+# notice_ttl_ms = 600000         # 通知多久後就不用再告訴她
+
 [modules.agent]
 # 文字頻道的聊天等級:off(關閉)| mention-only(只回提及)| quiet(安靜)| normal(一般)| lively(活躍)
 # (always = 每則都回,測試用;舊的 ambient = normal)。等級是上限:她在等級之內自己決定要多話,

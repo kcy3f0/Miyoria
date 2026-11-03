@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "@miyoria/actions": "workspace:*",
+    "@miyoria/activity": "workspace:*",
     "@miyoria/agent": "workspace:*",
     "@miyoria/api": "workspace:*",
     "@miyoria/auth": "workspace:*",
