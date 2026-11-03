@@ -141,7 +141,7 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
     new MindModule(profileId, {
       name: profile.displayName,
       persona: (services) =>
-        services.get(PersonaHandleKey)?.personaPrompt() ?? profile.personaPrompt(),
+        services.get(PersonaHandleKey)?.corePrompt() ?? profile.personaPrompt(),
     }),
     new KnowledgeModule(profileId),
     new ConversationModule(profileId),
@@ -149,7 +149,7 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
       name: profile.displayName,
       names: profile.names(),
       persona: (services) =>
-        services.get(PersonaHandleKey)?.personaPrompt() ?? profile.personaPrompt(),
+        services.get(PersonaHandleKey)?.corePrompt() ?? profile.personaPrompt(),
     }),
     new QueueModule(),
     GameModule.fromProfile(profile),

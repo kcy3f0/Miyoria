@@ -1,11 +1,12 @@
-// The compact snapshot one thought sees: the relevant server's world summary, places and people
-// with short refs, her own state, agenda, recent thoughts and what she remembers about the
-// people and place involved. No long chat transcripts.
+// The compact snapshot Plan sees: the relevant server's world summary, places (named by their
+// context string) and people (named by their stable handle), and what she remembers about the
+// people and place involved. No long chat transcripts, no per-call codes.
 
 import type { ActuatorRegistry } from "@miyoria/actions";
 import { errorMessage, getLogger, type ServiceLookup, withTimeout } from "@miyoria/kernel";
 import {
   type AccountRef,
+  AffectStateKey,
   CHAT_DM,
   CHAT_START,
   type ContextKey,
@@ -40,7 +41,7 @@ import {
   type WorldSnapshot,
   WorldStateKey,
 } from "@miyoria/types";
-import type { AgendaRef, CapabilityInfo, PersonRef, PlaceRef } from "./prompt.js";
+import type { CapabilityInfo, PersonRef, PlaceRef } from "./prompt.js";
 
 const log = getLogger("mind.snapshot");
 
@@ -57,7 +58,6 @@ function nameRef(name: string, taken: readonly string[]): string {
 const MAX_PLACES = 8;
 const MAX_PEOPLE = 10;
 const MAX_CHANNELS = 5;
-const MAX_AGENDA = 8;
 const CONTRIBUTOR_TIMEOUT_MS = 1500;
 const LABEL_TIMEOUT_MS = 500;
 const MAX_MEMORY_CHARS = 2500;
@@ -69,7 +69,6 @@ export interface Gathered {
   world: string;
   places: PlaceRef[];
   people: PersonRef[];
-  agenda: AgendaRef[];
   memories: string | null;
   /** Her documents about the people and place involved and herself (rendered outline). */
   documents: string | null;
@@ -92,7 +91,6 @@ export interface GatherInput {
   signal?: AbortSignal;
 }
 
-/** The context the thought is mostly about. */
 /**
  * The person a reply's `person` refers to: the handle shown in the snapshot, else a name that
  * is exactly one of theirs, else a legacy `u<N>` meaning the N-th person listed in this very
@@ -109,6 +107,22 @@ export function personByRef(people: readonly PersonRef[], ref: string): PersonRe
   return legacy === undefined ? undefined : people[Number(legacy) - 1];
 }
 
+/**
+ * The place a reply's `place` refers to: its context string as shown, else a label that is
+ * exactly one place's, else a legacy `p<N>` of this very snapshot (never stored).
+ */
+export function placeByRef(places: readonly PlaceRef[], ref: string): PlaceRef | undefined {
+  const r = ref.trim();
+  if (r === "") return undefined;
+  const exact = places.find((p) => p.ref === r);
+  if (exact) return exact;
+  const labelled = places.filter((p) => p.label === r);
+  if (labelled.length === 1) return labelled[0];
+  const legacy = /^p([0-9]{1,4})$/.exec(r)?.[1];
+  return legacy === undefined ? undefined : places[Number(legacy) - 1];
+}
+
+/** The context the snapshot is mostly about. */
 export function focusOf(
   triggers: readonly ThoughtTrigger[],
   suggestions: readonly MindSuggestion[],
@@ -230,7 +244,7 @@ export async function gather(input: GatherInput): Promise<Gathered> {
       world?.her.voice?.channel === context.channel &&
       world.her.voice.scope === context.scope;
     places.push({
-      ref: `p${places.length + 1}`,
+      ref: key,
       context,
       label: await label(services, input.labels, context, fallback),
       note,
@@ -298,6 +312,7 @@ export async function gather(input: GatherInput): Promise<Gathered> {
   // ---- people
   const social = services.get(SocialSignalsKey);
   const self: SelfState | undefined = services.get(SelfStateKey);
+  const affect = services.get(AffectStateKey);
   const people: PersonRef[] = [];
   const handles = services.get(HandleDirectoryKey);
   const addPerson = (account: AccountRef, name: string | null) => {
@@ -316,16 +331,23 @@ export async function gather(input: GatherInput): Promise<Gathered> {
         shown,
         people.map((p) => p.ref),
       );
+    const card = person === null ? null : (affect?.card(person) ?? null);
     people.push({
       ref: handle,
       account,
       person,
       name: name ?? presence?.display_name ?? account.id,
-      relation:
-        attitude === null
+      relation: card
+        ? `${card.label},在意 ${card.attachment.toFixed(1)}`
+        : attitude === null
           ? null
           : `${attitude.label || "認識的人"},好感 ${Math.round(attitude.affinity)}、熟悉 ${Math.round(attitude.familiarity)}`,
-      feeling: person === null ? null : (self?.feeling(person)?.text ?? null),
+      feeling:
+        card && card.feeling.trim() !== ""
+          ? card.feeling
+          : person === null
+            ? null
+            : (self?.feeling(person)?.text ?? null),
       heart: person === null ? null : heartLine(self, person),
       doing:
         activity === null
@@ -341,11 +363,6 @@ export async function gather(input: GatherInput): Promise<Gathered> {
     if (guild !== null && v.guild !== guild) continue;
     for (const m of v.members) if (!m.is_self) addPerson(m.account, m.display_name);
   }
-
-  // ---- agenda
-  const agenda: AgendaRef[] = (self?.agenda() ?? [])
-    .slice(0, MAX_AGENDA)
-    .map((item, i) => ({ ref: `g${i + 1}`, item }));
 
   // ---- memories
   let memories: string | null = null;
@@ -420,7 +437,6 @@ export async function gather(input: GatherInput): Promise<Gathered> {
     world: summary,
     places,
     people,
-    agenda,
     memories,
     documents,
     lessons,

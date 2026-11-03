@@ -391,6 +391,22 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # journal_keep = 200             # 想法日誌保留幾則原文;再多 digest_batch 則就把最舊的整理成摘要
 # digest_batch = 50
 # digests_keep = 60              # 摘要保留幾則(在面板「內心 → 想法」)
+# 慢想拆成三個小呼叫(推理等級在 [llm.reasoning]:appraise / plan / plan_daily / reflect):
+# 一段互動結束後 Appraise 感受、目標觸發 / 活動結束 / 在意的人上線 / 心情變差 / 心跳時 Plan 計畫
+# (改目標、交 0–2 個衝動給 Arbiter)、每天第一次 Plan 寫今天的計畫;Reflect 在 [modules.reflect]
+# heartbeat_mins = 15            # 閒著時 Plan 的心跳
+# min_heartbeat_mins = 4         # 很無聊、需求很缺時最快到這麼快
+# 什麼都沒做的 Plan 會讓下一次心跳變慢(最慢 max_heartbeat_mins);狀況沒變的心跳不問模型
+# appraise_quiet_secs = 120      # 一段互動安靜這麼久就算結束,回想它的感受
+# appraise_min_lines = 4         # 至少這麼多句才回想
+# appraise_max_per_hour = 6
+# goal_default_days = 3          # 沒寫期限的目標(舊議程、追問)多久後過期
+# goal_max_days = 14             # 目標最長留多久
+# goal_refire_mins = 30          # 目標的觸發條件一直成立時,隔多久再叫她一次
+# cared_attachment = 0.3         # 在意程度到這裡的人上線會叫醒她
+# mood_drop = 0.25               # 心情(愉快度)比上次計畫時掉這麼多就重新計畫
+# daily_hour = 6                 # 這個時間之後的第一次 Plan 是今天的計畫
+# quiet_start_hour / quiet_end_hour 已不使用:安靜時段只有 Arbiter 一份
 
 # ---- 反思與學習(自主層階段 G)-------------------------------------------------
 
