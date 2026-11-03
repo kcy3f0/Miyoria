@@ -56,6 +56,7 @@ import {
   type LaneKey,
   LessonsKey,
   MindKey,
+  type Notice,
   newAction,
   type Participant,
   PlatformSinksKey,
@@ -86,6 +87,7 @@ import {
   type TalkLevel,
   type VoiceAttention,
 } from "./attention.js";
+import { acceptedRequests, type Backing, claimReminder, unbackedClaim } from "./claims.js";
 import { budgetBlocks, budgetSelf, contributedData, savedPrompt } from "./compiler.js";
 import type { AttentionConfig, ChannelMode } from "./config.js";
 import { AMBIENT_MODES, typingRefreshMs } from "./config.js";
@@ -142,22 +144,6 @@ const CONTRIBUTOR_HISTORY = 6;
 const MAX_PEOPLE = 10;
 /** No budget: the agent's own data blocks are only limited by their own budgets. */
 const UNLIMITED = Number.MAX_SAFE_INTEGER;
-
-/**
- * Things she may say she has done that only happen through a tool, by tool name. A reply that
- * says one of these without the tool call gets one reminder (see `#produce`).
- */
-const CLAIMS: readonly (readonly [string, RegExp])[] = [
-  ["voice_join", /游過去|游去了|進語音了|進去語音|加入語音了|過去語音/],
-  ["voice_leave", /離開語音了|退出語音了|游走了|先下語音/],
-  ["stream_start", /開台了|開播了|開始直播了/],
-  ["stream_stop", /關台了|下播了|結束直播了/],
-  ["game_start", /開遊戲了|開始玩了|開好遊戲/],
-];
-
-function claimReminder(tool: string): string {
-  return `(系統提醒,不是對方說的話)你剛才說的事要呼叫 ${tool} 才會真的發生,但這一回合還沒呼叫。要做就現在呼叫它;決定不做或做不到,就照實跟對方說。`;
-}
 
 export class TurnError extends Error {
   override readonly name = "TurnError";
@@ -476,8 +462,9 @@ class Speech {
 
 /**
  * Text replies go out line by line while the model writes (a line break outside code blocks
- * ends a message). A line that claims something only a tool does is held back (with the rest
- * of the response), so the reminder in `#produce` can still replace it.
+ * ends a message). A line that claims something only a tool does, with nothing backing it
+ * (claims.ts), is held back (with the rest of the response), so the reminder in `#produce` can
+ * still replace it.
  */
 class TextSegments {
   /** UTF-16 offset into the step's text up to which it was handled. */
@@ -612,6 +599,10 @@ class Turn {
   #saved: SavedPrompt | null = null;
   /** Prompt tokens of the first model response, as the provider reported them. */
   #promptTokens: number | null = null;
+  /** The notices she was told in this turn (they may back what she says she did). */
+  #notices: readonly Notice[] = [];
+  /** Tools of this turn that answered without an error. */
+  readonly #succeeded = new Set<string>();
 
   constructor(
     readonly agent: Agent,
@@ -1038,7 +1029,7 @@ class Turn {
       unanswered: services.get(MindKey)?.unanswered?.(this.key) ?? [],
       // The owner's ceiling for this channel, so she knows it when asked to be quieter.
       level: levelHint(this.agent.handle.channelMode(this.key), this.key),
-      notices: this.agent.takeNotices(this.key),
+      notices: this.#takeNotices(),
       crushHere,
     });
     const selfBudget = budgetSelf(own, cfg.prompt.self_chars);
@@ -1271,8 +1262,9 @@ class Turn {
       if (text !== "") early.push(await this.#sendText(sink, text, direct, priority));
     };
     const offered = new Set(this.#toolSpecs().map((t) => t.name));
-    const segments = new TextSegments(send, (text) =>
-      CLAIMS.some(([tool, said]) => offered.has(tool) && said.test(text)),
+    const segments = new TextSegments(
+      send,
+      (text) => unbackedClaim(text, offered, this.#backing()) !== null,
     );
     const interim = async (e: Expression) => send(segments.rest(e));
     let expression: Expression;
@@ -1470,7 +1462,6 @@ class Turn {
     const toolsEnabled = cfg.tools_enabled && (this.inputs.length > 0 || this.intent !== null);
     const messages = [...initial];
     let earlier: Expression | null = null;
-    const used = new Set<string>();
     let reminded = false;
     for (let step = 0; step <= cfg.max_tool_steps; step++) {
       const tools = toolsEnabled ? this.#toolSpecs() : [];
@@ -1491,22 +1482,21 @@ class Turn {
         this.agent.log.debug({ turn: this.turn }, "speech interrupted, generation stopped");
         return expression;
       }
-      // She said she did something only a tool does ("我游過去了") without calling it: once per
-      // turn she is told it has not happened, and either does it or says so. In text the claim
-      // was not sent yet and the corrected reply replaces it.
+      // She said she did something only a tool does ("我游過去了") and nothing backs it (no
+      // accepted transition of this turn, no notice, not already so; claims.ts): once per turn
+      // she is told it has not happened, and either does it or says so. In text the claim was
+      // not sent yet and the corrected reply replaces it.
       if (calls.length === 0 && offered && !reminded && step < cfg.max_tool_steps) {
         const names = new Set(tools.map((t) => t.name));
-        const claim = CLAIMS.find(
-          ([tool, said]) => names.has(tool) && !used.has(tool) && said.test(expression.text),
-        );
+        const claim = unbackedClaim(expression.text, names, this.#backing());
         if (claim) {
           reminded = true;
           this.agent.log.info(
-            { turn: this.turn, tool: claim[0] },
+            { turn: this.turn, tool: claim.tool },
             "she claimed an action without doing it",
           );
           messages.push(assistantMessage(raw, []));
-          messages.push(userMessage(claimReminder(claim[0])));
+          messages.push(userMessage(claimReminder(claim.tool)));
           continue;
         }
       }
@@ -1525,7 +1515,6 @@ class Turn {
       }
       messages.push(assistantMessage(raw, calls));
       for (const call of calls) {
-        used.add(call.name);
         const result = await this.#runTool(call, priority);
         messages.push(toolResultMessage(call.id, result));
       }
@@ -1640,6 +1629,7 @@ class Turn {
   /** Runs one tool call; the result (or error) is a short text for the model. */
   async #runTool(call: ToolCall, priority: Priority): Promise<string> {
     const [ok, full] = await this.#tryTool(call, priority);
+    if (ok) this.#succeeded.add(call.name);
     const result = truncate(full, this.agent.config.max_tool_result_chars);
     this.agent.log.debug({ turn: this.turn, tool: call.name, ok, result }, "tool call");
     this.signal.throwIfAborted();
@@ -1692,6 +1682,23 @@ class Turn {
   #tool(name: string): Tool | undefined {
     const tool = this.agent.tools.get(name);
     return tool && this.#offers(tool, this.#toolScope()) ? tool : undefined;
+  }
+
+  /** The notices for this context, told in this turn (kept: they may back her claims). */
+  #takeNotices(): Notice[] {
+    const notices = this.agent.takeNotices(this.key);
+    this.#notices = notices;
+    return notices;
+  }
+
+  /** What backs what she says she did (claims.ts). */
+  #backing(): Backing {
+    const manager = this.agent.ctx.services.get(ActivityManagerKey) ?? null;
+    return {
+      requests: acceptedRequests(manager, this.turn, this.#notices),
+      tools: this.#succeeded,
+      scope: this.#toolScope(),
+    };
   }
 
   async #tryTool(call: ToolCall, priority: Priority): Promise<[boolean, string]> {

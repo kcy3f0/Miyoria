@@ -16,6 +16,7 @@ import {
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { acceptedRequests, CLAIMS, unbackedClaim } from "../src/claims.js";
 import { offeredIn, scopeOfSnapshot } from "../src/tool-scope.js";
 import {
   channel,
@@ -197,5 +198,88 @@ describe("tool scope", () => {
     await wait(3000);
     expect(t.goal.calls).toHaveLength(0);
     expect(h.sink.texts()).toEqual(["沒在玩啦"]);
+  });
+});
+
+describe("claims", () => {
+  const offered = new Set(CLAIMS.map((c) => c.tool));
+  const none = { requests: new Set<never>(), tools: new Set<string>(), scope: null };
+
+  it("a claim nothing backs is caught; one a task, a notice or her state backs is not", () => {
+    expect(unbackedClaim("好啦,我游過去了", offered, none)?.tool).toBe("voice_join");
+    expect(
+      unbackedClaim("好啦,我游過去了", offered, { ...none, requests: new Set(["ensure_voice"]) }),
+    ).toBeNull();
+    expect(
+      unbackedClaim("好啦,我游過去了", offered, {
+        ...none,
+        scope: scopeOfSnapshot(
+          snapshot(undefined, {
+            type: "in",
+            channel: { platform: "test", scope: "guild", channel: "v", kind: "voice" },
+            since: AT,
+          }),
+        ),
+      }),
+    ).toBeNull();
+    expect(unbackedClaim("開台了!", new Set(["voice_join"]), none)).toBeNull();
+    expect(unbackedClaim("今天天氣不錯", offered, none)).toBeNull();
+  });
+
+  it("backing comes from her turn's tasks and the notices she was told", () => {
+    const manager = new FakeManager(snapshot());
+    const task = (id: string, turn: string | null, status: ActivityTask["status"]) =>
+      ({
+        id,
+        resource: "presence",
+        request: { type: "leave_voice" },
+        by: "self",
+        turn,
+        context: null,
+        status,
+        created_at: AT,
+        ended_at: null,
+        failure: null,
+        detail: null,
+      }) satisfies ActivityTask;
+    manager.tasksList.push(task("t1", "turn-a", "running"), task("t2", "turn-b", "failed"));
+    expect([...acceptedRequests(manager, "turn-a", [])]).toEqual(["leave_voice"]);
+    expect([...acceptedRequests(manager, "turn-b", [])]).toEqual([]);
+    manager.tasksList.push({ ...task("t3", "turn-c", "done"), request: { type: "stop_live" } });
+    const notice = {
+      id: "n",
+      at: AT,
+      source: "activity",
+      task: "t3",
+      turn: "turn-c",
+      context: null,
+      ok: true,
+      code: null,
+      text: "關台了",
+      expires_at: AT,
+    };
+    expect([...acceptedRequests(manager, "turn-z", [notice])]).toEqual(["stop_live"]);
+    expect([...acceptedRequests(null, "turn-a", [notice])]).toEqual([]);
+  });
+
+  it("a successful tool call of her turn backs what she says next", async () => {
+    const manager = new FakeManager(snapshot());
+    const chat = new MockProvider("chat")
+      .events([
+        toolCall(0, "c1", "voice_join", "{}"),
+        { type: "done", finish_reason: "tool_calls", usage: null },
+      ])
+      .reply("好啦,我游過去了。");
+    const join = new Probe("voice_join");
+    const h = await Harness.build("always", noCheck(), chat, null, {
+      tools: [join],
+      provide: (s) => s.provide("app", ActivityManagerKey, manager),
+    });
+    h.say(mention(channel("c"), "Owen", "進語音"));
+    await wait(3000);
+    expect(join.calls).toHaveLength(1);
+    expect(h.sink.texts()).toEqual(["好啦,我游過去了。"]);
+    // Two model calls: the tool round and the reply; no reminder.
+    expect(chat.requests()).toHaveLength(2);
   });
 });
