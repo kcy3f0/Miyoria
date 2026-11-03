@@ -143,6 +143,23 @@ export {
   ObsWebSocketConnector,
   type SceneItem,
 } from "./obs.js";
+export {
+  applyObsSetup,
+  describeStep,
+  GAME_MODEL,
+  MASK_FILE,
+  MASK_FILTER,
+  type ObsAdmin,
+  type ObsSetupOptions,
+  type ObsSnapshot,
+  ObsWebSocketAdmin,
+  planObsSetup,
+  roundedMaskPng,
+  SING,
+  SOURCES,
+  type Step as ObsSetupStep,
+  VTS_WINDOW,
+} from "./obs-setup.js";
 export { OverlayHub, serveOverlay } from "./overlay.js";
 export {
   BODY_PARAMS,

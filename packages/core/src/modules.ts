@@ -8,7 +8,7 @@
 // extension host and one `ext.<id>` per extension.
 
 import { mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { ActionsModule } from "@miyoria/actions";
 import { AgentModule, PersonaHandleKey } from "@miyoria/agent";
 import { ApiModule, avatarEmotions } from "@miyoria/api";
@@ -39,7 +39,18 @@ import { SelfModule } from "@miyoria/self";
 import { SingModule } from "@miyoria/sing";
 import { MoodModule, SocialModule } from "@miyoria/social";
 import { SpeechConfigSchema, SpeechModule } from "@miyoria/speech";
-import { AvatarProfile, parseStageConfig, runStage, StageLinkModule } from "@miyoria/stage";
+import {
+  AvatarProfile,
+  applyObsSetup,
+  type ObsSetupStep,
+  ObsWebSocketAdmin,
+  overlayUrl,
+  parseStageConfig,
+  planObsSetup,
+  runStage,
+  SOURCES,
+  StageLinkModule,
+} from "@miyoria/stage";
 import { openStore as openStoreBackend, type Store } from "@miyoria/store";
 import { isJsonObject } from "@miyoria/types";
 import { VoiceLinkModule, VoiceModule } from "@miyoria/voice";
@@ -179,6 +190,54 @@ export async function runStageNode(
     avatar,
   );
   await runStage(stage, options.signal ? { signal: options.signal } : {});
+}
+
+/** Default scene names when `[modules."stage.link".scenes] roles` names none. */
+const DEFAULT_SCENES = { sing: "唱歌", chat: "聊天" } as const;
+
+/**
+ * `miyoria stage obs-setup`: plans Miyoria's OBS layout against the OBS of `[stage.obs]` and,
+ * unless `dryRun`, applies it. Returns the steps (each also goes to `onStep` as it runs).
+ */
+export async function setupStageObs(
+  config: Config,
+  options: {
+    baseDir?: string;
+    dryRun?: boolean;
+    relayout?: boolean;
+    onStep?: (step: ObsSetupStep) => void;
+  } = {},
+): Promise<ObsSetupStep[]> {
+  const baseDir = options.baseDir ?? process.cwd();
+  const stage = parseStageConfig(config.section("stage") ?? {});
+  const link = config.module("stage.link").config;
+  const scenesSection = isJsonObject(link) && isJsonObject(link.scenes) ? link.scenes : {};
+  const roles = isJsonObject(scenesSection.roles) ? scenesSection.roles : {};
+  const role = (name: string) => (typeof roles[name] === "string" ? (roles[name] as string) : null);
+  const url = overlayUrl(stage.overlay_bind);
+  if (url === null) throw new Error(`[stage] overlay_bind 不是有效的位址:${stage.overlay_bind}`);
+  const admin = await ObsWebSocketAdmin.connect(stage.obs);
+  try {
+    const steps = planObsSetup(await admin.snapshot(SOURCES.frame), {
+      overlayUrl: url,
+      videoSource: stage.obs.song_video_source ?? "Miyoria 歌曲影片",
+      maskPath: resolve(baseDir, stage.data_dir, "mask-video-rounded.png"),
+      scenes: {
+        sing: role("sing") ?? DEFAULT_SCENES.sing,
+        chat: role("chat") ?? DEFAULT_SCENES.chat,
+        game: role("game"),
+      },
+      relayout: options.relayout ?? false,
+    });
+    if (options.dryRun) {
+      for (const step of steps) options.onStep?.(step);
+    } else {
+      await applyObsSetup(admin, steps, options.onStep);
+    }
+    return steps;
+  } finally {
+    await admin.close().catch(() => {});
+  }
 }
 
 /** Offline extension tools for `miyoria ext ...` (legacy `miyoria_ext_host::cli`). */

@@ -26,6 +26,7 @@ npx miyoria doctor            # checks the config, the character, the LLM, Disco
 npx miyoria chat              # talk to her in the terminal, no Discord needed
 npx miyoria core              # the Discord bot, her mind loop and the admin panel at http://127.0.0.1:7878/
 npx miyoria stage             # on the streaming PC: VTube Studio, OBS and the overlay
+npx miyoria stage obs-setup   # builds her OBS scenes and sources (add --dry-run to preview)
 ```
 
 Her data lives in `data/miyoria.db` (SQLite through `node:sqlite`, so there is no database to install). `npx miyoria config` changes settings one at a time. `miyoria status`, `miyoria decisions` (why she spoke or stayed quiet) and `miyoria events 'agent.*'` let you watch a running Core. `npx miyoria --help` lists everything.

@@ -1,6 +1,7 @@
 // @miyoria/core: wires config, store, profile and every module into a running core node
 // (legacy `apps/miyoria/src/boot.rs` + `cli_platform.rs`).
 
+export { describeStep as describeObsSetupStep } from "@miyoria/stage";
 export {
   buildCoreWith,
   Core,
@@ -36,6 +37,7 @@ export {
   llmModule,
   openStore,
   runStageNode,
+  setupStageObs,
 } from "./modules.js";
 export { RecorderModule } from "./recorder.js";
 export {

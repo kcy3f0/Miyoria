@@ -83,6 +83,37 @@ export async function stage(configPath: string): Promise<void> {
   });
 }
 
+export async function stageObsSetup(
+  configPath: string,
+  dryRun: boolean,
+  relayout: boolean,
+): Promise<void> {
+  const config = await loadConfig(configPath);
+  configureLogging({ level: "warn" });
+  const { describeObsSetupStep: describeStep, setupStageObs } = await import("@miyoria/core");
+  const steps = await setupStageObs(config, {
+    baseDir: dirname(resolve(configPath)),
+    dryRun,
+    relayout,
+    onStep: (step) => println(`${dryRun ? "  會" : "  "}${describeStep(step)}`),
+  });
+  const changes = steps.filter((s) => s.op !== "write_mask" && s.op !== "filter");
+  if (dryRun) {
+    ok(
+      `預覽完成:${changes.length === 0 ? "OBS 已經是這個版面" : `${steps.length} 個步驟`}(沒有改 OBS)`,
+    );
+  } else {
+    ok(
+      changes.length === 0
+        ? "OBS 已經是這個版面,只更新了遮罩"
+        : `OBS 版面建好了(${steps.length} 個步驟)`,
+    );
+  }
+  warn(
+    "VTube Studio 要用透明背景:背景選純色並勾「透明」,OBS 的「VTube Studio 透明」才會只看到她本人",
+  );
+}
+
 export async function profileValidate(configPath: string): Promise<void> {
   const config = await loadConfig(configPath);
   const profile = await loadProfile(config, dirname(resolve(configPath)));

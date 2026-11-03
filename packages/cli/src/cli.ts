@@ -199,6 +199,18 @@ export const COMMANDS: CommandSpec = {
       name: "stage",
       help: "在直播機啟動 stage 節點(VTube Studio、OBS、overlay)",
       run: (ctx) => nodeCmd.stage(ctx.config),
+      subcommands: [
+        {
+          name: "obs-setup",
+          help: "在 OBS 建好 Miyoria 的場景和來源(背景、唱歌版面、透明立繪、overlay)",
+          options: [
+            { name: "dry-run", help: "只列出會做的事,不改 OBS" },
+            { name: "relayout", help: "已經有的項目也重新擺回預設位置" },
+          ],
+          run: (ctx) =>
+            nodeCmd.stageObsSetup(ctx.config, flag(ctx, "dry-run"), flag(ctx, "relayout")),
+        },
+      ],
     },
     {
       name: "chat",
