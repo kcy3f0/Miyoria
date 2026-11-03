@@ -128,6 +128,7 @@ import {
   LinkSplitter,
   SentenceSplitter,
 } from "./speech.js";
+import { offeredIn, scopeOfHer, scopeOfSnapshot, type ToolScope } from "./tool-scope.js";
 import { ReactTool } from "./tools.js";
 import { contextId, fixed, guard, TimeoutError, timeout } from "./util.js";
 import { imageParts, selectImages } from "./vision.js";
@@ -1661,17 +1662,36 @@ class Turn {
     return result;
   }
 
-  /** The tools offered in this context (`react` makes no sense in voice). */
-  #offers(name: string): boolean {
-    return !(this.voice && name === ReactTool.NAME);
+  /**
+   * What she is doing now, for which tools are offered (tool-scope.ts): the ActivityManager's
+   * snapshot, else world's `her`; `null` (unknown): every tool is.
+   */
+  #toolScope(): ToolScope | null {
+    const services = this.agent.ctx.services;
+    const activity = services.get(ActivityManagerKey);
+    if (activity) return scopeOfSnapshot(activity.snapshot());
+    const her = services.get(WorldStateKey)?.snapshot().her;
+    return her ? scopeOfHer(her) : null;
+  }
+
+  /** The tools offered in this context now (`react` makes no sense in voice). */
+  #offers(tool: Tool, scope: ToolScope | null): boolean {
+    if (this.voice && tool.spec.name === ReactTool.NAME) return false;
+    return offeredIn(tool, scope);
   }
 
   #toolSpecs(): ToolSpec[] {
-    return this.agent.tools.specs().filter((t) => this.#offers(t.name));
+    const scope = this.#toolScope();
+    const tools = this.agent.tools;
+    return tools.names().flatMap((name) => {
+      const tool = tools.get(name);
+      return tool && this.#offers(tool, scope) ? [tool.spec] : [];
+    });
   }
 
   #tool(name: string): Tool | undefined {
-    return this.#offers(name) ? this.agent.tools.get(name) : undefined;
+    const tool = this.agent.tools.get(name);
+    return tool && this.#offers(tool, this.#toolScope()) ? tool : undefined;
   }
 
   async #tryTool(call: ToolCall, priority: Priority): Promise<[boolean, string]> {
