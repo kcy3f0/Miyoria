@@ -44,6 +44,13 @@
 //   `POST /api/mind/approvals/{id}/approve|deny`, `POST /api/mind/pause|resume` (changes need
 //   `owner.autonomy.approve`)
 
+// * `GET /api/activity` (presence, broadcast, activity, scene), `GET /api/activity/tasks?limit=20`
+// * `GET /api/arbiter/ledger?context=&limit=`, `GET /api/arbiter/decisions?limit=&context=&verdict=`
+//   (the arbiter's verdicts since the `api` module started)
+// * `GET /api/affect` (emotions, mood, drives, biases), `GET /api/affect/people` (person cards)
+// * `GET /api/mind/goals?closed=false`, `GET /api/mind/plan` (her agenda and today's plan)
+// * `GET /api/prompts?context=&limit=`, `GET /api/prompts/{turn}` (saved prompts per turn),
+//   `GET /api/turns/outcomes?context=&outcome=&limit=` (how turns ended); read-only
 // * `GET /api/knowledge` (her documents), `GET /api/knowledge/conversations` (her conversation
 //   notes), `GET /api/reflection?days=7` (reflections, lessons, feedback),
 //   `GET /api/mind/digests?limit=20`; read-only
@@ -95,6 +102,7 @@ export {
 } from "./oauth.js";
 export { PANEL_DIR_ENV, pickDir } from "./panel.js";
 export { absoluteHistory } from "./people.js";
+export { summarizePrompt } from "./prompts.js";
 export { ActiveProfileKey, isQueueNotFound, MCP_MODULE_ID } from "./services.js";
 export {
   COOKIE,
@@ -105,8 +113,11 @@ export {
   STORE_PROFILE as SESSION_STORE_PROFILE,
 } from "./session.js";
 export type { Tokenizer } from "./state.js";
+export { DecisionTrail, TRAIL_CAPACITY, TRAIL_TOPIC } from "./trail.js";
 export type {
   AdjustPersonRequest,
+  ArbiterDecisionsView,
+  ArbiterDecisionView,
   AssignRoleRequest,
   AuthMethods,
   ChannelActivityView,
@@ -115,10 +126,12 @@ export type {
   ChannelLevelView,
   ConversationNoteView,
   CostInfo,
+  DayPlanView,
   ErrorBody,
   ExpressionRequest,
   ExtensionInfo,
   FeelingView,
+  GoalsView,
   HealthInfo,
   KnowledgeDocView,
   KnowledgeView,
@@ -139,6 +152,7 @@ export type {
   PersonaSectionInfo,
   PersonDetail,
   PersonSummary,
+  PromptSummary,
   QueueAuthor,
   QueueItemInfo,
   QueueState,
@@ -159,6 +173,7 @@ export type {
   StageLinkState,
   StageState,
   StreamRequest,
+  TurnOutcomeKind,
   UpdateMemoryRequest,
   UpdatePersonRequest,
   UpsertRoleRequest,

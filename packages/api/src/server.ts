@@ -4,6 +4,8 @@ import { errorMessage, getLogger } from "@miyoria/kernel";
 import { SettingsStoreKey } from "@miyoria/store";
 import { AuthorizerKey } from "@miyoria/types";
 import { Hono } from "hono";
+import { affectRoutes } from "./affect.js";
+import { bodyRoutes } from "./body.js";
 import { channelRoutes } from "./channels.js";
 import { controlRoutes } from "./control.js";
 import { coreRoutes } from "./core.js";
@@ -19,6 +21,8 @@ import * as oauth from "./oauth.js";
 import { opsRoutes } from "./ops.js";
 import { servePanel } from "./panel.js";
 import { peopleRoutes } from "./people.js";
+import { planRoutes } from "./plan.js";
+import { promptRoutes } from "./prompts.js";
 import { roleRoutes } from "./roles.js";
 import { json, type Route } from "./route.js";
 import { sandboxRoutes } from "./sandbox.js";
@@ -107,6 +111,10 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...dataRoutes(state),
     ...sandboxRoutes(state),
     ...mindRoutes(state),
+    ...planRoutes(state),
+    ...bodyRoutes(state),
+    ...affectRoutes(state),
+    ...promptRoutes(state),
     ...learningRoutes(state),
     ...controlRoutes(state),
     ...llmCallRoutes(state),

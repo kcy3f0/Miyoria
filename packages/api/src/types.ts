@@ -17,11 +17,13 @@ import type {
 } from "@miyoria/store";
 import type {
   AccountRef,
+  ArbiterDecision,
   ChannelActivity,
   ContextKey,
   ConversationState,
   FeedbackTally,
   Feeling,
+  Goal,
   KnowledgeDoc,
   Lesson,
   MindStats,
@@ -30,12 +32,14 @@ import type {
   PersonId,
   PlatformId,
   ProfileId,
+  ReasoningLevel,
   ReflectionRun,
   ReflectionStats,
   SelfSnapshot,
   Thought,
   Timestamp,
   TurnId,
+  TurnOutcome,
   VoiceParticipant,
   WorldSnapshot,
 } from "@miyoria/types";
@@ -610,3 +614,48 @@ export interface TelemetryView {
   interval_ms: number;
   points: TelemetryPoint[];
 }
+
+// ---- body, arbiter, affect, plan, prompts (docs/design/v2-architecture.md §3) -------------
+
+/** One arbiter decision (`arbiter.decision`) with what the ledger knows about its impulse. */
+export interface ArbiterDecisionView extends ArbiterDecision {
+  /** Where the impulse was aimed (`null`: unknown or anywhere). */
+  context: ContextKey | null;
+  /** What it was, short zh-TW, when the ledger still has it. */
+  summary: string | null;
+}
+
+/** `GET /api/arbiter/decisions`: decisions seen since the `api` module started, newest first. */
+export interface ArbiterDecisionsView {
+  decisions: ArbiterDecisionView[];
+}
+
+/** `GET /api/mind/goals`. */
+export interface GoalsView {
+  /** Pending and active goals, soonest trigger first, then (with `closed=true`) closed ones. */
+  goals: Goal[];
+  /** The closed goals were asked for and the agenda can list them. */
+  closed_included: boolean;
+}
+
+/** `GET /api/mind/plan`: today's plan in her words (`null`: not written yet). */
+export interface DayPlanView {
+  day_plan: string | null;
+}
+
+/** One saved prompt without its blocks and messages (`GET /api/prompts`). */
+export interface PromptSummary {
+  turn: TurnId;
+  context: ContextKey;
+  at: Timestamp;
+  purpose: string;
+  reasoning: ReasoningLevel;
+  prompt_tokens: number | null;
+  blocks: number;
+  messages: number;
+  /** Characters of all kept messages. */
+  chars: number;
+}
+
+/** The outcome kinds of a turn (`TurnOutcome["type"]`). */
+export type TurnOutcomeKind = TurnOutcome["type"];

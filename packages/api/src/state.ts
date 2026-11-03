@@ -19,6 +19,7 @@ import type { OAuth } from "./oauth.js";
 import { ActiveProfileKey } from "./services.js";
 import { type Principal, principalActor, type Sessions } from "./session.js";
 import { Telemetry } from "./telemetry.js";
+import { DecisionTrail } from "./trail.js";
 
 const log = getLogger("api.server");
 
@@ -53,6 +54,8 @@ export class ApiState {
     readonly labels: ContextLabels = new ContextLabels(() => ctx.clock.now()),
     /** Samples for the panel's charts (`GET /api/telemetry`). */
     readonly telemetry: Telemetry = new Telemetry(),
+    /** The arbiter's recent decisions (`GET /api/arbiter/decisions`). */
+    readonly trail: DecisionTrail = new DecisionTrail(),
   ) {}
 
   /** The service, or a 503 naming `what`. */

@@ -40,6 +40,7 @@ import { createApp } from "./server.js";
 import { Sessions } from "./session.js";
 import { ApiState, type PanelAuth, type Tokenizer } from "./state.js";
 import { SAMPLE_EVERY_MS, TELEMETRY_TOPICS } from "./telemetry.js";
+import { TRAIL_TOPIC } from "./trail.js";
 
 /** How often expired panel sessions are dropped. */
 export const PRUNE_EVERY_MS = 60 * 60_000;
@@ -248,6 +249,10 @@ export class ApiModule implements Module {
     const counted = ctx.subscribe(Object.keys(TELEMETRY_TOPICS));
     ctx.spawn("telemetry.events", async () => {
       for await (const env of counted) state.telemetry.handle(env);
+    });
+    const decided = ctx.subscribe([TRAIL_TOPIC]);
+    ctx.spawn("arbiter.trail", async () => {
+      for await (const env of decided) state.trail.handle(env);
     });
     ctx.spawn("telemetry", async (signal) => {
       state.telemetry.sample(state);
