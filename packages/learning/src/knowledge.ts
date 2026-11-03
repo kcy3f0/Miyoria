@@ -72,6 +72,30 @@ export function shortId(id: string): string {
 
 const MAX_LABEL = 40;
 const MAX_TITLE = 80;
+/** Documents past the render budget still listed by title. */
+const MAX_TITLES_PAST_BUDGET = 30;
+
+/** Titles that name the same note: equal or one inside the other once spacing and punctuation go, or mostly the same character pairs. */
+export function similarTitles(a: string, b: string): boolean {
+  const norm = (t: string) => t.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+  const x = norm(a);
+  const y = norm(b);
+  if (x === "" || y === "") return false;
+  if (x === y || (Math.min(x.length, y.length) >= 4 && (x.includes(y) || y.includes(x))))
+    return true;
+  const pairs = (t: string) => {
+    const chars = [...t];
+    const out = new Set<string>();
+    for (let i = 0; i + 1 < chars.length; i++) out.add(`${chars[i]}${chars[i + 1]}`);
+    return out;
+  };
+  const px = pairs(x);
+  const py = pairs(y);
+  if (px.size === 0 || py.size === 0) return false;
+  let shared = 0;
+  for (const p of px) if (py.has(p)) shared++;
+  return shared / Math.min(px.size, py.size) >= 0.6;
+}
 const MAX_WHY = 200;
 
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
@@ -348,6 +372,12 @@ export class KnowledgeStore implements KnowledgeBase {
         const title = cut(cleanKey(change.title ?? ""), MAX_TITLE);
         if (kind === "" || title === "")
           throw new KnowledgeError("a document needs a kind and a title");
+        const twin = this.docs(subject).find((d) => similarTitles(d.title, title));
+        if (twin) {
+          throw new KnowledgeError(
+            `a document like this already exists (${shortId(twin.id)}「${twin.title}」): patch it instead`,
+          );
+        }
         const now = toTimestamp(this.clock.now());
         const capped = !privileged(writer) && !aboutWriter(writer, { subject });
         const source = this.#source(writer, change.confidence, capped);
@@ -512,9 +542,14 @@ export class KnowledgeStore implements KnowledgeBase {
     return [head, ...lines].join("\n");
   }
 
+  /**
+   * Her documents about `subjects` as outlines, up to `maxChars`. Documents past the budget are
+   * still listed by id and title, so she always knows what she has already written.
+   */
   render(subjects: readonly KnowledgeSubject[], options: KnowledgeRenderOptions): string {
     const seen = new Set<string>();
     const parts: string[] = [];
+    const rest: string[] = [];
     let used = 0;
     for (const subject of subjects) {
       const key = subjectKey(subject);
@@ -526,15 +561,17 @@ export class KnowledgeStore implements KnowledgeBase {
         const ref = options.refs?.get(doc.id);
         const block = ref ? `${ref} ${text}` : text;
         const len = [...block].length + 2;
-        if (used + len > options.maxChars) {
-          const room = options.maxChars - used;
-          if (room > 80) parts.push(`${[...block].slice(0, room - 2).join("")}…`);
-          return parts.join("\n\n");
+        if (rest.length > 0 || used + len > options.maxChars) {
+          if (rest.length < MAX_TITLES_PAST_BUDGET) {
+            rest.push(`${ref ? `${ref} ` : ""}${shortId(doc.id)} ${doc.kind}「${doc.title}」`);
+          }
+          continue;
         }
         used += len;
         parts.push(block);
       }
     }
+    if (rest.length > 0) parts.push(`(內容放不下,只列標題:)\n${rest.join("\n")}`);
     return parts.join("\n\n");
   }
 }

@@ -121,6 +121,13 @@ export function oneLine(text: string, max = 40): string {
   return chars.length > max ? `${chars.slice(0, max).join("")}…` : flat;
 }
 
+/**
+ * Statuses are habits more than signals (many keep do-not-disturb on all day) and messages wait
+ * for people: none of it says whom she may talk to.
+ */
+export const STATUS_NOTE =
+  "(這些只是 Discord 狀態,很多人習慣一直掛著「請勿打擾」或閒置;不代表他在忙、不能找他,也不代表大家要你安靜。訊息對方之後會看到,想找誰就找,閒置或離線的人也可以。)";
+
 const STATUS_TEXT: Record<PresenceStatus, string> = {
   online: "在線",
   idle: "閒置",
@@ -680,6 +687,7 @@ export class WorldEngine {
       lines.push("在線的人:");
       for (const p of online.slice(0, max)) lines.push(`- ${describePerson(p, now)}`);
       if (online.length > max) lines.push(`- 還有 ${online.length - max} 人`);
+      lines.push(STATUS_NOTE);
     }
 
     if (ctx && ctx.kind !== "voice" && ctx.kind !== "dm") {

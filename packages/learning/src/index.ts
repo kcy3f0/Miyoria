@@ -75,6 +75,7 @@ export {
   originOf,
   originVisible,
   shortId,
+  similarTitles,
   sourceTag,
 } from "./knowledge.js";
 export { LESSON_PREFIX, LessonStore } from "./lessons.js";

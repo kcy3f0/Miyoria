@@ -879,10 +879,11 @@ export class MindLoop implements Mind {
       );
       thought.intents = intents.map(([, record]) => record);
       // Talking with people (or listening to a lively conversation) is not sitting idle;
-      // neither is anything she set out to do.
+      // neither is anything she set out to do, nor writing her notes.
       if (
         triggers.some((t) => t.kind === "turn") ||
         intents.some(([intent]) => intent !== null) ||
+        thought.changes.some((c) => c.startsWith("資料 ")) ||
         this.#lively()
       ) {
         this.#idleRun = 0;

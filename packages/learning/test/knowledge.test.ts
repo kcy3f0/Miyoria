@@ -15,6 +15,7 @@ import {
   knowledgeConfig,
   originVisible,
   shortId,
+  similarTitles,
 } from "../src/index.js";
 
 const GUILD: ContextKey = { platform: "discord", scope: "g1", channel: "c1", kind: "channel" };
@@ -324,6 +325,36 @@ describe("knowledge documents", () => {
     expect(k.render([subject], { context: OTHER_GUILD, maxChars: 2000 })).not.toContain("g1 說的");
     expect(originVisible(null, OTHER_GUILD)).toBe(true);
     expect(subjectKey(subject)).toBe("person:p-owen");
+  });
+
+  it("refuses a near-duplicate note and lists notes past the budget by title", async () => {
+    const k = kb();
+    const self = { type: "self" as const };
+    const note = (title: string) =>
+      k.apply(
+        {
+          type: "create",
+          subject: self,
+          kind: "流程",
+          title,
+          content: { 步驟: ["一", "二"] },
+          why: "",
+        },
+        her,
+      );
+    const first = await note("唱歌與開台流程");
+    expect(first.ok).toBe(true);
+    const again = await note("唱歌／開台流程（照著跑就好）");
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.error).toContain("already exists");
+    expect((await note("Minecraft 鐵裝計畫")).ok).toBe(true);
+    expect(similarTitles("唱歌與開台流程筆記", "唱歌與開台流程")).toBe(true);
+    expect(similarTitles("唱歌流程", "開台流程")).toBe(false);
+    // Too little room for the content: every note is still named.
+    const out = k.render([self], { context: GUILD, maxChars: 30 });
+    expect(out).toContain("只列標題");
+    expect(out).toContain("「唱歌與開台流程」");
+    expect(out).toContain("「Minecraft 鐵裝計畫」");
   });
 });
 
