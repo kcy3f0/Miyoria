@@ -2,6 +2,12 @@
 // (Discord Go Live; OBS follows `voice.golive` on the Stage side). Registered in the actuator
 // registry by the voice module; `/voice ...` and her tools both call them through the gate.
 //
+// With the ActivityManager (module `activity`) they are its presence and broadcast transitions
+// (`ensure_voice`, `leave_voice`, `ensure_live`, `stop_live`): the gate decides, then the manager
+// serializes them, answers idempotently and runs these executors as steps of its tasks. Without
+// it they run directly, with the same rules: joining while already in voice there stays put, and
+// leaving ends the Go Live first.
+//
 // Leaving on her own (principal `self`) is refused while she still has songs to sing there, and
 // for `STAY_AFTER_INVITE_MS` after someone brought her into voice while people are still in it:
 // her mind took the quiet of people listening to a song for a quiet channel and kept leaving
@@ -10,6 +16,7 @@
 import { type Capability, CapabilityError, defineCapability } from "@miyoria/actions";
 import { errorMessage } from "@miyoria/kernel";
 import {
+  type ActivityRequest,
   actLane,
   type Principal,
   StreamCurtainKey,
@@ -48,6 +55,20 @@ function lane(args: GuildArgs, principal: Principal): string | null {
   const guild = guildOf(args, principal);
   const platform = principal.context?.platform ?? "discord";
   return guild === null ? null : actLane(`voice:${platform}:${guild}`);
+}
+
+function platformOf(principal: Principal): string {
+  return principal.context?.platform ?? "discord";
+}
+
+/** The ActivityManager request of a guild-scoped call (`null`: no guild, the executor refuses). */
+function inGuild(
+  args: GuildArgs,
+  principal: Principal,
+  request: (guild: string, platform: string) => ActivityRequest,
+): ActivityRequest[] | null {
+  const guild = guildOf(args, principal);
+  return guild === null ? null : [request(guild, platformOf(principal))];
 }
 
 function requireNode(link: VoiceLink): void {
@@ -143,9 +164,25 @@ export function voiceCapabilities(
     },
     scope: guildOf,
     lane,
+    activity: (args, principal) =>
+      inGuild(args, principal, (guild, platform) => ({
+        type: "ensure_voice",
+        platform,
+        guild,
+        channel: args.channel ?? null,
+        follow: principal.requester,
+      })),
     async execute(args, ctx) {
       const guild = requireGuild(args, ctx.principal);
       requireNode(link);
+      const current = link.channel(guild);
+      if (current !== null && (args.channel == null || args.channel === current)) {
+        // Idempotent: already in voice here; asking again never moves her to another channel.
+        return {
+          text: `already in voice channel ${current}`,
+          data: { channel: current, already: true },
+        };
+      }
       const target =
         args.channel != null
           ? { channel: args.channel, follow: null }
@@ -155,7 +192,7 @@ export function voiceCapabilities(
       }
       const joined = await link.join(guild, target.channel, target.follow);
       if (ctx.principal.kind !== "self") invitedAt.set(guild, now());
-      return { text: `joined voice channel ${joined}`, data: { channel: joined } };
+      return { text: `joined voice channel ${joined}`, data: { channel: joined, already: false } };
     },
   });
 
@@ -172,6 +209,7 @@ export function voiceCapabilities(
     },
     scope: guildOf,
     lane,
+    activity: (args, principal) => inGuild(args, principal, () => ({ type: "leave_voice" })),
     check(args, principal) {
       if (principal.kind !== "self") return null;
       const guild = guildOf(args, principal);
@@ -181,6 +219,12 @@ export function voiceCapabilities(
       const guild = requireGuild(args, ctx.principal);
       if (link.channel(guild) === null) {
         return { text: "she is not in a voice channel", data: { left: false } };
+      }
+      // Without the ActivityManager (it stops the broadcast as its own step): Go Live ends
+      // first, with the curtain, so she never streams from a call she left.
+      if (!ctx.task && link.isStreaming(guild)) {
+        await ctx.services.get(StreamCurtainKey)?.close(ctx.signal);
+        await link.goliveStop(guild);
       }
       await link.leave(guild);
       return { text: "left the voice channel", data: { left: true } };
@@ -201,6 +245,13 @@ export function voiceCapabilities(
     },
     scope: guildOf,
     lane,
+    activity: (args, principal) =>
+      inGuild(args, principal, (guild, platform) => ({
+        type: "ensure_live",
+        platform,
+        guild,
+        source: args.source ?? null,
+      })),
     async execute(args, ctx) {
       const guild = requireGuild(args, ctx.principal);
       requireNode(link);
@@ -240,6 +291,7 @@ export function voiceCapabilities(
     },
     scope: guildOf,
     lane,
+    activity: (args, principal) => inGuild(args, principal, () => ({ type: "stop_live" })),
     async execute(args, ctx) {
       const guild = requireGuild(args, ctx.principal);
       if (!link.isStreaming(guild)) return { text: "not live", data: { stopped: false } };
