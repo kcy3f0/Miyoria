@@ -14,7 +14,7 @@ import {
   userMessage,
   withLlmTag,
 } from "@miyoria/llm";
-import { PeopleStoreKey, type SettingsStore } from "@miyoria/store";
+import { PeopleStoreKey, type SettingsStore, StoredHandleDirectory } from "@miyoria/store";
 import {
   type AccountRef,
   type Clock,
@@ -24,6 +24,8 @@ import {
   contextKeyString,
   dataBlock,
   type FeedbackTally,
+  type HandleDirectory,
+  HandleDirectoryKey,
   isJsonObject,
   type JsonValue,
   KnowledgeKey,
@@ -36,6 +38,7 @@ import {
   type ProfileId,
   type ReflectionRun,
   type ReflectionStats,
+  repairHandleText,
   SelfStateKey,
   safeName,
   toTimestamp,
@@ -45,7 +48,7 @@ import { type BudgetState, CallCap } from "./caps.js";
 import type { ReflectConfig } from "./config.js";
 import { applyDrafts, DRAFT_FORMAT, DraftSchema, type RefTable } from "./drafts.js";
 import type { FeedbackTracker } from "./feedback.js";
-import type { LessonStore } from "./lessons.js";
+import { isTalkLesson, type LessonStore } from "./lessons.js";
 
 const log = getLogger("learning.reflect");
 
@@ -107,8 +110,8 @@ const FORMAT = `{
   "insights": [{"from": ["n1", "n4"], "content": "把零散的記憶整理成更高層次的一句話", "kind": "fact / self_note", "importance": 0.7}],
   "outdated": [{"old": "n2", "by": "n5"}],
   "documents": [],
-  "feelings": [{"person": "u1", "note": "你現在對他的感覺(整段改寫)"}],
-  "lessons": [{"text": "學到的事,例如:阿明不喜歡被打斷", "person": "u1 或 null", "place": "p1 或 null", "talk": "-1~1(在那裡/那個人面前要更安靜是負的,更活潑是正的),或 null", "days": 30}],
+  "feelings": [{"person": "Owen", "note": "你現在對他的感覺(整段改寫)"}],
+  "lessons": [{"text": "學到的事,例如:阿明不喜歡被打斷", "person": "他的名字 或 null", "place": "資料裡的地點(整串)或 null", "talk": "只有這條 lesson 本身是關於話多話少時才填 -1~1(更安靜是負的,更活潑是正的);語氣、梗、用詞這類風格的 lesson 填 null", "days": 30}],
   "drop_lessons": ["L2"],
   "goals": [{"text": "接下來想做到的長期目標", "why": "理由", "days": 14}]
 }`;
@@ -123,7 +126,8 @@ function rules(kind: "daily" | "light", maxGoals: number): string {
 - lessons 要平衡:做得好、大家有接話、玩得開心的也要記(talk 可以是正的)。被嫌一兩次只代表那個人、那個話題、那個時候,不要寫成「整場不主動開話題」「只被點名才回」這種全面沉默的規則;你是有自己想法、會主動找事做的人,不是只會等人點名。舊的 lesson 已經過時或太極端就放進 drop_lessons。
 - 用 documents 更新你自己整理的資料庫(人物、伺服器、主題),也包括關於你自己的文件(subject "self":你喜歡做什麼、什麼做得好或不好、你的長期目標)。
 - goals:最多 ${maxGoals} 個值得花幾天去做的長期目標,會放進你的議程;沒有就不要。
-- 只能用資料裡的代號(n1、u1、p1、L1、#文件)。
+- 人一律用名字(資料裡看到的,例如 Owen、Owen#2),不要寫 u1、p1 這類代號;記憶、lesson、文件、感覺都是留給以後的你看的,代號每次都會變。地點照資料裡的整串寫。
+- 只能用資料裡的代號(n1、L1、#文件)和名字。
 
 ${DRAFT_FORMAT}
 
@@ -141,12 +145,21 @@ export interface ReflectDeps {
   clock: Clock;
   feedback: FeedbackTracker;
   lessons: LessonStore;
+  /** Her stable names for people (default: a table of its own, kept in memory). */
+  handles?: HandleDirectory;
+}
+
+interface PersonName {
+  name: string;
+  account: AccountRef | null;
 }
 
 interface PersonEntry {
   person: PersonId;
   account: AccountRef | null;
   name: string;
+  /** Her stable name for them (what the data shows). */
+  handle: string;
 }
 
 function localParts(now: number, offsetMinutes: number): { day: string; hour: number } {
@@ -161,6 +174,7 @@ const short = (s: string, max: number) => {
 
 export class Reflector {
   readonly #d: ReflectDeps;
+  readonly #handles: HandleDirectory;
   readonly cap: CallCap;
   readonly #runs: ReflectionRun[] = [];
   readonly #writes = new SerialQueue();
@@ -174,6 +188,10 @@ export class Reflector {
 
   constructor(deps: ReflectDeps) {
     this.#d = deps;
+    this.#handles =
+      deps.handles ??
+      deps.services.get(HandleDirectoryKey) ??
+      new StoredHandleDirectory(null, deps.clock);
     this.cap = new CallCap({
       perHour: null,
       perDay: deps.config.max_calls_per_day,
@@ -345,16 +363,23 @@ export class Reflector {
     const people = new Map<string, PersonEntry>();
     const places = new Map<string, ContextKey>();
     const names = await this.#names();
+    // People are named by their stable handle and places by their context string: both are
+    // the same in every call, so what she writes down about them stays true later.
     const addPerson = (person: PersonId): string => {
-      for (const [ref, p] of people) if (p.person === person) return ref;
-      const ref = `u${people.size + 1}`;
-      people.set(ref, { person, account: null, name: names.get(person) ?? person });
+      const ref = this.#handleOf(person, names);
+      if (!people.has(ref)) {
+        people.set(ref, {
+          person,
+          account: null,
+          name: names.get(person)?.name ?? ref,
+          handle: ref,
+        });
+      }
       return ref;
     };
     const addPlace = (c: ContextKey): string => {
-      for (const [ref, p] of places) if (contextKeyString(p) === contextKeyString(c)) return ref;
-      const ref = `p${places.size + 1}`;
-      places.set(ref, c);
+      const ref = contextKeyString(c);
+      if (!places.has(ref)) places.set(ref, c);
       return ref;
     };
     // Memories (daily only, never DMs).
@@ -459,10 +484,14 @@ export class Reflector {
         ),
       );
     }
-    const who = [...people.entries()].map(([ref, p]) => `${ref}=${safeName(p.name)}`);
-    const where = [...places.entries()].map(([ref, c]) => `${ref}=${contextKeyString(c)}`);
-    if (who.length + where.length > 0) {
-      blocks.unshift(dataBlock("refs", "代號", [...who, ...where].join("、")));
+    if (people.size + places.size > 0) {
+      const who = [...people.keys()].map((h) => safeName(h));
+      const where = [...places.keys()];
+      const lines = [
+        who.length > 0 ? `人(名字就是稱呼):${who.join("、")}` : "",
+        where.length > 0 ? `地點(整串照寫):${where.join("、")}` : "",
+      ].filter((l) => l !== "");
+      blocks.unshift(dataBlock("refs", "出現的人與地點", lines.join("\n")));
     }
     if (blocks.length === 0) blocks.push(dataBlock("empty", "今天", "沒有什麼特別的資料。"));
     return {
@@ -474,16 +503,27 @@ export class Reflector {
     };
   }
 
-  async #names(): Promise<Map<PersonId, string>> {
+  async #names(): Promise<Map<PersonId, PersonName>> {
     const people = this.#d.services.get(PeopleStoreKey);
-    const out = new Map<PersonId, string>();
+    const out = new Map<PersonId, PersonName>();
     if (!people) return out;
     try {
-      for (const p of await people.all()) out.set(p.id, p.display_name);
+      for (const p of await people.all()) {
+        out.set(p.id, { name: p.display_name, account: p.accounts[0]?.account ?? null });
+      }
     } catch {
       // names are optional
     }
     return out;
+  }
+
+  /** The person's stable handle (assigned from their first account when there is none yet). */
+  #handleOf(person: PersonId, names: ReadonlyMap<PersonId, PersonName>): string {
+    const known = this.#handles.ofPerson(person);
+    if (known !== null) return known;
+    const entry = names.get(person);
+    if (entry?.account) return this.#handles.ofAccount(entry.account, entry.name, person);
+    return safeName(entry?.name ?? person);
   }
 
   async #apply(
@@ -497,7 +537,9 @@ export class Reflector {
     const s = d.services;
     const now = d.clock.now();
     const ts = toTimestamp(now);
-    run.summary = short(reply.summary, 1200);
+    // Everything below is kept for later: no per-call codes in it.
+    const clean = (text: string): string | null => repairHandleText(text);
+    run.summary = short(clean(reply.summary) ?? "", 1200);
     const note = (ref: string) => {
       const n = /^n(\d+)$/.exec(ref.trim())?.[1];
       return n === undefined ? undefined : input.notes[Number(n) - 1];
@@ -508,9 +550,11 @@ export class Reflector {
         const from = i.from.map(note).filter((n): n is CuratedNote => n !== undefined);
         if (from.length === 0) continue;
         try {
+          const content = clean(i.content);
+          if (content === null) continue;
           await curator.insight(
             {
-              content: i.content,
+              content,
               kind: i.kind,
               from: from.map((n) => n.id),
               importance: i.importance,
@@ -529,8 +573,17 @@ export class Reflector {
         if (await curator.supersede(old.id, by.id, ts).catch(() => false)) run.superseded += 1;
       }
     }
-    const person = (ref: string | null) =>
-      ref === null ? undefined : input.people.get(ref.trim());
+    const person = (ref: string | null): PersonEntry | undefined => {
+      if (ref === null) return undefined;
+      const r = ref.trim();
+      const listed = input.people.get(r) ?? [...input.people.values()].find((p) => p.name === r);
+      if (listed) return listed;
+      // A person from the handle table who was not in the data (she named someone she knows).
+      const entry = this.#handles.resolve(r);
+      return entry?.person
+        ? { person: entry.person, account: entry.account, name: entry.handle, handle: entry.handle }
+        : undefined;
+    };
     const kb = s.get(KnowledgeKey);
     if (kb && reply.documents.length > 0) {
       const table: RefTable = {
@@ -576,9 +629,10 @@ export class Reflector {
     if (self) {
       for (const f of reply.feelings) {
         const p = person(f.person);
-        if (!p) continue;
+        const note = clean(f.note);
+        if (!p || note === null) continue;
         try {
-          await self.setFeeling(p.person, f.note, "self");
+          await self.setFeeling(p.person, note, "self");
           run.feelings.push(p.name);
         } catch (error) {
           log.debug({ err: errorMessage(error) }, "cannot write a feeling");
@@ -586,13 +640,14 @@ export class Reflector {
       }
       const open = self.agenda();
       for (const g of reply.goals.slice(0, d.config.max_goals)) {
-        if (open.some((a) => a.text === g.text)) continue;
+        const text = clean(g.text);
+        if (text === null || open.some((a) => a.text === text)) continue;
         self.addAgenda({
-          text: g.text,
-          why: g.why === "" ? "反思時定的目標" : g.why,
+          text,
+          why: g.why === "" ? "反思時定的目標" : (clean(g.why) ?? "反思時定的目標"),
           expiresAt: toTimestamp(now + (g.days ?? d.config.goal_days) * DAY_MS),
         });
-        run.goals.push(g.text);
+        run.goals.push(text);
       }
     }
     for (const ref of reply.drop_lessons) {
@@ -602,17 +657,24 @@ export class Reflector {
     }
     for (const l of reply.lessons) {
       const p = person(l.person);
+      const text = repairHandleText(l.text, { sole: p?.handle ?? null });
+      if (text === null) continue;
       const placeRef = l.place?.trim() ?? "";
-      const place = placeRef === "" ? undefined : input.places.get(placeRef);
+      const place =
+        placeRef === ""
+          ? undefined
+          : (input.places.get(placeRef) ?? parseContextString(placeRef) ?? undefined);
       // A light reflection on a DM keeps its lessons in that DM.
       const scope =
         context?.kind === "dm" ? contextKeyString(context) : place ? contextKeyString(place) : null;
       const lesson: Lesson = {
         id: newId(),
-        text: short(l.text, 200),
+        text: short(text, 200),
         person: p?.person ?? null,
         scope,
-        talk: l.talk,
+        // Only a lesson that is about talking more or less shifts her talkativeness; style
+        // lessons (tone, jokes, wording) are advice for her turns, not a volume knob.
+        talk: l.talk !== null && isTalkLesson(text) ? l.talk : null,
         created_at: ts,
         expires_at: toTimestamp(
           now + Math.min(l.days ?? d.config.lesson_days, d.config.max_lesson_days) * DAY_MS,

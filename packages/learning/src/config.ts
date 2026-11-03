@@ -51,6 +51,11 @@ export const ConversationConfigSchema = z.object({
    * stale: turns no longer see it and the next fold is asked to drop it if it is over (0 = never).
    */
   stale_thread_mins: count().default(30),
+  /**
+   * A thread nobody touched for this long is deleted from her notes by the fold itself, not
+   * left to her to remember (0 = never). Rewording a thread does not count as touching it.
+   */
+  drop_thread_mins: count().default(240),
   /** Offset of local time in transcripts (minutes east of UTC). */
   utc_offset_minutes: z
     .number()
