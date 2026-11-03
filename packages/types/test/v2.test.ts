@@ -95,6 +95,13 @@ describe("turn ownership", () => {
     expect(inputDisposition({ ...base, fromFocus: false, addressesHer: true })).toBe("background");
     expect(inputDisposition({ ...base, voice: true })).toBe("background");
     expect(inputDisposition({ ...base, phase: "speaking" })).toBe("background");
+    // Her own turn gives way to someone who addresses her (not to chatter or backchannel).
+    const own = { ...base, fromFocus: false, selfStarted: true };
+    expect(inputDisposition({ ...own, addressesHer: true })).toBe("restart");
+    expect(inputDisposition({ ...own, addressesHer: true, voice: true })).toBe("restart");
+    expect(inputDisposition({ ...own, addressesHer: true, text: "嗯" })).toBe("background");
+    expect(inputDisposition({ ...own, addressesHer: false })).toBe("background");
+    expect(inputDisposition({ ...own, addressesHer: true, phase: "speaking" })).toBe("background");
   });
 });
 

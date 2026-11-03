@@ -103,6 +103,11 @@ export interface NewInputFacts {
   text: string;
   /** The turn's `restarts` so far. */
   restarts: number;
+  /**
+   * The turn is one she started herself (`initiative` / `notice`, an intent) and has no focus:
+   * input that addresses her takes the floor from it (absent: `false`).
+   */
+  selfStarted?: boolean;
 }
 
 /**
@@ -116,12 +121,15 @@ export type InputDisposition = "merge" | "restart" | "background";
  * The §3.9 table. While collecting, merge. Once generation started: short replies and input
  * that is neither for her nor from the focus person never cancel; voice never regenerates
  * (speech that is written but not played yet is played as is); in text the focus person's
- * substantive follow-up restarts the turn at most `MAX_TURN_RESTARTS` times.
+ * substantive follow-up restarts the turn at most `MAX_TURN_RESTARTS` times. A turn she started
+ * herself gives way (`restart`) to substantive input that addresses her, voice included.
  */
 export function inputDisposition(facts: NewInputFacts): InputDisposition {
   if (facts.phase === "debounce") return "merge";
   if (facts.phase !== "generating") return "background";
-  if (facts.voice || isShortReply(facts.text)) return "background";
+  if (isShortReply(facts.text)) return "background";
+  if (facts.selfStarted === true && facts.addressesHer) return "restart";
+  if (facts.voice) return "background";
   if (!facts.fromFocus) return "background";
   return facts.restarts < MAX_TURN_RESTARTS ? "restart" : "background";
 }
