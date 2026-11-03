@@ -14,14 +14,23 @@ import type { CoreMessage } from "../protocol.js";
 
 /** Topic of the agent's emotion markers. */
 export const EMOTION_TOPIC = "agent.emotion";
+/**
+ * Topic of the written sentence of a line she spoke first (`voice_first`, e.g. the Japanese
+ * voice line and its Chinese subtitle): `{turn, context, spoken, text}`.
+ */
+export const SUBTITLE_TOPIC = "agent.subtitle";
 
 /** Turns whose subtitles are tracked at once. */
 const MAX_TURNS = 16;
 
 interface TurnSubtitle {
   turn: TurnId;
-  /** Text of the playbacks started so far. */
+  /** Text of the playbacks started so far (the segments joined). */
   spoken: string;
+  /** One entry per started playback: its text, or its written sentence once known. */
+  segments: string[];
+  /** Written sentences that arrived before their line played: spoken line → subtitle. */
+  written: Map<string, string>;
   /** Playbacks started and not yet ended. */
   active: number;
   completed: boolean;
@@ -99,7 +108,15 @@ export class Forwarder {
     const found = this.#turns.find((t) => t.turn === turn);
     if (found) return found;
     if (this.#turns.length >= MAX_TURNS) this.#turns.shift();
-    const e: TurnSubtitle = { turn, spoken: "", active: 0, completed: false, finalized: false };
+    const e: TurnSubtitle = {
+      turn,
+      spoken: "",
+      segments: [],
+      written: new Map(),
+      active: 0,
+      completed: false,
+      finalized: false,
+    };
     this.#turns.push(e);
     return e;
   }
@@ -147,6 +164,7 @@ export class Forwarder {
       case "custom":
         if (event.data.topic === SONG_TOPIC) return this.#onSong(event.data.payload);
         if (event.data.topic === SPEECH_PAUSE_TOPIC) return pauseNotice(event.data.payload);
+        if (event.data.topic === SUBTITLE_TOPIC) return this.#onWritten(event.data.payload);
         return event.data.topic === EMOTION_TOPIC ? this.#onEmotion(event.data.payload) : [];
       case "voice_playback": {
         const { turn, state, text, emotion } = event.data;
@@ -183,7 +201,11 @@ export class Forwarder {
         const e = this.#entry(turn);
         e.active += 1;
         e.finalized = false;
-        e.spoken = append(e.spoken, text);
+        // A line whose written sentence is known already shows that instead.
+        const shown = e.written.get(text) ?? text;
+        e.written.delete(text);
+        if (shown !== "") e.segments.push(shown);
+        e.spoken = joined(e.segments);
         if (e.spoken !== "") out.push(subtitle(turn, e.spoken, false));
       } else if (text !== "") {
         out.push({ type: "subtitle", turn: "", text, final: false });
@@ -203,6 +225,29 @@ export class Forwarder {
       out.push({ type: "subtitle", turn: "", text, final: true });
     }
     return out;
+  }
+
+  /**
+   * A line she spoke before writing it got its written sentence (`agent.subtitle`): the voice
+   * line (e.g. Japanese) in the subtitle is swapped for it (e.g. Chinese) and the subtitle is
+   * sent again (final when the turn's subtitle was final already). One that arrives before the
+   * line played is kept for that playback.
+   */
+  #onWritten(payload: JsonValue): CoreMessage[] {
+    const p = isJsonObject(payload) ? payload : {};
+    const turn = typeof p.turn === "string" && p.turn !== "" ? p.turn : null;
+    const spoken = typeof p.spoken === "string" ? p.spoken.trim() : "";
+    const written = typeof p.text === "string" ? p.text.trim() : "";
+    if (turn === null || spoken === "" || written === "" || spoken === written) return [];
+    const e = this.#entry(turn);
+    const i = e.segments.indexOf(spoken);
+    if (i < 0) {
+      e.written.set(spoken, written);
+      return [];
+    }
+    e.segments[i] = written;
+    e.spoken = joined(e.segments);
+    return [subtitle(turn, e.spoken, e.finalized)];
   }
 
   /**
@@ -262,6 +307,11 @@ function subtitle(turn: TurnId, text: string, final: boolean): CoreMessage {
 }
 
 const ASCII_ALNUM = /^[A-Za-z0-9]$/;
+
+/** The segments as one subtitle line. */
+function joined(segments: string[]): string {
+  return segments.reduce((line, segment) => append(line, segment), "");
+}
 
 /** Appends a speech segment, with a space between two Latin words. */
 function append(spoken: string, text: string): string {

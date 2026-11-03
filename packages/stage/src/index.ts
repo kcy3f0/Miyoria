@@ -63,7 +63,7 @@ export {
   type SceneDirectorDeps,
   type SceneSwitcher,
 } from "./link/director.js";
-export { EMOTION_TOPIC, Forwarder, type ForwarderOptions } from "./link/forward.js";
+export { EMOTION_TOPIC, Forwarder, type ForwarderOptions, SUBTITLE_TOPIC } from "./link/forward.js";
 export { type GoLiveFollow, goliveFollow, VOICE_GOLIVE_TOPIC } from "./link/golive.js";
 export {
   DEFAULT_BIND,
