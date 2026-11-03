@@ -109,7 +109,8 @@ export interface MindInput {
 
 /** Things she can do on her own, by capability, offered when nobody is around to talk to. */
 const SOLO: Record<string, string> = {
-  "game.start": "自己開遊戲玩(例如 Minecraft,邊玩邊實況給之後進來的人看)",
+  "game.start":
+    "自己開遊戲玩,邊玩邊實況(game = minecraft 玩 Minecraft;game = threads 滑 Threads 看大家的貼文講感想)",
   "game.goal": "給自己在遊戲裡訂個目標(例如做出鐵鎬、蓋個小屋)",
   "sing.request": "自己挑一首喜歡的歌來準備、唱給自己聽",
   "sing.play": "唱一首已經準備好的歌",
