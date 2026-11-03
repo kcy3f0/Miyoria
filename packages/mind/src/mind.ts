@@ -175,6 +175,11 @@ function parseSalient(payload: JsonValue): SalientEvent | null {
   };
 }
 
+/** The lowest talkativeness and initiative she sets for herself. */
+export const MIN_SELF_TALK = 0.2;
+/** How long a quiet spell (below 0.5) she chose herself lasts at most. */
+export const MAX_QUIET_MINUTES = 45;
+
 export class MindLoop implements Mind {
   readonly #d: MindDeps;
   readonly #calls: CallLog;
@@ -974,14 +979,20 @@ export class MindLoop implements Mind {
     for (const t of reply.talkativeness) {
       const scope = this.#scope(t.scope, place(t.scope)?.context ?? null, focus);
       if (scope === null) continue;
-      self.setTalkativeness(scope, { level: t.level, forMs: t.minutes * MINUTE_MS, why: t.why });
-      effects.talkativeness.push({ scope, level: t.level, minutes: t.minutes, why: t.why });
-      changes.push(`多話程度 ${scope} ${t.level.toFixed(2)}(${t.minutes} 分鐘)`);
+      // Going quiet on her own is a mood, not a vow: not near silence, and not for long.
+      // (Someone asking her to be quiet goes through the agent's own tool, without these.)
+      const level = Math.max(t.level, MIN_SELF_TALK);
+      const minutes =
+        level < t.level || level >= 0.5 ? t.minutes : Math.min(t.minutes, MAX_QUIET_MINUTES);
+      self.setTalkativeness(scope, { level, forMs: minutes * MINUTE_MS, why: t.why });
+      effects.talkativeness.push({ scope, level, minutes, why: t.why });
+      changes.push(`多話程度 ${scope} ${level.toFixed(2)}(${minutes} 分鐘)`);
     }
     if (reply.initiative !== null) {
-      self.setInitiative(reply.initiative.level, reply.initiative.why);
-      effects.initiative = { ...reply.initiative };
-      changes.push(`主動程度 ${reply.initiative.level.toFixed(2)}`);
+      const level = Math.max(reply.initiative.level, MIN_SELF_TALK);
+      self.setInitiative(level, reply.initiative.why);
+      effects.initiative = { level, why: reply.initiative.why };
+      changes.push(`主動程度 ${level.toFixed(2)}`);
     }
     for (const a of reply.agendaAdd) {
       const item = self.addAgenda({

@@ -22,7 +22,13 @@ export {
   THOUGHT_PREFIX,
   thoughtKey,
 } from "./journal.js";
-export { applyTurnEvent, type MindDeps, MindLoop } from "./mind.js";
+export {
+  applyTurnEvent,
+  MAX_QUIET_MINUTES,
+  MIN_SELF_TALK,
+  type MindDeps,
+  MindLoop,
+} from "./mind.js";
 export { MIND_TOPICS, MindModule, type MindModuleOptions } from "./module.js";
 export { type BudgetState, CallLog, heartbeatMs, inQuietHours, type Pace } from "./pace.js";
 export {

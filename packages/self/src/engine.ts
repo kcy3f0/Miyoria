@@ -42,6 +42,9 @@ const MAX_WHY = 200;
 /** Longest scope string. */
 const MAX_SCOPE = 120;
 
+/** How far above her tiredness (`1 - energy`) her own nudges may lift `rest`. */
+export const REST_OVER_TIREDNESS = 0.25;
+
 export class SelfError extends Error {
   override readonly name = "SelfError";
 }
@@ -154,6 +157,8 @@ export const SavedSchema = z.object({
 export class SelfEngine {
   #drives: Drives;
   #boredom: number;
+  /** Her energy (mood) as of the last advance, `null` when unknown. */
+  #energy: number | null = null;
   #policy: SelfPolicy;
   #agenda: AgendaItem[] = [];
   #pressure: Pressure = { lonely: 0, frustration: 0, missing: 0 };
@@ -222,6 +227,7 @@ export class SelfEngine {
           d.longing += (target - d.longing) * (1 - Math.exp(-rise.longing * hours));
         }
       }
+      this.#energy = c.energy;
       if (c.energy !== null) {
         const target = clamp01(1 - c.energy);
         const alpha = 1 - 0.5 ** (dt / (this.config.rest_half_life_mins * 60_000));
@@ -305,11 +311,19 @@ export class SelfEngine {
     return this.#expired.splice(0);
   }
 
-  /** Adds `delta` (negative = satisfied). */
+  /**
+   * Adds `delta` (negative = satisfied). `rest` follows her tiredness: nudges never lift it more
+   * than `REST_OVER_TIREDNESS` above it, so wanting a break cannot outgrow how tired she is.
+   */
   adjust(delta: Partial<Drives> & { boredom?: number }): void {
     for (const n of DRIVE_NAMES) {
       const v = delta[n];
-      if (v !== undefined && Number.isFinite(v)) this.#drives[n] = clamp01(this.#drives[n] + v);
+      if (v === undefined || !Number.isFinite(v)) continue;
+      let next = clamp01(this.#drives[n] + v);
+      if (n === "rest" && v > 0 && this.#energy !== null) {
+        next = Math.min(next, Math.max(this.#drives.rest, 1 - this.#energy + REST_OVER_TIREDNESS));
+      }
+      this.#drives[n] = next;
     }
     if (delta.boredom !== undefined && Number.isFinite(delta.boredom)) {
       this.#boredom = clamp01(this.#boredom + delta.boredom);

@@ -12,7 +12,7 @@ import {
   type VoiceParticipant,
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { THOUGHT_PREFIX } from "../src/index.js";
+import { MAX_QUIET_MINUTES, MIN_SELF_TALK, THOUGHT_PREFIX } from "../src/index.js";
 import { HER, OWEN, rig, salient, stopRigs, TEXT, VOICE, wait } from "./helpers.js";
 
 beforeEach(() => {
@@ -316,6 +316,28 @@ describe("mind module", () => {
     const [thought] = r.mind().thoughts();
     expect(thought?.error).toContain("no JSON object");
     expect(thought?.intents).toEqual([]);
+  });
+
+  it("keeps the quiet she chooses herself above a floor and short", async () => {
+    const provider = new MockProvider("p").reply(
+      JSON.stringify({
+        thought: "整排請勿打擾,那我也躺平",
+        policy: {
+          talkativeness: [{ scope: "p2", level: 0.05, for_min: 120, why: "躺平" }],
+          initiative: { level: 0.01, why: "躺平" },
+        },
+      }),
+    );
+    const r = await rig(provider);
+    r.publish(salient("頻道安靜下來了"));
+    await wait(5000);
+    const self = r.sup.services.require(SelfStateKey);
+    const talk = self.talkativeness(TEXT);
+    expect(talk?.level).toBe(MIN_SELF_TALK);
+    expect(Date.parse(talk?.until ?? "") - Date.now()).toBeLessThanOrEqual(
+      MAX_QUIET_MINUTES * 60_000,
+    );
+    expect(self.snapshot().policy.initiative).toBe(MIN_SELF_TALK);
   });
 
   it("tells her when she has done nothing for several thoughts in a row", async () => {

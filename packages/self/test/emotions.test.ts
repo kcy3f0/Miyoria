@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { selfConfig } from "../src/config.js";
 import { shownEmotion } from "../src/display.js";
 import { EmotionEngine, temperament } from "../src/emotions.js";
-import { IDLE, SelfEngine } from "../src/engine.js";
+import { IDLE, REST_OVER_TIREDNESS, SelfEngine } from "../src/engine.js";
 import { HeartBook } from "../src/heart.js";
 
 const T0 = Date.parse("2026-11-02T12:00:00.000Z");
@@ -217,6 +217,18 @@ describe("drives and emotions", () => {
     nobody.adjust({ longing: 0.8 });
     nobody.advance(T0 + 6 * HOUR, IDLE);
     expect(nobody.drives().longing).toBeCloseTo(0.4, 6);
+  });
+
+  it("her nudges lift rest only a little above how tired she is", () => {
+    const e = new SelfEngine(selfConfig(), T0, base);
+    e.advance(T0 + 6 * HOUR, { ...IDLE, energy: 0.75 });
+    const tired = e.drives().rest;
+    expect(tired).toBeCloseTo(0.25, 1);
+    for (let i = 0; i < 20; i++) e.adjust({ rest: 0.12 });
+    expect(e.drives().rest).toBeCloseTo(1 - 0.75 + REST_OVER_TIREDNESS, 6);
+    // Satisfying it still works.
+    e.adjust({ rest: -0.3 });
+    expect(e.drives().rest).toBeCloseTo(0.2, 6);
   });
 
   it("longing unmet for long turns into 想念, kept while it lasts", () => {
