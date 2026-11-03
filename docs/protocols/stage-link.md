@@ -26,7 +26,7 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 | `emotion` | `name`, `intensity`(0..1) | 情緒標記(來自 `agent.emotion`)。`name` 是小寫,`intensity` 沒給時是 `1.0` |
 | `subtitle` | `turn`, `text`, `final`(bool) | 字幕。同一個 `turn` 的新字幕取代舊的(`text` 是到目前為止的全文)。沒有 turn 的語音用 `""` |
 | `speaking` | `state`(`started` / `stopped`) | 她開始 / 停止說話(來自 `voice.playback`) |
-| `scene` | `name`, `transition?`, `transition_ms?`, `id?` | 切 OBS 場景。有 `transition` 時先把它設成 OBS 目前的轉場(`SetCurrentSceneTransition`),有 `transition_ms` 再設長度(`SetCurrentSceneTransitionDuration`,0..20000;Cut、stinger 這種固定長度的轉場設不了長度,只會記 debug log)再切。OBS 沒有這個轉場時記警告、照樣用目前的轉場切換 |
+| `scene` | `name`, `transition?`, `transition_ms?`, `id?` | 切 OBS 場景。有 `transition` 時只用在這一次切換:設成**目標場景**的轉場覆寫(`SetSceneSceneTransitionOverride`,`transition_ms` 是長度,50..20000),不改 OBS 全域的「目前的轉場」;切換一次一個,兩次切換的轉場不會互相套用。OBS 沒有這個轉場時記警告、照樣用目前的轉場切換 |
 | `stream` | `action`(`start` / `stop`), `id?` | 開始 / 停止直播 |
 | `avatar_hotkey` | `name`, `id?` | 觸發 VTS hotkey(名稱或 hotkey ID) |
 | `gaze` | `target`(`chat` / `game` / `camera`) | 她看哪裡 |
@@ -111,6 +111,7 @@ golive_start_delay_ms = 3000   # 等 voice node 的 ffmpeg 綁好 RTMP listener 
 
 - 訂閱 `agent.emotion`、`agent.turn.completed`、`voice.playback`,依上面的規則轉送;另外用 `agent.turn.started`、`voice.synthesis`、`sing.prepare`、`sing.cue` 算出 `activity`。
 - 另外訂閱 `voice.golive`(`{guild, state, error?, reason?}`):`starting` 時在 `golive_start_delay_ms` 後叫 OBS 開始直播(最多重試 3 次),`stopped` / `failed` 時叫 OBS 停止。所以 Discord 的 `/golive start` 一個指令就能從推流到 OBS 全包;`golive_obs = false` 可以關掉,讓 OBS 自己控制。
+- 有 ActivityManager(module `activity`)時上面這段不跑:OBS 是開台(`ensure_live`)的第二個子步驟,`stage.stream` 過閘門、Go Live 真的 `live` 之後才按(`[modules.activity] obs`、`obs_start_delay_ms`、`obs_attempts`);直播機連著但 OBS 沒開就是「開台失敗:OBS 沒開」並把 Go Live 收回。Go Live 從別處開或自己斷掉時,它也會讓 OBS 跟著開 / 停。
 - 提供 `StageLink` 服務(`StageLinkKey`):`setScene`、`stream`、`hotkey`、`refreshStatus`、`gaze`、`status`、`subscribeStatus`。
 - 狀態變化發佈成 `custom` 事件(topic `stage.status`),payload `{connected, vts, obs, scene, streaming, scenes, hotkeys, overlay_url}`(斷線時只有 `{"connected": false}`)。
 - 有 `CommandRegistry` 時註冊指令:`stream start`、`stream stop`、`stream scene <name>`、`stream status`(權限節點 `stream.start` / `stream.stop` / `stream.scene` / `stream.status`)。
@@ -144,7 +145,8 @@ only_while_live = false         # true:只在直播中切
   - 停播:Go Live `stopped` / `failed`,或 OBS 停止直播 → `ending`,並停在結尾畫面直到有新的變化(開台、開始 / 停止遊戲)。
   - 只對**變化**反應(開機時不會去「修正」目前的場景);`debounce_ms` 內的變化合併;兩次自動切換至少隔 `min_switch_ms`;別人(OBS 裡手動、指令、面板、她自己的 `stage_scene`)切了之後 `manual_hold_ms` 內不插手,期間有變化就等時間到再切。開場與結尾不受這些等待限制。
 - **結尾幕(`StreamCurtainKey`)**:`stream.stop`(Go Live)與 `stage.stream stop`(`/stream stop`、面板)在真的停播前先呼叫它:切到 `ending`、停留 `ending_ms` 再停;沒有結尾場景、沒在直播或切換被閘門擋下時馬上繼續。
-- 轉場會改掉 OBS「目前的轉場」設定,之後你在 OBS 手動切換也會用它。
+- 轉場只用在那一次切換(目標場景的轉場覆寫),OBS「目前的轉場」不會被改掉。
+- **場景是她狀態的函式**:有 ActivityManager 時,導演從它的 snapshot(`activity.changed`)讀她在不在語音、直播、玩遊戲、唱歌,`scene = f(presence, broadcast, activity, 她的覆寫)`(`stage.link` 也把這個規則提供成 `SceneRuleKey`,所以 `ActivitySnapshot.scene` 是同一個答案)。她(或指令、面板)用 `stage.scene` 切的場景是**有時間的覆寫**(`manual_hold_ms` 長),導演照著它、時間到再回到規則的場景,不會跟她搶;只有在 OBS 裡直接切的才算手動切換。導演和結尾幕的切換共用一把鎖,所以它自己的切換不會被當成手動切換。
 
 ### 唱歌時放影片(`song_video`,Stage 端)
 

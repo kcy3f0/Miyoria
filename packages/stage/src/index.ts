@@ -77,6 +77,16 @@ export {
 } from "./link/link.js";
 export { GAME_SESSION_TOPIC, StageLinkModule } from "./link/module.js";
 export {
+  away,
+  factsOf,
+  NO_FACTS,
+  pickScene,
+  type SceneFacts,
+  type SceneMemory,
+  sceneWants,
+  type Want,
+} from "./link/scene-rule.js";
+export {
   BUILTIN_ROLES,
   type BuiltinRole,
   type ClassifiedBy,

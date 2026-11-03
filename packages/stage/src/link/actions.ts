@@ -2,8 +2,14 @@
 // role's transition; she may do it herself, the scene director does it as `director`) and
 // `stage.stream` (OBS start / stop streaming; commands and the panel only, her own tool is
 // `stream.start`, the Go Live that OBS follows).
+//
+// Scene switches run one at a time (whoever asks), so two switches and their transitions never
+// interleave. With the ActivityManager, a switch that does not come from the scene director (her
+// tool, a command, the panel) is a timed override (`scene_override`, `manual_hold_ms` long) the
+// director follows instead of fighting it.
 
 import { type Capability, CapabilityError, defineCapability } from "@miyoria/actions";
+import { SerialQueue } from "@miyoria/kernel";
 import { actLane, type StreamCurtain } from "@miyoria/types";
 import { z } from "zod";
 import type { SceneTransition } from "../protocol.js";
@@ -67,6 +73,8 @@ export interface StageCapabilityOptions {
   roles?: SceneRoles | null;
   /** Shows the ending scene before OBS stops streaming. */
   curtain?: StreamCurtain | null;
+  /** How long a switch she (or a command, the panel) asked for holds (ms). Default 120 000. */
+  overrideMs?: number;
 }
 
 export function stageCapabilities(
@@ -74,6 +82,8 @@ export function stageCapabilities(
   options: StageCapabilityOptions = {},
 ): Capability[] {
   const roles = options.roles ?? null;
+  const switches = new SerialQueue();
+  const overrideMs = options.overrideMs ?? 120_000;
   const scene = defineCapability<SceneArgs>({
     name: "stage.scene",
     summary: "切換 OBS 場景",
@@ -91,6 +101,14 @@ export function stageCapabilities(
       },
     },
     lane: () => STAGE_LANE,
+    // Her (or a command's) choice is an override of the director's scene, for a while.
+    activity(args, principal) {
+      if (principal.kind === "director") return null;
+      const target = sceneTarget(args, link, roles);
+      return target.ok
+        ? [{ type: "scene_override", scene: target.scene, duration_ms: overrideMs }]
+        : null;
+    },
     // Only scenes the node reported (when it reports a list at all) or mapped roles.
     check(args) {
       const target = sceneTarget(args, link, roles);
@@ -100,7 +118,7 @@ export function stageCapabilities(
       requireNode(link);
       const target = sceneTarget(args, link, roles);
       if (!target.ok) throw new CapabilityError(target.why);
-      const status = await link.setScene(target.scene, target.transition);
+      const status = await switches.run(() => link.setScene(target.scene, target.transition));
       const what = target.role ? `${target.scene} (${target.role})` : target.scene;
       return {
         text: `switched to scene ${what}`,
