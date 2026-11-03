@@ -24,7 +24,14 @@
   "autoRespawn": true,
   "autoRespawnDelayTicks": 40,
   "disablePauseOnLostFocus": true,
-  "screenshotMaxWidth": 640
+  "screenshotMaxWidth": 640,
+  "reflexes": true,
+  "reflexFight": true,
+  "reflexPickup": true,
+  "reflexFleeHealth": 8.0,
+  "reflexEatFood": 14,
+  "reflexEatFoodBusy": 6,
+  "reflexStuckSecs": 20
 }
 ```
 
@@ -40,6 +47,11 @@
 | `autoRespawn` | 死亡後自動按「重生」(等 `autoRespawnDelayTicks` 讓 `death` 事件先送出) |
 | `disablePauseOnLostFocus` | 視窗失焦時不暫停遊戲(她在背景玩、你在別的視窗時需要) |
 | `screenshotMaxWidth` | `screenshot` 預設縮圖寬度 |
+| `reflexes` | 反射層(§7)總開關;舊的設定檔沒有這些欄位時用預設值 |
+| `reflexFight` / `reflexPickup` | 被怪靠近時反擊(關掉就只逃)/ 工作結束後撿看得到的掉落物 |
+| `reflexFleeHealth` | 血量小於等於此值時逃跑而不是反擊(0–20) |
+| `reflexEatFood` / `reflexEatFoodBusy` | 閒著時飢餓 ≤ 前者就吃;≤ 後者時停下手上的事去吃 |
+| `reflexStuckSecs` | Baritone 在走路卻這麼多秒沒移動(也沒在挖方塊)就算卡住(5–300) |
 
 adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 
@@ -123,6 +135,7 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 | `missing_items` | 背包裡的東西不夠(`craft`、`smelt`、`place`)。訊息:`missing <item> x<n>[, …]`,`<item>+` 表示「或同類」(例如任何木材),`fuel` 表示燃料;配方另外要工作台時後面接 `; also needs a crafting_table within reach` |
 | `needs_station` | 要工作台(3x3 配方)或熔爐,但附近看不到。訊息:`needs a <crafting_table\|furnace> within reach; none in sight` |
 | `busy` | 上一個 `craft` / `smelt` 還在做 |
+| `reflex_active` | 反射(§7)正在用她的身體(逃離岩漿、反擊、吃東西…);移動身體的請求(`baritone`、`altoclef`、`look`、`use`、`attack`、`select_slot`、`place`、`craft`、`smelt`)等 `reflex_end` 再送。訊息:`busy with a reflex: <kind>` |
 | `baritone_unavailable` | 沒有安裝 Baritone |
 | `altoclef_unavailable` | 沒有安裝 AltoClef(或還沒初始化 / API 不符) |
 | `screenshot_failed` | 擷取或編碼失敗 |
@@ -178,7 +191,8 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
   ],
   "baritone": { "available": true, "busy": true, "process": "Mine", "goal": "GoalBlock{x=1,y=2,z=3}" },
   "altoclef": { "available": false, "busy": null },
-  "crafting": null
+  "crafting": null,
+  "reflex": { "active": null }
 }
 ```
 
@@ -192,6 +206,7 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 - `nearby_entities`:只含活的生物(不含自己、盔甲架),依距離排序,最多 `maxEntities` 個;`hostile` 為 Minecraft 的 `Monster` 分類(殭屍、骷髏、苦力怕、史萊姆、幻翼……)。`nearby_entities_total` 是截斷前的總數。`name` 只在玩家或有自訂名稱時出現。
 - `nearby_blocks`:`blockScanRadius` 內**她看得到的**「值得注意的方塊」(礦石、原木、石頭 / 沙子 / 礫石 / 黏土、箱子 / 桶 / 終界箱 / 界伏盒、工作台 / 熔爐 / 鐵砧等工作站、床、地獄 / 終界傳送門、刷怪磚、岩漿、可收成作物等),依方塊種類分組,每種給出數量與最近一個的座標。「看得到」= 有一面朝向她、旁邊不是不透明的完整方塊,而且從她眼睛到那一面中心的直線沒有被不透明的完整方塊擋住(樹葉、玻璃、水不擋);埋在石頭裡的礦**不會**出現(不透視)。每種只檢查最近的 24 個,所以 `count` 是「最近的那些裡看得到幾個」。排序:鑽石 / 遠古殘骸 → 其他礦石 / 原木 / 刷怪磚 → 箱子 / 岩漿 / 傳送門 → 其他;同級依距離。最多 `maxBlockKinds` 種。
 - `crafting`:`craft` / `smelt` 工作進行中時是 `{"kind":"craft"|"smelt","item":<成品 / 要燒的東西,只拿東西時為 null>}`,沒有時為 `null`。
+- `reflex.active`:正在跑的反射(§7:`lava`、`suffocation`、`falling_block`、`drowning`、`flee`、`fight`、`eat`、`unstuck`、`pickup`),沒有時為 `null`。
 - `baritone.busy`:Baritone 目前有沒有在執行(尋路或某個流程在控制);`process` 是流程名稱(例如 `Mine`、`Follow`、`Explore`、`Farm`、`Custom Goal`),`goal` 是目前目標的字串表示。沒有安裝 Baritone 時 `available:false`。
 - `altoclef.busy`:AltoClef 使用者任務是否在跑;無法判斷時為 `null`。
 
@@ -335,6 +350,14 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 
 把背包裡的一個方塊放在她腳邊:先找面向的那一格,再左右、後面,然後兩格外;要是空的(或可取代,例如草)、下面是實心而且點了不會開畫面的方塊、不和她的身體重疊。物品在快捷列就直接選那一格,在背包上半部就用快捷列交換點擊換到目前選的格子。會轉頭看那裡、揮手。`data: {"item","position":{x,y,z}}`。拒絕:`invalid_args`(不是方塊、旁邊沒有空位、遊戲不讓放)、`missing_items`。
 
+### 5.14 `quit`
+
+```json
+{"id":"29","type":"quit"}
+```
+
+關掉遊戲,跟按視窗的關閉鈕一樣(離開世界時單人世界會存檔,然後客戶端結束)。在主選單也可以。先回 `data: {"quitting": true}` 再關,之後連線會斷。adapter 只在 `quit_on_stop` 允許時才送(預設只關她自己開的遊戲)。
+
 ## 6. 事件
 
 | name | 何時送出 | `data` |
@@ -354,6 +377,8 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 | `craft_failed` | `craft` 做不下去 | `{"item","crafted","requested","error","cancelled"?}`;`error` 例如 `ran out of <item>`、`inventory full`、`could not open the crafting_table`、`the screen was closed`、`stopped` |
 | `smelt_finished` | `smelt` 放好 / 拿好了(熔爐之後繼續燒) | `{"collected"?:{item:n},"item"?,"count"?,"fuel"?,"fuel_count"?,"ready_in_secs"?}` |
 | `smelt_failed` | `smelt` 做不下去 | `{"error","collected"?,"cancelled"?}`;例如 `the furnace is still smelting <item>` |
+| `reflex` | 一個反射開始用她的身體(§7) | `{"kind","interrupted","health","target"?,"food"?}`;`interrupted` 是被打斷的工作(Baritone 流程名例如 `Mine`、`craft`、`smelt`、按住的按鍵 `hold`),沒打斷東西為 `null`;`target` 是反擊 / 逃離的生物,`food` 是要吃的東西 |
+| `reflex_end` | 反射結束 | `{"kind","ok","interrupted","secs","yielded"?}`;`ok:false` 是沒成功(逾時、被更緊急的反射接手);`yielded:true` 表示讓給了一個請求或 `stop` |
 
 `goal_reached` 對應 `goto` 類目標;`mine` / `follow` / `explore` / `farm` 沒有「到達」的概念,結束時只會有 `baritone_idle`。注意 `goal_reached` / `goal_failed` 來自 Baritone 的 `PathEvent`(`AT_GOAL` / `CALC_FAILED`),**每一段路**都會送:挖礦時每走到一顆礦、`follow` 每次追上、AltoClef 子任務之間都會出現。client 要自己記得目前下的是哪種工作再解讀(adapter 只在 `goto` 時把它當成完成,見 `README.md` §7)。
 
@@ -365,9 +390,30 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 {"type":"event","name":"goal_reached","time":1730000002345,"data":{"goal":"GoalBlock{x=120,y=64,z=-30}"}}
 ```
 
-## 7. 反射(reflex)放哪裡
+## 7. 反射層(reflex)
 
-LLM 不碰逐幀控制。吃東西、躲怪、水中求生這類反射交給 Baritone / AltoClef 的設定;模組本身只提供狀態與事件。建議的 Baritone 設定見 `README.md` §5。
+LLM 不碰逐幀控制。模組每個 client tick 跑一層反射(`reflex/ReflexBrain` 決定、`game/Reflexes` 執行;參考 Mindcraft 的 modes、mc_aiplayer 的 Safety Net),**只在 adapter 連著時**(有人手動玩的時候不搶控制)。一次只跑一個,依優先順序;越前面的危險可以接手後面的:
+
+| kind | 何時開始 | 做什麼 | 何時結束 |
+|---|---|---|---|
+| `lava` | 在岩漿或火裡 | 朝 5 格內最近的安全落腳處跑、跳 | 離開岩漿 / 火 0.5 秒 |
+| `suffocation` | 卡在方塊裡(窒息) | 像按住左鍵一樣挖開頭部那格 | 不再卡住 |
+| `falling_block` | 頭上有掉落的方塊(沙、礫石) | 閃到旁邊不在那一欄的位置 | 約 0.75 秒 |
+| `drowning` | 在水裡、氧氣低於 40% | 按住跳往上游 | 頭出水或氧氣回到 90% |
+| `flee` | 苦力怕 6 格內,或血量 ≤ `reflexFleeHealth` 時敵對生物 10 格內 | Baritone `GoalRunAway`(16 格),沒有 Baritone 就背對牠跑 | 2 秒內沒有威脅 |
+| `fight` | 看得到的敵對生物 4 格內、血量夠(不打苦力怕) | 換上最好的劍 / 斧、轉頭、靠近,攻擊冷卻好了才打(3 格內) | 1 秒內 6 格內沒有敵人 |
+| `eat` | 有食物而且飢餓 ≤ `reflexEatFoodBusy`(會打斷工作),或閒著時 ≤ `reflexEatFood` | 拿出最好的食物(不吃腐肉這類,除非快餓死;從背包換到空的快捷列格,吃完換回去)、按住右鍵 | 吃完 |
+| `unstuck` | Baritone 在走路但約 `reflexStuckSecs` 秒沒移動(挖方塊不算) | 停掉 Baritone,往旁邊的空位跑、跳一秒 | 一秒後 |
+| `pickup` | 工作結束 0.75–30 秒內、6 格內有看得到的掉落物 | Baritone 走到那裡(走不到 5 秒就放棄那個) | 沒有可撿的 |
+
+規則:
+
+- 只用她看得到的目標(`canSee`):不打牆後的怪、不撿牆後的東西。中立生物(終界使者、殭屍化豬布林)只有在牠攻擊時才算威脅。攻擊距離與冷卻跟玩家一樣,Baritone 的 legit 設定(§8)與可見性檢查都不變。
+- 會打斷工作的反射(除了 `pickup` 以外,以及閒著時的 `eat`)先送 `reflex`(帶 `interrupted`),再停掉 Baritone(之後的 `baritone_idle` 帶 `reason:"reflex"`)、`craft` / `smelt`(`*_failed` 帶 `cancelled:true`)、按住的按鍵。結束時送 `reflex_end`。
+- 反射期間移動身體的請求回 `reflex_active`;`pickup` 和閒著時的反射會讓路給請求。`stop` 只停 `pickup` / `eat` / `unstuck`,求生的反射照跑。
+- 反射自己用 Baritone 走路(`flee`、`pickup`)時,那段路的 `goal_reached` / `goal_failed` / `baritone_idle` 不送(不是她下的工作)。`pickup` 等工作的 `baritone_idle` 送出(閒置 10 tick)之後才開始。
+- 死掉、在主選單、單人遊戲暫停、AltoClef 任務進行中(它有自己的反射)時不跑。
+- `observe` 的 `reflex.active` 是正在跑的反射。
 
 ## 8. 不作弊:模組強制的 Baritone 設定
 

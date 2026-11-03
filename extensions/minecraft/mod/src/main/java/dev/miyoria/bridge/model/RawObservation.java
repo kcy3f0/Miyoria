@@ -44,6 +44,8 @@ public final class RawObservation {
     public AltoState altoclef = AltoState.UNAVAILABLE;
     /** The running craft / smelt job, or null. */
     public CraftState crafting;
+    /** The reflex that has her body ({@code lava}, {@code fight}...), or null. */
+    public String reflex;
 
     public record StackSlot(int slot, StackInfo stack) {}
 

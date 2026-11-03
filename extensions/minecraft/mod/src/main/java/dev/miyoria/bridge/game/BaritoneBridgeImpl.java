@@ -68,6 +68,8 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
     private String lastProcess;
     private String lastGoal;
     private boolean cancelledByUs;
+    /** A reflex (not a request) set Baritone's current goal; its events are not reported. */
+    private boolean reflexOwned;
 
     public BaritoneBridgeImpl(EventSink events, int sightRadius) {
         this.events = events;
@@ -118,6 +120,7 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
         JsonObject out = new JsonObject();
         out.addProperty("command", command);
         cancelledByUs = false;
+        reflexOwned = false; // a request takes Baritone over from a reflex
         switch (command) {
             case "goto" -> doGoto(req, out);
             case "mine" -> doMine(req, out);
@@ -337,6 +340,39 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
     }
 
     @Override
+    public void interrupt() {
+        cancel();
+        stopReason = "reflex";
+    }
+
+    @Override
+    public void reflexGoTo(BlockPos pos) {
+        reflexOwned = true;
+        b().getCustomGoalProcess().setGoalAndPath(new GoalBlock(pos));
+    }
+
+    @Override
+    public void reflexRunAway(double distance, List<BlockPos> from) {
+        reflexOwned = true;
+        b().getCustomGoalProcess().setGoalAndPath(new GoalRunAway(distance, from.toArray(new BlockPos[0])));
+    }
+
+    @Override
+    public void reflexCancel() {
+        if (reflexOwned) b().getPathingBehavior().cancelEverything();
+    }
+
+    @Override
+    public boolean reflexDriving() {
+        return reflexOwned && state().busy();
+    }
+
+    @Override
+    public boolean pathing() {
+        return b().getPathingBehavior().isPathing();
+    }
+
+    @Override
     public RawObservation.BaritoneState state() {
         IBaritone bar = b();
         boolean pathing = bar.getPathingBehavior().isPathing();
@@ -372,6 +408,13 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
             lastGoal = s.goal();
         } else if (wasBusy && ++idleTicks >= IDLE_DEBOUNCE_TICKS) {
             wasBusy = false;
+            if (reflexOwned) {
+                // a reflex's walk (a pickup, running away) ended: not a task of hers
+                reflexOwned = false;
+                cancelledByUs = false;
+                stopReason = null;
+                return;
+            }
             JsonObject d = new JsonObject();
             d.addProperty("process", lastProcess);
             d.addProperty("goal", lastGoal);
@@ -387,6 +430,7 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
         b().getGameEventHandler().registerEventListener(new AbstractGameEventListener() {
             @Override
             public void onPathEvent(PathEvent event) {
+                if (reflexOwned) return; // a reflex's own walk
                 switch (event) {
                     case AT_GOAL -> {
                         JsonObject d = new JsonObject();

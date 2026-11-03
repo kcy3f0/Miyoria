@@ -13,6 +13,10 @@ public class GoalBlock implements Goal {
         this.z = z;
     }
 
+    public GoalBlock(net.minecraft.util.math.BlockPos pos) {
+        this(pos.getX(), pos.getY(), pos.getZ());
+    }
+
     @Override
     public boolean isInGoal(int x, int y, int z) {
         return x == this.x && y == this.y && z == this.z;

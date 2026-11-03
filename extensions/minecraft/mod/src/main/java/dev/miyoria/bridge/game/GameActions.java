@@ -76,6 +76,11 @@ public final class GameActions {
         }
     }
 
+    /** A timed key hold ({@code use} / {@code attack} with {@code hold_ticks}) is running. */
+    public boolean holding() {
+        return !holds.isEmpty();
+    }
+
     public void releaseAll() {
         targetYaw = targetPitch = null;
         for (KeyBinding k : holds.keySet()) k.setPressed(false);

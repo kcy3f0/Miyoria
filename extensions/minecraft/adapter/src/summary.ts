@@ -67,7 +67,21 @@ export interface Snapshot {
   altoclef?: { available?: boolean; busy?: boolean | null };
   /** A craft / smelt job of the mod's workbench. */
   crafting?: { kind: string; item: string | null } | null;
+  /** The reflex the mod is running (`lava`, `fight`, ...), `null` when none. */
+  reflex?: { active: string | null } | null;
 }
+
+const REFLEX_ACTIVE: Record<string, string> = {
+  lava: "逃離岩漿",
+  suffocation: "從方塊裡挖出來",
+  falling_block: "閃開落下的方塊",
+  drowning: "往上游換氣",
+  flee: "逃跑",
+  fight: "反擊",
+  eat: "吃東西",
+  unstuck: "掙脫卡住",
+  pickup: "撿東西",
+};
 
 const MAX_INVENTORY = 16;
 const MAX_ENTITIES = 6;
@@ -126,9 +140,9 @@ function pos(p: Pos): string {
   return `(${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)})`;
 }
 
-/** Whether Baritone or AltoClef is working on something. */
+/** Whether Baritone or AltoClef is working on something (or a reflex has her body). */
 export function isBusy(s: Snapshot): boolean {
-  return s.baritone?.busy === true || s.altoclef?.busy === true || !!s.crafting;
+  return s.baritone?.busy === true || s.altoclef?.busy === true || !!s.crafting || !!s.reflex?.active;
 }
 
 /** Summary lines in Traditional Chinese. */
@@ -208,6 +222,8 @@ export function summarize(s: Snapshot): string {
   if (s.crafting) {
     activity.push(s.crafting.kind === "craft" ? `正在合成 ${zh(s.crafting.item)}` : "正在用熔爐");
   }
+  const reflex = s.reflex?.active;
+  if (reflex) activity.push(`本能反應中:${REFLEX_ACTIVE[reflex] ?? reflex}`);
   if (activity.length) lines.push(activity.join("、"));
   return lines.join("\n");
 }
@@ -248,6 +264,7 @@ export function compactState(s: Snapshot): Record<string, unknown> {
     baritone: s.baritone ? { busy: s.baritone.busy ?? false, process: s.baritone.process ?? null } : undefined,
     altoclef: s.altoclef?.available ? { busy: s.altoclef.busy ?? null } : undefined,
     crafting: s.crafting ?? undefined,
+    reflex: s.reflex?.active ?? undefined,
   };
   for (const key of Object.keys(state)) if (state[key] === undefined) delete state[key];
   return state;
