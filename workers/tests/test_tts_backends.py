@@ -350,6 +350,43 @@ def test_pump_stops_generating_when_cancelled(load_server):
     assert len(produced) == n  # nothing more is generated, and sentence 2 never started
 
 
+def test_an_offload_stops_a_running_utterance_at_the_next_chunk(load_server):
+    server = load_server({"faster_qwen3_tts": make_fake_faster()})
+    closed = threading.Event()
+
+    class Endless:
+        lock = threading.Lock()
+        stopping = False
+
+        def stream(self, text, language, voice, instruct):
+            try:
+                while True:
+                    yield np.zeros(4, dtype=np.float32), 24000
+                    time.sleep(0.005)
+            finally:
+                closed.set()
+
+    eng = Endless()
+
+    async def go():
+        pool = ThreadPoolExecutor(max_workers=1)
+        pump = server.ChunkPump(eng, ["a。", "b。"], "Chinese", None, "", pool, asyncio.get_running_loop())
+        pump.start()
+        assert (await pump.queue.get())[0] == "chunk"
+        eng.stopping = True  # what /offload sets before it waits for the lock
+        await asyncio.wait_for(pump.future, timeout=5)
+        kinds = []
+        while not pump.queue.empty():
+            kinds.append(pump.queue.get_nowait())
+        pool.shutdown()
+        return kinds
+
+    items = asyncio.run(go())
+    assert items[-1][0] == "error" and items[-1][1].status == 503
+    assert closed.is_set()
+    assert eng.lock.acquire(timeout=1)  # the GPU lock is free for the close
+
+
 # ── qwen-tts (sentence-level) backend through the same endpoint ──────────────
 
 

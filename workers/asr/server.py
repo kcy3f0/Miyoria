@@ -353,8 +353,8 @@ def _vram_mb() -> int | None:
 
 
 def _drop() -> None:
-    with state.lock:  # waits for a running transcription
-        state.backend = None
+    with state.lock:  # waits for the running transcription; the waiting ones see no backend and give up
+        pass
     gc.collect()
     torch = sys.modules.get("torch")
     if torch is not None and torch.cuda.is_available():
@@ -378,7 +378,11 @@ async def offload(req: OffloadRequest | None = None) -> dict[str, Any]:
         max_s = req.max_s if req.max_s is not None else float(os.environ.get("ASR_OFFLOAD_MAX_S", "900"))
         state.offloaded = {"since": time.time(), "reason": (req.reason or "")[:80],
                            "reload_at": time.time() + max_s if max_s > 0 else None}
-        await asyncio.get_running_loop().run_in_executor(state.pool, _drop)
+        # Gone at once, so requests queued for the lock answer 503 instead of running first (the
+        # lock is not fair: a busy voice channel would hold the offload off for minutes). Dropped
+        # on its own thread: the pool's threads can all be waiting for the lock.
+        state.backend = None
+        await asyncio.get_running_loop().run_in_executor(None, _drop)
         ms = (time.perf_counter() - t0) * 1000
         after = _vram_mb()
         log.info("offloaded for %r in %.0f ms (VRAM %s -> %s MB)", req.reason, ms, before, after)

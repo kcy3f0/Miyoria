@@ -319,7 +319,9 @@ def test_the_gpu_comes_back_after_a_failure_or_a_cancel(sing, offload, monkeypat
     fail.add("http://asr/offload")  # one worker that cannot offload is skipped
     done = wait(sing, sing.post("/jobs", json={"query": "failing conversion"}).json()["job"]["id"])
     assert done["state"] == "failed" and "mock conversion failed" in done["error"]
-    assert [c[0] for c in calls] == ["http://tts/offload", "http://asr/offload", "http://tts/reload"]
+    # The worker that did not offload in time is reloaded too: its offload may have finished late.
+    assert [c[0] for c in calls] == ["http://tts/offload", "http://asr/offload", "http://tts/reload",
+                                     "http://asr/reload"]
     assert done["exclusive"] == "done" and "offload http://asr" in done["exclusive_info"]["errors"][0]
 
     calls.clear()

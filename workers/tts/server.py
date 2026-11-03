@@ -210,6 +210,8 @@ class BaseEngine:
         self.stream_probe: list[str] = []
         self.gen_kwargs: dict[str, Any] = json.loads(os.environ.get("TTS_GEN_KWARGS", "{}") or "{}")
         self.closed = False  # offloaded: the model is gone, nothing may run on it any more
+        # An offload is under way: running requests stop at the next chunk, waiting ones never start.
+        self.stopping = False
         self._load_model()
         self.reload_voices()
         self._warmup()
@@ -589,21 +591,29 @@ class ChunkPump:
             wav = resample_poly(_to_numpy(wav), self.rate // g, sr // g)
         return _to_pcm16(wav)
 
+    def _offloading(self) -> bool:
+        return getattr(self.eng, "stopping", False) or getattr(self.eng, "closed", False)
+
     def _run(self) -> None:
         try:
             for sentence in self.sentences:
                 if self.cancelled.is_set():
                     return
+                if self._offloading():
+                    raise ApiError(503, "offloaded")
                 with self.eng.lock:
                     if self.cancelled.is_set():
                         return
-                    if getattr(self.eng, "closed", False):
+                    if self._offloading():
                         raise ApiError(503, "offloaded")
                     gen = self.eng.stream(sentence, self.language, self.voice, self.instruct)
                     try:
                         for wav, sr in gen:
                             if self.cancelled.is_set():
                                 return
+                            # The song worker is taking the GPU: this utterance ends here.
+                            if self._offloading():
+                                raise ApiError(503, "offloaded")
                             self._put(("chunk", self._pcm(wav, sr)))
                     finally:
                         close = getattr(gen, "close", None)
@@ -802,9 +812,13 @@ async def offload(req: OffloadRequest | None = None) -> dict[str, Any]:
         max_s = req.max_s if req.max_s is not None else float(os.environ.get("TTS_OFFLOAD_MAX_S", "900"))
         state.offloaded = {"since": time.time(), "reason": (req.reason or "")[:80],
                            "reload_at": time.time() + max_s if max_s > 0 else None}
-        await loop.run_in_executor(state.pool, eng.close)
+        # Running requests stop at their next chunk and waiting ones never start, so the close
+        # below waits for one chunk at most. It runs on its own thread: the pool's threads can all
+        # be held by requests waiting for the GPU lock.
+        eng.stopping = True
+        await loop.run_in_executor(None, eng.close)
         del eng
-        await loop.run_in_executor(state.pool, _free_cuda)
+        await loop.run_in_executor(None, _free_cuda)
         ms = (time.perf_counter() - t0) * 1000
         after = _vram_mb()
         log.info("offloaded for %r in %.0f ms (VRAM %s -> %s MB)", req.reason, ms, before, after)

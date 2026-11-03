@@ -64,3 +64,33 @@ def test_reloads_by_itself(asr):
     while client.get("/health").json()["offloaded"] and time.time() < deadline:
         time.sleep(0.05)
     assert client.get("/health").json()["offloaded"] is False
+
+
+def test_an_offload_does_not_wait_behind_queued_requests(asr):
+    """A busy voice channel queues transcriptions on the (unfair) lock; the offload goes first."""
+    import threading
+
+    client, server = asr
+    server.make_backend = None  # unused from here
+    started = threading.Event()
+
+    class Slow:
+        def transcribe(self, x, language, prompt):
+            started.set()
+            time.sleep(0.4)
+            return {"text": "慢", "language": "zh"}
+
+    server.state.backend = Slow()
+    server.state.pool._max_workers = 4
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(post(client).status_code)) for _ in range(6)]
+    for t in threads:
+        t.start()
+    assert started.wait(5)
+    t0 = time.monotonic()
+    assert client.post("/offload", json={"max_s": 0}).json()["state"] == "offloaded"
+    took = time.monotonic() - t0
+    for t in threads:
+        t.join(10)
+    assert took < 1.5  # one running transcription at most, not all six
+    assert results.count(503) >= 4

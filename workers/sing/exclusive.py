@@ -50,6 +50,7 @@ class Exclusive:
         self.max_s = max_s
         self.state: str | None = None
         self.offloaded: list[str] = []
+        self.asked: list[str] = []  # offload requested, whether or not it answered in time
         self.timings: dict[str, float] = {}
         self.errors: list[str] = []
         self._lock = threading.Lock()
@@ -75,6 +76,7 @@ class Exclusive:
         self.state = "offloading"
         t0 = time.monotonic()
         for url in self.urls:
+            self.asked.append(url)
             try:
                 r = self.post(f"{url}/offload", {"reason": "sing", "max_s": self.max_s}, self.offload_timeout_s)
                 self.offloaded.append(url)
@@ -97,7 +99,9 @@ class Exclusive:
 
     def _reload_all(self) -> None:
         t0 = time.monotonic()
-        for url in self.offloaded:
+        # Every worker asked, also those whose offload timed out: it may have finished after we
+        # stopped waiting (a reload of a loaded worker answers "already" at once).
+        for url in self.asked:
             try:
                 r = self.post(f"{url}/reload", {}, self.reload_timeout_s)
                 log.info("reloaded %s (%s ms)", url, r.get("reload_ms"))
