@@ -89,6 +89,8 @@ export {
   CommandSpecSchema,
   type Contributions,
   ContributionsSchema,
+  type ExecutorDecl,
+  ExecutorDeclSchema,
   type ExtensionInfo,
   type HostInfo,
   type InitializeParams,
@@ -129,4 +131,11 @@ export {
   UNAVAILABLE,
 } from "./rpc.js";
 export { ProfileIdKey } from "./services.js";
+export {
+  callFailureCode,
+  ProxyExecutor,
+  type ProxyExecutorOptions,
+  TaskCallError,
+  TaskExecutorRegistry,
+} from "./tasks.js";
 export { SKIP_DIRS, type Snapshot, sameSnapshot, snapshot, watchRoots } from "./watch.js";

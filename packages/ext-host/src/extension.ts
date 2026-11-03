@@ -33,6 +33,8 @@ import {
   type ModuleId,
   type PromptContributors,
   PromptContributorsKey,
+  TaskExecutorsKey,
+  taskTopic,
   V2_TOPIC_PREFIXES,
 } from "@miyoria/types";
 import { z } from "zod";
@@ -43,6 +45,8 @@ import { validPattern, validTopic } from "./manifest.js";
 import {
   CommandSpecSchema,
   type Contributions,
+  type ExecutorDecl,
+  ExecutorDeclSchema,
   type InitializeParams,
   InitializeResultSchema,
   PROTOCOL_VERSION,
@@ -62,6 +66,7 @@ import {
   UNAVAILABLE,
 } from "./rpc.js";
 import { ProfileIdKey } from "./services.js";
+import { ProxyExecutor, TaskExecutorRegistry } from "./tasks.js";
 
 /** Version sent as `initialize.host.version`. */
 export const HOST_VERSION = "0.1.0";
@@ -234,6 +239,8 @@ export class ExtensionModule implements Module {
         child.kill();
         status = "closed its stdout";
       }
+      // Its tasks die with it (a terminal event each, code `crashed`).
+      session.failTasks("crashed", `擴充套件結束了(${status})`);
       if (protocolError !== null) {
         throw new ExtensionProcessError(
           `extension \`${id}\` protocol error: ${errorMessage(protocolError)} (${status})`,
@@ -390,6 +397,7 @@ class Session implements RpcHandler {
   #tools = new Map<string, ToolReg>();
   #commands = new Map<string, CommandReg>();
   #prompts = new Map<string, PromptContributors>();
+  #executor: { proxy: ProxyExecutor; registry: TaskExecutorRegistry } | null = null;
 
   constructor(
     ctx: ModuleContext,
@@ -480,6 +488,67 @@ class Session implements RpcHandler {
         );
       }
     }
+    if (c.executor !== null) {
+      try {
+        this.registerExecutor(c.executor);
+      } catch (e) {
+        if (fatal(e)) throw new ExtensionStartError(`executor: ${message(e)}`);
+        this.ctx.log.warn({ ext: this.id, error: message(e) }, "task executor not registered");
+      }
+    }
+  }
+
+  /** Topic prefix of this extension's task events: its game's namespace, else `ext.<id>`. */
+  taskOwner(): string {
+    const game = this.spec.manifest.gameId();
+    return game !== null ? `game.${game}` : `ext.${this.id}`;
+  }
+
+  /** `tasks.register`: (re)places this extension's executor in the `TaskExecutors` registry. */
+  registerExecutor(decl: ExecutorDecl): JsonValue {
+    const registry = this.ctx.services.get(TaskExecutorsKey);
+    if (!(registry instanceof TaskExecutorRegistry)) {
+      throw new RpcError(UNAVAILABLE, "the task executor registry is not available");
+    }
+    if (this.stopping) throw Session.closedError();
+    const owner = this.taskOwner();
+    const current = registry.get(owner);
+    if (current !== undefined && current !== this.#executor?.proxy) {
+      throw new RpcError(CONFLICT, `an executor for \`${owner}\` is already registered`);
+    }
+    if (this.#executor) {
+      this.#executor.proxy.close("superseded", "擴充套件換了一個執行器");
+      this.#executor.registry.unregister(this.#executor.proxy);
+    }
+    const proxy = new ProxyExecutor(
+      this.peer,
+      {
+        owner,
+        name: decl.name,
+        goals: decl.goals.map((g) => ({ ...g })),
+        guide: decl.guide,
+      },
+      {
+        callTimeoutMs: this.host.call_timeout_ms,
+        graceMs: this.host.task_grace_ms,
+        publish: (event) => {
+          this.ctx.publish(
+            customEvent(taskTopic(owner, event.type), event as unknown as JsonValue),
+          );
+        },
+        now: () => this.ctx.clock.now(),
+      },
+    );
+    registry.register(proxy);
+    this.#executor = { proxy, registry };
+    return { owner };
+  }
+
+  /** The process is gone: every task it was running fails with `code`. */
+  failTasks(code: "crashed" | "disconnected", detail: string): void {
+    const executor = this.#executor;
+    if (!executor) return;
+    executor.proxy.close(code, detail);
   }
 
   subscribe(topics: readonly string[]): JsonValue {
@@ -671,6 +740,12 @@ class Session implements RpcHandler {
     for (const [name, reg] of tools) unregisterToolIfOurs(reg, name);
     for (const reg of commands.values()) unregisterCommandIfOurs(reg);
     for (const [key, registry] of prompts) registry.unregister(key);
+    const executor = this.#executor;
+    this.#executor = null;
+    if (executor) {
+      executor.proxy.close("disconnected", "擴充套件停止了");
+      executor.registry.unregister(executor.proxy);
+    }
   }
 
   async request(method: string, p: JsonValue): Promise<JsonValue> {
@@ -691,6 +766,8 @@ class Session implements RpcHandler {
         const path = params(CommandPathSchema, p).path;
         return this.unregisterCommand(typeof path === "string" ? splitPath(path) : path);
       }
+      case "tasks.register":
+        return this.registerExecutor(params(ExecutorDeclSchema, p));
       case "prompt.register":
         return this.registerPrompt(params(KeyedSchema, p).key);
       case "prompt.unregister":
@@ -725,6 +802,7 @@ class Session implements RpcHandler {
 
   notification(method: string, p: JsonValue): void {
     if (method === "log") this.log(p);
+    else if (method === "task.event") this.#executor?.proxy.onEvent(p);
     else this.ctx.log.debug({ ext: this.id, method }, "ignored notification");
   }
 }

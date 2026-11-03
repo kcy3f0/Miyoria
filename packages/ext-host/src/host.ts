@@ -15,7 +15,7 @@ import {
   sleep,
 } from "@miyoria/kernel";
 import { ToolRegistry } from "@miyoria/tools";
-import { type JsonValue, type ModuleId, serviceKey } from "@miyoria/types";
+import { type JsonValue, type ModuleId, serviceKey, TaskExecutorsKey } from "@miyoria/types";
 import {
   extensionSettings,
   grantedPermissions,
@@ -30,6 +30,7 @@ import {
   extensionModuleId,
 } from "./extension.js";
 import { ExtensionManifest, MANIFEST_FILE, type McpServerSpec, runsOnCore } from "./manifest.js";
+import { TaskExecutorRegistry } from "./tasks.js";
 import { SKIP_DIRS, type Snapshot, sameSnapshot, snapshot, watchRoots } from "./watch.js";
 
 const log = getLogger("ext_host");
@@ -241,6 +242,9 @@ export class ExtensionsModule implements Module {
     ctx.provide(ExtensionCatalogKey, this.catalog);
     // Game adapters' raw tools: the game director's capabilities use them, chat turns never.
     ctx.provide(GatedToolsKey, new ToolRegistry());
+    // Task executors of activity-type extensions (game adapters): the core starts goals as tasks
+    // through them and learns how they ended from their task events (v2 §3.8).
+    ctx.provide(TaskExecutorsKey, new TaskExecutorRegistry());
     if (host.dev) {
       const targets = this.catalog.entries.map((e) => ({
         id: extensionModuleId(e.spec),

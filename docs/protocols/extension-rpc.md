@@ -292,7 +292,7 @@ game = "minecraft"          # 遊戲 id:1–32 個小寫英數、`-`、`_`(一�
 - 同一個遊戲 id 只能有一個擴充;第二個在 discovery 時被略過。
 - 宿主在 `initialize` 的 `extension.game` 送出這個 id。
 - **事件**:adapter 可以發佈 `game.<id>.<type>`(例如 `game.minecraft.death`),不需要 `events` 權限。別的擴充即使有 `events = ["game.*"]` 也只能**訂閱**、不能發佈 `game.*`。
-- **工具**:`game.<id>.observe`、`game.<id>.act`(登記成 `game_<id>_observe` / `game_<id>_act`;慢迴路 `@miyoria/game` 就是呼叫這兩個)。`game.` 底下的工具名稱只保留給該 adapter。這些是 adapter 的原始控制(開 / 關遊戲、遊戲內聊天),**不會**出現在聊天回合的工具清單裡:宿主把 `game_*` 工具登記在另一個只給能力用的 registry(`GatedToolsKey`),她只能透過過閘門的能力(`game.start` / `game.stop` / `game.goal`,導演的 `game.act`)使用它們。
+- **任務執行器**:adapter 是 `game.<id>` 的任務執行器(見〈任務執行器〉),慢迴路 `@miyoria/game` 只透過它 observe、開始 / 取消目標。SDK 的 `registerAdapter` 不再登記原始的 `game.<id>.observe` / `game.<id>.act` 工具;沒有自己執行器的 adapter,它的 `act` 會被包成一步就結束的任務。`game.` 底下的工具名稱仍只保留給該 adapter,而且**不會**出現在聊天回合的工具清單裡(宿主登記在只給能力用的 `GatedToolsKey`);她只能透過過閘門的能力(`game.start` / `game.stop` / `game.goal`,導演的 `game.act`)動到遊戲。
 - **prompt**:`prompt.register` 的 key 照常加上 `ext.<id>.` 前綴。
 
 SDK 的 `ctx.game.registerAdapter(adapter)` 負責這些對應;`describe().id` 必須等於 `ctx.game.id`(= `extension.game`),否則丟出錯誤、啟動失敗。事件的 `payload` 是 `GameEvent`:
@@ -303,18 +303,39 @@ SDK 的 `ctx.game.registerAdapter(adapter)` 負責這些對應;`describe().id` �
 
 `type` 是 topic 最後的部分;`important: true` 表示值得立刻實況評論;`data.text`(選填)是一句繁體中文描述,給實況提示用。
 
+## 任務執行器
+
+活動型擴充(遊戲、瀏覽器)實作任務契約(`docs/design/v2-architecture.md` §3.8;型別在 `@miyoria/types` 的 `task.ts`,SDK 有一份相同的副本):核心開始一個任務 `{id, goal, args, budget_s}`,擴充接受後一定以**剛好一個** `done` 或 `failed{code, detail}` 結束它。核心從不從事件名稱或結果文字猜完成。
+
+- **註冊**(Ext → Host):`contributions.executor` 或執行中的 `tasks.register`(request),一個擴充一個:
+  ```json
+  {"name":"Minecraft","goals":[{"name":"goto","description":"走到…","parameters":{"type":"object"},"budget_s":120}],"guide":"生存的進度…"}
+  ```
+  owner(事件的 topic 前綴)由宿主決定:game adapter 是 `game.<id>`,其他擴充是 `ext.<id>`。宿主把它放進 `TaskExecutorsKey`(`get(owner)`);擴充停止時移除。
+- **`task.start`**(Host → Ext,request):`{"task":{"id","goal","args","budget_s"}}` → `{}`。只表示**接受了**;結果以事件回報。連接受都不行(spec 不合法)才回錯誤,`error.data.code` 是失敗碼。呼叫端放棄等待(`$/cancelRequest`)時也會取消這個任務。
+- **`task.cancel`**(Host → Ext,request):`{"task":"<id>"}` → `{}`;之後該任務會以 `failed` / `cancelled` 結束。不認得或已結束的 id 忽略。
+- **`task.observe`**(Host → Ext,request):`{}` → `StructuredState` `{"at","state":{…},"task":<執行中的 id 或 null>,"summary"}`(結構化狀態,不是要再解析的文字)。
+- **`task.event`**(Ext → Host,notification):`{"event": TaskEvent}`,`TaskEvent` 是 `{"type":"started","task","goal","at"}`、`{"type":"progress","task","progress":0..1|null,"detail","at"}`、`{"type":"done","task","detail","data","at"}` 或 `{"type":"failed","task","code","detail","at"}`。宿主檢查後發佈到匯流排 `<owner>.task.<type>`(例如 `game.minecraft.task.done`,payload 就是這個事件)。
+
+失敗碼(`TASK_FAILURE_CODES`):`timeout`、`cancelled`、`superseded`、`busy`、`invalid`、`not_found`、`unreachable`、`precondition`、`disconnected`、`crashed`、`died`、`denied`、`internal`。
+
+宿主的保證:已結束任務的事件一律丟掉(過期的工作無害);接受後超過 `budget_s` + `task_grace_ms`(預設 5 秒)還沒結束,宿主自己發 `failed` / `timeout` 並送 `task.cancel`;行程中途結束,執行中的任務都發 `failed` / `crashed`(宿主停止擴充時是 `disconnected`)。
+
+SDK:`TaskRunner`(`@miyoria/sdk`)把一個 `TaskWorker { observe, run(spec, task), resource? }` 變成執行器:`run` 回傳 = `done`、丟 `TaskFailure(code, detail)` = `failed`;預算、取消、同一個資源上新任務取代舊任務(`superseded`)都由它處理,`task.signal` 在那時中止,`task.progress(detail, p)` 回報進度。`ctx.tasks.register(executor, info)` 註冊。
+
 ## 逾時
 
 | 方向 | 方法 | 設定(`[modules.extensions]`) | 預設 |
 |---|---|---|---|
 | Host → Ext | `initialize` | `init_timeout_ms` | 10000 |
-| Host → Ext | `tools.call`、`commands.invoke` | `call_timeout_ms` | 30000 |
+| Host → Ext | `tools.call`、`commands.invoke`、`task.start` / `task.cancel` / `task.observe` | `call_timeout_ms` | 30000 |
+| 宿主 | 接受後沒有回報結束的任務 | `budget_s` + `task_grace_ms` | + 5000 |
 | Host → Ext | `prompt.contribute` | `prompt_timeout_ms` | 3000 |
 | 停止 | `shutdown` 後等待結束 | `shutdown_grace_ms` | 2000 |
 
 逾時的 request 在呼叫端得到 `-32002`,之後才到的 response 會被忽略;連線本身不受影響。SDK 對宿主的 request 預設 10 秒逾時。
 
-**取消**:呼叫端不再等一個 request 時(逾時,或呼叫被中止:工具逾時、回合被取消、遊戲導演的步驟逾時),宿主送 notification `$/cancelRequest` `{"id": <那個 request 的 id>}`(跟 LSP 一樣)。擴充可以據此停止那件工作(SDK 會中止交給處理函式的 `AbortSignal`:工具的 `ctx.signal`、game adapter 的 `act(action, signal)` / `observe(signal)`),讓過期的工作無害;不認得這個 notification 的擴充照舊忽略它。之後送回的 response 會被忽略(被 SDK 取消的處理函式回 `-32800`)。
+**取消**:呼叫端不再等一個 request 時(逾時,或呼叫被中止:工具逾時、回合被取消、遊戲導演的步驟逾時),宿主送 notification `$/cancelRequest` `{"id": <那個 request 的 id>}`(跟 LSP 一樣)。擴充可以據此停止那件工作(SDK 會中止交給處理函式的 `AbortSignal`:工具的 `ctx.signal`、執行器的 `start(spec, signal)` / `observe(signal)`),讓過期的工作無害;不認得這個 notification 的擴充照舊忽略它。之後送回的 response 會被忽略(被 SDK 取消的處理函式回 `-32800`)。
 
 ## 錯誤碼
 
