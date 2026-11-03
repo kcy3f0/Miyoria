@@ -206,7 +206,7 @@ describe("eventDelta", () => {
 describe("self prompt", () => {
   it("describes strong drives, the policy here, due agenda and feelings of who is present", async () => {
     const h = await boot();
-    const prompt = h.contributors.all()[0] as SelfPrompt;
+    const prompt = h.contributors.all().find((c) => c.key === "self") as SelfPrompt;
     expect(prompt.key).toBe("self");
     // Nothing notable yet.
     expect(await prompt.contribute(request())).toEqual([]);

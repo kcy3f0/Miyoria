@@ -44,6 +44,25 @@ export const BehaviorConfigSchema = z.object({
   max_share_of_recent: z.number().default(0.3),
 });
 
+/** How fast one emotion rises and fades for this character. */
+export const EmotionTemperamentSchema = z.object({
+  /** How strongly events stir it (multiplier, 1 = ordinary). */
+  gain: z.number().nonnegative().optional(),
+  /** Time for half of it to fade. */
+  half_life_mins: z.number().positive().optional(),
+});
+
+/**
+ * `[temperament]`: her emotional temperament. Emotion names are the `self` module's
+ * (`joy`, `shy`, `pride`, ..., and `resentment` for 不爽 toward someone); unknown ones are
+ * ignored.
+ */
+export const TemperamentSchema = z.object({
+  /** Display rules: `open` (shows what she feels) or `tsundere` (hides it, 傲嬌). */
+  display: z.enum(["open", "tsundere"]).default("open"),
+  emotions: z.record(z.string(), EmotionTemperamentSchema).default({}),
+});
+
 export const PersonaConfigSchema = z.object({
   /** Section files under `persona/`, in prompt order (without `.md`). */
   sections: z.array(z.string()).default(["identity", "style"]),
@@ -65,6 +84,7 @@ export const ProfileManifestSchema = z.object({
   language: LanguageConfigSchema.prefault({}),
   mood: MoodBaselineSchema.prefault({}),
   behavior: BehaviorConfigSchema.prefault({}),
+  temperament: TemperamentSchema.prefault({}),
   persona: PersonaConfigSchema.prefault({}),
   llm: ProfileLlmSchema.prefault({}),
 });
@@ -72,6 +92,7 @@ export type ProfileManifest = z.output<typeof ProfileManifestSchema>;
 export type LanguageConfig = z.output<typeof LanguageConfigSchema>;
 export type MoodBaseline = z.output<typeof MoodBaselineSchema>;
 export type BehaviorConfig = z.output<typeof BehaviorConfigSchema>;
+export type Temperament = z.output<typeof TemperamentSchema>;
 
 /** Parses `profile.toml` text. Throws `ProfileError`. */
 export function parseProfileManifest(text: string, source = "profile.toml"): ProfileManifest {

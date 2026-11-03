@@ -23,9 +23,60 @@ export interface Attitude {
 /** Provided by the social module; the agent uses it in attention. Must answer from memory. */
 export interface SocialSignals {
   attitude(account: AccountRef): Attitude | null;
+  /** The same by person (her emotions about people she knows only by id). */
+  attitudeOf?(person: PersonId): Attitude | null;
 }
 
 export const SocialSignalsKey = serviceKey<SocialSignals>("SocialSignals");
+
+/**
+ * Bus topic of every social event someone caused toward her (`SocialEvent`), published by the
+ * social module whether or not the daily caps let it change the numbers: her emotions react
+ * to all of them.
+ */
+export const SOCIAL_EVENT_TOPIC = "social.event";
+
+/** Payload of `social.event`. */
+export interface SocialEvent {
+  person: PersonId;
+  /** Display name (untrusted). */
+  name: string | null;
+  /** `praise`, `insult`, `warm`, ... (the social module's event kinds). */
+  kind: string;
+  /** `rule` (keywords), `appraisal` (the LLM) or `mind` (her own hint). */
+  source: string;
+  /** Strength for `warm` / `cold` (0..1), 1 otherwise. */
+  scale: number;
+  context: ContextKey | null;
+}
+
+/**
+ * Bus topic of what the social appraisal (the batched `fast` LLM pass) read about her feelings
+ * in a conversation (`SocialAppraisal`), for her emotions.
+ */
+export const SOCIAL_APPRAISAL_TOPIC = "social.appraisal";
+
+/** One person in a `SocialAppraisal`. */
+export interface AppraisedPerson {
+  person: PersonId;
+  name: string | null;
+  /** -1..1, how they treated her. */
+  toward_her: number;
+  /** -1..1, how flirty, caring or intimate they were with her (beyond friendly). */
+  romance: number;
+  /** 0..1, how warmly they were with other people while leaving her out. */
+  others: number;
+  /** A promise to her they kept or broke in these lines. */
+  promise: "kept" | "broken" | null;
+}
+
+/** Payload of `social.appraisal`. */
+export interface SocialAppraisal {
+  context: ContextKey;
+  /** Her emotions (`self` emotion names, 0..1) the conversation stirred, as the model read it. */
+  her: Record<string, number>;
+  people: AppraisedPerson[];
+}
 
 /** Global emotional state of the active profile. */
 export interface Mood {

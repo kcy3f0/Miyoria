@@ -169,6 +169,7 @@ export {
   IGNORE_DIRECT_AFFINITY,
   moodHint,
   parseBudgetState,
+  shownHint,
   tone,
   unansweredHint,
 } from "./signals.js";

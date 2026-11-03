@@ -26,6 +26,9 @@ import {
   type Participant,
   type PersonId,
   type ProfileId,
+  SOCIAL_APPRAISAL_TOPIC,
+  SOCIAL_EVENT_TOPIC,
+  type SocialAppraisal,
   type SocialSignals,
   type Subject,
   sameAccount,
@@ -39,6 +42,7 @@ import {
   type Line,
   notesRequest,
   parseAppraisal,
+  parseHeartAppraisal,
   parseNotes,
   truncate,
 } from "./appraisal.js";
@@ -246,6 +250,11 @@ export class Social implements SocialSignals {
   readonly #linkFailures = new Map<string, { since: number; count: number }>();
   /** Serializes read-modify-write cycles so store writes stay in order. */
   readonly #gate = new SerialQueue();
+  /**
+   * What she cares about, for the appraisal to read her feelings (who she likes, her secret
+   * crush, what she wants); `null` = the appraisal does not read her feelings.
+   */
+  #concerns: (() => string | null) | null = null;
 
   constructor(
     profile: ProfileId,
@@ -269,6 +278,15 @@ export class Social implements SocialSignals {
   /** Used to auto-tag owners and for owner-only commands. */
   setAuthorizer(authorizer: Authorizer | null): void {
     this.#authorizer = authorizer;
+  }
+
+  /**
+   * Lets the appraisal also read her feelings (`social.appraisal`): `concerns` describes what
+   * she cares about (names inside are untrusted; it goes into the request's data); it returns
+   * `null` while her feelings are not tracked (no `self` module).
+   */
+  setConcerns(concerns: (() => string | null) | null): void {
+    this.#concerns = concerns;
   }
 
   get authorizer(): Authorizer | null {
@@ -580,12 +598,14 @@ export class Social implements SocialSignals {
   ): Promise<number> {
     if (snapshot.people.length === 0) return 0;
     const names = snapshot.people.map(([n]) => n);
+    const concerns = this.#concerns?.() ?? null;
     const request = {
-      ...appraisalRequest(this.herName, snapshot.lines, names),
+      ...appraisalRequest(this.herName, snapshot.lines, names, concerns),
       session: this.#llmSession(),
     };
     const response = await router.complete(this.config.llm_purpose, request, signal);
     const results = parseAppraisal(response.text);
+    if (concerns !== null) this.#announceHeart(response.text, snapshot, context);
     let applied = 0;
     for (const result of results) {
       const wanted = asciiLower(result.person_name.trim());
@@ -615,6 +635,25 @@ export class Social implements SocialSignals {
       applied++;
     }
     return applied;
+  }
+
+  /** Publishes what the appraisal read about her feelings (`social.appraisal`). */
+  #announceHeart(text: string, snapshot: Snapshot, context: ContextKey): void {
+    let heart: ReturnType<typeof parseHeartAppraisal>;
+    try {
+      heart = parseHeartAppraisal(text);
+    } catch {
+      return;
+    }
+    const people: SocialAppraisal["people"] = [];
+    for (const [label, person] of snapshot.people) {
+      const p = heart.people.get(asciiLower(label.trim()));
+      if (!p) continue;
+      people.push({ person, name: this.displayName(person), ...p });
+    }
+    if (people.length === 0 && Object.keys(heart.her).length === 0) return;
+    const payload: SocialAppraisal = { context: { ...context }, her: heart.her, people };
+    this.#publish(customEvent(SOCIAL_APPRAISAL_TOPIC, JSON.parse(JSON.stringify(payload))));
   }
 
   /** People whose notes are due for a refresh. */
@@ -713,6 +752,19 @@ export class Social implements SocialSignals {
         r.last_interaction = toTimestamp(touch);
         const [, , df] = apply(r, 0, 0, change, this.config);
         if (nonzero(df)) rows.push([row(now, 0, 0, df, "familiarity: day"), null]);
+      }
+      // Her emotions react to everything, whether or not the caps let the numbers move.
+      for (const [source, kind, scale] of events) {
+        this.#publish(
+          customEvent(SOCIAL_EVENT_TOPIC, {
+            person,
+            name: this.displayName(person),
+            kind,
+            source,
+            scale: Math.abs(scale),
+            context: context === null ? null : { ...context },
+          }),
+        );
       }
       const ledger = this.#ledgers.get(person);
       if (ledger) {
@@ -953,6 +1005,20 @@ export class Social implements SocialSignals {
   attitude(account: AccountRef): Attitude | null {
     const person = this.#accounts.get(accountRefString(account));
     if (person === undefined) return null;
+    const r = this.#rels.get(person);
+    return r ? attitude(r) : null;
+  }
+
+  /** The people she likes most (affinity at or above `min`), most liked first. */
+  liked(min: number, max: number): PersonId[] {
+    return [...this.#rels.values()]
+      .filter((r) => r.affinity >= min && !isBlocked(r))
+      .sort((a, b) => b.affinity - a.affinity)
+      .slice(0, Math.max(max, 0))
+      .map((r) => r.person);
+  }
+
+  attitudeOf(person: PersonId): Attitude | null {
     const r = this.#rels.get(person);
     return r ? attitude(r) : null;
   }

@@ -19,11 +19,15 @@ import {
   AuthorizerKey,
   type ContextKey,
   contextKeyString,
+  EMOTION_LABELS,
   type PersonId,
   type ProfileId,
   type PromptContributors,
   PromptContributorsKey,
+  type SelfState,
+  SelfStateKey,
   SocialSignalsKey,
+  safeName,
 } from "@miyoria/types";
 import { registerCommands, unregisterCommands } from "./commands.js";
 import { SocialConfigSchema } from "./config.js";
@@ -39,6 +43,35 @@ interface Running {
   social: Social;
   commands: CommandMount;
   contributors: PromptContributors | undefined;
+}
+
+/** Liked this much counts as someone she cares about, for the appraisal. */
+const CARES_AFFINITY = 40;
+
+/**
+ * What she cares about, for the appraisal to read her feelings: the people she likes, her
+ * secret crush, her strongest emotions and wants. Short; names are made inert.
+ */
+export function concerns(social: Social, self: SelfState): string {
+  const lines: string[] = [];
+  const name = (p: PersonId) => safeName(social.displayName(p) ?? "某人", 24);
+  const liked = social.liked(CARES_AFFINITY, 5);
+  if (liked.length > 0) lines.push(`- 她喜歡的人:${liked.map(name).join("、")}`);
+  const crush = self.crush();
+  if (crush) lines.push(`- 她偷偷喜歡(暗戀,祕密):${name(crush.person)}`);
+  const felt = self.emotions().slice(0, 3);
+  if (felt.length > 0) {
+    lines.push(`- 她現在的情緒:${felt.map((e) => EMOTION_LABELS[e.name]).join("、")}`);
+  }
+  const drives = self.drives();
+  const wants: string[] = [];
+  if (drives.esteem >= 0.65) wants.push("被誇、被認可");
+  if (drives.attention >= 0.65) wants.push("被注意");
+  if (drives.social >= 0.65) wants.push("有人陪她聊天");
+  if (drives.longing >= 0.5 && crush) wants.push("那個人注意她");
+  if (drives.hunger >= 0.7) wants.push("吃白飯(Token)");
+  if (wants.length > 0) lines.push(`- 她現在很想要:${wants.join("、")}`);
+  return lines.join("\n");
 }
 
 function stores(ctx: ModuleContext): SocialStores {
@@ -103,6 +136,11 @@ export class SocialModule implements Module {
       ctx.clock,
     );
     social.setAuthorizer(ctx.services.get(AuthorizerKey) ?? null);
+    // With her emotions (the `self` module), the appraisal also reads how she feels.
+    social.setConcerns(() => {
+      const self = ctx.services.get(SelfStateKey);
+      return self ? concerns(social, self) : null;
+    });
     await social.load();
 
     ctx.provide(SocialSignalsKey, social);

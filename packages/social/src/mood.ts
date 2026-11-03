@@ -1,9 +1,12 @@
 // Module `mood`: her global mood.
 //
-// Valence / arousal / energy drift back to the profile baseline with an exponential decay,
-// energy follows a time-of-day curve (low late at night) and events nudge it:
+// Valence / arousal / energy drift with an exponential decay toward a target: the profile
+// baseline shaped by her daily rhythm (energy low late at night) plus what her emotions push
+// toward (`SelfState.affect` of the `self` module), so the mood mostly follows her emotions
+// and lags behind them. Events nudge it directly:
 //
-// * `social.relationship` (praise, insults, ... from the social module),
+// * `social.relationship` (praise, insults, ... from the social module; only without the
+//   `self` module, whose emotions already react to them),
 // * `agent.emotion` (her own emotion tags),
 // * `mood.nudge` with `{"valence": .., "arousal": .., "energy": .., "reason": ..}` (all
 //   optional; for games and extensions).
@@ -21,6 +24,7 @@ import {
 import type { MoodBaseline } from "@miyoria/profile";
 import { type SettingsStore, SettingsStoreKey } from "@miyoria/store";
 import {
+  type Affect,
   type Clock,
   customEvent,
   type Event,
@@ -35,6 +39,7 @@ import {
   PromptContributorsKey,
   type PromptRequest,
   type PromptSection,
+  SelfStateKey,
   serviceKey,
   systemClock,
   timestampMs,
@@ -67,6 +72,8 @@ export const MoodConfigSchema = z.object({
   social_weight: z.number().default(0.03),
   /** Largest change of one dimension by a single event. */
   max_nudge: z.number().default(0.2),
+  /** How much her emotions move the mood's target (0 = only baseline and rhythm). */
+  emotion_weight: z.number().nonnegative().default(1),
 });
 
 export type MoodConfig = z.output<typeof MoodConfigSchema>;
@@ -109,20 +116,30 @@ function clampMood(m: Mood): Mood {
   };
 }
 
+/** Mood offsets her emotions push toward (`SelfState.affect`); `null` = none. */
+export type AffectSource = () => Affect | null;
+
 /** Pure mood dynamics; `now` (epoch ms) is passed in. */
 export class MoodEngine {
   #baseline: Mood;
   #current: Mood;
   #at: number;
   readonly #config: MoodConfig;
+  readonly #affect: AffectSource;
 
-  constructor(baseline: MoodBaseline, config: MoodConfig, now: number) {
+  constructor(
+    baseline: MoodBaseline,
+    config: MoodConfig,
+    now: number,
+    affect: AffectSource = () => null,
+  ) {
     this.#baseline = clampMood({
       valence: baseline.valence,
       arousal: baseline.arousal,
       energy: baseline.energy,
     });
     this.#config = config;
+    this.#affect = affect;
     this.#at = now;
     this.#current = this.#baseline;
     this.#current = this.target(now);
@@ -137,7 +154,7 @@ export class MoodEngine {
   }
 
   clone(): MoodEngine {
-    const copy = new MoodEngine(this.#baseline, this.#config, this.#at);
+    const copy = new MoodEngine(this.#baseline, this.#config, this.#at, this.#affect);
     copy.#current = this.#current;
     return copy;
   }
@@ -150,14 +167,22 @@ export class MoodEngine {
     return minuteOfDay / 60;
   }
 
-  /** Where the mood drifts to at `now` (baseline shaped by the time of day). */
+  /** Where the mood drifts to at `now` (baseline shaped by the time of day, plus emotions). */
   target(now: number): Mood {
     const dip = clamp(this.#config.night_dip, 0, 1) * nightShape(this.#localHour(now));
+    const a = this.#affect();
+    const w = a === null ? 0 : Math.max(this.#config.emotion_weight, 0);
+    const off = (v: number | undefined) => (v !== undefined && Number.isFinite(v) ? v * w : 0);
     return clampMood({
-      valence: this.#baseline.valence,
-      arousal: this.#baseline.arousal * (1 - 0.5 * dip),
-      energy: this.#baseline.energy * (1 - dip),
+      valence: this.#baseline.valence + off(a?.valence),
+      arousal: this.#baseline.arousal * (1 - 0.5 * dip) + off(a?.arousal),
+      energy: this.#baseline.energy * (1 - dip) + off(a?.energy),
     });
+  }
+
+  /** Her emotions are moving the target (so social events need no direct nudge). */
+  followsEmotions(): boolean {
+    return this.#affect() !== null;
   }
 
   /** The mood at `now` without changing the engine. */
@@ -310,8 +335,14 @@ export class MoodState implements MoodSignals {
   readonly #config: MoodConfig;
   readonly #clock: Clock;
 
-  constructor(baseline: MoodBaseline, config: MoodConfig, now: number, clock: Clock = systemClock) {
-    this.engine = new MoodEngine(baseline, config, now);
+  constructor(
+    baseline: MoodBaseline,
+    config: MoodConfig,
+    now: number,
+    clock: Clock = systemClock,
+    affect: AffectSource = () => null,
+  ) {
+    this.engine = new MoodEngine(baseline, config, now, affect);
     this.#lastPublished = this.engine.current();
     this.#threshold = Math.abs(config.publish_threshold);
     this.#config = config;
@@ -324,6 +355,14 @@ export class MoodState implements MoodSignals {
 
   /** Applies an event. Returns the new mood when it should be published. */
   handle(event: Event, now: number): { mood: Mood; reason: string } | null {
+    // Her emotions already react to what people do (and the mood follows them).
+    if (
+      event.type === "custom" &&
+      event.data.topic === "social.relationship" &&
+      this.engine.followsEmotions()
+    ) {
+      return null;
+    }
     const n = eventNudge(event, this.#config);
     if (n === null) return null;
     this.engine.nudge(now, n.valence, n.arousal, n.energy);
@@ -411,8 +450,8 @@ interface Running {
 }
 
 /**
- * Module `mood`. Requires nothing; uses `SettingsStoreKey` and `PromptContributorsKey` when
- * present.
+ * Module `mood`. Requires nothing; uses `SettingsStoreKey`, `PromptContributorsKey` and
+ * `SelfStateKey` (her emotions move the target) when present.
  */
 export class MoodModule implements Module {
   static readonly ID = "mood";
@@ -441,7 +480,9 @@ export class MoodModule implements Module {
   async start(ctx: ModuleContext): Promise<void> {
     const config = ctx.config(MoodConfigSchema);
     const now = ctx.clock.now();
-    const state = new MoodState(this.#baseline, config, now, ctx.clock);
+    // The `self` module may start later or restart: looked up on every use.
+    const affect = () => ctx.services.get(SelfStateKey)?.affect?.() ?? null;
+    const state = new MoodState(this.#baseline, config, now, ctx.clock, affect);
     const store = config.persist ? ctx.services.get(SettingsStoreKey) : undefined;
     if (store) {
       try {

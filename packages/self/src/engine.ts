@@ -2,7 +2,14 @@
 //
 // * Drives rise on their own toward 1 (`rise_per_hour` is the share of the remaining gap per
 //   hour, so they saturate), `rest` follows tiredness (`1 - energy` of her mood), boredom rises
-//   while nothing happens. Events subtract (satisfy).
+//   while nothing happens. Events subtract (satisfy). `longing` rises toward her crush's
+//   romance while they are not with her and fades without a crush.
+// * Her emotions (`EmotionEngine`) and feelings about people (`HeartBook`) live here too.
+//   Drives unmet for a long time turn into emotions: wanting company (social, attention) into
+//   寂寞, hunger and esteem into 不甘心, longing into 想念. Each builds as a "pressure" that
+//   approaches its target slowly and holds the emotion at least that high, so the emotion does
+//   not fade while the need lasts and fades at its own pace once it is met.
+// * People she cares about who stay away build 想念 toward them (held, not faded, while away).
 // * Policy and agenda are only stored here: she (phase C's mind loop, the activeness tool)
 //   writes them; settings past `until` and agenda items past `expires_at` expire.
 
@@ -25,6 +32,8 @@ import {
 } from "@miyoria/types";
 import { z } from "zod";
 import type { SelfConfig } from "./config.js";
+import { EmotionEngine, type Temperament, temperament } from "./emotions.js";
+import { HeartBook } from "./heart.js";
 
 const HOUR_MS = 3_600_000;
 /** Longest agenda / reason text kept. */
@@ -45,9 +54,20 @@ export interface Circumstances {
   playing: boolean;
   /** She is live (OBS streaming or Discord Go Live). */
   streaming: boolean;
+  /** Her crush is with her (in her voice channel). */
+  crushTogether?: boolean;
+  /** How much she cares about someone (0..1); unknown = only romance counts. */
+  care?: (person: string) => number;
 }
 
 export const IDLE: Circumstances = { energy: null, playing: false, streaming: false };
+
+/** Drives unmet for a while build these (0..1 each, see the header). */
+interface Pressure {
+  lonely: number;
+  frustration: number;
+  missing: number;
+}
 
 const clamp01 = (v: number) => (Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 0);
 
@@ -98,6 +118,7 @@ const TalkSchema = z.object({
 });
 
 const unitNum = z.number().transform(clamp01);
+const pressure = unitNum.catch(0).default(0);
 
 /** `self:state` as saved by `toJson`. */
 export const SavedSchema = z.object({
@@ -109,6 +130,9 @@ export const SavedSchema = z.object({
     attention: unitNum.catch(0.3),
     rest: unitNum.catch(0.3),
     curiosity: unitNum.catch(0.3),
+    esteem: unitNum.catch(0.3),
+    hunger: unitNum.catch(0.3),
+    longing: unitNum.catch(0),
   }),
   policy: z.object({
     talkativeness: z.record(z.string(), TalkSchema).catch({}),
@@ -116,6 +140,13 @@ export const SavedSchema = z.object({
     initiative_why: z.string().catch(""),
   }),
   agenda: z.array(AgendaSchema).catch([]),
+  /** Missing in records saved before emotions existed. */
+  emotions: z.unknown().optional(),
+  hearts: z.unknown().optional(),
+  pressure: z
+    .object({ lonely: pressure, frustration: pressure, missing: pressure })
+    .catch({ lonely: 0, frustration: 0, missing: 0 })
+    .optional(),
 });
 
 // ---- engine ---------------------------------------------------------------------------------
@@ -125,14 +156,29 @@ export class SelfEngine {
   #boredom: number;
   #policy: SelfPolicy;
   #agenda: AgendaItem[] = [];
+  #pressure: Pressure = { lonely: 0, frustration: 0, missing: 0 };
+  /** Agenda items for someone that expired since the last `takeExpired`. */
+  #expired: AgendaItem[] = [];
   #at: number;
+  readonly emotions: EmotionEngine;
+  readonly hearts: HeartBook;
 
   constructor(
     private readonly config: SelfConfig,
     now: number,
+    temper: Temperament = temperament().temperament,
   ) {
     const d = clamp01(config.initial_drive);
     this.#drives = Object.fromEntries(DRIVE_NAMES.map((n) => [n, d])) as Drives;
+    this.#drives.longing = 0;
+    this.emotions = new EmotionEngine(temper, config.emotions.floor, now);
+    this.hearts = new HeartBook(
+      config.heart,
+      temper,
+      config.utc_offset_minutes,
+      config.emotions.missing_after_hours * HOUR_MS,
+      now,
+    );
     this.#boredom = clamp01(config.initial_boredom);
     this.#policy = {
       talkativeness: {},
@@ -162,7 +208,20 @@ export class SelfEngine {
       d.play = toward1(d.play, rise.play);
       d.attention = toward1(d.attention, rise.attention);
       d.curiosity = toward1(d.curiosity, rise.curiosity);
+      d.esteem = toward1(d.esteem, rise.esteem);
+      d.hunger = toward1(d.hunger, rise.hunger);
       this.#boredom = toward1(this.#boredom, this.config.boredom_per_hour);
+      // The crush as of the start of the interval.
+      const crush = this.hearts.crush(this.#at);
+      if (crush === null) {
+        // Nobody to long for: it fades (half-life 6 hours).
+        d.longing *= 0.5 ** (hours / 6);
+      } else if (!c.crushTogether) {
+        const target = clamp01(0.3 + crush.romance);
+        if (target > d.longing) {
+          d.longing += (target - d.longing) * (1 - Math.exp(-rise.longing * hours));
+        }
+      }
       if (c.energy !== null) {
         const target = clamp01(1 - c.energy);
         const alpha = 1 - 0.5 ** (dt / (this.config.rest_half_life_mins * 60_000));
@@ -177,11 +236,72 @@ export class SelfEngine {
         d.attention -= s.streaming_per_hour * hours;
         d.rest += s.streaming_rest_per_hour * hours;
       }
+      if (c.crushTogether) d.longing -= s.crush_together_per_hour * hours;
       for (const n of DRIVE_NAMES) d[n] = clamp01(d[n]);
       this.#boredom = clamp01(this.#boredom);
+      this.emotions.advance(now);
+      this.hearts.advance(now);
+      this.#unmet(hours, now, c, crush?.person ?? null);
       this.#at = now;
     }
     this.#expire(now);
+  }
+
+  /** Emotions from drives unmet for a while and from people she cares about staying away. */
+  #unmet(hours: number, now: number, c: Circumstances, crush: string | null): void {
+    const e = this.config.emotions;
+    const t = this.emotions.temperament.emotions;
+    const d = this.#drives;
+    const above = (v: number, level: number) => (v > level ? (v - level) / (1 - level) : 0);
+    const build = (key: keyof Pressure, target: number, perHour: number) => {
+      const p = this.#pressure[key];
+      this.#pressure[key] =
+        target > p ? p + (target - p) * (1 - Math.exp(-perHour * hours)) : clamp01(target);
+    };
+    build(
+      "lonely",
+      above(Math.max(d.social, d.attention), e.lonely_social),
+      e.lonely_per_hour * t.lonely.gain,
+    );
+    build(
+      "frustration",
+      above(Math.max(d.hunger, d.esteem), e.unmet_level),
+      e.unmet_per_hour * t.frustration.gain,
+    );
+    build(
+      "missing",
+      c.crushTogether ? 0 : above(d.longing, 0.5),
+      (e.missing_per_day / 24) * t.missing.gain,
+    );
+    const lonelyCause = d.attention > d.social ? "很久沒人理我" : "很久沒人陪我聊天";
+    this.emotions.atLeast("lonely", this.#pressure.lonely, lonelyCause, null, now);
+    const grumble = d.hunger >= d.esteem ? "肚子餓,沒人給我白飯" : "都沒人認可我";
+    this.emotions.atLeast("frustration", this.#pressure.frustration, grumble, null, now);
+
+    // 想念 toward people she cares about who stay away; the strongest is also hers.
+    let missing = crush === null ? 0 : this.#pressure.missing;
+    let about: string | null = missing > 0 ? crush : null;
+    const care = c.care;
+    const after = e.missing_after_hours * HOUR_MS;
+    for (const person of this.hearts.people()) {
+      const seen = this.hearts.lastSeen(person);
+      if (seen === null || now - seen < after) continue;
+      const level = Math.max(care ? care(person) : 0, this.hearts.romanceOf(person));
+      if (level <= 0) continue;
+      const v = this.hearts.long(person, "missing", level, (e.missing_per_day / 24) * hours, now);
+      if (v > missing) {
+        missing = v;
+        about = person;
+      }
+    }
+    if (missing > 0) {
+      this.emotions.atLeast("missing", missing, "想念某個人", about, now);
+    }
+  }
+
+  /** Agenda items about someone that expired since the last call (she did not get to them). */
+  takeExpired(): AgendaItem[] {
+    return this.#expired.splice(0);
   }
 
   /** Adds `delta` (negative = satisfied). */
@@ -379,6 +499,7 @@ export class SelfEngine {
         a.status = "expired";
         a.closed_at = a.expires_at;
         closed = true;
+        if (a.person !== null) this.#expired.push({ ...a });
       }
     }
     if (closed) this.#trimClosed();
@@ -393,6 +514,9 @@ export class SelfEngine {
       drives: { ...this.#drives },
       policy: this.policy(this.#at) as unknown as JsonValue,
       agenda: this.#agenda.map((a) => ({ ...a })) as unknown as JsonValue,
+      emotions: this.emotions.toJson(),
+      hearts: this.hearts.toJson(),
+      pressure: { ...this.#pressure },
     };
   }
 
@@ -417,7 +541,12 @@ export class SelfEngine {
     this.#agenda = saved.agenda.map((a) => ({ ...a }));
     const at = Date.parse(saved.at);
     this.#at = Number.isNaN(at) ? now : Math.min(at, now);
+    this.#pressure = { ...(saved.pressure ?? { lonely: 0, frustration: 0, missing: 0 }) };
+    this.emotions.restore(saved.emotions as JsonValue | undefined, this.#at);
+    this.hearts.restore(saved.hearts as JsonValue | undefined, this.#at);
     this.advance(now, IDLE);
+    // What expired while she was away is not news.
+    this.#expired = [];
     return true;
   }
 }

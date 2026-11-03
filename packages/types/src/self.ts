@@ -1,6 +1,8 @@
-// Her inner state (docs/design/autonomy.md §4): drives, boredom, the policy she sets for
-// herself, her agenda and how she feels about people. Provided by the `self` module as
-// `SelfStateKey`; her mood stays with the `mood` module and is only included in snapshots.
+// Her inner state (docs/design/autonomy.md §4, §23): emotions (七情), drives (六欲), boredom,
+// the policy she sets for herself, her agenda and how she feels about people (her notes, the
+// romance she feels, her crush). Provided by the `self` module as `SelfStateKey`; her mood stays
+// with the `mood` module (which follows her emotions through `SelfState.affect`) and is only
+// included in snapshots.
 
 import type { PersonId } from "./ids.js";
 import { type ContextKey, contextKeyString } from "./platform.js";
@@ -8,16 +10,149 @@ import { serviceKey } from "./service-key.js";
 import type { Mood } from "./social.js";
 import type { Timestamp } from "./time.js";
 
-export const DRIVE_NAMES = ["social", "play", "attention", "rest", "curiosity"] as const;
+export const DRIVE_NAMES = [
+  "social",
+  "play",
+  "attention",
+  "rest",
+  "curiosity",
+  "esteem",
+  "hunger",
+  "longing",
+] as const;
 
 /**
  * `social`: wants to interact with people; `play`: wants to play a game; `attention`: wants to
- * be noticed (stream, perform); `rest`: wants to rest; `curiosity`: wants something new.
+ * be noticed (stream, perform); `rest`: wants to rest; `curiosity`: wants something new;
+ * `esteem`: wants to be acknowledged, to show off (singing, winning); `hunger`: her appetite for
+ * 白飯 (tokens); `longing`: wants to be near her crush and noticed by them (fades without one).
  */
 export type DriveName = (typeof DRIVE_NAMES)[number];
 
 /** Each 0..1. Drives rise slowly on their own and drop when satisfied. */
 export type Drives = Record<DriveName, number>;
+
+// ---- emotions -------------------------------------------------------------------------------
+
+/**
+ * Her discrete emotions (七情 and a few more), each 0..1 with its own decay; they coexist.
+ * 喜 joy, 怒 anger, 哀 sorrow, 懼 fear, 驚 surprise, 厭 disgust, 害羞 shy, 得意 pride, 嫉妒
+ * jealousy, 寂寞 lonely, 想念 missing, 感激 gratitude, 愧疚 guilt, 不甘心 frustration.
+ */
+export const EMOTION_NAMES = [
+  "joy",
+  "anger",
+  "sorrow",
+  "fear",
+  "surprise",
+  "disgust",
+  "shy",
+  "pride",
+  "jealousy",
+  "lonely",
+  "missing",
+  "gratitude",
+  "guilt",
+  "frustration",
+] as const;
+
+export type EmotionName = (typeof EMOTION_NAMES)[number];
+
+/** How each emotion reads (zh-TW). */
+export const EMOTION_LABELS: Readonly<Record<EmotionName, string>> = {
+  joy: "喜",
+  anger: "怒",
+  sorrow: "哀",
+  fear: "懼",
+  surprise: "驚",
+  disgust: "厭",
+  shy: "害羞",
+  pride: "得意",
+  jealousy: "嫉妒",
+  lonely: "寂寞",
+  missing: "想念",
+  gratitude: "感激",
+  guilt: "愧疚",
+  frustration: "不甘心",
+};
+
+/** Emotions she feels toward one person: 想念, 嫉妒, 感激, 不爽. */
+export const PERSON_EMOTION_NAMES = ["missing", "jealousy", "gratitude", "resentment"] as const;
+
+export type PersonEmotionName = (typeof PERSON_EMOTION_NAMES)[number];
+
+export const PERSON_EMOTION_LABELS: Readonly<Record<PersonEmotionName, string>> = {
+  missing: "想念",
+  jealousy: "嫉妒",
+  gratitude: "感激",
+  resentment: "不爽",
+};
+
+/** One emotion she feels now. */
+export interface EmotionReading {
+  name: EmotionName;
+  /** 0..1, decayed to now. */
+  intensity: number;
+  /** What last stirred it (short, zh-TW; may contain names, so it is data in prompts). */
+  cause: string;
+  /** When it was last stirred. */
+  at: Timestamp;
+  /** Who it is about, when someone. */
+  person: PersonId | null;
+}
+
+/**
+ * What she lets show of what she feels (the profile's display rules): her lines and her
+ * `<emo:…>` tags follow this, her inner monologue knows the felt emotion.
+ */
+export interface ShownEmotion {
+  /** The felt emotion it comes from. */
+  from: EmotionName;
+  /** The `<emo:…>` tag it shows as. */
+  tag: string;
+  /** How it shows, in words (zh-TW). */
+  style: string;
+  /** She hides what she feels (what shows differs from what she feels). */
+  masked: boolean;
+}
+
+/** How she feels about one person beyond the social numbers. */
+export interface Heart {
+  person: PersonId;
+  /** Last display name she saw (untrusted). */
+  name: string | null;
+  /** 心動 0..1: grows on its own from warm, flirty, caring moments with people she likes. */
+  romance: number;
+  /** Active emotions toward them (0..1, decayed to now; absent = none). */
+  emotions: Partial<Record<PersonEmotionName, number>>;
+  /** Last time she saw them say anything. */
+  last_seen: Timestamp | null;
+  /** Last time they spent time with her (talked to her, were in voice with her). */
+  last_together: Timestamp | null;
+}
+
+/** The person she secretly has a crush on (暗戀): the highest romance above the threshold. */
+export interface Crush {
+  person: PersonId;
+  name: string | null;
+  romance: number;
+  since: Timestamp;
+}
+
+/** Mood offsets her emotions push toward (added to the mood's target). */
+export interface Affect {
+  valence: number;
+  arousal: number;
+  energy: number;
+}
+
+/** One sample of her emotional state (for charts). */
+export interface EmotionSample {
+  at: Timestamp;
+  emotions: Partial<Record<EmotionName, number>>;
+  drives: Drives;
+  mood: Mood | null;
+}
 
 /** How talkative she wants to be in one scope (0 = silent, 1 = very chatty). */
 export interface Talkativeness {
@@ -89,6 +224,13 @@ export interface SelfSnapshot {
   policy: SelfPolicy;
   /** Open items first (by due time), then recently closed ones. */
   agenda: AgendaItem[];
+  /** What she feels, strongest first (only noticeable ones); absent from old producers. */
+  emotions?: EmotionReading[];
+  /** What she shows of it; `null` when nothing stands out. */
+  shown?: ShownEmotion | null;
+  /** People she has feelings about (romance or active emotions), highest romance first. */
+  hearts?: Heart[];
+  crush?: Crush | null;
 }
 
 export interface TalkativenessInput {
@@ -143,6 +285,26 @@ export interface SelfState {
   feelings(): Feeling[];
   /** Replaces her description of `person`; empty text deletes it (returns `null`). */
   setFeeling(person: PersonId, text: string, by: string): Promise<Feeling | null>;
+
+  /** What she feels, strongest first, at or above `min` (default: the noticeable ones). */
+  emotions(min?: number): EmotionReading[];
+  /**
+   * Stirs (`amount` > 0) or calms (`amount` < 0) an emotion; the profile's temperament scales
+   * how fast it rises. `person`: who it is about.
+   */
+  feel(emotion: EmotionName, amount: number, cause: string, person?: PersonId | null): void;
+  /** Stirs or calms an emotion toward one person (and the matching emotion of her own). */
+  feelToward(person: PersonId, emotion: PersonEmotionName, amount: number, cause: string): void;
+  /** What she shows of her strongest emotion (display rules); `null` when nothing stands out. */
+  shown(): ShownEmotion | null;
+  /** Mood offsets of her current emotions; never reads the mood (the mood reads this). */
+  affect(): Affect;
+  heart(person: PersonId): Heart | null;
+  /** People she has feelings about, highest romance first. */
+  hearts(): Heart[];
+  crush(): Crush | null;
+  /** Recent samples of her emotions, drives and mood, oldest first. */
+  history(): EmotionSample[];
 }
 
 export const SelfStateKey = serviceKey<SelfState>("SelfState");

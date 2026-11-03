@@ -50,6 +50,7 @@ import {
   type Priority,
   PromptContributorsKey,
   type PromptRequest,
+  SelfStateKey,
   type SocialSignals,
   safeName,
   sameAccount,
@@ -93,6 +94,7 @@ import {
   EXHAUSTED_LINE,
   herStatusHint,
   moodHint,
+  shownHint,
   unansweredHint,
 } from "./signals.js";
 import {
@@ -742,6 +744,9 @@ class Turn {
     const extras: Extras = { notes: [], people: [], sections: null, reasons: [] };
     const mood = this.agent.mood();
     if (mood !== null) extras.notes.push(moodHint(mood));
+    // What she shows of her emotion (felt vs shown): her lines and `<emo:…>` follow it.
+    const shown = this.agent.ctx.services.get(SelfStateKey)?.shown?.() ?? null;
+    if (shown !== null) extras.notes.push(shownHint(shown));
     const her = this.agent.ctx.services.get(WorldStateKey)?.snapshot().her ?? null;
     if (her !== null) extras.notes.push(herStatusHint(her));
     // The owner's ceiling for this channel, so she knows it when asked to be quieter or chattier.

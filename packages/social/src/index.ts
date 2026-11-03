@@ -13,10 +13,12 @@
 export {
   AppraisalParseError,
   appraisalRequest,
+  type HeartAppraisal,
   type Line,
   notesRequest,
   type PersonAppraisal,
   parseAppraisal,
+  parseHeartAppraisal,
   parseNotes,
   truncate,
 } from "./appraisal.js";

@@ -23,6 +23,15 @@ valence = 0.1   # -1..1 愉快程度
 arousal = 0.5   # 0..1 興奮程度
 energy  = 0.7   # 0..1 精神
 
+[temperament]   # 個性:每種情緒來得多快(gain,倍數,1 = 一般)、退一半要多久(half_life_mins)
+display = "tsundere"   # 顯示規則:心裡的感受和表現出來的不一樣(害羞 → 嫌棄 + 臉紅、想念 → 「才沒有在等你」)
+[temperament.emotions]
+shy         = { gain = 1.8, half_life_mins = 12 }    # 害羞來得很快
+pride       = { gain = 1.6, half_life_mins = 40 }    # 得意很強烈
+anger       = { gain = 1.4, half_life_mins = 6 }     # 怒來得快、去得也快
+missing     = { gain = 0.5, half_life_mins = 720 }   # 想念慢慢累積、很久才退
+frustration = { gain = 1.3, half_life_mins = 30 }    # 好勝,不甘心
+
 [behavior]
 default_channel_mode = "quiet"   # 沒設定的文字頻道的聊天等級:off / mention-only / quiet / normal / lively
 initiative = "medium"

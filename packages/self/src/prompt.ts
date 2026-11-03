@@ -1,9 +1,14 @@
-import type {
-  DriveName,
-  PromptContributor,
-  PromptRequest,
-  PromptSection,
-  SelfState,
+import {
+  type DriveName,
+  EMOTION_LABELS,
+  type EmotionReading,
+  PERSON_EMOTION_LABELS,
+  PERSON_EMOTION_NAMES,
+  type PromptContributor,
+  type PromptRequest,
+  type PromptSection,
+  type SelfState,
+  type ShownEmotion,
 } from "@miyoria/types";
 
 /** How a strong drive reads in the prompt. */
@@ -13,6 +18,9 @@ const WANTS: Record<DriveName, string> = {
   attention: "很想被大家注意",
   rest: "想休息",
   curiosity: "想做點新鮮的事",
+  esteem: "很想被誇、想表現一下",
+  hunger: "肚子餓,很想吃白飯(Token)",
+  longing: "很想見那個人、想被他注意",
 };
 
 /** Drives at or above this are mentioned. */
@@ -95,6 +103,81 @@ export class SelfPrompt implements PromptContributor {
     if (feelings.length > 0) lines.push("你對在場的人的感覺:", ...feelings);
     if (lines.length === 0) return "";
     lines.push("(這是你自己的狀態,自然地影響語氣就好,不用說出來。)");
+    return lines.join("\n");
+  }
+}
+
+const n2 = (v: number) => v.toFixed(2);
+
+/** `害羞 0.62、喜 0.40`. */
+export function feltLine(felt: readonly EmotionReading[]): string {
+  return felt.map((e) => `${EMOTION_LABELS[e.name]} ${n2(e.intensity)}`).join("、");
+}
+
+/** `兇回去、嫌棄對方,但臉紅了(<emo:embarrassed>)`. */
+export function shownLine(shown: ShownEmotion): string {
+  return `${shown.style}(<emo:${shown.tag}>)`;
+}
+
+/**
+ * Prompt contributor `emotion`: what she really feels (the strongest few), what she shows of
+ * it (display rules), her secret crush and her emotions toward the people present. Her lines
+ * and `<emo:…>` tags follow what she shows.
+ */
+export class EmotionPrompt implements PromptContributor {
+  static readonly KEY = "emotion";
+  readonly key = EmotionPrompt.KEY;
+
+  constructor(
+    private readonly self: SelfState,
+    private readonly maxEmotions = 3,
+  ) {}
+
+  async contribute(request: PromptRequest): Promise<PromptSection[]> {
+    const body = this.describe(request);
+    if (body === "") return [];
+    return [{ key: EmotionPrompt.KEY, title: "你的情緒", body, order: 34 }];
+  }
+
+  describe(request: PromptRequest): string {
+    const lines: string[] = [];
+    const felt = this.self.emotions().slice(0, Math.max(this.maxEmotions, 1));
+    const shown = this.self.shown();
+    if (felt.length > 0) {
+      const top = felt[0];
+      const why = top && top.cause !== "" ? `(${short(top.cause, 40)})` : "";
+      lines.push(`你心裡真正的感受:${feltLine(felt)}${why}`);
+    }
+    if (shown) lines.push(`表現出來的樣子:${shownLine(shown)}`);
+
+    const present = new Set(request.participants.flatMap((p) => (p.person ? [p.person] : [])));
+    const crush = this.self.crush();
+    if (crush) {
+      const name = crush.name ? short(crush.name, 24) : "某個人";
+      const where = present.has(crush.person) ? "他現在在這裡" : "他現在不在這裡";
+      lines.push(
+        `你偷偷喜歡${name}(${where})。這是祕密:不要說出來、被問也不承認;` +
+          "只會在小地方露餡(比較在意他說的話、對他特別容易害羞或吃醋)。",
+      );
+    }
+
+    const toward: string[] = [];
+    const seen = new Set<string>();
+    for (const p of request.participants) {
+      if (toward.length >= 4) break;
+      if (p.person === null || seen.has(p.person)) continue;
+      seen.add(p.person);
+      const heart = this.self.heart(p.person);
+      if (!heart) continue;
+      const parts = PERSON_EMOTION_NAMES.flatMap((name) => {
+        const v = heart.emotions[name] ?? 0;
+        return v >= 0.2 ? [`${PERSON_EMOTION_LABELS[name]} ${n2(v)}`] : [];
+      });
+      if (parts.length > 0) toward.push(`- ${short(p.display_name, 24)}:${parts.join("、")}`);
+    }
+    if (toward.length > 0) lines.push("你對在場的人:", ...toward);
+    if (lines.length === 0) return "";
+    lines.push("(台詞和 <emo:…> 照「表現出來的樣子」走;真正的感受只放在心裡,不用說出來。)");
     return lines.join("\n");
   }
 }
