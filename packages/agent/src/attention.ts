@@ -20,6 +20,15 @@
 //
 // Voice turns add `VoiceAttention`: a question right after she spoke addresses her, she never
 // joins in while someone is speaking and ambient probabilities are scaled down.
+//
+// Someone answering what she just said (`answersHer`) is a conversation, not her butting in:
+// it always skips her "stay quiet here" setting and the level's long cooldown
+// (docs/design/v2-architecture.md §3.9; in voice the short cooldown too). When her feelings come from `AffectState` (`affectBiased`), they already shifted her
+// talkativeness, so the affinity and energy multipliers are not applied on top.
+//
+// What is meant to stay here: the cheap prefilter (mode, addressed, replying to her),
+// talkativeness × share cap and the gray zone. Cooldowns, the level's gaps and initiative
+// limits become the Arbiter's floors (docs/design/v2-implementation.md W6).
 
 import { type IncomingMessage, type Mood, timestampMs } from "@miyoria/types";
 import {
@@ -169,6 +178,24 @@ export interface AttentionInput {
   affinity: number | null;
   /** Her mood, if mood signals are available. */
   mood: Mood | null;
+  /**
+   * Her talkativeness already carries her feelings (`AffectSnapshot.biases`): no affinity and
+   * energy multipliers on top. Absent: `false`.
+   */
+  affectBiased?: boolean;
+}
+
+/**
+ * Her talkativeness with the floor (docs/design/v2-architecture.md §3.9): lessons and moods may
+ * lower it, but not below `floor`, unless she herself set exactly 0 for the place.
+ */
+export function flooredTalk(
+  merged: TalkLevel | null,
+  own: TalkLevel | null,
+  floor: number,
+): TalkLevel | null {
+  if (merged === null || own?.level === 0 || merged.level >= floor) return merged;
+  return { level: floor, scope: `${merged.scope} (floor)` };
 }
 
 function clamp01(x: number): number {
@@ -197,8 +224,9 @@ export function ceilingFactor(
  * factor), affinity and energy; under a level never above the level's maximum.
  */
 export function ambientScale(input: AttentionInput): number {
-  const affinity = input.affinity === null ? 1 : affinityAmbientFactor(input.affinity);
-  const energy = input.mood === null ? 1 : energyProbabilityFactor(input.mood);
+  const biased = input.affectBiased === true;
+  const affinity = input.affinity === null || biased ? 1 : affinityAmbientFactor(input.affinity);
+  const energy = input.mood === null || biased ? 1 : energyProbabilityFactor(input.mood);
   const talk = input.talkativeness ?? null;
   const ceiling = input.ceiling ?? null;
   if (ceiling !== null) {
@@ -323,7 +351,21 @@ function questionAfterHer(input: AttentionInput): string | null {
   return hit ? "question right after she spoke" : null;
 }
 
-export function assess(input: AttentionInput): Assessment {
+/**
+ * The same input as `input`, but when someone answers what she just said her talkativeness
+ * counts as at least "as usual" (0.5): her quiet setting is about joining in, not about
+ * answering.
+ */
+function replyingInput(input: AttentionInput, replying: boolean): AttentionInput {
+  const talk = input.talkativeness ?? null;
+  if (!replying || talk === null || talk.level >= 0.5) return input;
+  return { ...input, talkativeness: { level: 0.5, scope: `${talk.scope}, replying` } };
+}
+
+export function assess(raw: AttentionInput): Assessment {
+  // Someone answering what she just said: never shut out by her quiet setting or the level.
+  const replying = followsHer(raw);
+  const input = replyingInput(raw, replying);
   const cfg = input.config;
   const reasons = [`mode ${input.mode}`];
   let why: string | null = null;
@@ -370,6 +412,7 @@ export function assess(input: AttentionInput): Assessment {
 
   const talk = input.talkativeness ?? null;
   const ceiling = input.ceiling ?? null;
+  if (replying) reasons.push("replying to her: skips quiet and level checks");
   if (ceiling !== null) reasons.push(`level ${ceiling.mode}`);
   if (talk !== null) {
     const capped = ceiling !== null && talk.level > ceiling.maxTalk;
@@ -377,7 +420,7 @@ export function assess(input: AttentionInput): Assessment {
       `talkativeness ${fixed(talk.level, 2)} (${talk.scope})` +
         (capped ? ` capped to ${fixed(ceiling.maxTalk, 2)}` : ""),
     );
-    if (talk.level <= SILENT_TALKATIVENESS) {
+    if (talk.level <= SILENT_TALKATIVENESS && !replying) {
       reasons.push("she wants to stay quiet here");
       return done({ kind: "ignore" });
     }
@@ -393,19 +436,20 @@ export function assess(input: AttentionInput): Assessment {
   }
   const activeness = input.activeness;
   if (talk === null && activeness !== "medium") reasons.push(`activeness ${activeness}`);
-  if (input.mood !== null) reasons.push(`energy ${fixed(input.mood.energy, 2)}`);
+  const biased = input.affectBiased === true;
+  if (input.mood !== null && !biased) reasons.push(`energy ${fixed(input.mood.energy, 2)}`);
   const cooldownMs = ambientCooldown(
     cfg.cooldown_ms,
     cfg.min_cooldown_ms,
     activeness,
     talk,
-    input.mood,
+    biased ? null : input.mood,
     ceiling,
   );
   const last = input.session.lastSelfAt();
-  const follows = followsHer(input);
-  // In voice, someone answering what she just said is a conversation, not her butting in.
-  const answeringHer = input.voice !== null && follows;
+  // In voice, someone answering what she just said is a conversation, not her butting in; in
+  // text the short cooldown still spaces her lines out.
+  const answeringHer = input.voice !== null && replying;
   if (last !== null && !answeringHer) {
     const since = input.now - last;
     if (since < cooldownMs) {
@@ -413,7 +457,7 @@ export function assess(input: AttentionInput): Assessment {
       return done({ kind: "ignore" });
     }
     // The level's long cooldown is about joining in again, not about keeping a conversation.
-    if (ceiling !== null && !follows && since < ceiling.minCooldownMs) {
+    if (ceiling !== null && !replying && since < ceiling.minCooldownMs) {
       reasons.push(`level cooldown (${since}ms since she spoke)`);
       return done({ kind: "ignore" });
     }
@@ -443,16 +487,33 @@ export function assess(input: AttentionInput): Assessment {
   return done({ kind: "sample", probability: ambientProbability(input, score) });
 }
 
-/** She spoke among the last three entries before this turn, within the last 3 minutes. */
+/** Someone in this turn answers what she just said (see `answersHer`). */
 function followsHer(input: AttentionInput): boolean {
-  const history = input.session.history();
-  const before = Math.max(history.length - input.inputs.length, 0);
-  const her = history
-    .slice(0, before)
+  return answersHer(input.session, input.inputs, input.now);
+}
+
+/**
+ * Someone is answering what she just said: she spoke among the last three history entries
+ * other than `inputs` (which are already in the history; her reply may have landed between
+ * them), within the last 3 minutes.
+ */
+export function answersHer(
+  session: Session,
+  inputs: readonly IncomingMessage[],
+  now: number,
+): boolean {
+  const ids = new Set(inputs.map((m) => m.id.id));
+  const history = session.history();
+  // Inputs without an id match in the history are its last entries (as recorded).
+  const known = history.filter((e) => e.id !== null && ids.has(e.id)).length;
+  const rest = history
+    .slice(0, history.length - (inputs.length - known))
+    .filter((e) => e.id === null || !ids.has(e.id));
+  const her = rest
     .reverse()
     .slice(0, 3)
     .find((e) => e.isSelf);
-  return her !== undefined && Math.trunc((input.now - her.ts) / 1000) < 180;
+  return her !== undefined && Math.trunc((now - her.ts) / 1000) < 180;
 }
 
 function salience(input: AttentionInput, direct: boolean, reasons: string[]): number {

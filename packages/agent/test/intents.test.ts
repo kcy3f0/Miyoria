@@ -324,6 +324,14 @@ describe("talkativeness", () => {
     expect(trace?.respond, trace?.reasons.join("; ")).toBe(true);
     expect(trace?.reasons.some((x) => x.startsWith("talkativeness 1.00"))).toBe(true);
     self.level = 0;
+    // Someone answering what she just said is never shut out by her quiet setting ...
+    r.h.say(incoming(c, "Owen", "那妳覺得呢?"));
+    await wait(3000);
+    const replying = r.h.traces()[0];
+    expect(replying?.respond, replying?.reasons.join("; ")).toBe(true);
+    expect(replying?.reasons).toContain("replying to her: skips quiet and level checks");
+    // ... but chatter later on is.
+    await wait(200_000);
     r.h.say(incoming(c, "Owen", "鯨魚是什麼?"));
     await wait(3000);
     expect(r.h.traces()[0]?.reasons).toContain("she wants to stay quiet here");

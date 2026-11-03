@@ -80,10 +80,10 @@ describe("config", () => {
 
   it("defaults", () => {
     expect(defaultAgentConfig()).toEqual({
-      debounce_ms: 1500,
+      debounce_ms: 800,
       typing_extend_ms: 2500,
       max_debounce_ms: 4000,
-      history_after_fold: 10,
+      history_after_fold: 25,
       history_limit: 50,
       prompt_history: 30,
       max_prompt_chars: 16_000,
@@ -97,7 +97,7 @@ describe("config", () => {
       respond_to_bots: false,
       reply_ttl_ms: 120_000,
       max_message_chars: 1900,
-      reply_reference: false,
+      reply_reference: true,
       typing_refresh_ms: 8000,
       tools_enabled: true,
       max_tool_steps: 3,
@@ -122,9 +122,11 @@ describe("config", () => {
         llm_check: true,
         llm_check_timeout_ms: 8000,
         llm_yes_probability: 0.9,
+        talk_floor: 0.15,
       },
       voice: {
         debounce_ms: 700,
+        direct_debounce_ms: 400,
         max_debounce_ms: 2500,
         default_mode: "normal",
         ambient_factor: 0.5,
@@ -136,6 +138,7 @@ describe("config", () => {
         gray_low: 0.15,
         llm_check: false,
         speak_ttl_ms: 30_000,
+        voice_first: true,
         text_chat: true,
         text_aside: true,
       },
@@ -150,6 +153,24 @@ describe("config", () => {
         download_timeout_ms: 5000,
         allowed_hosts: ["cdn.discordapp.com", "media.discordapp.net"],
         cache_entries: 32,
+      },
+      prompt: {
+        budgets: {
+          conversation: 900,
+          memory: 1000,
+          knowledge: 700,
+          lessons: 500,
+          world: 500,
+          game: 700,
+          sing: 400,
+          people: 800,
+          examples: 2500,
+        },
+        default_budget: 600,
+        self_chars: 1600,
+        save_every: 1,
+        saved: 50,
+        saved_message_chars: 800,
       },
     });
     expect(() => AgentConfigSchema.parse({ channels: { c: "loud" } })).toThrow();

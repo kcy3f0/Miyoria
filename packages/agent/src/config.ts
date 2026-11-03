@@ -137,6 +137,11 @@ export const AttentionConfigSchema = z.object({
   llm_check_timeout_ms: z.number().int().nonnegative().default(8000),
   /** Reply probability after the LLM check said yes. */
   llm_yes_probability: z.number().default(0.9),
+  /**
+   * Lowest talkativeness lessons and moods can push her to (her own setting of exactly 0 still
+   * silences her). Someone answering what she just said is never shut out by it either way.
+   */
+  talk_floor: z.number().min(0).max(1).default(0.15),
 });
 export type AttentionConfig = z.output<typeof AttentionConfigSchema>;
 
@@ -147,6 +152,8 @@ export type AttentionConfig = z.output<typeof AttentionConfigSchema>;
 export const VoiceConfigSchema = z.object({
   /** Quiet time after an utterance before her turn starts (the speaker may continue). */
   debounce_ms: z.number().int().nonnegative().default(700),
+  /** The same when the utterance calls her (her name, a question right after she spoke). */
+  direct_debounce_ms: z.number().int().nonnegative().default(400),
   /**
    * Upper bound on the debounce of one turn. While someone is speaking the debounce is
    * extended up to this.
@@ -189,6 +196,13 @@ export const VoiceConfigSchema = z.object({
   llm_check: z.boolean().default(false),
   /** Sentences that have not started playing within this time are dropped. */
   speak_ttl_ms: z.number().int().nonnegative().default(30_000),
+  /**
+   * Bilingual voice (she is heard in another language than she writes): she writes each
+   * `<voice>` line first and it goes to TTS as soon as it is complete; the written sentence
+   * after it becomes the subtitle and her history line (`agent.subtitle`). `false`: a line
+   * waits for its written sentence and both go out together.
+   */
+  voice_first: z.boolean().default(true),
   /**
    * While she is in a voice channel, messages typed in its text chat are part of the voice
    * conversation and she answers them by speaking (Discord voice channels have a text chat
@@ -246,10 +260,41 @@ export const VisionConfigSchema = z.object({
 });
 export type VisionConfig = z.output<typeof VisionConfigSchema>;
 
+/**
+ * `[modules.agent.prompt]`: the prompt compiler (docs/design/v2-architecture.md §3.5). Every
+ * data section has its own budget (characters of its body); over it a section is cut to whole
+ * lines (or characters), and when the contributed sections together exceed
+ * `max_context_chars` the room is shared fairly instead of the last ones dropping.
+ */
+export const PromptConfigSchema = z.object({
+  /** Budget per section key; sections without one get `default_budget`. */
+  budgets: z.record(z.string(), z.number().int().nonnegative()).default({
+    conversation: 900,
+    memory: 1000,
+    knowledge: 700,
+    lessons: 500,
+    world: 500,
+    game: 700,
+    sing: 400,
+    people: 800,
+    examples: 2500,
+  }),
+  default_budget: z.number().int().nonnegative().default(600),
+  /** Her own state (the trusted system part: mood, activity, policy, goals, limits). */
+  self_chars: z.number().int().nonnegative().default(1600),
+  /** Keep a compressed copy of every n-th turn's prompt (`agent.prompt`); 0 = none. */
+  save_every: z.number().int().nonnegative().default(1),
+  /** Saved prompts kept in memory. */
+  saved: z.number().int().nonnegative().default(50),
+  /** A saved message is cut to this many characters (head and tail kept). */
+  saved_message_chars: z.number().int().nonnegative().default(800),
+});
+export type PromptConfig = z.output<typeof PromptConfigSchema>;
+
 /** `[modules.agent]` config section. */
 export const AgentConfigSchema = z.object({
   /** Quiet time after the last message before a turn starts. */
-  debounce_ms: z.number().int().nonnegative().default(1500),
+  debounce_ms: z.number().int().nonnegative().default(800),
   /** A typing notification pushes the turn start to at least this far out. */
   typing_extend_ms: z.number().int().nonnegative().default(2500),
   /** Upper bound on the total debounce of one turn. */
@@ -262,7 +307,7 @@ export const AgentConfigSchema = z.object({
    * When her conversation notes (module `conversation`) cover older lines, the prompt keeps only
    * the lines after them, but at least this many of the newest.
    */
-  history_after_fold: z.number().int().nonnegative().default(10),
+  history_after_fold: z.number().int().nonnegative().default(25),
   /** The history in the prompt is cut to this many characters, oldest entries first. */
   max_prompt_chars: z.number().int().nonnegative().default(16_000),
   /** One history entry is cut to this many characters. */
@@ -295,8 +340,11 @@ export const AgentConfigSchema = z.object({
   reply_ttl_ms: z.number().int().nonnegative().default(120_000),
   /** Longer replies are split into several messages. */
   max_message_chars: z.number().int().nonnegative().default(1900),
-  /** Send direct replies as platform replies to the triggering message. */
-  reply_reference: z.boolean().default(false),
+  /**
+   * Send replies to someone who called her as platform replies quoting the first message she
+   * answers (the turn's focus).
+   */
+  reply_reference: z.boolean().default(true),
   /** The typing indicator is resubmitted this often while generating. */
   typing_refresh_ms: z.number().int().nonnegative().default(8000),
   /** Offer registered tools to the model. */
@@ -319,7 +367,7 @@ export const AgentConfigSchema = z.object({
   seed: z.number().int().nonnegative().nullable().default(null),
   /** Time limit for each prompt contributor; slower ones are skipped. */
   contributor_timeout_ms: z.number().int().nonnegative().default(800),
-  /** Contributed context added to the situation message is capped at this many characters. */
+  /** Contributed data sections together are budgeted to this many characters. */
   max_context_chars: z.number().int().nonnegative().default(4000),
   /**
    * While the LLM budget is exhausted, her canned "out of energy" line is sent at most once
@@ -334,6 +382,7 @@ export const AgentConfigSchema = z.object({
   voice: VoiceConfigSchema.prefault({}),
   history: HistoryConfigSchema.prefault({}),
   vision: VisionConfigSchema.prefault({}),
+  prompt: PromptConfigSchema.prefault({}),
 });
 export type AgentConfig = z.output<typeof AgentConfigSchema>;
 

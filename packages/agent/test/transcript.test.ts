@@ -7,10 +7,10 @@ import {
   buildMessages,
   gapLine,
   type HistoryEntry,
-  SITUATION,
+  RULES,
   TRANSCRIPT_RULES,
   transcriptLine,
-  VOICE_SITUATION,
+  VOICE_RULES,
 } from "../src/index.js";
 import { entry } from "./fixtures.js";
 
@@ -151,10 +151,10 @@ describe("transcript", () => {
     );
   });
 
-  it("situation_templates_explain_the_markers", () => {
-    expect(SITUATION).toContain(TRANSCRIPT_RULES);
-    expect(VOICE_SITUATION).toContain(TRANSCRIPT_RULES);
-    expect(SITUATION).toContain("@名字");
-    expect(VOICE_SITUATION).toContain("文字區");
+  it("rules_explain_the_markers", () => {
+    expect(RULES).toContain(TRANSCRIPT_RULES);
+    expect(VOICE_RULES).toContain(TRANSCRIPT_RULES);
+    expect(RULES).toContain("@名字");
+    expect(VOICE_RULES).toContain("文字區");
   });
 });

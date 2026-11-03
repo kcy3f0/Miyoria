@@ -51,9 +51,10 @@ describe("ts port", () => {
     const stubborn = new Stubborn(3000);
     const h = await Harness.create("always", noCheck(), stubborn);
     const c = channel("c");
-    h.say(incoming(c, "Owen", "一"));
+    h.say(incoming(c, "Owen", "我想問一件事"));
     await wait(2000);
-    h.say(incoming(c, "Owen", "二"));
+    // The focus person adds something substantial: the turn starts over (once).
+    h.say(incoming(c, "Owen", "其實是別的問題啦"));
     await wait(10_000);
     expect(stubborn.calls).toBe(2);
     expect(h.sink.texts()).toEqual(["late 2"]);
@@ -115,7 +116,9 @@ describe("ts port", () => {
     const custom = h
       .drain()
       .flatMap((e) =>
-        e.event.type === "custom" ? [[e.event.data.topic, e.event.data.payload]] : [],
+        e.event.type === "custom" && ["agent.emotion", "agent.tool"].includes(e.event.data.topic)
+          ? [[e.event.data.topic, e.event.data.payload]]
+          : [],
       );
     const turn = h.sink.actions[0]?.turn;
     expect(custom).toEqual([

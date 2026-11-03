@@ -3,11 +3,12 @@ import { defineManifest, errorMessage, type Module, type ModuleContext } from "@
 import type { Profile } from "@miyoria/profile";
 import { SettingsStoreKey } from "@miyoria/store";
 import { ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
-import { IntentSinkKey, SelfStateKey } from "@miyoria/types";
+import { IntentSinkKey, SelfStateKey, TurnFocusViewKey } from "@miyoria/types";
 
 import { activenessCapability, chatCapabilities } from "./actions.js";
 import { type RandomSource, SeededRandom } from "./attention.js";
 import { AgentCommands } from "./commands.js";
+import { SavedPromptsKey } from "./compiler.js";
 import { AgentConfigSchema } from "./config.js";
 import {
   AgentHandle,
@@ -43,7 +44,9 @@ const SETTINGS_LOAD_TIMEOUT_MS = 5_000;
  * while running, and the capabilities `channel.activeness` (her talkativeness here for a while,
  * offered as the `channel_activeness` tool), `chat.start` and `chat.dm` (talking on her own) in
  * the actuator registry. Provides `IntentSinkKey`: her mind loop's intents become turns she
- * starts herself (principal `self`, with tools).
+ * starts herself (principal `self`, with tools). Provides `TurnFocusViewKey` (whom each turn in
+ * flight answers, for voice barge-in) and `SavedPromptsKey` (compressed prompts of recent turns,
+ * also published as `agent.prompt`); every turn ends with an `agent.turn.outcome`.
  *
  * Uses the optional services `SettingsStoreKey` (persisting runtime settings), `AuthorizerKey`
  * (tool permissions), `CommandRegistryKey`, `PromptContributorsKey` (per-turn context),
@@ -173,6 +176,8 @@ export class AgentModule implements Module {
       this.#unregister.push(actuators.register(capability));
     }
     ctx.provide(IntentSinkKey, intents);
+    ctx.provide(TurnFocusViewKey, agent.focusBoard);
+    ctx.provide(SavedPromptsKey, agent.prompts);
     ctx.spawn("events", () => agent.run(events));
   }
 

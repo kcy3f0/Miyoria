@@ -1,16 +1,13 @@
-import { type Attitude, newId } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import {
   affinityAmbientFactor,
   affinityDirectFactor,
-  attitudeHint,
   energyCooldownFactor,
   energyProbabilityFactor,
   herStatusHint,
   moodHint,
   parseBudgetState,
   shownHint,
-  tone,
 } from "../src/index.js";
 
 describe("signals", () => {
@@ -50,25 +47,6 @@ describe("signals", () => {
     expect(shownHint({ from: "joy", tag: "x>y", style: "開心", masked: false })).toContain(
       "<emo:neutral>",
     );
-  });
-
-  it("attitude_hints", () => {
-    const a: Attitude = {
-      person: newId(),
-      affinity: 60,
-      trust: 50,
-      familiarity: 50,
-      blocked: false,
-      label: "朋友",
-      call_name: "歐文",
-    };
-    expect(attitudeHint("Owen", a)).toBe("你對 Owen 的態度:親近(朋友),你都叫對方「歐文」");
-    a.affinity = -50;
-    a.label = "";
-    a.call_name = null;
-    expect(attitudeHint("Owen", a)).toBe("你對 Owen 的態度:冷淡");
-    a.affinity = 0;
-    expect(tone(a.affinity)).toBe("普通");
   });
 
   it("parses_budget_states", () => {

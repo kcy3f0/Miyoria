@@ -47,6 +47,8 @@ export interface HistoryEntry {
   turn: TurnId | null;
   /** One of the messages the current turn answers (set on a copy while building the prompt). */
   current?: boolean;
+  /** With `current`: how the focus block introduces it (`問你`, `回你`, `接著說`, `說`). */
+  focusVerb?: string;
 }
 
 /** Someone else seen in a context (Rust `session::Participant`). */
@@ -218,6 +220,22 @@ export class Session {
       if (last?.isSelf) last.interrupted = true;
     }
     this.noteSelfSpoke(ts);
+  }
+
+  /**
+   * Her speech of `turn` was recorded with its spoken line (`spoken`, a line sent to TTS before
+   * its written sentence existed): the written sentence replaces it. Returns whether it was
+   * found.
+   */
+  replaceSpoken(turn: TurnId, spoken: string, written: string): boolean {
+    const from = spoken.trim();
+    if (from === "") return false;
+    const found = this.#history.findLast(
+      (e) => e.isSelf && e.spoken && e.turn === turn && e.text.includes(from),
+    );
+    if (!found) return false;
+    found.text = found.text.replace(from, written.trim());
+    return true;
   }
 
   /** She was talking at `ts` (start or end of her speech). */

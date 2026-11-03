@@ -153,9 +153,10 @@ describe("prompt contributors", () => {
       section("memory", "你記得的事", "Owen 明天要考數學", 10),
     ]);
     const social = new Contributor("social", [section("social", "關係", "Owen 是你的朋友", 0)]);
+    const world = new Contributor("world", [section("world", "周遭", "大家都在線", 0)]);
     const slow = new Contributor("slow", [section("slow", "太慢", "不該出現", 5)], 60_000);
     const broken = new Contributor("broken", [section("broken", "壞掉", "不該出現", 5)], 0, true);
-    for (const c of [memory, social, slow, broken]) registry.register(c);
+    for (const c of [memory, social, world, slow, broken]) registry.register(c);
 
     const c = channel("c");
     h.say(incoming(c, "阿明", "安安"));
@@ -163,28 +164,31 @@ describe("prompt contributors", () => {
     h.drain();
     const before = mock.requests().length;
     h.say(incoming(c, "Owen", "妳還記得我明天要幹嘛嗎"));
-    // Debounce (1.5 s) plus at most the contributor timeout (0.8 s).
-    await wait(1500 + 700);
+    // Debounce (0.8 s) plus at most the contributor timeout (0.8 s).
+    await wait(800 + 700);
     expect(mock.requests().length, "waited for the contributors").toBe(before);
     await wait(200);
     expect(mock.requests().length, "slow contributor skipped").toBe(before + 1);
     await wait(1000);
 
-    // Contributed sections are data blocks in the user-role data message, never system text.
+    // Contributed sections are data blocks in the user-role data message, never system text;
+    // the people present have one renderer, the agent's own (`social` is not repeated).
     const d = data(mock, before);
     expect(
       d.endsWith(
-        "⟦資料 來源=social 標題=關係⟧\nOwen 是你的朋友\n⟦/資料⟧\n\n" +
+        "⟦資料 來源=world 標題=周遭⟧\n大家都在線\n⟦/資料⟧\n\n" +
           "⟦資料 來源=memory 標題=你記得的事⟧\nOwen 明天要考數學\n⟦/資料⟧",
       ),
       d,
     ).toBe(true);
     expect(d).not.toContain("不該出現");
+    expect(d).not.toContain("Owen 是你的朋友");
     expect(situation(mock, before)).not.toContain("Owen 明天要考數學");
 
     const trace = lastTrace(h);
     expect(trace.respond).toBe(true);
-    expect(trace.reasons).toContain("context from: memory, social");
+    expect(trace.reasons).toContain("context from: memory, social, world");
+    expect(trace.reasons).toContain("rendered by the agent: social");
     expect(trace.reasons).toContain("context skipped: broken (failed), slow (timed out)");
 
     // What the contributors saw.
@@ -285,7 +289,8 @@ describe("social signals", () => {
     h.say(mention(c, "rude", "喂"));
     await wait(3000);
     expect(mock.requests().length).toBe(1);
-    expect(data(mock, 0)).toContain("你對 rude 的態度:冷淡");
+    // One line per person, one relationship scale.
+    expect(data(mock, 0)).toContain("⟦資料 來源=people 標題=在場的人⟧\n- rude:很討厭\n⟦/資料⟧");
     let trace = lastTrace(h);
     expect(trace.respond).toBe(true);
     expect(hasReason(trace, "affinity -50"), trace.reasons.join("; ")).toBe(true);
@@ -301,7 +306,7 @@ describe("social signals", () => {
     // Friends get a warm tone and their call name.
     h.say(mention(channel("c3"), "Owen", "早"));
     await wait(3000);
-    expect(data(mock, 1)).toContain("你對 Owen 的態度:親近,你都叫對方「歐文」");
+    expect(data(mock, 1)).toContain("- Owen:摯友;你叫他「歐文」");
   });
 
   it("affinity_scales_ambient_probability", async () => {
@@ -400,7 +405,7 @@ describe("initiative", () => {
     expect(s).toContain("你想到可以聊的事在參考資料「你想聊的事」裡。");
     expect(data(mock, 0)).toContain("標題=你想聊的事⟧\n問 Owen 考試考得怎樣\n⟦/資料⟧");
     expect(s).not.toContain("問 Owen 考試考得怎樣");
-    expect(data(mock, 0)).toContain("你對 Owen 的態度:親近");
+    expect(data(mock, 0)).toContain("- Owen:好朋友");
     expect(h.sink.sent()).toEqual([["欸,Owen,考試考得怎樣?", "initiative"]]);
     const trace = lastTrace(h);
     expect(trace.respond).toBe(true);

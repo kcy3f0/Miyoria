@@ -2,7 +2,6 @@
 // (`SocialSignals`), her mood (`MoodSignals`) and the LLM budget (`llm.budget` events).
 
 import {
-  type Attitude,
   type HerStatus,
   type Mood,
   neutralize,
@@ -71,24 +70,6 @@ export function energyCooldownFactor(mood: Mood): number {
   return 1.3 - 0.6 * clamp(mood.energy, 0, 1);
 }
 
-/** `冷淡` / `普通` / `親近`. */
-export function tone(affinity: number): string {
-  if (affinity < -20) return "冷淡";
-  if (affinity > 40) return "親近";
-  return "普通";
-}
-
-/** `"你對 Owen 的態度:親近(朋友),你都叫對方「歐文」"`. */
-export function attitudeHint(name: string, attitude: Attitude): string {
-  let line = `你對 ${name} 的態度:${tone(attitude.affinity)}`;
-  const label = attitude.label.trim();
-  if (label !== "") line += `(${label})`;
-  const call = attitude.call_name?.trim();
-  if (call) line += `,你都叫對方「${call}」`;
-  return line;
-}
-
-/** One line describing her mood, e.g. `"你現在的狀態:心情不錯、平靜、有點累"`. */
 /** Her actual voice / stream / game state, for the situation (so she never claims otherwise). */
 export function herStatusHint(her: HerStatus): string {
   const voice =
@@ -133,6 +114,10 @@ export function shownHint(shown: ShownEmotion): string {
   return `你現在表現出來的樣子:${style}。台詞和 <emo:…> 照這個走(多半是 <emo:${tag}>)${hide}`;
 }
 
+/**
+ * One line describing her mood, e.g. `"你現在的狀態:心情不錯、平靜、有點累"` (the fallback
+ * while `AffectState` is not running; its `mood_line` replaces it).
+ */
 export function moodHint(mood: Mood): string {
   const valence = mood.valence < -0.3 ? "心情不太好" : mood.valence > 0.3 ? "心情不錯" : "心情普通";
   const arousal = mood.arousal > 0.7 ? "有點興奮" : mood.arousal < 0.3 ? "平靜" : "還算放鬆";

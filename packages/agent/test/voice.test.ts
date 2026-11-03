@@ -125,9 +125,10 @@ describe("voice", () => {
     expect(msgs[1]?.content).toBe("Owen(語音): 我跟你說\nOwen(語音): 今天考試考完了");
     expect(msgs[2]?.role).toBe("user");
     expect(msgs[2]?.content).toContain("標題=語音頻道裡的人⟧\nOwen、阿明");
-    const situation = msgs[3]?.content ?? "";
-    expect(situation).toContain("一到兩句");
-    // Spoken replies start right away: no thinking.
+    // The voice rules are part of the fixed system part.
+    expect(msgs[0]?.content ?? "").toContain("一到兩句");
+    // Spoken replies start right away: no reasoning (`[llm.reasoning] chat_voice`).
+    expect(requests[0]?.reasoning_purpose).toBe("chat_voice");
     expect(requests[0]?.thinking).toBe(false);
     expect(requests[0]?.tools, "no `react` in voice").toEqual([]);
 
@@ -284,7 +285,65 @@ describe("voice", () => {
     expect(prepared[0]?.[0]).toEqual(voiceCtx());
   });
 
-  it("voice_lines_go_to_the_sink_with_the_written_text_and_ask_for_them", async () => {
+  it("voice_lines_written_first_go_to_tts_at_once_and_get_their_subtitles", async () => {
+    const prepared: [string, string | undefined][] = [];
+    const voiceSink = {
+      speaksIn: "Japanese",
+      prepare: (_c: ContextKey, text: string, spoken?: string) => prepared.push([text, spoken]),
+      speak: async () => "completed" as const,
+    };
+    const paced = new Paced([
+      [
+        [0, textDelta("<emo:happy><voice>えっ、本当に?</voice>")],
+        [500, textDelta("欸,真的嗎?")],
+        [0, textDelta("<voice>じゃあ行こう!</voice>那走吧!")],
+        [0, done()],
+      ],
+      [
+        [0, textDelta("嗯。")],
+        [0, done()],
+      ],
+    ]);
+    const h = await Harness.build("off", voiceConfig("always"), paced, null, { voiceSink });
+    const subtitles = h.sup.bus.subscribe("agent.subtitle");
+    h.publish(joined());
+    h.publish(utterance("Owen", "我中了樂透耶"));
+    // Turn at 0.7s: the first line is spoken before its written sentence exists.
+    await wait(900);
+    expect(texts(h)).toEqual(["えっ、本当に?"]);
+    expect(h.sink.speeches()[0]).toEqual(["えっ、本当に?", "happy"]);
+    await wait(2000);
+    expect(texts(h)).toEqual(["えっ、本当に?", "じゃあ行こう!"]);
+    // Handed to the sink as its own spoken words: nothing to translate.
+    expect(prepared).toEqual([
+      ["えっ、本当に?", "えっ、本当に?"],
+      ["じゃあ行こう!", "じゃあ行こう!"],
+    ]);
+    const turn = h.sink.speakActions()[0]?.turn as TurnId;
+    const subs: unknown[] = [];
+    for (let env = subtitles.tryRecv(); env !== null; env = subtitles.tryRecv()) {
+      if (env.event.type === "custom") subs.push(env.event.data.payload);
+    }
+    expect(subs).toEqual([
+      { turn, context: voiceCtx(), spoken: "えっ、本当に?", text: "欸,真的嗎?" },
+      { turn, context: voiceCtx(), spoken: "じゃあ行こう!", text: "那走吧!" },
+    ]);
+    // Her reply and her history are the written sentences.
+    expect(completedTexts(h)).toEqual(["欸,真的嗎?那走吧!"]);
+    h.publish(playback(turn, "started", "えっ、本当に?"));
+    h.publish(playback(turn, "started", "じゃあ行こう!"));
+    await wait(100);
+    h.publish(utterance("Owen", "真的啦,我沒騙你"));
+    await wait(2000);
+    const msgs = paced.requests[1]?.messages ?? [];
+    expect(msgs[2]).toMatchObject({ role: "assistant", content: "欸,真的嗎?那走吧!" });
+    const prompt = JSON.stringify(paced.requests[0]?.messages);
+    expect(prompt).toContain("每一句先寫 <voice>");
+    expect(prompt).toContain("用 Japanese 念出來");
+    subtitles.close();
+  });
+
+  it("voice_lines_wait_for_their_written_text_without_voice_first", async () => {
     const prepared: [string, string | undefined][] = [];
     const voiceSink = {
       speaksIn: "Japanese",
@@ -294,7 +353,11 @@ describe("voice", () => {
     const mock = new MockProvider("chat").reply(
       "<voice>えっ、本当に?</voice><emo:happy>欸,真的嗎?<voice>じゃあ行こう!</voice>那走吧!最後一句沒有日文。",
     );
-    const h = await Harness.build("off", voiceConfig("always"), mock, null, { voiceSink });
+    const config = {
+      ...voiceConfig("always"),
+      voice: { ...voiceConfig("always").voice, voice_first: false },
+    };
+    const h = await Harness.build("off", config, mock, null, { voiceSink });
     h.publish(joined());
     h.publish(utterance("Owen", "我中樂透了"));
     await wait(3000);
@@ -305,9 +368,6 @@ describe("voice", () => {
       ["那走吧!最後一句沒有日文。", "じゃあ行こう!"],
     ]);
     expect(h.sink.speeches()[0]).toEqual(["欸,真的嗎?", "happy"]);
-    const prompt = JSON.stringify(mock.requests()[0]?.messages);
-    expect(prompt).toContain("<voice>");
-    expect(prompt).toContain("用 Japanese 念出來");
   });
 
   it("voice_lines_after_their_written_sentence_go_with_it", async () => {
@@ -406,40 +466,48 @@ describe("voice", () => {
     expect(completedTexts(h)).toEqual(["", "", "好啦。"]);
   });
 
-  it("utterance_before_playback_cancels_and_regenerates", async () => {
+  it("speech_written_but_not_played_is_played_and_new_input_waits", async () => {
     const mock = new MockProvider("chat")
       .reply("第一個回答。")
       .reply("第二個回答。")
       .reply("第三個回答。");
     const h = await Harness.create("off", voiceConfig("always"), mock);
     h.publish(joined());
-    h.publish(utterance("Owen", "一"));
+    h.publish(utterance("Owen", "我們晚餐吃什麼好"));
     await wait(2000);
     const first = h.sink.speakActions()[0]?.turn as TurnId;
-    // Her answer is queued but has not started playing yet.
-    h.publish(utterance("Owen", "二"));
+    // Her answer is queued but has not started playing yet: it is never regenerated, the new
+    // utterance gets a turn of its own.
+    h.publish(utterance("Owen", "我想吃拉麵或是壽司"));
     await wait(2000);
-    expect(h.sink.cancelled).toEqual([first]);
+    expect(h.sink.cancelled).toEqual([]);
     let requests = mock.requests();
     expect(requests.length).toBe(2);
-    expect(requests[1]?.messages[1]?.content).toBe("Owen(語音): 一\nOwen(語音): 二");
-
-    // Once playback started, new input waits for a turn of its own.
+    expect(requests[1]?.messages[1]?.content).toBe(
+      "Owen(語音): 我們晚餐吃什麼好\nOwen(語音): 我想吃拉麵或是壽司",
+    );
     const second = h.sink.speakActions()[1]?.turn as TurnId;
     expect(second).not.toBe(first);
-    h.publish(playback(second, "started", "第二個回答。"));
-    await wait(100);
-    h.publish(utterance("Owen", "三"));
-    await wait(2000);
-    expect(h.sink.cancelled).toEqual([first]);
-    requests = mock.requests();
-    expect(requests.length).toBe(3);
-    const msgs = requests[2]?.messages ?? [];
-    expect(msgs.slice(1, -2).map((m) => [m.role, m.content])).toEqual([
-      ["user", "Owen(語音): 一\nOwen(語音): 二"],
-      ["assistant", "第二個回答。"],
-      ["user", "Owen(語音): 三"],
+
+    // While a turn is being generated, short replies and other people never cancel it either.
+    const slow = new Paced([
+      [
+        [1500, textDelta("慢慢想。")],
+        [0, done()],
+      ],
     ]);
+    const h2 = await Harness.create("off", voiceConfig("always"), slow);
+    h2.publish(joined());
+    h2.publish(utterance("Owen", "妳覺得明天會下雨嗎"));
+    await wait(1000);
+    h2.publish(utterance("Owen", "嗯"));
+    h2.publish(utterance("阿明", "我覺得會下雨耶"));
+    await wait(5000);
+    expect(h2.sink.cancelled).toEqual([]);
+    expect(slow.requests.length).toBe(2);
+    expect(h2.sink.speeches().map(([t]) => t)).toEqual(["慢慢想。", "慢慢想。"]);
+    requests = mock.requests();
+    expect(requests.length).toBe(2);
   });
 
   it("interrupted_playback_stops_further_sentences", async () => {

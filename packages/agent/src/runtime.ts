@@ -1,5 +1,8 @@
 // The agent's event loop: turns bus events into session updates and coordinator input, and
-// keeps the state shared by the per-context coordinators and their turns.
+// keeps the state shared by the per-context coordinators and their turns: the focus of every
+// turn in flight (`TurnFocusBoard`, provided as `TurnFocusViewKey`), turn outcomes
+// (`agent.turn.outcome`), saved prompts, notices waiting to be told and the subtitles of
+// lines she spoke before writing them.
 
 import { errorMessage, type Logger, type ModuleContext, type Subscription } from "@miyoria/kernel";
 import type { ToolRegistry } from "@miyoria/tools";
@@ -8,27 +11,42 @@ import {
   type ActionId,
   type Attitude,
   type ContextKey,
+  customEvent,
   type Envelope,
+  type Handle,
+  HandleDirectoryKey,
   type IncomingMessage,
   type Intent,
   isJsonObject,
   type JsonValue,
   type Mood,
   MoodSignalsKey,
+  NOTICE_TOPIC,
+  type Notice,
   newId,
   type PlatformId,
   type PlaybackState,
+  type SavedPrompt,
   SelfStateKey,
   type SocialSignals,
   SocialSignalsKey,
+  safeName,
+  sameAccount,
+  TURN_FOCUS_TOPIC,
+  TURN_OUTCOME_TOPIC,
   type TurnId,
+  type TurnOutcomeRecord,
   type VoiceParticipant,
   type VoiceUtterance,
+  v2Event,
+  v2Payload,
 } from "@miyoria/types";
 import { ambientCooldown, type RandomSource, type TalkLevel } from "./attention.js";
 import type { AgentCommands } from "./commands.js";
+import { PROMPT_TOPIC, SavedPrompts } from "./compiler.js";
 import type { AgentConfig } from "./config.js";
 import { Coordinator } from "./coordinator.js";
+import { TurnFocusBoard } from "./focus.js";
 import type { AgentHandle } from "./handle.js";
 import { startBackfill } from "./history.js";
 import { type Ceiling, ceilingFor, UNCAPPED_INITIATIVES } from "./levels.js";
@@ -42,6 +60,14 @@ import { type FetchLike, ImageLoader } from "./vision.js";
 /** Module whose restart means the agent commands must be registered again. */
 const COMMANDS_MODULE = "commands";
 const MINUTE_MS = 60_000;
+/** Topic of the voice module's barge-in reports (`packages/voice/src/topics.ts`, W2). */
+export const BARGE_IN_TOPIC = "voice.barge_in";
+/** Topic of the subtitle of a line she spoke before writing it (payload: see `noteSubtitle`). */
+export const SUBTITLE_TOPIC = "agent.subtitle";
+/** Notices kept per context while nobody reads them. */
+const MAX_NOTICES = 10;
+/** Barge-ins and subtitles remembered (by turn). */
+const MAX_REMEMBERED = 64;
 
 /** An `agent.initiative` request. */
 export interface Initiative {
@@ -146,6 +172,18 @@ export class Agent {
    * level's gap between starts. In memory only.
    */
   readonly #starts = new Map<string, number>();
+  /** The focus of every turn in flight (`TurnFocusViewKey`). */
+  readonly focusBoard: TurnFocusBoard;
+  /** Compressed prompts of recent turns (`SavedPromptsKey`). */
+  readonly prompts: SavedPrompts;
+  /** Turns seen so far, for `[modules.agent.prompt] save_every`. */
+  #promptCount = 0;
+  /** Notices not shown to her yet, by context id (`""`: wherever she talks next). */
+  readonly #notices = new Map<string, Notice[]>();
+  /** Who barged in on her speech, by turn (`voice.barge_in` with `stop`). */
+  readonly #barges = new Map<TurnId, Handle | null>();
+  /** Written sentences of lines she spoke first, by turn: spoken line → subtitle. */
+  readonly #subtitles = new Map<TurnId, Map<string, string>>();
 
   constructor(
     readonly ctx: ModuleContext,
@@ -160,6 +198,11 @@ export class Agent {
     this.images = new ImageLoader(fetchImage, (key, error) =>
       this.log.debug({ image: key, error }, "could not download image"),
     );
+    this.focusBoard = new TurnFocusBoard(
+      () => ctx.clock.now(),
+      (focus) => ctx.publish(v2Event(TURN_FOCUS_TOPIC, focus), { turn: focus.turn }),
+    );
+    this.prompts = new SavedPrompts(config.prompt.saved);
   }
 
   get log(): Logger {
@@ -175,6 +218,7 @@ export class Agent {
       "action.completed",
       "system.module.state",
       "agent.initiative",
+      NOTICE_TOPIC,
       BUDGET_TOPIC,
     ];
   }
@@ -260,6 +304,11 @@ export class Agent {
       }
       case "custom":
         if (event.data.topic === BUDGET_TOPIC) this.#onBudget(event.data.payload);
+        else if (event.data.topic === BARGE_IN_TOPIC) this.#onBargeIn(event.data.payload);
+        else if (event.data.topic === NOTICE_TOPIC) {
+          const notice = v2Payload(event, NOTICE_TOPIC);
+          if (notice) this.#onNotice(notice);
+        }
         break;
       default:
         break;
@@ -431,6 +480,138 @@ export class Agent {
     );
   }
 
+  // ---- v2: focus, outcomes, prompts, notices, subtitles --------------------------------------
+
+  /**
+   * The stable handle of `account` (`HandleDirectoryKey`; without one, the cleaned display
+   * name).
+   */
+  handleOf(account: AccountRef, displayName: string): Handle {
+    const dir = this.ctx.services.get(HandleDirectoryKey);
+    if (dir) {
+      try {
+        return dir.ofAccount(account, displayName);
+      } catch (error) {
+        this.log.debug({ error: errorMessage(error) }, "handle directory failed");
+      }
+    }
+    return safeName(displayName);
+  }
+
+  /** Publishes the one `agent.turn.outcome` of a turn. */
+  publishOutcome(record: TurnOutcomeRecord): void {
+    this.#barges.delete(record.turn);
+    this.ctx.publish(v2Event(TURN_OUTCOME_TOPIC, record), { turn: record.turn });
+  }
+
+  /** Keeps (every `save_every`-th) saved prompt and publishes it as `agent.prompt`. */
+  savePrompt(prompt: SavedPrompt): void {
+    const every = this.config.prompt.save_every;
+    if (every <= 0) return;
+    this.#promptCount += 1;
+    if ((this.#promptCount - 1) % every !== 0) return;
+    this.prompts.push(prompt);
+    this.ctx.publish(customEvent(PROMPT_TOPIC, prompt as unknown as JsonValue), {
+      turn: prompt.turn,
+    });
+  }
+
+  /** Who stopped her speech of `turn` by talking over her, if voice reported it. */
+  bargedBy(turn: TurnId): Handle | null {
+    return this.#barges.get(turn) ?? null;
+  }
+
+  #onBargeIn(payload: JsonValue): void {
+    if (!isJsonObject(payload) || payload.action !== "stop") return;
+    const turn = typeof payload.turn === "string" ? payload.turn : null;
+    if (turn === null) return;
+    const account = isJsonObject(payload.account) ? payload.account : null;
+    let by: Handle | null = null;
+    if (
+      account !== null &&
+      typeof account.platform === "string" &&
+      typeof account.id === "string"
+    ) {
+      const ref = { platform: account.platform, id: account.id };
+      const name =
+        [...this.#contexts.values()]
+          .flatMap((h) => h.session.voiceMembers())
+          .find((m) => sameAccount(m.account, ref))?.display_name ?? ref.id;
+      by = this.handleOf(ref, name);
+    }
+    this.#barges.set(turn, by);
+    while (this.#barges.size > MAX_REMEMBERED) {
+      const oldest = this.#barges.keys().next().value;
+      if (oldest === undefined) break;
+      this.#barges.delete(oldest);
+    }
+  }
+
+  /**
+   * A task outcome for her: kept until a turn in its context (or any, without one) shows it.
+   * When nobody is talking with her there, a short turn of her own tells it (reason `notice`).
+   */
+  #onNotice(notice: Notice): void {
+    if (Date.parse(notice.expires_at) <= this.ctx.clock.now()) return;
+    const id = notice.context === null ? "" : contextId(notice.context);
+    const list = this.#notices.get(id) ?? [];
+    list.push(notice);
+    while (list.length > MAX_NOTICES) list.shift();
+    this.#notices.set(id, list);
+    if (notice.context !== null) {
+      this.#onInitiative(notice.context, { reason: "notice", hint: "", about: [] });
+    }
+  }
+
+  /** The unexpired notices for `context` (and those for anywhere); they count as told. */
+  takeNotices(context: ContextKey): Notice[] {
+    const now = this.ctx.clock.now();
+    const out: Notice[] = [];
+    for (const id of [contextId(context), ""]) {
+      const list = this.#notices.get(id);
+      if (!list) continue;
+      this.#notices.delete(id);
+      out.push(...list.filter((n) => Date.parse(n.expires_at) > now));
+    }
+    return out.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  }
+
+  /**
+   * A line she spoke before writing it (`voice_first`) got its written sentence: her history
+   * keeps the written one, and `agent.subtitle` tells the overlay.
+   */
+  noteSubtitle(context: ContextKey, turn: TurnId, spoken: string, written: string): void {
+    const h = this.#existing(context);
+    if (!h?.session.replaceSpoken(turn, spoken, written)) {
+      let map = this.#subtitles.get(turn);
+      if (!map) {
+        map = new Map();
+        this.#subtitles.set(turn, map);
+        while (this.#subtitles.size > MAX_REMEMBERED) {
+          const oldest = this.#subtitles.keys().next().value;
+          if (oldest === undefined) break;
+          this.#subtitles.delete(oldest);
+        }
+      }
+      map.set(spoken.trim(), written);
+    }
+    this.ctx.publish(
+      customEvent(SUBTITLE_TOPIC, {
+        turn,
+        context: { ...context },
+        spoken,
+        text: written,
+      }),
+      { turn },
+    );
+  }
+
+  /** The written sentence of a spoken line, when it came before playback reported it. */
+  #written(turn: TurnId | null, text: string): string {
+    if (turn === null) return text;
+    return this.#subtitles.get(turn)?.get(text.trim()) ?? text;
+  }
+
   /** Her own talkativeness for `context` (`SelfState`), if she set one. */
   talkativeness(context: ContextKey): TalkLevel | null {
     const t = this.ctx.services.get(SelfStateKey)?.talkativeness(context) ?? null;
@@ -462,10 +643,10 @@ export class Agent {
     const now = this.ctx.clock.now();
     switch (state) {
       case "started":
-        h.session.recordSpeech(name, me, text, turn, now);
+        h.session.recordSpeech(name, me, this.#written(turn, text), turn, now);
         break;
       case "interrupted":
-        h.session.recordInterruption(name, me, text, turn, now);
+        h.session.recordInterruption(name, me, this.#written(turn, text), turn, now);
         break;
       case "finished":
         h.session.noteSelfSpoke(now);

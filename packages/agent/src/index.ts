@@ -24,10 +24,12 @@ export {
   ambientCooldown,
   ambientProbability,
   ambientScale,
+  answersHer,
   assess,
   ceilingFactor,
   decide,
   directReason,
+  flooredTalk,
   type Gate,
   isQuestion,
   mentionsTopic,
@@ -43,6 +45,25 @@ export {
   vocativeName,
 } from "./attention.js";
 export { activenessLabel, personaSummary } from "./commands.js";
+export {
+  type Budgeted,
+  type BudgetOptions,
+  budgetBlocks,
+  budgetSelf,
+  contributedData,
+  fairShares,
+  fitBody,
+  ordered,
+  PROMPT_TOPIC,
+  renderSections,
+  SavedPrompts,
+  SavedPromptsKey,
+  type SelfBlock,
+  SUPERSEDED,
+  savedMessages,
+  savedPrompt,
+  squeeze,
+} from "./compiler.js";
 export {
   ACTIVENESS_LEVELS,
   type Activeness,
@@ -63,6 +84,8 @@ export {
   maxDebounceMs,
   modeFor,
   ParseError,
+  type PromptConfig,
+  PromptConfigSchema,
   parseActiveness,
   parseChannelMode,
   probabilityFactor,
@@ -82,6 +105,16 @@ export {
   MAX_PAUSE_MS,
   type Segment,
 } from "./expression.js";
+export {
+  type CallKind,
+  callKind,
+  type FocusSelection,
+  focusVerb,
+  selectFocus,
+  TurnFocusBoard,
+  type TurnFocusInit,
+  type VoiceCallFacts,
+} from "./focus.js";
 export {
   ACTIVENESS_PREFIX,
   AgentHandle,
@@ -114,7 +147,10 @@ export {
   cleanReply,
   DATA_PREAMBLE,
   DEFAULT_TRANSCRIPT,
+  dataMessage,
+  EXAMPLES_TITLE,
   FOCUS_HEAD,
+  FORMAT_RULES,
   focusMessage,
   GUARD_RULES,
   gapLine,
@@ -126,18 +162,21 @@ export {
   INTENT_TITLE,
   INTERRUPTED,
   type IntentData,
+  intentBody,
   MAX_PARENT_CHARS,
-  PEOPLE_TITLE,
+  NOTICE,
   PRESENT_TITLE,
-  renderSections,
+  RULES,
   replyTag,
+  rulesPrompt,
+  SELF_HEAD,
   SELF_QUOTE_NAME,
   SITUATION,
   type Situation,
-  type SituationData,
   SPOKEN_TAG,
-  situationData,
+  selfSection,
   situationPrompt,
+  speaksRule,
   splitMessage,
   TRANSCRIPT_RULES,
   type TranscriptOptions,
@@ -147,8 +186,23 @@ export {
   VOICE_INITIATIVE,
   VOICE_INTENT,
   VOICE_PRESENT_TITLE,
+  VOICE_RULES,
   VOICE_SITUATION,
 } from "./prompt.js";
+export { BARGE_IN_TOPIC, SUBTITLE_TOPIC } from "./runtime.js";
+export {
+  activityBlock,
+  goalsBlock,
+  ledgerBlock,
+  moodBlock,
+  noticesBlock,
+  type PeopleSources,
+  type PresentPerson,
+  peopleBody,
+  policyBlock,
+  type SelfSources,
+  selfBlocks,
+} from "./self-block.js";
 export {
   type HistoryEntry,
   historyEntry,
@@ -159,7 +213,6 @@ export {
 export {
   affinityAmbientFactor,
   affinityDirectFactor,
-  attitudeHint,
   BUDGET_TOPIC,
   type BudgetState,
   EXHAUSTED_LINE,
@@ -170,7 +223,6 @@ export {
   moodHint,
   parseBudgetState,
   shownHint,
-  tone,
   unansweredHint,
 } from "./signals.js";
 export {
@@ -182,7 +234,15 @@ export {
   SentenceSplitter,
 } from "./speech.js";
 export { ReactTool, ToolArgumentError } from "./tools.js";
-export { CheckError, markCurrent, parseCheck, TurnError, truncate } from "./turn.js";
+export {
+  CheckError,
+  focusVerbs,
+  markCurrent,
+  parseCheck,
+  TurnError,
+  type TurnPlan,
+  truncate,
+} from "./turn.js";
 export {
   allowedUrl,
   type FetchLike,
