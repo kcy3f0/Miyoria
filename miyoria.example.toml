@@ -454,12 +454,31 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # penalty = 0.15                 # 每多一次扣這麼多比例的分數
 # floor = 0.4                    # 最低乘到這麼多
 
-# 主動發話的觸發(冷場、打招呼、進語音問候、追問)。心智迴圈在跑時會交給她判斷,
-# 下面的每日次數、安靜時段與冷卻仍然是底線
-# [modules.initiative]
-# to_mind = true
-# max_per_day = 12
-# max_per_context_per_day = 4
+# 仲裁(Arbiter):她想說話 / 做事的唯一關卡。她自己開的話題(心智迴圈 / 計畫)、唱歌報幕、
+# 遊戲實況、追問、打招呼都先到這裡;規則只有這一份(取代舊的 [modules.initiative]、心智迴圈的
+# 第二套安靜時段和 chat.start 的次數限制),而且會寫進她的帳本,讓她看得到:「你今天主動開了
+# 5 次話題,最近 3 次沒人接;下次可主動在 21:40 之後」。報幕、實況、追問不算她主動開的話題。
+[modules.arbiter]
+quiet_start_hour = 1             # 安靜時段(當地時間,含開始、不含結束;相同 = 沒有):她不自己開口,
+quiet_end_hour = 7               # 回別人、點的歌、事情的結果不受影響
+# utc_offset_minutes = 480       # 她的時區(UTC+8)
+# day_start_hour = 4             # 「今天」從幾點開始算
+max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不限)
+# max_per_context_per_day = 4    # 同一個頻道 / 語音 / 私訊一天最多幾次
+# max_per_person_per_day = 4     # 同一個人一天最多被她主動找幾次
+# min_gap_secs = 60              # 任兩次之間至少隔多久
+# gap_text_secs = 600            # 同一個地方兩次之間至少隔多久;沒人接一次就加倍,最多 max_backoff 倍
+# gap_voice_secs = 300
+# max_backoff = 8
+# reply_window_text_secs = 600   # 她說完後這段時間內有人叫她 / 回她,才算有人接
+# reply_window_voice_secs = 300
+# stale_topic_mins = 45          # 沒人接的話題列給她看多久(這段時間內不再提)
+# after_speech_text_secs = 5     # 打招呼和她自己開話題,至少等她講完這麼久
+# after_speech_voice_secs = 20
+# disabled_contexts = []         # 這些頻道她不主動說話(discord:<guild>:<channel> 或頻道 id)
+# greeting = true                # 朋友當天第一次說話時打招呼
+# voice_join = true              # 好感夠的人進她的語音頻道時打招呼
+# followup = true                # 之前說好要問的事,對方在的時候提出來
 
 # ---- 程式沙箱 ----------------------------------------------------------------
 

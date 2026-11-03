@@ -18,7 +18,7 @@ import { StoreError } from "./common.js";
 import { type ExportColumn, exportValue } from "./profile-data.js";
 import type { RoleDefinition } from "./records.js";
 
-/** Settings profile of node-wide settings (`initiative:state`, `queue:state`, ...). */
+/** Settings profile of node-wide settings (`arbiter:state`, `queue:state`, ...). */
 export const GLOBAL_SETTINGS_PROFILE: ProfileId = "_global";
 
 export type DataCategoryId =
@@ -184,7 +184,7 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
       // @miyoria/memory `MAINTENANCE_KEY`
       settings("memory_maintenance", "active", ["memory_maintenance_last"]),
     ],
-    { modules: ["memory", "initiative"] },
+    { modules: ["memory", "arbiter"] },
   ),
   category(
     "relationships",
@@ -290,11 +290,16 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
     ],
     { confirm: "simple" },
   ),
-  // @miyoria/initiative `STATE_KEY` under `STATE_PROFILE`
-  category("initiative", [settings("initiative", "global", ["initiative:state"])], {
-    modules: ["initiative"],
-    confirm: "simple",
-  }),
+  // @miyoria/arbiter `STATE_KEY` under `STATE_PROFILE` (her ledger: counters, backoff, topics,
+  // greetings), and the old @miyoria/initiative state it replaced
+  category(
+    "initiative",
+    [settings("initiative", "global", ["arbiter:state", "initiative:state"])],
+    {
+      modules: ["arbiter"],
+      confirm: "simple",
+    },
+  ),
   category(
     "people",
     [

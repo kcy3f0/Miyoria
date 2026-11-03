@@ -2,8 +2,8 @@
 // confirmations and module pauses, the backup-before-reset rule and the factory reset.
 
 import { ACTIVENESS_PREFIX, AgentHandleKey, MODE_PREFIX } from "@miyoria/agent";
+import * as arbiter from "@miyoria/arbiter";
 import { AuthService, AuthServiceKey } from "@miyoria/auth";
-import * as initiative from "@miyoria/initiative";
 import {
   defineManifest,
   type Module,
@@ -351,7 +351,7 @@ describe("data categories", () => {
     expect(has("active", MOOD_KEY)).toBe(true);
     expect(has("active", TOOL_KEY_PREFIX)).toBe(true);
     for (const [profile, name] of [
-      [initiative.STATE_PROFILE, initiative.STATE_KEY],
+      [arbiter.STATE_PROFILE, arbiter.STATE_KEY],
       [queue.STATE_PROFILE, queue.STATE_KEY],
       [CONSENT_PROFILE, consentKey({ platform: "x", id: "y" }).replace(/x:y$/, "")],
       [PRIVACY_PROFILE, PRIVACY_PREFIX],

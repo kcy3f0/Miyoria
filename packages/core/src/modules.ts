@@ -2,7 +2,7 @@
 // (camelCased); if a package exported something else, fix it here and nowhere else.
 //
 // Boot order (legacy `boot.rs`): llm, speech, voice.link, voice, scheduler, agent, commands,
-// auth, actions, social, mood, world, self, memory, initiative, mind, knowledge, conversation,
+// auth, actions, social, mood, world, self, memory, arbiter, mind, knowledge, conversation,
 // reflect, queue, game, game.chat, sing, mcp,
 // stage.link, sandbox (opt-in), recorder, Discord bot, Admin API, terminal chat, then the
 // extension host and one `ext.<id>` per extension.
@@ -13,12 +13,12 @@ import { ActionsModule } from "@miyoria/actions";
 import { ActivityModule } from "@miyoria/activity";
 import { AgentModule, PersonaHandleKey } from "@miyoria/agent";
 import { ApiModule, avatarEmotions } from "@miyoria/api";
+import { ArbiterModule } from "@miyoria/arbiter";
 import { AuthConfigSchema, AuthModule } from "@miyoria/auth";
 import { CommandsModule } from "@miyoria/commands";
 import { DiscordBotModule } from "@miyoria/discord";
 import * as extHost from "@miyoria/ext-host";
 import { GameChatModule, GameHandleKey, GameModule } from "@miyoria/game";
-import { InitiativeModule } from "@miyoria/initiative";
 import type { Config, Module } from "@miyoria/kernel";
 import {
   ConversationModule,
@@ -137,7 +137,8 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
       baseline: profile.manifest.mood,
     }),
     new MemoryModule(profileId, config.get("memory.embedding", EmbeddingConfigSchema)),
-    new InitiativeModule(profileId),
+    // Replaces `initiative` (an old `[modules.initiative]` section is read with a warning).
+    new ArbiterModule(profileId, { legacyInitiative: config.module("initiative").config }),
     new MindModule(profileId, {
       name: profile.displayName,
       persona: (services) =>
