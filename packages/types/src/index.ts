@@ -410,6 +410,17 @@ export {
 } from "./handle-text.js";
 export { CORE_CHARS, CORE_SENTENCES, characterCore } from "./persona-core.js";
 export {
+  type ConversationFacts,
+  defaultImpulsePriority,
+  type ImpulseHost,
+  ImpulseHostKey,
+  type ImpulseInput,
+  type ImpulseRun,
+  impulseReason,
+  isSelfTalk,
+  newImpulse,
+} from "./impulse.js";
+export {
   type Desire,
   GOAL_TOPIC,
   type Goal,
