@@ -7,6 +7,11 @@
 //                                                       started with `levels`: what lip sync follows)
 
 export const PROTOCOL_VERSION = 1;
+/**
+ * Optional protocol features this node implements, announced in `hello.capabilities` so Core
+ * only sends what the node understands.
+ */
+export const NODE_CAPABILITIES: readonly string[] = ["play_duck", "play_pause"];
 export const CAPTURE_SAMPLE_RATE = 16_000;
 
 export const FRAME_CAPTURE = 0x01;
@@ -29,6 +34,12 @@ export type CoreMessage =
   | { type: "play_start"; play: number; guild: string; sample_rate: number; levels?: boolean }
   | { type: "play_end"; play: number }
   | { type: "play_stop"; play: number; fade_ms: number }
+  /** Volume of a play (0..1, 1 = normal), ramped over `fade_ms`; stays until changed. */
+  | { type: "play_duck"; play: number; gain: number; fade_ms: number }
+  /** Fade the play out and hold it; buffered audio waits. */
+  | { type: "play_pause"; play: number; fade_ms: number }
+  /** Continue a paused play with a fade-in. */
+  | { type: "play_resume"; play: number; fade_ms: number }
   | GoLiveStartMessage
   | { type: "golive_stop"; guild: string }
   | { type: "ping" };
@@ -158,6 +169,25 @@ export function parseCoreMessage(text: string): ParseResult<CoreMessage> {
       }
       return { ok: true, value: { type, play, fade_ms: fadeMs } };
     }
+    case "play_duck": {
+      const play = raw.play;
+      if (!isU32(play)) return fail("play_duck: `play` must be a u32");
+      const gain = raw.gain;
+      if (typeof gain !== "number" || !Number.isFinite(gain) || gain < 0 || gain > 1) {
+        return fail("play_duck: `gain` must be a number in 0..1");
+      }
+      const fadeMs = parseFadeMs(raw.fade_ms);
+      if (fadeMs === undefined) return fail("play_duck: `fade_ms` must be a non-negative number");
+      return { ok: true, value: { type, play, gain, fade_ms: fadeMs } };
+    }
+    case "play_pause":
+    case "play_resume": {
+      const play = raw.play;
+      if (!isU32(play)) return fail(`${type}: \`play\` must be a u32`);
+      const fadeMs = parseFadeMs(raw.fade_ms);
+      if (fadeMs === undefined) return fail(`${type}: \`fade_ms\` must be a non-negative number`);
+      return { ok: true, value: { type, play, fade_ms: fadeMs } };
+    }
     case "golive_start":
       return parseGoLiveStart(raw);
     case "golive_stop": {
@@ -234,6 +264,8 @@ export type NodeMessage =
       token: string;
       node: string;
       self_account: { platform: "discord"; id: string };
+      /** Optional features this node implements ({@link NODE_CAPABILITIES}). */
+      capabilities?: string[];
     }
   | { type: "joined"; guild: string; channel: string }
   | { type: "left"; guild: string; reason?: string }
@@ -297,4 +329,11 @@ export function decodeBinaryFrame(buf: Uint8Array): ParseResult<BinaryFrame> {
     return fail(`unknown binary frame kind 0x${(kind ?? 0).toString(16).padStart(2, "0")}`, true);
   }
   return { ok: true, value: { kind, id: b.readUInt32LE(1), pcm: b.subarray(5) } };
+}
+
+/** `fade_ms` of the play control messages: absent = 0, else a non-negative number (capped). */
+function parseFadeMs(fade: unknown): number | undefined {
+  if (fade === undefined || fade === null) return 0;
+  if (typeof fade !== "number" || !Number.isFinite(fade) || fade < 0) return undefined;
+  return Math.min(Math.round(fade), MAX_FADE_MS);
 }
