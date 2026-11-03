@@ -31,6 +31,7 @@ import {
   type RunResult,
   type Sandbox,
   SandboxGate,
+  type SessionInfo,
   type ToolProposal,
 } from "../src/index.js";
 
@@ -100,8 +101,13 @@ export class FakeSandbox implements Sandbox {
     },
     remove: async () => false,
   };
+  /** Thrown by the next `run`. */
+  nextError: Error | null = null;
   async run(request: RunRequest): Promise<RunResult> {
     this.requests.push(structuredClone(request));
+    const error = this.nextError;
+    this.nextError = null;
+    if (error) throw error;
     return {
       run_id: "01J00000000000000000000000",
       language: request.language,
@@ -114,7 +120,32 @@ export class FakeSandbox implements Sandbox {
       files_out_truncated: false,
       duration_ms: 7,
       killed_reason: null,
+      session:
+        request.session === undefined || request.session === "fresh"
+          ? null
+          : { name: request.session, created: this.sessions.length === 0, closed: null },
     };
+  }
+  /** Session names `listSessions` reports. */
+  sessions: string[] = [];
+  readonly closed: string[] = [];
+  async listSessions(): Promise<SessionInfo[]> {
+    return this.sessions.map((name) => ({
+      name,
+      language: "python",
+      created_at: 0,
+      last_used_at: 0,
+      runs: 1,
+      disk_bytes: 2048,
+      expires_at: Date.now() + 10 * 60_000,
+      busy: false,
+    }));
+  }
+  async closeSession(name: string): Promise<boolean> {
+    if (!this.sessions.includes(name)) return false;
+    this.sessions = this.sessions.filter((s) => s !== name);
+    this.closed.push(name);
+    return true;
   }
   async health() {
     return { available: true, server_version: "29", error: null, checked_at: 1 };

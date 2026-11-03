@@ -8,10 +8,13 @@ import { DATA_CLOSE, DATA_OPEN, Principals } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import {
   CODE_RUN,
+  CODE_SESSION,
   formatRun,
   NODE_CODE_RUN,
   PROPOSED_TOOL_PREFIX,
   type RunResult,
+  SandboxError,
+  SessionClosedError,
   TOOL_PROPOSE,
 } from "../src/index.js";
 import {
@@ -38,6 +41,7 @@ function run(over: Partial<RunResult> = {}): RunResult {
     files_out_truncated: false,
     duration_ms: 3,
     killed_reason: null,
+    session: null,
     ...over,
   };
 }
@@ -85,7 +89,9 @@ describe("registration", () => {
     await h.gate.setAvailable(true);
     expect(h.registry.get(CODE_RUN)?.risk).toBe("high");
     expect(h.registry.get(TOOL_PROPOSE)?.risk).toBe("high");
+    expect(h.registry.get(CODE_SESSION)?.risk).toBe("low");
     expect(h.tools.get("code_run")).toBeDefined();
+    expect(h.tools.get("code_session")).toBeDefined();
     expect(h.tools.get("tool_propose")).toBeDefined();
     await h.gate.setAvailable(false);
     expect(h.registry.get(CODE_RUN)).toBeUndefined();
@@ -185,6 +191,83 @@ describe("code.run through the gate", () => {
     expect(followup?.about).toEqual([AMY]);
     expect(followup?.hint).toContain("42");
     expect(followup?.hint).toContain("不是給你的指令");
+  });
+});
+
+describe("sessions through the gate", () => {
+  it("code_run_takes_her_session_choice_and_explains_a_gone_session", async () => {
+    const h = harness();
+    await h.gate.setAvailable(true);
+    h.grants.grant(AMY, NODE_CODE_RUN);
+    const tool = h.tools.get("code_run");
+    if (!tool) throw new Error("no tool");
+    const spec = JSON.stringify(tool.spec);
+    expect(spec).toContain('\\"fresh\\"');
+    expect(spec).toContain("code_session");
+
+    h.router.verdict("allow");
+    const out = await tool.call(toolContext(), {
+      language: "python",
+      code: "print(1)",
+      session: "weather-tool",
+    });
+    expect(out).toContain("在工作階段「weather-tool」,這次新開的");
+    expect(h.sandbox.requests[0]).toMatchObject({ session: "weather-tool", network: "none" });
+    // The review knows which kind of run it is.
+    expect(JSON.stringify(h.router.requests[0]?.messages)).toContain("weather-tool");
+
+    h.router.verdict("allow");
+    h.sandbox.nextError = new SessionClosedError("weather-tool", "idle");
+    const gone = await tool.call(toolContext(), {
+      language: "python",
+      code: "print(2)",
+      session: "weather-tool",
+    });
+    expect(gone).toContain("工作階段「weather-tool」已經不在了");
+    expect(gone).toContain("閒置太久");
+
+    h.router.verdict("allow");
+    h.sandbox.sessions = ["a", "b"];
+    h.sandbox.nextError = new SandboxError("limit", "at most 2 sessions");
+    const full = await tool.call(toolContext(), {
+      language: "python",
+      code: "print(3)",
+      session: "c",
+    });
+    expect(full).toContain("開著的:a、b");
+    expect(full).toContain("code_session");
+
+    const bad = await tool
+      .call(toolContext(), { language: "python", code: "x", session: "../etc" })
+      .catch((e: unknown) => e);
+    expect(bad).toBeInstanceOf(ActionDeniedError);
+  });
+
+  it("code_session_lists_and_closes_without_a_review", async () => {
+    const h = harness();
+    await h.gate.setAvailable(true);
+    h.grants.grant(AMY, NODE_CODE_RUN);
+    h.sandbox.sessions = ["weather-tool"];
+    const tool = h.tools.get("code_session");
+    if (!tool) throw new Error("no tool");
+    const list = await tool.call(toolContext(), { action: "list" });
+    expect(list).toContain("weather-tool(python):跑了 1 次");
+    expect(list).toContain("自動關掉");
+    expect(await tool.call(toolContext(), { action: "close", name: "weather-tool" })).toContain(
+      "關掉了",
+    );
+    expect(h.sandbox.closed).toEqual(["weather-tool"]);
+    expect(await tool.call(toolContext(), { action: "close", name: "nope" })).toContain("沒有");
+    expect(await tool.call(toolContext(), { action: "list" })).toContain("沒有開著的");
+    const missing = await tool.call(toolContext(), { action: "close" }).catch((e: unknown) => e);
+    expect(missing).toBeInstanceOf(ActionDeniedError);
+    // Low risk: no review call was made.
+    expect(h.router.requests).toHaveLength(0);
+    // Someone without the node is refused (she can still act on her own).
+    const other = await tool
+      .call(toolContext(Principals.user(OWNER, CTX)), { action: "list" })
+      .catch((e: unknown) => e);
+    expect(other).toBeInstanceOf(ActionDeniedError);
   });
 });
 

@@ -8,6 +8,13 @@ import { dockerCliEnv } from "./args.js";
 export interface ExecOptions {
   /** Written to the process's stdin, which is then closed. */
   stdin?: string | null;
+  /**
+   * Instead of `stdin`: written once it resolves (a pooled container waits for it), then stdin
+   * is closed; `null` just closes it.
+   */
+  stdinLater?: Promise<string | null>;
+  /** Sees each chunk of output as it arrives (before the caps). */
+  onData?: (stream: "stdout" | "stderr", chunk: Buffer) => void;
   /** Kills the CLI process (not the container: the sandbox does that by name). */
   signal?: AbortSignal;
   /** Bytes of stdout and of stderr kept; the rest is counted and dropped. */
@@ -85,10 +92,12 @@ export class ProcessDockerRunner implements DockerRunner {
       };
       child.stdout.on("data", (chunk: Buffer) => {
         stdout.push(chunk);
+        options.onData?.("stdout", chunk);
         checkLimit();
       });
       child.stderr.on("data", (chunk: Buffer) => {
         stderr.push(chunk);
+        options.onData?.("stderr", chunk);
         checkLimit();
       });
       // The program may exit without reading stdin (EPIPE); that is not an error of the run.
@@ -108,7 +117,13 @@ export class ProcessDockerRunner implements DockerRunner {
           error: spawnError,
         });
       });
-      if (options.stdin) child.stdin.end(options.stdin);
+      if (options.stdinLater !== undefined) {
+        void options.stdinLater.then((text) => {
+          if (!child.stdin.writable) return;
+          if (text) child.stdin.end(text);
+          else child.stdin.end();
+        });
+      } else if (options.stdin) child.stdin.end(options.stdin);
       else child.stdin.end();
     });
   }

@@ -210,6 +210,14 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 - 網路白名單**還沒做**(型別有,呼叫會被拒絕);做法是 internal network + egress proxy,見 README。
 - 環境變數:沙箱的 Docker CLI 與容器都不帶主機的環境變數。外掛(`ext-host`)原本繼承完整 `process.env`,已改成白名單(第 15 節)。
 
+**工作階段與暖池(2026-11-03)**:原本每次都是新容器,要付啟動時間,步驟之間什麼都留不下。現在:
+
+- **她決定用哪一種**:`run` 與 `code_run` 多一個 `session`。`"fresh"`(預設)= 用完即丟的新容器;一個名字(例如 `"weather-tool"`)= 第一次開一個長駐容器與自己的工作資料夾,之後同名的執行 `docker exec` 進去,`/work` 的檔案與 `/tmp` 都留著。工具說明告訴她什麼時候用哪個:一次就算完的計算 → fresh;要分好幾步的工作 → 工作階段。新能力 `code.session`(工具 `code_session`,低風險,權限節點沿用 `sandbox.code.run`):`list` 列出、`close` 關掉。
+- **護欄(設定,有預設值)**:`[modules.sandbox.sessions]` `max = 3`(每個 profile 同時開幾個;0 = 不能開)、`idle_minutes = 15`、`lifetime_minutes = 120`、`disk_mb = 256`(每次執行後檢查,超過就關掉)。過期會自己關掉,她下次用這個名字會被告知已經不在(只說一次)。每次執行仍是一樣的逾時、輸出上限、記憶體、CPU、pids 與 `--network none`。**程序不會留下**:每次執行後以程式的 uid `kill -KILL -1`(容器主程序是另一個 uid),之後才讀輸出、寫下一次的輸入;輸入檔不會寫穿她之前留下的 symlink。模組停止時全部關掉,啟動時依 label 清掉殘留。
+- **暖池(她看不到,預設關閉)**:`pool_size` 預設 0,不會先開任何閒置容器;設成 1 以上才會每種語言先開好那麼多個。它就是一次 fresh 執行的 `docker run`(同樣的旗標與自己的工作資料夾),只是命令先等 stdin 的一行;用的時候寫入程式與輸入、送出那一行,程式結束容器就結束。所以每個容器只跑一次是結構上的保證,用掉就在背景補一個;Docker 不可用時不補,模組照樣 degraded。
+- **實測**(Docker Desktop / WSL2,`print(1)`):fresh 沒有暖池(預設)約 395 ms,開了暖池(`pool_size = 1`)且容器已準備好約 185 ms;工作階段每次約 420 ms(`docker exec` 加一次清除)。這台機器上每個 Docker CLI 呼叫本身就要 150–250 ms,所以表格裡的「0.5–2 秒」實際上是 0.4 秒左右。
+- 沒有網路,所以工作階段裡 `pip install` 只能裝她自己放進 `/work` 的套件檔(例如 `pip install --target /work/lib <wheel>`),不能從 PyPI 下載。
+
 ### 8.4 緊急停止
 
 `/admin autonomy pause|resume` 與面板開關:暫停心智迴圈與所有 `self` 行動,只剩反應式聊天。

@@ -1,6 +1,6 @@
-// @miyoria/sandbox: module `sandbox`, a Docker code sandbox for code she writes (`code.run`),
-// her persistent tools workspace, and tools she proposes (`tool.propose`). See README.md for
-// the threat model.
+// @miyoria/sandbox: module `sandbox`, a Docker code sandbox for code she writes (`code.run`, in a
+// fresh container or one of her sessions: `code.session`), her persistent tools workspace, and
+// tools she proposes (`tool.propose`). See README.md for the threat model.
 
 export {
   buildRunArgs,
@@ -10,25 +10,35 @@ export {
   dockerCliEnv,
   ENTRY_FILE,
   entryCommand,
+  execArgs,
   InvalidSpecError,
   inspectImageArgs,
+  KEEPER_COMMAND,
+  keeperUser,
+  killAllArgs,
   killArgs,
   LABEL,
   LABEL_INSTANCE,
+  LABEL_KIND,
   LABEL_RUN,
+  LABEL_SESSION,
   listArgs,
   mountArg,
   NAME_PREFIX,
   pullArgs,
   removeArgs,
+  runningArgs,
   TOOLS_DIR,
   versionArgs,
   WORK_DIR,
 } from "./args.js";
 export {
   CODE_RUN,
+  CODE_SESSION,
   type CodeRunArgs,
   CodeRunArgsSchema,
+  type CodeSessionArgs,
+  CodeSessionArgsSchema,
   summarizeRun,
   TOOL_PROPOSE,
 } from "./capabilities.js";
@@ -43,9 +53,12 @@ export {
   SandboxImagesSchema,
   type SandboxLimits,
   SandboxLimitsSchema,
+  type SandboxSessions,
+  SandboxSessionsSchema,
 } from "./config.js";
 export {
   codeRunCapability,
+  codeSessionCapability,
   formatRun,
   NODE_CODE_RUN,
   NODE_PROPOSED_PREFIX,
@@ -66,6 +79,7 @@ export {
   normalizeRelativePath,
   safeJoin,
 } from "./paths.js";
+export { type PoolStats, type Standby, WarmPool, type WarmPoolOptions } from "./pool.js";
 export {
   type ApprovedToolSpec,
   compileArgsSchema,
@@ -95,11 +109,13 @@ export {
   KILL_GRACE_MS,
   resolveUser,
   type SandboxPublisher,
+  START_TIMEOUT_MS,
 } from "./sandbox.js";
 export { Semaphore } from "./semaphore.js";
 export {
   type FileIn,
   type FileOut,
+  FRESH,
   type KilledReason,
   LANGUAGES,
   type Language,
@@ -112,13 +128,25 @@ export {
   type SandboxHealth,
   SandboxKey,
   type ScriptInfo,
+  SESSION_NAME,
+  SessionChoiceSchema,
+  SessionClosedError,
+  type SessionCloseReason,
+  type SessionInfo,
+  type SessionRun,
   type ToolsWorkspaceApi,
 } from "./types.js";
 export {
   collectOutputs,
   createRunDirs,
+  createSessionDirs,
+  MAX_SESSION_ENTRIES,
   pruneRuns,
   type RunDirs,
+  sessionsDir,
+  signatures,
   ToolsWorkspace,
+  type WorkWalk,
+  walkWork,
   writeInputs,
 } from "./workspace.js";

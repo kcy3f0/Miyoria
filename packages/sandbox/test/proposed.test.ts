@@ -36,7 +36,16 @@ class FakeSandbox implements Sandbox {
       files_out_truncated: false,
       duration_ms: 5,
       killed_reason: null,
+      session: null,
     };
+  }
+
+  async listSessions() {
+    return [];
+  }
+
+  async closeSession() {
+    return false;
   }
 
   async health() {
