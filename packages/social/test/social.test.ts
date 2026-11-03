@@ -42,6 +42,7 @@ import {
   familiarityChange,
   flirtWeight,
   label,
+  lineDepth,
   localDay,
   MoodModule,
   mergeInto,
@@ -120,13 +121,48 @@ describe("social engine", () => {
     check(-60, 50, "很討厭");
   });
 
-  it("familiarity_grows_per_day_and_decays_without_contact", () => {
+  it("familiarity grows with how much and how deeply people talk, and decays without contact", () => {
     const c = socialConfig();
-    expect(close(familiarityChange(null, t(1, 12), c), 1)).toBe(true);
-    expect(close(familiarityChange(t(1, 9), t(1, 23), c), 0)).toBe(true);
-    expect(close(familiarityChange(t(1, 23), t(2, 1), c), 1)).toBe(true);
+    // Every line counts (not +1 a day), by its depth, slowing toward 100.
+    expect(close(familiarityChange(null, t(1, 12), c), 0.15)).toBe(true);
+    expect(close(familiarityChange(t(1, 9), t(1, 23), c, 0, 1), 0.15)).toBe(true);
+    expect(close(familiarityChange(t(1, 9), t(1, 23), c, 0, 3), 0.45)).toBe(true);
+    expect(close(familiarityChange(t(1, 9), t(1, 23), c, 50, 1), 0.075)).toBe(true);
+    expect(familiarityChange(t(1, 9), t(1, 23), c, 100, 4)).toBe(0);
+    // The next day is just another line.
+    expect(close(familiarityChange(t(1, 23), t(2, 1), c), 0.15)).toBe(true);
     // 19 days without contact, 7 of grace: 12 days of decay.
-    expect(close(familiarityChange(t(1, 12), t(21, 12), c), 1 - 12 * 0.5)).toBe(true);
+    expect(close(familiarityChange(t(1, 12), t(21, 12), c), 0.15 - 12 * 0.5)).toBe(true);
+    // Depth: said to her, long, very long.
+    expect([
+      lineDepth("嗨", false),
+      lineDepth("嗨", true),
+      lineDepth("嗨".repeat(40), true),
+    ]).toEqual([1, 2, 3]);
+    expect(lineDepth("嗨".repeat(120), true)).toBe(4);
+  });
+
+  it("a person who talks a lot is not a stranger (604 lines)", async () => {
+    const h = new Harness();
+    for (let i = 0; i < 604; i++) {
+      await h.say(
+        "discord:2",
+        "Amy",
+        "今天天氣真好,我們一起去走走吧,順便聊聊最近發生的事情吧",
+        dm(),
+        t(1, 10) + i * MINUTE,
+      );
+    }
+    const r = h.rel("discord:2");
+    expect(r.interactions).toBe(604);
+    expect(r.familiarity).toBeGreaterThan(30);
+    expect(r.familiarity).toBeLessThan(100);
+    // Rows are written in steps of half a point, not one per line.
+    const rows = h.store
+      .deltas(h.person("discord:2"))
+      .filter((d) => d.reason === "familiarity: lines");
+    expect(rows.length).toBeGreaterThan(5);
+    expect(rows.length).toBeLessThan(250);
   });
 
   it("rules_are_capped_per_day_and_survive_restart", async () => {
@@ -137,12 +173,13 @@ describe("social engine", () => {
     let r = h.rel("discord:2");
     // thanks: 1 + .5 + .25 ... < 2, praise: 1.5 + .75 ... < 3.
     expect(r.affinity > 4.5 && r.affinity < 5.001, `${r.affinity}`).toBe(true);
-    expect(close(r.familiarity, 1), "one interaction day").toBe(true);
+    // 20 lines said to her (depth 2): 0.3 each, slowing a little.
+    expect(r.familiarity > 5 && r.familiarity < 6.5, `${r.familiarity}`).toBe(true);
     expect(r.interactions).toBe(20);
     const p = h.person("discord:2");
     const reasons = h.store.deltas(p).map((d) => d.reason);
     expect(reasons).toContain("rule: thanks");
-    expect(reasons).toContain("familiarity: day");
+    expect(reasons).toContain("familiarity: lines");
     expect(h.topics()).not.toEqual([]);
 
     // A restart rebuilds today's ledger from the recorded deltas.
@@ -157,7 +194,8 @@ describe("social engine", () => {
     await again.say("discord:2", "Amy", "謝謝", dm(), t(2, 11));
     r = again.rel("discord:2");
     expect(close(r.affinity - before, 1), `${r.affinity - before}`).toBe(true);
-    expect(close(r.familiarity, 2)).toBe(true);
+    // The next day's lines add to what the first day made (it is only a few lines more).
+    expect(r.familiarity > 5.5, `${r.familiarity}`).toBe(true);
   });
 
   it("rules_only_count_lines_said_to_her", async () => {
@@ -590,6 +628,7 @@ describe("social engine", () => {
       utc_offset_minutes: 480,
       familiarity_grace_days: 7,
       familiarity_decay_per_day: 0.5,
+      familiarity_per_line: 0.15,
       appraisal_every_lines: 8,
       appraisal_idle_secs: 90,
       appraisal_max_lines: 30,
@@ -607,21 +646,19 @@ describe("social engine", () => {
     const h = new Harness();
     await h.say("discord:2", "Amy", "謝謝", dm(), t(1, 10));
     const p = h.person("discord:2");
-    const [familiarity, thanks] = h.topics();
-    expect(familiarity).toEqual({
+    // One short line is only a hair of familiarity: no row for it yet.
+    const [thanks] = h.topics();
+    expect(thanks).toMatchObject({
       profile: profile(),
       person: p,
       name: "Amy",
-      reason: "familiarity: day",
-      kind: null,
-      positive: null,
-      affinity: 0,
-      trust: 0,
-      familiarity: 1,
+      reason: "rule: thanks",
+      kind: "thanks",
+      positive: true,
+      trust: expect.any(Number),
       label: "陌生人",
       context: dm(),
     });
-    expect(thanks).toMatchObject({ reason: "rule: thanks", kind: "thanks", positive: true });
     const delta = h.store.deltas(p)[0];
     expect(Object.keys(delta ?? {}).sort()).toEqual([
       "affinity",

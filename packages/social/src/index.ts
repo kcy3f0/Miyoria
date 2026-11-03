@@ -37,10 +37,9 @@ export {
   stripTags,
   TOPIC,
 } from "./engine.js";
-export { SocialError, SocialModule } from "./module.js";
+export { applyBond, SocialError, SocialModule } from "./module.js";
 export {
   describe,
-  emotionNudge,
   eventNudge,
   type MoodConfig,
   MoodConfigSchema,
@@ -76,6 +75,7 @@ export {
   isPositiveKind,
   type LocalDay,
   label,
+  lineDepth,
   localDay,
   normalize,
   OWNER_TAG,

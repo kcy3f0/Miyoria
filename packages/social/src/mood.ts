@@ -1,15 +1,15 @@
 // Module `mood`: her global mood.
 //
-// Valence / arousal / energy drift with an exponential decay toward a target: the profile
-// baseline shaped by her daily rhythm (energy low late at night) plus what her emotions push
-// toward (`SelfState.affect` of the `self` module), so the mood mostly follows her emotions
-// and lags behind them. Events nudge it directly:
+// With the `self` module (the affect service, `AffectStateKey`) the mood is not stored here: it
+// is derived from her drives, her emotions and the time of day (`deriveMood` of `@miyoria/types`)
+// and this module only serves it (`MoodSignalsKey`) and publishes `mood.changed`. Nothing nudges
+// it any more, and her own `<emo:…>` tags (`agent.emotion`) are expression only: they never feed
+// back (that loop is what pinned arousal at 1).
 //
-// * `social.relationship` (praise, insults, ... from the social module; only without the
-//   `self` module, whose emotions already react to them),
-// * `agent.emotion` (her own emotion tags),
-// * `mood.nudge` with `{"valence": .., "arousal": .., "energy": .., "reason": ..}` (all
-//   optional; for games and extensions).
+// Without the `self` module the old behaviour stays: valence / arousal / energy drift with an
+// exponential decay toward a target (the profile baseline shaped by her daily rhythm), nudged
+// by `social.relationship` (praise, insults, ...) and `mood.nudge` with `{"valence": ..,
+// "arousal": .., "energy": .., "reason": ..}` (all optional; for games and extensions).
 //
 // Publishes `mood.changed` when the mood moved noticeably.
 
@@ -25,6 +25,7 @@ import type { MoodBaseline } from "@miyoria/profile";
 import { type SettingsStore, SettingsStoreKey } from "@miyoria/store";
 import {
   type Affect,
+  AffectStateKey,
   type Clock,
   customEvent,
   type Event,
@@ -33,6 +34,8 @@ import {
   type Mood,
   type MoodSignals,
   MoodSignalsKey,
+  moodLine,
+  nightShape,
   type ProfileId,
   type PromptContributor,
   type PromptContributors,
@@ -46,6 +49,9 @@ import {
   toTimestamp,
 } from "@miyoria/types";
 import { z } from "zod";
+
+// The time-of-day curve lives in `@miyoria/types` (the affect service derives the mood from it).
+export { nightShape };
 
 /** Settings key of the persisted mood. */
 export const SETTINGS_KEY = "mood:last";
@@ -83,25 +89,6 @@ export function moodConfig(overrides: Partial<MoodConfig> = {}): MoodConfig {
   return { ...MoodConfigSchema.parse({}), ...overrides };
 }
 
-/** Sleepiness per local hour (0 = awake, 1 = deepest night), interpolated. */
-const NIGHT_SHAPE = [
-  0.5, 0.7, 0.85, 0.95, 1.0, 0.9, 0.65, 0.35, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.05, 0.0, 0.0,
-  0.0, 0.0, 0.0, 0.1, 0.2, 0.35,
-] as const;
-
-function shapeAt(i: number): number {
-  return NIGHT_SHAPE[((i % 24) + 24) % 24] ?? 0;
-}
-
-/** Sleepiness at a fractional local hour (0..24). */
-export function nightShape(hour: number): number {
-  const h = ((hour % 24) + 24) % 24;
-  const i = Math.floor(h);
-  const frac = h - i;
-  const cur = shapeAt(i);
-  return cur + (shapeAt(i + 1) - cur) * frac;
-}
-
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(Math.max(v, lo), hi);
 }
@@ -118,6 +105,9 @@ function clampMood(m: Mood): Mood {
 
 /** Mood offsets her emotions push toward (`SelfState.affect`); `null` = none. */
 export type AffectSource = () => Affect | null;
+
+/** The mood derived from drives, emotions and the hour (`null`: the affect service is not running). */
+export type DerivedMood = () => Mood | null;
 
 /** Pure mood dynamics; `now` (epoch ms) is passed in. */
 export class MoodEngine {
@@ -229,28 +219,6 @@ export class MoodEngine {
   }
 }
 
-/** `[valence, arousal, energy]` nudge for one of her emotion tags. */
-export function emotionNudge(emotion: string): [number, number, number] | null {
-  switch (emotion.trim().toLowerCase()) {
-    case "happy":
-      return [0.06, 0.04, 0];
-    case "smug":
-      return [0.04, 0.02, 0];
-    case "embarrassed":
-      return [0.02, 0.05, 0];
-    case "surprised":
-      return [0, 0.06, 0];
-    case "annoyed":
-      return [-0.03, 0.03, 0];
-    case "angry":
-      return [-0.06, 0.08, 0];
-    case "sad":
-      return [-0.06, -0.03, -0.02];
-    default:
-      return null;
-  }
-}
-
 function num(v: JsonValue, key: string): number {
   if (!isJsonObject(v)) return 0;
   const x = v[key];
@@ -291,13 +259,6 @@ export function eventNudge(event: Event, config: MoodConfig): MoodNudge | null {
         reason: `social: ${kind}`,
       };
     }
-    case "agent.emotion": {
-      const emotion = str(payload, "emotion");
-      if (emotion === null) return null;
-      const n = emotionNudge(emotion);
-      if (n === null) return null;
-      return { valence: n[0], arousal: n[1], energy: n[2], reason: `emotion: ${emotion}` };
-    }
     case "mood.nudge":
       return {
         valence: num(payload, "valence"),
@@ -310,28 +271,19 @@ export function eventNudge(event: Event, config: MoodConfig): MoodNudge | null {
   }
 }
 
-/** One-line hint for the prompt. */
+/**
+ * One-line hint for the prompt: the canonical mood line (`moodLine`, the only place its
+ * thresholds live) and how to carry it.
+ */
 export function describe(m: Mood): string {
-  let v: string;
-  if (m.valence >= 0.5) v = "心情很好";
-  else if (m.valence >= 0.2) v = "心情不錯";
-  else if (m.valence > -0.2) v = "心情普通";
-  else if (m.valence > -0.5) v = "有點不爽";
-  else v = "心情很差";
-  let e: string;
-  if (m.energy < 0.3) e = "很睏";
-  else if (m.energy < 0.5) e = "有點累";
-  else if (m.energy > 0.85) e = "精神很好";
-  else e = "精神還可以";
-  let a = "";
-  if (m.arousal > 0.75) a = ",情緒有點激動";
-  else if (m.arousal < 0.25) a = ",很平靜";
-  return `你現在${v}、${e}${a}。語氣可以自然帶出來,但不用直接說出自己的心情。`;
+  return `你現在${moodLine(m)}。語氣可以自然帶出來,但不用直接說出自己的心情。`;
 }
 
 /** Shared mood state. Provided as `MoodStateKey` and `MoodSignalsKey`. */
 export class MoodState implements MoodSignals {
   readonly engine: MoodEngine;
+  /** The derived mood (the affect service), when it runs: then nothing is stored here. */
+  readonly #derived: DerivedMood;
   #lastPublished: Mood;
   readonly #threshold: number;
   readonly #config: MoodConfig;
@@ -343,7 +295,9 @@ export class MoodState implements MoodSignals {
     now: number,
     clock: Clock = systemClock,
     affect: AffectSource = () => null,
+    derived: DerivedMood = () => null,
   ) {
+    this.#derived = derived;
     this.engine = new MoodEngine(baseline, config, now, affect);
     this.#lastPublished = this.engine.current();
     this.#threshold = Math.abs(config.publish_threshold);
@@ -352,11 +306,13 @@ export class MoodState implements MoodSignals {
   }
 
   at(now: number): Mood {
-    return this.engine.peek(now);
+    return this.#derived() ?? this.engine.peek(now);
   }
 
   /** Applies an event. Returns the new mood when it should be published. */
   handle(event: Event, now: number): { mood: Mood; reason: string } | null {
+    // A derived mood is nobody's to nudge: events reach it through her drives and emotions.
+    if (this.#derived() !== null) return null;
     // Her emotions already react to what people do (and the mood follows them).
     if (
       event.type === "custom" &&
@@ -379,7 +335,7 @@ export class MoodState implements MoodSignals {
   }
 
   #changed(now: number): Mood | null {
-    const current = this.engine.peek(now);
+    const current = this.at(now);
     const last = this.#lastPublished;
     const moved = Math.max(
       Math.abs(current.valence - last.valence),
@@ -484,7 +440,9 @@ export class MoodModule implements Module {
     const now = ctx.clock.now();
     // The `self` module may start later or restart: looked up on every use.
     const affect = () => ctx.services.get(SelfStateKey)?.affect?.() ?? null;
-    const state = new MoodState(this.#baseline, config, now, ctx.clock, affect);
+    // With the affect service the mood is derived from her drives and emotions, not stored.
+    const derived = () => ctx.services.get(AffectStateKey)?.snapshot().mood ?? null;
+    const state = new MoodState(this.#baseline, config, now, ctx.clock, affect, derived);
     const store = config.persist ? ctx.services.get(SettingsStoreKey) : undefined;
     if (store) {
       try {
@@ -514,7 +472,8 @@ export class MoodModule implements Module {
       if (store) await saves.run(() => this.#save(ctx, store, state));
     };
 
-    const sub = ctx.subscribe(["social.relationship", "agent.emotion", "mood.nudge"]);
+    // `agent.emotion` is not listened to: her own tags are expression, never a cause.
+    const sub = ctx.subscribe(["social.relationship", "mood.nudge"]);
     ctx.spawn("mood", async () => {
       for await (const env of sub) {
         const result = state.handle(env.event, ctx.clock.now());

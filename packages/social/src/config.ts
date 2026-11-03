@@ -29,6 +29,11 @@ export const SocialConfigSchema = z.object({
     .number()
     .int()
     .default(8 * 60),
+  /**
+   * Familiarity per line a person says (times its depth, see `lineDepth`; slows toward 100):
+   * it grows with how much and how deeply people interact, not a point per day.
+   */
+  familiarity_per_line: z.number().nonnegative().default(0.15),
   /** Days without contact before familiarity starts to decay. */
   familiarity_grace_days: z.number().int().default(7),
   /** Familiarity lost per day without contact after the grace period. */

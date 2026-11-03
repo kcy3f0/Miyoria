@@ -63,6 +63,7 @@ import {
   isOwner,
   isPositiveKind,
   label,
+  lineDepth,
   localDay,
   normalize,
   OWNER_TAG,
@@ -120,6 +121,8 @@ const ACTIVITY_LINES = 30;
 const CONTEXT_LINES_KEPT = 6;
 const TONE_THRESHOLD = 0.15;
 const MINUTE_MS = 60_000;
+/** Smallest familiarity change that is recorded as a delta row. */
+const FAMILIARITY_STEP = 0.5;
 
 interface BufLine {
   person: PersonId | null;
@@ -249,6 +252,8 @@ export class Social implements SocialSignals {
   /** Interaction counters changed but not yet written. */
   readonly #dirty = new Set<PersonId>();
   readonly #linkFailures = new Map<string, { since: number; count: number }>();
+  /** Familiarity gained since the last recorded step, per person. */
+  readonly #famPending = new Map<PersonId, number>();
   /** Serializes read-modify-write cycles so store writes stay in order. */
   readonly #gate = new SerialQueue();
   /**
@@ -464,7 +469,7 @@ export class Social implements SocialSignals {
       line.directed || this.#mentionsHer(line.text) || this.#spokeRecently(line.context, now);
     const kinds = directed ? classify(line.text) : [];
     const events: CappedEvent[] = kinds.map((k) => ["rule", k, 1] as const);
-    await this.applyEvents(person, events, now, line.context, now);
+    await this.applyEvents(person, events, now, line.context, now, lineDepth(line.text, directed));
 
     const speaker = this.#personNames.get(person) ?? line.display_name;
     const text = line.text.trim();
@@ -737,13 +742,17 @@ export class Social implements SocialSignals {
     this.#ledgers.set(person, DayLedger.fromDeltas(today, deltas));
   }
 
-  /** Applies capped events and, with `touch` (epoch ms), one interaction. */
+  /**
+   * Applies capped events and, with `touch` (epoch ms), one interaction of `depth` (see
+   * `lineDepth`; it sets how much it adds to familiarity).
+   */
   applyEvents(
     person: PersonId,
     events: readonly CappedEvent[],
     touch: number | null,
     context: ContextKey | null,
     now: number,
+    depth = 1,
   ): Promise<void> {
     if (events.length === 0 && touch === null) return Promise.resolve();
     return this.#gate.run(async () => {
@@ -752,11 +761,25 @@ export class Social implements SocialSignals {
       if (isBlocked(r)) return;
       const rows: Array<[RelationshipDelta, EventKind | null]> = [];
       if (touch !== null) {
-        const change = familiarityChange(r.last_interaction, touch, this.config);
+        const change = familiarityChange(
+          r.last_interaction,
+          touch,
+          this.config,
+          r.familiarity,
+          depth,
+        );
         r.interactions += 1;
         r.last_interaction = toTimestamp(touch);
         const [, , df] = apply(r, 0, 0, change, this.config);
-        if (nonzero(df)) rows.push([row(now, 0, 0, df, "familiarity: day"), null]);
+        // A line moves it a hair: rows (and `social.relationship` events) come in steps of at
+        // least half a point; the counters are flushed by the tick.
+        const pending = (this.#famPending.get(person) ?? 0) + df;
+        if (Math.abs(pending) >= FAMILIARITY_STEP) {
+          this.#famPending.delete(person);
+          rows.push([row(now, 0, 0, pending, "familiarity: lines"), null]);
+        } else {
+          this.#famPending.set(person, pending);
+        }
       }
       // Her emotions react to everything, whether or not the caps let the numbers move.
       for (const [source, kind, scale] of events) {
@@ -1015,8 +1038,7 @@ export class Social implements SocialSignals {
   attitude(account: AccountRef): Attitude | null {
     const person = this.#accounts.get(accountRefString(account));
     if (person === undefined) return null;
-    const r = this.#rels.get(person);
-    return r ? attitude(r) : null;
+    return this.attitudeOf(person);
   }
 
   /** The people she likes most (affinity at or above `min`), most liked first. */
@@ -1030,7 +1052,7 @@ export class Social implements SocialSignals {
 
   attitudeOf(person: PersonId): Attitude | null {
     const r = this.#rels.get(person);
-    return r ? attitude(r) : null;
+    return r ? { ...attitude(r), display_name: this.#personNames.get(person) ?? null } : null;
   }
 }
 
@@ -1046,6 +1068,9 @@ export function attitude(r: Relationship): Attitude {
     blocked: isBlocked(r),
     label: label(r),
     call_name: r.call_name,
+    owner: isOwner(r),
+    interactions: r.interactions,
+    last_interaction: r.last_interaction,
   };
 }
 

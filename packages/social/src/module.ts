@@ -16,10 +16,13 @@ import {
   StoreKey,
 } from "@miyoria/store";
 import {
+  AFFECT_BOND_TOPIC,
   AuthorizerKey,
   type ContextKey,
   contextKeyString,
   EMOTION_LABELS,
+  isJsonObject,
+  type JsonValue,
   type PersonId,
   type ProfileId,
   type PromptContributors,
@@ -162,6 +165,7 @@ export class SocialModule implements Module {
       "platform.message.created",
       "voice.utterance",
       "agent.turn.completed",
+      AFFECT_BOND_TOPIC,
     ]);
     ctx.spawn("events", async () => {
       for await (const env of sub) {
@@ -205,6 +209,14 @@ export class SocialModule implements Module {
           case "agent_turn_completed":
             social.observeSelf(event.data.context, event.data.text, now);
             break;
+          case "custom":
+            // A bond change Reflect proposed through the affect service (small, already capped).
+            if (event.data.topic === AFFECT_BOND_TOPIC) {
+              await applyBond(social, event.data.payload, now).catch((error: unknown) => {
+                ctx.log.warn({ err: errorMessage(error) }, "cannot apply a proposed bond change");
+              });
+            }
+            break;
           default:
             break;
         }
@@ -246,6 +258,24 @@ export class SocialModule implements Module {
     running.contributors?.unregister(SocialPrompt.KEY);
     await running.social.flush();
   }
+}
+
+/** Applies an `affect.bond` payload (`AffectBondPayload`) to the relationship. */
+export async function applyBond(social: Social, payload: JsonValue, now: number): Promise<void> {
+  if (!isJsonObject(payload) || typeof payload.person !== "string") return;
+  const num = (v: JsonValue | undefined) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const [affinity, trust, familiarity] = [
+    num(payload.affinity),
+    num(payload.trust),
+    num(payload.familiarity),
+  ];
+  if (affinity === 0 && trust === 0 && familiarity === 0) return;
+  const why = typeof payload.why === "string" ? payload.why.slice(0, 80) : "";
+  await social.modify(payload.person, `reflect: ${why}`, now, (r) => {
+    r.affinity += affinity;
+    r.trust += trust;
+    r.familiarity += familiarity;
+  });
 }
 
 function spawnAppraisal(ctx: ModuleContext, social: Social, key: ContextKey): void {
