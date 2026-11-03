@@ -12,6 +12,7 @@ import { CharacterPage } from "@/pages/character/CharacterPage";
 import { DataPage } from "@/pages/data/DataPage";
 import { InnerPage } from "@/pages/inner/InnerPage";
 import { LivePage } from "@/pages/live/LivePage";
+import { LlmPage } from "@/pages/llm/LlmPage";
 import { NotFoundPage } from "@/pages/NotFound";
 import { OverviewPage } from "@/pages/overview/OverviewPage";
 import { SettingsPage } from "@/pages/settings/SettingsPage";
@@ -23,6 +24,8 @@ import {
   type CharacterTab,
   INNER_TABS,
   type InnerTab,
+  LLM_TABS,
+  type LlmTab,
   oneOf,
   SYSTEM_TABS,
   type SystemTab,
@@ -53,8 +56,45 @@ export const characterRoute = createRoute({
 export const innerRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/inner",
-  validateSearch: (s: Record<string, unknown>): { tab?: InnerTab } => ({ tab: oneOf(INNER_TABS, s.tab) }),
+  validateSearch: (s: Record<string, unknown>): { tab?: InnerTab; thought?: string } => ({
+    tab: oneOf(INNER_TABS, s.tab),
+    thought: str(s.thought),
+  }),
   component: InnerPage,
+});
+
+export interface LlmSearch {
+  tab?: LlmTab;
+  /** The call open in the sheet. */
+  call?: string;
+  thought?: string;
+  turn?: string;
+  purpose?: string;
+  model?: string;
+  module?: string;
+  status?: "ok" | "error" | "aborted" | "streaming";
+  trouble?: boolean;
+  q?: string;
+}
+
+const STATUSES = ["ok", "error", "aborted", "streaming"] as const;
+
+export const llmRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/llm",
+  validateSearch: (s: Record<string, unknown>): LlmSearch => ({
+    tab: oneOf(LLM_TABS, s.tab),
+    call: str(s.call),
+    thought: str(s.thought),
+    turn: str(s.turn),
+    purpose: str(s.purpose),
+    model: str(s.model),
+    module: str(s.module),
+    status: STATUSES.find((x) => x === s.status),
+    trouble: s.trouble === true || s.trouble === "true" ? true : undefined,
+    q: str(s.q),
+  }),
+  component: LlmPage,
 });
 
 export const systemRoute = createRoute({
@@ -83,6 +123,7 @@ const routeTree = rootRoute.addChildren([
   createRoute({ getParentRoute: () => rootRoute, path: "/live", component: LivePage }),
   characterRoute,
   innerRoute,
+  llmRoute,
   systemRoute,
   createRoute({ getParentRoute: () => rootRoute, path: "/access", component: AccessPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/data", component: DataPage }),
@@ -105,6 +146,7 @@ const routeTree = rootRoute.addChildren([
   moved("/modules", "/system", { tab: "modules" }),
   moved("/extensions", "/system", { tab: "extensions" }),
   moved("/mcp", "/system", { tab: "mcp" }),
+  moved("/calls", "/llm", { tab: "calls" }),
   moved("/roles", "/access"),
 ]);
 

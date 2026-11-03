@@ -126,8 +126,10 @@ function Tooltip({ x, width, title, rows }: { x: number; width: number; title: s
 
 /** A visually hidden table of the plotted values (at most 24 rows). */
 function DataTableSr({ caption, head, rows }: { caption: string; head: string[]; rows: string[][] }) {
+  // `overflow: hidden` does not apply to a table box: the wrapper keeps it out of the layout.
   return (
-    <table className="sr-only">
+    <div className="sr-only">
+    <table>
       <caption>{caption}</caption>
       <thead>
         <tr>
@@ -148,6 +150,7 @@ function DataTableSr({ caption, head, rows }: { caption: string; head: string[];
         ))}
       </tbody>
     </table>
+    </div>
   );
 }
 
@@ -640,7 +643,7 @@ export function BarList({
             {i.label}
           </span>
           <span className="h-2 rounded-full bg-muted">
-            <span className="block h-full rounded-full" style={{ width: `${max > 0 ? Math.max(2, (i.value / max) * 100) : 0}%`, background: color }} />
+            <span className="block h-full rounded-full" style={{ width: `${max > 0 && i.value > 0 ? Math.max(2, (i.value / max) * 100) : 0}%`, background: color }} />
           </span>
           <span className="text-right font-mono text-[13px] tabular-nums" title={i.detail}>
             {format(i.value)}

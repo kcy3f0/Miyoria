@@ -1,5 +1,5 @@
 import type { CostReport, UsageMap } from "@/api/types";
-import { useCost, useUsage } from "@/app/queries";
+import { useCost, useLlmStats, useUsage } from "@/app/queries";
 import { BarList, ChartBlock } from "@/components/charts/charts";
 import { QueryView, SkeletonRows } from "@/components/query-state";
 import { LatencyBlock, RangeToggle, SpendBlock, TokensBlock, useRange, useTrend } from "@/components/trends";
@@ -7,6 +7,7 @@ import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtCompact, fmtInt, fmtUsd } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { fmtPerMtok } from "./labels";
 
 export function UsageTable({ usage, cost }: { usage: UsageMap; cost?: CostReport }) {
   const rows = Object.entries(usage).sort(([, a], [, b]) => b.calls - a.calls);
@@ -86,22 +87,86 @@ function CallsByModel() {
   );
 }
 
-export function LlmTab() {
+/** The configured `[llm.pricing]` and the models seen without one. */
+function PriceTable() {
+  const stats = useLlmStats(null);
+  const prices = stats.data?.prices ?? {};
+  const seen = (stats.data?.by_model ?? []).map((g) => g.key).filter((k) => k !== "—");
+  const models = [...new Set([...Object.keys(prices), ...seen])].sort();
+  const r = "text-right font-mono text-[13px] tabular-nums";
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader>
+        <CardTitle>價格(每百萬 token,USD)</CardTitle>
+        <span className="ml-auto text-xs text-muted-foreground">
+          設定在 <code>miyoria.toml</code> 的 <code>[llm.pricing]</code>
+        </span>
+      </CardHeader>
+      {stats.isPending ? (
+        <SkeletonRows count={2} />
+      ) : models.length === 0 ? (
+        <p className="px-4 py-6 text-center text-sm text-muted-foreground">沒有設定價格,也還沒有呼叫</p>
+      ) : (
+        <Table aria-label="價格">
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead>模型</TableHead>
+              <TableHead className="text-right">輸入</TableHead>
+              <TableHead className="text-right">快取命中的輸入</TableHead>
+              <TableHead className="text-right">輸出</TableHead>
+              <TableHead className="text-right">保留的呼叫</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {models.map((m) => {
+              const p = prices[m];
+              const calls = stats.data?.by_model.find((g) => g.key === m)?.calls ?? 0;
+              return (
+                <TableRow key={m}>
+                  <TableCell className="font-mono text-[13px]">{m}</TableCell>
+                  {p ? (
+                    <>
+                      <TableCell className={r}>{fmtPerMtok(p.input_per_mtok)}</TableCell>
+                      <TableCell className={r}>
+                        {p.cached_input_per_mtok === null ? <span className="text-muted-foreground">同輸入</span> : fmtPerMtok(p.cached_input_per_mtok)}
+                      </TableCell>
+                      <TableCell className={r}>{fmtPerMtok(p.output_per_mtok)}</TableCell>
+                    </>
+                  ) : (
+                    <TableCell colSpan={3} className="text-right text-[13px] text-[oklch(0.78_0.14_25)]">
+                      沒有設定價格,呼叫算作 $0
+                    </TableCell>
+                  )}
+                  <TableCell className="text-right tabular-nums">{fmtInt(calls)}</TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      )}
+    </Card>
+  );
+}
+
+export function PricesTab() {
   const [range, setRange] = useRange();
   const trend = useTrend(range);
   const usage = useUsage();
   const cost = useCost();
   return (
     <div className="grid gap-4">
-      <div className="flex items-center justify-between gap-3">
+      <PriceTable />
+      <div className="grid gap-4 lg:grid-cols-2">
+        <SpendBlock />
+        <CallsByModel />
+      </div>
+      <div className="flex items-center justify-between gap-3 pt-2">
         <h2 className="text-base font-semibold tracking-tight">用量趨勢</h2>
         <RangeToggle range={range} onChange={setRange} />
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <TokensBlock trend={trend} />
         <LatencyBlock trend={trend} />
-        <SpendBlock />
-        <CallsByModel />
       </div>
       <Card className="overflow-hidden">
         <CardHeader>

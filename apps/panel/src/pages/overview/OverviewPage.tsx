@@ -41,8 +41,14 @@ function budgetIssue(cost: CostReport): Issue | null {
   };
 }
 
-const go = (label: string, search: { tab: "modules" | "mcp" | "extensions" | "llm"; q?: string }) => (
+const go = (label: string, search: { tab: "modules" | "mcp" | "extensions"; q?: string }) => (
   <Link to="/system" search={search} aria-label={`查看 ${label}`}>
+    <ChevronRight className="size-4" />
+  </Link>
+);
+
+const toLlm = (
+  <Link to="/llm" search={{ tab: "prices" }} aria-label="查看 LLM 花費">
     <ChevronRight className="size-4" />
   </Link>
 );
@@ -70,7 +76,7 @@ function Attention() {
     }
   }
   const b = cost.data ? budgetIssue(cost.data) : null;
-  if (b) issues.unshift({ ...b, to: go("LLM", { tab: "llm" }) });
+  if (b) issues.unshift({ ...b, to: toLlm });
 
   if (modules.isPending || issues.length === 0) return null;
   return (

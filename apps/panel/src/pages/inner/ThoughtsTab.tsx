@@ -1,5 +1,5 @@
-import { Check, X } from "lucide-react";
-import { type ReactNode, useId } from "react";
+import { Brain, Check, ChevronRight, X } from "lucide-react";
+import { type ReactNode, useDeferredValue, useId, useState } from "react";
 import type {
   IntentStatus,
   MindView,
@@ -9,11 +9,16 @@ import type {
   ThoughtIntent,
   ThoughtTriggerKind,
 } from "@/api/types";
-import { useApprovals, useDigests, useMind, useMindMutations, useThoughtHistory, useThoughts } from "@/app/queries";
+import { useApprovals, useDigests, useMind, useMindMutations, useThoughtHistory } from "@/app/queries";
 import { BarList, ChartBlock, SegmentBar } from "@/components/charts/charts";
+import { SearchInput } from "@/components/controls";
 import { RangeToggle, ThoughtsBlock, useRange } from "@/components/trends";
-import { fmtInt } from "@/lib/format";
-import { rangeOf, tally } from "@/lib/telemetry";
+import { Segmented } from "@/components/ui/segmented";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { fmtInt, fmtTime } from "@/lib/format";
+import { rangeOf, type ThoughtOutcome, tally, thoughtOutcome } from "@/lib/telemetry";
+import { fmtCost, fmtMs } from "@/pages/llm/labels";
+import { ThoughtSheet } from "./ThoughtSheet";
 import { READ_ONLY_HINT, useCanWrite } from "@/app/session";
 import { EmptyLine, QueryView, SkeletonRows } from "@/components/query-state";
 import { StatusBadge, type Tone } from "@/components/status";
@@ -59,6 +64,8 @@ function AutonomyCard() {
   const id = useId();
   const m = mind.data;
   const state = m ? stateOf(m) : null;
+  // The idle run as her newest thought saw it (`null`: she just did something).
+  const idle = useThoughtHistory().data?.[0]?.idle ?? null;
   return (
     <Card className="overflow-hidden">
       <CardHeader>
@@ -86,7 +93,7 @@ function AutonomyCard() {
       </CardHeader>
       <QueryView query={mind} skeleton={<SkeletonRows count={1} />}>
         {(v) => (
-          <dl className="grid grid-cols-2 gap-px bg-border sm:grid-cols-4" aria-label="心智迴圈">
+          <dl className="grid grid-cols-2 gap-px bg-border sm:grid-cols-5 [&>div:last-child]:col-span-2 sm:[&>div:last-child]:col-span-1" aria-label="心智迴圈">
             <Fact label="這小時">
               {v.stats ? `${v.stats.calls_last_hour} / ${v.stats.max_calls_per_hour}` : "—"}
             </Fact>
@@ -96,6 +103,13 @@ function AutonomyCard() {
             </Fact>
             <Fact label="下次心跳">
               <When at={v.stats?.next_heartbeat_at ?? null} />
+            </Fact>
+            <Fact label="沒事做">
+              {idle && idle.thoughts > 0 ? (
+                <span className="text-warning">連續 {idle.thoughts} 次 · {idle.minutes} 分鐘</span>
+              ) : (
+                <span className="text-muted-foreground">剛做過事</span>
+              )}
             </Fact>
           </dl>
         )}
@@ -219,22 +233,36 @@ function IntentLine({ intent }: { intent: ThoughtIntent }) {
   );
 }
 
-function ThoughtItem({ t }: { t: Thought }) {
+function ThoughtItem({ t, onOpen }: { t: Thought; onOpen: () => void }) {
   const kinds = [...new Set(t.triggers.map((x) => x.kind))];
   const detail = t.triggers.find((x) => x.detail.trim() !== "")?.detail;
   return (
-    <li className="grid gap-x-6 gap-y-2 px-4 py-4 sm:grid-cols-[8rem_minmax(0,1fr)]">
+    <li className="group grid gap-x-6 gap-y-2 px-4 py-4 sm:grid-cols-[8rem_minmax(0,1fr)]">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[13px] text-muted-foreground sm:flex-col sm:gap-1">
         <When at={t.at} />
         <span>{kinds.map((k) => TRIGGER_LABEL[k] ?? k).join("、")}</span>
+        <span className="font-mono text-[11px] tabular-nums">
+          {t.tokens !== null ? `${fmtInt(t.tokens)} tok` : "—"} · {fmtMs(t.ms)}
+          {t.cost_usd != null && ` · ${fmtCost(t.cost_usd)}`}
+        </span>
+        {t.idle && t.idle.thoughts > 0 && <span className="text-xs text-warning">連續第 {t.idle.thoughts + 1} 次沒事</span>}
       </div>
       <div className="grid min-w-0 gap-2.5">
-        {detail && <p className="text-[13px] text-muted-foreground">{detail}</p>}
-        {t.error ? (
-          <p className="font-mono text-xs text-destructive">{t.error}</p>
-        ) : (
-          <p className="max-w-[70ch] leading-relaxed">{t.thought || "—"}</p>
-        )}
+        <div className="flex items-start gap-3">
+          <div className="grid min-w-0 flex-1 gap-2.5">
+            {detail && <p className="text-[13px] text-muted-foreground">{detail}</p>}
+            {t.error ? (
+              <p className="font-mono text-xs text-destructive">{t.error}</p>
+            ) : (
+              <p className="max-w-[70ch] leading-relaxed">{t.thought || "—"}</p>
+            )}
+          </div>
+          <Button size="sm" variant="ghost" className="shrink-0 text-muted-foreground" onClick={onOpen} aria-label={`看 ${fmtTime(t.at)} 的想法的全部細節`}>
+            {t.has_reasoning && <Brain className="text-brand" aria-label="有推理" />}
+            細節
+            <ChevronRight />
+          </Button>
+        </div>
         {t.changes.length > 0 && <p className="text-[13px] text-muted-foreground">{t.changes.join(" · ")}</p>}
         {t.intents.length > 0 && (
           <ul className="grid gap-3 border-t pt-2.5" aria-label="意圖">
@@ -248,28 +276,104 @@ function ThoughtItem({ t }: { t: Thought }) {
   );
 }
 
-function TimelineCard() {
-  const thoughts = useThoughts();
+type OutcomeFilter = "all" | ThoughtOutcome;
+const OUTCOME_FILTERS: { value: OutcomeFilter; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: "acted", label: "付諸行動" },
+  { value: "held", label: "想做沒做" },
+  { value: "none", label: "只是想想" },
+];
+const PAGE = 40;
+
+function matches(t: Thought, q: string): boolean {
+  if (!q) return true;
+  const hay = [
+    t.thought,
+    t.error ?? "",
+    ...t.triggers.map((x) => x.detail),
+    ...t.changes,
+    ...t.intents.flatMap((i) => [i.capability, i.why, i.opening ?? "", i.detail ?? "", i.said ?? ""]),
+    ...(t.suggestions ?? []).map((s) => s.hint),
+  ]
+    .join("\n")
+    .toLowerCase();
+  return hay.includes(q);
+}
+
+/** Her journal with filters; a thought opens in full. */
+function TimelineCard({ onOpen }: { onOpen: (id: string) => void }) {
+  const thoughts = useThoughtHistory();
+  const [text, setText] = useState("");
+  const q = useDeferredValue(text.trim().toLowerCase());
+  const [kind, setKind] = useState<string>("all");
+  const [outcome, setOutcome] = useState<OutcomeFilter>("all");
+  const [errors, setErrors] = useState(false);
+  const [shown, setShown] = useState(PAGE);
+  const all = thoughts.data ?? [];
+  const visible = all.filter(
+    (t) =>
+      (kind === "all" || t.triggers.some((x) => x.kind === kind)) &&
+      (outcome === "all" || thoughtOutcome(t) === outcome) &&
+      (!errors || t.error !== null || t.intents.some((i) => i.status === "failed" || i.status === "denied")) &&
+      matches(t, q),
+  );
+  const kinds = [...new Set(all.flatMap((t) => t.triggers.map((x) => x.kind)))];
   return (
     <Card className="overflow-hidden">
       <CardHeader>
         <CardTitle>
           想法
-          {thoughts.data && thoughts.data.length > 0 && (
-            <span className="font-normal text-muted-foreground tabular-nums">{thoughts.data.length}</span>
+          {all.length > 0 && (
+            <span className="font-normal text-muted-foreground tabular-nums">
+              {visible.length === all.length ? all.length : `${visible.length} / ${all.length}`}
+            </span>
           )}
         </CardTitle>
       </CardHeader>
+      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3">
+        <SearchInput value={text} onChange={setText} placeholder="搜尋想法、意圖、她說的話" label="搜尋想法" className="sm:w-64" />
+        <Select value={kind} onValueChange={setKind}>
+          <SelectTrigger size="sm" className="w-32" aria-label="觸發原因">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">所有觸發</SelectItem>
+            {kinds.map((k) => (
+              <SelectItem key={k} value={k}>
+                {TRIGGER_LABEL[k] ?? k}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Segmented label="結果" value={outcome} onChange={setOutcome} options={OUTCOME_FILTERS} />
+        <div className="flex items-center gap-2">
+          <Switch id="thought-errors" checked={errors} onCheckedChange={setErrors} />
+          <Label htmlFor="thought-errors" className="font-normal text-muted-foreground">
+            只看失敗或被擋的
+          </Label>
+        </div>
+      </div>
       <QueryView query={thoughts} skeleton={<SkeletonRows count={4} />}>
-        {(list) =>
-          list.length === 0 ? (
+        {() =>
+          all.length === 0 ? (
             <EmptyLine className="py-8">還沒有想法</EmptyLine>
+          ) : visible.length === 0 ? (
+            <EmptyLine className="py-8">沒有符合的想法</EmptyLine>
           ) : (
-            <ol className="divide-y" aria-label="想法時間軸">
-              {list.map((t) => (
-                <ThoughtItem key={t.id} t={t} />
-              ))}
-            </ol>
+            <>
+              <ol className="divide-y" aria-label="想法時間軸">
+                {visible.slice(0, shown).map((t) => (
+                  <ThoughtItem key={t.id} t={t} onOpen={() => onOpen(t.id)} />
+                ))}
+              </ol>
+              {visible.length > shown && (
+                <div className="border-t p-3 text-center">
+                  <Button size="sm" variant="outline" onClick={() => setShown((n) => n + PAGE)}>
+                    再顯示 {Math.min(PAGE, visible.length - shown)} 則
+                  </Button>
+                </div>
+              )}
+            </>
           )
         }
       </QueryView>
@@ -372,14 +476,15 @@ function ThoughtStats() {
   );
 }
 
-export function ThoughtsTab() {
+export function ThoughtsTab({ thought, onThought }: { thought?: string; onThought: (id: string | undefined) => void }) {
   return (
     <div className="grid gap-6">
       <AutonomyCard />
       <ApprovalsCard />
       <ThoughtStats />
-      <TimelineCard />
+      <TimelineCard onOpen={onThought} />
       <DigestsCard />
+      <ThoughtSheet id={thought} onClose={() => onThought(undefined)} />
     </div>
   );
 }

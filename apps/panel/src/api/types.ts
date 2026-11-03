@@ -970,9 +970,59 @@ export interface ThoughtIntent {
   turn: TurnId | null;
   decisions: ThoughtDecision[];
   said: string | null;
+  /** Every status it went through, oldest first (newer journals only). */
+  history?: { at: Timestamp; status: IntentStatus; detail: string | null }[];
 }
 
-/** `GET /api/mind/thoughts` (newest first). */
+/** What one thought saw (bounded copies; only the newest thoughts keep it). */
+export interface ThoughtInput {
+  time: string;
+  night: boolean;
+  self: {
+    mood: Mood | null;
+    boredom: number;
+    drives: Record<string, number>;
+    initiative: number;
+  } | null;
+  suggestions: MindSuggestion[];
+  world: string;
+  places: { ref: string; label: string; note: string; here: boolean }[];
+  people: { ref: string; name: string; person: string | null; relation: string | null; feeling: string | null; doing: string | null }[];
+  agenda: { ref: string; text: string; due: Timestamp | null; blocked: string | null }[];
+  memories: string | null;
+  documents: string | null;
+  lessons: string[];
+  recap: string | null;
+  digest: string | null;
+  unanswered: string[];
+  blocked: { capability: string; reason: string }[];
+  idle: { thoughts: number; minutes: number } | null;
+  capabilities: string[];
+  recent: number;
+}
+
+/** What one thought changed, item by item. */
+export interface ThoughtEffects {
+  drives: Record<string, number>;
+  talkativeness: { scope: string; level: number; minutes: number; why: string }[];
+  initiative: { level: number; why: string } | null;
+  feelings: { person: string; name: string; note: string | null; hint: "+" | "-" | null }[];
+  agenda_added: { text: string; why: string }[];
+  agenda_done: string[];
+  agenda_dropped: string[];
+  documents: { type: string; title: string | null; ok: boolean; error: string | null }[];
+}
+
+/** A reason to think, offered by another module. */
+export interface MindSuggestion {
+  source: string;
+  reason: string;
+  context: ContextKey | null;
+  hint: string;
+  about: AccountRef[];
+}
+
+/** `GET /api/mind/thoughts` (newest first, without `input` and `reasoning`) and `GET /api/mind/thoughts/{id}`. */
 export interface Thought {
   id: string;
   at: Timestamp;
@@ -983,6 +1033,139 @@ export interface Thought {
   tokens: number | null;
   error: string | null;
   ms: number;
+  suggestions?: MindSuggestion[];
+  /** Only from `GET /api/mind/thoughts/{id}`, and only for the newest thoughts. */
+  input?: ThoughtInput | null;
+  reasoning?: string | null;
+  /** In the list: whether the full thought has them. */
+  has_input?: boolean;
+  has_reasoning?: boolean;
+  effects?: ThoughtEffects | null;
+  /** Ids of her LLM calls for this thought. */
+  calls?: string[];
+  cost_usd?: number | null;
+  attempts?: number;
+  idle?: { thoughts: number; minutes: number } | null;
+}
+
+// ---------------------------------------------------------------------------
+// LLM call inspector (`packages/llm/src/calls.ts`, `packages/api/src/llmcalls.ts`)
+
+export interface LlmPricing {
+  input_per_mtok: number;
+  cached_input_per_mtok: number | null;
+  output_per_mtok: number;
+}
+
+export type LlmCallStatus = "streaming" | "ok" | "error" | "aborted";
+
+export interface LlmCallRecord {
+  id: string;
+  at: Timestamp;
+  purpose: string;
+  chain: string;
+  model: string | null;
+  provider: string | null;
+  status: LlmCallStatus;
+  fallbacks: { model: string; error: string; kind: string }[];
+  retries: string[];
+  thinking: boolean;
+  json_mode: boolean;
+  tools: string[];
+  max_tokens: number | null;
+  temperature: number | null;
+  messages: number;
+  images: number;
+  usage: { prompt_tokens: number; completion_tokens: number; cached_prompt_tokens: number; reasoning_tokens: number | null } | null;
+  first_token_ms: number | null;
+  total_ms: number | null;
+  cost_usd: number | null;
+  pricing: LlmPricing | null;
+  finish_reason: string | null;
+  error: string | null;
+  error_kind: string | null;
+  module: string | null;
+  turn: string | null;
+  thought: string | null;
+  label: string | null;
+  repair: number | null;
+  text_chars: number;
+  reasoning_chars: number;
+  tool_calls: number;
+  has_detail: boolean;
+}
+
+export interface LlmToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface LlmCallDetail {
+  messages: { role: string; name: string | null; content: string; cut: number; tool_calls: LlmToolCall[]; tool_call_id: string | null }[];
+  tools: string[];
+  response: { text: string; reasoning: string; tool_calls: LlmToolCall[]; cut: number };
+}
+
+export interface LlmCallsQuery {
+  purpose?: string;
+  model?: string;
+  module?: string;
+  status?: LlmCallStatus;
+  trouble?: boolean;
+  thought?: string;
+  turn?: string;
+  since?: string;
+  q?: string;
+}
+
+/** `GET /api/llm/calls`. */
+export interface LlmCallsPage {
+  items: LlmCallRecord[];
+  next_cursor: string | null;
+  matched: number;
+  kept: number;
+}
+
+export interface LlmGroupStats {
+  key: string;
+  calls: number;
+  errors: number;
+  prompt_tokens: number;
+  cached_prompt_tokens: number;
+  completion_tokens: number;
+  reasoning_tokens: number;
+  cost_usd: number;
+  p50_ms: number | null;
+  p95_ms: number | null;
+  total_p50_ms: number | null;
+}
+
+/** `GET /api/llm/stats?minutes=`. */
+export interface LlmCallStats {
+  since: Timestamp | null;
+  total: LlmGroupStats;
+  by_purpose: LlmGroupStats[];
+  by_model: LlmGroupStats[];
+  by_module: LlmGroupStats[];
+  by_hour: {
+    hour: Timestamp;
+    calls: number;
+    errors: number;
+    prompt_tokens: number;
+    cached_prompt_tokens: number;
+    completion_tokens: number;
+    cost_usd: number;
+    by_purpose: Record<string, number>;
+  }[];
+  latency: { le_ms: number; count: number }[];
+  errors: { kind: string; count: number }[];
+  finish_reasons: { reason: string; count: number }[];
+  expensive: LlmCallRecord[];
+  slowest: LlmCallRecord[];
+  kept: number;
+  oldest: Timestamp | null;
+  prices: Record<string, LlmPricing>;
 }
 
 /** `GET /api/mind/approvals`: high-risk actions waiting for an owner. */
