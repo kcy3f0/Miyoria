@@ -21,13 +21,16 @@ import { defineManifest, errorMessage, type Module, type ModuleContext } from "@
 import { SocialKey } from "@miyoria/social";
 import {
   type AccountRef,
+  ActivityManagerKey,
   type ContextKey,
   contextKeyEquals,
   contextKeyString,
   customEvent,
   type Envelope,
   filterOutgoing,
+  inVoice,
   isJsonObject,
+  isLive,
   type JsonValue,
   type MessageRef,
   neutralize,
@@ -190,6 +193,11 @@ export class GameChat implements ChatHandled {
 
   /** Where a reply in `context` goes right now. */
   delivery(context: ContextKey): Delivery {
+    // The ActivityManager's presence and broadcast when it runs (one copy), else the bus.
+    const snapshot = this.#ctx.services.get(ActivityManagerKey)?.snapshot();
+    if (snapshot) {
+      return deliveryFor(this.route(context), inVoice(snapshot), isLive(snapshot));
+    }
     return deliveryFor(this.route(context), this.#voices[0] ?? null, this.#live.live());
   }
 

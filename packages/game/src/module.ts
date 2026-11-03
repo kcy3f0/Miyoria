@@ -1,11 +1,13 @@
-import { actuatorsFor } from "@miyoria/actions";
+import { actuatorsFor, GatedToolsKey } from "@miyoria/actions";
 import { CommandMount } from "@miyoria/commands";
 import { defineManifest, type Module, type ModuleContext } from "@miyoria/kernel";
 import type { Profile } from "@miyoria/profile";
 import { ToolRegistryKey } from "@miyoria/tools";
 import {
   type AccountRef,
+  ActivityManagerKey,
   type ContextKey,
+  isLive,
   type PromptContributor,
   type PromptContributors,
   PromptContributorsKey,
@@ -77,6 +79,11 @@ export class GameControl {
 
   async goal(text: string, by: string): Promise<string> {
     return this.#director.goal(text, by);
+  }
+
+  /** A goal for the session that is still starting (applied once it runs). */
+  pendingGoal(text: string, by: string): string {
+    return this.#director.pendingGoal(text, by);
   }
 }
 
@@ -164,14 +171,20 @@ export class GameModule implements Module {
     const director = new Director(cfg, ctx, persona, view, actuators);
     const control = new GameControl(director);
     const live = new LiveState();
+    // The ActivityManager's broadcast when it runs (one copy of "is she live"), else the bus.
+    const isStreaming = (): boolean => {
+      const manager = ctx.services.get(ActivityManagerKey);
+      return manager ? isLive(manager.snapshot()) : live.live();
+    };
     const capabilities = gameCapabilities({
       control,
       defaultGame: cfg.default_game,
       permissions: cfg.permissions,
       toolTimeoutMs: cfg.tool_timeout_secs * 1000,
       tools: () => ctx.services.get(ToolRegistryKey),
+      gated: () => ctx.services.get(GatedToolsKey),
       actuators,
-      live: () => live.live(),
+      live: isStreaming,
     }).map((c) => actuators.register(c));
 
     let paths: string[] = [];
@@ -198,6 +211,7 @@ export class GameModule implements Module {
       "voice.participants",
       LIVE_TOPICS.golive,
       LIVE_TOPICS.stage,
+      "system.module.state",
     ]);
     ctx.spawn("director", async () => {
       try {

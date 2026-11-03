@@ -1,4 +1,4 @@
-import { ActuatorRegistry, ActuatorRegistryKey } from "@miyoria/actions";
+import { ActuatorRegistry, ActuatorRegistryKey, GatedToolsKey } from "@miyoria/actions";
 import {
   type ArgValue,
   CommandRegistry,
@@ -38,6 +38,7 @@ import {
   GameHandleKey,
   GameModule,
   type GameStatus,
+  SESSION_TOPIC,
 } from "../src/index.js";
 
 // ----- fakes -----
@@ -609,10 +610,11 @@ describe("game director", () => {
     expect(llm.requests()).toEqual([]);
     expect(h.status()?.summary).toContain("沒有連上");
 
-    // Losing the adapter tools shows up as an observation error.
+    // Losing the adapter tools (its extension crashed) ends the session: the scene goes back
+    // and the ActivityManager shows `failed(crashed)`, instead of a session that plays nothing.
     h.tools.unregister("game_minecraft_observe");
     await secs(20);
-    expect(h.status()?.summary).toContain("看不到遊戲");
+    expect(h.status()).toBeNull();
     await h.stop();
   });
 
@@ -901,5 +903,56 @@ describe("GameModule", () => {
     const stopping = sup.stopAll();
     await vi.advanceTimersByTimeAsync(10);
     await stopping;
+  });
+});
+
+describe("session end and gated tools", () => {
+  it("a disconnect ends the session with its code, without commentary", async () => {
+    const llm = new MockProvider("mock").reply(decision("閒晃", null));
+    const h = await Harness.create(llm);
+    const sessions = collect(h.sup.bus.subscribe(SESSION_TOPIC), (e) =>
+      e.type === "custom" ? (e.data.payload as Record<string, JsonValue>) : null,
+    );
+    await h.start();
+    h.hints();
+    await h.gameEvent("disconnected", "跟 Minecraft 的連線斷了", true);
+    expect(h.status()).toBeNull();
+    const stopped = sessions.take().filter((s) => s.state === "stopped");
+    expect(stopped).toEqual([
+      expect.objectContaining({
+        game: "minecraft",
+        code: "disconnected",
+        reason: "跟 Minecraft 的連線斷了",
+      }),
+    ]);
+    expect(h.hints()).toEqual([]);
+    // No `stop` / `quit` sent to a game that is gone.
+    expect(h.actNames()).not.toContain("quit");
+    await h.stop();
+  });
+
+  it("the adapter's tools come from the gated registry, not the chat tools", async () => {
+    const llm = new MockProvider("mock").reply(decision("閒晃", null));
+    const h = await Harness.create(llm);
+    const gated = new ToolRegistry();
+    for (const name of ["game_minecraft_observe", "game_minecraft_act"]) {
+      const tool = h.tools.get(name);
+      if (tool) gated.register(tool);
+      h.tools.unregister(name);
+    }
+    h.sup.services.provide("extensions", GatedToolsKey, gated);
+    expect(await h.start()).toContain("開始玩 Minecraft");
+    expect(h.observeCalls).toBeGreaterThan(0);
+    await h.stop();
+  });
+
+  it("a goal set while the game is starting waits for the session", async () => {
+    const llm = new MockProvider("mock").reply(decision("挖鐵礦", null));
+    const h = await Harness.create(llm);
+    const control = h.sup.services.require(GameControlKey);
+    expect(control.pendingGoal("挖鐵礦", "Owen")).toContain("開好後");
+    await h.start();
+    expect(h.status()?.goal?.text).toBe("挖鐵礦");
+    await h.stop();
   });
 });

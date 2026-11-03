@@ -7,6 +7,13 @@
 // the owner when that fails), starts the session (the stage's scene director then
 // switches OBS to the game scene), sets a first goal when given one and, when asked to, also goes
 // live with `stream.start` (its own gate decision, for the same principal).
+//
+// With the ActivityManager (module `activity`) `game.start` / `game.stop` are its `start` / `stop`
+// transitions: one start at a time (no second preflight, no "已經在玩" race between the panel and
+// a turn), her tool answers at once ("開始了,task 7") instead of holding the `act:game` lane for
+// the whole launch, a stop cancels a launch in progress, and `stream: true` is an `ensure_live`
+// of its own. The adapter's raw tools (`game_<id>_observe` / `_act`) live in the gated tool
+// registry (`GatedToolsKey`), never in the chat turns' tool list; `game.act` is how they are used.
 
 import {
   type ActuatorRegistry,
@@ -17,7 +24,15 @@ import {
 } from "@miyoria/actions";
 import { withTimeout } from "@miyoria/kernel";
 import type { ToolRegistry } from "@miyoria/tools";
-import { actLane, isJsonObject, type JsonValue, newId, type Principal } from "@miyoria/types";
+import {
+  ActivityManagerKey,
+  type ActivityRequest,
+  actLane,
+  isJsonObject,
+  type JsonValue,
+  newId,
+  type Principal,
+} from "@miyoria/types";
 import { z } from "zod";
 import { GAME_CHAT_MAX, sanitizeGameChat } from "./chat-text.js";
 import type { Placement } from "./director.js";
@@ -74,10 +89,19 @@ export interface GameCapabilityOptions {
   permissions: { start: string; stop: string; goal: string };
   toolTimeoutMs: number;
   tools: () => ToolRegistry | undefined;
+  /** The gated tool registry (`GatedToolsKey`), where the adapter's raw tools are. */
+  gated?: () => ToolRegistry | undefined;
   /** For `game.start {stream: true}` (goes live through the gate). */
   actuators?: ActuatorRegistry | null;
   /** She is streaming (Go Live or OBS) right now. */
   live?: () => boolean;
+}
+
+/** The guild to go live in for `principal`: her voice channel's, else where she was asked. */
+function liveGuild(o: GameCapabilityOptions, principal: Principal): string | null {
+  const here = principal.context;
+  const voice = o.control.voiceContext(here?.platform ?? null) ?? o.control.voiceContext();
+  return voice?.scope ?? (here?.kind !== "dm" ? (here?.scope ?? null) : null);
 }
 
 /** `stream.start` for the same principal, in the guild of her voice channel. */
@@ -88,9 +112,7 @@ async function goLive(
   signal: AbortSignal,
 ): Promise<string> {
   if (!o.actuators) return "沒辦法開台(行動閘門沒有啟用)。";
-  const here = principal.context;
-  const voice = o.control.voiceContext(here?.platform ?? null) ?? o.control.voiceContext();
-  const guild = voice?.scope ?? (here?.kind !== "dm" ? (here?.scope ?? null) : null);
+  const guild = liveGuild(o, principal);
   if (guild === null) return "沒有開台:不知道要在哪個伺服器開。";
   const outcome = await o.actuators.invoke(
     {
@@ -136,6 +158,23 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
       },
     },
     lane: () => GAME_LANE,
+    activity(args, principal) {
+      if (principal.context === null) return null;
+      const out: ActivityRequest[] = [
+        {
+          type: "start",
+          activity: "game",
+          target: args.game ?? o.defaultGame,
+          goal: args.goal ?? null,
+        },
+      ];
+      const guild = args.stream === true ? liveGuild(o, principal) : null;
+      if (guild !== null) {
+        const platform = principal.context.platform;
+        out.push({ type: "ensure_live", platform, guild, source: null });
+      }
+      return out;
+    },
     async execute(args, ctx) {
       const here = ctx.principal.context;
       if (here === null) throw new CapabilityError("no context to play in");
@@ -149,6 +188,8 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
         ctx.signal,
       );
       if (args.goal) text += await o.control.goal(args.goal, byOf(ctx.principal, null));
+      // Run by the ActivityManager, going live is a transition of its own (`ensure_live`).
+      if (ctx.task) return text;
       if (args.stream === true) {
         text += await goLive(o, ctx.principal, ctx.request.turn, ctx.signal);
       } else if (o.live && !o.live()) {
@@ -170,6 +211,7 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
       properties: {},
     },
     lane: () => GAME_LANE,
+    activity: () => [{ type: "stop", activity: "game" }],
     async execute() {
       return o.control.stop();
     },
@@ -189,7 +231,13 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
     },
     lane: () => GAME_LANE,
     async execute(args, ctx) {
-      return o.control.goal(args.text, byOf(ctx.principal, args.by));
+      const by = byOf(ctx.principal, args.by);
+      // The game is still starting (her `game_start` answered at once): the goal waits for it.
+      const activity = ctx.services.get(ActivityManagerKey)?.snapshot().activity;
+      if (activity?.type === "game" && activity.phase === "starting") {
+        return o.control.pendingGoal(args.text, by);
+      }
+      return o.control.goal(args.text, by);
     },
   });
 
@@ -201,27 +249,32 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
     permission: null,
     async execute(args, ctx) {
       const name = `game_${args.game}_act`;
-      const tool = o.tools()?.get(name);
+      const tool = o.gated?.()?.get(name) ?? o.tools()?.get(name);
       if (!tool) throw new CapabilityError(`tool \`${name}\` is not registered`);
       const context = ctx.principal.context;
       if (context === null) throw new CapabilityError("no game context");
       const call = safeActCall(args.call);
-      const result = await withTimeout(
-        tool.call(
-          {
-            turn: ctx.request.turn ?? newId(),
-            context,
-            account: ctx.principal.requester ?? { platform: context.platform, id: "game" },
-            principal: ctx.principal,
-            message: { context, id: "game" },
-            priority: "initiative",
-            signal: ctx.signal,
-          },
-          call as JsonValue,
-        ),
-        o.toolTimeoutMs,
+      // Timing out aborts the call too (the extension is told to cancel it), so a late action
+      // never lands after she was told it failed.
+      const timeout = new AbortController();
+      const running = tool.call(
+        {
+          turn: ctx.request.turn ?? newId(),
+          context,
+          account: ctx.principal.requester ?? { platform: context.platform, id: "game" },
+          principal: ctx.principal,
+          message: { context, id: "game" },
+          priority: "initiative",
+          signal: AbortSignal.any([ctx.signal, timeout.signal]),
+        },
+        call as JsonValue,
       );
-      if (result === undefined) throw new CapabilityError(`tool \`${name}\` timed out`);
+      running.catch(() => undefined);
+      const result = await withTimeout(running, o.toolTimeoutMs);
+      if (result === undefined) {
+        timeout.abort(new CapabilityError(`tool \`${name}\` timed out`));
+        throw new CapabilityError(`tool \`${name}\` timed out`);
+      }
       return result;
     },
   });

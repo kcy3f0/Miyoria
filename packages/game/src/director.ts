@@ -1,13 +1,14 @@
 // The director: one game session at a time, a decision every `decide_secs` (sooner on important
 // events), goal tracking, queue goals, commentary and mood nudges.
 
-import { type ActuatorRegistry, deniedText } from "@miyoria/actions";
+import { type ActuatorRegistry, deniedText, GatedToolsKey } from "@miyoria/actions";
 import { errorMessage, getLogger, type ModuleContext, sleep, withTimeout } from "@miyoria/kernel";
 import { type ChatRequest, type LlmRouter, LlmRouterKey, sessionId } from "@miyoria/llm";
 import { RequestQueueKey } from "@miyoria/queue";
 import { type ToolContext, type ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
 import {
   type AccountRef,
+  ActivityManagerKey,
   type ContextKey,
   contextKeyEquals,
   contextKeyString,
@@ -18,6 +19,7 @@ import {
   newId,
   Principals,
   serviceKey,
+  type TaskFailureCode,
   type Timestamp,
   toTimestamp,
 } from "@miyoria/types";
@@ -56,9 +58,22 @@ export const DECISION_TOPIC = "game.director.decision";
 export const INITIATIVE_REASON = "game";
 /**
  * Topic of session changes, `{state: "started" | "stopped", game, game_name, context}` (the
- * stage's scene director switches to the game scene and back on it).
+ * stage's scene director switches to the game scene and back on it). A session that ended by
+ * itself also carries `code` (`disconnected`, `crashed`) and `reason`; the ActivityManager turns
+ * that into `failed(code)`.
  */
 export const SESSION_TOPIC = "game.director.session";
+
+/** Where the adapter's raw tools are: the gated registry first, then the app's (old hosts). */
+export type AdapterTools = Pick<ToolRegistry, "get">;
+
+/** The adapter tools as `services` has them now. */
+export function adapterTools(services: ModuleContext["services"]): AdapterTools | null {
+  const gated = services.get(GatedToolsKey);
+  const tools = services.get(ToolRegistryKey);
+  if (!gated && !tools) return null;
+  return { get: (name) => gated?.get(name) ?? tools?.get(name) };
+}
 
 /** Whether in-game chat of a game is its own conversation (then the director only notes it). */
 export interface ChatHandled {
@@ -276,7 +291,7 @@ function gameName(actDescription: string | null, id: string): string {
 }
 
 async function callTool(
-  tools: ToolRegistry,
+  tools: AdapterTools,
   name: string,
   ctx: ToolContext,
   args: JsonValue,
@@ -284,8 +299,18 @@ async function callTool(
 ): Promise<string> {
   const tool = tools.get(name);
   if (!tool) throw new Error(`tool \`${name}\` is not registered`);
-  const result = await withTimeout(tool.call(ctx, args), timeoutMs);
-  if (result === undefined) throw new Error(`tool \`${name}\` timed out`);
+  // Giving up aborts the call too (the extension is told to cancel it).
+  const timeout = new AbortController();
+  const running = tool.call(
+    { ...ctx, signal: AbortSignal.any([ctx.signal, timeout.signal]) },
+    args,
+  );
+  running.catch(() => undefined);
+  const result = await withTimeout(running, timeoutMs);
+  if (result === undefined) {
+    timeout.abort(new Error(`tool \`${name}\` timed out`));
+    throw new Error(`tool \`${name}\` timed out`);
+  }
   return result;
 }
 
@@ -294,7 +319,7 @@ interface DecideInput {
   generation: number;
   trigger: Trigger;
   cfg: GameConfig;
-  tools: ToolRegistry;
+  tools: AdapterTools;
   router: LlmRouter | undefined;
   toolCtx: ToolContext;
   observeTool: string;
@@ -386,6 +411,8 @@ export class Director {
   #generation = 0;
   /** The running background step, if any (aborted when a session starts or stops). */
   #work: AbortController | null = null;
+  /** A goal set while the game was still starting (applied when the session starts). */
+  #pendingGoal: { text: string; by: string } | null = null;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #closed = false;
 
@@ -510,9 +537,34 @@ export class Director {
 
   // ----- commands -----
 
-  /** A voice channel her voice node is in (on `platform` when given), if any. */
+  /**
+   * A voice channel her voice node is in (on `platform` when given), if any: the
+   * ActivityManager's presence when it runs, else what the director saw on the bus.
+   */
   voiceContext(platform: string | null = null): ContextKey | null {
+    const presence = this.#ctx.services.get(ActivityManagerKey)?.snapshot().presence;
+    if (presence !== undefined) {
+      if (presence.type !== "in") return null;
+      return platform === null || presence.channel.platform === platform
+        ? { ...presence.channel }
+        : null;
+    }
     return this.#voices.find((v) => platform === null || v.platform === platform) ?? null;
+  }
+
+  /** Voice channels she is in (the manager's presence when it runs). */
+  #voiceChannels(): ContextKey[] {
+    const presence = this.#ctx.services.get(ActivityManagerKey)?.snapshot().presence;
+    if (presence !== undefined) return presence.type === "in" ? [{ ...presence.channel }] : [];
+    return this.#voices;
+  }
+
+  /** Keeps a goal for the session about to start; returns the reply text. */
+  pendingGoal(text: string, by: string): string {
+    const goal = text.trim();
+    if (goal === "") throw new GameError("請輸入目標。");
+    this.#pendingGoal = { text: goal, by };
+    return `遊戲還在開,開好後就做:${goal}。`;
   }
 
   /**
@@ -522,7 +574,7 @@ export class Director {
    */
   async preflight(game: string, context: ContextKey, signal?: AbortSignal): Promise<Preflight> {
     if (!this.#cfg.require_connected) return { inMenu: false };
-    const tools = this.#ctx.services.get(ToolRegistryKey);
+    const tools = adapterTools(this.#ctx.services);
     const observe = `game_${game}_observe`;
     if (!tools?.get(observe)) return { inMenu: false };
     const name = gameName(tools.get(`game_${game}_act`)?.spec.description ?? null, game);
@@ -568,7 +620,7 @@ export class Director {
     game: string,
     name: string,
     context: ContextKey,
-    tools: ToolRegistry,
+    tools: AdapterTools,
     ctx: ToolContext,
   ): Promise<JsonObject | null> {
     const cfg = this.#cfg;
@@ -666,9 +718,9 @@ export class Director {
   }
 
   #resolveContext(placement: Placement, here: ContextKey): ContextKey {
+    const voices = this.#voiceChannels();
     const voice = (): ContextKey | undefined =>
-      this.#voices.find((v) => v.platform === here.platform && v.scope === here.scope) ??
-      this.#voices[0];
+      voices.find((v) => v.platform === here.platform && v.scope === here.scope) ?? voices[0];
     const stream = (): ContextKey | null => this.#cfg.stream_context;
     switch (placement) {
       case "auto":
@@ -692,7 +744,7 @@ export class Director {
     if (this.#session) {
       throw new GameError(`她已經在玩 ${this.#session.gameName}，要換遊戲請先使用 /game stop。`);
     }
-    const tools = this.#ctx.services.get(ToolRegistryKey);
+    const tools = adapterTools(this.#ctx.services);
     if (!tools) throw new GameError("工具系統沒有啟用，無法玩遊戲。");
     const observe = `game_${game}_observe`;
     const act = tools.get(`game_${game}_act`);
@@ -729,28 +781,53 @@ export class Director {
       guard: null,
     };
     this.#publishSession("started", this.#session);
-    return `她開始玩 ${name} 了，實況會在${where}進行。`;
+    let text = `她開始玩 ${name} 了，實況會在${where}進行。`;
+    const pending = this.#pendingGoal;
+    this.#pendingGoal = null;
+    if (pending !== null) text += this.#commandGoal(pending.text, pending.by);
+    return text;
   }
 
-  #publishSession(state: "started" | "stopped", s: Session): void {
+  #publishSession(
+    state: "started" | "stopped",
+    s: Session,
+    end: { code: TaskFailureCode; reason: string } | null = null,
+  ): void {
     this.#ctx.publish(
       customEvent(SESSION_TOPIC, {
         state,
         game: s.game,
         game_name: s.gameName,
         context: { ...s.context },
+        ...(end !== null ? { code: end.code, reason: end.reason } : {}),
       }),
     );
   }
 
+  /**
+   * Ends the session because the game went away (`disconnected`, its extension crashed): no
+   * `stop` / `quit` actions (nothing to send them to); the session event carries the code.
+   */
+  #end(code: TaskFailureCode, reason: string): void {
+    const s = this.#session;
+    if (!s) return;
+    this.#session = null;
+    this.#generation += 1;
+    this.#pendingGoal = null;
+    log.warn({ game: s.game, code, reason }, "game session ended by itself");
+    this.#publishSession("stopped", s, { code, reason });
+    this.#cancelWork();
+  }
+
   #stop(): string {
     const s = this.#session;
+    this.#pendingGoal = null;
     if (!s) throw new GameError("她目前沒有在玩遊戲。");
     this.#session = null;
     this.#generation += 1;
     log.info({ game: s.game }, "game session stopped");
     this.#publishSession("stopped", s);
-    const tools = this.#ctx.services.get(ToolRegistryKey);
+    const tools = adapterTools(this.#ctx.services);
     const act = tools?.get(actTool(s));
     if (act) {
       const actuators = this.#actuators;
@@ -807,6 +884,17 @@ export class Director {
       case "voice_left":
         this.#voices = this.#voices.filter((v) => !contextKeyEquals(v, event.data.context));
         break;
+      case "module_state_changed": {
+        // An extension that stopped or crashed takes the adapter's tools with it.
+        const s = this.#session;
+        const { module, state } = event.data;
+        if (s && module.startsWith("ext.") && (state === "failed" || state === "stopped")) {
+          if (!adapterTools(this.#ctx.services)?.get(observeTool(s))) {
+            this.#end("crashed", `遊戲的擴充套件停止了(${module})`);
+          }
+        }
+        break;
+      }
       case "custom": {
         const { topic, payload } = event.data;
         if (topic === "queue.item_activated") {
@@ -843,6 +931,11 @@ export class Director {
     const text = typeof dataObj?.text === "string" ? dataObj.text : kind;
     const important = obj?.important === true;
     log.debug({ kind, text, important }, "game event");
+    if (this.#cfg.end_events.includes(kind)) {
+      // The game went away: the session ends (scene back, activity failed), no commentary.
+      this.#end("disconnected", text);
+      return;
+    }
     this.#remember(text);
 
     const s = this.#session;
@@ -1062,7 +1155,7 @@ export class Director {
     // Hold the next tick far away until the result arrives.
     s0.nextDecide = now + this.#secs(cfg.decide_secs);
     s0.decideStarted = now;
-    const tools = this.#ctx.services.get(ToolRegistryKey);
+    const tools = adapterTools(this.#ctx.services);
     if (!tools) {
       log.warn("no tool registry; cannot observe the game");
       return null;
@@ -1142,6 +1235,11 @@ export class Director {
       s.summary = summary;
     } else {
       log.warn({ error: observation.error }, "observing the game failed");
+      if (!adapterTools(this.#ctx.services)?.get(observeTool(s))) {
+        // The adapter is gone (its extension crashed or was disabled): the session ends.
+        this.#end("crashed", "遊戲的擴充套件不見了");
+        return null;
+      }
       s.summary = `看不到遊戲畫面(${observation.error})`;
       s.busy = null;
       return null;
@@ -1213,7 +1311,7 @@ export class Director {
       log.debug({ action: decision.action.display(), why: verdict.why }, "kept the current goal");
       return null;
     }
-    if (!this.#ctx.services.get(ToolRegistryKey)) return null;
+    if (!adapterTools(this.#ctx.services)) return null;
     const generation = cur.generation;
     const actuators = this.#actuators;
     const action = decision.action;

@@ -104,6 +104,11 @@ export const GameConfigSchema = z.object({
       "smelt_finished",
       "plan_finished",
     ]),
+  /**
+   * Event types meaning the game went away (`disconnected`): the session ends at once (the
+   * scene switches back, the ActivityManager shows `failed(disconnected)`), it is not commentary.
+   */
+  end_events: z.array(z.string()).default(["disconnected"]),
   /** Event types meaning the current goal failed. */
   failed_events: z
     .array(z.string())
