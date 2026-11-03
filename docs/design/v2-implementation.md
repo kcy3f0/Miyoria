@@ -230,6 +230,18 @@
 
 Arbiter 接受 `speak` impulse 後,開回合仍走既有的 `agent_initiative` 事件 / `IntentSinkKey`(不另開新路徑);接受 `act` impulse 後呼叫 capability(活動類走 `ActivityManagerKey.request`)。
 
+**W6 實作紀錄**:
+
+- `packages/arbiter`(module `arbiter`,`ArbiterKey`):`ArbiterCore`(`arbiter.ts`)只做三件事。底線依序是暫停、預算(exhausted 全擋;degraded 只擋 `plan` / `agenda` / `world`)、同意(`target.account` 被 social 封鎖)、`disabled_contexts`、頻道等級(`off` / `mention-only`)、語音不在場;`plan` / `agenda` 再加安靜時段,而她自己的 `speak`(`isSelfTalk`,即 `chat.start` / `chat.dm`)另有每日 / 每地 / 每人上限、任兩次間隔、同一地方的間隔(沒人接就加倍,`max_backoff`)、等級的間隔(`ConversationFacts.start_gap_ms`)與「剛講完話」。**她看得到的規則一律 `rejected` + `retry_at`**(她帶著帳本重新計畫);只有當下的事實(地方忙、`world` 打招呼時她剛講完)才 `deferred`,每 `retry_ms` 依優先度重試到過期。同 `coalesce_key` 合併(新的贏);某個 impulse 拿到地方後,排在那裡的她自己的願望 `preempted`;有人叫她(`agent.turn.focus` reason `addressed` / `reply_to_her`)也一樣。
+- 帳本(`ledger.ts`):每個不是「go」的決定都寫一筆 `denied`(`detail` = `<reason>: <她看得懂的說明>`)並發 `arbiter.decision` / `arbiter.ledger`;`LedgerView.limits.next_initiative_at` 用同一套時間規則反覆推算(`ledger(context)` 含那個地方的間隔與等級間隔)。她開的話題:`agent.turn.completed` 記下她說的話,之後在 `reply_window_*` 內有人叫她 / 回她(別人的 `agent.turn.outcome` reason `addressed` / `reply_to_her`,或提及 / 回覆 / 私訊)就 `ok`,否則 `ignored` → streak +1、該地方間隔加倍、發 `affect.event` `topic_ignored`。沒開口(silence / cancelled / error)不算話題。狀態存在 `_global` 的 `arbiter:state`(資料分類沿用 `initiative`)。
+- 給 agent 的接縫是新的 `types/src/impulse.ts`:`newImpulse()`(speak 的舊 initiative reason 放 `args.reason`,`impulseReason()` 讀回)、`isSelfTalk()`、`ImpulseHost` + `ImpulseHostKey`(agent 提供:`facts(context)` 給底線用,`open(impulse)` 開回合)。Arbiter 接受後,她自己的(`plan` / `agenda`,含 act)與 `chat.*` 走 `AgentIntents` 原本的路徑(閘門 → coordinator 等地方空出來);其他 speak 是 coordinator 的 initiative 回合,coordinator 只回答「現在忙不忙」(`ImpulseRun` busy → Arbiter 稍後再試)。不是她的 `act` impulse 由 Arbiter 經 `ActuatorRegistry` 執行(`game` 用 `director` principal)。
+- agent:`agent.initiative` 與 notice 在有 Arbiter 時都轉成 impulse(`initiativeSource()`);`arbiter.impulse` 在沒有 Arbiter 時由 agent 當舊的 initiative 處理(fallback)。`startBlocked` 有 Arbiter 時讀 `ledger(context).limits.next_initiative_at`,`noteStart` 不再記(Arbiter 自己記),Arbiter 放行的意圖帶 `IntentTurn.gated`,不會被自己剛記的那次擋住。`chat.start` 的閘門次數(每日 24、每人 4、1 分鐘)搬進 Arbiter 的 `max_per_day` / `max_per_person_per_day` / `min_gap_secs`,閘門只留防迴圈的上限(200 / 50 / 0);`chat.dm` 的閘門限制沒動(私訊的安全線)。
+- 來源:唱歌報幕(`song`,開始 / 準備的那句 6 秒內不說就算了)、遊戲實況(`game`,同一地方合併)、動作結果(`followup`,reason `action_result`)都發 `arbiter.impulse`;歌好了要不要唱(`#remind`)仍交給她的心智迴圈。mind 只把 `intent:` 回合算成她開的話題(item 12)。
+- initiative 刪除:打招呼、進語音問候、追問變成 Arbiter 的 producer(`producers.ts`,source `world` / `followup`;追問只有被接受或延後才 `markDone`);上限與安靜時段併進 `[modules.arbiter]`;舊的 `[modules.initiative]` 段照樣能讀,搬過來的 key 會帶進來並警告(`INITIATIVE_KEYS`,`core/src/modules.ts` 傳 `legacyInitiative`)。冷場:world 的 `channel_quiet` 現在也涵蓋她所在的語音頻道。
+- attention:只剩前置過濾(模式、被叫到、名字、她剛講完的問句、一對一、語音裡有人還在講就不插嘴)+ 她的 talkativeness(含 lesson、`AffectSnapshot.biases`、下限;activeness 只把預設移 −0.25 / +0.17,數學上等於舊的 ×0.5 / ×1.6)× 分數、佔比上限、灰色區 `fast`。好感 / 精力 / activeness 倍率、語音 `ambient_factor` / `interrupt_scale`、灰色區門檻隨 talkativeness 縮放、三種冷卻與等級冷卻都刪了;`attention.cooldown_ms`、`min_cooldown_ms`、`voice.ambient_factor`、`cooldown_ms`、`min_cooldown_ms`、`interrupt_scale` 留著也能讀,啟動時警告(`deprecatedAgentKeys`)。
+- 回放測試(`arbiter/test/replay.test.ts`):30 小時的腳本(有人聊天、忙碌、唱歌、遊戲實況、約 4 成有人接),她的 Plan 看帳本才開口時被擋率 0%(三個 seed,< 20% 的驗收),每個擋下都有 reason 與帳本紀錄;盲著規劃(舊 mind)被擋 > 80%。
+- 沒做 / 留給別人:她的 Plan 直接 `ArbiterKey.submit(impulse)`(W7 已接上);W7 的 mind 還留著自己的語音冷場偵測(當 Plan 的喚醒;world 的 `channel_quiet` 分數 0.3 低於 mind 的 `SALIENT_MIN_SCORE` 0.5,所以沒有直接拿掉);收到訊息的回合(source `message`)不經過 Arbiter(回話仍是 agent 自己的回合機制,Arbiter 從 focus / outcome 得知「有人在跟她說話」)。
+
 ### W7 Mind → Appraise / Plan / Reflect + Goal agenda(第二波;§3.4、§3.7)
 
 **擁有**:`packages/mind/**`(W4、W5 的例外 hunk 合併之後)。
