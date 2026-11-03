@@ -131,6 +131,18 @@
 
 **狀態機注意**:`presence` 只有一份(她的語音帳號同時只能在一個語音頻道),但現有 capability 參數都以 guild 為單位(`voice/src/actions.ts` 的 `GuildArgs`);跨 guild 的 `ensure_voice` = 先離開再加入。
 
+**實作紀錄(W3)**:
+
+- **路由在閘門之後**:capability 多了 `activity(args, principal) → ActivityRequest[]`(`voice.join`、`voice.leave`、`stream.start`、`stream.stop`、`game.start`(`stream: true` 多一個 `ensure_live`)、`game.stop`、`stage.scene`(導演以外的人 → `scene_override`))。`activity` module 啟動時把 `ActivityService` 裝成 `ActuatorRegistry.setActivityRouter`:所以她的工具、指令、面板 API、mind、導演**全部**先過閘門,再交給 manager。`InvokeOptions.activity`:`wait`(預設;指令 / 面板 / mind 等結果,錯誤帶原本的 `cause`)、`detach`(`CapabilityTool` 用:立刻回「開始了(task XXXXXX)」)、`direct`(manager 自己的步驟)。沒有 `activity` module 時一切照舊直接執行。
+- **步驟**:主步驟 = 原本的 capability(閘門已放行,`ExecContext.task` 有值);隱含步驟(OBS 跟著 Go Live、離開前關台、跨伺服器先離開)以原本的 principal(指令 / 面板)或 `director` 過閘門,`InvokeOptions.implied`:暫停、禁止、同意、權限、預算照常,中風險不重複算次數限制。
+- **鎖**:每個 task 鎖它碰到的資源(固定順序 presence → broadcast → activity;`ensure_voice` / `leave_voice` / `ensure_live` 鎖 presence + broadcast)。反向的要求取代進行中的(`stop` 取消還在開的遊戲、`leave_voice` 取消 join、`stop_live` 取消開台)。被取消的 task 立刻結束(步驟忽略 signal 也一樣),之後才到的結果無害。
+- **狀態從匯流排推出來**:`voice.joined/left/participants`、`voice.golive`、`stage.status`、`game.director.session`(現在多帶 `code` / `reason`)、`sing.cue`、`agent.turn.started/completed`,加上進行中的 task 的 phase。`activity.changed` 只在 snapshot 變了才發(`version` +1)。
+- **說完再離開**:`leave_voice` 有 turn 時先等那個回合結束(`speech_wait_ms`),再把 `voice.leave` 排進她的語音 lane(`voice:<platform>:<guild>`,priority `idle`),排在那個回合所有句子後面。
+- **遊戲**:`disconnected`(`[modules.game] end_events`)或 extension 掛掉(`system.module.state` 之後 adapter 工具不見了 / observe 時不見了)→ 導演結束 session(`code: disconnected | crashed`,不送 stop / quit)→ manager `failed(code)` 留 `failed_hold_ms`、notice 給開遊戲的人、場景切回。遊戲還在開時她設的 `game_goal` 等 session 開始才套用。導演的 `voiceContext`、`game.chat` 的投遞、`LiveState` 有 manager 時讀 snapshot。
+- **場景**:`stage/src/link/scene-rule.ts` 的純函式 `sceneWants(factsOf(snapshot), memory, …)`;導演有 manager 時只吃 `activity.changed`(`onSnapshot`),並提供 `SceneRuleKey` 讓 `snapshot.scene` 是同一個答案。導演與結尾幕共用一把 mutex(`#expect` 只在鎖內寫);`stage.scene` capability 與節點的 `ObsController.setScene` 也各自序列化;轉場改用目標場景的轉場覆寫(`SetSceneSceneTransitionOverride`),不再改 OBS 全域轉場。「開台中但還沒真的 live」不算 live,失敗的開台不會「開場 → 結尾」亂切。
+- **閘門缺口**:ext-host 把 `game_*` 工具登記在 `GatedToolsKey`(`@miyoria/actions`,由 `extensions` module 提供),不進 `ToolRegistry`;保留前綴加上 `activity`、`arbiter`、`affect`、`plan`、`gate`、`actions`;`Peer.request` 逾時 / 中止時送 `$/cancelRequest`,SDK 中止處理函式的 signal(`ToolCallContext.signal`、`GameAdapter.act(action, signal)`)。排程器的 ticket 在等待的工具逾時 / 回合取消時取消(排隊的不會跑,跑到一半的 signal 被中止)。中 / 高風險的結果(含被擋下的)寫成 `LedgerRecord`(有 `ArbiterKey` 就 `record`,沒有就發 `actions.outcome`);高風險 `REVIEW_PENDING` 的結果另外發 `agent.notice`。
+- **對 types 的增補**:新檔 `scene-rule.ts`(`SceneRule`、`SceneRuleKey`);`HerStatus.singing?: string | null`(選填,舊的 producer 不用改)。world 的 `her()` 有 snapshot 時從它讀(`world/src/module.ts` 多傳一個 snapshot getter)。
+
 ### W4 Affect(驅力、情緒動態、一人一卡)
 
 **擁有**:`packages/self/**`、`packages/social/**`;例外:可改 `mind/src/mind.ts:963-969`(mind 直接 `self.feel`)與 `mind/src/prompt.ts:145-149`(`OUTPUT_FORMAT` 的情緒 / 驅力範例值)這兩個 hunk,做 item 14 的「mind 不再寫情緒」部分。
