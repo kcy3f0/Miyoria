@@ -9,6 +9,7 @@ import { type ToolContext, type ToolRegistry, ToolRegistryKey } from "@miyoria/t
 import {
   type AccountRef,
   ActivityManagerKey,
+  ARBITER_IMPULSE_TOPIC,
   type ContextKey,
   contextKeyEquals,
   contextKeyString,
@@ -17,11 +18,13 @@ import {
   type JsonObject,
   type JsonValue,
   newId,
+  newImpulse,
   Principals,
   serviceKey,
   type TaskFailureCode,
   type Timestamp,
   toTimestamp,
+  v2Event,
 } from "@miyoria/types";
 import { GAME_ACT } from "./actions.js";
 import type { GameConfig } from "./config.js";
@@ -1123,10 +1126,21 @@ export class Director {
     const text = urgent
       ? `(你正在直播玩 ${s.gameName})${hint}`
       : `(你正在直播玩 ${s.gameName})實況:${hint}`;
-    this.#ctx.publish({
-      type: "agent_initiative",
-      data: { context: s.context, reason: INITIATIVE_REASON, hint: text, about: [] },
-    });
+    // Commentary is an impulse of source `game` (never her own topic); a newer line replaces
+    // one still waiting for a free moment.
+    const impulse = newImpulse(
+      {
+        source: "game",
+        context: s.context,
+        ttlMs: this.#secs(urgent ? cfg.urgent_commentary_min_secs : cfg.commentary_min_secs),
+        why: `${s.gameName} 實況`,
+        hint: text,
+        reason: INITIATIVE_REASON,
+        coalesce_key: `game:${contextKeyString(s.context)}`,
+      },
+      now,
+    );
+    this.#ctx.publish(v2Event(ARBITER_IMPULSE_TOPIC, impulse));
     return true;
   }
 

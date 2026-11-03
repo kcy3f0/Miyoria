@@ -21,12 +21,15 @@ import { RequestQueue, RequestQueueKey } from "@miyoria/queue";
 import { type Tool, ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
 import {
   type AccountRef,
+  ARBITER_IMPULSE_TOPIC,
   type ContextKey,
   type Event,
+  impulseReason,
   type JsonValue,
   PromptContributors,
   PromptContributorsKey,
   type PromptRequest,
+  v2Payload,
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -148,13 +151,17 @@ class Harness {
     this.queue = new RequestQueue(undefined, {
       publisher: (event) => this.sup.bus.publish("queue", event),
     });
-    this.hintLog = collect(this.sup.bus.subscribe("agent.initiative"), (e) => {
-      if (e.type !== "agent_initiative") return null;
-      expect(e.data.reason).toBe("game");
-      return e.data.hint;
+    // Her commentary: impulses of source `game` for the Arbiter.
+    this.hintLog = collect(this.sup.bus.subscribe(ARBITER_IMPULSE_TOPIC), (e) => {
+      const impulse = v2Payload(e, ARBITER_IMPULSE_TOPIC);
+      if (!impulse) return null;
+      expect(impulse.source).toBe("game");
+      expect(impulseReason(impulse)).toBe("game");
+      return impulse.hint;
     });
-    this.hintContexts = collect(this.sup.bus.subscribe("agent.initiative"), (e) =>
-      e.type === "agent_initiative" ? e.data.context : null,
+    this.hintContexts = collect(
+      this.sup.bus.subscribe(ARBITER_IMPULSE_TOPIC),
+      (e) => v2Payload(e, ARBITER_IMPULSE_TOPIC)?.target.context ?? null,
     );
     this.nudgeLog = collect(this.sup.bus.subscribe("mood.nudge"), (e) =>
       e.type === "custom" ? (e.data.payload as Record<string, JsonValue>) : null,

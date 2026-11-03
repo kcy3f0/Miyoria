@@ -14,11 +14,13 @@ import { LlmRouter, LlmRouterKey, MockProvider, parseModelRef } from "@miyoria/l
 import { type Tool, type ToolContext, ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
 import {
   type AccountRef,
+  ARBITER_IMPULSE_TOPIC,
   type ContextKey,
   type Event,
   type JsonValue,
   type Principal,
   Principals,
+  v2Payload,
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -255,7 +257,10 @@ describe("去玩 Minecraft", () => {
     await f.startTool({});
     await vi.advanceTimersByTimeAsync(100);
     const hints = () =>
-      f.events.flatMap((e) => (e.type === "agent_initiative" ? [e.data.hint] : []));
+      f.events.flatMap((e) => {
+        const hint = v2Payload(e, ARBITER_IMPULSE_TOPIC)?.hint;
+        return hint ? [hint] : [];
+      });
     const before = hints().length;
     const chat = (message: string, system = false) =>
       f.publish({
