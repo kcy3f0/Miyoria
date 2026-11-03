@@ -12,6 +12,7 @@
 //    request is asked again with twice the token budget and a request to keep it short.
 
 import type { z } from "zod";
+import { withLlmTag } from "./trace.js";
 import {
   assistantMessage,
   type ChatRequest,
@@ -164,12 +165,10 @@ export async function completeJson<S extends z.ZodType>(
   let tokens = 0;
   let issues: string[] = [];
   for (let attempt = 1; attempt <= repairs + 1; attempt++) {
-    const response = await call(
-      router,
-      purpose,
-      { ...request, messages, max_tokens: maxTokens },
-      options.signal,
-    );
+    const req = { ...request, messages, max_tokens: maxTokens };
+    const response = await (attempt > 1
+      ? withLlmTag({ repair: attempt - 1 }, () => call(router, purpose, req, options.signal))
+      : call(router, purpose, req, options.signal));
     if (response.usage) tokens += response.usage.prompt_tokens + response.usage.completion_tokens;
     const cut = response.finish_reason === "length";
     const raw = extractJsonObject(response.text);

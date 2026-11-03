@@ -17,7 +17,7 @@
 
 import { CommandRegistryKey, ReplySinkKey } from "@miyoria/commands";
 import { errorMessage, getLogger, type ServiceLookup } from "@miyoria/kernel";
-import { LlmRouterKey } from "@miyoria/llm";
+import { LlmRouterKey, withLlmTag } from "@miyoria/llm";
 import { AuditLogKey, SettingsStoreKey } from "@miyoria/store";
 import type { ToolRegistry } from "@miyoria/tools";
 import {
@@ -691,17 +691,19 @@ export class ActuatorRegistry implements ActuatorExecutor {
     const timer = setTimeout(() => controller.abort(), this.#config.review_timeout_ms);
     let reply: ReturnType<typeof parseReview>;
     try {
-      const response = await router.complete(
-        purpose,
-        {
-          messages,
-          temperature: 0,
-          max_tokens: 2000,
-          json_mode: true,
-          thinking: true,
-          session: "actions-review",
-        },
-        controller.signal,
+      const response = await withLlmTag({ module: "actions", label: "review" }, () =>
+        router.complete(
+          purpose,
+          {
+            messages,
+            temperature: 0,
+            max_tokens: 2000,
+            json_mode: true,
+            thinking: true,
+            session: "actions-review",
+          },
+          controller.signal,
+        ),
       );
       reply = parseReview(response.text);
     } catch (error) {

@@ -1,6 +1,7 @@
 import { errorMessage, getLogger, type MetricsRegistry } from "@miyoria/kernel";
 import type { SettingsStore } from "@miyoria/store";
-import { type Clock, systemClock } from "@miyoria/types";
+import { type Clock, newId, systemClock } from "@miyoria/types";
+import { callUsage, LlmCallLog, type LlmCallRecord } from "./calls.js";
 import {
   type BudgetConfig,
   type BudgetState,
@@ -11,6 +12,7 @@ import {
   type Pricing,
 } from "./cost.js";
 import { errorKind, type LlmMetrics, llmMetrics } from "./metrics.js";
+import { collectRetries, currentLlmTag, type LlmCallTag } from "./trace.js";
 import {
   type ChatProvider,
   type ChatRequest,
@@ -22,6 +24,7 @@ import {
   modelRefString,
   ProviderHttpError,
   type StreamEvent,
+  type ToolCall,
   textOnlyRequest,
   type Usage,
 } from "./types.js";
@@ -53,6 +56,8 @@ export interface LlmRouterOptions {
    * `provider` (the model entry wins). Unlisted models do.
    */
   imageInput?: ReadonlyMap<string, boolean>;
+  /** Where calls are recorded for the inspector (kept across module restarts by the module). */
+  calls?: LlmCallLog;
 }
 
 /** HTTP statuses with which a provider may refuse image parts it does not support. */
@@ -71,6 +76,9 @@ interface Call {
   /** When the request to the answering model was sent. */
   sentAt: number;
   firstTokenAt: number | null;
+  /** Its entry in the call log. */
+  record: LlmCallRecord;
+  tag: LlmCallTag | undefined;
 }
 
 /**
@@ -122,6 +130,7 @@ export class LlmRouter {
   readonly #imageInput: ReadonlyMap<string, boolean>;
   /** Models that refused image parts in this run (`provider:model`); they get text from now on. */
   readonly #refusedImages = new Set<string>();
+  readonly #calls: LlmCallLog;
 
   constructor(
     providers: ReadonlyMap<string, ChatProvider>,
@@ -136,6 +145,7 @@ export class LlmRouter {
     this.#clock = options.clock ?? systemClock;
     this.#thinking = options.thinking ?? new Map();
     this.#imageInput = options.imageInput ?? new Map();
+    this.#calls = options.calls ?? new LlmCallLog();
   }
 
   /**
@@ -243,20 +253,47 @@ export class LlmRouter {
    */
   async stream(purpose: string, request: ChatRequest, signal?: AbortSignal): Promise<RoutedStream> {
     const requestedAt = this.#clock.now();
-    const state = this.#cost.gate(purpose);
+    const tag = currentLlmTag();
+    const record = this.#calls.open(
+      newId(),
+      new Date(requestedAt).toISOString(),
+      purpose,
+      this.#effectivePurpose(purpose),
+      request,
+      this.#thinkingFor(purpose, request),
+      tag,
+    );
+    tag?.onCall?.({ id: record.id, cost_usd: null, status: record.status });
+    const fail = (error: unknown): never => {
+      record.status = signal?.aborted ? "aborted" : "error";
+      record.error = errorMessage(error);
+      record.error_kind = errorKind(error);
+      record.total_ms = Math.max(0, this.#clock.now() - requestedAt);
+      tag?.onCall?.({ id: record.id, cost_usd: null, status: record.status });
+      throw error;
+    };
+    let state: BudgetState;
+    try {
+      state = this.#cost.gate(purpose);
+    } catch (error) {
+      return fail(error);
+    }
     const chain = this.#chainForState(purpose, state);
     if (chain.length === 0) {
-      throw new LlmError(
-        `no model configured for purpose \`${purpose}\` (and no \`chat\` fallback)`,
+      return fail(
+        new LlmError(`no model configured for purpose \`${purpose}\` (and no \`chat\` fallback)`),
       );
     }
     let lastError: unknown;
     for (const model of chain) {
       const key = modelRefString(model);
+      record.model = key;
+      record.provider = model.provider;
       const provider = this.#providers.get(model.provider);
       if (!provider) {
         log.warn({ model: key }, "unknown provider in model chain");
         lastError = new LlmError(`unknown provider \`${model.provider}\``);
+        record.fallbacks.push({ model: key, error: errorMessage(lastError), kind: "error" });
         continue;
       }
       let iterator: AsyncIterator<StreamEvent>;
@@ -271,7 +308,9 @@ export class LlmRouter {
       if (images && !this.modelTakesImages(model)) routed = textOnlyRequest(routed);
       try {
         try {
-          [iterator, first] = await this.#open(provider, routed, signal);
+          [iterator, first] = await collectRetries(record.retries, () =>
+            this.#open(provider, routed, signal),
+          );
         } catch (error) {
           // A provider that cannot take image parts: once more as text, and remember it.
           if (signal?.aborted || !images || !hasImages(routed.messages) || !rejectsImages(error)) {
@@ -281,12 +320,15 @@ export class LlmRouter {
             { model: key, err: errorMessage(error) },
             "model refused image input, retrying as text",
           );
-          [iterator, first] = await this.#open(provider, textOnlyRequest(routed), signal);
+          record.retries.push("圖片被拒,改用文字");
+          [iterator, first] = await collectRetries(record.retries, () =>
+            this.#open(provider, textOnlyRequest(routed), signal),
+          );
           this.#refusedImages.add(key);
           log.warn({ model: key }, "sending this model text only from now on");
         }
       } catch (error) {
-        if (signal?.aborted) throw error;
+        if (signal?.aborted) return fail(error);
         log.warn({ model: key, err: errorMessage(error) }, "model failed, trying next in chain");
         this.#metrics.errors.inc({
           model: key,
@@ -294,15 +336,30 @@ export class LlmRouter {
           stage: "request",
           kind: errorKind(error),
         });
+        record.fallbacks.push({ model: key, error: errorMessage(error), kind: errorKind(error) });
         lastError = error;
         continue;
       }
-      const call: Call = { key, purpose, requestedAt, sentAt, firstTokenAt: null };
+      // The answering model is not a fallback.
+      record.pricing = this.#cost.priceFor(key);
+      const call: Call = { key, purpose, requestedAt, sentAt, firstTokenAt: null, record, tag };
       this.#metrics.calls.inc({ model: key, purpose });
       if (!first.done) this.#observe(call, first.value);
       return new RoutedStream(call, this.#track(call, first, iterator, signal));
     }
-    throw lastError ?? new LlmError("all models failed");
+    const failed = record.fallbacks.pop();
+    if (failed) record.model = failed.model;
+    return fail(lastError ?? new LlmError("all models failed"));
+  }
+
+  /** The call inspector's log (the most recent calls, bounded). */
+  get calls(): LlmCallLog {
+    return this.#calls;
+  }
+
+  /** Every `[llm.pricing]` entry, by `provider:model`. */
+  prices(): Record<string, Pricing> {
+    return this.#cost.prices();
   }
 
   /** Starts a response; only failures before the first event count as the model failing. */
@@ -336,7 +393,7 @@ export class LlmRouter {
     );
   }
 
-  #record(call: Call, usage: Usage): void {
+  #record(call: Call, usage: Usage): number {
     const key = call.key;
     let record = this.#usage.get(key);
     if (!record) {
@@ -354,6 +411,7 @@ export class LlmRouter {
     tokens.inc({ ...labels, type: "completion" }, usage.completion_tokens);
     tokens.inc({ ...labels, type: "cached_prompt" }, usage.cached_prompt_tokens ?? 0);
     this.#metrics.cost.inc(labels, cost);
+    return cost;
   }
 
   async *#track(
@@ -363,11 +421,42 @@ export class LlmRouter {
     signal: AbortSignal | undefined,
   ): AsyncGenerator<StreamEvent> {
     let finished = false;
+    const record = call.record;
+    let text = "";
+    let reasoning = "";
+    const tools: ToolCall[] = [];
+    const end = (status: LlmCallRecord["status"], error: unknown = null) => {
+      if (record.status !== "streaming") return;
+      record.status = status;
+      record.total_ms = Math.max(0, this.#clock.now() - call.requestedAt);
+      record.first_token_ms =
+        call.firstTokenAt === null ? null : Math.max(0, call.firstTokenAt - call.requestedAt);
+      if (error !== null) {
+        record.error = errorMessage(error);
+        record.error_kind = errorKind(error);
+      }
+      this.#calls.respond(record.id, text, reasoning, tools);
+      call.tag?.onCall?.({ id: record.id, cost_usd: record.cost_usd, status });
+    };
     try {
       for (let next = first; !next.done; ) {
         const ev = next.value;
         this.#observe(call, ev);
-        if (ev.type === "done" && ev.usage) this.#record(call, ev.usage);
+        if (ev.type === "text_delta") text += ev.text;
+        else if (ev.type === "reasoning_delta") reasoning += ev.text;
+        else if (ev.type === "tool_call_delta") {
+          while (tools.length <= ev.index) tools.push({ id: "", name: "", arguments: "" });
+          const t = tools[ev.index] as ToolCall;
+          if (ev.id !== null) t.id = ev.id;
+          if (ev.name !== null) t.name += ev.name;
+          t.arguments += ev.arguments;
+        } else if (ev.type === "done") {
+          record.finish_reason = ev.finish_reason;
+          if (ev.usage) {
+            record.usage = callUsage(ev.usage);
+            record.cost_usd = this.#record(call, ev.usage);
+          }
+        }
         yield ev;
         try {
           next = await rest.next();
@@ -380,12 +469,21 @@ export class LlmRouter {
               kind: errorKind(error),
             });
           }
+          end(signal?.aborted ? "aborted" : "error", error);
           throw error;
         }
       }
       finished = true;
+      end("ok");
     } finally {
-      if (!finished) await rest.return?.();
+      if (!finished) {
+        // The caller stopped reading (or the stream failed, recorded above).
+        end(
+          record.finish_reason !== null ? "ok" : "aborted",
+          record.finish_reason !== null ? null : new LlmError("stopped before the end"),
+        );
+        await rest.return?.();
+      }
     }
   }
 }

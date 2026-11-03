@@ -8,6 +8,7 @@ import {
 import { SettingsStoreKey } from "@miyoria/store";
 import { type JsonValue, serviceKey } from "@miyoria/types";
 import { z } from "zod";
+import { LlmCallLog } from "./calls.js";
 import { BudgetConfigSchema, PricingSchema } from "./cost.js";
 import { LlmRouter } from "./router.js";
 import { type ChatProvider, LlmError, type ModelRef, ModelRefSchema } from "./types.js";
@@ -111,6 +112,8 @@ export class LlmModule implements Module {
   readonly #overrides: ReadonlyMap<string, ModelRef[]>;
   /** Router of the running module, flushed on stop. */
   #router: LlmRouter | undefined;
+  /** The call inspector's log; outlives restarts of the module. */
+  readonly #calls = new LlmCallLog();
 
   constructor(
     config: LlmConfig,
@@ -134,6 +137,7 @@ export class LlmModule implements Module {
       budget: this.#config.budget,
       thinking: new Map(Object.entries(this.#config.thinking)),
       imageInput: new Map(Object.entries(this.#config.image_input)),
+      calls: this.#calls,
     });
     router.setPurposes(this.#overrides);
     return router;

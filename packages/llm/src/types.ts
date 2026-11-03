@@ -137,6 +137,8 @@ export interface Usage {
   completion_tokens: number;
   /** Prompt tokens served from the provider's prefix cache, if reported. */
   cached_prompt_tokens: number | null;
+  /** Completion tokens spent thinking (part of `completion_tokens`), if reported. */
+  reasoning_tokens?: number | null;
 }
 
 /**

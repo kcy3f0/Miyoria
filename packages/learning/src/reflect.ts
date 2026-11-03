@@ -6,7 +6,14 @@
 // each, capped per day; budget degraded = only the daily one, exhausted = none.
 
 import { errorMessage, getLogger, SerialQueue, type ServiceLookup } from "@miyoria/kernel";
-import { completeJson, LlmRouterKey, sessionId, systemMessage, userMessage } from "@miyoria/llm";
+import {
+  completeJson,
+  LlmRouterKey,
+  sessionId,
+  systemMessage,
+  userMessage,
+  withLlmTag,
+} from "@miyoria/llm";
 import { PeopleStoreKey, type SettingsStore } from "@miyoria/store";
 import {
   type AccountRef,
@@ -292,22 +299,24 @@ export class Reflector {
       } else this.#lastLightAt = run.at;
       this.#saveState();
       const input = await this.#gather(kind, context, started, signal);
-      const result = await completeJson(
-        router,
-        d.config.purpose,
-        {
-          messages: [
-            systemMessage(`${d.persona().trim()}\n\n${rules(kind, d.config.max_goals)}`),
-            userMessage(input.data),
-            userMessage("好好想一想,然後只回傳 JSON。"),
-          ],
-          json_mode: true,
-          thinking: true,
-          max_tokens: d.config.max_tokens,
-          session: sessionId(d.profile, `reflect-${kind}`),
-        },
-        ReflectionSchema,
-        signal ? { signal } : {},
+      const result = await withLlmTag({ module: "learning", label: `reflect:${kind}` }, () =>
+        completeJson(
+          router,
+          d.config.purpose,
+          {
+            messages: [
+              systemMessage(`${d.persona().trim()}\n\n${rules(kind, d.config.max_goals)}`),
+              userMessage(input.data),
+              userMessage("好好想一想,然後只回傳 JSON。"),
+            ],
+            json_mode: true,
+            thinking: true,
+            max_tokens: d.config.max_tokens,
+            session: sessionId(d.profile, `reflect-${kind}`),
+          },
+          ReflectionSchema,
+          signal ? { signal } : {},
+        ),
       );
       run.tokens = result.tokens;
       await this.#apply(result.value, input, kind, context, run);

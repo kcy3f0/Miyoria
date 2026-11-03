@@ -8,6 +8,7 @@ import { errorMessage, getLogger, isAbortError, sleep } from "@miyoria/kernel";
 import type { JsonValue } from "@miyoria/types";
 import { z } from "zod";
 import type { ProviderConfig, ProviderFactory } from "../module.js";
+import { noteProviderRetry } from "../trace.js";
 import {
   type ChatProvider,
   type ChatRequest,
@@ -310,6 +311,7 @@ export class OpenAiProvider implements ChatProvider {
           { provider: this.name, err: describeFetchError(error), delay_ms: delay },
           "LLM request failed, retrying",
         );
+        noteProviderRetry(describeFetchError(error));
         await sleep(delay, signal);
         continue;
       }
@@ -323,6 +325,7 @@ export class OpenAiProvider implements ChatProvider {
           { provider: this.name, status: response.status, delay_ms: delay },
           "LLM request failed, retrying",
         );
+        noteProviderRetry(`HTTP ${response.status}`);
         await sleep(delay, signal);
         continue;
       }

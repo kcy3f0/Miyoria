@@ -9,6 +9,7 @@ import {
   sessionId,
   systemMessage,
   userMessage,
+  withLlmTag,
 } from "@miyoria/llm";
 import type {
   LogEntry,
@@ -587,7 +588,9 @@ export class MemoryEngine implements FollowupSource {
       json_mode: true,
       session: sessionId(this.profile, `memory-${contextHash(context)}`),
     };
-    const response = await router.complete(this.config.purpose, request, signal);
+    const response = await withLlmTag({ module: "memory", label: "extract" }, () =>
+      router.complete(this.config.purpose, request, signal),
+    );
     let extraction: Extraction;
     try {
       extraction = parseExtraction(response.text);
