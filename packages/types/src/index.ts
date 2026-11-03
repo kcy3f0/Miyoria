@@ -464,3 +464,9 @@ export {
   v2Event,
   v2Payload,
 } from "./v2-topics.js";
+export {
+  VOICE_BARGE_IN_TOPIC,
+  type VoiceBargeIn,
+  type VoiceBargeInAction,
+  type VoiceBargeInReason,
+} from "./voice-barge.js";
