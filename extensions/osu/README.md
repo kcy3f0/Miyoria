@@ -1,6 +1,6 @@
 # osu! 擴充(AI 玩家)
 
-讓她把一個 osu! AI 玩家送進 lazer 多人房,跟大家一起打;也可以叫它單獨打一張譜,把 replay 貼出來;或是開台自己打 osu,邊打邊實況(game adapter,見下面「她自己打 osu 開台」)。
+讓她把一個 osu! AI 玩家送進 lazer 多人房,跟大家一起打;也可以叫它單獨打一張譜,把 replay 貼出來。
 
 AI 本體是 [osu_rl](https://github.com/SQL1024-sql/osu_RL) 的 `live.service`:一個強化學習模型,用普通帳號以 lazer 客戶端的協定連上 osu! 私人伺服器(例如 Illyaverse),判定和計分都用 lazer 自己的程式算。這個擴充只把它的 HTTP API 包成工具,不碰遊戲本身。
 
@@ -35,63 +35,36 @@ AI 本體是 [osu_rl](https://github.com/SQL1024-sql/osu_RL) 的 `live.service`:
 
 AI 一定要用**另外註冊的帳號**,不要把自己的帳號密碼填進 `live/.env`。在同一台電腦上架 `live.service` 或跑 `live.e2e` 之前,自己的 lazer 登入不用動,但 `live/.env` 裡只能放 AI 帳號(`OSU_RL_TESTER_*` 也不要放自己的帳號)。
 
-## 一台機器開台(最簡單的做法)
-
-全部放在直播機上:Miyoria、AI(`live.service`)、OBS 和看畫面的 lazer。AI 只吃 CPU,不佔顯存。
-
-**第一次**
-
-1. **AI**:clone [osu_rl](https://github.com/SQL1024-sql/osu_RL),照它的 [live/README.md](https://github.com/SQL1024-sql/osu_RL/blob/master/live/README.md) 裝好 Python 套件和 .NET 10,執行 `python -m live.setup`。它會問伺服器和 Miyo 的 osu 帳號,最後印出下面要貼的金鑰。
-2. **Miyoria**:`pnpm build`(含這個擴充),`miyoria.toml` 加上:
-
-```toml
-[extensions."miyoria.osu"]
-account = "<Miyo 的 osu 帳號名稱>"          # live.service 登入的不是它就全部拒絕(見上面「帳號保護」)
-blocked_accounts = ["<你們自己的帳號>"]
-env = { MIYORIA_OSU_TOKEN = "<live.setup 印出來的金鑰>" }
-```
-
-3. **畫面**:在同一台開 lazer(用 Kaleidoscope 連同一台伺服器),用**專門觀戰的帳號**登入(不是 Miyo 的,也**不是你自己的**:直播機上的 lazer 如果登著你的帳號,先登出再換),設定裡開「自動下載缺少的譜面」。OBS 建一個遊戲場景擷取 lazer 視窗,在 `[modules."stage.link".scenes] roles` 加上 `osu = "<那個場景>"`(打 osu 時會切到它;沒設就用 `game` 的場景)。
-
-**每次開台**
-
-1. 開 `python -m live.service`、Miyoria、OBS、lazer。
-2. lazer 到 Miyo 帳號的個人頁按「觀戰」,之後她打的每一張譜畫面都會自動跟上。
-3. 在語音頻道下 `/game start game:osu`(或跟她說「去打 osu」),開播照平常(`/voice golive start` 或 OBS 推流)。
-4. 想點譜就直接跟她說譜面 id;結束 `/game stop`。
-
-`[modules.game]` 和工具逾時都不用改:打完一張是導演認得的 `goal_reached`,她會接著選下一張。
-
-## 她自己打 osu(game adapter 的細節)
-
-這個擴充同時是 `game = "osu"` 的 game adapter,跟 Minecraft 一樣走導演迴路(`docs/ARCHITECTURE.md` §12.3):
-
-- `game_osu_observe`:正在打哪張譜、進度、combo、準度、miss;準備中;沒在打時是上一張的成績
-- `game_osu_act`:`play`(`beatmap_id`、可選 `level`、`mods`)、`stop`、`set_level`、`join_room`、`leave_room`
-- 事件 `game.osu.*`,每個都有 `data.text` 給她實況:`preparing`、`started`、`combo_break`(100 combo 以上算重要)、`goal_reached`(打完:準度、評級、是否 FC)、`goal_failed`(中途停止或出錯)、`connected` / `disconnected`
-
-`play` 是單人打譜:AI 用自己的帳號打,伺服器上看得到它在玩,成績也會送出。打譜照真實時間播放,事件也照遊戲時間送出。
-
-注意:
-
-- 正在打的時候不能再 `play`(會回 `already playing`);在多人房裡也不能單人打。
-- 譜面要在伺服器上(`/osu/{id}` 下載得到)。
-- 伺服器會把 AI 的單人成績算進排行榜和 pp。
-
 ## 設定
 
-| 設定(`[extensions."miyoria.osu"]`) | 環境變數 | 預設 |
+1. 照 osu_rl 的 [live/README.md](https://github.com/SQL1024-sql/osu_RL/blob/master/live/README.md) 架好 `live.service`(需要 Python、.NET 10、編好的 ppy/osu,和伺服器上一個 AI 帳號),記下 `OSU_RL_CONTROL_TOKEN`。
+2. 建置:先 `pnpm build` packages/sdk,再在這裡 `pnpm install && pnpm build`。
+3. `miyoria.toml`:
+
+```toml
+[modules.extensions]
+dirs = ["extensions"]
+# 沒打過的譜要先模擬加計分,第一次 10–40 秒;預設 30 秒會逾時
+call_timeout_ms = 120000
+
+[extensions."miyoria.osu"]
+account = "Miyoria AI"                    # AI 自己的帳號名稱(MIYORIA_OSU_ACCOUNT);live.service 登入的不是它就全部拒絕
+blocked_accounts = ["你自己的帳號"]        # 絕對不能用的帳號
+url = "http://127.0.0.1:8765"            # live.service;也可以用環境變數 MIYORIA_OSU_URL
+public_url = "https://osu-ai.example"     # 可選:replay 連結用的對外網址(MIYORIA_OSU_PUBLIC_URL)
+env = { MIYORIA_OSU_TOKEN = "<OSU_RL_CONTROL_TOKEN>" }
+```
+
+| 設定 | 環境變數 | 預設 |
 |---|---|---|
-| `url` | `MIYORIA_OSU_URL` | `http://127.0.0.1:8765`(同一台) |
+| `url` | `MIYORIA_OSU_URL` | `http://127.0.0.1:8765` |
 | `token` | `MIYORIA_OSU_TOKEN` | 無(沒設會在 log 警告,每次呼叫都被拒絕) |
-| `public_url` | `MIYORIA_OSU_PUBLIC_URL` | 同 `url`;replay 連結要給別人點時設成對外網址 |
+| `public_url` | `MIYORIA_OSU_PUBLIC_URL` | 同 `url` |
 | `account` | `MIYORIA_OSU_ACCOUNT` | 無(沒設就全部拒絕) |
 | `blocked_accounts` | | `[]` |
-| `request_timeout_ms` | | `25000`(比宿主預設的 30 秒工具逾時短) |
+| `request_timeout_ms` | | `120000` |
 
-`osu_ai_play_map` 打一張沒打過的譜超過逾時時,會請她 20 秒後用同樣的參數再問一次,那時結果已經算好存起來了。
-
-AI 跟 Miyoria 不在同一台時:`live.service` 用 `--host 0.0.0.0` 啟動,`url` 設成那台的位址,兩台之間走 Tailscale。
+`live.service` 預設只聽 `127.0.0.1`;不在同一台機器時,`live.service` 用 `--host 0.0.0.0` 並在前面加 HTTPS 反向代理,manifest 的 `network` 也要改成那個位址。
 
 ## 測試
 
@@ -99,4 +72,4 @@ AI 跟 Miyoria 不在同一台時:`live.service` 用 `--host 0.0.0.0` 啟動,`ur
 pnpm --filter @miyoria/ext-osu test
 ```
 
-單元測試用一個假的 `live.service` 跑完整的 SDK 流程(工具、game adapter、事件、逾時)。2026-11-03 接上真的 `live.service`(本機 Illyaverse)實測:工具全部正常;`game_osu_act play` 打完一整張 Renatus Hard,事件依序是 preparing → started → combo_break → goal_reached,observe 一路回報進度、combo 和準度。
+單元測試用一個假的 `live.service` 跑完整的 SDK 流程。2026-11-03 也接上真的 `live.service`(本機 Illyaverse)測過 `status`、`list_rooms`、`set_level` 和 `play_map`:`play_map` 第一次打一張 Hard 譜花了 36 秒,所以上面的 `call_timeout_ms` 一定要調高。進房打一整輪的流程在 osu_rl 那邊用 `python -m live.e2e` 測過。

@@ -1,12 +1,11 @@
-# osu! AI 玩家:讓她把 osu_rl 的 AI 送進 lazer 多人房跟大家一起打,或自己打譜開台(game adapter `game.osu.*`)。
+# osu! AI 玩家:讓她把 osu_rl 的 AI 送進 lazer 多人房跟大家一起打,或單獨打一張譜。
 # 這個擴充只是 HTTP 用戶端;AI 本體是 osu_rl 的 live.service(https://github.com/SQL1024-sql/osu_RL/tree/master/live)。
 # 建置:先 `pnpm build` packages/sdk,再在這裡 `pnpm install && pnpm build`。
 id = "miyoria.osu"
 version = "0.1.0"
 name = "osu!"
-description = "osu! AI 玩家(osu_rl live.service):進 lazer 多人房、換難度、打譜直播"
-kind = ["game-adapter", "tools"]
-game = "osu"
+description = "osu! AI 玩家(osu_rl live.service):進 lazer 多人房、換難度、打單張譜"
+kind = ["tools"]
 runtime = "node"
 entry = "dist/index.js"
 placement = "any"

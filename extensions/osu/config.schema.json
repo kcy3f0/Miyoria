@@ -27,9 +27,9 @@
     },
     "request_timeout_ms": {
       "type": "integer",
-      "description": "一次呼叫最多等多久(要比宿主的 call_timeout_ms 短);打一張沒打過的譜超過時,工具會請她稍後再問",
+      "description": "一次呼叫最多等多久;打一張沒打過的譜要 10–30 秒以上",
       "minimum": 1000,
-      "default": 25000
+      "default": 120000
     }
   }
 }
