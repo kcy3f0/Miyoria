@@ -47,7 +47,7 @@ OBS:新增「瀏覽器」來源,網址 `http://127.0.0.1:7884/overlay/`,寬 1920
 
 ### 背景層與唱歌場景
 
-`?layer=backdrop` 畫 Stage 的 `/overlay/backdrop`(`[stage] overlay_backdrop` 指定的圖),模糊、壓暗,像毛玻璃後面的景;沒有圖就是深色漸層。加上 `&layout=sing` 時還有一個玻璃框:半透明的邊、細亮邊線和陰影,歌曲影片就放在框裡面(沒有歌在播時看得到框裡較暗的玻璃)。框的位置在 `style.css` 的 `--pad`、`--video-*`,OBS 裡影片的位置要跟它一樣。
+`?layer=backdrop` 畫 Stage 的 `/overlay/backdrop`(`[stage] overlay_backdrop` 指定的圖),上面一層中性的暗色;沒有圖就是近黑色。加上 `&layout=sing` 時多一塊影片的位置:沒有歌在播時是一片灰黑的半透明玻璃,影片蓋上去後只剩貼著影片外緣的 1px 半透明白邊和柔和的陰影,圓角 14px。位置在 `style.css` 的 `--pad`、`--video-*`,OBS 裡影片的位置要跟它一樣。所有底板(字幕、面板、膠囊)是同一種灰黑玻璃:`rgb(24 24 27)`、1px `rgb(255 255 255 / 0.15)` 邊、圓角 14px。
 
 OBS 場景由下到上:
 
@@ -74,7 +74,7 @@ src/emotion.ts     情緒名稱 → 顏色(同亮度同彩度,只轉色相)
 src/connection.ts  WebSocket 重連
 src/view.ts        DOM、rAF 迴圈、字幕計時、面板與佇列(FLIP)
 src/activity.ts    活動膠囊(文字、寬度、進度條)
-src/backdrop.ts    背景層(?layer=backdrop):背景圖、壓暗、唱歌版面的玻璃框
+src/backdrop.ts    背景層(?layer=backdrop):背景圖、壓暗、唱歌版面的影片位置
 src/motion.ts      共用動態:is-out 進出、交叉淡化、讀 CSS 的時間
 src/demo.ts        ?demo=1 的假資料(說話、思考、做歌的每個階段、唱歌、佇列變動輪流來)
 src/style.css      版面與視覺

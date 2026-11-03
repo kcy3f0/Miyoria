@@ -14,8 +14,11 @@
 :root {
   --scale: 1;
 
-  --plate: oklch(0.15 0.014 275 / 0.88);
-  --plate-edge: oklch(1 0 0 / 0.09);
+  /* Neutral grey-black glass with a light hairline edge. */
+  --plate: rgb(24 24 27 / 0.84);
+  --plate-edge: rgb(255 255 255 / 0.15);
+  --plate-shadow: 0 0.75rem 2.25rem rgb(0 0 0 / 0.28);
+  --radius: 0.875rem;
   --rule: oklch(1 0 0 / 0.09);
   --ink: oklch(0.97 0.006 275);
   --ink-dim: oklch(0.78 0.012 275);
@@ -39,13 +42,12 @@
 
   /*
    * The sing layout's song video: OBS puts it at this rectangle (1504x846 at 48,48 in 1080p), the
-   * backdrop frames it in a glass bezel, and the overlay keeps its pieces clear of it.
+   * backdrop draws its edge, and the overlay keeps its pieces clear of it.
    */
   --pad: 3rem;
   --video-w: 94rem;
   --video-h: 52.875rem;
   --video-r: 0.875rem;
-  --bezel: 0.5rem;
 
   --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft JhengHei UI", "Noto Sans TC", "PingFang TC",
     system-ui, sans-serif;
@@ -166,8 +168,8 @@ body {
   padding: 0.65rem 1.4rem 0.75rem;
   background: var(--plate);
   border: 1px solid var(--plate-edge);
-  border-radius: 0.7rem;
-  box-shadow: 0 0.6rem 1.8rem oklch(0 0 0 / 0.38);
+  border-radius: var(--radius);
+  box-shadow: var(--plate-shadow);
   transform: translateX(-50%);
   transition:
     opacity var(--t-enter) var(--ease-out),
@@ -382,9 +384,9 @@ body {
 
 /* The capsule sits just under the video, flush with its left edge. */
 [data-layout="sing"] .activity {
-  top: calc(var(--pad) + var(--video-h) + var(--bezel) + 1rem);
+  top: calc(var(--pad) + var(--video-h) + 1.25rem);
   bottom: auto;
-  left: calc(var(--pad) - var(--bezel));
+  left: var(--pad);
 }
 
 /*
@@ -411,56 +413,39 @@ body {
   position: fixed;
   inset: 0;
   overflow: hidden;
-  background:
-    radial-gradient(120% 90% at 30% 20%, oklch(0.26 0.03 265), transparent 70%),
-    oklch(0.14 0.018 270);
+  background: rgb(10 10 12);
 }
 
-/* Larger than the frame, so the blur has no soft edge. */
 .backdrop__art {
   position: absolute;
-  top: -3rem;
-  left: -3rem;
-  width: calc(100% + 6rem);
-  height: calc(100% + 6rem);
+  inset: 0;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
-  filter: blur(0.7rem) saturate(1.35);
 }
 
-/* Dims the picture, a little more towards the bottom where the captions and capsule sit. */
+/* A neutral tint over the picture, so the video, her model and the plates stand out on it. */
 .backdrop__shade {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(140% 110% at 50% 35%, transparent 35%, oklch(0.1 0.03 265 / 0.45)),
-    linear-gradient(180deg, oklch(0.18 0.035 265 / 0.5), oklch(0.12 0.03 265 / 0.72));
+  background: rgb(8 8 10 / 0.42);
 }
 
-/* The glass the song video sits in: a frosted rim around it, a hairline edge, a soft shadow. */
-.bezel {
+/*
+ * The song video's place: grey-black glass seen between songs, its 1px edge just outside the video
+ * (which covers the rest) so the edge reads as the video's own, and a soft shadow under it.
+ */
+.screen {
   position: absolute;
-  top: calc(var(--pad) - var(--bezel));
-  left: calc(var(--pad) - var(--bezel));
+  top: calc(var(--pad) - 1px);
+  left: calc(var(--pad) - 1px);
   box-sizing: border-box;
-  width: calc(var(--video-w) + 2 * var(--bezel));
-  height: calc(var(--video-h) + 2 * var(--bezel));
-  border: 1px solid oklch(1 0 0 / 0.22);
-  border-radius: calc(var(--video-r) + var(--bezel));
-  background: oklch(1 0 0 / 0.08);
-  box-shadow:
-    0 1.6rem 4rem oklch(0 0 0 / 0.42),
-    inset 0 1px 0 oklch(1 0 0 / 0.14);
-  backdrop-filter: blur(1.5rem) saturate(1.3);
-}
-
-/* The screen itself, seen between songs (the video covers it while one plays). */
-.bezel::after {
-  content: "";
-  position: absolute;
-  inset: calc(var(--bezel) - 1px);
-  border-radius: var(--video-r);
-  background: oklch(0.1 0.015 265 / 0.45);
-  box-shadow: inset 0 0 0 1px oklch(0 0 0 / 0.25);
+  width: calc(var(--video-w) + 2px);
+  height: calc(var(--video-h) + 2px);
+  border: 1px solid var(--plate-edge);
+  border-radius: calc(var(--video-r) + 1px);
+  background: rgb(24 24 27 / 0.72);
+  box-shadow: 0 1.125rem 3.125rem rgb(0 0 0 / 0.35);
 }
 
 /* ── side panel ───────────────────────────────────────────────────────── */
@@ -475,8 +460,8 @@ body {
   padding: 0.95rem 1.1rem;
   background: var(--plate);
   border: 1px solid var(--plate-edge);
-  border-radius: 0.7rem;
-  box-shadow: 0 0.5rem 1.4rem oklch(0 0 0 / 0.32);
+  border-radius: var(--radius);
+  box-shadow: var(--plate-shadow);
   font-size: 1.05rem;
   line-height: 1.35;
   opacity: 1;
