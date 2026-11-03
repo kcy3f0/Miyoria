@@ -29,10 +29,12 @@ import {
   type SelfState,
   SelfStateKey,
   SocialSignalsKey,
+  SpeechPauseKey,
   sameAccount,
   type ThoughtTrigger,
   toTimestamp,
   type VoiceChannelState,
+  VoiceFloorKey,
   type WorldSnapshot,
   WorldStateKey,
 } from "@miyoria/types";
@@ -121,7 +123,9 @@ async function label(
  * How much is being said in a voice channel (`;正在聊天:最近 5 分鐘 12 句,最後一句 8 秒前`), so
  * a busy channel never reads as quiet; empty when unknown.
  */
-export function voiceTalk(v: VoiceChannelState): string {
+export function voiceTalk(v: VoiceChannelState, deaf = false): string {
+  // While a song is prepared her listening is off: no utterances does not mean nobody talks.
+  if (deaf) return ";你現在聽不到這裡的人說話";
   const a = v.activity;
   if (!a) return "";
   if (a.recent_utterances === 0 || a.secs_since_last === null) return ";最近沒人說話";
@@ -131,6 +135,33 @@ export function voiceTalk(v: VoiceChannelState): string {
       : `${Math.round(a.secs_since_last / 60)} 分鐘前`;
   const who = a.recent_speakers.length > 0 ? `(${a.recent_speakers.slice(0, 4).join("、")})` : "";
   return `;${a.lively ? "正在聊天:" : ""}最近 ${a.recent_utterances} 句${who},最後一句 ${last}`;
+}
+
+/**
+ * What she is singing where she is in voice (`guild`), and whether she can hear the voice
+ * channel. Without it she took people listening to her song for a silent channel, and thought
+ * the set list was done while songs were still playing and queued.
+ */
+export function singing(
+  services: ServiceLookup,
+  guild: string | null,
+): { note: string; deaf: boolean } {
+  const floor = guild === null ? undefined : services.get(VoiceFloorKey);
+  const deaf = services.get(SpeechPauseKey)?.paused() === "song";
+  const lines: string[] = [];
+  if (guild !== null && floor) {
+    const now = floor.holder(guild) !== null;
+    if (now) lines.push("你正在唱歌:語音裡安靜是大家在聽,不是沒人。");
+    const left = (floor.pending?.(guild) ?? 0) - (now ? 1 : 0);
+    if (left > 0) lines.push(`歌單還有 ${left} 首在準備或等著唱,還沒唱完。`);
+  }
+  if (deaf) {
+    lines.push(
+      "歌正在做(顯示卡給了唱歌),你暫時聽不到語音裡的人說話,也不能講話;聽不到不代表沒人講。",
+    );
+  }
+  if (lines.length === 0) return { note: "", deaf };
+  return { note: ["唱歌:", ...lines.map((l) => `- ${l}`)].join("\n"), deaf };
 }
 
 /** Her crush and her emotions toward someone (`你偷偷喜歡的人;想念 0.40`); `null` if nothing. */
@@ -153,8 +184,14 @@ export async function gather(input: GatherInput): Promise<Gathered> {
   const focus = focusOf(input.triggers, input.suggestions, world);
   const guild = focus?.scope ?? null;
   const inGuild = (c: ContextKey) => guild === null || c.scope === guild;
-  const summary =
-    worldState?.summary(focus !== null && focus.kind !== "dm" ? { context: focus } : {}) ?? "";
+  const songs = singing(services, world?.her.voice?.scope ?? null);
+  const deaf = songs.deaf;
+  const summary = [
+    worldState?.summary(focus !== null && focus.kind !== "dm" ? { context: focus } : {}) ?? "",
+    songs.note,
+  ]
+    .filter((part) => part !== "")
+    .join("\n");
 
   // ---- places
   const places: PlaceRef[] = [];
@@ -206,7 +243,7 @@ export async function gather(input: GatherInput): Promise<Gathered> {
     await addPlace(
       context,
       `語音頻道 ${v.name ?? v.channel}`,
-      `裡面有 ${people.map((m) => m.display_name).join("、")}${voiceTalk(v)}`,
+      `裡面有 ${people.map((m) => m.display_name).join("、")}${voiceTalk(v, deaf)}`,
     );
   }
   // Fill in the notes of places added first (focus, her voice channel).
@@ -221,7 +258,7 @@ export async function gather(input: GatherInput): Promise<Gathered> {
     );
     if (v && p.context.kind === "voice") {
       const people = v.members.filter((m) => !m.is_self).map((m) => m.display_name);
-      p.note = people.length > 0 ? `裡面有 ${people.join("、")}${voiceTalk(v)}` : "沒有人";
+      p.note = people.length > 0 ? `裡面有 ${people.join("、")}${voiceTalk(v, deaf)}` : "沒有人";
     }
   }
   // The owner's level of each text channel: a ceiling on her talking there.

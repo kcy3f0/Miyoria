@@ -113,6 +113,8 @@ export const VoicePlayerKey = serviceKey<VoicePlayer>("VoicePlayer");
 export interface VoiceFloor {
   /** What holds `guild`'s voice channel (`"song"`), or `null` when her speech may play. */
   holder(guild: string): string | null;
+  /** Songs still to sing in `guild` (preparing, ready or playing). */
+  pending?(guild: string): number;
 }
 
 export const VoiceFloorKey = serviceKey<VoiceFloor>("VoiceFloor");

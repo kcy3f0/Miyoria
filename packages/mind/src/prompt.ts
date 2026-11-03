@@ -113,7 +113,7 @@ const SOLO: Record<string, string> = {
   "game.goal": "給自己在遊戲裡訂個目標(例如做出鐵鎬、蓋個小屋)",
   "sing.request": "自己挑一首喜歡的歌來準備、唱給自己聽",
   "sing.play": "唱一首已經準備好的歌",
-  "voice.leave": "離開語音去休息,晚點有人再回來",
+  "voice.leave": "離開語音去休息,晚點有人再回來(還有歌沒唱完、或剛有人叫你回來時不行)",
 };
 
 /** Idle thoughts in a row after which she is told she has been sitting there. */

@@ -56,4 +56,11 @@ export {
   parseMindReply,
   type TalkChange,
 } from "./reply.js";
-export { capabilityInfo, focusOf, type Gathered, gather, NOT_FOR_HER } from "./snapshot.js";
+export {
+  capabilityInfo,
+  focusOf,
+  type Gathered,
+  gather,
+  NOT_FOR_HER,
+  singing,
+} from "./snapshot.js";

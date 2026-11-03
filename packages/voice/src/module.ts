@@ -12,7 +12,13 @@ import {
 import { LlmRouterKey } from "@miyoria/llm";
 import { SpeechServiceKey } from "@miyoria/speech";
 import { SettingsStoreKey } from "@miyoria/store";
-import { type JsonObject, type ProfileId, VoiceSinkKey, WorldStateKey } from "@miyoria/types";
+import {
+  type JsonObject,
+  type ProfileId,
+  VoiceFloorKey,
+  VoiceSinkKey,
+  WorldStateKey,
+} from "@miyoria/types";
 import { voiceCapabilities } from "./actions.js";
 import { BargeIn } from "./barge.js";
 import { registerCommands, unregisterCommands } from "./commands.js";
@@ -109,6 +115,7 @@ export class VoiceModule implements Module {
       link,
       () => config.golive_source,
       () => ctx.services.get(WorldStateKey),
+      () => ctx.services.get(VoiceFloorKey),
     ).map((c) => actuators.register(c));
     const commands = new CommandMount(
       "voice",

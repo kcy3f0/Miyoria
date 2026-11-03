@@ -1,10 +1,21 @@
 // Capabilities of the voice node: `voice.join`, `voice.leave`, `stream.start` and `stream.stop`
 // (Discord Go Live; OBS follows `voice.golive` on the Stage side). Registered in the actuator
 // registry by the voice module; `/voice ...` and her tools both call them through the gate.
+//
+// Leaving on her own (principal `self`) is refused while she still has songs to sing there, and
+// for `STAY_AFTER_INVITE_MS` after someone brought her into voice while people are still in it:
+// her mind took the quiet of people listening to a song for a quiet channel and kept leaving
+// mid-song, and her friends kept calling her back. A person or a command can still send her away.
 
 import { type Capability, CapabilityError, defineCapability } from "@miyoria/actions";
 import { errorMessage } from "@miyoria/kernel";
-import { actLane, type Principal, StreamCurtainKey, type WorldState } from "@miyoria/types";
+import {
+  actLane,
+  type Principal,
+  StreamCurtainKey,
+  type VoiceFloor,
+  type WorldState,
+} from "@miyoria/types";
 import { z } from "zod";
 import type { VoiceLink } from "./link/link.js";
 
@@ -45,6 +56,22 @@ function requireNode(link: VoiceLink): void {
 
 const GUILD_PROPERTY = { type: "string", description: "伺服器 id(省略 = 這個伺服器)" };
 
+/** After someone brings her into voice, she does not leave on her own for this long (ms). */
+export const STAY_AFTER_INVITE_MS = 20 * 60_000;
+
+/** People other than her in her voice channel of `guild`. */
+function othersInVoice(
+  guild: string,
+  channel: string | null,
+  world: WorldState | undefined,
+): number {
+  if (channel === null) return 0;
+  const vc = world
+    ?.snapshot()
+    .voice_channels.find((c) => c.guild === guild && c.channel === channel);
+  return vc ? vc.members.filter((m) => !m.is_self).length : 0;
+}
+
 /**
  * Where to join for `principal`'s request in `guild`: the requester's current voice channel as the
  * bot sees it (`world`), else ask the voice node to look the requester up (`follow`).
@@ -76,7 +103,29 @@ export function voiceCapabilities(
   link: VoiceLink,
   goliveSource: () => string,
   world: () => WorldState | undefined = () => undefined,
+  floor: () => VoiceFloor | undefined = () => undefined,
+  now: () => number = Date.now,
 ): Capability[] {
+  /** When someone (not she herself) last brought her into voice, per guild. */
+  const invitedAt = new Map<string, number>();
+
+  /** Why she may not leave `guild` on her own now, or `null`. */
+  function stay(guild: string): string | null {
+    const songs = floor();
+    if (songs?.holder(guild)) return "正在唱歌:唱完、歌單也唱完再離開語音";
+    const pending = songs?.pending?.(guild) ?? 0;
+    if (pending > 0) return `還有 ${pending} 首歌在準備或等著唱:唱完再離開語音`;
+    const invited = invitedAt.get(guild);
+    if (invited !== undefined && now() - invited < STAY_AFTER_INVITE_MS) {
+      const people = othersInVoice(guild, link.channel(guild), world());
+      if (people > 0) {
+        const minutes = Math.max(1, Math.round((now() - invited) / 60_000));
+        return `${minutes} 分鐘前有人叫你進語音,大家(${people} 人)還在:先待著,想安靜可以少說話`;
+      }
+    }
+    return null;
+  }
+
   const join = defineCapability<JoinArgs>({
     name: "voice.join",
     summary: "加入語音頻道",
@@ -105,6 +154,7 @@ export function voiceCapabilities(
         throw new CapabilityError("no channel given and nobody to follow");
       }
       const joined = await link.join(guild, target.channel, target.follow);
+      if (ctx.principal.kind !== "self") invitedAt.set(guild, now());
       return { text: `joined voice channel ${joined}`, data: { channel: joined } };
     },
   });
@@ -122,6 +172,11 @@ export function voiceCapabilities(
     },
     scope: guildOf,
     lane,
+    check(args, principal) {
+      if (principal.kind !== "self") return null;
+      const guild = guildOf(args, principal);
+      return guild === null ? null : stay(guild);
+    },
     async execute(args, ctx) {
       const guild = requireGuild(args, ctx.principal);
       if (link.channel(guild) === null) {

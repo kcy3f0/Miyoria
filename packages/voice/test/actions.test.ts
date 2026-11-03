@@ -13,9 +13,11 @@ import {
   type StreamCurtain,
   StreamCurtainKey,
   type Subject,
+  type VoiceFloor,
+  type WorldState,
 } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
-import { joinTarget, voiceCapabilities } from "../src/actions.js";
+import { joinTarget, STAY_AFTER_INVITE_MS, voiceCapabilities } from "../src/actions.js";
 import type { VoiceLink } from "../src/index.js";
 
 const CTX: ContextKey = { platform: "discord", scope: "g1", channel: "c1", kind: "channel" };
@@ -71,8 +73,35 @@ class FakeLink {
   }
 }
 
-function setup(nodes: string[]) {
+interface SetupOptions {
+  /** Songs still to sing, and whether one is playing. */
+  songs?: { playing: boolean; pending: number };
+  /** People (other than her) in the voice channel she is in. */
+  others?: number;
+  now?: () => number;
+}
+
+function setup(nodes: string[], options: SetupOptions = {}) {
   const link = new FakeLink();
+  const world = {
+    snapshot: () => ({
+      voice_channels: [
+        {
+          guild: "g1",
+          channel: link.inVoice ?? "",
+          members: [
+            { is_self: true },
+            ...Array.from({ length: options.others ?? 0 }, () => ({ is_self: false })),
+          ],
+        },
+      ],
+    }),
+    person: () => null,
+  } as unknown as WorldState;
+  const songs = options.songs;
+  const floor: VoiceFloor | undefined = songs
+    ? { holder: () => (songs.playing ? "song" : null), pending: () => songs.pending }
+    : undefined;
   const services = new ServiceRegistry();
   services.provide("test", AuthorizerKey, new Grants(new Set(nodes)));
   const tools = new ToolRegistry();
@@ -83,7 +112,13 @@ function setup(nodes: string[]) {
     builtins: false,
     publish: (e) => events.push(e),
   });
-  for (const c of voiceCapabilities(link as unknown as VoiceLink, () => "rtmp://obs/live")) {
+  for (const c of voiceCapabilities(
+    link as unknown as VoiceLink,
+    () => "rtmp://obs/live",
+    () => world,
+    () => floor,
+    options.now,
+  )) {
     registry.register(c);
   }
   const ctx: ToolContext = {
@@ -97,6 +132,65 @@ function setup(nodes: string[]) {
   };
   return { link, tools, registry, ctx, events, services };
 }
+
+/** She asks to leave on her own (her mind), in the server's text channel. */
+async function leaveOnHerOwn(s: ReturnType<typeof setup>) {
+  return s.registry.invoke({
+    principal: Principals.self(CTX),
+    capability: "voice.leave",
+    args: {},
+    why: "喉嚨乾,想休息",
+    turn: null,
+  });
+}
+
+describe("leaving on her own", () => {
+  it("is refused while a song plays or songs are still to sing; a person can still send her away", async () => {
+    const songs = { playing: true, pending: 2 };
+    const s = setup(["voice.leave"], { songs });
+    s.link.inVoice = "vc1";
+    const playing = await leaveOnHerOwn(s);
+    expect(playing.status).toBe("denied");
+    expect(playing.decision.reason).toMatch(/正在唱歌/);
+    songs.playing = false;
+    const queued = await leaveOnHerOwn(s);
+    expect(queued.decision.reason).toMatch(/還有 2 首歌/);
+    expect(s.link.calls).toEqual([]);
+    // Someone asking her to leave is not her own idea.
+    expect(await s.tools.get("voice_leave")?.call(s.ctx, {})).toBe("left the voice channel");
+    expect(s.link.calls).toEqual(["leave g1"]);
+  });
+
+  it("is refused for a while after someone brought her in, while people are still there", async () => {
+    let t = 1_000_000;
+    const s = setup(["voice.join", "voice.leave"], { others: 3, now: () => t });
+    await s.tools.get("voice_join")?.call(s.ctx, {});
+    t += 5 * 60_000;
+    const early = await leaveOnHerOwn(s);
+    expect(early.status).toBe("denied");
+    expect(early.decision.reason).toMatch(/5 分鐘前有人叫你進語音,大家\(3 人\)還在/);
+    t += STAY_AFTER_INVITE_MS;
+    expect((await leaveOnHerOwn(s)).status).toBe("done");
+    expect(s.link.calls).toEqual(["join g1 null 7", "leave g1"]);
+  });
+
+  it("may leave an empty channel, or one she joined on her own", async () => {
+    const t = 1_000_000;
+    const empty = setup(["voice.join", "voice.leave"], { others: 0, now: () => t });
+    await empty.tools.get("voice_join")?.call(empty.ctx, {});
+    expect((await leaveOnHerOwn(empty)).status).toBe("done");
+
+    const own = setup(["voice.join", "voice.leave"], { others: 2, now: () => t });
+    await own.registry.invoke({
+      principal: Principals.self(CTX),
+      capability: "voice.join",
+      args: { channel: "vc9" },
+      why: "想陪大家",
+      turn: null,
+    });
+    expect((await leaveOnHerOwn(own)).status).toBe("done");
+  });
+});
 
 describe("voice capabilities", () => {
   it("voice_join follows the requester; leave, go live and stop go through the gate", async () => {

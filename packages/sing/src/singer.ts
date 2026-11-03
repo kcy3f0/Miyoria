@@ -193,6 +193,11 @@ export class Singer implements VoiceFloor, SpeechPause {
     return this.#playing?.entry ?? null;
   }
 
+  /** `VoiceFloor`: songs still to sing in `guild` (a song asked for outside a server counts too). */
+  pending(guild: string): number {
+    return this.list.open().filter((e) => e.context === null || e.context.scope === guild).length;
+  }
+
   /** The song started is waiting for her to finish talking. */
   starting(): boolean {
     return this.#playing !== null && !this.#playing.audible;
