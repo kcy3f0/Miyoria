@@ -174,6 +174,12 @@ describe("telemetry", () => {
     const t = new Telemetry(3);
     t.handle({ event: { type: "platform_message_created" } } as never);
     t.handle({ event: { type: "custom", data: { topic: "voice.latency" } } } as never);
+    // Only turns where she said something count as replies.
+    const turn = (text: string) =>
+      t.handle({ event: { type: "agent_turn_completed", data: { turn: "t", text } } } as never);
+    turn("好啊");
+    turn("");
+    turn("  ");
     const state = {
       optional: (key: unknown) => h.sup.services.get(key as never),
       now: () => Date.parse("2026-11-03T10:00:00.000Z"),
@@ -181,6 +187,7 @@ describe("telemetry", () => {
     };
     const p = t.sample(state as never);
     expect(p.events.messages).toBe(1);
+    expect(p.events.turns).toBe(1);
     expect(p.mood?.valence).toBe(0.3);
     expect(p.drives?.curiosity).toBe(0.6);
     expect(t.sample(state as never).events.messages).toBe(0);

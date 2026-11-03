@@ -88,7 +88,10 @@ export class Telemetry {
   /** Counts a bus envelope toward the next sample. */
   handle(env: Envelope): void {
     const key = TELEMETRY_TOPICS[eventTopic(env.event)];
-    if (key) this.#counts[key] = (this.#counts[key] ?? 0) + 1;
+    if (!key) return;
+    // A turn she ended in silence, or that new messages cancelled, is no reply.
+    if (env.event.type === "agent_turn_completed" && env.event.data.text.trim() === "") return;
+    this.#counts[key] = (this.#counts[key] ?? 0) + 1;
   }
 
   /** Takes one sample of `state` now. */
