@@ -101,12 +101,13 @@ export function impulseReason(impulse: Impulse): string {
 }
 
 /**
- * Her own impulse that will make her talk: a self-initiated `speak`, or a self-initiated `act`
- * with something to say afterwards (`hint`). These count toward "主動開話題".
+ * Her own impulse to start talking (a self-initiated `speak`: `chat.start` / `chat.dm`). Only
+ * these count toward "主動開話題" (daily caps, gaps, the unanswered backoff); her own `act`
+ * impulses (join voice, sing a requested song, go live) respect quiet hours and the gate's
+ * per-capability limits, as `chat.start` alone had the counters before.
  */
 export function isSelfTalk(impulse: Impulse): boolean {
-  if (!isSelfInitiated(impulse.source)) return false;
-  return impulse.kind === "speak" || (impulse.hint ?? "").trim() !== "";
+  return isSelfInitiated(impulse.source) && impulse.kind === "speak";
 }
 
 /** What the host knows about a context, for the Arbiter's floors. */

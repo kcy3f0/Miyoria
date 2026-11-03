@@ -546,8 +546,8 @@ export class ArbiterCore implements Arbiter {
 
   /**
    * The rules on her own starts that only depend on time and what she already did: quiet
-   * hours, the daily caps, the gaps and the unanswered backoff (`talk`: it makes her talk; act
-   * impulses without words only respect quiet hours).
+   * hours, the daily caps, the gaps and the unanswered backoff (`talk`: she starts talking; her
+   * act impulses only respect quiet hours).
    */
   #timeRules(
     place: Place | null,

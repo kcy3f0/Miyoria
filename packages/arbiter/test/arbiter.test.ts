@@ -54,6 +54,29 @@ describe("source classification", () => {
   });
 });
 
+describe("her own act impulses", () => {
+  it("are not topics she opens: no caps or gaps, but quiet hours", async () => {
+    const r = rig({ max_per_day: 1 });
+    for (const _ of [1, 2, 3]) {
+      const d = await r.arbiter.submit(
+        impulse(r.clock, { source: "plan", kind: "act", capability: "sing.play", context: HERE }),
+      );
+      expect(d.verdict).toBe("accepted");
+    }
+    expect(r.arbiter.ledger().limits.initiatives_today).toBe(0);
+    const night = rig({}, new ManualClock(Date.UTC(2026, 10, 2, 18, 0, 0)));
+    const d = await night.arbiter.submit(
+      impulse(night.clock, {
+        source: "plan",
+        kind: "act",
+        capability: "voice.join",
+        context: HERE,
+      }),
+    );
+    expect(d).toMatchObject({ verdict: "rejected", reason: "quiet_hours" });
+  });
+});
+
 describe("floors", () => {
   it("pause, budget, consent and the channel level", async () => {
     const r = rig();
