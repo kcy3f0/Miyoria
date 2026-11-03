@@ -1,8 +1,27 @@
 // Chat Completions wire format.
 
-import type { JsonValue } from "@miyoria/types";
+import type { JsonValue, ReasoningLevel } from "@miyoria/types";
 import { z } from "zod";
 import type { ChatMessage, ChatRequest, ContentPart, Usage } from "../types.js";
+
+/** How a provider expresses reasoning levels (`OpenAiConfig.reasoningEffort` and caps). */
+export interface ReasoningWire {
+  /** Send `reasoning_effort: "low" | "medium" | "high"` (APIs that have it). */
+  effort: boolean;
+  /**
+   * Without `effort`: `max_tokens` cap per level, the stand-in for "think less" on APIs that
+   * only have an on / off switch (`null`: no cap). Never raises a smaller `max_tokens`.
+   */
+  maxTokens: Readonly<Partial<Record<ReasoningLevel, number | null>>>;
+}
+
+/** Default caps of reasoning levels on on / off providers (`low` and `medium` think briefly). */
+export const DEFAULT_REASONING_MAX_TOKENS: Readonly<Record<ReasoningLevel, number | null>> = {
+  off: null,
+  low: 2048,
+  medium: 8192,
+  high: null,
+};
 
 /**
  * Request body. Only `content` / `tool_calls` are ever sent for assistant messages, so
@@ -13,6 +32,8 @@ export function requestBody(
   req: ChatRequest,
   /** Merged into the body when `req.thinking === false` (the provider's switch). */
   thinkingOff: Readonly<Record<string, JsonValue>> | null = null,
+  /** How `req.reasoning` is sent (`null`: not at all, only the on / off switch). */
+  reasoning: ReasoningWire | null = null,
 ): Record<string, JsonValue> {
   const body: Record<string, JsonValue> = {
     model: req.model ?? "",
@@ -32,6 +53,18 @@ export function requestBody(
   if (req.stop && req.stop.length > 0) body.stop = req.stop;
   if (req.json_mode) body.response_format = { type: "json_object" };
   if (req.thinking === false && thinkingOff) Object.assign(body, thinkingOff);
+  const level = req.reasoning ?? null;
+  if (reasoning !== null && level !== null && level !== "off" && req.thinking !== false) {
+    if (reasoning.effort) {
+      body.reasoning_effort = level;
+    } else {
+      const cap = reasoning.maxTokens[level] ?? null;
+      if (cap !== null) {
+        const asked = typeof body.max_tokens === "number" ? body.max_tokens : cap;
+        body.max_tokens = Math.min(asked, cap);
+      }
+    }
+  }
   return body;
 }
 
