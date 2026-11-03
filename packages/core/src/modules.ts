@@ -118,7 +118,7 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
     llmModule(config, profile),
     SpeechModule.withDefaultFactories(config.get("speech", SpeechConfigSchema)),
     new VoiceLinkModule(),
-    new VoiceModule(profileId, profile.voice),
+    new VoiceModule(profileId, profile.voice, profile.names()),
     new SchedulerModule(),
     new AgentModule(profile),
     new CommandsModule({ owners: authOwners(config) }),
