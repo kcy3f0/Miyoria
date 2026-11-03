@@ -1,12 +1,13 @@
-// osu! AI player tools. The AI itself (a reinforcement-learning model that plays lazer multiplayer rooms) is
-// osu_rl's live.service; this extension only turns its HTTP API into tools.
-//
-// The account guard: live.service plays with whatever account its own settings name, and nothing here can
-// see those. So before every call it asks live.service who it is logged in as, and refuses unless that is
-// exactly `account` (the AI's own account) and none of `blocked_accounts` (the owner's). A live.service set
-// up with a person's account never gets a single request from her.
+// osu! AI player. The AI itself (a reinforcement-learning model that plays lazer as an ordinary client) is
+// osu_rl's live.service; this extension turns its HTTP API into tools and a game adapter (`game.osu.*`).
+// Every request goes through the account guard in client.ts.
 
 import { defineExtension } from "@miyoria/sdk";
+import { OsuAdapter } from "./adapter.js";
+import { client, guarded } from "./client.js";
+
+export { GAME_ID, mapEvent, OsuAdapter, summarize } from "./adapter.js";
+export { accountProblem } from "./client.js";
 
 /** `[extensions."miyoria.osu"]` config (everything optional). */
 interface OsuConfig {
@@ -18,29 +19,6 @@ interface OsuConfig {
   account?: string;
   /** Accounts the AI must never use (the owner's), refused even if `account` names one of them. */
   blocked_accounts?: string[];
-}
-
-/** Account names compare without case or surrounding spaces, like the osu! server's. */
-function sameName(a: string, b: string): boolean {
-  return a.trim().toLowerCase() === b.trim().toLowerCase();
-}
-
-/**
- * Why live.service, logged in as `user`, may not be used, or `null` when it may.
- */
-export function accountProblem(
-  user: unknown,
-  account: string,
-  blocked: readonly string[],
-): string | null {
-  if (!account.trim()) return "沒有設定 AI 帳號(account),不使用 osu! AI";
-  if (blocked.some((b) => sameName(b, account)))
-    return "設定的 AI 帳號在 blocked_accounts 裡,不使用";
-  if (typeof user !== "string" || !user.trim()) return "osu! AI 還沒登入,不知道它用的是哪個帳號";
-  if (blocked.some((b) => sameName(b, user)))
-    return `osu! AI 登入的是不能用的帳號(${user}),拒絕使用`;
-  if (!sameName(user, account)) return `osu! AI 登入的帳號(${user})不是設定的 AI 帳號,拒絕使用`;
-  return null;
 }
 
 const LEVELS = ["easy", "normal", "hard", "expert"];
@@ -63,53 +41,35 @@ export default defineExtension({
       /\/+$/,
       "",
     );
-    const timeoutMs = config.request_timeout_ms ?? 120_000;
-    const account = config.account ?? process.env.MIYORIA_OSU_ACCOUNT ?? "";
-    const blocked = config.blocked_accounts ?? [];
     if (!token)
       ctx.log.warn(
         "no live.service token (config token / MIYORIA_OSU_TOKEN); every call will be refused",
       );
+    const account = config.account ?? process.env.MIYORIA_OSU_ACCOUNT ?? "";
+    const blocked = config.blocked_accounts ?? [];
     if (!account.trim())
       ctx.log.warn(
         "no AI account (config account / MIYORIA_OSU_ACCOUNT); every call will be refused",
       );
-
-    async function request(
-      method: "GET" | "POST",
-      path: string,
-      body?: unknown,
-    ): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
-      let res: Response;
-      try {
-        res = await fetch(base + path, {
-          method,
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-      } catch (error) {
-        return { ok: false, error: `連不到 osu! AI 服務(${String(error)})` };
-      }
-      const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-      if (!res.ok) return { ok: false, error: String(data.error ?? res.status) };
-      return { ok: true, data };
-    }
+    let lastRefused: string | null = null;
+    const http = guarded(
+      // under the host's tool timeout ([modules.extensions] call_timeout_ms, 30 s by default)
+      client(base, token, config.request_timeout_ms ?? 25_000),
+      account,
+      blocked,
+      (user) => {
+        if (user === lastRefused) return; // the event poller retries every few seconds
+        lastRefused = user;
+        ctx.log.error("osu! AI refused: wrong account", { user });
+      },
+    );
 
     async function call(method: "GET" | "POST", path: string, body?: unknown): Promise<string> {
-      // Who live.service is logged in as, checked before every call (it can be restarted with
-      // other settings at any time).
-      const who = await request("GET", "/status");
-      if (!who.ok) return `失敗:${who.error}`;
-      const problem = accountProblem(who.data.user, account, blocked);
-      if (problem !== null) {
-        ctx.log.error("osu! AI refused: wrong account", { user: String(who.data.user ?? "") });
-        return `失敗:${problem}`;
-      }
-      if (method === "GET" && path === "/status") return JSON.stringify(who.data);
-      const r = await request(method, path, body);
-      if (!r.ok) return `失敗:${r.error}`;
-      const data = r.data;
+      const { ok, data } = await http(method, path, body);
+      // the service keeps preparing a map after the call gives up, and asking again gets the cached play
+      if (data.timed_out === true && path === "/play")
+        return "還在準備這張譜(第一次要 10–40 秒)。等 20 秒再用同樣的參數呼叫一次,就會直接拿到結果。";
+      if (!ok) return `失敗:${String(data.error)}`;
       if (typeof data.replay_url === "string") data.replay_url = publicBase + data.replay_url;
       return JSON.stringify(data);
     }
@@ -181,6 +141,15 @@ export default defineExtension({
             : [],
         }),
     });
+
+    const adapter = new OsuAdapter(http);
+    await ctx.game.registerAdapter(adapter);
+    void adapter
+      .pump()
+      .catch((error: unknown) =>
+        ctx.log.error("osu event polling stopped", { error: String(error) }),
+      );
+    ctx.onShutdown(() => adapter.close());
 
     ctx.log.info("osu extension activated", { url: base, account });
   },
