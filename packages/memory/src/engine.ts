@@ -36,6 +36,7 @@ import {
   newId,
   type PersonId,
   type ProfileId,
+  repairHandleText,
   sameAccount,
   serviceKey,
   systemClock,
@@ -45,7 +46,9 @@ import {
 } from "@miyoria/types";
 import type { MemoryConfig } from "./config.js";
 import { cosine, type Embedder, NoEmbedder } from "./embed.js";
+import { expired, expiryOf, wordingTtlHours } from "./expiry.js";
 import { type Extraction, parseExtraction, systemPrompt, transcript } from "./extract.js";
+import { RepeatDamper } from "./repeat.js";
 import { hasScope, isPrivate, scopeEquals, scopeForNew } from "./scope.js";
 import { finalScore, signals, tokenOverlap } from "./score.js";
 import { textSimilarity, tokenize, tokenString } from "./tokenize.js";
@@ -119,6 +122,12 @@ interface RankOptions {
   includeDone: boolean;
   /** Drop records scoring below this; `null` keeps every candidate. */
   minScore: number | null;
+  /**
+   * Recall for a turn (not browsing): records expired by their own lifetime are left out, a
+   * memory found only through a present person needs a real match, and a gag recalled too
+   * often is down-weighted.
+   */
+  forTurn: boolean;
 }
 
 export interface ConsolidationReport {
@@ -137,6 +146,8 @@ export interface MaintenanceReport {
   pruned: number;
   decayed: number;
   forgotten: number;
+  /** Notes that went stale (present-tense states past their lifetime) and were deleted. */
+  expired: number;
 }
 
 /** Someone who spoke in the lines being consolidated. */
@@ -192,6 +203,7 @@ export class MemoryEngine implements FollowupSource {
   readonly #router: LlmRouter | null;
   readonly #clock: Clock;
   readonly #watermarks = new Map<string, Watermark>();
+  readonly #repeats: RepeatDamper;
   #lastMaintenance: Timestamp | null = null;
 
   constructor(
@@ -209,6 +221,7 @@ export class MemoryEngine implements FollowupSource {
     this.#settings = options.settings ?? null;
     this.#router = options.router ?? null;
     this.#clock = options.clock ?? systemClock;
+    this.#repeats = new RepeatDamper(config.repeat);
   }
 
   /** Whether consolidation can run (message log and LLM router present). */
@@ -261,7 +274,9 @@ export class MemoryEngine implements FollowupSource {
    * same kind, scope and subjects.
    */
   async store(memory: NewMemory, now: Timestamp, signal?: AbortSignal): Promise<Stored> {
-    const content = memory.content.trim();
+    // Memories are kept for good: a per-call code (`u7`) in one would point at someone else
+    // later. Resolved from the text itself where it can be, otherwise the sentence is dropped.
+    const content = repairHandleText(memory.content.trim())?.trim() ?? "";
     if (content === "") throw new MemoryError("empty memory");
     const tokens = tokenString(content);
     const embedding = await this.#embedOne(content, signal);
@@ -314,6 +329,8 @@ export class MemoryEngine implements FollowupSource {
       }
       old.importance = clamp01(Math.max(old.importance, memory.importance));
       old.updated_at = now;
+      // Said again: a state note is true again from now on.
+      if (old.kind !== "followup" && memory.due !== null) old.due = memory.due;
       await this.records.upsert(old);
       return { type: "reinforced", id: old.id };
     }
@@ -374,9 +391,10 @@ export class MemoryEngine implements FollowupSource {
       kinds,
       limit,
       now,
-      { includeDone: false, minScore: this.config.min_score },
+      { includeDone: false, minScore: this.config.min_score, forTurn: true },
       signal,
     );
+    this.#repeats.note(ranked.map((r) => r.record.tokens));
     if (ranked.length > 0) {
       try {
         await this.records.touch(
@@ -410,7 +428,7 @@ export class MemoryEngine implements FollowupSource {
       kinds,
       limit,
       now,
-      { includeDone: true, minScore: null },
+      { includeDone: true, minScore: null, forTurn: false },
       signal,
     );
   }
@@ -432,7 +450,8 @@ export class MemoryEngine implements FollowupSource {
       hasScope(scopes, r.scope) &&
       kinds.includes(r.kind) &&
       r.superseded_by === null &&
-      (options.includeDone || !r.done);
+      (options.includeDone || !r.done) &&
+      !(options.forTurn && expired(r, now));
     const fetch = Math.max(this.config.candidate_limit, limit);
 
     // id -> (record, backend text score, vector score)
@@ -475,8 +494,13 @@ export class MemoryEngine implements FollowupSource {
           : null);
       const backend = maxText > 0 ? text / maxText : 0;
       const t = Math.max(backend, tokenOverlap(tokens, record.tokens));
+      // Being about someone who is here is not a reason to bring a memory up (and the nearest
+      // neighbour of an unrelated query is no match): it has to be about what is being said,
+      // by a shared word or a close embedding.
+      if (options.forTurn && t <= 0 && (vector ?? 0) < this.config.min_vector) continue;
       const s = signals(this.config, record, vector, t, present, now);
-      const score = finalScore(this.config, record, s);
+      let score = finalScore(this.config, record, s);
+      if (options.forTurn) score *= this.#repeats.factor(record.tokens);
       if (options.minScore === null || score >= options.minScore) {
         ranked.push({ record, score, text_score: text, vector_score: vector });
       }
@@ -659,14 +683,17 @@ export class MemoryEngine implements FollowupSource {
 
     if (x.episode) {
       const ep = x.episode;
-      if (ep.importance >= min) {
+      if (ep.importance >= min && repairHandleText(ep.summary) !== null) {
         const emotion = ep.emotion?.trim() ?? "";
         items.push({
           ...base,
           kind: "episode",
           scope: scope("episode", null),
           subjects: [...everyone],
-          content: emotion !== "" ? `${ep.summary}(當時我的心情:${emotion})` : ep.summary,
+          content:
+            emotion !== ""
+              ? `${repairHandleText(ep.summary)}(當時我的心情:${emotion})`
+              : (repairHandleText(ep.summary) ?? ep.summary),
           importance: ep.importance,
           confidence: 1,
         });
@@ -676,7 +703,7 @@ export class MemoryEngine implements FollowupSource {
     }
 
     for (const fact of x.facts) {
-      if (fact.importance < min) {
+      if (fact.importance < min || repairHandleText(fact.statement) === null) {
         report.skipped += 1;
         continue;
       }
@@ -703,11 +730,12 @@ export class MemoryEngine implements FollowupSource {
         content: fact.statement,
         importance: fact.importance,
         confidence: fact.confidence,
+        due: expiryOf(kind, fact.statement, fact.valid_hours, this.config, now),
       });
     }
 
     for (const note of x.self_notes) {
-      if (note.importance < min) {
+      if (note.importance < min || repairHandleText(note.note) === null) {
         report.skipped += 1;
         continue;
       }
@@ -719,10 +747,15 @@ export class MemoryEngine implements FollowupSource {
         content: note.note,
         importance: note.importance,
         confidence: 1,
+        due: expiryOf("self_note", note.note, note.valid_hours, this.config, now),
       });
     }
 
     for (const f of x.followups) {
+      if (repairHandleText(f.about) === null) {
+        report.skipped += 1;
+        continue;
+      }
       let subjects: PersonId[];
       switch (f.subject.type) {
         case "named":
@@ -771,6 +804,7 @@ export class MemoryEngine implements FollowupSource {
       }),
       decayed: 0,
       forgotten: 0,
+      expired: await this.#expireStates(now),
     };
 
     const last = await this.lastMaintenanceRun();
@@ -803,6 +837,45 @@ export class MemoryEngine implements FollowupSource {
     }
     await this.#setLastMaintenance(now);
     return report;
+  }
+
+  /**
+   * Gives notes written before lifetimes existed ("已經開台", "正在下載") the one their wording
+   * implies, counted from when they were last written, and deletes notes that went stale more
+   * than a week ago. Returns how many were deleted.
+   */
+  async #expireStates(now: Timestamp): Promise<number> {
+    const nowMs = ms(now);
+    let deleted = 0;
+    for (const kind of ["fact", "self_note"] as const) {
+      let before: Timestamp | null = null;
+      for (;;) {
+        const page = await this.records.list(this.profile, memoryFilter(500, { kind, before }));
+        const oldest = page[page.length - 1];
+        if (!oldest) break;
+        for (const record of page) {
+          let due = record.due;
+          if (due === null) {
+            const hours = wordingTtlHours(record.content, this.config);
+            if (hours === null) continue;
+            due = toTimestamp(ms(record.updated_at) + hours * 3_600_000);
+            if (ms(due) > nowMs) {
+              await this.records.upsert({ ...record, due });
+              continue;
+            }
+          }
+          if (nowMs - ms(due) >= 7 * DAY_MS) {
+            if (await this.records.delete(record.id)) deleted += 1;
+          } else if (due !== record.due) {
+            await this.records.upsert({ ...record, due });
+          }
+        }
+        const full = page.length === 500;
+        if (!full || (before !== null && ms(before) === ms(oldest.created_at))) break;
+        before = oldest.created_at;
+      }
+    }
+    return deleted;
   }
 
   /** When maintenance last ran (memory first, then settings). */
@@ -890,8 +963,22 @@ export class MemoryEngine implements FollowupSource {
 
   // ---- FollowupSource ------------------------------------------------------------------
 
+  /**
+   * Followups due now, newest first. One nobody brought up within `followup_max_age_hours` of
+   * its time is closed instead of offered (a question about "tomorrow's exam" a week later is
+   * noise, and 181 of them were still open).
+   */
   async due(profile: ProfileId, now: Timestamp): Promise<Followup[]> {
-    return (await this.records.dueFollowups(profile, now)).map(toFollowup);
+    const hours = this.config.followup_max_age_hours;
+    const maxAgeMs = hours > 0 ? hours * 3_600_000 : null;
+    if (maxAgeMs !== null) {
+      try {
+        await this.records.expireFollowups(profile, toTimestamp(ms(now) - maxAgeMs));
+      } catch (error) {
+        log.warn({ error: errorMessage(error) }, "closing stale followups failed");
+      }
+    }
+    return (await this.records.dueFollowups(profile, now, maxAgeMs)).map(toFollowup);
   }
 
   async markDone(id: string): Promise<void> {

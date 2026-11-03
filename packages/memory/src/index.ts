@@ -34,6 +34,8 @@ export {
   type MemoryConfig,
   MemoryConfigSchema,
   memoryConfig,
+  type RepeatConfig,
+  RepeatConfigSchema,
   type Weights,
   WeightsSchema,
 } from "./config.js";
@@ -72,6 +74,7 @@ export {
   WATERMARK_PREFIX,
   type Watermark,
 } from "./engine.js";
+export { expired, expiryOf, MAX_VALID_HOURS, wordingTtlHours } from "./expiry.js";
 export {
   type ExEpisode,
   type ExFact,
@@ -91,6 +94,7 @@ export {
   MemoryModuleError,
   type MemoryModuleOptions,
 } from "./module.js";
+export { RepeatDamper } from "./repeat.js";
 export {
   hasScope,
   isPrivate,
@@ -104,6 +108,7 @@ export {
 export {
   finalScore,
   recency,
+  recencyTau,
   relativeDate,
   type Signals,
   signalScore,

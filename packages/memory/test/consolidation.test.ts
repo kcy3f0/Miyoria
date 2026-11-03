@@ -206,7 +206,7 @@ describe.each(BACKENDS)("consolidation (%s store)", (backend) => {
       expect(got, JSON.stringify(ctx)).toEqual([]);
     }
     // Followups from the DM point back to the DM.
-    const due = await e.engine.due(profile(), t0(DAY));
+    const due = await e.engine.due(profile(), t0(90 * MINUTE));
     expect(due[0]?.context).toEqual(dm);
 
     // In the DM itself she remembers everything.

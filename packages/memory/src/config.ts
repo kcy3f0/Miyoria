@@ -36,6 +36,25 @@ export const DedupeConfigSchema = z.object({
 });
 export type DedupeConfig = z.output<typeof DedupeConfigSchema>;
 
+/**
+ * Down-weighting of a gag she keeps recalling: when memories saying (nearly) the same thing
+ * were recalled more than `allowed` times in the last `window` recalled items, the next one
+ * scores `penalty` less per extra time (never below `floor` of its score).
+ */
+export const RepeatConfigSchema = z.object({
+  /** Recalled items remembered (0 turns the down-weighting off). */
+  window: uint().default(40),
+  /** Times the same thing may appear in the window before it is down-weighted. */
+  allowed: uint().default(3),
+  /** Score lost per extra appearance (fraction of the score). */
+  penalty: z.number().min(0).max(1).default(0.15),
+  /** Lowest factor applied. */
+  floor: z.number().min(0).max(1).default(0.4),
+  /** Share of the smaller token set that two memories must have in common to be the same thing. */
+  similarity: z.number().min(0).max(1).default(0.6),
+});
+export type RepeatConfig = z.output<typeof RepeatConfigSchema>;
+
 /** Daily maintenance: pruning episodes and decaying unreinforced facts. */
 export const ForgettingConfigSchema = z.object({
   enabled: z.boolean().default(true),
@@ -93,11 +112,36 @@ export const MemoryConfigSchema = z.object({
   recall_limit: uint().default(8),
   /** Candidates fetched from the store per kind of match before ranking. */
   candidate_limit: uint().default(32),
-  /** Records scoring below this are never recalled. */
-  min_score: z.number().default(0.05),
+  /**
+   * Records scoring below this are never recalled. Was 0.05, which let almost anything in and
+   * kept the same old memories on top; about 0.25 needs a real match or real importance.
+   */
+  min_score: z.number().default(0.25),
+  /**
+   * A memory has to be about what is being said: a word in common with the query, or an
+   * embedding at least this similar. Being about someone who is present, or being one of the
+   * nearest neighbours of a query it has nothing to do with, is not enough.
+   */
+  min_vector: z.number().default(0.3),
   weights: WeightsSchema.prefault({}),
   /** Recency decay time constant (days): `exp(-age / tau)`. */
   recency_tau_days: z.number().default(14),
+  /**
+   * The same for episodes ("what happened last night"): hours to days, not weeks. 1.5 days
+   * halves an episode's recency weight in about a day.
+   */
+  episode_recency_tau_days: z.number().default(1.5),
+  /**
+   * How long a present-tense state or commitment note ("已經開台", "正在下載") stays true when
+   * the summarizer gave no lifetime (hours; 0 = no expiry). Expired notes are not recalled.
+   */
+  state_note_hours: z.number().min(0).default(12),
+  /**
+   * Followups nobody brought up within this many hours of their time are closed and no longer
+   * offered (0 = never).
+   */
+  followup_max_age_hours: z.number().min(0).default(6),
+  repeat: RepeatConfigSchema.prefault({}),
   guild_scope: GuildScopeSchema.default("guild"),
   /**
    * Lets facts marked `global` in a DM become person-wide. Off by default: nothing learned in

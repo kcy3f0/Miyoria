@@ -41,6 +41,14 @@ export function recency(updatedAt: Timestamp, now: Timestamp, tauDays: number): 
   return Math.exp(-ageDays / Math.max(tauDays, 0.01));
 }
 
+/**
+ * The recency time constant of a record (days): episodes fade over hours to days, everything
+ * else (facts, her notes, followups) over weeks.
+ */
+export function recencyTau(config: MemoryConfig, kind: MemoryRecord["kind"]): number {
+  return kind === "episode" ? config.episode_recency_tau_days : config.recency_tau_days;
+}
+
 /** Signals of a record. `text` is already normalized (0..1). */
 export function signals(
   config: MemoryConfig,
@@ -53,7 +61,7 @@ export function signals(
   return {
     vector: clamp(vector ?? 0, 0, 1),
     text: clamp(text, 0, 1),
-    recency: recency(record.updated_at, now, config.recency_tau_days),
+    recency: recency(record.updated_at, now, recencyTau(config, record.kind)),
     importance: clamp(record.importance, 0, 1),
     subject: record.subjects.some((s) => present.includes(s)) ? 1 : 0,
   };

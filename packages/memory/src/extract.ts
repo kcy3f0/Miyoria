@@ -21,11 +21,15 @@ export interface ExFact {
   importance: number;
   confidence: number;
   global: boolean;
+  /** Hours the statement stays true (a state in progress); `null` = lasting. */
+  valid_hours: number | null;
 }
 
 export interface ExNote {
   note: string;
   importance: number;
+  /** Hours the note stays true (a state in progress); `null` = lasting. */
+  valid_hours: number | null;
 }
 
 export interface ExFollowup {
@@ -59,14 +63,16 @@ export function systemPrompt(selfLabel: string): string {
 只輸出一個 JSON 物件,格式如下:
 {
   "episode": {"summary": "一兩句話描述這段對話發生了什麼(我的角度)", "importance": 0.0到1.0, "emotion": "我當時的心情,一個詞"} 或 null,
-  "facts": [{"subject_name": "這件事是關於誰(用逐字稿裡的名字),關於我自己就寫 \\"self\\"", "statement": "例如:Owen 喜歡吃拉麵", "importance": 0.0到1.0, "confidence": 0.0到1.0, "global": true 或 false}],
-  "self_notes": [{"note": "我說過的承諾、表達過的意見、我自己的經歷,例如:我答應 Owen 下次陪他打 Minecraft", "importance": 0.0到1.0}],
+  "facts": [{"subject_name": "這件事是關於誰(用逐字稿裡的名字),關於我自己就寫 \\"self\\"", "statement": "例如:Owen 喜歡吃拉麵", "importance": 0.0到1.0, "confidence": 0.0到1.0, "global": true 或 false, "valid_hours": null 或 幾小時內仍然成立}],
+  "self_notes": [{"note": "我說過的承諾、表達過的意見、我自己的經歷,例如:我答應 Owen 下次陪他打 Minecraft", "importance": 0.0到1.0, "valid_hours": null 或 幾小時內仍然成立}],
   "followups": [{"subject_name": "要追問誰", "about": "之後想問或提起的事,例如:問 Owen 明天的考試考得怎樣", "due_in_hours": 幾小時後適合提起}]
 }
 
 規則:
 - importance:1 是非常重要(重大消息、強烈喜好、承諾),0.1 是幾乎不重要。
 - confidence:對方明確說的接近 1,只是暗示或玩笑話就低一點。
+- valid_hours:只有「現在正在發生的狀態」才填(例如「正在下載歌」「已經開台」「Owen 在打 osu」),填它大概還會成立幾小時;長久成立的事(喜好、關係、承諾、經歷)填 null。
+- 提到人一律寫名字,不要寫 u1、p2 這類代號。
 - global 只在「名字、希望我怎麼稱呼他、代名詞」這類到哪裡都適用、而且一點都不私密的事實才設 true,其他一律 false。
 - 沒有值得記的就給空陣列或 null,不要硬湊。`;
 }
@@ -146,16 +152,23 @@ export function parseExtraction(text: string): Extraction {
       importance: unit(item.importance) ?? 0.5,
       confidence: unit(item.confidence) ?? 0.7,
       global: boolean(item.global),
+      valid_hours: hours(item.valid_hours),
     });
   }
 
   for (const item of array(value, "self_notes")) {
     let note: ExNote | null = null;
     if (typeof item === "string") {
-      if (item.trim() !== "") note = { note: item.trim(), importance: 0.4 };
+      if (item.trim() !== "") note = { note: item.trim(), importance: 0.4, valid_hours: null };
     } else if (isJsonObject(item)) {
       const n = strField(item, ["note", "content", "statement"]);
-      if (n !== null) note = { note: n, importance: unit(item.importance) ?? 0.4 };
+      if (n !== null) {
+        note = {
+          note: n,
+          importance: unit(item.importance) ?? 0.4,
+          valid_hours: hours(item.valid_hours),
+        };
+      }
     }
     if (note) out.self_notes.push(note);
     else out.skipped += 1;
@@ -242,6 +255,12 @@ function number(value: JsonValue | undefined): number | null {
     if (FLOAT.test(s)) n = Number(s);
   }
   return n !== null && Number.isFinite(n) ? n : null;
+}
+
+/** A lifetime in hours (positive), else `null`. */
+function hours(value: JsonValue | undefined): number | null {
+  const n = number(value);
+  return n !== null && n > 0 ? n : null;
 }
 
 /** A 0..1 score; 0..10 and 0..100 scales are rescaled. */
