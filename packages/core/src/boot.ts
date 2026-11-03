@@ -29,11 +29,13 @@ import {
   RelationshipStoreKey,
   SettingsStoreKey,
   type Store,
+  StoredHandleDirectory,
   StoreKey,
 } from "@miyoria/store";
 import { ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
 import {
   ActuatorExecutorKey,
+  HandleDirectoryKey,
   type JsonValue,
   KERNEL_MODULE,
   PlatformHistories,
@@ -90,6 +92,15 @@ export interface ModuleCatalog {
    * `ActiveProfileKey`), provided right before the modules are built.
    */
   provideServices?(services: ServiceRegistry, deps: ModuleDeps): void;
+  /**
+   * One-time repairs of stored data that belong to module packages (idempotent), run after the
+   * store is open and before any module starts.
+   */
+  migrateStoredData?(
+    store: Store,
+    profile: ProfileId,
+    handles: StoredHandleDirectory | null,
+  ): Promise<void>;
 }
 
 export interface CoreOptions {
@@ -197,6 +208,15 @@ export async function buildCoreWith(
   services.provide(k, AuditLogKey, store.audit);
   services.provide(k, ModuleStateStoreKey, store.moduleState);
   services.provide(k, ProfileDataStoreKey, store.profileData);
+  // Her stable names for people (`Owen`, `Owen#2`): never per-call codes (`u1`).
+  let handles: StoredHandleDirectory | null = null;
+  try {
+    handles = await StoredHandleDirectory.open(store.settings);
+    handles.syncPeople(await store.people.all());
+    services.provide(k, HandleDirectoryKey, handles);
+  } catch (error) {
+    log.warn({ err: errorMessage(error) }, "cannot load the handle table; names stay per module");
+  }
   // Registries other modules add to, independent of any one module's lifetime.
   const tools = new ToolRegistry();
   services.provide(k, ToolRegistryKey, tools);
@@ -217,6 +237,14 @@ export async function buildCoreWith(
   const profileDisplayName = profile.displayName;
   const profileId = profile.id;
   services.provide(k, ProfileIdKey, profileId);
+  // Lessons, recaps and agenda text written with per-call codes before handles were stable are
+  // repaired before any module caches them (idempotent; resolves what the record itself says,
+  // drops the rest).
+  try {
+    await catalog.migrateStoredData?.(store, profileId, handles);
+  } catch (error) {
+    log.warn({ err: errorMessage(error) }, "cannot repair per-call codes in stored text");
+  }
 
   const deps: ModuleDeps = { config, profile, profileId, store, baseDir };
   catalog.provideServices?.(services, deps);

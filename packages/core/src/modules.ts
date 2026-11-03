@@ -19,7 +19,12 @@ import * as extHost from "@miyoria/ext-host";
 import { GameChatModule, GameHandleKey, GameModule } from "@miyoria/game";
 import { InitiativeModule } from "@miyoria/initiative";
 import type { Config, Module } from "@miyoria/kernel";
-import { ConversationModule, KnowledgeModule, ReflectModule } from "@miyoria/learning";
+import {
+  ConversationModule,
+  KnowledgeModule,
+  ReflectModule,
+  repairEphemeralHandles,
+} from "@miyoria/learning";
 import {
   type LlmConfig,
   LlmConfigSchema,
@@ -51,8 +56,12 @@ import {
   SOURCES,
   StageLinkModule,
 } from "@miyoria/stage";
-import { openStore as openStoreBackend, type Store } from "@miyoria/store";
-import { isJsonObject } from "@miyoria/types";
+import {
+  openStore as openStoreBackend,
+  type Store,
+  type StoredHandleDirectory,
+} from "@miyoria/store";
+import { isJsonObject, type ProfileId } from "@miyoria/types";
 import { VoiceLinkModule, VoiceModule } from "@miyoria/voice";
 import { WorldModule } from "@miyoria/world";
 import {
@@ -152,12 +161,28 @@ async function discoverExtensions(config: Config, baseDir: string): Promise<Exte
   return { skipped: found.skipped, modules: found.modules };
 }
 
+/** Repairs lessons, recaps and agenda text that carry per-call codes (`u1`). */
+async function migrateStoredData(
+  store: Store,
+  profile: ProfileId,
+  handles: StoredHandleDirectory | null,
+): Promise<void> {
+  const people = await store.people.all();
+  const handleOf = new Map(people.map((p) => [p.id, handles?.ensurePerson(p) ?? null] as const));
+  await repairEphemeralHandles({
+    settings: store.settings,
+    profile,
+    handleOfPerson: (person) => handleOf.get(person) ?? null,
+  });
+}
+
 export const defaultCatalog: ModuleCatalog = {
   openStore,
   coreModules,
   discord: () => new DiscordBotModule(),
   api: (deps) => new ApiModule({ emotions: avatarEmotions(deps.profile.avatar) }),
   discoverExtensions,
+  migrateStoredData,
 };
 
 /** Builds a core node from `config` with every module package. */

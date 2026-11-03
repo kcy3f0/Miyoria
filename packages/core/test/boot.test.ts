@@ -12,7 +12,16 @@ import {
 } from "@miyoria/kernel";
 import { openStore, type Store, StoreKey } from "@miyoria/store";
 import { ToolRegistryKey } from "@miyoria/tools";
-import { type ContextKey, type Envelope, PlatformSinksKey, toTimestamp } from "@miyoria/types";
+import {
+  type ContextKey,
+  type Envelope,
+  HandleDirectoryKey,
+  PlatformSinksKey,
+  TURN_OUTCOME_TOPIC,
+  type TurnOutcomeRecord,
+  toTimestamp,
+  v2Event,
+} from "@miyoria/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildCoreWith,
@@ -107,6 +116,55 @@ describe("buildCore", () => {
     expect(s.get(SupervisorKey)).toBe(core.supervisor);
     expect(s.has(ToolRegistryKey)).toBe(true);
     expect(s.has(PlatformSinksKey)).toBe(true);
+  });
+
+  it("provides_the_handle_table_and_repairs_stored_text_before_any_module_starts", async () => {
+    const store = await openStore("memory://");
+    await store.people.upsertAccount({ platform: "discord", id: "1" }, "Owen");
+    await store.settings.set("deepseek-chan", "reflect:lesson:L1", {
+      id: "L1",
+      text: "u7 一直嗆我",
+      person: null,
+    });
+    const order: string[] = [];
+    const base = catalog();
+    core = await buildCoreWith(
+      {
+        ...base,
+        migrateStoredData: async (s, profile, handles) => {
+          order.push(
+            `migrate:${profile}:${handles
+              ?.list()
+              .map((e) => e.handle)
+              .join(",")}`,
+          );
+          const row = (await s.settings.get(profile, "reflect:lesson:L1")) as { text: string };
+          expect(row.text).toBe("u7 一直嗆我"); // not repaired yet: the hook runs first
+        },
+        coreModules: async (deps) => {
+          order.push("modules");
+          return base.coreModules(deps);
+        },
+      },
+      config(),
+      { store },
+    );
+    expect(order).toEqual(["migrate:deepseek-chan:Owen", "modules"]);
+    const handles = core.services.get(HandleDirectoryKey);
+    expect(handles?.ofAccount({ platform: "discord", id: "1" }, "Renamed")).toBe("Owen");
+    // A failing repair never stops her from starting.
+    await core.stop();
+    core = await buildCoreWith(
+      {
+        ...catalog(),
+        migrateStoredData: async () => {
+          throw new Error("boom");
+        },
+      },
+      config(),
+      { store: await openStore("memory://") },
+    );
+    expect(core.profileDisplayName).toBe("DeepSeek-chan");
   });
 
   it("disables_token_modules_without_a_token_and_remembers_runtime_toggles", async () => {
@@ -272,6 +330,66 @@ describe("recorder", () => {
     await waitFor(async () => (await store.decisions.recent("p", null, 5)).length === 1);
     expect((await store.people.personByAccount(owen)) !== null).toBe(true);
     expect(await store.people.personByAccount(her)).toBeNull();
+    await supervisor.stopAll();
+  });
+
+  it("records_how_each_turn_ended_so_a_reply_that_was_never_sent_can_be_found", async () => {
+    const store = await openStore("memory://");
+    const { supervisor } = await running([new RecorderModule(store, "p")], store);
+    const outcome = (turn: string, kind: TurnOutcomeRecord["outcome"]): TurnOutcomeRecord => ({
+      turn,
+      context: discord,
+      reason: "addressed",
+      outcome: kind,
+      addressed_by: ["Owen"],
+      focus: [],
+      restarts: 1,
+      reasoning: null,
+      latency_ms: null,
+      at: toTimestamp(Date.parse("2026-01-01T00:00:00Z")),
+    });
+    const cancelled = outcome("T1", { type: "cancelled", cause: "input", by: "Owen" });
+    supervisor.bus.publish("agent", v2Event(TURN_OUTCOME_TOPIC, cancelled));
+    supervisor.bus.publish(
+      "agent",
+      v2Event(TURN_OUTCOME_TOPIC, outcome("T2", { type: "sent", parts: 1 })),
+    );
+    await waitFor(
+      async () => ((await store.decisions.recentOutcomes?.("p", discord, 5)) ?? []).length === 2,
+    );
+    const got = (await store.decisions.recentOutcomes?.("p", discord, 5)) ?? [];
+    expect(got.map((o) => o.turn).sort()).toEqual(["T1", "T2"]);
+    expect(got.find((o) => o.turn === "T1")).toEqual(cancelled);
+    await supervisor.stopAll();
+  });
+
+  it("fixes_her_name_for_a_person_the_first_time_she_sees_them", async () => {
+    const store = await openStore("memory://");
+    const { supervisor } = await running([new RecorderModule(store, "p")], store);
+    const { StoredHandleDirectory } = await import("@miyoria/store");
+    const handles = new StoredHandleDirectory(store.settings);
+    supervisor.services.provide("kernel", HandleDirectoryKey, handles);
+    const ts = toTimestamp(Date.parse("2026-01-01T00:00:00Z"));
+    const say = (id: string, name: string, text: string) =>
+      supervisor.bus.publish("platform.discord.bot", {
+        type: "platform_message_created",
+        data: {
+          id: { context: discord, id: text },
+          author: { account: { platform: "discord", id }, display_name: name, is_bot: false },
+          text,
+          mentions_self: false,
+          reply_to_self: false,
+          attachments: [],
+          ts,
+        },
+      });
+    say("1", "Owen", "hi");
+    say("2", "Owen", "me too");
+    await waitFor(() => handles.list().length === 2);
+    expect(handles.list().map((e) => e.handle)).toEqual(["Owen", "Owen#2"]);
+    // The person is recorded on the row, so `ofPerson` answers.
+    const person = await store.people.personByAccount({ platform: "discord", id: "1" });
+    expect(handles.ofPerson(person?.id ?? "")).toBe("Owen");
     await supervisor.stopAll();
   });
 });

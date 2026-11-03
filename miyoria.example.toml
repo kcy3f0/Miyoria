@@ -347,6 +347,7 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # max_calls_per_day = 400
 # min_interval_secs = 30         # 同一個頻道兩次整理至少隔多久
 # stale_thread_mins = 30         # 筆記裡這麼久沒人碰的事(懸而未決的問題、話題)不再放進 prompt
+# drop_thread_mins = 240         # 這麼久沒人碰的事直接從筆記刪掉(只是改寫措辭不算碰;0 = 不刪)
 
 # 她自己整理的資料庫(人、伺服器、她自己、她取名的主題):內容結構由她決定,這裡只有大小上限
 # [modules.knowledge]
@@ -364,6 +365,19 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # min_interval_mins = 30
 # light_after_lines = 80
 # reply_window_mins = 10         # 她說完話之後多久內的回覆算回應她
+
+# 長期記憶的新鮮度:回想時只放真的相關的事,舊的、現在式的、一直重複的會被淘汰。
+# [modules.memory]
+# min_score = 0.25               # 低於這個分數不回想(原本 0.05,幾乎什麼都放)
+# min_vector = 0.3               # 沒有共同的字時,向量至少這麼像才算相關(在場的人的記憶也一樣要相關)
+# episode_recency_tau_days = 1.5 # 事件記憶(episode)的新近度衰減:小時到幾天,不是幾週
+# state_note_hours = 12          # 「已經開台」「正在下載」這類現在式的筆記多久後失效(0 = 不失效)
+# followup_max_age_hours = 6     # 追問過了時間這麼久沒人提就自動關掉;先挑最新的(0 = 不自動關)
+# [modules.memory.repeat]        # 同一個梗在最近回想的 window 則裡出現超過 allowed 次就降權
+# window = 40
+# allowed = 3
+# penalty = 0.15                 # 每多一次扣這麼多比例的分數
+# floor = 0.4                    # 最低乘到這麼多
 
 # 主動發話的觸發(冷場、打招呼、進語音問候、追問)。心智迴圈在跑時會交給她判斷,
 # 下面的每日次數、安靜時段與冷卻仍然是底線
