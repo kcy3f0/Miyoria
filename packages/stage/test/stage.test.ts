@@ -74,7 +74,12 @@ function stageConfig(module: StageLinkModule, vts: FakeVts): StageConfig {
       data_dir: dir(),
       overlay_bind: "127.0.0.1:0",
       overlay_dir: join(dir(), "missing"),
-      vts: { url: vts.url(), emotion_hold_ms: 300, after_speech_ms: 100 },
+      vts: {
+        url: vts.url(),
+        emotion_hold_ms: 300,
+        after_speech_ms: 100,
+        only_while_streaming: false,
+      },
       obs: { subtitle_source: "Subtitle", subtitle_clear_ms: 0, poll_ms: 100 },
       lipsync: { bind: "127.0.0.1:0" },
     },

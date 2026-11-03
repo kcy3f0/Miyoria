@@ -149,6 +149,13 @@ export async function runStageWith(
     );
     background.push(overlayServer.done);
 
+    let obs: ObsController | null = null;
+    if (config.obs.enabled) {
+      const controller = new ObsController(obsConnector, config.obs);
+      spawn("obs", () => controller.run(tasks.signal));
+      obs = controller;
+    }
+
     const levels = new Levels(config.lipsync);
     const vts = new Watch<VtsClient | null>(null);
     let avatar: AvatarLoop | null = null;
@@ -171,14 +178,12 @@ export async function runStageWith(
         overlay.levels(sample.rms, sample.bands);
       });
       const loop = avatar;
-      spawn("avatar", () => loop.run(tasks.signal));
-    }
-
-    let obs: ObsController | null = null;
-    if (config.obs.enabled) {
-      const controller = new ObsController(obsConnector, config.obs);
-      spawn("obs", () => controller.run(tasks.signal));
-      obs = controller;
+      const watched = obs;
+      const active =
+        config.vts.only_while_streaming && watched !== null
+          ? () => watched.state().streaming
+          : () => true;
+      spawn("avatar", () => loop.run(tasks.signal, active));
     }
 
     const controller = obs;

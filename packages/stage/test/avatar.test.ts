@@ -465,3 +465,48 @@ describe("avatar loop frame", () => {
     expect(MotionConfigSchema.parse({}).seed).toBeNull();
   });
 });
+
+describe("avatar loop run", () => {
+  it("rests the model while nobody is watching", async () => {
+    const config = parseStageConfig({ vts: { inject_hz: 100 } }, DEEPSEEK());
+    const injected: number[] = [];
+    const all = new Set(
+      new AvatarLoop(config, new Levels(config.lipsync), new Watch<VtsClient | null>(null), {
+        now: () => Date.now(),
+      }).parameters(),
+    );
+    const client = {
+      isClosed: () => false,
+      inject: () => injected.push(Date.now()),
+      inputParameterLists: async () => ({ defaults: all, custom: new Set<string>() }),
+      inputParameters: async () => all,
+      createParameter: async () => {},
+      expression: async () => {},
+      hotkey: async () => {},
+    } as unknown as VtsClient;
+    const loop = new AvatarLoop(
+      config,
+      new Levels(config.lipsync),
+      new Watch<VtsClient | null>(client),
+      { now: () => Date.now() },
+      new Random(9),
+    );
+    let live = true;
+    const controller = new AbortController();
+    const done = loop.run(controller.signal, () => live);
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    await wait(150);
+    const whileLive = injected.length;
+    expect(whileLive).toBeGreaterThan(3);
+    live = false;
+    await wait(30);
+    const atPause = injected.length;
+    await wait(150);
+    expect(injected.length).toBe(atPause);
+    live = true;
+    await wait(150);
+    expect(injected.length).toBeGreaterThan(atPause + 3);
+    controller.abort();
+    await done;
+  });
+});

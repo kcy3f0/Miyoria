@@ -275,15 +275,28 @@ export class AvatarLoop {
     return values;
   }
 
-  run(signal: AbortSignal): Promise<void> {
+  /**
+   * Injects until `signal` aborts. While `active` says no (nobody is watching), nothing is
+   * computed or sent and pending cues are dropped: the model goes back to VTS's own idle.
+   */
+  run(signal: AbortSignal, active: () => boolean = () => true): Promise<void> {
     const hz = Math.min(Math.max(this.#config.vts.inject_hz, 1), 120);
     let last = this.#clock.now();
+    let paused = false;
     const unsubscribe = this.#vts.subscribe((client) => this.#onClient(client));
     this.#onClient(this.#vts.get());
     const tick = () => {
       const now = this.#clock.now();
       const dt = Math.min(Math.max(now - last, 0), 200);
       last = now;
+      if (!active()) {
+        if (!paused) log.info("not streaming; the avatar rests");
+        paused = true;
+        this.#cues = [];
+        return;
+      }
+      if (paused) log.info("streaming; driving the avatar again");
+      paused = false;
       const values = this.frame(dt, now);
       const client = this.#vts.get();
       const known = this.#known;

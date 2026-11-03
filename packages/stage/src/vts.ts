@@ -37,6 +37,11 @@ export const VtsConfigSchema = z.object({
   /** Injection rate (frame times come from the clock, so any rate works). */
   inject_hz: z.number().int().nonnegative().default(60),
   /**
+   * Drive the model only while OBS is streaming (Go Live included): nobody sees it otherwise.
+   * Without an OBS connection configured the model is always driven.
+   */
+  only_while_streaming: z.boolean().default(true),
+  /**
    * Tell VTS a face is tracked while injecting. Keeps the model's "tracking lost" idle
    * animation from playing (and taking over eyes, jaw and head) while Miyoria drives it.
    */
