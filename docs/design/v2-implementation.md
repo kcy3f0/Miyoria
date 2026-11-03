@@ -171,6 +171,16 @@
 
 **Migration**:一次性修掉已污染的 lessons、recap、議程(`self:state` 裡的 agenda 文字;那個 key 屬於 W4 的 self module,migration 只改文字欄位、不改形狀,PR 裡要寫明)。無法確定是誰的 `u7` 一律刪掉該句,不要猜。
 
+**實作紀錄(W5)**:
+
+- `HandleDirectory`:`StoredHandleDirectory`(`store/src/handles.ts`),一人(帳號)一列存在節點層級的 settings(`_global` 的 `handle:<platform>:<id>`,資料分類 `people`);`boot.ts` 開機時載入並 provide,`recorder` 第一次看到帳號時就定下 handle。`ofAccount()` 多一個可選的 `person` 參數(`types/src/handle.ts`)。同名只有第二個人加 `#2`,大小寫不同也算同名。
+- 不再寫入臨時代號:conversation fold、reflect、mind 快照(`u${n}` → handle,`personByRef` 另外容許同一份快照裡的舊 `u<N>`,只在解析時用,不會存);fold 的 recap / notes、reflect 的 summary / insight / feeling / lesson / goal、記憶的 episode / fact / note / followup、知識文件的 draft 寫入前都過 `repairHandleText`(`types/src/handle-text.ts`):同一段文字裡有定義(`u1=御坂`、`御坂(u1)`)就換成名字,lesson 只剩一個代號時用 `person` 的 handle,其餘整句刪掉;什麼都不剩就拒絕寫入。地點(`p1`)改成直接用 context 字串。
+- Migration:`repairEphemeralHandles`(`learning/src/repair.ts`)修 lessons、對話 recap / notes、`self:state` 的 `agenda[].text / why`(只改文字,不改形狀;議程的 `person` 欄位不可信,所以不拿它來猜代號,剩下的代號換成「某人」)。冪等。`ModuleCatalog.migrateStoredData` 在 `boot.ts` 載入 handle 之後、任何 module 啟動之前呼叫(module 啟動後會把舊文字存回去)。
+- 新鮮度:`min_score` 0.25;記憶要有共同的字或 `min_vector`(0.3)以上的 embedding 才算相關(在場的人也一樣);episode 用 `episode_recency_tau_days`(1.5);現在式的 fact / self_note 用 summarizer 給的 `valid_hours` 或字面判斷(已經開台、正在…)設到期,存在 `due`(**非 followup 的 `due` 是失效時間**,recall 跳過,maintenance 刪除過期一週以上的);followup 到期 `followup_max_age_hours`(6)後自動關閉、先挑最新、查詢帶年齡上限;最近 `repeat.window` 個回想裡同一個梗超過 `allowed` 次就降權。
+- 對話筆記:改寫不會更新年齡(`touchUnits` 依同一欄位 / 清單的相似度繼承舊時間),所以過期過濾真的生效;`drop_thread_mins`(240)沒人碰的就由 fold 直接刪。**這份程式裡找不到把「已淡出的話題」放進回合 prompt 的地方**(`render` 本來就不放過期的);fold 輸入裡「超過 N 分鐘沒人提的部分」仍保留,它是整理用的,不是回合 prompt。
+- Style lesson:只有內容本身在講話多話少(`isTalkLesson`)的 lesson 才會有 `talk` 偏移;`panel` 來源的照設定。
+- 回合結果:`DecisionLog.appendOutcome?` / `recentOutcomes?`(表 `turn_outcomes`,migration 0005,sqlite + postgres),`recorder` 訂閱 `agent.turn.outcome`。
+
 ### W6 Arbiter(第二波;§3.3)
 
 **擁有**:新 `packages/arbiter/**`;刪除 `packages/initiative/**`;下面列的發 initiative 的 hunk;`core/src/modules.ts` 換掉 `InitiativeModule`(`:126`)。
