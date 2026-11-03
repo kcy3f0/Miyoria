@@ -2,6 +2,7 @@ import { Ban, Save } from "lucide-react";
 import { useId, useState } from "react";
 import type { PersonDetail, RelationshipDelta } from "@/api/types";
 import { useAdjustPerson, usePerson, useUpdatePerson } from "@/app/queries";
+import { TimeChart } from "@/components/charts/charts";
 import { ConfirmDialog } from "@/components/confirm";
 import { Facts } from "@/components/json-view";
 import { EmptyLine, ErrorLine, SkeletonRows } from "@/components/query-state";
@@ -14,37 +15,25 @@ import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle } from "@/compo
 import { accountString, fmtDateTime, fmtRelative } from "@/lib/format";
 import { notify } from "@/lib/notify";
 
-/** Affinity over time, -100..100 with a zero line. */
+/** Affinity, trust and familiarity over time on one -100..100 axis. */
 export function AffinityChart({ history }: { history: RelationshipDelta[] }) {
   if (history.length < 2) return null;
-  const W = 600;
-  const H = 120;
-  const pad = 6;
-  const t0 = new Date(history[0]?.at ?? 0).getTime();
-  const t1 = new Date(history[history.length - 1]?.at ?? 0).getTime();
-  const span = Math.max(1, t1 - t0);
-  const x = (at: string) => pad + ((new Date(at).getTime() - t0) / span) * (W - pad * 2);
-  const y = (v: number) => pad + ((100 - Math.max(-100, Math.min(100, v))) / 200) * (H - pad * 2);
-  const points = history.map((d) => `${x(d.at).toFixed(1)},${y(d.affinity).toFixed(1)}`).join(" ");
   const first = history[0];
   const last = history[history.length - 1];
   return (
-    <figure className="grid gap-1.5">
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="none"
-        role="img"
-        aria-label={`好感變化:從 ${Math.round(first?.affinity ?? 0)} 到 ${Math.round(last?.affinity ?? 0)}`}
-        className="h-28 w-full rounded-md border bg-background"
-      >
-        <line x1={pad} x2={W - pad} y1={y(0)} y2={y(0)} stroke="var(--border)" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
-        <polyline points={points} fill="none" stroke="var(--chart-1)" strokeWidth={1.75} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-      </svg>
-      <figcaption className="flex justify-between font-mono text-[11px] text-muted-foreground">
-        <span>{fmtDateTime(first?.at ?? "")}</span>
-        <span>{fmtDateTime(last?.at ?? "")}</span>
-      </figcaption>
-    </figure>
+    <TimeChart
+      label={`關係變化:好感從 ${Math.round(first?.affinity ?? 0)} 到 ${Math.round(last?.affinity ?? 0)}`}
+      times={history.map((d) => Date.parse(d.at))}
+      series={[
+        { key: "affinity", label: "好感", color: "var(--chart-1)", values: history.map((d) => d.affinity) },
+        { key: "trust", label: "信任", color: "var(--chart-2)", values: history.map((d) => d.trust) },
+        { key: "familiarity", label: "熟悉", color: "var(--chart-3)", values: history.map((d) => d.familiarity) },
+      ]}
+      domain={[-100, 100]}
+      zero
+      height={150}
+      format={(v) => String(Math.round(v))}
+    />
   );
 }
 

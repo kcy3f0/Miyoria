@@ -30,6 +30,12 @@
 // * `GET /api/stage`, `POST /api/stage/scene|expression|stream|say`,
 //   `GET|PUT /api/stage/scenes` (scene roles), `POST /api/stage/scenes/classify`
 // * `GET /api/voice`
+// * `POST /api/voice/join|leave|golive`, `GET|POST /api/songs`, `POST /api/songs/play|stop`,
+//   `POST /api/game/start|stop|goal` (through the actuator gate as the panel, see `control.ts`)
+// * `GET /api/telemetry?minutes=360` (a minute's samples of her state and the LLM counters)
+// * `GET /api/llm/calls?purpose=&model=&module=&status=&trouble=&thought=&turn=&since=&until=&q=`,
+//   `GET /api/llm/calls/{id}` (request and response, redacted), `GET /api/llm/stats?minutes=`
+//   (the call inspector, see `llmcalls.ts`), `GET /api/mind/thoughts/{id}` (one thought in full)
 // * `GET /api/self` (her inner state), `GET /api/world` (what she perceives); read-only
 // * `GET /api/data`, `GET /api/data/export?categories=`, `POST /api/data/wipe`,
 //   `POST /api/data/backup`, `POST /api/data/reset` (her data by category, factory reset;

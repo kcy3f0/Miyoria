@@ -6,6 +6,7 @@ import { defineExtension } from "@miyoria/sdk";
 import { MinecraftAdapter } from "./adapter.js";
 import { BridgeClient } from "./bridge.js";
 import { type AdapterConfig, bridgeConfigPath, resolveEndpoint } from "./config.js";
+import { Launcher } from "./launcher.js";
 
 export { MinecraftAdapter, GAME_ID } from "./adapter.js";
 export { BridgeClient, BridgeError } from "./bridge.js";
@@ -13,6 +14,9 @@ export { ACTIONS, toRequests } from "./actions.js";
 export { mapEvent } from "./events.js";
 export { compactState, summarize } from "./summary.js";
 export { bridgeConfigPath, defaultMinecraftDir, resolveEndpoint } from "./config.js";
+export { Launcher, LaunchError, prismCandidates, prismInstanceOf } from "./launcher.js";
+export { ObtainRunner } from "./obtain.js";
+export { PlanError, describeStep, plan } from "./planner.js";
 
 export default defineExtension({
   async activate(ctx) {
@@ -38,9 +42,18 @@ export default defineExtension({
       reconnectMaxMs: config.reconnect_max_ms,
       log: ctx.log,
     });
+    const minecraftDir = config.minecraft_dir ?? process.env.MIYORIA_MC_DIR;
+    const launcher = new Launcher({ config, minecraftDir });
+    if (launcher.problem() === null) {
+      ctx.log.info("can start the game itself", {
+        prism: launcher.executable() ?? null,
+        instance: launcher.instance() ?? null,
+      });
+    }
     const adapter = new MinecraftAdapter(bridge, {
       damageImportant: config.damage_important,
       allowCommands: config.allow_commands,
+      launcher,
     });
     await ctx.game.registerAdapter(adapter);
     bridge.start();

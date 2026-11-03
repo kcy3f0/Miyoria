@@ -99,7 +99,7 @@ mod/
 
 ## 5. 建議的 Baritone 設定
 
-反射與行為偏好放在 Baritone / AltoClef 設定裡,模組本身不做逐幀控制。Baritone 讀 `<遊戲目錄>/baritone/settings.txt`(一行一個:`名稱 值`),建議:
+求生反射(岩漿、溺水、窒息、落沙、反擊 / 逃跑、進食、卡住、撿東西)在模組自己的反射層(`PROTOCOL.md` §7,`miyoria-bridge.json` 的 `reflex*` 欄位);走路、挖礦的行為偏好放在 Baritone 設定裡。Baritone 讀 `<遊戲目錄>/baritone/settings.txt`(一行一個:`名稱 值`),建議:
 
 ```
 allowBreak true
@@ -158,8 +158,8 @@ Core 的擴充套件主機從 `[modules.extensions] dirs`(預設 `["extensions"]
 
 | GameAdapter | miyoria-bridge |
 |---|---|
-| `describe()` | 17 個動作(`goto`、`mine`、`follow`、`explore`、`farm`、`build`、`get`、`craft`、`smelt`、`place`、`chat`、`stop`、`look`、`attack`、`use`、`select`、`respawn`)與參數 schema,加上生存進度指南 `guide`(`adapter/src/guide.ts`,附在 act 工具描述後面,所以導演的 prompt 看得到) |
-| `observe()` | `observe` → 繁中摘要 + 精簡狀態(`busy`、`capabilities`、背包、最好的鎬能挖什麼(`pickaxe_tier`)、食物、離天黑 / 天亮幾分鐘、附近生物、看得到的方塊、合成中…);沒連上或在主選單時回 `connected:false` / `in_game:false`,導演就不會叫 LLM |
+| `describe()` | 20 個動作(`goto`、`mine`、`follow`、`explore`、`farm`、`build`、`get`、`obtain`、`craft`、`smelt`、`place`、`chat`、`stop`、`look`、`attack`、`use`、`select`、`respawn`、`launch`、`quit`)與參數 schema,加上生存進度指南 `guide`(`adapter/src/guide.ts`,附在 act 工具描述後面,所以導演的 prompt 看得到) |
+| `observe()` | `observe` → 繁中摘要 + 精簡狀態(`busy`、`capabilities`、背包、最好的鎬能挖什麼(`pickaxe_tier`)、食物、離天黑 / 天亮幾分鐘、附近生物、看得到的方塊、合成中、正在跑的反射(`reflex`)、`obtain` 計畫的進度(`plan`)…);沒連上或在主選單時回 `connected:false` / `in_game:false`,導演就不會叫 LLM。沒連上時另有 `launch`:`{available, problem?, state: idle\|starting\|failed, error?}`(能不能自己開遊戲、開到哪了) |
 | `act(action)` | 對應到 `baritone` / `altoclef` / `craft` / `smelt` / `place` / `chat` / `look` / `use` / `attack` / `select_slot` / `respawn` / `stop`;`hello_ack.capabilities` 說沒有的模組直接回失敗。`mine` 先 `observe` 看背包,鎬不夠挖不到東西的方塊直接拒絕並說要先做什麼(表在 `adapter/src/harvest.ts`:石頭 / 煤要木鎬、鐵 / 銅 / 青金石要石鎬、金 / 鑽石 / 紅石 / 綠寶石要鐵鎬、黑曜石 / 遠古殘骸要鑽石鎬)。模組的拒絕(`not_visible`、`too_far`、`missing_items`、`needs_station`、`busy`)轉成告訴她下一步的繁中句子 |
 | `events()` | 推送事件 → `game.minecraft.<事件>`,`data.text` 是給實況用的一句話,`important` 標出值得馬上反應的(死亡、低血量、危險生物、稀有物品、別人講話、成就);另外有 `connected` / `disconnected` |
 
@@ -167,7 +167,13 @@ Core 的擴充套件主機從 `[modules.extensions] dirs`(預設 `["extensions"]
 
 **目標什麼時候算完成**:Baritone 每走完一段路就送 `goal_reached`(挖礦是一顆礦接一顆、`follow` 一直重新追上、AltoClef 在子任務之間尋路),所以 adapter 記住上一個動作開始的是什麼工作:只有 `goto` 會轉送 `goal_reached` / `goal_failed`;`mine` / `follow` / `explore` / `farm` / `build` 以 `baritone_idle` 結束;`craft` / `smelt` 以 `craft_finished` / `smelt_finished`(或 `*_failed`)結束;AltoClef 的 `get` 期間 Baritone 也會在子任務之間閒置,adapter 收到 `baritone_idle` 時先 `observe`,AltoClef 自己也閒下來才轉送(文字「AltoClef 任務做完了」)。
 
-雙速控制的分工:快迴路(逐幀)完全在 Baritone / AltoClef;慢迴路(導演 + LLM)每 `decide_secs`(預設 20 秒)或遇到事件(`death`、`low_health`、`hostile_near`、`goal_reached`、`goal_failed`、`baritone_idle`、`craft_finished`、`craft_failed`、`smelt_finished`、`smelt_failed`、`advancement`、`chat`、`connected`)時才 `observe` 一次,下高階目標並產生實況評論。
+**自己開遊戲(`launch` / `quit`)**:`game start` 時遊戲沒開,導演先透過閘門送 `launch`(principal `director`)。adapter 用 Prism Launcher 的 CLI 開實例:`prismlauncher --launch <實例> [--world <存檔>]`(背景、detached,Core 重開不會關掉遊戲),再每 2 秒 `observe` 等模組連上、進入世界(`[modules.game] launch_wait_secs`,預設 240 秒;adapter 自己的 `launch_timeout_secs` 預設 180 秒)。找不到 Prism、啟動器結束時回錯誤碼、逾時,都變成 `game start` 的失敗並說原因。Prism 執行檔:`prism_path`(或 `MIYORIA_MC_PRISM`),沒設就依序找實例資料夾旁(可攜版)、`%LOCALAPPDATA%\Programs\PrismLauncher\prismlauncher.exe`、`%PROGRAMFILES%`、`%PROGRAMFILES(X86)%`、scoop;實例 id 從 `minecraft_dir`(`…\instances\<實例>\.minecraft`)推,也可以用 `prism_instance` 指定;`launch_world` 預設 `latest`(最近玩的存檔,看 `level.dat` 的時間),空字串 = 停在主選單。`game stop` 先送 `stop` 再送 `quit`(`[modules.game] close_on_stop`);adapter 的 `quit_on_stop` 預設 `launched`:只關她自己開的遊戲(`always` / `never`)。決策迴路不會自己選 `launch` / `quit`(`[modules.game] session_actions`)。
+
+**`obtain {item, count}`:取得物品的規劃器**(`adapter/src/planner.ts` + `obtain.ts`,參考 mc_aiplayer 的 GoalPlanner):她只說目標,程式依配方、熔爐、方塊掉落物與工具等級(`harvest.ts`)往回推,例如鐵鎬從空手:砍原木 ×4 → 做木材 ×16 → 工作台 → 放下 → 木棒 ×8 → 木鎬 → 挖鵝卵石 ×11 → 熔爐 → 放下 → 石鎬 → 挖粗鐵 ×3 → 燒鐵錠 ×3 → 鐵鎬。同一種材料一次做齊(不會為每片木材各砍一次樹);燃料先用煤炭,不夠就把原木做成木材再燒。執行時每一步都用一般的請求(`baritone mine` / `explore` / `goto`、`craft`、`smelt`、`place`),等那一步的結束事件,再從實際背包重新規劃;看不到方塊就 `explore` 到看得到為止(最多 90 秒),太遠就先 `goto`,工作台 / 熔爐不在旁邊就走過去或放下背包裡的。同一步失敗兩次就結束並說卡在哪一步、為什麼;反射打斷的那一步會等反射結束再重做,不算失敗。進度用 `plan_step` 事件回報,結束是 `plan_finished` / `plan_failed`(導演的完成 / 失敗事件);計畫期間那些步驟自己的事件(`baritone_idle`、`craft_finished`…)不轉送。其他動作(`chat` 以外)或 `stop` 會取消計畫。
+
+**反射**(模組,見 `PROTOCOL.md` §7):`reflex`(緊急的標成 important)和打斷了東西或沒成功的 `reflex_end` 會轉送;撿東西、沒打斷工作的進食結束不轉送。請求被 `reflex_active` 擋下時 adapter 等 `reflex_end`(最多 10 秒)再送一次。
+
+雙速控制的分工:快迴路(逐幀)在模組的反射層和 Baritone / AltoClef;慢迴路(導演 + LLM)每 `decide_secs`(預設 20 秒)或遇到事件(`death`、`low_health`、`hostile_near`、`goal_reached`、`goal_failed`、`baritone_idle`、`craft_finished`、`craft_failed`、`smelt_finished`、`smelt_failed`、`advancement`、`chat`、`connected`、`plan_finished`、`plan_failed`、`reflex_end`)時才 `observe` 一次,下高階目標並產生實況評論。動作失敗(或 `goal_failed` / `craft_failed` / `plan_failed` 這類失敗事件)後,導演 `failure_guard_secs`(預設 45 秒)內不送 `guarded_actions`(預設 `goto`、`mine`、`look`、`attack`),prompt 也告訴她暫時不能用、要換方法(`obtain`、`explore`、先 `craft` 缺的)或換目標;換了別的動作而且成功就提早解除。
 
 ## 8. 疑難排解
 
@@ -186,8 +192,10 @@ Core 的擴充套件主機從 `[modules.extensions] dirs`(預設 `["extensions"]
 
 ## 9. 驗證狀態
 
-已驗證:Gradle 建置(Windows、Temurin JDK 21)、JUnit 48 項(協定、快照、事件偵測、設定、WebSocket 驗證與請求回覆 round trip)、對真實 Baritone 1.11.3 API jar 的編譯、缺 jar 時的失敗訊息與 stub 測試路徑;adapter 的 Vitest(對假 mod 的連線、重連、token、動作對應、事件與目標完成判斷,以及透過 SDK runtime 的整個擴充)與擴充探索(`miyoria ext list` 找得到 `miyoria.minecraft`)。
+已驗證:Gradle 建置(Windows、Temurin JDK 21)、JUnit 62 項(協定、快照、事件偵測、反射決策、設定、WebSocket 驗證與請求回覆 round trip)、對真實 Baritone 1.11.3 API jar 的編譯、缺 jar 時的失敗訊息與 stub 測試路徑;adapter 的 Vitest(對假 mod 的連線、重連、token、動作對應、事件與目標完成判斷,以及透過 SDK runtime 的整個擴充)與擴充探索(`miyoria ext list` 找得到 `miyoria.minecraft`)。
 
 **尚未在真實遊戲裡驗證**(需要 Minecraft 帳號與圖形環境):所有與遊戲互動的行為,包含 `observe` 的實際內容、Baritone / AltoClef 動作、`use` / `attack` 按鍵模擬、`screenshot` 擷取、`advancement` / `chat` 事件解析,以及 AltoClef 的反射呼叫(已對照 `altoclef-1.21.1-0.19.jar` 的方法簽名撰寫,未實跑)。第一次實機測試請從 `observe` 與 `baritone goto` 開始。
+
+**自主能力(自己開遊戲、反射層、`obtain` 規劃器、失敗防呆,2026-11-03)**:只在測試裡驗證過,遊戲裡還沒實跑。已驗證:反射的決策邏輯(JUnit:觸發條件、優先順序與接手、結束的遲滯、冷卻、卡住偵測、撿東西的時間窗、`yieldNonUrgent`)、模組對真實 Baritone 1.11.3 與 Minecraft 1.21.1 的編譯和缺 jar 的 stub 路徑;adapter 的 Vitest:啟動器(假的 process:參數、`--world latest`、錯誤碼、逾時、`quit_on_stop`、找 Prism 的路徑)、`launch` / `quit` 對假 mod、規劃器(鐵鎬的完整步驟、已有的東西、燃料、工具等級、tag 材料)、計畫執行器對假世界(從空手做木鎬、看不到就探索、太遠就走過去、反射打斷後重做、取消)、`reflex_active` 重試與反射事件文字;導演的 Vitest:自己開遊戲(連上並等世界載入、啟動器失敗、逾時、拒絕)、停止時送 `quit`、失敗防呆。**沒驗證**:真的開 Prism(這台的 `prismlauncher.exe` 沒有實際執行過)、`--world` 是否直接進入世界、`quit` 是否正常存檔關閉;所有反射在遊戲裡的實際動作(逃離岩漿的路線、挖開窒息方塊、按鍵移動、攻擊、進食的快捷列交換、Baritone `GoalRunAway`、撿東西);`obtain` 在真的世界裡跑完整條鐵鎬路線。
 
 **不作弊與生存進度(`craft` / `smelt` / `place`、可見性、Baritone legit 設定)**:可見性判斷(JUnit)、快照欄位、adapter 的對應 / 鎬等級拒絕 / 錯誤與事件文字(Vitest)、對真實 Baritone 1.11.3 API jar 與 Minecraft 1.21.1 的編譯與建置已驗證;遊戲裡的實際行為還沒實跑。實機要看:新世界 `observe` 不再列出埋在地下的礦、`mine diamond_ore` 沒鐵鎬被拒、`mine oak_log` 只砍看得到的樹且砍完會停(`reason:"nothing_visible"`)而不是往下挖、`craft oak_planks` / `crafting_table` 打開背包合成、`place crafting_table` 後 `craft wooden_pickaxe` 會轉頭打開工作台、`smelt raw_iron` 放進熔爐再 `smelt` 拿出鐵錠、Baritone 走路時鏡頭跟著轉而且轉得平順、畫面上沒有路線線條。

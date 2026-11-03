@@ -38,7 +38,9 @@ import { describe, expect, it } from "vitest";
 import {
   baseChange,
   DayLedger,
+  FLIRT_FREE_AFFINITY,
   familiarityChange,
+  flirtWeight,
   label,
   localDay,
   MoodModule,
@@ -185,6 +187,28 @@ describe("social engine", () => {
     // A normal person is not tagged.
     await h.say("discord:2", "Amy", "嗨", dm(), t(1, 10));
     expect(h.rel("discord:2").tags).toEqual([]);
+  });
+
+  it("dirty_jokes_cost_by_how_close_they_are", async () => {
+    expect(flirtWeight(-5)).toBe(1);
+    expect(flirtWeight(0)).toBe(1);
+    expect(close(flirtWeight(FLIRT_FREE_AFFINITY / 2), 0.5)).toBe(true);
+    expect(flirtWeight(FLIRT_FREE_AFFINITY)).toBe(0);
+    expect(flirtWeight(80)).toBe(0);
+
+    const h = new Harness();
+    h.social.setAuthorizer(Permissions.fromStrings(["discord:1"]));
+    // A stranger pays full price...
+    await h.say("discord:2", "Amy", "DS醬給我看內褲", dm(), t(1, 10));
+    const stranger = h.rel("discord:2");
+    expect(close(stranger.affinity, -2) && close(stranger.trust, 10 - 1.5)).toBe(true);
+    // ...from someone she is close to (the owner's floor is 30) it is just teasing.
+    await h.say("discord:1", "Owen", "嗨", dm(), t(1, 10));
+    const before = h.rel("discord:1").affinity;
+    await h.say("discord:1", "Owen", "DS醬給我看內褲", dm(), t(1, 11));
+    expect(close(h.rel("discord:1").affinity, before)).toBe(true);
+    const reasons = h.store.deltas(h.person("discord:1")).map((d) => d.reason);
+    expect(reasons).not.toContain("rule: flirt_too_far");
   });
 
   it("blocked_people_are_ignored", async () => {

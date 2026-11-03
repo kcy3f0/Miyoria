@@ -1,4 +1,4 @@
-import { MockProvider } from "@miyoria/llm";
+import { LlmRouterKey, MockProvider } from "@miyoria/llm";
 import { MemorySettingsStore } from "@miyoria/store";
 import {
   ConversationStatesKey,
@@ -128,6 +128,34 @@ describe("mind module", () => {
       said: "我只是剛好路過喔。",
       turn: TURN,
       decisions: [expect.objectContaining({ capability: "voice.join", allowed: true })],
+    });
+    // The whole lifecycle of the intent, what she saw and what each part of her reply changed.
+    expect(after?.intents[0]?.history?.map((h) => h.status)).toEqual([
+      "pending",
+      "started",
+      "done",
+    ]);
+    expect(after?.intents[1]?.history).toEqual([
+      expect.objectContaining({ status: "dropped", detail: "not something she can do" }),
+    ]);
+    expect(after?.input?.world).toContain("Minecraft");
+    expect(after?.input?.people.map((p) => p.name)).toContain("Owen");
+    expect(after?.effects).toMatchObject({
+      drives: { social: -0.1 },
+      feelings: [{ name: "Owen", note: "有點在意他", hint: "+" }],
+      talkativeness: [{ scope: "discord:g1:c1", level: 0.8, minutes: 30 }],
+      agenda_added: [{ text: "問 Owen 報告的結果" }],
+    });
+    expect(after?.attempts).toBe(1);
+    // Linked to the call inspector both ways.
+    const router = r.sup.services.require(LlmRouterKey);
+    expect(after?.calls).toHaveLength(1);
+    expect(router.calls.list({ thought: after?.id ?? "" }).items[0]).toMatchObject({
+      id: after?.calls?.[0],
+      module: "mind",
+      label: "thought",
+      purpose: "mind",
+      status: "ok",
     });
     const published = r.thoughts() as unknown as Thought[];
     expect(published.length).toBeGreaterThanOrEqual(3);
@@ -266,6 +294,19 @@ describe("mind module", () => {
     const [thought] = r.mind().thoughts();
     expect(thought?.error).toContain("no JSON object");
     expect(thought?.intents).toEqual([]);
+  });
+
+  it("tells her when she has done nothing for several thoughts in a row", async () => {
+    const provider = new MockProvider("p");
+    for (let i = 0; i < 4; i++) provider.reply('{"thought": "繼續窩著"}');
+    const r = await rig(provider, { config: { min_interval_secs: 0 } });
+    for (const what of ["a", "b", "c", "d"]) {
+      r.publish(salient(what));
+      await wait(5000);
+    }
+    expect(provider.requests().length).toBe(4);
+    expect(systemText(provider, 2)).not.toContain("# 你已經發呆一陣子了");
+    expect(systemText(provider, 3)).toContain("連續想了 3 次都沒做任何事");
   });
 
   it("keeps her journal across restarts, the newest `journal_keep`", async () => {

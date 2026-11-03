@@ -1,7 +1,18 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import type { Envelope, ModuleInfo, PersonDetail, StageState, VoiceState } from "@/api/types";
+import type {
+  ChannelLevelsView,
+  ChannelLevelView,
+  Envelope,
+  ModuleInfo,
+  PersonDetail,
+  SongsState,
+  SongView,
+  StageState,
+  VoiceState,
+  WorldView,
+} from "@/api/types";
 import { ConnectionProvider, STORAGE_TOKEN } from "@/app/connection";
 import { EventStore } from "@/app/events-store";
 import { mockFetch, renderPage, renderRoute } from "@/test/render";
@@ -22,6 +33,15 @@ const mod = (id: string, over: Partial<ModuleInfo> = {}): ModuleInfo => ({
   recent_restarts: 0,
   ...over,
 });
+
+const WORLD_BASE: WorldView = {
+  at: "2026-11-03T10:00:00.000Z",
+  time: { local: "2026-11-03T18:00", weekday: 2, weekend: false, part_of_day: "傍晚", utc_offset_minutes: 480 },
+  her: { voice: null, voice_name: null, golive: null, streaming: false, scene: null, game: null },
+  people: [],
+  voice_channels: [],
+  channels: [],
+};
 
 const posts = (fetch: ReturnType<typeof mockFetch>) =>
   fetch.mock.calls.filter(([, init]) => init?.method && init.method !== "GET").map(([u, init]) => `${init?.method} ${String(u)}`);
@@ -287,10 +307,183 @@ describe("Live", () => {
     });
     const user = userEvent.setup();
     renderRoute("/live");
-    await user.click(await screen.findByRole("combobox", { name: "場景" }));
-    await user.click(await screen.findByRole("option", { name: "Game" }));
+    const scenes = await screen.findByRole("radiogroup", { name: "場景" });
+    expect(within(scenes).getByRole("radio", { name: "Talk" })).toHaveAttribute("aria-checked", "true");
+    await user.click(within(scenes).getByRole("radio", { name: "Game" }));
     await waitFor(() => expect(switched).toEqual({ scene: "Game" }));
     expect(await screen.findByText("已切到「Game」")).toBeInTheDocument();
+  });
+
+  it("requests, sings and stops songs, and shows a song being prepared", async () => {
+    const posted: [string, unknown][] = [];
+    const song = (no: number, state: SongView["state"], over: Partial<SongView> = {}): SongView => ({
+      no,
+      query: `song ${no}`,
+      title: null,
+      artist: null,
+      duration_s: null,
+      key: 0,
+      requester_name: "Owen",
+      state,
+      stage: "",
+      progress: 1,
+      error: null,
+      forced: false,
+      created_at: "2026-11-03T10:00:00.000Z",
+      ready_at: null,
+      ...over,
+    });
+    const list: SongsState = {
+      playing: 1,
+      paused: null,
+      songs: [song(1, "playing", { title: "Lemon" }), song(2, "ready"), song(3, "preparing", { stage: "separate", progress: 0.4 })],
+    };
+    mockFetch((method, url, body) => {
+      if (url.pathname === "/api/songs" && method === "GET") return { body: list };
+      if (method === "POST" && url.pathname.startsWith("/api/songs")) {
+        posted.push([url.pathname, body]);
+        return { body: { ...list, text: "ok" } };
+      }
+      return undefined;
+    });
+    const user = userEvent.setup();
+    renderRoute("/live");
+    const set = await screen.findByRole("list", { name: "歌單" });
+    expect(within(set).getByText("Lemon")).toBeInTheDocument();
+    expect(within(set).getByRole("progressbar", { name: "#3 準備進度" })).toHaveAttribute("aria-valuenow", "40");
+    expect(within(set).getByText("分離人聲")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("歌名、歌手或 YouTube 連結"), "アイドル");
+    await user.click(screen.getByRole("button", { name: "點歌" }));
+    await user.click(within(set).getByRole("button", { name: "唱這首" }));
+    await user.click(screen.getByRole("button", { name: "停止這首" }));
+    await waitFor(() =>
+      expect(posted).toEqual([
+        ["/api/songs", { query: "アイドル", key: null }],
+        ["/api/songs/play", { song: 2 }],
+        ["/api/songs/stop", { all: false }],
+      ]),
+    );
+  });
+
+  it("joins a voice channel from the list, and leaves after a confirmation", async () => {
+    let inVoice = false;
+    const posted: [string, unknown][] = [];
+    const ctx = { platform: "discord", scope: "g1", channel: "v1", kind: "voice" as const };
+    mockFetch((method, url, body) => {
+      if (url.pathname === "/api/voice")
+        return {
+          body: {
+            sessions: inVoice
+              ? [
+                  {
+                    context: ctx,
+                    label: "雜談",
+                    participants: [],
+                    speaking: [],
+                    joined_at: "2026-11-03T10:00:00.000Z",
+                    latency: {
+                      asr: { p50_ms: null, p95_ms: null, samples: 0 },
+                      llm_first_token: { p50_ms: null, p95_ms: null, samples: 0 },
+                      tts_first_audio: { p50_ms: null, p95_ms: null, samples: 0 },
+                    },
+                    last_turn: null,
+                  },
+                ]
+              : [],
+          } satisfies VoiceState,
+        };
+      if (url.pathname === "/api/world")
+        return {
+          body: {
+            ...WORLD_BASE,
+            voice_channels: [{ platform: "discord", guild: "g1", channel: "v1", name: "雜談", members: [] }],
+          },
+        };
+      if (method === "POST") {
+        posted.push([url.pathname, body]);
+        if (url.pathname === "/api/voice/join") inVoice = true;
+        if (url.pathname === "/api/voice/leave") inVoice = false;
+        return { body: { text: "ok" } };
+      }
+      return undefined;
+    });
+    const user = userEvent.setup();
+    renderRoute("/live");
+    await user.click(await screen.findByRole("button", { name: "加入 雜談" }));
+    expect(await screen.findByText("她加入了「雜談」")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "離開" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: "離開" }));
+    await waitFor(() =>
+      expect(posted).toEqual([
+        ["/api/voice/join", { guild: "g1", channel: "v1" }],
+        ["/api/voice/leave", { guild: "g1" }],
+      ]),
+    );
+  });
+
+  it("sets a text channel's level and mutes it", async () => {
+    let level: ChannelLevelsView = {
+      levels: [
+        { mode: "off", label: "關閉", description: "完全不說話" },
+        { mode: "quiet", label: "安靜", description: "很少插話" },
+        { mode: "lively", label: "活躍", description: "比較常加入對話" },
+      ],
+      channels: [
+        {
+          context: { platform: "discord", scope: "g1", channel: "c1", kind: "channel" },
+          label: "Miyoria / 雜談",
+          mode: "quiet",
+          custom: false,
+          default: "quiet",
+        },
+      ],
+    };
+    const puts: unknown[] = [];
+    mockFetch((method, url, body) => {
+      if (url.pathname === "/api/channels/levels") return { body: level };
+      if (method === "PUT" && url.pathname === "/api/channels/level") {
+        puts.push(body);
+        const mode = (body as { mode: string | null }).mode ?? "quiet";
+        const row = { ...(level.channels[0] as ChannelLevelView), mode, custom: mode !== "quiet" };
+        level = { ...level, channels: [row] };
+        return { body: row };
+      }
+      return undefined;
+    });
+    const user = userEvent.setup();
+    renderRoute("/live");
+    const select = await screen.findByRole("combobox", { name: "Miyoria / 雜談 的聊天等級" });
+    expect(select).toHaveTextContent("安靜");
+    expect(screen.getByText("很少插話 · 預設")).toBeInTheDocument();
+    await user.click(select);
+    await user.click(await screen.findByRole("option", { name: "活躍" }));
+    expect(await screen.findByText("已將 Miyoria / 雜談 設為「活躍」")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "讓她在 Miyoria / 雜談 閉嘴" }));
+    expect(await screen.findByText("她在 Miyoria / 雜談 不會說話了")).toBeInTheDocument();
+    expect(puts).toEqual([
+      { context: { platform: "discord", scope: "g1", channel: "c1", kind: "channel" }, mode: "lively" },
+      { context: { platform: "discord", scope: "g1", channel: "c1", kind: "channel" }, mode: "off" },
+    ]);
+  });
+
+  it("stops her autonomy with one click", async () => {
+    let paused = false;
+    mockFetch((method, url) => {
+      if (url.pathname === "/api/mind") return { body: { paused, running: true, accepting: !paused, stats: null, pending_approvals: 0 } };
+      if (method === "POST" && url.pathname === "/api/mind/pause") {
+        paused = true;
+        return { body: { paused, running: true, accepting: false, stats: null, pending_approvals: 0 } };
+      }
+      return undefined;
+    });
+    const user = userEvent.setup();
+    renderRoute("/live");
+    await user.click(await screen.findByRole("button", { name: "緊急停止" }));
+    expect(await screen.findByText("已緊急停止:她不會再自己行動")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "恢復自主" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "自主行動已暫停" })).toBeInTheDocument();
   });
 });
 

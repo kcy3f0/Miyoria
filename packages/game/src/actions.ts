@@ -2,8 +2,9 @@
 // tools) and `game.act` (the director's own adapter actions, and her in-game chat lines). All go
 // through the gate, so game chat can never turn straight into an action.
 //
-// `game.start` is the whole "go play" flow: it checks that the game is running (and refuses so
-// she can tell the owner when it is not), starts the session (the stage's scene director then
+// `game.start` is the whole "go play" flow: it checks that the game is running (starts it with
+// the adapter's `launch` action when the adapter can, and refuses with the reason so she can tell
+// the owner when that fails), starts the session (the stage's scene director then
 // switches OBS to the game scene), sets a first goal when given one and, when asked to, also goes
 // live with `stream.start` (its own gate decision, for the same principal).
 
@@ -122,7 +123,7 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
       name: "game_start",
       description:
         `開始玩遊戲(例如 Minecraft;導演迴路會自己決定目標與動作,直播畫面會切到遊戲場景)。只有被要求玩遊戲時才用;只是要開直播 / 開台請用 stream_start,不要用這個。game 省略 = ${o.defaultGame}。` +
-        "遊戲沒開時會失敗,那就跟大家說、請擁有者先開遊戲。goal 可以給第一個目標;stream = true 會順便開台(Go Live)。",
+        "遊戲沒開時會自己開(要等一兩分鐘);開不起來會失敗並說原因,那就跟大家說、請擁有者看一下。goal 可以給第一個目標;stream = true 會順便開台(Go Live)。",
       properties: {
         game: { type: "string", description: `遊戲 id,例如 ${o.defaultGame}` },
         where: {

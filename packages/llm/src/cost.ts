@@ -358,6 +358,17 @@ export class CostTracker {
     return 0;
   }
 
+  /** The `[llm.pricing]` entry of `model` (`provider:model`), if any. */
+  priceFor(model: string): Pricing | null {
+    const p = this.#pricing.get(model);
+    return p ? { ...p } : null;
+  }
+
+  /** Every configured price, by `provider:model`. */
+  prices(): Record<string, Pricing> {
+    return Object.fromEntries([...this.#pricing].map(([k, v]) => [k, { ...v }]));
+  }
+
   /** Adds one finished call; returns its cost in USD. */
   record(model: string, usage: Usage): number {
     const cost = this.#price(model, usage);

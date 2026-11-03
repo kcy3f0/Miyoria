@@ -161,11 +161,20 @@ dirs = ["extensions"]
 # [extensions."miyoria.minecraft"]
 # env = { MIYORIA_MC_TOKEN = "${MC_TOKEN:-}" }   # 直接設定值
 # env_pass = ["MIYORIA_MC_*"]                    # 取代 manifest 的 [env] pass
+# minecraft_dir = 'C:\Users\<你>\AppData\Roaming\PrismLauncher\instances\<實例>\.minecraft'
+# 她要玩時自己用 Prism Launcher 開遊戲(實例 id 從 minecraft_dir 推,Prism 執行檔自動找)
+# prism_path = 'C:\Users\<你>\AppData\Local\Programs\PrismLauncher\prismlauncher.exe'
+# launch_world = "latest"      # 直接進最近玩的存檔;"" = 停在主選單
+# quit_on_stop = "launched"    # 停止玩時只關她自己開的遊戲(always / never)
 
-# 遊戲(導演迴路)。`game start` 會先確認遊戲開著、模組連上了,沒開就拒絕(她會說要請你開遊戲)
+# 遊戲(導演迴路)。`game start` 會先確認遊戲開著、模組連上了;沒開就請 adapter 自己開
+# (auto_launch),開不起來才拒絕並說原因。動作失敗後一陣子不給 goto / mine,逼她換方法
 # [modules.game]
 # default_game = "minecraft"
 # require_connected = true
+# auto_launch = true
+# launch_wait_secs = 240
+# failure_guard_secs = 45
 
 # 唱歌(點歌):歌曲 worker(workers/sing,見 workers/README.md 第 9 節)用她的聲音翻唱。
 # 有人點歌她自己決定要不要唱、什麼時候唱;/queue song request 是強制(好了、她有空就唱)。

@@ -56,6 +56,15 @@ import type {
   SetPersonaRequest,
   SetPersonaResponse,
   UsageMap,
+  ControlResult,
+  GameStartRequest,
+  SongsState,
+  TelemetryView,
+  LlmCallDetail,
+  LlmCallRecord,
+  LlmCallsPage,
+  LlmCallsQuery,
+  LlmCallStats,
 } from "./types";
 
 type Opts = { signal?: AbortSignal };
@@ -179,6 +188,47 @@ export function createApi(client: ApiClient) {
     knowledge: (o?: Opts) => client.get<KnowledgeView>("/api/knowledge", o),
     conversationNotes: (o?: Opts) => client.get<ConversationNote[]>("/api/knowledge/conversations", o),
     reflection: (days: number, o?: Opts) => client.get<ReflectionView>(`/api/reflection?days=${days}`, o),
+
+    // live controls (through the actuator gate as the panel)
+    voiceJoin: (guild: string, channel: string | null) =>
+      client.post<ControlResult>("/api/voice/join", { guild, channel }),
+    voiceLeave: (guild?: string) => client.post<ControlResult>("/api/voice/leave", { guild: guild ?? null }),
+    goLive: (action: StreamAction, guild?: string) =>
+      client.post<ControlResult>("/api/voice/golive", { action, guild: guild ?? null }),
+    songs: (o?: Opts) => client.get<SongsState>("/api/songs", o),
+    requestSong: (query: string, key?: number) =>
+      client.post<SongsState & ControlResult>("/api/songs", { query, key: key ?? null }),
+    playSong: (song?: number) => client.post<SongsState & ControlResult>("/api/songs/play", { song: song ?? null }),
+    stopSong: (all: boolean) => client.post<SongsState & ControlResult>("/api/songs/stop", { all }),
+    gameStart: (req: GameStartRequest) => client.post<ControlResult>("/api/game/start", req),
+    gameStop: () => client.post<ControlResult>("/api/game/stop", {}),
+    gameGoal: (text: string) => client.post<ControlResult>("/api/game/goal", { text }),
+
+    thought: (id: string, o?: Opts) => client.get<Thought>(`/api/mind/thoughts/${seg(id)}`, o),
+    llmCalls: (q: LlmCallsQuery, limit: number, before: string | null, o?: Opts) =>
+      client.get<LlmCallsPage>("/api/llm/calls", {
+        ...o,
+        query: {
+          purpose: q.purpose,
+          model: q.model,
+          module: q.module,
+          status: q.status,
+          trouble: q.trouble ? "true" : undefined,
+          thought: q.thought,
+          turn: q.turn,
+          since: q.since,
+          q: q.q,
+          limit,
+          before: before ?? undefined,
+        },
+      }),
+    llmCall: (id: string, o?: Opts) =>
+      client.get<{ call: LlmCallRecord; detail: LlmCallDetail | null }>(`/api/llm/calls/${seg(id)}`, o),
+    llmStats: (minutes: number | null, o?: Opts) =>
+      client.get<LlmCallStats>("/api/llm/stats", { ...o, query: { minutes: minutes ?? undefined } }),
+
+    telemetry: (minutes: number, o?: Opts) =>
+      client.get<TelemetryView>("/api/telemetry", { ...o, query: { minutes } }),
   };
 }
 

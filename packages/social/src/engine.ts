@@ -4,7 +4,7 @@
 // Callers pass `now` (epoch ms) explicitly so everything is testable without a clock.
 
 import { getLogger, SerialQueue } from "@miyoria/kernel";
-import { type LlmRouter, sessionId } from "@miyoria/llm";
+import { type LlmRouter, sessionId, withLlmTag } from "@miyoria/llm";
 import type {
   IdentityStore,
   MemoryRecordStore,
@@ -57,6 +57,7 @@ import {
   type EventKind,
   eventKindOrder,
   familiarityChange,
+  flirtWeight,
   hasTag,
   isBlocked,
   isOwner,
@@ -603,7 +604,9 @@ export class Social implements SocialSignals {
       ...appraisalRequest(this.herName, snapshot.lines, names, concerns),
       session: this.#llmSession(),
     };
-    const response = await router.complete(this.config.llm_purpose, request, signal);
+    const response = await withLlmTag({ module: "social", label: "appraisal" }, () =>
+      router.complete(this.config.llm_purpose, request, signal),
+    );
     const results = parseAppraisal(response.text);
     if (concerns !== null) this.#announceHeart(response.text, snapshot, context);
     let applied = 0;
@@ -694,7 +697,9 @@ export class Social implements SocialSignals {
         ...notesRequest(this.herName, name, old, lines),
         session: this.#llmSession(),
       };
-      const response = await router.complete(this.config.llm_purpose, request, signal);
+      const response = await withLlmTag({ module: "social", label: "notes" }, () =>
+        router.complete(this.config.llm_purpose, request, signal),
+      );
       const notes = parseNotes(response.text);
       if (notes === null || notes === old) return false;
       await this.#modifyInner(person, "notes: refresh", now, false, (r) => {
@@ -769,7 +774,12 @@ export class Social implements SocialSignals {
       const ledger = this.#ledgers.get(person);
       if (ledger) {
         for (const [source, kind, scale] of events) {
-          const [a, t] = ledger.take(kind, baseChange(kind, scale), this.config);
+          let base = baseChange(kind, scale);
+          if (kind === "flirt_too_far") {
+            const w = flirtWeight(r.affinity);
+            base = [base[0] * w, base[1] * w];
+          }
+          const [a, t] = ledger.take(kind, base, this.config);
           const [da, dt] = apply(r, a, t, 0, this.config);
           if (nonzero(da) || nonzero(dt)) {
             rows.push([row(now, da, dt, 0, `${source}: ${kind}`), kind]);

@@ -210,6 +210,9 @@ export function judge(
   busy: boolean | null,
   important: boolean,
 ): Verdict {
+  if (cfg.session_actions.includes(proposal.name)) {
+    return { type: "keep", why: "session actions belong to game start / stop" };
+  }
   if (cfg.instant_actions.includes(proposal.name)) return { type: "step" };
   if (!goal) return { type: "replace" };
   if (goal.pending) return { type: "step" };
@@ -264,6 +267,8 @@ export interface PromptParts {
   backlog: string[];
   recent: string[];
   observation: string;
+  /** The failure guard's line while it withholds actions (`guardNote`). */
+  withheld?: string | null;
 }
 
 /** System and user messages of one decision. */
@@ -294,6 +299,7 @@ export function prompts(p: PromptParts): { system: string; user: string } {
   let user = `${dataBlock("game", "觸發", p.trigger)}\n`;
   user += p.goal !== null ? `目前目標:${escapeData(p.goal)}\n` : "目前目標:沒有\n";
   if (p.lastAction !== null) user += `上一個動作:${escapeData(p.lastAction)}\n`;
+  if (p.withheld) user += `${escapeData(p.withheld)}\n`;
   if (p.backlog.length > 0) {
     user += `${dataBlock("queue", "排隊中的觀眾請求", p.backlog.join(";"))}\n`;
   }

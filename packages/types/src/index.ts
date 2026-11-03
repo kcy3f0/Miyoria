@@ -126,6 +126,8 @@ export {
   type Thought,
   type ThoughtDecision,
   type ThoughtDigest,
+  type ThoughtEffects,
+  type ThoughtInput,
   type ThoughtIntent,
   type ThoughtTrigger,
   type ThoughtTriggerKind,
@@ -224,7 +226,14 @@ export {
   type SocialSignals,
   SocialSignalsKey,
 } from "./social.js";
-export { parseSongCue, SONG_TOPIC, type SongCue } from "./song.js";
+export {
+  parseSongCue,
+  parseSongPrepare,
+  SONG_PREPARE_TOPIC,
+  SONG_TOPIC,
+  type SongCue,
+  type SongPrepare,
+} from "./song.js";
 export { type StreamCurtain, StreamCurtainKey } from "./stream.js";
 export { type Clock, systemClock, type Timestamp, timestampMs, toTimestamp } from "./time.js";
 export {
@@ -243,6 +252,7 @@ export {
   type PlayChunk,
   type PlayHandle,
   SPEECH_PAUSE_TOPIC,
+  SPEECH_SYNTH_TOPIC,
   type SpeakOutcome,
   type SpeechPause,
   SpeechPauseKey,

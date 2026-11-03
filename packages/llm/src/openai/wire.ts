@@ -74,6 +74,8 @@ const WireUsageSchema = z.object({
   prompt_cache_hit_tokens: opt(z.number()),
   /** OpenAI. */
   prompt_tokens_details: opt(z.object({ cached_tokens: opt(z.number()) })),
+  /** OpenAI, OpenRouter, DeepSeek reasoners. */
+  completion_tokens_details: opt(z.object({ reasoning_tokens: opt(z.number()) })),
 });
 
 /** One streamed chunk; unknown fields are ignored. */
@@ -114,5 +116,8 @@ export function wireUsage(u: z.output<typeof WireUsageSchema>): Usage {
     completion_tokens: u.completion_tokens ?? 0,
     cached_prompt_tokens:
       u.prompt_cache_hit_tokens ?? u.prompt_tokens_details?.cached_tokens ?? null,
+    ...(u.completion_tokens_details?.reasoning_tokens != null
+      ? { reasoning_tokens: u.completion_tokens_details.reasoning_tokens }
+      : {}),
   };
 }

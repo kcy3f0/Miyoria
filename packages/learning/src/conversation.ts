@@ -6,7 +6,14 @@
 // read the state from memory.
 
 import { errorMessage, type Logger, SerialQueue } from "@miyoria/kernel";
-import { completeJson, type LlmRouter, sessionId, systemMessage, userMessage } from "@miyoria/llm";
+import {
+  completeJson,
+  type LlmRouter,
+  sessionId,
+  systemMessage,
+  userMessage,
+  withLlmTag,
+} from "@miyoria/llm";
 import type { LogEntry, MessageLog, PeopleStore, SettingsStore } from "@miyoria/store";
 import {
   type AccountRef,
@@ -340,18 +347,20 @@ export class ConversationEngine implements ConversationStates {
       const table: RefTable = { people, guild };
       const kb = cfg.knowledge ? d.knowledge() : undefined;
       const messages = this.#messages(context, previous, lines, table, kb);
-      const result = await completeJson(
-        router,
-        cfg.purpose,
-        {
-          messages,
-          json_mode: true,
-          temperature: 0.2,
-          max_tokens: cfg.max_tokens,
-          session: sessionId(d.profile, `conversation-${key}`),
-        },
-        foldSchema(cfg, kb !== undefined),
-        signal ? { signal } : {},
+      const result = await withLlmTag({ module: "learning", label: "conversation" }, () =>
+        completeJson(
+          router,
+          cfg.purpose,
+          {
+            messages,
+            json_mode: true,
+            temperature: 0.2,
+            max_tokens: cfg.max_tokens,
+            session: sessionId(d.profile, `conversation-${key}`),
+          },
+          foldSchema(cfg, kb !== undefined),
+          signal ? { signal } : {},
+        ),
       );
       this.tokens += result.tokens;
       const reply = result.value;

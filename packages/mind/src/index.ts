@@ -29,6 +29,7 @@ export {
   type AgendaRef,
   ASK,
   type CapabilityInfo,
+  IDLE_NUDGE_THOUGHTS,
   type MindInput,
   mindData,
   mindMessages,

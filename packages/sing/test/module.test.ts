@@ -26,8 +26,10 @@ import {
   PromptContributors,
   PromptContributorsKey,
   type PromptRequest,
+  SONG_PREPARE_TOPIC,
   SONG_TOPIC,
   type SongCue,
+  type SongPrepare,
   SPEECH_PAUSE_TOPIC,
   SpeechPauseKey,
   VoiceFloorKey,
@@ -253,6 +255,14 @@ const playback = (state: "started" | "finished"): Event => ({
   type: "voice_playback",
   data: { context: VOICE, turn: "t-prep", state, text: "我去準備一下歌喔", emotion: null },
 });
+
+function prepares(h: Harness): SongPrepare[] {
+  return h.events.flatMap((e) =>
+    e.type === "custom" && e.data.topic === SONG_PREPARE_TOPIC
+      ? [e.data.payload as unknown as SongPrepare]
+      : [],
+  );
+}
 
 function pauses(h: Harness): boolean[] {
   return h.events.flatMap((e) =>
@@ -511,6 +521,7 @@ describe("sing module", () => {
       title: "Song MV",
       video: join(dir, "s-j1", "video.mp4"),
       offset_ms: 0,
+      duration_ms: 1000,
     });
     expect(started[1]).not.toHaveProperty("video");
   });
@@ -615,6 +626,45 @@ describe("sing module", () => {
     await settle(1600);
     expect(h.worker.gone).toEqual(["j1", "j2"]);
     expect(h.initiatives().filter((i) => i.reason === "song_prepare")).toHaveLength(1);
+  });
+
+  it("publishes the song being prepared, its stage and progress, when they change", async () => {
+    h = await Harness.create();
+    await h.join();
+    await h.command("queue song request", { song: "夜に駆ける" });
+    await h.command("queue song request", { song: "https://youtu.be/abc" });
+    await settle(1600);
+    expect(prepares(h)).toEqual([
+      { no: 1, title: "夜に駆ける", stage: "queued", progress: 0, exclusive: null },
+    ]);
+    // The one the worker runs wins over the queued one; a link is no title until the worker
+    // found one.
+    h.worker.progress("j2", 0.2, "download");
+    await settle(1600);
+    expect(prepares(h).at(-1)).toEqual({
+      no: 2,
+      title: "",
+      stage: "download",
+      progress: 0.2,
+      exclusive: null,
+    });
+    Object.assign(h.worker.jobs.get("j2") ?? {}, { source: { title: "アイドル", artist: null } });
+    h.worker.exclusive("j2", "offloading");
+    await settle(1600);
+    expect(prepares(h).at(-1)).toMatchObject({ no: 2, title: "アイドル", exclusive: "offloading" });
+    const count = prepares(h).length;
+    await settle(1600);
+    expect(prepares(h), "unchanged: nothing new").toHaveLength(count);
+    h.worker.finish("j1", "夜に駆ける");
+    h.worker.finish("j2", "アイドル");
+    await settle(1600);
+    expect(prepares(h).at(-1)).toEqual({
+      no: null,
+      title: "",
+      stage: "",
+      progress: 0,
+      exclusive: null,
+    });
   });
 
   it("without a word from her, or out of voice, the worker does not wait", async () => {

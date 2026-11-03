@@ -64,6 +64,12 @@ export const ACTIONS: GameActionSpec[] = [
     parameters: obj({ item: str("物品 id"), count: int("數量,預設 1") }, ["item"]),
   },
   {
+    name: "obtain",
+    description:
+      "取得一個物品,只說目標就好(例如 {item:\"iron_pickaxe\"}):程式依配方和工具等級往回推出步驟(砍樹 → 工作台 → 木鎬 → 石頭 → 石鎬 → 熔爐 → 鐵…),用 mine / craft / smelt / place 一步一步做,邊做邊回報;只會挖看得到的方塊",
+    parameters: obj({ item: str("物品 id,例如 iron_pickaxe、torch、furnace"), count: int("數量,預設 1") }, ["item"]),
+  },
+  {
     name: "craft",
     description:
       "合成物品:小配方用背包的 2x2 格,3x3 配方(鎬、劍、熔爐…)要站在工作台旁;例如 {item:\"oak_planks\",count:4}。材料不夠會說缺什麼",
@@ -103,6 +109,8 @@ export const ACTIONS: GameActionSpec[] = [
   },
   { name: "select", description: "切換快捷列:{slot:0-8} 或 {item}", parameters: obj({ slot: int("0–8"), item: str("物品 id") }) },
   { name: "respawn", description: "死掉時按重生", parameters: obj({}) },
+  { name: "launch", description: "開遊戲(用 Prism Launcher;開始玩的時候系統會自己做,不用呼叫)", parameters: obj({}) },
+  { name: "quit", description: "關遊戲(結束玩的時候系統會自己做,不用呼叫)", parameters: obj({}) },
 ];
 
 /** One request to send to the mod (`type` plus parameters). */
@@ -291,6 +299,8 @@ export function describeAction(action: GameAction): string {
       return `開始蓋 ${a.schematic}`;
     case "get":
       return `用 AltoClef 取得 ${a.item}${a.count ? ` ×${a.count}` : ""}`;
+    case "obtain":
+      return `開始取得 ${zh(String(a.item))}${a.count ? ` ×${a.count}` : ""}`;
     case "craft":
       return `開始合成 ${zh(String(a.item))}${a.count ? ` ×${a.count}` : ""}`;
     case "smelt":
@@ -356,6 +366,8 @@ export function errorText(code: string, message: string): string {
       return `參數不對:${message}`;
     case "timeout":
       return "模組沒有回應(逾時)";
+    case "reflex_active":
+      return "身體正在本能反應(逃生、反擊或吃東西),等它結束再下指令";
     default:
       return `${code}:${message}`;
   }

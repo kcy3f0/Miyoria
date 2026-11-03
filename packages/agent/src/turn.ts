@@ -27,6 +27,7 @@ import {
   type ToolCall,
   type ToolSpec,
   toolResultMessage,
+  withLlmTag,
 } from "@miyoria/llm";
 import type { Tool, ToolContext } from "@miyoria/tools";
 import {
@@ -710,7 +711,10 @@ class Turn {
     const response = await timeout(
       this.agent.config.attention.llm_check_timeout_ms,
       this.signal,
-      (signal) => router.complete("fast", request, signal),
+      (signal) =>
+        withLlmTag({ module: "agent", turn: this.turn, label: "attention" }, () =>
+          router.complete("fast", request, signal),
+        ),
     );
     return parseCheck(response.text);
   }
@@ -1154,7 +1158,12 @@ class Turn {
    */
   async #streamStep(router: LlmRouter, request: ChatRequest, speech: Speech | null): Promise<Step> {
     const offeredTools = (request.tools?.length ?? 0) > 0;
-    const stream = await guard(router.stream("chat", request, this.signal), this.signal);
+    const stream = await guard(
+      withLlmTag({ module: "agent", turn: this.turn, label: "reply" }, () =>
+        router.stream("chat", request, this.signal),
+      ),
+      this.signal,
+    );
     const iterator = stream[Symbol.asyncIterator]();
     const parser = new ExpressionParser();
     const expression = new Expression();

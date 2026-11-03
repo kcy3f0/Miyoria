@@ -281,7 +281,9 @@ export function eventNudge(event: Event, config: MoodConfig): MoodNudge | null {
       if (kind === null) return null;
       const affinity = num(payload, "affinity");
       if (Math.abs(affinity) < 1e-6) return null;
-      const hostile = kind === "insult" || kind === "harassment" || kind === "flirt_too_far";
+      // A dirty joke riles her only from someone it actually cost (see `flirtWeight`).
+      const hostile =
+        kind === "insult" || kind === "harassment" || (kind === "flirt_too_far" && affinity < -1);
       return {
         valence: affinity * config.social_weight,
         arousal: Math.abs(affinity) * 0.01 + (hostile ? 0.05 : 0),

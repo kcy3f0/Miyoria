@@ -1,6 +1,7 @@
 import {
   Activity,
   Clapperboard,
+  Cpu,
   Database,
   Gauge,
   HeartPulse,
@@ -17,6 +18,7 @@ export type NavPath =
   | "/live"
   | "/character"
   | "/inner"
+  | "/llm"
   | "/system"
   | "/access"
   | "/data"
@@ -51,6 +53,12 @@ export const INNER_TABS = [
   { tab: "reflection", label: "反思" },
 ] as const;
 
+export const LLM_TABS = [
+  { tab: "overview", label: "概況" },
+  { tab: "calls", label: "呼叫" },
+  { tab: "prices", label: "價格與用量" },
+] as const;
+
 export const SYSTEM_TABS = [
   { tab: "modules", label: "子系統" },
   { tab: "extensions", label: "擴充套件" },
@@ -61,6 +69,7 @@ export type ActivityTab = (typeof ACTIVITY_TABS)[number]["tab"];
 export type CharacterTab = (typeof CHARACTER_TABS)[number]["tab"];
 export type SystemTab = (typeof SYSTEM_TABS)[number]["tab"];
 export type InnerTab = (typeof INNER_TABS)[number]["tab"];
+export type LlmTab = (typeof LLM_TABS)[number]["tab"];
 
 export const NAV: NavItem[] = [
   { to: "/", label: "總覽", icon: Gauge },
@@ -68,6 +77,7 @@ export const NAV: NavItem[] = [
   { to: "/live", label: "直播", icon: Clapperboard },
   { to: "/character", label: "角色", icon: UserRound, tabs: [...CHARACTER_TABS] },
   { to: "/inner", label: "內心", icon: HeartPulse, tabs: [...INNER_TABS] },
+  { to: "/llm", label: "LLM", icon: Cpu, tabs: [...LLM_TABS] },
   { to: "/system", label: "系統", icon: Server, tabs: [...SYSTEM_TABS] },
   { to: "/access", label: "權限", icon: ShieldCheck },
   { to: "/data", label: "資料", icon: Database },

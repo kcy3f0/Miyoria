@@ -87,6 +87,35 @@ def ffmpeg_to_wav(src: Path, dst: Path, rate: int = SR, channels: int = 2, max_s
         raise JobError(f"ffmpeg could not decode the audio: {r.stderr.strip()[:300]}")
 
 
+# ── video ────────────────────────────────────────────────────────────────────
+
+# Every song video is re-encoded to one frame size, letterboxed in the sing scene's background:
+# OBS's media source (32.1, hardware decoding) crashes when the file it plays changes to a
+# video of another size.
+VIDEO_W, VIDEO_H = 1280, 720
+VIDEO_PAD = "0x10141f"
+
+
+def normalize_video(src: Path, dst: Path) -> None:
+    """``src`` as a VIDEO_W x VIDEO_H H.264 mp4 without audio (NVENC, else libx264), at most 30 fps."""
+    vf = (f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+          f"pad={VIDEO_W}:{VIDEO_H}:(ow-iw)/2:(oh-ih)/2:color={VIDEO_PAD},setsar=1,format=yuv420p")
+    head = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
+            "-an", "-sn", "-dn", "-vf", vf, "-fpsmax", "30"]
+    tail = ["-movflags", "+faststart", str(dst)]
+    encoders = (
+        ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "23", "-b:v", "0"],
+        ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-threads", "4"],
+    )
+    err = ""
+    for enc in encoders:
+        r = subprocess.run(head + enc + tail, capture_output=True, text=True)
+        if r.returncode == 0:
+            return
+        err = r.stderr.strip()
+    raise JobError(f"ffmpeg could not re-encode the video: {err[:300]}")
+
+
 def read_audio(p: Path):
     """(frames, channels) float32 and the sample rate."""
     import soundfile as sf
@@ -328,15 +357,26 @@ class RealBackend:
             out = Path(tmp) / "video.mp4"
             if not out.is_file():
                 raise JobError("the video download produced no mp4 (over SING_VIDEO_MAX_MB?)")
-            os.replace(out, dest)
+            if cancelled():
+                raise Cancelled()
+            even = Path(tmp) / "video.even.mp4"
+            normalize_video(out, even)
+            os.replace(even, dest)
         progress(1.0)
         return {
-            "width": info.get("width"),
-            "height": info.get("height"),
+            "width": VIDEO_W,
+            "height": VIDEO_H,
+            "source_width": info.get("width"),
+            "source_height": info.get("height"),
             "vcodec": info.get("vcodec"),
             "fps": info.get("fps"),
             "format_id": info.get("format_id"),
         }
+
+    def library_video(self, v: Path, sdir: Path) -> dict[str, Any]:
+        """A library entry's own video, re-encoded into ``sdir/video.mp4``."""
+        normalize_video(v, sdir / "video.mp4")
+        return {"source": "library", "width": VIDEO_W, "height": VIDEO_H}
 
     def fetch_library(self, src: Source, sdir: Path) -> None:
         p = self.store.library_path(src.path or "")

@@ -48,7 +48,9 @@ function Loading() {
 }
 
 export function InnerPage() {
-  const { tab = "state" } = route.useSearch();
+  const search = route.useSearch();
+  const thought = search.thought;
+  const tab = search.tab ?? (thought ? "thoughts" : "state");
   const navigate = useNavigate();
   const self = useSelf();
   const world = useWorld();
@@ -74,7 +76,10 @@ export function InnerPage() {
           </QueryView>
         </TabsContent>
         <TabsContent value="thoughts">
-          <ThoughtsTab />
+          <ThoughtsTab
+            thought={thought}
+            onThought={(id) => void navigate({ to: "/inner", search: { tab: "thoughts", thought: id }, replace: id === undefined })}
+          />
         </TabsContent>
         <TabsContent value="knowledge">
           <KnowledgeTab />

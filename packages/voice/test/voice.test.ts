@@ -324,6 +324,7 @@ describe("voice", () => {
   it("speaks_through_tts", async () => {
     const e = await boot();
     const events = e.h.subscribe(["voice.playback", "voice.latency"]);
+    const synth = e.h.subscribe(["voice.synthesis"]);
     const sink = e.h.services.require(VoiceSinkKey);
     const speaking = sink.speak(
       voiceCtx,
@@ -331,6 +332,12 @@ describe("voice", () => {
       "annoyed",
       null,
     );
+    // The overlay hears that her line went to TTS before it plays.
+    const asked = (await nextEvent(synth)).event;
+    expect(asked).toEqual({
+      type: "custom",
+      data: { topic: "voice.synthesis", payload: { context: { ...voiceCtx }, turn: null } },
+    });
     const [id, rate, samples] = await readPlayback(e.node);
     expect([rate, samples]).toEqual([24_000, 4800]);
     e.node.sendJson({ type: "playback", play: id, state: "started" });

@@ -39,6 +39,7 @@ import { PANEL_DIR_ENV, pickDir } from "./panel.js";
 import { createApp } from "./server.js";
 import { Sessions } from "./session.js";
 import { ApiState, type PanelAuth, type Tokenizer } from "./state.js";
+import { SAMPLE_EVERY_MS, TELEMETRY_TOPICS } from "./telemetry.js";
 
 /** How often expired panel sessions are dropped. */
 export const PRUNE_EVERY_MS = 60 * 60_000;
@@ -243,6 +244,15 @@ export class ApiModule implements Module {
 
     const sub = ctx.subscribe(MONITOR_TOPICS);
     ctx.spawn("monitor", () => monitor.run(sub));
+
+    const counted = ctx.subscribe(Object.keys(TELEMETRY_TOPICS));
+    ctx.spawn("telemetry.events", async () => {
+      for await (const env of counted) state.telemetry.handle(env);
+    });
+    ctx.spawn("telemetry", async (signal) => {
+      state.telemetry.sample(state);
+      for await (const _ of interval(SAMPLE_EVERY_MS, signal)) state.telemetry.sample(state);
+    });
 
     if (oauth) {
       ctx.spawn("sessions", async (signal) => {

@@ -43,6 +43,23 @@ public final class BridgeConfig {
     public boolean disablePauseOnLostFocus = true;
     /** Screenshot defaults. */
     public int screenshotMaxWidth = 640;
+    /**
+     * Survival reflexes every tick, without the LLM: escape lava / suffocation / falling sand /
+     * drowning, fight or flee, eat, get unstuck, pick up drops.
+     */
+    public boolean reflexes = true;
+    /** Hit back at hostiles that come close (off: only flee). */
+    public boolean reflexFight = true;
+    /** Pick up visible drops after a task ends. */
+    public boolean reflexPickup = true;
+    /** At or below this health she runs from hostiles instead of fighting. */
+    public float reflexFleeHealth = 8f;
+    /** She eats at or below this food level when idle... */
+    public int reflexEatFood = 14;
+    /** ...and stops what she is doing to eat at or below this one. */
+    public int reflexEatFoodBusy = 6;
+    /** A task that has not moved her for this long counts as stuck. */
+    public int reflexStuckSecs = 20;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
@@ -81,6 +98,10 @@ public final class BridgeConfig {
         cfg.maxEntities = clamp(cfg.maxEntities, 1, 64);
         cfg.maxBlockKinds = clamp(cfg.maxBlockKinds, 1, 64);
         cfg.screenshotMaxWidth = clamp(cfg.screenshotMaxWidth, 64, 3840);
+        cfg.reflexEatFood = clamp(cfg.reflexEatFood, 0, 19);
+        cfg.reflexEatFoodBusy = clamp(cfg.reflexEatFoodBusy, 0, cfg.reflexEatFood);
+        cfg.reflexStuckSecs = clamp(cfg.reflexStuckSecs, 5, 300);
+        cfg.reflexFleeHealth = Math.max(0f, Math.min(20f, cfg.reflexFleeHealth));
         if (dirty || !Files.isRegularFile(file)) {
             save(file, cfg);
         }

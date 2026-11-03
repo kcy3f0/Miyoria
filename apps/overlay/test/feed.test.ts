@@ -7,6 +7,7 @@ import {
   parseMessage,
   parseQueueItem,
   reduce,
+  shownActivity,
 } from "../src/feed.js";
 
 const run = (actions: Action[], from: OverlayState = initialState()): OverlayState => actions.reduce(reduce, from);
@@ -81,7 +82,7 @@ describe("parseMessage", () => {
 describe("reduce", () => {
   it("starts empty and offline", () => {
     expect(initialState()).toEqual({
-      connected: false, speaking: false, subtitleSeq: 0, subtitle: null, emotion: null, status: null, queue: [], notice: null,
+      connected: false, speaking: false, subtitleSeq: 0, subtitle: null, emotion: null, status: null, queue: [], notice: null, activity: null,
     });
   });
 
@@ -153,5 +154,57 @@ describe("reduce", () => {
     expect(shown.notice).toBe("準備歌曲中…");
     expect(reduce(shown, on as Action)).toBe(shown);
     expect(run([{ type: "notice", text: "" }], shown).notice).toBeNull();
+  });
+
+  it("parses activity: kinds, determinate / indeterminate progress, a song's clock", () => {
+    expect(
+      parseMessage(
+        '{"type":"activity","kind":"song_prepare","label":"轉換歌聲","detail":"夜に駆ける","progress":0.46,"elapsed_ms":null,"duration_ms":null}',
+      ),
+    ).toEqual({
+      type: "activity",
+      activity: { kind: "song_prepare", label: "轉換歌聲", detail: "夜に駆ける", progress: 0.46, elapsedMs: null, durationMs: null },
+    });
+    expect(parseMessage('{"type":"activity","kind":"thinking","label":"思考中…","detail":null,"progress":null}')).toEqual({
+      type: "activity",
+      activity: { kind: "thinking", label: "思考中…", detail: null, progress: null, elapsedMs: null, durationMs: null },
+    });
+    expect(
+      parseMessage('{"type":"activity","kind":"singing","label":"正在唱","detail":"アイドル","elapsed_ms":4000,"duration_ms":200000}'),
+    ).toMatchObject({ activity: { elapsedMs: 4000, durationMs: 200000, progress: null } });
+    // A song without a usable length has no clock; progress is clamped.
+    expect(parseMessage('{"type":"activity","kind":"singing","label":"正在唱","elapsed_ms":4000,"duration_ms":-1}')).toMatchObject({
+      activity: { elapsedMs: null, durationMs: null },
+    });
+    expect(parseMessage('{"type":"activity","kind":"song_prepare","label":"x","progress":3}')).toMatchObject({ activity: { progress: 1 } });
+    // Hidden: kind null, or nothing to say.
+    expect(parseMessage('{"type":"activity","kind":null}')).toEqual({ type: "activity", activity: null });
+    expect(parseMessage('{"type":"activity","kind":"thinking","label":"  "}')).toEqual({ type: "activity", activity: null });
+    // Malformed: ignored.
+    expect(parseMessage('{"type":"activity"}')).toBeNull();
+    expect(parseMessage('{"type":"activity","kind":7,"label":"x"}')).toBeNull();
+    expect(parseMessage('{"type":"activity","kind":"<b>","label":"x"}')).toBeNull();
+    const long = parseMessage(JSON.stringify({ type: "activity", kind: "singing", label: "長".repeat(99), detail: "曲".repeat(999) }));
+    expect(long?.type === "activity" && long.activity?.label.length).toBe(40);
+    expect(long?.type === "activity" && long.activity?.detail?.length).toBe(160);
+  });
+
+  it("keeps the activity; the same one again is no change; a dropped feed clears it", () => {
+    const thinking = parseMessage('{"type":"activity","kind":"thinking","label":"思考中…"}') as Action;
+    const s = run([{ type: "connection", connected: true }, thinking]);
+    expect(s.activity).toMatchObject({ kind: "thinking" });
+    expect(reduce(s, thinking)).toBe(s);
+    expect(reduce(s, { type: "activity", activity: null }).activity).toBeNull();
+    expect(reduce(s, { type: "connection", connected: false }).activity).toBeNull();
+  });
+
+  it("the capsule shows the activity, else an older Core's notice", () => {
+    const notice = run([{ type: "notice", text: "準備歌曲中…" }]);
+    expect(shownActivity(notice)).toEqual({
+      kind: "notice", label: "準備歌曲中…", detail: null, progress: null, elapsedMs: null, durationMs: null,
+    });
+    const both = run([parseMessage('{"type":"activity","kind":"song_prepare","label":"下載中","progress":0.1}') as Action], notice);
+    expect(shownActivity(both)).toMatchObject({ kind: "song_prepare", label: "下載中" });
+    expect(shownActivity(initialState())).toBeNull();
   });
 });

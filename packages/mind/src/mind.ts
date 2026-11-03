@@ -4,7 +4,13 @@
 
 import { ActuatorRegistryKey } from "@miyoria/actions";
 import { errorMessage, type Logger, type ServiceLookup, sleep } from "@miyoria/kernel";
-import { assistantMessage, type ChatMessage, LlmRouterKey, userMessage } from "@miyoria/llm";
+import {
+  assistantMessage,
+  type ChatMessage,
+  LlmRouterKey,
+  userMessage,
+  withLlmTag,
+} from "@miyoria/llm";
 import { SocialKey } from "@miyoria/social";
 import {
   type AccountRef,
@@ -40,6 +46,7 @@ import {
   type Thought,
   type ThoughtDecision,
   type ThoughtDigest,
+  type ThoughtEffects,
   type ThoughtIntent,
   type ThoughtTrigger,
   type TurnId,
@@ -50,6 +57,7 @@ import type { MindConfig } from "./config.js";
 import type { Journal } from "./journal.js";
 import { type BudgetState, CallLog, heartbeatMs, inQuietHours } from "./pace.js";
 import { type MindInput, mindMessages, type PersonRef, type PlaceRef } from "./prompt.js";
+import { clipReasoning, noEffects, thoughtInput } from "./record.js";
 import { type DocDraft, type MindReply, MindReplyError, parseMindReply } from "./reply.js";
 import {
   type Block,
@@ -172,6 +180,9 @@ export class MindLoop implements Mind {
   #salient: SalientEvent[] = [];
   #nextHeartbeat: number | null = null;
   #idleStreak = 0;
+  /** Thoughts in a row (any trigger) that did nothing, and when the run began. */
+  #idleRun = 0;
+  #idleSince: number | null = null;
   #running = false;
   #thinking = false;
   #wake: (() => void) | null = null;
@@ -225,6 +236,10 @@ export class MindLoop implements Mind {
 
   thoughts(limit = 50): Thought[] {
     return this.#d.journal.list(limit);
+  }
+
+  thought(id: string): Thought | null {
+    return this.#d.journal.get(id);
   }
 
   digests(limit = 20): ThoughtDigest[] {
@@ -527,7 +542,8 @@ export class MindLoop implements Mind {
       if (oldest !== undefined) this.#turnEvents.delete(oldest);
     }
     if (!this.#ownTurns.has(turn)) return false;
-    this.#d.journal.updateByTurn(turn, (_t, intent) => applyTurnEvent(intent, e));
+    const at = toTimestamp(this.#now());
+    this.#d.journal.updateByTurn(turn, (_t, intent) => applyTurnEvent(intent, e, at));
     return true;
   }
 
@@ -625,12 +641,9 @@ export class MindLoop implements Mind {
 
   #scheduleHeartbeat(now: number): void {
     const self = this.#d.services.get(SelfStateKey);
-    const world = this.#d.services.get(WorldStateKey)?.snapshot() ?? null;
     const ms = heartbeatMs(
       {
-        lively:
-          (world?.channels.some((c) => c.lively) ?? false) ||
-          (world?.voice_channels.some((v) => v.activity?.lively === true) ?? false),
+        lively: this.#lively(),
         inVoice: [...this.#rooms.values()].some((r) => r.people > 0),
         agendaDue: (self?.agenda() ?? []).some((a) => a.due === null || Date.parse(a.due) <= now),
         night: inQuietHours(now, this.#d.config),
@@ -641,6 +654,15 @@ export class MindLoop implements Mind {
       this.#d.config,
     );
     this.#nextHeartbeat = ms === null ? null : now + ms;
+  }
+
+  /** A text channel or voice channel has a lively conversation going. */
+  #lively(): boolean {
+    const world = this.#d.services.get(WorldStateKey)?.snapshot() ?? null;
+    return (
+      (world?.channels.some((c) => c.lively) ?? false) ||
+      (world?.voice_channels.some((v) => v.activity?.lively === true) ?? false)
+    );
   }
 
   async #thinkPending(signal: AbortSignal): Promise<void> {
@@ -724,6 +746,13 @@ export class MindLoop implements Mind {
           capability: b.capability,
           reason: b.reason,
         })),
+        idle:
+          this.#idleSince === null
+            ? null
+            : {
+                thoughts: this.#idleRun,
+                minutes: Math.round((started - this.#idleSince) / MINUTE_MS),
+              },
       };
       this.#calls.record(started);
       const thought: Thought = {
@@ -736,6 +765,22 @@ export class MindLoop implements Mind {
         tokens: null,
         error: null,
         ms: 0,
+        suggestions: suggestions.map((s) => structuredClone(s)),
+        input: thoughtInput(input),
+        reasoning: null,
+        effects: null,
+        calls: [],
+        cost_usd: null,
+        attempts: 0,
+        idle: input.idle ?? null,
+      };
+      // Her LLM calls for this thought, for the call inspector's links both ways.
+      const costs = new Map<string, number | null>();
+      const onCall = (call: { id: string; cost_usd: number | null }) => {
+        if (!costs.has(call.id)) thought.calls?.push(call.id);
+        costs.set(call.id, call.cost_usd);
+        const known = [...costs.values()].filter((c): c is number => c !== null);
+        thought.cost_usd = known.length === 0 ? null : known.reduce((a, b) => a + b, 0);
       };
       let reply: MindReply;
       const controller = new AbortController();
@@ -747,17 +792,29 @@ export class MindLoop implements Mind {
         // unusable reply gets one repair try with the problem spelled out.
         let messages: ChatMessage[] = mindMessages(input);
         for (let attempt = 1; ; attempt++) {
-          const response = await router.complete(
-            cfg.purpose,
+          thought.attempts = attempt;
+          const response = await withLlmTag(
             {
-              messages,
-              json_mode: true,
-              thinking: true,
-              max_tokens: cfg.max_tokens,
-              session: `mind-${d.profile}`,
+              module: "mind",
+              thought: thought.id,
+              label: "thought",
+              repair: attempt > 1 ? attempt - 1 : null,
+              onCall,
             },
-            controller.signal,
+            () =>
+              router.complete(
+                cfg.purpose,
+                {
+                  messages,
+                  json_mode: true,
+                  thinking: true,
+                  max_tokens: cfg.max_tokens,
+                  session: `mind-${d.profile}`,
+                },
+                controller.signal,
+              ),
           );
+          thought.reasoning = clipReasoning(response.reasoning);
           const usage = response.usage;
           if (usage) {
             const used = usage.prompt_tokens + usage.completion_tokens;
@@ -792,7 +849,16 @@ export class MindLoop implements Mind {
       thought.thought = reply.thought;
       thought.ms = this.#now() - started;
       const onlyHeartbeat = triggers.every((t) => t.kind === "heartbeat");
-      thought.changes = await this.#apply(reply, snap.people, snap.places, snap.focus, self);
+      const effects = noEffects();
+      thought.changes = await this.#apply(
+        reply,
+        snap.people,
+        snap.places,
+        snap.focus,
+        self,
+        effects,
+      );
+      thought.effects = effects;
       // A thought woken only by her own turn ending must not start a conversation where she
       // just spoke (it would feed itself: her turn, a thought, another turn).
       const justSpoke = triggers.every((t) => t.kind === "turn")
@@ -808,6 +874,19 @@ export class MindLoop implements Mind {
         snap.agenda,
       );
       thought.intents = intents.map(([, record]) => record);
+      // Talking with people (or listening to a lively conversation) is not sitting idle;
+      // neither is anything she set out to do.
+      if (
+        triggers.some((t) => t.kind === "turn") ||
+        intents.some(([intent]) => intent !== null) ||
+        this.#lively()
+      ) {
+        this.#idleRun = 0;
+        this.#idleSince = null;
+      } else {
+        this.#idleRun += 1;
+        this.#idleSince ??= started;
+      }
       await d.journal.add(thought);
       // Acting can take a while (the scheduler's lanes, joining voice): the loop goes on.
       void this.#act(thought.id, intents, signal).catch((error: unknown) => {
@@ -826,6 +905,7 @@ export class MindLoop implements Mind {
     places: PlaceRef[],
     focus: ContextKey | null,
     self: SelfState | undefined,
+    effects: ThoughtEffects = noEffects(),
   ): Promise<string[]> {
     const changes: string[] = [];
     const now = this.#now();
@@ -837,6 +917,12 @@ export class MindLoop implements Mind {
     for (const f of reply.feelings) {
       const p = person(f.person);
       if (!p || p.person === null) continue;
+      effects.feelings.push({
+        person: p.person,
+        name: p.name,
+        note: f.note,
+        hint: f.hint === "+" || f.hint === "-" ? f.hint : null,
+      });
       if (f.note !== null && self) {
         try {
           await self.setFeeling(p.person, f.note, "self");
@@ -860,6 +946,7 @@ export class MindLoop implements Mind {
     if (!self) return changes;
     const drives = Object.entries(reply.drives);
     if (drives.length > 0) {
+      effects.drives = Object.fromEntries(drives);
       self.adjust(reply.drives, "mind");
       changes.push(
         `慾望 ${drives.map(([k, v]) => `${k} ${v > 0 ? "+" : ""}${v.toFixed(2)}`).join("、")}`,
@@ -869,10 +956,12 @@ export class MindLoop implements Mind {
       const scope = this.#scope(t.scope, place(t.scope)?.context ?? null, focus);
       if (scope === null) continue;
       self.setTalkativeness(scope, { level: t.level, forMs: t.minutes * MINUTE_MS, why: t.why });
+      effects.talkativeness.push({ scope, level: t.level, minutes: t.minutes, why: t.why });
       changes.push(`多話程度 ${scope} ${t.level.toFixed(2)}(${t.minutes} 分鐘)`);
     }
     if (reply.initiative !== null) {
       self.setInitiative(reply.initiative.level, reply.initiative.why);
+      effects.initiative = { ...reply.initiative };
       changes.push(`主動程度 ${reply.initiative.level.toFixed(2)}`);
     }
     for (const a of reply.agendaAdd) {
@@ -885,6 +974,7 @@ export class MindLoop implements Mind {
         expiresAt: toTimestamp(now + a.expiresInMin * MINUTE_MS),
       });
       changes.push(`議程 +「${item.text}」`);
+      effects.agenda_added.push({ text: item.text, why: a.why });
     }
     const open = self.agenda();
     const byRef = (ref: string) => {
@@ -893,13 +983,19 @@ export class MindLoop implements Mind {
     };
     for (const ref of reply.agendaDone) {
       const item = byRef(ref);
-      if (item && self.completeAgenda(item.id)) changes.push(`完成議程「${item.text}」`);
+      if (item && self.completeAgenda(item.id)) {
+        changes.push(`完成議程「${item.text}」`);
+        effects.agenda_done.push(item.text);
+      }
     }
     for (const ref of reply.agendaDrop) {
       const item = byRef(ref);
-      if (item && self.dropAgenda(item.id)) changes.push(`放棄議程「${item.text}」`);
+      if (item && self.dropAgenda(item.id)) {
+        changes.push(`放棄議程「${item.text}」`);
+        effects.agenda_dropped.push(item.text);
+      }
     }
-    changes.push(...(await this.#documents(reply.documents, people, focus)));
+    changes.push(...(await this.#documents(reply.documents, people, focus, effects)));
     return changes;
   }
 
@@ -908,6 +1004,7 @@ export class MindLoop implements Mind {
     drafts: readonly DocDraft[],
     people: PersonRef[],
     focus: ContextKey | null,
+    effects: ThoughtEffects,
   ): Promise<string[]> {
     const kb = this.#d.services.get(KnowledgeKey);
     if (!kb || drafts.length === 0) return [];
@@ -958,7 +1055,15 @@ export class MindLoop implements Mind {
           }
           break;
       }
-      if (change === null) continue;
+      if (change === null) {
+        effects.documents.push({
+          type: d.type,
+          title: d.title ?? null,
+          ok: false,
+          error: "incomplete",
+        });
+        continue;
+      }
       try {
         const result = await kb.apply(change, {
           kind: "self",
@@ -969,9 +1074,29 @@ export class MindLoop implements Mind {
         });
         if (result.ok) {
           out.push(result.doc ? `資料 ${d.type}「${result.doc.title}」` : `資料 ${d.type}`);
-        } else this.#d.log.debug({ err: result.error }, "her document change was refused");
+          effects.documents.push({
+            type: d.type,
+            title: result.doc?.title ?? d.title ?? null,
+            ok: true,
+            error: null,
+          });
+        } else {
+          this.#d.log.debug({ err: result.error }, "her document change was refused");
+          effects.documents.push({
+            type: d.type,
+            title: d.title ?? null,
+            ok: false,
+            error: String(result.error),
+          });
+        }
       } catch (error) {
         this.#d.log.warn({ err: errorMessage(error) }, "cannot change her documents");
+        effects.documents.push({
+          type: d.type,
+          title: d.title ?? null,
+          ok: false,
+          error: errorMessage(error),
+        });
       }
     }
     return out;
@@ -1072,6 +1197,13 @@ export class MindLoop implements Mind {
         turn: null,
         decisions: [],
         said: null,
+        history: [
+          {
+            at: toTimestamp(now),
+            status: problem === null ? "pending" : "dropped",
+            detail: problem,
+          },
+        ],
       };
       const item = draft.agenda === null ? undefined : agenda.find((a) => a.ref === draft.agenda);
       if (item && problem === null) this.#intentAgenda.set(intent.id, item.item.id);
@@ -1137,9 +1269,10 @@ export class MindLoop implements Mind {
         record.status = outcome.status;
         record.detail = outcome.detail;
         record.turn = outcome.turn;
+        noteStatus(record, toTimestamp(this.#now()));
         // Events of the turn that arrived before its outcome.
         for (const e of outcome.turn === null ? [] : (this.#turnEvents.get(outcome.turn) ?? [])) {
-          applyTurnEvent(record, e);
+          applyTurnEvent(record, e, toTimestamp(this.#now()));
         }
       });
     }
@@ -1180,8 +1313,25 @@ export class MindLoop implements Mind {
   }
 }
 
+/** Most status changes kept per intent. */
+const MAX_HISTORY = 12;
+
+/** Appends the intent's current status to its history when it changed. */
+export function noteStatus(intent: ThoughtIntent, at: string): void {
+  intent.history ??= [];
+  const history = intent.history;
+  const last = history[history.length - 1];
+  if (last && last.status === intent.status && last.detail === intent.detail) return;
+  history.push({ at, status: intent.status, detail: intent.detail });
+  if (history.length > MAX_HISTORY) history.splice(1, history.length - MAX_HISTORY);
+}
+
 /** Folds an event of her intent's turn into its journal record. */
-export function applyTurnEvent(intent: ThoughtIntent, e: TurnEvent): void {
+export function applyTurnEvent(
+  intent: ThoughtIntent,
+  e: TurnEvent,
+  at: string = new Date().toISOString(),
+): void {
   switch (e.type) {
     case "decision":
       if (intent.decisions.length < 10) intent.decisions.push(e.decision);
@@ -1189,6 +1339,7 @@ export function applyTurnEvent(intent: ThoughtIntent, e: TurnEvent): void {
     case "skipped":
       intent.status = "dropped";
       intent.detail = e.why;
+      noteStatus(intent, at);
       return;
     case "completed":
       if (e.text.trim() !== "") {
@@ -1198,6 +1349,7 @@ export function applyTurnEvent(intent: ThoughtIntent, e: TurnEvent): void {
         intent.status = "dropped";
         intent.detail = "she stayed quiet or was interrupted";
       }
+      noteStatus(intent, at);
       return;
   }
 }

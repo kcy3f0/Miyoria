@@ -53,6 +53,32 @@ export function sceneTransitionOf(msg: {
 export type SongVideoAction = "play" | "stop";
 export const SongVideoActionSchema = z.enum(["play", "stop"]);
 
+/**
+ * What she is doing, for the overlay's activity line: `thinking` (a turn runs, nothing said yet),
+ * `synthesizing` (her line is at TTS), `song_prepare` (the song worker makes a song), `singing`.
+ */
+export type ActivityKind = "thinking" | "synthesizing" | "song_prepare" | "singing";
+
+/** Longest activity `label` / `detail` (code units). */
+export const ACTIVITY_LABEL_MAX = 40;
+export const ACTIVITY_DETAIL_MAX = 120;
+
+/**
+ * An `activity` message. `kind: null` hides the line (the other fields are then empty / null).
+ * `label` is the short zh-TW text, `detail` the song it is about (already escaped and capped),
+ * `progress` 0..1 or `null` (indeterminate). A song being sung has `elapsed_ms` (how far into it
+ * it was when the message was sent) and `duration_ms`, so its progress runs on the receiver's
+ * clock instead.
+ */
+export interface Activity {
+  kind: ActivityKind | null;
+  label: string;
+  detail: string | null;
+  progress: number | null;
+  elapsed_ms: number | null;
+  duration_ms: number | null;
+}
+
 /** `speaking` states. */
 export type SpeakingState = "started" | "stopped";
 export const SpeakingStateSchema = z.enum(["started", "stopped"]);
@@ -175,6 +201,8 @@ export type CoreMessage =
     }
   /** A line of status for the overlay (`""` clears it), e.g. 「準備歌曲中…」. */
   | { type: "notice"; text: string }
+  /** What she is doing now, for the overlay's activity line. */
+  | ({ type: "activity" } & Activity)
   /** Asks for a `status` (with the same `id`). */
   | { type: "status_request"; id?: number }
   | { type: "ping" }
@@ -226,6 +254,15 @@ const CoreMessageSchema = z.discriminatedUnion("type", [
       .transform((v) => (v?.trim() ? v.trim() : undefined)),
   }),
   z.object({ type: z.literal("notice"), text: z.string().max(200) }),
+  z.object({
+    type: z.literal("activity"),
+    kind: z.enum(["thinking", "synthesizing", "song_prepare", "singing"]).nullable(),
+    label: z.string().max(ACTIVITY_LABEL_MAX).default(""),
+    detail: z.string().max(ACTIVITY_DETAIL_MAX).nullable().default(null),
+    progress: z.number().min(0).max(1).nullable().default(null),
+    elapsed_ms: z.number().min(0).max(86_400_000).nullable().default(null),
+    duration_ms: z.number().positive().max(86_400_000).nullable().default(null),
+  }),
   z.object({ type: z.literal("status_request"), id: requestId }),
   z.object({ type: z.literal("ping") }),
   z.object({ type: z.literal("pong") }),

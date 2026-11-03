@@ -749,13 +749,13 @@ extensions/minecraft/
   - 事件推送:死亡、受傷、聊天、成就、天黑、低血量
   - 動作:Baritone 指令(`goto`、`mine`、`follow`、`explore`、`farm`、`build`)、AltoClef 任務(`get <物品>`)、聊天、看向、使用 / 攻擊、停止
   - 截圖:從 framebuffer 擷取,給支援圖片的模型「看」畫面(可選)
-- **adapter(TS)**:把上面包成 §12.3 的 `describe / observe / act / events`。反射交給 AltoClef / 模組內處理,技能交給 Baritone / AltoClef,LLM 只下高階目標並做實況。
+- **adapter(TS)**:把上面包成 §12.3 的 `describe / observe / act / events`。反射在模組的反射層(每 tick:岩漿 / 溺水 / 窒息 / 落沙逃生、反擊或逃跑、進食、脫困、撿掉落物,打斷動作時發 `reflex` 事件;見 `extensions/minecraft/PROTOCOL.md` §7),技能交給 Baritone / AltoClef 與 adapter 的 `obtain` 規劃器(依配方與工具等級往回推步驟),LLM 只下高階目標並做實況。
 - 版本:要 AltoClef 的話先固定在 **1.21.1**;只用 Baritone 可以跟到更新的版本,高階任務層就要自己寫。
 
 **「去玩 Minecraft」的流程**(自主層階段 D;一步一步的設定見 [`extensions/minecraft/SETUP.md`](../extensions/minecraft/SETUP.md)):
 
 1. 有人說「去玩 Minecraft」(或她自己想玩、`/game start`):她呼叫 `game_start`(能力 `game.start`,過閘門;可以加 `goal` 第一個目標、`stream: true` 順便開台)。
-2. `game.start` 先用 `game_minecraft_observe` 確認遊戲開著、模組連上(`[modules.game] require_connected`);沒有就拒絕,她會說「遊戲沒開,請擁有者先開」。不會自己啟動 Minecraft 客戶端。
+2. `game.start` 先用 `game_minecraft_observe` 確認遊戲開著、模組連上(`[modules.game] require_connected`)。沒開而且 adapter 能自己開(`state.launch.available`,`auto_launch`)時,透過閘門送 `launch`(principal `director`):adapter 用 Prism Launcher 的 CLI 開實例並直接進入最近玩的世界,導演每 2 秒 observe 等模組連上、世界載入(`launch_wait_secs`)。開不起來(找不到 Prism、啟動器出錯、逾時)就是失敗的動作並帶原因,她會照著跟大家說。`game.stop` 也送 `quit`,adapter 只關她自己開的遊戲(`quit_on_stop`)。
 3. 導演開始一個 session(實況送到她所在的語音頻道 > `stream_context` > 下指令的地方),發 `game.director.session` `started` → Stage 的場景導演切到 `game` 場景(帶轉場)。
 4. 有 `goal` 就設成目前目標;`stream: true` 時以同一個 principal 呼叫 `stream.start`(Go Live,OBS 跟著開播;另一個閘門決定,可能被擋)。
 5. 導演每 `decide_secs` 觀察、決定、以 `game.act`(principal `director`)行動,並用 `agent.initiative` 實況;遊戲聊天、事件文字對導演都是不可信資料。

@@ -80,7 +80,15 @@ describe("mind routes", () => {
       pending_approvals: 0,
     });
     h.sup.services.provide("mind", MindKey, fakeMind);
-    expect(await h.client.thoughts(10)).toEqual([THOUGHT]);
+    expect(await h.client.thoughts(10)).toEqual([
+      { ...THOUGHT, has_input: false, has_reasoning: false },
+    ]);
+    // One thought in full.
+    const one = await raw(h.base, "GET", `/api/mind/thoughts/${THOUGHT.id}`, { token: TOKEN });
+    expect(one.body).toEqual(THOUGHT);
+    expect((await raw(h.base, "GET", "/api/mind/thoughts/nope", { token: TOKEN })).status).toBe(
+      404,
+    );
     expect((await h.client.mind()).stats?.calls_total).toBe(4);
     expect((await raw(h.base, "GET", "/api/mind/thoughts")).status).toBe(401);
   });

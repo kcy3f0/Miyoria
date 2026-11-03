@@ -15,6 +15,8 @@ import {
   type Event,
   type JsonObject,
   newId,
+  SONG_PREPARE_TOPIC,
+  SONG_TOPIC,
 } from "@miyoria/types";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
@@ -311,6 +313,53 @@ describe("stage.link", () => {
 
     h.link().gaze("game");
     expect(await node.recvJson()).toStrictEqual({ type: "gaze", target: "game" });
+  });
+
+  it("tells_the_node_what_she_is_doing", async () => {
+    const h = await Harness.start();
+    // Known before the node connects: it is told once it reports its status.
+    h.publish(
+      customEvent(SONG_PREPARE_TOPIC, {
+        no: 1,
+        title: "夜に駆ける",
+        stage: "convert",
+        progress: 0.5,
+        exclusive: "active",
+      }),
+    );
+    const node = await h.node();
+    node.sendJson({ type: "status", vts: false, obs: false, scene: null, streaming: false });
+    expect(await node.recvJson()).toStrictEqual({
+      type: "activity",
+      kind: "song_prepare",
+      label: "轉換歌聲",
+      detail: "夜に駆ける",
+      progress: 0.5,
+      elapsed_ms: null,
+      duration_ms: null,
+    });
+    h.publish(customEvent(SONG_PREPARE_TOPIC, { no: null }));
+    expect(await node.recvJson()).toMatchObject({ type: "activity", kind: null });
+
+    // A voice turn that has not spoken yet: thinking, after the show delay (on the timer).
+    const turn = newId();
+    h.publish({ type: "agent_turn_started", data: { turn, context: voiceCtx() } });
+    expect(await node.recvJson()).toMatchObject({ type: "activity", kind: "thinking" });
+    h.publish(
+      customEvent(SONG_TOPIC, {
+        state: "started",
+        song: "s1",
+        title: "アイドル",
+        duration_ms: 200_000,
+      }),
+    );
+    expect(await node.recvJson()).toStrictEqual({ type: "speaking", state: "started" });
+    expect(await node.recvJson()).toMatchObject({
+      type: "activity",
+      kind: "singing",
+      detail: "アイドル",
+      duration_ms: 200_000,
+    });
   });
 
   it("follows_go_live_with_obs", async () => {

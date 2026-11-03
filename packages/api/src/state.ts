@@ -18,6 +18,7 @@ import type { Monitor } from "./monitor.js";
 import type { OAuth } from "./oauth.js";
 import { ActiveProfileKey } from "./services.js";
 import { type Principal, principalActor, type Sessions } from "./session.js";
+import { Telemetry } from "./telemetry.js";
 
 const log = getLogger("api.server");
 
@@ -50,6 +51,8 @@ export class ApiState {
     /** Emotions of the profile's `avatar.toml`, sorted. */
     readonly emotions: readonly string[] = [],
     readonly labels: ContextLabels = new ContextLabels(() => ctx.clock.now()),
+    /** Samples for the panel's charts (`GET /api/telemetry`). */
+    readonly telemetry: Telemetry = new Telemetry(),
   ) {}
 
   /** The service, or a 503 naming `what`. */

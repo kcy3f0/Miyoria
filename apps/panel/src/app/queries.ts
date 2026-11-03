@@ -4,6 +4,7 @@ import {
   QueryClient,
   useInfiniteQuery,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -15,6 +16,8 @@ import type {
   ContextKey,
   DataCategoryId,
   DecisionsQuery,
+  GameStartRequest,
+  LlmCallsQuery,
   MemoryQuery,
   ModuleAction,
   ModuleInfo,
@@ -25,6 +28,7 @@ import type {
   SayRequest,
   SceneRolesState,
   SetPersonaRequest,
+  SongsState,
   StageState,
   StreamAction,
   UpdateMemoryRequest,
@@ -65,6 +69,8 @@ export const queryKeys = {
   knowledge: ["knowledge"] as const,
   conversationNotes: ["knowledge", "conversations"] as const,
   reflection: ["reflection"] as const,
+  songs: ["songs"] as const,
+  telemetry: (minutes: number) => ["telemetry", minutes] as const,
 };
 
 /** Errors that retrying cannot fix. */
@@ -482,5 +488,128 @@ export function useMindMutations() {
       },
     }),
   };
+}
+
+// --- live controls -----------------------------------------------------------
+
+export function useSongs() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.songs, queryFn: ({ signal }) => api.songs({ signal }), refetchInterval: poll(3_000) });
+}
+
+export function useSongMutations() {
+  const api = useApi();
+  const qc = useQueryClient();
+  const set = (s: SongsState) => qc.setQueryData<SongsState>(queryKeys.songs, { playing: s.playing, paused: s.paused, songs: s.songs });
+  return {
+    request: useMutation({ mutationFn: ({ query, key }: { query: string; key?: number }) => api.requestSong(query, key), onSuccess: set }),
+    play: useMutation({ mutationFn: (song?: number) => api.playSong(song), onSuccess: set }),
+    stop: useMutation({ mutationFn: (all: boolean) => api.stopSong(all), onSuccess: set }),
+  };
+}
+
+/** Voice, Go Live and the game change what `world`, `voice` and `stage` report. */
+export function useLiveControls() {
+  const api = useApi();
+  const qc = useQueryClient();
+  const refresh = () => {
+    for (const key of [queryKeys.world, queryKeys.voice, queryKeys.stage]) void qc.invalidateQueries({ queryKey: key });
+  };
+  return {
+    join: useMutation({
+      mutationFn: ({ guild, channel }: { guild: string; channel: string | null }) => api.voiceJoin(guild, channel),
+      onSuccess: refresh,
+    }),
+    leave: useMutation({ mutationFn: (guild?: string) => api.voiceLeave(guild), onSuccess: refresh }),
+    goLive: useMutation({
+      mutationFn: ({ action, guild }: { action: StreamAction; guild?: string }) => api.goLive(action, guild),
+      onSuccess: refresh,
+    }),
+    gameStart: useMutation({ mutationFn: (req: GameStartRequest) => api.gameStart(req), onSuccess: refresh }),
+    gameStop: useMutation({ mutationFn: () => api.gameStop(), onSuccess: refresh }),
+    gameGoal: useMutation({ mutationFn: (text: string) => api.gameGoal(text), onSuccess: refresh }),
+  };
+}
+
+// --- charts ------------------------------------------------------------------
+
+/** A minute's samples for the last `minutes`; older Cores answer 404 and the charts say so. */
+export function useTelemetry(minutes: number) {
+  const api = useApi();
+  return useQuery({
+    queryKey: queryKeys.telemetry(minutes),
+    queryFn: ({ signal }) => api.telemetry(minutes, { signal }),
+    refetchInterval: poll(60_000),
+    placeholderData: (prev) => prev,
+  });
+}
+
+/** One thought in full (what it saw, the reasoning). */
+export function useThought(id: string | undefined) {
+  const api = useApi();
+  return useQuery({
+    queryKey: [...queryKeys.thoughts, "one", id ?? ""],
+    queryFn: ({ signal }) => api.thought(id ?? "", { signal }),
+    enabled: Boolean(id),
+    refetchInterval: poll(10_000),
+  });
+}
+
+const LLM_PAGE = 100;
+
+/** The call inspector, newest first, one page at a time. */
+export function useLlmCalls(q: LlmCallsQuery) {
+  const api = useApi();
+  return useInfiniteQuery({
+    queryKey: ["llm", "calls", q],
+    queryFn: ({ signal, pageParam }) => api.llmCalls(q, LLM_PAGE, pageParam, { signal }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next_cursor,
+    refetchInterval: poll(10_000),
+    // A new filter keeps the old rows until the new ones arrive.
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useLlmCall(id: string | undefined) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["llm", "call", id ?? ""],
+    queryFn: ({ signal }) => api.llmCall(id ?? "", { signal }),
+    enabled: Boolean(id),
+    refetchInterval: (query) => (query.state.data?.call.status === "streaming" ? 2_000 : false),
+  });
+}
+
+/** Breakdowns of the calls in the last `minutes` (`null`: every kept call). */
+export function useLlmStats(minutes: number | null) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["llm", "stats", minutes],
+    queryFn: ({ signal }) => api.llmStats(minutes, { signal }),
+    refetchInterval: poll(30_000),
+    placeholderData: (prev) => prev,
+  });
+}
+
+/** Up to 300 thoughts for the per-hour chart (the journal shows the newest 50). */
+export function useThoughtHistory() {
+  const api = useApi();
+  return useQuery({
+    queryKey: [...queryKeys.thoughts, "history"],
+    queryFn: ({ signal }) => api.thoughts(300, { signal }),
+    refetchInterval: poll(60_000),
+  });
+}
+
+/** Details (with the affinity history) of several people at once. */
+export function usePeopleDetails(ids: string[]) {
+  const api = useApi();
+  return useQueries({
+    queries: ids.map((id) => ({
+      queryKey: queryKeys.person(id),
+      queryFn: ({ signal }: { signal: AbortSignal }) => api.person(id, { signal }),
+    })),
+  });
 }
 

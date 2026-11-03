@@ -33,6 +33,7 @@
     "@miyoria/memory": "workspace:*",
     "@miyoria/queue": "workspace:*",
     "@miyoria/sandbox": "workspace:*",
+    "@miyoria/sing": "workspace:*",
     "@miyoria/social": "workspace:*",
     "@miyoria/stage": "workspace:*",
     "@miyoria/store": "workspace:*",

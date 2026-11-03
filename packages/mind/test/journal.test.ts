@@ -97,3 +97,26 @@ describe("journal compaction", () => {
     expect(again.digests().length).toBe(journal.digests().length);
   });
 });
+
+describe("journal detail", () => {
+  it("only the newest thoughts keep what they saw and the reasoning, also in the store", async () => {
+    const store = new MemorySettingsStore();
+    const journal = new Journal(store, "p", 10, () => {}, null, 2);
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const t = { ...thought(i), reasoning: `推理 ${i}`, input: { world: `世界 ${i}` } as never };
+      ids.push(t.id);
+      await journal.add(t);
+    }
+    await journal.flush();
+    const kept = journal.list(10).map((t) => [t.thought, t.reasoning ?? null]);
+    expect(kept).toEqual([
+      ["想法 3", "推理 3"],
+      ["想法 2", "推理 2"],
+      ["想法 1", null],
+      ["想法 0", null],
+    ]);
+    const stored = await store.get("p", `${THOUGHT_PREFIX}${ids[0]}`);
+    expect(stored).toMatchObject({ input: null, reasoning: null, thought: "想法 0" });
+  });
+});

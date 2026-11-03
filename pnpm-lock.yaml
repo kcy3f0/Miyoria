@@ -344,6 +344,9 @@ importers:
       '@miyoria/sandbox':
         specifier: workspace:*
         version: link:../sandbox
+      '@miyoria/sing':
+        specifier: workspace:*
+        version: link:../sing
       '@miyoria/social':
         specifier: workspace:*
         version: link:../social

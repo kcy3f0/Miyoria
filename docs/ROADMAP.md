@@ -113,10 +113,12 @@
 - [x] `@miyoria/queue`:觀眾請求、公平排序、投票、overlay 顯示
 - [ ] 實測:真的 Minecraft 客戶端 + 她的帳號
 - [x] 不作弊:Baritone legit 設定、只看得到 / 挖得到看得見的方塊、工具等級不夠就拒絕並說缺什麼、`craft` / `smelt` / `place`(2026-11-02,還沒在遊戲裡實測)
-- [ ] 反射層(模組裡每 tick 跑,不經過 LLM):岩漿 / 溺水 / 窒息 / 落沙逃生、依血量反擊或逃跑、餓了自動吃、卡住約 20 秒自動脫身、挖完撿掉落物;打斷動作時發事件讓她知道(參考 Mindcraft 的 modes、mc_aiplayer 的 Safety Net)
-- [ ] 取得物品的規劃器:她只說目標(例如「鐵鎬」),程式依配方與工具等級往回推出砍樹 → 工作台 → 木鎬 → 石頭 → 石鎬 → 鐵 → 熔爐 → 鐵鎬,逐步執行並回報(參考 mc_aiplayer 的 GoalPlanner)
-- [ ] 失敗後的防呆:動作失敗後暫時不給低階移動 / 挖掘,逼她換方法或換目標
-- [ ] 已知限制:只隔著樹葉看到的原木 Baritone 會立刻停;只支援一般熔爐;平滑轉頭在 ±180° 附近可能甩一下;遊戲內聊天預設「安靜」等級
+- [x] 自己開遊戲:`game.start` 時遊戲沒開,導演透過閘門送 adapter 的 `launch`,adapter 用 Prism Launcher 的 CLI 開實例(`--launch <實例> --world <最近玩的存檔>`,執行檔可設定、預設自動找)並等模組連上、世界載入;開不起來 / 逾時是失敗的動作並帶原因;`game.stop` 只關她自己開的遊戲(2026-11-03,只在測試裡驗證,還沒真的開過 Prism)
+- [x] 反射層(模組裡每 tick 跑,不經過 LLM):岩漿 / 溺水 / 窒息 / 落沙逃生、依血量反擊或逃跑、餓了自動吃、卡住約 20 秒自動脫身、挖完撿掉落物;打斷動作時發事件讓她知道(參考 Mindcraft 的 modes、mc_aiplayer 的 Safety Net)(2026-11-03,決策邏輯有 JUnit;遊戲裡的實際動作還沒實測)
+- [x] 取得物品的規劃器:她只說目標(例如「鐵鎬」),程式依配方與工具等級往回推出砍樹 → 工作台 → 木鎬 → 石頭 → 石鎬 → 鐵 → 熔爐 → 鐵鎬,逐步執行並回報(參考 mc_aiplayer 的 GoalPlanner)(`obtain` 動作,2026-11-03,對假世界測過;還沒在遊戲裡跑完整條路線)
+- [x] 失敗後的防呆:動作失敗後暫時不給低階移動 / 挖掘,逼她換方法或換目標(`[modules.game] failure_guard_secs` / `guarded_actions`,2026-11-03)
+- [ ] 實測(自主能力):真的用 Prism 開關遊戲、各種反射在遊戲裡的動作、`obtain iron_pickaxe` 從空手跑到底
+- [ ] 已知限制:只隔著樹葉看到的原木 Baritone 會立刻停;只支援一般熔爐;平滑轉頭在 ±180° 附近可能甩一下;遊戲內聊天預設「安靜」等級;`obtain` 看不到礦時只會 `explore`(不盲挖),埋在地下的鐵常要先去洞穴;反射打斷 Baritone 後原本的工作不會自動接續(她收到事件後再決定)
 - [x] 唱歌(點歌):`workers/sing`(yt-dlp / 本機歌庫 → Demucs → Seed-VC 歌聲轉換 → 混音 + lrclib 歌詞,快取)、`@miyoria/sing`(歌單、`sing_request` / `sing_start` / `sing_stop`、她決定什麼時候唱、`/queue song request | list | skip | stop`、`[modules.queue]` 的 `song` 項目)、嘴型跟人聲走(Voice Link `0x03` 嘴型音軌)、歌詞字幕(見 [design/autonomy.md](design/autonomy.md) §22)
 - [x] 唱歌時放原曲影片:worker 平行抓影片(H.264 ≤ 1080p,`video.mp4`,本機歌庫用旁邊的 `video.*`)、`song_video` 訊息、Stage 用 OBS 媒體來源靜音播放並跟歌同步(`latency_ms` + 位置校正)、場景用途 `sing`(導演切過去、唱完回原場景)
 - [x] 高音不破音:轉換前清理 F0(八度錯誤、尖刺、短暫掉格)、自動挑音高看歌的最高音對她的上限、必要時整首往下轉調(伴奏用 Rubber Band)、參考音可以多段
