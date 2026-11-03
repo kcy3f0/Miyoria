@@ -91,6 +91,24 @@ function addressed(r: Rig, context: ContextKey): void {
 
 const status = (t: Thought) => t.intents.map((i) => [i.capability, i.status, i.detail]);
 
+describe("announcements (v2 §5 item 12)", () => {
+  it("a song announcement nobody answers is no topic of hers", async () => {
+    const r = await manual(new MockProvider("p"));
+    for (const [i, reason] of ["initiative:song_start", "initiative:song_done"].entries()) {
+      r.publish({
+        type: "agent_decision",
+        data: { turn: `S${i}`, context: TEXT, respond: true, score: 0, reasons: [reason] },
+      });
+      r.publish({
+        type: "agent_turn_completed",
+        data: { turn: `S${i}`, context: TEXT, text: "下一首要開始囉" },
+      });
+    }
+    await wait(30 * 60_000);
+    expect(r.mind().unanswered?.(TEXT)).toEqual([]);
+  });
+});
+
 describe("self-started conversations (her own floor, without the Arbiter)", () => {
   it("backs off, doubling, when nobody responds, and resets after a real exchange", async () => {
     const same = reply([speak("大家在幹嘛", "想聊天")]);

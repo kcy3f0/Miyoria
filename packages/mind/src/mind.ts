@@ -641,12 +641,10 @@ export class MindLoop implements Mind {
         if (!d.respond && skipped && d.reasons.some((r) => r.startsWith("intent:"))) {
           this.#turnEvent(d.turn, { type: "skipped", why: skipped.slice("skipped: ".length) });
         }
-        // Her own turns (intents; initiative except the game commentary) vs. someone
-        // addressing her there: a real exchange, which answers what she raised.
-        const selfStarted = d.reasons.some(
-          (r) =>
-            r.startsWith("intent:") || (r.startsWith("initiative:") && r !== "initiative:game"),
-        );
+        // Her own turns (her intents; never an announcement, commentary, greeting or result:
+        // those are no topics she raised, v2 §5 item 12) vs. someone addressing her there: a
+        // real exchange, which answers what she raised.
+        const selfStarted = d.reasons.some((r) => r.startsWith("intent:"));
         if (selfStarted) {
           if (d.respond) this.#selfTurn(d.turn);
         } else if (d.reasons.some((r) => r.startsWith("direct: "))) {
