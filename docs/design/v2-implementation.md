@@ -145,6 +145,18 @@
 | `self/src/heart.ts`、`self/src/feelings.ts` | romance / hearts / feelings → `PersonCard.attachment`、`emotions`、`feeling` |
 | contributor:`social/src/mood.ts:499`、`social/src/module.ts:149`、`self/src/module.ts:224` | W1 的編譯器接手後刪掉(先別刪,W1 會忽略它們) |
 
+**W4 實作紀錄**(2026-11-04):
+
+- `self` 提供 `AffectStateKey`(`self/src/affect.ts`),跟 `SelfStateKey` 並存。情緒只有兩種輸入:規則事件表(`self/src/events.ts`,`applyEvent` / `applySocial`,來源有 `affect.event`、`social.event`、`sing.cue`、`voice.playback`、`activity.done|failed`、`game.*`、`llm.budget`)和評估(`appraise`:strength → 0.1 / 0.2 / 0.35 × gain,`social.appraisal` 先轉成評估)。動態在 `self/src/dynamics.ts`(遞減、互斥、10 分鐘預算)與 `emotions.ts`(`excite`、基準值、`hold`)。`feel` / `feelToward` 保留,走同一套動態。
+- 寂寞:`SelfEngine` 的 pressure 直接是 social / attention 缺口的函式,以 `hold` 撐住,需求被滿足(`adjust`)就立刻鬆開;不再有第二個半衰期。
+- 心情不存:`types/src/affect-mood.ts` 的 `deriveMood`(基準 + 時段 + 情緒 + 慾望)。`social` 的 `MoodState` 在有 `AffectStateKey` 時直接回傳推導值,`mood.nudge` / `social.relationship` / `agent.emotion` 都不再動它(沒有 `self` 時才用舊的衰減引擎)。
+- **`<emo>` 回寫在 `social/src/mood.ts`**(`eventNudge` 的 `agent.emotion` 分支與 `emotionNudge`),已刪;`agent/src/turn.ts:1446` 只發 `agent.emotion` 給 Stage,沒有回寫,W1 不用改。
+- 單一 renderer 在 `types/src/affect-mood.ts`:`moodLine`、`renderAffectMood(snapshot)`、`renderPersonLine` / `renderPeople`;`AffectState.renderMood?()` / `renderPeople?(people)` 是同一份的捷徑。W1 的編譯器用它們,`agent/src/signals.ts` 的 `moodHint` 與三套刻度由 W1 換掉。
+- 一人一卡:卡片存在 `self:feeling:<person>`(`text` / `updated_at` / `by` 維持舊形狀,其餘在 `card` 底下),數字(好感 / 信任 / 熟悉度)仍由 social 寫、卡片讀 `Attitude`(`Attitude` 多了 optional 的 `owner` / `display_name` / `interactions` / `last_interaction`);attachment = 舊的 romance(`HeartBook`),不再由事件自己長,只有 `adjustBond`(`reflect` / `panel`)能動,每步 ≤ 0.03、每天 ≤ 0.06。好感 / 信任 / 熟悉度的 `BondChange` 經 `affect.bond` topic 給 social 套用。migration 在 `self/src/migrate.ts`,模組啟動時跑,冪等(每張卡 `migrated_at`),舊 key 一個都不刪。
+- familiarity:`social/src/rel.ts` `familiarityChange` 依每句話的深度(`lineDepth`)× `familiarity_per_line`,往 100 慢下來;delta 紀錄每 0.5 點才寫一筆。
+- mind:`mind/src/mind.ts` 不再套用 `reply.emotions` 與 `feelings[].emotions`(parser 照舊解析,只是忽略);`OUTPUT_FORMAT` 拿掉情緒欄位、drives 範例改成 0,並刪掉要求輸出 emotions 的那一條規則(`mind/src/prompt.ts`,比 brief 列的兩個 hunk 多這一行)。
+- 已知落差:`[temperament]` 的 `baseline`(profile 套件的 schema)還沒有,程式內建的預設基準值是傲嬌 pride 0.12;`store/src/data.ts` 沒有新的 key(卡片用既有的 `self:feeling:` 前綴,`self:cards:migration` 是新的,wipe / export 要加)。
+
 ### W5 Memory / Learning(新鮮度、followup 到期、穩定 handle + migration)
 
 **擁有**:`packages/memory/**`、`packages/store/**`(含 `packages/store/migrations/**`)、`packages/learning/**`;`core/src/boot.ts:187-203` 追加 `HandleDirectoryKey` 的 provide;例外:`mind/src/snapshot.ts:285`(people 的 `u${n}` ref)與 `mind/src/mind.ts` 對應的 ref 解析(`:923`、`:1051`、`:1161`)這幾個 hunk。

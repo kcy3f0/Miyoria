@@ -281,6 +281,16 @@ boredom_per_hour = 0.15          # 沒事做時無聊上升的速度
 # play = 0.05
 # attention = 0.04
 # curiosity = 0.05
+# [modules.self.emotions]        # 她的情緒(七情);各情緒來得多快、退得多快是 profile 的 [temperament]
+# budget_per_10min = 0.9         # 所有情緒加起來,任何 10 分鐘內最多被激起這麼多(避免一次爆滿;0 = 不限)
+# [modules.self.bond]            # 對人的關係只會小步、每天有上限地改(由每日回顧提議;在意程度只有回顧能動)
+# attachment_step = 0.03         # 在意程度一次最多動這麼多
+# attachment_daily = 0.06        # ...每人每天最多
+# affinity_step = 2              # 好感 / 信任 / 熟悉度同理
+# affinity_daily = 4
+# [modules.self.mood]            # 心情不單獨存,是從慾望、情緒和時段算出來的
+# night_dip = 0.4                # 深夜精力最多掉這麼多
+# emotion_weight = 1             # 情緒對心情的影響(0 = 只看基準值、時段與慾望)
 
 # 她的心智迴圈:有事發生(有人上線 / 進語音、頻道冷掉、語音冷場、她剛講完話)或心跳時,
 # 她自己想一想:寫內心獨白、調整感受與方針、決定要不要主動做事(每件事都要過行動閘門)。

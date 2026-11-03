@@ -308,6 +308,15 @@ boredom_per_hour = 0.15          # 沒事做時無聊上升的速度
 # missing_after_hours = 20       # 在乎的人多久沒出現開始想念
 # jealousy_lines = 3             # 在乎的人在 jealousy_window_mins 內回覆別人幾次、都沒理她就吃醋
 # jealousy_window_mins = 15
+# budget_per_10min = 0.9         # 所有情緒加起來,任何 10 分鐘內最多被激起這麼多(避免一次爆滿;0 = 不限)
+# [modules.self.bond]            # 對人的關係只會小步、每天有上限地改(由每日回顧提議;在意程度只有回顧能動)
+# attachment_step = 0.03         # 在意程度一次最多動這麼多
+# attachment_daily = 0.06        # ...每人每天最多
+# affinity_step = 2              # 好感 / 信任 / 熟悉度同理
+# affinity_daily = 4
+# [modules.self.mood]            # 心情不單獨存,是從慾望、情緒和時段算出來的
+# night_dip = 0.4                # 深夜精力最多掉這麼多
+# emotion_weight = 1             # 情緒對心情的影響(0 = 只看基準值、時段與慾望)
 # [modules.self.heart]           # 心動與暗戀:只從她喜歡的人的互動自己長出來,沒有人能設定
 # min_affinity = 25              # 好感至少這麼多才會心動
 # daily_gain = 0.06              # 每人每天最多長這麼多

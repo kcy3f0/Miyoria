@@ -130,7 +130,10 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
       interests: profile.manifest.interests,
       game: (services) => services.get(GameHandleKey)?.status()?.game_name ?? null,
     }),
-    new SelfModule(profileId, { temperament: profile.manifest.temperament }),
+    new SelfModule(profileId, {
+      temperament: profile.manifest.temperament,
+      baseline: profile.manifest.mood,
+    }),
     new MemoryModule(profileId, config.get("memory.embedding", EmbeddingConfigSchema)),
     new InitiativeModule(profileId),
     new MindModule(profileId, {
