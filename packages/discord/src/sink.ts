@@ -24,6 +24,9 @@ export interface RestLike {
   get?(route: `/${string}`, options?: RestRequest): Promise<unknown>;
 }
 
+/** Discord's longest voice channel status. */
+const MAX_VOICE_STATUS = 500;
+
 function nameOf(value: unknown): string | null {
   if (typeof value !== "object" || value === null || !("name" in value)) return null;
   return typeof value.name === "string" && value.name.trim() !== "" ? value.name : null;
@@ -119,6 +122,18 @@ export class DiscordSink implements PlatformSink, ReplySink {
         );
       },
     );
+  }
+
+  /** The voice channel's status line: filtered like `send`, at most 500 characters. */
+  async setVoiceStatus(context: ContextKey, status: string, signal?: AbortSignal): Promise<void> {
+    const channel = channelOf(context);
+    const text = [...filterOutgoing(status).trim()].slice(0, MAX_VOICE_STATUS).join("");
+    await inContext(`setting the voice status of ${contextKeyString(context)}`, async () => {
+      await this.#rest.put(`/channels/${channel}/voice-status`, {
+        body: { status: text },
+        signal,
+      });
+    });
   }
 
   async typing(context: ContextKey, signal?: AbortSignal): Promise<void> {
