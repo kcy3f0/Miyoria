@@ -182,7 +182,9 @@ export class OsuAdapter implements GameAdapter {
         summary: `看不到 osu! AI 的狀態:${String(r.data.error)}`,
         state: { connected: false },
       };
-    return { summary: summarize(r.data), state: { connected: true, ...r.data } };
+    // Busy while a map is being prepared or played: the director does not start another one.
+    const busy = r.data.now != null || r.data.playing === true;
+    return { summary: summarize(r.data), state: { connected: true, ...r.data, busy } };
   }
 
   async act(action: GameAction): Promise<ActionResult> {

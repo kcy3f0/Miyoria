@@ -51,7 +51,7 @@ blocked_accounts = ["<你們自己的帳號>"]
 env = { MIYORIA_OSU_TOKEN = "<live.setup 印出來的金鑰>" }
 ```
 
-3. **畫面**:在同一台開 lazer(用 Kaleidoscope 連同一台伺服器),用**另一個帳號**登入,設定裡開「自動下載缺少的譜面」。OBS 建一個遊戲場景擷取 lazer 視窗,在 `[modules."stage.link".scenes]` 把 `game` 對應到它。
+3. **畫面**:在同一台開 lazer(用 Kaleidoscope 連同一台伺服器),用**專門觀戰的帳號**登入(不是 Miyo 的,也**不是你自己的**:直播機上的 lazer 如果登著你的帳號,先登出再換),設定裡開「自動下載缺少的譜面」。OBS 建一個遊戲場景擷取 lazer 視窗,在 `[modules."stage.link".scenes] roles` 加上 `osu = "<那個場景>"`(打 osu 時會切到它;沒設就用 `game` 的場景)。
 
 **每次開台**
 

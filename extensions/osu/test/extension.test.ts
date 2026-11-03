@@ -287,3 +287,20 @@ describe("accountProblem", () => {
     expect(accountProblem("Miyoria_AI", "  ", [])).toMatch(/沒有設定/);
   });
 });
+
+describe("OsuAdapter busy", () => {
+  it("is busy while a map is prepared or played, so the director starts no other", async () => {
+    const { OsuAdapter } = await import("../src/adapter.js");
+    const status = (data: Record<string, unknown>) =>
+      new OsuAdapter(async () => ({ ok: true, data: { user: "Miyo", level: "hard", ...data } }));
+    expect((await status({ playing: true }).observe()).state.busy).toBe(true);
+    expect(
+      (
+        await status({
+          now: { title: "x", progress: 0.5, combo: 3, accuracy: 0.9, misses: 1 },
+        }).observe()
+      ).state.busy,
+    ).toBe(true);
+    expect((await status({ playing: false, now: null }).observe()).state.busy).toBe(false);
+  });
+});
