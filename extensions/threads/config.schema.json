@@ -9,7 +9,7 @@
     },
     "profile_dir": {
       "type": "string",
-      "description": "瀏覽器資料夾(她的登入狀態存在這裡);預設 %LOCALAPPDATA%\Miyoria\threads-browser"
+      "description": "瀏覽器資料夾(她的登入狀態存在這裡);預設 %LOCALAPPDATA%/Miyoria/threads-browser"
     },
     "width": { "type": "integer", "minimum": 360, "default": 720, "description": "視窗寬度(px)" },
     "height": { "type": "integer", "minimum": 480, "default": 1000, "description": "視窗高度(px)" },
