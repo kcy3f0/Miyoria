@@ -84,6 +84,19 @@ export const SandboxCapsSchema = z.object({
 });
 export type SandboxCaps = z.output<typeof SandboxCapsSchema>;
 
+/** Her named sessions: long-lived containers whose `/work` carries over between runs. */
+export const SandboxSessionsSchema = z.object({
+  /** Sessions open at once (per profile). 0 = no sessions. */
+  max: z.number().int().min(0).default(3),
+  /** A session closes after this many minutes without a run. */
+  idle_minutes: z.number().positive().default(15),
+  /** A session closes this many minutes after it started, however busy. */
+  lifetime_minutes: z.number().positive().default(120),
+  /** Largest `/work` of a session, in MiB; a run that leaves more closes the session. */
+  disk_mb: z.number().int().min(1).default(256),
+});
+export type SandboxSessions = z.output<typeof SandboxSessionsSchema>;
+
 /**
  * `[modules.sandbox]` config section. The module is opt-in: it only runs with
  * `enabled = true` (see the core's `OPT_IN_MODULES`).
@@ -96,8 +109,8 @@ export type SandboxCaps = z.output<typeof SandboxCapsSchema>;
  */
 export const SandboxConfigSchema = z.object({
   /**
-   * Directory for per-run workspaces (`runs/<run id>`) and the per-profile tools workspace
-   * (`profiles/<profile>/tools`). Relative paths resolve against the directory of
+   * Directory for per-run workspaces (`runs/<run id>`), the per-profile tools workspace
+   * (`profiles/<profile>/tools`) and session workspaces (`profiles/<profile>/sessions`). Relative paths resolve against the directory of
    * `miyoria.toml`.
    */
   root: z.string().min(1).default("data/sandbox"),
@@ -129,6 +142,13 @@ export const SandboxConfigSchema = z.object({
   health_ttl_ms: z.number().int().min(0).default(30_000),
   limits: SandboxLimitsSchema.prefault({}),
   caps: SandboxCapsSchema.prefault({}),
+  sessions: SandboxSessionsSchema.prefault({}),
+  /**
+   * Started, idle containers kept ready per language image, so a fresh run skips the container
+   * start. Each serves exactly one run, then it is destroyed and replaced. Default 0 (off):
+   * no idle containers unless it is turned on.
+   */
+  pool_size: z.number().int().min(0).max(8).default(0),
   /** Scripts kept in the tools workspace per profile. */
   max_scripts: z.number().int().min(0).default(100),
   /** Proposed tools kept per profile (pending, approved and rejected). */

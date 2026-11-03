@@ -3,11 +3,18 @@
 
 import type { JsonValue } from "@miyoria/types";
 import { z } from "zod";
-import { FileInSchema, LanguageSchema, type RunResult } from "./types.js";
+import {
+  FileInSchema,
+  LanguageSchema,
+  type RunResult,
+  SESSION_NAME,
+  SessionChoiceSchema,
+} from "./types.js";
 
 /** Capability ids (design doc section 7). */
 export const CODE_RUN = "code.run";
 export const TOOL_PROPOSE = "tool.propose";
+export const CODE_SESSION = "code.session";
 
 /**
  * Model-facing arguments of `code.run`. There is no network field: model-initiated runs never
@@ -21,8 +28,21 @@ export const CodeRunArgsSchema = z.object({
   stdin: z.string().optional(),
   timeout_ms: z.number().int().positive().optional(),
   mount_tools: z.boolean().optional().describe("Mount her saved scripts read-only at /tools"),
+  session: SessionChoiceSchema.optional().describe("`fresh` (default) or a session name"),
 });
 export type CodeRunArgs = z.output<typeof CodeRunArgsSchema>;
+
+/** Arguments of `code.session`: list her sessions, or close one. */
+export const CodeSessionArgsSchema = z
+  .object({
+    action: z.enum(["list", "close"]),
+    name: z.string().regex(SESSION_NAME).optional(),
+  })
+  .refine((a) => a.action !== "close" || a.name !== undefined, {
+    message: "`close` needs the session's `name`",
+    path: ["name"],
+  });
+export type CodeSessionArgs = z.output<typeof CodeSessionArgsSchema>;
 
 /** A compact JSON view of a run result (audit / `ActionResult.data`; outputs are untrusted). */
 export function summarizeRun(result: RunResult): JsonValue {
@@ -36,5 +56,6 @@ export function summarizeRun(result: RunResult): JsonValue {
     stdout_truncated: result.stdout_truncated,
     stderr_truncated: result.stderr_truncated,
     files_out: result.files_out.map((f) => ({ path: f.path, size: f.size, encoding: f.encoding })),
+    session: result.session === null ? null : { ...result.session },
   };
 }

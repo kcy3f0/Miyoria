@@ -9,8 +9,12 @@ import type { Language } from "./types.js";
 export const LABEL = "miyoria.sandbox";
 /** Label naming the sandbox root a container belongs to (one core does not reap another's). */
 export const LABEL_INSTANCE = "miyoria.sandbox.instance";
-/** Label carrying the run id. */
+/** Label carrying the run id (of a fresh or pooled container) or the session's container id. */
 export const LABEL_RUN = "miyoria.sandbox.run";
+/** Label saying what a container is for: `run` (fresh), `pool` (warm, one run) or `session`. */
+export const LABEL_KIND = "miyoria.sandbox.kind";
+/** Label carrying a session's name. */
+export const LABEL_SESSION = "miyoria.sandbox.session";
 /** Container name prefix. */
 export const NAME_PREFIX = "miyoria-sbx-";
 
@@ -26,9 +30,35 @@ export const ENTRY_FILE: Record<Language, string> = { python: "main.py", node: "
  * Interpreter command per language. Python: `-I` isolated mode (ignores `PYTHON*` variables and
  * the user site directory), `-B` no `.pyc` writes, `-u` unbuffered so output survives a kill.
  */
-export function entryCommand(language: Language): string[] {
-  const file = `${CODE_DIR}/${ENTRY_FILE[language]}`;
+export function entryCommand(language: Language, entry: string = ENTRY_FILE[language]): string[] {
+  const file = `${CODE_DIR}/${entry}`;
   return language === "python" ? ["python3", "-I", "-B", "-u", file] : ["node", file];
+}
+
+/**
+ * What a session container runs while it waits for `docker exec`: nothing but a sleep (under
+ * `--init`, which reaps whatever the execs leave behind).
+ */
+export const KEEPER_COMMAND: readonly string[] = ["sleep", "infinity"];
+
+/** Byte a pooled container writes to stderr once it waits for its program (then dropped). */
+export const STANDBY_READY = 0x06;
+
+/**
+ * A pooled container's command: says it is up (`STANDBY_READY` on stderr), waits for one line on
+ * stdin, then becomes `command` (`exec`), which reads the rest of stdin. The shell reads stdin a
+ * byte at a time, so nothing of the program's stdin is lost; EOF before the line just exits.
+ */
+export function standbyCommand(command: readonly string[]): string[] {
+  return ["sh", "-c", `printf '\\006' >&2; IFS= read -r _ || exit 0; exec "$@"`, "sh", ...command];
+}
+
+/**
+ * The uid:gid a session container's keeper runs as: never the one its programs run as, so
+ * `killAllArgs` (as the program's user) ends every program process but not the container.
+ */
+export function keeperUser(user: string): string {
+  return user.split(":")[0] === "65534" ? "65533:65533" : "65534:65534";
 }
 
 /**
@@ -58,6 +88,11 @@ export interface ContainerSpec {
   limits: SandboxLimits;
   command: readonly string[];
   env: Readonly<Record<string, string>>;
+  /**
+   * `docker run -d` (a session container that waits for `docker exec`) instead of an attached
+   * `-i` run of the program. Default `false`.
+   */
+  detached?: boolean;
 }
 
 export class InvalidSpecError extends Error {
@@ -67,6 +102,7 @@ export class InvalidSpecError extends Error {
 const CONTAINER_NAME = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
 const LABEL_KEY = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const ENV_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/;
+const USER = /^[1-9][0-9]*(:[1-9][0-9]*)?$/;
 
 /**
  * One `--mount` value. Docker parses it as a CSV record, so a field with `,` or `"` is quoted
@@ -87,7 +123,8 @@ function bind(source: string, target: string, readonly: boolean): string {
 /**
  * `docker run` arguments for one sandboxed program:
  *
- * - disposable and findable: `--rm`, `--name`, labels, `-i` (stdin), `--pull never` (images are
+ * - disposable and findable: `--rm`, `--name`, labels, `-i` (stdin; `-d` for a session container
+ *   that waits for `docker exec`), `--pull never` (images are
  *   checked before the clock starts), `--log-driver none` (no copies of the output in Docker);
  * - no network: `--network none`;
  * - file system: `--read-only` root, `--tmpfs /tmp` (noexec, nosuid, nodev, sized), the run
@@ -104,12 +141,12 @@ function bind(source: string, target: string, readonly: boolean): string {
 export function buildRunArgs(spec: ContainerSpec): string[] {
   if (!CONTAINER_NAME.test(spec.name)) throw new InvalidSpecError(`bad name \`${spec.name}\``);
   if (!IMAGE_REF.test(spec.image)) throw new InvalidSpecError(`bad image \`${spec.image}\``);
-  if (!/^[1-9][0-9]*(:[1-9][0-9]*)?$/.test(spec.user)) {
+  if (!USER.test(spec.user)) {
     throw new InvalidSpecError(`bad user \`${spec.user}\` (must be a non-root uid[:gid])`);
   }
   if (spec.command.length === 0) throw new InvalidSpecError("empty command");
   const { limits } = spec;
-  const args = ["run", "--rm", "-i", "--name", spec.name];
+  const args = ["run", "--rm", spec.detached ? "-d" : "-i", "--name", spec.name];
   for (const [key, value] of Object.entries(spec.labels)) {
     if (!LABEL_KEY.test(key) || /[\r\n]/.test(value)) {
       throw new InvalidSpecError(`bad label \`${key}\``);
@@ -169,6 +206,32 @@ export function buildRunArgs(spec: ContainerSpec): string[] {
   // a Docker flag. The image itself cannot start with `-` (IMAGE_REF).
   args.push(spec.image, ...spec.command);
   return args;
+}
+
+/**
+ * `docker exec` of a program in a session container (it inherits the container's environment,
+ * working directory and limits). `user` overrides the container's user.
+ */
+export function execArgs(name: string, command: readonly string[], user?: string): string[] {
+  if (!CONTAINER_NAME.test(name)) throw new InvalidSpecError(`bad name \`${name}\``);
+  if (user !== undefined && !USER.test(user)) throw new InvalidSpecError(`bad user \`${user}\``);
+  if (command.length === 0) throw new InvalidSpecError("empty command");
+  return ["exec", "-i", ...(user === undefined ? [] : ["--user", user]), name, ...command];
+}
+
+/**
+ * Kills every process of `user` in a session container except the caller (`kill(-1)` skips
+ * PID 1 and processes of other users, so the keeper and the container stay).
+ */
+export function killAllArgs(name: string, user: string): string[] {
+  if (!CONTAINER_NAME.test(name)) throw new InvalidSpecError(`bad name \`${name}\``);
+  if (!USER.test(user)) throw new InvalidSpecError(`bad user \`${user}\``);
+  return ["exec", "--user", user, name, "sh", "-c", "kill -KILL -1; kill -KILL -1; exit 0"];
+}
+
+/** `docker container inspect` printing whether it runs (`true`); fails when it is gone. */
+export function runningArgs(name: string): string[] {
+  return ["container", "inspect", "--format", "{{.State.Running}}", name];
 }
 
 /** `docker kill <name>`. */

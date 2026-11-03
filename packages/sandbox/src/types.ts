@@ -17,6 +17,16 @@ export const NetworkPolicySchema = z.union([
   z.object({ allow: z.array(z.string().min(1).max(253)).max(32) }),
 ]);
 
+/** `RunRequest.session` for a throwaway container (the default). */
+export const FRESH = "fresh";
+
+/** Session names (same rule as script and tool names; `fresh` means no session). */
+export const SESSION_NAME = /^[a-z][a-z0-9_-]{0,47}$/;
+export const SessionChoiceSchema = z.union([
+  z.literal(FRESH),
+  z.string().regex(SESSION_NAME, "`fresh` or a session name (a-z, 0-9, `_`, `-`)"),
+]);
+
 /** A file written into `/work` before the run. */
 export interface FileIn {
   /** Relative POSIX path inside `/work` (`data/input.csv`). See `normalizeRelativePath`. */
@@ -45,6 +55,12 @@ export interface RunRequest {
   network?: NetworkPolicy;
   /** Mount the profile's tools workspace read-only at `/tools`. Default `false`. */
   mount_tools?: boolean;
+  /**
+   * `"fresh"` (default): a throwaway container. A name (`weather-tool`): the long-lived session
+   * of that name, created by its first run; `/work` and `/tmp` carry over between its runs.
+   * Sessions never mount `/tools`.
+   */
+  session?: string;
 }
 
 export const RunRequestSchema = z.object({
@@ -55,6 +71,7 @@ export const RunRequestSchema = z.object({
   timeout_ms: z.number().int().positive().optional(),
   network: NetworkPolicySchema.optional(),
   mount_tools: z.boolean().optional(),
+  session: SessionChoiceSchema.optional(),
 });
 
 /** Why the sandbox (not the program) ended a run. */
@@ -77,6 +94,46 @@ export interface FileOut {
   content: string;
 }
 
+/** Why a session ended. */
+export type SessionCloseReason =
+  /** `closeSession` (she closed it). */
+  | "closed"
+  /** No run for `sessions.idle_minutes`. */
+  | "idle"
+  /** Older than `sessions.lifetime_minutes`. */
+  | "lifetime"
+  /** Its workspace grew over `sessions.disk_mb`. */
+  | "disk"
+  /** Its container went away (Docker restarted, or it died). */
+  | "lost"
+  /** The sandbox shut down. */
+  | "shutdown";
+
+/** What a run in a session says about the session. */
+export interface SessionRun {
+  name: string;
+  /** This run started the session. */
+  created: boolean;
+  /** The session ended with this run (e.g. `disk`); its files are gone. */
+  closed: SessionCloseReason | null;
+}
+
+/** A live session (`listSessions`). */
+export interface SessionInfo {
+  name: string;
+  language: Language;
+  /** Epoch ms. */
+  created_at: number;
+  last_used_at: number;
+  runs: number;
+  /** Bytes in its `/work` after the last run. */
+  disk_bytes: number;
+  /** Epoch ms when it closes unless used again (idle), or at the latest (lifetime). */
+  expires_at: number;
+  /** A run is in progress. */
+  busy: boolean;
+}
+
 /** Result of one run (JSON shape: snake_case, every key present). */
 export interface RunResult {
   run_id: string;
@@ -93,6 +150,8 @@ export interface RunResult {
   /** Wall-clock time of the container run (image checks and pulls excluded). */
   duration_ms: number;
   killed_reason: KilledReason | null;
+  /** The session the run used; `null` for a fresh run. */
+  session: SessionRun | null;
 }
 
 /** Whether Docker can be used. */
@@ -135,8 +194,10 @@ export type SandboxErrorKind =
   | "not_found"
   /** A proposed tool is not in the state the operation needs. */
   | "wrong_state"
-  /** Too many scripts / proposed tools. */
-  | "limit";
+  /** Too many scripts / proposed tools / sessions. */
+  | "limit"
+  /** The named session closed on its own (idle, lifetime, lost); the next run starts it anew. */
+  | "session_closed";
 
 /** Why a sandbox operation was refused. */
 export class SandboxError extends Error {
@@ -151,10 +212,40 @@ export class SandboxError extends Error {
   }
 }
 
-/** Runs untrusted code in a disposable container. Provided by module `sandbox`. */
+const CLOSED_BECAUSE: Record<SessionCloseReason, string> = {
+  closed: "it was closed",
+  idle: "it was idle for too long",
+  lifetime: "it reached its maximum lifetime",
+  disk: "its workspace grew over the disk quota",
+  lost: "its container went away",
+  shutdown: "the sandbox shut down",
+};
+
+/** A run named a session that is gone (`session_closed`); the next run starts it anew. */
+export class SessionClosedError extends SandboxError {
+  constructor(
+    readonly session: string,
+    readonly reason: SessionCloseReason,
+  ) {
+    super(
+      "session_closed",
+      `session \`${session}\` is gone (${CLOSED_BECAUSE[reason]}); its files are gone too. ` +
+        "Run again with that name to start a new, empty session.",
+    );
+  }
+}
+
+/**
+ * Runs untrusted code in a disposable container, or in one of her named sessions. Provided by
+ * module `sandbox`.
+ */
 export interface Sandbox {
   /** Runs one program. Throws `SandboxError` when it could not be run at all. */
   run(request: RunRequest, options?: { signal?: AbortSignal }): Promise<RunResult>;
+  /** Her live sessions, oldest first. */
+  listSessions(): Promise<SessionInfo[]>;
+  /** Closes a session and deletes its files; `false` when there is none of that name. */
+  closeSession(name: string): Promise<boolean>;
   /** Last known Docker availability (re-checked when older than `health_ttl_ms`). */
   health(options?: { signal?: AbortSignal; refresh?: boolean }): Promise<SandboxHealth>;
   /** The profile's persistent tools workspace. */

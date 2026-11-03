@@ -869,7 +869,8 @@ extensions/minecraft/
 | `sing.request` | `sing_request` | 準備一首歌(`workers/sing` 用她的聲音翻唱;指令 / 面板 = 好了就唱),見 [design/autonomy.md](design/autonomy.md) §22 | 中 | sing |
 | `sing.play` / `sing.stop` | `sing_start` / `sing_stop` | 在她所在的語音頻道唱準備好的歌(先等她說完);停止(`all` = 連歌單清空) | 低 | sing |
 | `test.high` | `test_high_risk` | 什麼都不做的高風險佔位(`[modules.actions] test_capability = true` 才有) | 高 | actions |
-| `code.run` | `code_run` | 在離線、用完即丟的 Docker 容器裡跑她寫的 Python / Node(`network` 一律 `none`);輸出以不可信資料區塊回來 | 高 | sandbox(opt-in,Docker 可用時) |
+| `code.run` | `code_run` | 在離線的 Docker 容器裡跑她寫的 Python / Node(`session`:`fresh` 用完即丟,或她命名的工作階段,`/work` 會保留;`network` 一律 `none`);輸出以不可信資料區塊回來 | 高 | sandbox(opt-in,Docker 可用時) |
+| `code.session` | `code_session` | 列出(`list`)或關掉(`close`)她的工作階段 | 低 | sandbox |
 | `tool.propose` | `tool_propose` | 提出自寫工具;閘門放行 = 核准那個版本 | 高 | sandbox |
 | `sbx.<name>` | `sbx_<name>` | 已核准的自寫工具(雜湊與參數 schema 檢查後在沙箱裡跑) | 中 | sandbox |
 

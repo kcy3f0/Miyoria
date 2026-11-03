@@ -1,9 +1,9 @@
-// Host-side directories: one disposable workspace per run, and the profile's persistent tools
-// workspace. Everything the container wrote is treated as hostile: entries are lstat'ed, only
+// Host-side directories: one disposable workspace per run, one per session (kept between its
+// runs), and the profile's persistent tools workspace. Everything the container wrote is treated as hostile: entries are lstat'ed, only
 // regular files are read, symlinks are never followed, and walks are bounded.
 
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getLogger } from "@miyoria/kernel";
 import { isUlid } from "@miyoria/types";
@@ -21,8 +21,10 @@ import {
 
 const log = getLogger("sandbox.workspace");
 
-/** Most directory entries an output walk looks at. */
+/** Most directory entries an output walk of a run looks at. */
 const MAX_WALK_ENTRIES = 2000;
+/** Most directory entries a session's `/work` may hold (more counts as over its disk quota). */
+export const MAX_SESSION_ENTRIES = 10_000;
 
 export interface RunDirs {
   /** `<root>/runs/<run id>` */
@@ -50,13 +52,32 @@ export async function createRunDirs(root: string, runId: string): Promise<RunDir
   return { dir, codeDir, workDir };
 }
 
-/** Writes the program to `codeDir`. */
+/** `<root>/profiles/<profile>/sessions`: one `<container id>` directory per live session. */
+export function sessionsDir(root: string, profile: string): string {
+  return join(root, "profiles", profile, "sessions");
+}
+
+/** Creates the directories of one session (same layout and modes as a run's). */
+export async function createSessionDirs(base: string, id: string): Promise<RunDirs> {
+  if (!isUlid(id)) throw new SandboxError("invalid_request", `bad session id \`${id}\``);
+  const dir = join(base, id);
+  const codeDir = join(dir, "code");
+  const workDir = join(dir, "work");
+  await mkdir(codeDir, { recursive: true });
+  await mkdir(workDir, { recursive: true });
+  await chmod(codeDir, 0o755);
+  await chmod(workDir, 0o777);
+  return { dir, codeDir, workDir };
+}
+
+/** Writes the program to `codeDir` (as `file`; default the language's `ENTRY_FILE`). */
 export async function writeProgram(
   codeDir: string,
   language: Language,
   code: string,
+  file: string = ENTRY_FILE[language],
 ): Promise<void> {
-  await writeFile(join(codeDir, ENTRY_FILE[language]), code, { flag: "wx", mode: 0o644 });
+  await writeFile(join(codeDir, file), code, { flag: "wx", mode: 0o644 });
 }
 
 function decode(file: FileIn): Buffer {
@@ -74,14 +95,49 @@ function sha256(data: Buffer): string {
 }
 
 /**
+ * Makes way for an input in a session's `/work`, which earlier runs wrote: every existing parent
+ * must be a real directory (not a link the program left to steer the host's write elsewhere), and
+ * an existing file of that name is removed (a regular file only). Only call it while nothing runs
+ * in the session's container.
+ */
+async function clearForInput(workDir: string, path: string): Promise<void> {
+  const parts = path.split("/");
+  let current = workDir;
+  for (const [i, part] of parts.entries()) {
+    current = join(current, part);
+    let stat: Awaited<ReturnType<typeof lstat>>;
+    try {
+      stat = await lstat(current);
+    } catch {
+      return;
+    }
+    const last = i === parts.length - 1;
+    if (!last && !stat.isDirectory()) {
+      throw new SandboxError(
+        "invalid_path",
+        `input file \`${path}\`: \`${part}\` is not a directory`,
+      );
+    }
+    if (last) {
+      if (!stat.isFile()) {
+        throw new SandboxError("invalid_path", `input file \`${path}\` exists and is not a file`);
+      }
+      await unlink(current);
+    }
+  }
+}
+
+/**
  * Checks the input files against the caps and path rules, then writes them under `workDir`
- * (never overwriting). Returns the sha256 of each input by case-folded path, so unchanged inputs
- * are not returned as outputs.
+ * (never through an existing file: `wx`). `replace` (a session's `/work`) first removes files of
+ * the same name an earlier run left. Returns the sha256 of each input by case-folded path, so
+ * unchanged inputs are not returned as outputs.
  */
 export async function writeInputs(
   workDir: string,
   files: readonly FileIn[],
   caps: SandboxCaps,
+  options: { replace?: boolean } = {},
 ): Promise<Map<string, string>> {
   if (files.length > caps.max_files_in) {
     throw new SandboxError("invalid_request", `at most ${caps.max_files_in} input files`);
@@ -113,6 +169,7 @@ export async function writeInputs(
   const hashes = new Map<string, string>();
   for (const { path, data } of prepared) {
     const full = safeJoin(workDir, path);
+    if (options.replace) await clearForInput(workDir, path);
     const parts = path.split("/");
     let dir = workDir;
     for (const part of parts.slice(0, -1)) {
@@ -135,20 +192,36 @@ function isUtf8(data: Buffer): boolean {
   }
 }
 
+/** A regular file found by `walkWork`. */
+interface WalkEntry {
+  path: string;
+  full: string;
+  size: number;
+  /** Changes when the file is written (size, mtime, ctime). */
+  sig: string;
+}
+
+/** What `walkWork` found. */
+export interface WorkWalk {
+  files: WalkEntry[];
+  /** Some entries were skipped (links, special or unreadable files, depth or entry limits). */
+  truncated: boolean;
+  /** Entries looked at (files, directories and the rest). */
+  entries: number;
+  /** Bytes of the regular files found. */
+  bytes: number;
+}
+
 /**
- * Regular files under `workDir` that are new or differ from the inputs, in path order, within
- * the caps. Symlinks, devices, FIFOs and sockets are skipped, unreadable entries too (both set
- * `truncated`); the walk never follows links and stops at `MAX_PATH_DEPTH` levels and
- * `MAX_WALK_ENTRIES` entries. Call it only after the container has exited.
+ * Regular files under `workDir` in path order. Symlinks, devices, FIFOs and sockets are skipped,
+ * unreadable entries too (both set `truncated`); the walk never follows links and stops at
+ * `MAX_PATH_DEPTH` levels and `maxEntries` entries.
  */
-export async function collectOutputs(
-  workDir: string,
-  inputs: ReadonlyMap<string, string>,
-  caps: SandboxCaps,
-): Promise<{ files: FileOut[]; truncated: boolean }> {
-  const found: Array<{ path: string; full: string; size: number }> = [];
+export async function walkWork(workDir: string, maxEntries = MAX_WALK_ENTRIES): Promise<WorkWalk> {
+  const files: WalkEntry[] = [];
   let truncated = false;
   let entries = 0;
+  let bytes = 0;
   const walk = async (dir: string, prefix: string, depth: number): Promise<void> => {
     let names: string[];
     try {
@@ -158,7 +231,7 @@ export async function collectOutputs(
       return;
     }
     for (const name of names) {
-      if (++entries > MAX_WALK_ENTRIES) {
+      if (++entries > maxEntries) {
         truncated = true;
         return;
       }
@@ -176,13 +249,37 @@ export async function collectOutputs(
         if (depth >= MAX_PATH_DEPTH) truncated = true;
         else await walk(full, path, depth + 1);
       } else if (stat.isFile()) {
-        found.push({ path, full, size: stat.size });
+        bytes += stat.size;
+        const sig = `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+        files.push({ path, full, size: stat.size, sig });
       } else {
         truncated = true;
       }
     }
   };
   await walk(workDir, "", 1);
+  return { files, truncated, entries, bytes };
+}
+
+/** File signatures by case-folded path, to tell which files a session run changed. */
+export function signatures(walked: WorkWalk): Map<string, string> {
+  return new Map(walked.files.map((f) => [pathKey(f.path), f.sig]));
+}
+
+/**
+ * Regular files under `workDir` that are new or differ from the inputs (and, in a session, whose
+ * signature differs from `before`, taken just before the run), in path order, within the caps.
+ * `walked` reuses a walk. Call it only once nothing runs in the container any more.
+ */
+export async function collectOutputs(
+  workDir: string,
+  inputs: ReadonlyMap<string, string>,
+  caps: SandboxCaps,
+  options: { before?: ReadonlyMap<string, string>; walked?: WorkWalk } = {},
+): Promise<{ files: FileOut[]; truncated: boolean }> {
+  const walked = options.walked ?? (await walkWork(workDir));
+  let truncated = walked.truncated;
+  const found = walked.files.filter((f) => options.before?.get(pathKey(f.path)) !== f.sig);
 
   const files: FileOut[] = [];
   let total = 0;

@@ -355,6 +355,8 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # tool_timeout_ms = 8000         # 她寫的工具每次呼叫的時間上限(低於 agent 的 tool_timeout_ms)
 # images = { python = "python:3.12-slim", node = "node:24-slim" }  # 可釘 digest:...@sha256:<hash>
 # limits = { memory_mb = 256, cpus = 1, pids_limit = 128 }
+# pool_size = 0                  # 預設 0 = 關;設 1 以上:每種語言先開好幾個等著的容器(每個只跑一次就丟),一般執行不用等容器啟動
+# sessions = { max = 3, idle_minutes = 15, lifetime_minutes = 120, disk_mb = 256 }  # 她的工作階段(同名的執行共用 /work)
 # 跑程式的次數上限在 [modules.actions.limits."code.run"](預設每天 30 次、冷卻 20 秒)
 
 # ---- Stage 節點(在直播機執行 `miyoria stage`)-------------------------------

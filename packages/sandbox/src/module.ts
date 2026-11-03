@@ -30,13 +30,15 @@ export interface SandboxModuleOptions {
  * workspace) and, with the settings store, `ProposedToolsKey`. Opt-in (`enabled = true`).
  *
  * At start it checks Docker in the background, removes containers this instance left behind
- * and prunes old run workspaces. Without Docker the module runs degraded: `run` throws
- * `unavailable` and the health shows why, until Docker comes back (re-checked on use).
+ * (pooled and session ones too), prunes old run and session workspaces, then fills the warm pool
+ * (only with `pool_size` > 0; it is off by default). Without Docker the module runs degraded:
+ * `run` throws `unavailable` and the health shows why, until Docker comes back (re-checked on
+ * use). Stopping it removes the pool's and her sessions' containers.
  *
- * While Docker is available it registers `code.run`, `tool.propose` and one `sbx.<name>` per
- * approved tool she wrote in the app's actuator registry (see `gate.ts`); they are withdrawn
- * when Docker goes away (re-checked every `recheck_ms`). `/admin autonomy status` shows the
- * sandbox and the proposed tools.
+ * While Docker is available it registers `code.run`, `code.session`, `tool.propose` and one
+ * `sbx.<name>` per approved tool she wrote in the app's actuator registry (see `gate.ts`); they
+ * are withdrawn when Docker goes away (re-checked every `recheck_ms`). `/admin autonomy status`
+ * shows the sandbox, her sessions and the proposed tools.
  */
 export class SandboxModule implements Module {
   static readonly ID = "sandbox";
@@ -102,10 +104,18 @@ export class SandboxModule implements Module {
     });
 
     ctx.spawn("startup", async (signal) => {
+      // Leftovers of an earlier process go first, then the warm pool starts (once Docker answers).
+      let reaped = false;
+      const reapOnce = async () => {
+        if (reaped) return;
+        await sandbox.reap(signal);
+        reaped = true;
+        sandbox.warm();
+      };
       try {
         const health = await sandbox.health({ signal, refresh: true });
         await gate.setAvailable(health.available);
-        if (health.available) await sandbox.reap(signal);
+        if (health.available) await reapOnce();
         await sandbox.prune();
       } catch (error) {
         if (!signal.aborted)
@@ -117,6 +127,7 @@ export class SandboxModule implements Module {
           await sleep(config.recheck_ms, signal);
           const health = await sandbox.health({ signal, refresh: true });
           await gate.setAvailable(health.available);
+          if (health.available) await reapOnce();
         } catch (error) {
           if (signal.aborted) return;
           ctx.log.warn({ err: errorMessage(error) }, "sandbox health check failed");
