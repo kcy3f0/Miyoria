@@ -214,6 +214,7 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
     [
       settings("self_state", "active", ["self:state"]),
       settings("self_feelings", "active", [], ["self:feeling:"]),
+      settings("self_cards_migration", "active", ["self:cards:migration"]),
       settings("mind_thoughts", "active", [], ["mind:thought:"]),
       settings("mind_digests", "active", [], ["mind:digest:"]),
     ],
