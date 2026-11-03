@@ -188,3 +188,35 @@ describe("ThreadsAdapter", () => {
     expect(await adapter.act({ name: "like" })).toMatchObject({ ok: false });
   });
 });
+
+describe("Vision", () => {
+  it("asks an OpenCode endpoint without reasoning, with its session header, and caches", async () => {
+    const { Vision } = await import("../src/vision.js");
+    const sent: Array<{
+      url: string;
+      headers: Record<string, string>;
+      body: Record<string, unknown>;
+    }> = [];
+    const fake = (async (url: string, init: RequestInit) => {
+      sent.push({
+        url,
+        headers: init.headers as Record<string, string>,
+        body: JSON.parse(String(init.body)),
+      });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "一隻貓 " } }] }));
+    }) as unknown as typeof fetch;
+    const v = new Vision({
+      url: "https://opencode.ai/inference/go/v1/",
+      model: "deepseek-v4.1-flash",
+      key: "k",
+      timeoutMs: 1000,
+      fetch: fake,
+    });
+    expect(await v.describe("/@a/post/1", "jpeg")).toBe("一隻貓");
+    expect(await v.describe("/@a/post/1", "jpeg")).toBe("一隻貓");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.url).toBe("https://opencode.ai/inference/go/v1/chat/completions");
+    expect(sent[0]?.headers["x-opencode-session"]).toMatch(/^miyoria-threads-/);
+    expect(sent[0]?.body.thinking).toEqual({ type: "disabled" });
+  });
+});

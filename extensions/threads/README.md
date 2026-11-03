@@ -26,10 +26,10 @@ dirs = ["extensions"]
 roles = { chat = "聊天", sing = "唱歌", threads = "Threads" }   # threads 角色 = 滑 Threads 的場景
 
 [extensions."miyoria.threads"]
-# 看圖模型(任何 OpenAI 相容端點);不設就只讀文字
-vision_url = "https://openrouter.ai/api/v1"
-vision_model = "google/gemini-2.5-flash-lite"
-# key 放在 .env 的 MIYORIA_THREADS_VISION_KEY
+# 看圖模型(任何 OpenAI 相容端點,例如 OpenCode 上的 DeepSeek V4.1 Flash 就看得懂圖);不設就只讀文字
+vision_url = "https://opencode.ai/inference/go/v1"
+vision_model = "deepseek-v4.1-flash"
+env = { MIYORIA_THREADS_VISION_KEY = "${OPENCODE_API_KEY:-}" }   # 沿用 .env 裡已經有的 key
 ```
 
 然後 `npx miyoria stage obs-setup` 會建好 Threads 場景:背景、她的瀏覽器視窗(OBS 視窗擷取「Miyoria Threads」)、站在右邊的她、overlay。
@@ -45,6 +45,8 @@ vision_model = "google/gemini-2.5-flash-lite"
 | `width` / `height` | `720` / `1000` | 視窗大小 |
 | `vision_url` / `vision_model` | 無 | 看圖模型(也可以用 `MIYORIA_THREADS_VISION_URL` / `_MODEL`) |
 | `vision_key_env` | `MIYORIA_THREADS_VISION_KEY` | 放 key 的環境變數 |
+
+OpenCode 和 DeepSeek 的端點會自動加上 OpenCode 要的 `x-opencode-session`,並關掉推理(不然短短的描述會被推理吃掉)。
 
 ## 安全
 
