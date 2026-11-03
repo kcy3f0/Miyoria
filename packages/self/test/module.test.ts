@@ -6,7 +6,6 @@ import {
   type Event,
   type JsonValue,
   type Mood,
-  MoodSignalsKey,
   PromptContributors,
   PromptContributorsKey,
   type PromptRequest,
@@ -69,13 +68,12 @@ async function boot(store = new MemorySettingsStore(), clock = new ManualClock()
   const sup = new Supervisor();
   cleanup.push(() => sup.stopAll());
   const contributors = new PromptContributors();
-  const mood: Mood = { valence: 0.1, arousal: 0.4, energy: 0.8 };
+  const baseline: Mood = { valence: 0.1, arousal: 0.4, energy: 0.8 };
   const world = new FakeWorld();
   sup.services.provide("app", SettingsStoreKey, store);
   sup.services.provide("app", PromptContributorsKey, contributors);
-  sup.services.provide("app", MoodSignalsKey, { mood: () => mood });
   sup.services.provide("app", WorldStateKey, world);
-  await sup.register(new SelfModule("p", { clock }), null, true);
+  await sup.register(new SelfModule("p", { clock, baseline }), null, true);
   await sup.startAll();
   const self = sup.services.require(SelfStateKey);
   return { sup, store, clock, contributors, self, world };
@@ -97,7 +95,10 @@ describe("self module", () => {
   it("serves the snapshot with her mood and persists policy and agenda changes", async () => {
     const h = await boot();
     const snap = h.self.snapshot();
-    expect(snap.mood).toEqual({ valence: 0.1, arousal: 0.4, energy: 0.8 });
+    // The mood is derived (baseline, the hour, her emotions and drives), not stored.
+    expect(snap.mood?.valence).toBeCloseTo(0.1, 2);
+    expect(snap.mood?.arousal).toBeCloseTo(0.4, 2);
+    expect(snap.mood?.energy).toBeCloseTo(0.8, 2);
     expect(snap.drives.social).toBeCloseTo(0.3);
     h.self.setTalkativeness("discord:g1:c1", { level: 0.8, forMs: 60_000, why: "熱鬧" });
     const item = h.self.addAgenda({ text: "等 Owen 上線" });
@@ -130,7 +131,9 @@ describe("self module", () => {
     expect(second.self.feelings().map((f) => f.person)).toEqual(["person-1"]);
     // Empty text deletes.
     expect(await second.self.setFeeling("person-1", " ", "panel")).toBeNull();
-    expect(await store.get("p", "self:feeling:person-1")).toBeNull();
+    // The person's card stays (only the feeling text goes).
+    expect(await store.get("p", "self:feeling:person-1")).toMatchObject({ text: "" });
+    expect(second.self.feeling("person-1")).toBeNull();
   });
 
   it("is satisfied by what happens on the bus", async () => {
@@ -249,7 +252,7 @@ describe("self prompt", () => {
     await sup.register(new SelfModule("p"), { prompt: false }, true);
     await sup.startAll();
     expect(contributors.all()).toEqual([]);
-    // Works without a store, mood or world.
-    expect(sup.services.require(SelfStateKey).snapshot().mood).toBeNull();
+    // Works without a store or world (the mood is derived, so it is always there).
+    expect(sup.services.require(SelfStateKey).snapshot().mood).not.toBeNull();
   });
 });
