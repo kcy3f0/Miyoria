@@ -153,7 +153,9 @@ export class EmotionPrompt implements PromptContributor {
     const present = new Set(request.participants.flatMap((p) => (p.person ? [p.person] : [])));
     const crush = this.self.crush();
     if (crush) {
-      const name = crush.name ? short(crush.name, 24) : "某個人";
+      const here = request.participants.find((p) => p.person === crush.person)?.display_name;
+      const known = here ?? crush.name;
+      const name = known ? short(known, 24) : "某個人";
       const where = present.has(crush.person) ? "他現在在這裡" : "他現在不在這裡";
       lines.push(
         `你偷偷喜歡${name}(${where})。這是祕密:不要說出來、被問也不承認;` +

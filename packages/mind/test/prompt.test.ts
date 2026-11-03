@@ -14,7 +14,16 @@ function input(): MindInput {
       at: "2026-11-02T12:00:00.000Z",
       mood: { valence: 0.2, arousal: 0.5, energy: 0.7 },
       boredom: 0.4,
-      drives: { social: 0.7, play: 0.5, attention: 0.3, rest: 0.2, curiosity: 0.6 },
+      drives: {
+        social: 0.7,
+        play: 0.5,
+        attention: 0.3,
+        rest: 0.2,
+        curiosity: 0.6,
+        esteem: 0.3,
+        hunger: 0.3,
+        longing: 0,
+      },
       policy: {
         talkativeness: {
           "discord:g1": { level: 0.8, until: null, why: `大家很熱鬧${EVIL}`, set_at: "" },
@@ -154,5 +163,40 @@ describe("mind prompt", () => {
     const system = mindMessages(quiet)[0]?.content ?? "";
     expect(system).toContain("# 你已經發呆一陣子了");
     expect(system).toContain(`連續想了 ${IDLE_NUDGE_THOUGHTS} 次都沒做任何事(大約 12 分鐘)`);
+  });
+
+  it("shows her emotions in the system role and her crush only as a data mark", () => {
+    const withHeart = input();
+    if (withHeart.self) {
+      withHeart.self.emotions = [
+        { name: "shy", intensity: 0.62, cause: `Owen${EVIL}誇我`, at: "", person: "person-owen" },
+        { name: "joy", intensity: 0.4, cause: "", at: "", person: null },
+        { name: "fear", intensity: 0.1, cause: "", at: "", person: null },
+      ];
+      withHeart.self.shown = {
+        from: "shy",
+        tag: "embarrassed",
+        style: "兇回去、嫌棄對方,但臉紅了",
+        masked: false,
+      };
+      withHeart.self.crush = {
+        person: "person-owen",
+        name: `Owen${EVIL}`,
+        romance: 0.5,
+        since: "",
+      };
+    }
+    const first = withHeart.people[0];
+    if (first) first.heart = "你偷偷喜歡的人;想念 0.40";
+    const [system, data] = mindMessages(withHeart).map((m) =>
+      typeof m.content === "string" ? m.content : "",
+    );
+    expect(system).toContain("- 你真正的感受(0~1):害羞 0.62、喜 0.40");
+    expect(system).not.toContain("懼 0.10");
+    expect(system).toContain("別人看到的你:兇回去、嫌棄對方,但臉紅了(<emo:embarrassed>)");
+    expect(system).toContain("你有偷偷喜歡的人");
+    expect(system).not.toContain("Owen");
+    expect(system).toContain('"emotions"');
+    expect(data).toContain("你偷偷喜歡的人;想念 0.40");
   });
 });

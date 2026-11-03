@@ -26,7 +26,16 @@ const SNAPSHOT: SelfSnapshot = {
   at: "2026-11-02T12:00:00.000Z",
   mood: { valence: 0.2, arousal: 0.5, energy: 0.7 },
   boredom: 0.4,
-  drives: { social: 0.7, play: 0.5, attention: 0.3, rest: 0.2, curiosity: 0.6 },
+  drives: {
+    social: 0.7,
+    play: 0.5,
+    attention: 0.3,
+    rest: 0.2,
+    curiosity: 0.6,
+    esteem: 0.3,
+    hunger: 0.3,
+    longing: 0,
+  },
   policy: {
     talkativeness: {
       "discord:g1": {

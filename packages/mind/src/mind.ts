@@ -20,6 +20,8 @@ import {
   type ContextKey,
   contextKeyString,
   customEvent,
+  EMOTION_LABELS,
+  type EmotionName,
   type Envelope,
   type Event,
   type Intent,
@@ -36,6 +38,8 @@ import {
   type MindSuggestion,
   newId,
   type PatchOp,
+  PERSON_EMOTION_LABELS,
+  type PersonEmotionName,
   Principals,
   type ProfileId,
   type RaisedTopic,
@@ -931,6 +935,12 @@ export class MindLoop implements Mind {
           this.#d.log.warn({ err: errorMessage(error) }, "cannot write her feelings");
         }
       }
+      for (const [name, v] of Object.entries(f.emotions ?? {}) as [PersonEmotionName, number][]) {
+        self?.feelToward?.(p.person, name, v, "我自己想了想");
+        changes.push(
+          `對 ${p.name} 的${PERSON_EMOTION_LABELS[name]} ${v > 0 ? "+" : ""}${v.toFixed(2)}`,
+        );
+      }
       if ((f.hint === "+" || f.hint === "-") && social) {
         // A hint, not a number: social's daily caps decide what it is worth.
         await social.applyEvents(
@@ -944,6 +954,14 @@ export class MindLoop implements Mind {
       }
     }
     if (!self) return changes;
+    const emotions = Object.entries(reply.emotions ?? {}) as [EmotionName, number][];
+    if (emotions.length > 0 && self.feel) {
+      effects.emotions = Object.fromEntries(emotions);
+      for (const [name, v] of emotions) self.feel(name, v, "我自己想了想");
+      changes.push(
+        `情緒 ${emotions.map(([k, v]) => `${EMOTION_LABELS[k]} ${v > 0 ? "+" : ""}${v.toFixed(2)}`).join("、")}`,
+      );
+    }
     const drives = Object.entries(reply.drives);
     if (drives.length > 0) {
       effects.drives = Object.fromEntries(drives);

@@ -163,6 +163,28 @@ describe("mind module", () => {
     expect(r.mind().stats()).toMatchObject({ calls_last_hour: 1, calls_total: 1 });
   });
 
+  it("nudges her emotions, her own and toward someone, from her reply", async () => {
+    const provider = new MockProvider("p").reply(
+      JSON.stringify({
+        thought: "Owen 進語音了……才、才沒有很開心。",
+        emotions: { joy: 0.3, shy: 0.2 },
+        feelings: [{ person: "u1", emotions: { gratitude: 0.25 } }],
+      }),
+    );
+    const r = await rig(provider);
+    r.publish(salient("Owen 進了語音頻道「聊天室」"));
+    await wait(4100);
+    expect(provider.requests().length).toBe(1);
+    const self = r.sup.services.require(SelfStateKey);
+    const felt = Object.fromEntries(self.emotions(0).map((e) => [e.name, e.intensity]));
+    expect(felt.joy).toBeCloseTo(0.3, 2);
+    expect(felt.shy).toBeCloseTo(0.2, 2);
+    expect(self.heart("person-owen")?.emotions.gratitude).toBeCloseTo(0.25, 2);
+    const [thought] = r.mind().thoughts();
+    expect(thought?.effects?.emotions).toEqual({ joy: 0.3, shy: 0.2 });
+    expect(thought?.changes).toContain("情緒 喜 +0.30、害羞 +0.20");
+  });
+
   it("adapts the heartbeat and keeps to the hourly cap", async () => {
     const provider = new MockProvider("p").reply('{"thought": "沒什麼事。"}');
     const r = await rig(provider, { config: { max_calls_per_hour: 3, min_interval_secs: 30 } });

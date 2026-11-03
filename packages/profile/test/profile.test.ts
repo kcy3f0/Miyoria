@@ -31,6 +31,7 @@ describe("Profile", () => {
         initiative: "medium",
         max_share_of_recent: 0.3,
       },
+      temperament: { display: "open", emotions: {} },
       persona: { sections: ["identity", "style"] },
       llm: { purposes: {} },
     });
@@ -46,6 +47,10 @@ describe("Profile", () => {
     expect(p.personaPrompt()).not.toBe("");
     expect(p.voice).not.toBeNull();
     expect(p.avatar).not.toBeNull();
+    // Her temperament: tsundere display rules, 害羞 fast, 想念 slow.
+    expect(p.manifest.temperament.display).toBe("tsundere");
+    expect(p.manifest.temperament.emotions.shy?.gain).toBeGreaterThan(1);
+    expect(p.manifest.temperament.emotions.missing?.gain).toBeLessThan(1);
   });
 
   it("persona prompt: sections in order, then examples sorted by file name", async () => {

@@ -18,6 +18,9 @@ import {
   LessonsKey,
   type MindSuggestion,
   newId,
+  PERSON_EMOTION_LABELS,
+  PERSON_EMOTION_NAMES,
+  type PersonId,
   PlatformSinksKey,
   type ProfileId,
   PromptContributorsKey,
@@ -130,6 +133,19 @@ export function voiceTalk(v: VoiceChannelState): string {
   return `;${a.lively ? "正在聊天:" : ""}最近 ${a.recent_utterances} 句${who},最後一句 ${last}`;
 }
 
+/** Her crush and her emotions toward someone (`你偷偷喜歡的人;想念 0.40`); `null` if nothing. */
+export function heartLine(self: SelfState | undefined, person: PersonId): string | null {
+  if (!self?.heart) return null;
+  const parts: string[] = [];
+  if (self.crush?.()?.person === person) parts.push("你偷偷喜歡的人");
+  const h = self.heart(person);
+  for (const name of PERSON_EMOTION_NAMES) {
+    const v = h?.emotions[name] ?? 0;
+    if (v >= 0.2) parts.push(`${PERSON_EMOTION_LABELS[name]} ${v.toFixed(2)}`);
+  }
+  return parts.length === 0 ? null : parts.join(";");
+}
+
 export async function gather(input: GatherInput): Promise<Gathered> {
   const { services } = input;
   const worldState = services.get(WorldStateKey);
@@ -238,6 +254,7 @@ export async function gather(input: GatherInput): Promise<Gathered> {
           ? null
           : `${attitude.label || "認識的人"},好感 ${Math.round(attitude.affinity)}、熟悉 ${Math.round(attitude.familiarity)}`,
       feeling: person === null ? null : (self?.feeling(person)?.text ?? null),
+      heart: person === null ? null : heartLine(self, person),
       doing:
         activity === null
           ? presence?.voice

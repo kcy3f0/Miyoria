@@ -128,4 +128,19 @@ describe("her reply", () => {
     expect(() => parseMindReply("{not json}", 2)).toThrow(MindReplyError);
     expect(() => parseMindReply("[1, 2] {", 2)).toThrow(MindReplyError);
   });
+
+  it("parses emotion changes, bounded, and emotions toward people", () => {
+    const reply = parseMindReply(
+      JSON.stringify({
+        thought: "他又跟別人聊天……才不在意。",
+        emotions: { jealousy: 0.9, joy: -0.1, love: 1, shy: "x" },
+        feelings: [{ person: "u1", emotions: { jealousy: 0.2, crush: 1 } }],
+      }),
+      2,
+    );
+    expect(reply.emotions).toEqual({ jealousy: 0.3, joy: -0.1 });
+    expect(reply.feelings).toEqual([
+      { person: "u1", note: null, hint: null, emotions: { jealousy: 0.2 } },
+    ]);
+  });
 });

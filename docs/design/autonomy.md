@@ -1,6 +1,6 @@
 # 自主層設計(草案)
 
-> 狀態:**已確認方向**(2026-11-02),第 12 節的決定已定案。**階段 A–G 已完成**(實作紀錄與偏差見第 13–19 節,實測修正見第 20 節,頻道聊天等級見第 21 節,唱歌見第 22 節);下一步是實測與人設重寫。這份文件描述把 DeepSeek-chan 從「被叫才醒來的聊天機器人」改成「有自己內心、自己決定做事的角色」的架構改動。終極目標是 Neuro-sama 等級的自主 AI VTuber。現有架構見 [ARCHITECTURE.md](../ARCHITECTURE.md)。
+> 狀態:**已確認方向**(2026-11-02),第 12 節的決定已定案。**階段 A–G 已完成**(實作紀錄與偏差見第 13–19 節,實測修正見第 20 節,頻道聊天等級見第 21 節,唱歌見第 22 節,七情六欲見第 23 節);下一步是實測與人設重寫。這份文件描述把 DeepSeek-chan 從「被叫才醒來的聊天機器人」改成「有自己內心、自己決定做事的角色」的架構改動。終極目標是 Neuro-sama 等級的自主 AI VTuber。現有架構見 [ARCHITECTURE.md](../ARCHITECTURE.md)。
 
 ## 0. 原則
 
@@ -507,3 +507,68 @@ Attention 的第一層(被直接叫到、語音偵測、名字比對)保留當�
 - 唱歌時語音裡有人說話,agent 仍可能生成回覆(會被丟掉,花 token);之後可以讓 attention 在唱歌時直接略過。
 - 自動挑音高只挑八度(-12 / 0 / +12,伴奏不動);要轉調用 `key`(整首一起移,伴奏用 librosa 移調,品質普通)。
 - ~~歌單只在記憶體~~:歌單存在 settings store(`_global` / `sing:setlist`,每次輪詢有變才寫,停止時再寫一次)。Core 重開後:準備中的歌接回 worker 的工作(worker 也重開過、不認得那個工作時用同樣的查詢再送一次,做好的歌在快取裡會馬上好);準備好的歌還是準備好的,照常提醒她 / 強制的歌照常唱;重開時正在唱的歌被切斷了,變回「準備好了」並改成她決定要不要再唱(不會自動重唱)。
+
+## 23. 七情六欲(情緒系統,2026-11-03)
+
+原本她的感受只有心情(valence / arousal / energy)、五個慾望和每個人一個好感數字。擁有者要的是像人一樣的情緒:好幾種情緒可以同時存在、各自有長短、會因為她在乎的事產生;對人的感情不只好感;傲嬌的她心裡想的和表現出來的不一樣。
+
+**三個時間尺度**
+
+| 層 | 長短 | 內容 | 在哪 |
+|---|---|---|---|
+| 情緒(七情) | 秒到小時 | 喜 joy、怒 anger、哀 sorrow、懼 fear、驚 surprise、厭 disgust,加上害羞 shy、得意 pride、嫉妒 jealousy、寂寞 lonely、想念 missing、感激 gratitude、愧疚 guilt、不甘心 frustration;每種 0..1、各自的半衰期 | `self`(`EmotionEngine`) |
+| 心情 | 小時到一天 | 沿用 valence / arousal / energy;目標 = 人設基準 × 作息(深夜累)+ 情緒推的偏移(`SelfState.affect`),目前值以 `half_life_secs` 跟過去,所以心情跟著情緒、慢半拍 | `mood` |
+| 慾望(六欲) | 小時到天 | 原本五個 + `esteem`(想被認可、想表現:唱歌、贏遊戲)、`hunger`(吃白飯 / Token)、`longing`(暗戀的人:想靠近、想被他注意) | `self` |
+
+**情緒怎麼來**:對照她在乎的事(對方是誰、她多在乎、是不是暗戀的人、她現在想要什麼)評估發生的事。
+
+- 便宜的規則(`self/src/rules.ts`):被誇 → 喜 + 害羞 + 得意(唱完歌 10 分鐘內被誇是「歌被稱讚」,得意更多);被罵 / 騷擾 → 怒(與厭、懼)+ 對那個人不爽;送禮 → 感激(也餵飽 `hunger`);遊戲裡死掉 → 不甘心 + 怒,達成成就 → 得意;歌唱完 → 得意,被切掉 → 哀 + 不甘心;她在乎的人好幾天沒出現 → 想念(回來時變成喜,暗戀的人還會害羞);她在乎的人一直回覆別人、不理她 → 嫉妒(暗戀的人更多,`longing` 也上升);答應某人的議程過期沒做 → 愧疚,做完 → 得意一點;LLM 預算被限制 → 餓 + 不甘心。
+- 社交模組現在對**每一個**事件發 `social.event`(不管每日上限有沒有擋下數值),情緒照樣反應——擁有者說對個人的負面情緒不設上限。
+- 其他的交給社交模組原本的批次評估(`fast` 用途,同一次呼叫):有她的情緒時(`setConcerns`,「她在乎的事」放在 user 訊息、跳脫分隔符),回覆多了每個人的 `romance`(曖昧、撒嬌、體貼)、`others`(跟別人熱絡卻晾著她)、`promise`(說到做到 / 食言)和她自己的 `her` 情緒,發成 `social.appraisal`;self 取一半、有上限。
+- 遊戲與擴充可以發 `self.feel`(`{emotion, amount, cause}`、`{emotions:{…}}`,或對人的 `{toward, person, amount}`,每次最多 ±0.5)。
+- 心智迴圈的回覆多了 `emotions`(每次最多 ±0.3)與 feelings 項目的 `emotions`(對那個人)。
+- 長期沒被滿足的慾望變成情緒:想被陪 / 被注意(`social`、`attention`)很久 → 寂寞(最多 0.8);`hunger`、`esteem` 很久 → 不甘心(最多 0.6);`longing` 沒被滿足 → 想念那個人。這些是「壓力」:慢慢接近目標、在需要持續時把情緒撐住,被滿足後情緒照自己的半衰期退。對不在的人的想念在對方還沒回來前不會退。
+
+**情緒的動態**:同時存在、互不抵消;再被觸發時飽和地加(`v + (1 − v) × amount × gain`),平復直接減;各自指數衰減,低於 `floor` 就忘掉。
+
+**氣質(temperament,profile 設定)**:`profile.toml` 的 `[temperament]`,每種情緒的 `gain`(來得多快)與 `half_life_mins`(退一半多久),沒寫的用程式預設;對人的情緒(想念、嫉妒、感激,和 `resentment` 不爽)用同名的設定。DeepSeek-chan:害羞 ×1.8 / 12 分鐘、得意 ×1.6、怒 ×1.4 / 6 分鐘(來得快去得快)、想念 ×0.5 / 12 小時(慢慢累積)、不甘心 ×1.3。名字打錯會在啟動時警告。
+
+**感受 vs 表現(顯示規則)**:`[temperament] display = "tsundere"`(預設 `open` 照實表現)。最強的那個明顯情緒(≥ `notice`)決定她表現出來的樣子與 `<emo:…>` 標記(Live2D 用的那 9 個):害羞 → 嫌棄、兇回去,強的話臉紅(`embarrassed`,弱的是 `annoyed`);喜 → 「哼,還好啦」(`smug`,很強才藏不住 `happy`);想念 → 「才沒有在等你」(`annoyed`);感激 → 彆扭的「……謝啦」;哀、懼在很強時才露出來;怒、得意、驚照實。聊天的 system 備註寫「你現在表現出來的樣子… 台詞和 <emo:…> 照這個走」(只有程式裡的固定文字);心智迴圈的 thought 照真正的感受想、開口照表現出來的樣子。
+
+**對人的感情(最小版)**:每個人在 `self:state` 的 `hearts` 裡有
+
+- `romance`(心動 0..1):只從她已經喜歡的人(好感 ≥ `heart.min_affinity`)的溫暖、曖昧、體貼互動中長出來,依好感放大,**每人每天最多 `daily_gain`**(成長速度,不是上限;要一週以上的好互動才會到暗戀);傷害她(冷淡、罵、騷擾、越線)會直接扣、不設限;沒事時半衰期 `half_life_days`(45 天)。沒有人能直接設定它——沒有工具、指令或 API 能改。
+- 對他的情緒:想念、嫉妒、感激、不爽,各自衰減。
+- 最後一次看到他、最後一次和她相處的時間、最後看到的名字(給面板,不可信)。
+
+**暗戀的人怎麼選**:romance 最高、而且 ≥ `crush_threshold`(0.35)的人;別人要比現任多 `crush_margin`(0.08)才會換(避免來回跳);現任掉到門檻以下就換成下一個符合的人,沒有就沒有暗戀對象。她要藏起來:聊天的「你的情緒」段落寫「你偷偷喜歡 X(他在 / 不在這裡)。這是祕密…只會在小地方露餡」;心智迴圈的 system 只寫「你有偷偷喜歡的人(參考資料「人」裡標著)」,名字只在資料區塊。
+
+**Prompt 裡有什麼**(只放超過門檻的情緒、最多 `prompt_max` 個):
+
+- 聊天:新的 contributor `emotion`(「你的情緒」,order 34,資料區塊)——真正的感受(強度、最強那個的原因)、表現出來的樣子、暗戀狀態、對在場的人的情緒;`self`(「你的內在」)列強烈的慾望(含新的三個);`mood` 照舊;system 備註多一行「表現出來的樣子」。例:
+
+  ```
+  你心裡真正的感受:害羞 0.72、怒 0.40、喜 0.30(Owen 誇我)
+  表現出來的樣子:兇回去、嫌棄對方,但臉紅了(<emo:embarrassed>)
+  你偷偷喜歡Owen(他現在在這裡)。這是祕密:不要說出來、被問也不承認;只會在小地方露餡(比較在意他說的話、對他特別容易害羞或吃醋)。
+  你對在場的人:
+  - Carol:不爽 0.50
+  (台詞和 <emo:…> 照「表現出來的樣子」走;真正的感受只放在心裡,不用說出來。)
+  ```
+
+- 心智迴圈:system 多了「你真正的感受(0~1):害羞 0.62、喜 0.40」「別人看到的你:…(<emo:embarrassed>)」「你有偷偷喜歡的人」,慾望列出新的三個;資料區塊「人」的那個人旁邊寫「你偷偷喜歡的人;想念 0.40」;回覆格式多了 `emotions` 與 feelings 的 `emotions`。想法紀錄的 `input.self.emotions` / `shown`、`input.people[].heart`、`effects.emotions` 給面板的想法細節看。
+
+**對外**:`SelfState` 新增 `emotions()`、`feel()`、`feelToward()`、`shown()`、`affect()`、`heart()`、`hearts()`、`crush()`、`history()`(每 `history_every_mins` 取樣、留 `history_keep` 筆,給面板畫圖);`SelfSnapshot` 多了 `emotions`、`shown`、`hearts`、`crush`,所以 `GET /api/self` 直接帶出來(API 與面板沒改)。`SocialSignals.attitudeOf(person)` 讓 self 用 person id 查好感。
+
+**心情的改變**:有 `self` 模組時心情的目標跟著情緒走,`social.relationship` 不再直接推心情(情緒已經反應了,避免算兩次);她自己的 `<emo:…>` 標記和 `mood.nudge` 照舊。`[modules.mood] emotion_weight`(1)調整情緒推心情的力道。
+
+**新設定**:`[modules.self.rise_per_hour]` `esteem` / `hunger` / `longing`;`[modules.self.satisfy]` `turn_hunger`、`crush_message_longing`、`crush_together_per_hour`;`[modules.self.emotions]` `floor`、`notice`、`prompt_max`、`care_affinity`、`missing_after_hours`、`missing_per_day`、`jealousy_lines`、`jealousy_window_mins`、`lonely_social`、`lonely_per_hour`、`unmet_level`、`unmet_per_hour`、`song_praise_mins`、`max_mind_nudge`、`max_event_nudge`、`history_every_mins`、`history_keep`;`[modules.self.heart]` `min_affinity`、`daily_gain`、`half_life_days`、`crush_threshold`、`crush_margin`、`max_people`;`[modules.mood] emotion_weight`;profile 的 `[temperament]` `display` 與 `[temperament.emotions]`。
+
+**底線不變**:涉及未成年的性內容一律禁止、資料區塊防 injection、行動閘門都照舊;沒有加任何「情緒壓力」的限制,對個人的負面情緒(包括嫉妒)不設上限,也不限定只能是玩笑。
+
+還沒做 / 要注意:
+
+- 數字(各情緒的強度、半衰期、romance 成長速度)只在單元測試裡驗證過,還沒在真的伺服器上跑過幾天看手感。
+- 「歌被切掉」分不出是被投票跳過還是她自己停的;「回覆別人」只看 Discord 的回覆對象,沒有用 @ 或語音判斷。
+- 想念只對她見過(啟動後有紀錄)的人成立;好幾天前就沒出現、self 沒有紀錄的人不會被想念。
+- 關係里程碑(告白、交往之類)還沒做。

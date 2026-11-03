@@ -127,6 +127,7 @@ describe("mood", () => {
       persist: true,
       social_weight: 0.03,
       max_nudge: 0.2,
+      emotion_weight: 1,
     });
   });
 

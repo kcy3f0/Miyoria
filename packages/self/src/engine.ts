@@ -258,19 +258,20 @@ export class SelfEngine {
       this.#pressure[key] =
         target > p ? p + (target - p) * (1 - Math.exp(-perHour * hours)) : clamp01(target);
     };
+    // Long-unmet needs weigh, but not to the top: 寂寞 up to 0.8, the grumbling up to 0.6.
     build(
       "lonely",
-      above(Math.max(d.social, d.attention), e.lonely_social),
+      0.8 * above(Math.max(d.social, d.attention), e.lonely_social),
       e.lonely_per_hour * t.lonely.gain,
     );
     build(
       "frustration",
-      above(Math.max(d.hunger, d.esteem), e.unmet_level),
+      0.6 * above(Math.max(d.hunger, d.esteem), e.unmet_level),
       e.unmet_per_hour * t.frustration.gain,
     );
     build(
       "missing",
-      c.crushTogether ? 0 : above(d.longing, 0.5),
+      c.crushTogether ? 0 : above(d.longing, 0.4),
       (e.missing_per_day / 24) * t.missing.gain,
     );
     const lonelyCause = d.attention > d.social ? "很久沒人理我" : "很久沒人陪我聊天";

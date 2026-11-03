@@ -17,6 +17,7 @@ import {
   DATA_OPEN,
   type DriveName,
   dataBlock,
+  EMOTION_LABELS,
   type MindSuggestion,
   neutralize,
   type PersonId,
@@ -50,6 +51,8 @@ export interface PersonRef {
   feeling: string | null;
   /** What they are doing, from the world snapshot. */
   doing: string | null;
+  /** Her crush, and her emotions toward them (`你偷偷喜歡的人;想念 0.40`). */
+  heart?: string | null;
 }
 
 export interface AgendaRef {
@@ -122,6 +125,9 @@ const DRIVE_TEXT: Record<DriveName, string> = {
   attention: "想被注意",
   rest: "想休息",
   curiosity: "好奇",
+  esteem: "想被誇",
+  hunger: "肚子餓",
+  longing: "想見那個人",
 };
 
 const n2 = (v: number) => v.toFixed(2);
@@ -137,7 +143,8 @@ const TRIGGER_TEXT: Record<ThoughtTrigger["kind"], string> = {
 
 export const OUTPUT_FORMAT = `{
   "thought": "你的內心獨白(第一人稱、你的口吻,一到三句)",
-  "feelings": [{"person": "u1", "note": "你現在對他的感覺(整段改寫,可省略)", "affinity_hint": "+ / - / 0"}],
+  "feelings": [{"person": "u1", "note": "你現在對他的感覺(整段改寫,可省略)", "affinity_hint": "+ / - / 0", "emotions": {"missing": 0.1, "jealousy": 0, "gratitude": 0, "resentment": -0.1}}],
+  "emotions": {"joy": 0.1, "shy": 0, "lonely": -0.1},
   "drives": {"social": -0.1, "play": 0.1, "attention": 0, "rest": 0, "curiosity": 0, "boredom": -0.1},
   "policy": {
     "talkativeness": [{"scope": "p1 / server / voice / text / *", "level": 0.7, "for_min": 30, "why": "理由"}],
@@ -173,6 +180,19 @@ function rules(input: MindInput): string {
         `- 心情:愉快 ${n2(s.mood.valence)}(-1~1)、興奮 ${n2(s.mood.arousal)}、精神 ${n2(s.mood.energy)}`,
       );
     }
+    // Her emotions: names and numbers only (what stirred them is in the data).
+    const felt = (s.emotions ?? []).filter((e) => e.intensity >= 0.2).slice(0, 4);
+    if (felt.length > 0) {
+      lines.push(
+        `- 你真正的感受(0~1):${felt.map((e) => `${EMOTION_LABELS[e.name]} ${n2(e.intensity)}`).join("、")}`,
+      );
+    }
+    if (s.shown) {
+      lines.push(
+        `- 別人看到的你:${neutralize(s.shown.style)}(<emo:${s.shown.tag}>)${s.shown.masked ? ",跟心裡的不一樣" : ""}`,
+      );
+    }
+    if (s.crush) lines.push("- 你有偷偷喜歡的人(參考資料「人」裡標著);這是你的祕密。");
     const talk = Object.entries(s.policy.talkativeness);
     if (talk.length > 0) {
       lines.push(
@@ -215,6 +235,8 @@ function rules(input: MindInput): string {
     "- 語音頻道寫著「正在聊天」或最近有人說話,就不是冷場:不要覺得大家很安靜,也不用自己開新話題;想參與就跟著大家正在聊的事。",
     "- 自己主動開口沒人接,就是大家在忙別的:不要一直找話題、不要重複同一件事;放下它,或過一陣子再換個完全不同的話題。",
     "- 好感只能用 affinity_hint 表達(+ / - / 0),實際數值由系統決定;feelings 的 note 是你自己對他的感覺描述。",
+    "- thought 照你真正的感受想(包括嘴上不會承認的);開口(opening)照別人看到的你,不要把真正的感受和喜歡誰說出來。",
+    "- emotions 是想完之後感受的變化(-0.3~0.3,joy 喜、anger 怒、sorrow 哀、fear 懼、surprise 驚、disgust 厭、shy 害羞、pride 得意、jealousy 嫉妒、lonely 寂寞、missing 想念、gratitude 感激、guilt 愧疚、frustration 不甘心),feelings 的 emotions 是對那個人的(missing 想念、jealousy 嫉妒、gratitude 感激、resentment 不爽);真的有變化才給。",
     "- 只能用參考資料裡的代號(u1、p1、g1…)指人、地點和議程。",
     "- documents 是你自己整理的資料庫(關於人、伺服器、你自己、你取名的主題),結構和種類都由你決定(JSON,文字可以用 Markdown);想到值得整理的才改,通常是空的。修改用 JSON Pointer 路徑,例如 /喜歡/-。",
     "",
@@ -285,7 +307,8 @@ export function mindData(input: MindInput): string {
       if (p.relation) parts.push(p.relation);
       if (p.doing) parts.push(p.doing);
       const feeling = p.feeling ? `;你對他的感覺:${short(p.feeling, 160)}` : "";
-      return `- ${p.ref}:${parts.join(",")}${feeling}`;
+      const heart = p.heart ? `;${p.heart}` : "";
+      return `- ${p.ref}:${parts.join(",")}${heart}${feeling}`;
     });
     blocks.push(dataBlock("people", "人", lines.join("\n")));
   }

@@ -4,7 +4,16 @@
 // the prompt's short refs (`u1`, `p1`, `g1`) and are resolved against the snapshot later.
 
 import { extractJsonObject } from "@miyoria/llm";
-import { DRIVE_NAMES, type DriveName, type JsonObject, type JsonValue } from "@miyoria/types";
+import {
+  DRIVE_NAMES,
+  type DriveName,
+  EMOTION_NAMES,
+  type EmotionName,
+  type JsonObject,
+  type JsonValue,
+  PERSON_EMOTION_NAMES,
+  type PersonEmotionName,
+} from "@miyoria/types";
 import { z } from "zod";
 
 export class MindReplyError extends Error {
@@ -15,6 +24,8 @@ export class MindReplyError extends Error {
 export const MAX_THOUGHT = 600;
 /** Largest drive (and boredom) change one thought may make. */
 export const MAX_DRIVE_NUDGE = 0.2;
+/** Largest emotion change one thought may make. */
+export const MAX_EMOTION_NUDGE = 0.3;
 export const MAX_FEELINGS = 3;
 export const MAX_FEELING_NOTE = 300;
 export const MAX_TALKATIVENESS = 3;
@@ -39,6 +50,8 @@ export interface FeelingChange {
   /** Her new description (replaces the old one); `null` = unchanged. */
   note: string | null;
   hint: AffinityHint | null;
+  /** Changes of her emotions toward them. */
+  emotions?: Partial<Record<PersonEmotionName, number>>;
 }
 
 export interface TalkChange {
@@ -87,6 +100,8 @@ export interface DocDraft {
 export interface MindReply {
   thought: string;
   feelings: FeelingChange[];
+  /** Changes of her emotions (bounded). */
+  emotions?: Partial<Record<EmotionName, number>>;
   drives: Partial<Record<DriveName | "boredom", number>>;
   talkativeness: TalkChange[];
   initiative: { level: number; why: string } | null;
@@ -129,6 +144,19 @@ const optNum = z
     return Number.isFinite(n) ? n : null;
   });
 
+/** Known names with a finite, nonzero number, each bounded. */
+function nudges<K extends string>(value: unknown, names: readonly K[], max: number) {
+  const out: Partial<Record<K, number>> = {};
+  if (!isRecord(value)) return out;
+  for (const key of names) {
+    const v = Number(value[key]);
+    if (value[key] !== undefined && value[key] !== null && Number.isFinite(v) && v !== 0) {
+      out[key] = clamp(v, -max, max);
+    }
+  }
+  return out;
+}
+
 const Feeling = z
   .object({
     person: ref.refine((v) => v !== null),
@@ -140,9 +168,13 @@ const Feeling = z
         const v = typeof h === "string" ? h.trim() : "";
         return v === "+" || v === "-" || v === "0" ? v : null;
       }),
+    emotions: z
+      .unknown()
+      .optional()
+      .transform((v) => nudges(v, PERSON_EMOTION_NAMES, MAX_EMOTION_NUDGE)),
   })
   // Nothing to change: not an item.
-  .refine((f) => f.note !== null || f.affinity_hint !== null);
+  .refine((f) => f.note !== null || f.affinity_hint !== null || Object.keys(f.emotions).length > 0);
 
 const Talk = z.object({
   scope: ref.refine((v) => v !== null),
@@ -247,7 +279,9 @@ export function parseMindReply(raw: string, maxIntents: number): MindReply {
     person: f.person as string,
     note: f.note,
     hint: f.affinity_hint,
+    ...(Object.keys(f.emotions).length > 0 ? { emotions: f.emotions } : {}),
   }));
+  const emotions = nudges(obj.emotions, EMOTION_NAMES, MAX_EMOTION_NUDGE);
 
   const intents = items(obj.intents, Intent, Math.max(maxIntents, 0)).map((i) => ({
     action: i.action,
@@ -280,6 +314,7 @@ export function parseMindReply(raw: string, maxIntents: number): MindReply {
   return {
     thought,
     feelings,
+    emotions,
     drives,
     talkativeness,
     initiative,

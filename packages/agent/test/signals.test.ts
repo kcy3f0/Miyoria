@@ -9,6 +9,7 @@ import {
   herStatusHint,
   moodHint,
   parseBudgetState,
+  shownHint,
   tone,
 } from "../src/index.js";
 
@@ -33,6 +34,22 @@ describe("signals", () => {
     expect(energyCooldownFactor(fresh)).toBeCloseTo(0.7, 5);
     expect(moodHint(tired)).toBe("你現在的狀態:心情不太好、平靜、有點累");
     expect(moodHint(fresh)).toBe("你現在的狀態:心情不錯、有點興奮、精神很好");
+  });
+
+  it("shown emotion hint: her lines and tags follow what she shows", () => {
+    const hint = shownHint({
+      from: "shy",
+      tag: "embarrassed",
+      style: "兇回去、嫌棄對方,但臉紅了",
+      masked: true,
+    });
+    expect(hint).toBe(
+      "你現在表現出來的樣子:兇回去、嫌棄對方,但臉紅了。台詞和 <emo:…> 照這個走(多半是 <emo:embarrassed>);心裡真正的感受藏起來,不要直接說出來",
+    );
+    // Only a plain tag name gets through.
+    expect(shownHint({ from: "joy", tag: "x>y", style: "開心", masked: false })).toContain(
+      "<emo:neutral>",
+    );
   });
 
   it("attitude_hints", () => {

@@ -32,6 +32,8 @@ export function thoughtInput(input: MindInput): ThoughtInput {
           boredom: s.boredom,
           drives: { ...s.drives },
           initiative: s.policy.initiative,
+          emotions: Object.fromEntries((s.emotions ?? []).map((e) => [e.name, e.intensity])),
+          shown: s.shown ? `${s.shown.style} <emo:${s.shown.tag}>` : null,
         }
       : null,
     suggestions: input.suggestions.slice(0, LIST_MAX).map((x) => ({ ...x, hint: line(x.hint) })),
@@ -49,6 +51,7 @@ export function thoughtInput(input: MindInput): ThoughtInput {
       relation: p.relation,
       feeling: p.feeling === null ? null : line(p.feeling),
       doing: p.doing === null ? null : line(p.doing),
+      heart: p.heart ?? null,
     })),
     agenda: input.agenda.slice(0, LIST_MAX).map((a) => ({
       ref: a.ref,

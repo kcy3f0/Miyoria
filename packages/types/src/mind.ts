@@ -143,6 +143,9 @@ export interface ThoughtInput {
     boredom: number;
     drives: Record<string, number>;
     initiative: number;
+    /** Her emotions (name: intensity) and what showed of them. */
+    emotions?: Record<string, number>;
+    shown?: string | null;
   } | null;
   suggestions: MindSuggestion[];
   world: string;
@@ -154,6 +157,7 @@ export interface ThoughtInput {
     relation: string | null;
     feeling: string | null;
     doing: string | null;
+    heart?: string | null;
   }[];
   agenda: { ref: string; text: string; due: Timestamp | null; blocked: string | null }[];
   memories: string | null;
@@ -174,6 +178,8 @@ export interface ThoughtInput {
 /** What one thought changed, item by item (`changes` says it in words). */
 export interface ThoughtEffects {
   drives: Record<string, number>;
+  /** Emotion changes (name: change). */
+  emotions?: Record<string, number>;
   talkativeness: { scope: string; level: number; minutes: number; why: string }[];
   initiative: { level: number; why: string } | null;
   feelings: { person: string; name: string; note: string | null; hint: "+" | "-" | null }[];
