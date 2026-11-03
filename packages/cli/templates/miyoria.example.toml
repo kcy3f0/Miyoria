@@ -407,6 +407,8 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # min_interval_mins = 30
 # light_after_lines = 80
 # reply_window_mins = 10         # 她說完話之後多久內的回覆算回應她
+# light_after_total_lines = 300  # 自上次反思後各處累積這麼多句,安靜時就稍微反思一下(0 = 關)
+# max_bonds = 5                  # 一次反思最多整理幾個人的人物卡(在意程度每人每天最多調一次)
 
 # 長期記憶的新鮮度:回想時只放真的相關的事,舊的、現在式的、一直重複的會被淘汰。
 # [modules.memory]

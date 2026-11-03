@@ -103,7 +103,9 @@ export type KnowledgeConfig = z.output<typeof KnowledgeConfigSchema>;
  * ```
  */
 export const ReflectConfigSchema = z.object({
-  /** LLM purpose of a reflection (thinking on). */
+  /**
+   * Model chain of a reflection; how deeply it reasons is `[llm.reasoning] reflect` (high).
+   */
   purpose: z.string().default("summarizer"),
   /** Her local time zone (minutes east of UTC). */
   utc_offset_minutes: z
@@ -117,6 +119,13 @@ export const ReflectConfigSchema = z.object({
   /** A lighter reflection after a session of at least this many lines went quiet. */
   light_after_lines: count().default(80),
   light_quiet_mins: count().default(10),
+  /**
+   * Interaction threshold: once this many lines were said anywhere since her last reflection,
+   * a light reflection over all of it follows in the next quiet moment (0 = off).
+   */
+  light_after_total_lines: count().default(300),
+  /** Bond changes (attachment, feelings) a reflection may propose, each person once a day. */
+  max_bonds: count().default(5),
   max_calls_per_day: count().default(6),
   min_interval_mins: count().default(30),
   timeout_ms: count().default(120_000),
