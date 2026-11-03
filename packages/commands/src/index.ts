@@ -52,6 +52,7 @@ export {
   granted,
   isAdminNode,
   matches,
+  SANDBOX_CODE_RUN,
 } from "./nodes.js";
 export { Permissions, parseAccount, ROLE_RANK, type Role } from "./perms.js";
 export {

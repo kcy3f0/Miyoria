@@ -561,6 +561,16 @@ class Turn {
    * Mean affinity of the turn's speakers (unknown people count as 0), if social signals are
    * available.
    */
+  /**
+   * The message her tools act for: the latest one that @-mentions her or replies to her, else
+   * the latest one. Someone chatting right after a request must not become its requester.
+   */
+  #requester(): IncomingMessage | undefined {
+    return (
+      this.inputs.findLast((m) => m.mentions_self || m.reply_to_self) ?? this.inputs.at(-1)
+    );
+  }
+
   #speakerAffinity(): number | null {
     const social = this.social;
     if (!social) return null;
@@ -1312,7 +1322,7 @@ class Turn {
         return [false, `error: arguments are not valid JSON: ${errorMessage(error)}`];
       }
     }
-    const last = this.inputs.at(-1);
+    const last = this.#requester();
     if (!last && this.intent === null) return [false, "error: no triggering message"];
     const me = this.agent.selfAccount(this.key.platform);
     try {

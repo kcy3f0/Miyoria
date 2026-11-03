@@ -13,7 +13,7 @@
 // | restricted | 10 | `help`, `me.*`, `memory.self.*`, `voice.consent` | |
 // | blocked | 0 | nothing | |
 
-import { builtinRoleGrants } from "@miyoria/commands";
+import { builtinRoleGrants, SANDBOX_CODE_RUN } from "@miyoria/commands";
 import type { RoleDefinition } from "@miyoria/store";
 
 export const OWNER = "owner";
@@ -83,14 +83,26 @@ const V1_MODERATOR = [
 ];
 const V1_ADMIN = ["admin.*", "module.*", "memory.*", "stream.*"];
 
+/** A built-in role's grants before trusted people could ask her to run code. */
+function beforeSandbox(name: string): string[] {
+  const role = builtinRoleGrants().find((r) => r.name === name);
+  return (role?.grants ?? []).filter((n) => n !== SANDBOX_CODE_RUN);
+}
+
 /**
  * Grants of the built-in roles as earlier versions seeded them. A stored built-in role that
  * still has exactly these grants was never edited and is upgraded to the current definition.
  */
 export const LEGACY_BUILTIN_GRANTS: Readonly<Record<string, readonly (readonly string[])[]>> = {
-  admin: [[...V1_PRIVACY, ...V1_EVERYDAY, ...V1_TRUSTED, ...V1_MODERATOR, ...V1_ADMIN]],
-  moderator: [[...V1_PRIVACY, ...V1_EVERYDAY, ...V1_TRUSTED, ...V1_MODERATOR]],
-  trusted: [[...V1_PRIVACY, ...V1_EVERYDAY, ...V1_TRUSTED]],
+  admin: [
+    [...V1_PRIVACY, ...V1_EVERYDAY, ...V1_TRUSTED, ...V1_MODERATOR, ...V1_ADMIN],
+    beforeSandbox("admin"),
+  ],
+  moderator: [
+    [...V1_PRIVACY, ...V1_EVERYDAY, ...V1_TRUSTED, ...V1_MODERATOR],
+    beforeSandbox("moderator"),
+  ],
+  trusted: [[...V1_PRIVACY, ...V1_EVERYDAY, ...V1_TRUSTED], beforeSandbox("trusted")],
   user: [[...V1_PRIVACY, ...V1_EVERYDAY]],
   restricted: [V1_PRIVACY],
 };

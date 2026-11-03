@@ -72,12 +72,16 @@ const EVERYDAY: readonly string[] = [
   "stream.status",
 ];
 
+/** Trusted people may ask her to run code in the sandbox (she can still decline). */
+export const SANDBOX_CODE_RUN = "sandbox.code.run";
+
 const TRUSTED_EXTRA: readonly string[] = [
   "chat.*",
   "tools.*",
   "queue.priority",
   "game.suggest",
   "stream.clip",
+  SANDBOX_CODE_RUN,
 ];
 
 const MODERATOR_EXTRA: readonly string[] = [

@@ -13,7 +13,7 @@ import {
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { activenessCapability } from "../src/actions.js";
-import { channel, Harness, incoming, noCheck, Probe } from "./harness.js";
+import { channel, Harness, incoming, mention, noCheck, Probe } from "./harness.js";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -103,6 +103,22 @@ describe("channel.activeness", () => {
     const probe = new Probe("probe");
     const h = await Harness.build("always", noCheck(), mock, null, { tools: [probe] });
     h.say(incoming(channel("c"), "Owen", "幫我一下"));
+    await vi.advanceTimersByTimeAsync(3000);
+    const [ctx] = probe.calls[0] ?? [];
+    expect(ctx?.principal).toEqual(Principals.user(OWEN, channel("c")));
+  });
+
+  it("tool calls run for the one who asked her, not whoever spoke last", async () => {
+    const mock = new MockProvider("chat")
+      .events([
+        { type: "tool_call_delta", index: 0, id: "c1", name: "probe", arguments: "{}" },
+        { type: "done", finish_reason: "tool_calls", usage: null },
+      ])
+      .reply("好了");
+    const probe = new Probe("probe");
+    const h = await Harness.build("always", noCheck(), mock, null, { tools: [probe] });
+    h.say(mention(channel("c"), "Owen", "幫我跑個程式"));
+    h.say(incoming(channel("c"), "Mini", "哈哈"));
     await vi.advanceTimersByTimeAsync(3000);
     const [ctx] = probe.calls[0] ?? [];
     expect(ctx?.principal).toEqual(Principals.user(OWEN, channel("c")));
