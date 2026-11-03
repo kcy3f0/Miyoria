@@ -190,7 +190,19 @@ dirs = ["extensions"]
 
 [modules.voice]
 consent = "opt-out"        # opt-out:預設收音,可用 /voice consent off 退出;opt-in:同意後才收
-barge_in = "stop"          # 有人插話時停止說話:stop | ignore
+barge_in = "selective"     # 有人插話時:selective(只有這回合要回的人 / 叫她名字 / 對她說實質內容才停,其他人只降音量)| stop(任何人都停)| ignore
+# barge_in_ms = 600            # 這回合要回的人講多久先暫停她(stop 模式:任何人講多久就停)
+# barge_in_duck_ms = 250       # 其他人講多久她就降音量
+# barge_in_duck_gain = 0.3     # 降音量時剩多少(0~1)
+# barge_in_focus_stop_ms = 3000 # 要回的人一直講到這麼久,不等語音辨識就停
+# names = ["她的名字", "暱稱"]    # 叫到這些字就停(profile 的名字模組會自己補上)
+# music_gate = true            # 唱歌時只有叫她名字的句子算有人講話
+# self_echo_tail_ms = 5000     # 她講完後這段時間內,轉錄跟她說的話重複就當回音
+# vad_engine = "energy"        # energy | silero(silero 要另外註冊引擎,沒有就退回 energy)
+# vad_silero_model = ""        # silero_vad.onnx 的路徑
+# tts_prefetch = 2             # 她說話時先合成後面幾句(0 = 關閉)
+# tts_prefetch_ttl_ms = 30000  # 預先合成的句子沒人用,過這麼久就丟掉
+# speech_hold_max_ms = 90000   # 唱歌 / 顯示卡借出時她的話最多等這麼久,再久就丟掉
 # 說話用另一種語言(例如日文聲線比較好聽):每句先用 LLM(fast)翻譯再送 TTS,字幕和聊天紀錄維持原文
 # tts_translate = "Japanese"
 
