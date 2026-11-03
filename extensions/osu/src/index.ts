@@ -1,5 +1,10 @@
 // osu! AI player tools. The AI itself (a reinforcement-learning model that plays lazer multiplayer rooms) is
 // osu_rl's live.service; this extension only turns its HTTP API into tools.
+//
+// The account guard: live.service plays with whatever account its own settings name, and nothing here can
+// see those. So before every call it asks live.service who it is logged in as, and refuses unless that is
+// exactly `account` (the AI's own account) and none of `blocked_accounts` (the owner's). A live.service set
+// up with a person's account never gets a single request from her.
 
 import { defineExtension } from "@miyoria/sdk";
 
@@ -9,6 +14,33 @@ interface OsuConfig {
   token?: string;
   public_url?: string;
   request_timeout_ms?: number;
+  /** The AI's own account on the osu! server; nothing runs until live.service is logged in as it. */
+  account?: string;
+  /** Accounts the AI must never use (the owner's), refused even if `account` names one of them. */
+  blocked_accounts?: string[];
+}
+
+/** Account names compare without case or surrounding spaces, like the osu! server's. */
+function sameName(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * Why live.service, logged in as `user`, may not be used, or `null` when it may.
+ */
+export function accountProblem(
+  user: unknown,
+  account: string,
+  blocked: readonly string[],
+): string | null {
+  if (!account.trim()) return "沒有設定 AI 帳號(account),不使用 osu! AI";
+  if (blocked.some((b) => sameName(b, account)))
+    return "設定的 AI 帳號在 blocked_accounts 裡,不使用";
+  if (typeof user !== "string" || !user.trim()) return "osu! AI 還沒登入,不知道它用的是哪個帳號";
+  if (blocked.some((b) => sameName(b, user)))
+    return `osu! AI 登入的是不能用的帳號(${user}),拒絕使用`;
+  if (!sameName(user, account)) return `osu! AI 登入的帳號(${user})不是設定的 AI 帳號,拒絕使用`;
+  return null;
 }
 
 const LEVELS = ["easy", "normal", "hard", "expert"];
@@ -32,12 +64,22 @@ export default defineExtension({
       "",
     );
     const timeoutMs = config.request_timeout_ms ?? 120_000;
+    const account = config.account ?? process.env.MIYORIA_OSU_ACCOUNT ?? "";
+    const blocked = config.blocked_accounts ?? [];
     if (!token)
       ctx.log.warn(
         "no live.service token (config token / MIYORIA_OSU_TOKEN); every call will be refused",
       );
+    if (!account.trim())
+      ctx.log.warn(
+        "no AI account (config account / MIYORIA_OSU_ACCOUNT); every call will be refused",
+      );
 
-    async function call(method: "GET" | "POST", path: string, body?: unknown): Promise<string> {
+    async function request(
+      method: "GET" | "POST",
+      path: string,
+      body?: unknown,
+    ): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
       let res: Response;
       try {
         res = await fetch(base + path, {
@@ -47,10 +89,27 @@ export default defineExtension({
           signal: AbortSignal.timeout(timeoutMs),
         });
       } catch (error) {
-        return `失敗:連不到 osu! AI 服務(${String(error)})`;
+        return { ok: false, error: `連不到 osu! AI 服務(${String(error)})` };
       }
       const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-      if (!res.ok) return `失敗:${String(data.error ?? res.status)}`;
+      if (!res.ok) return { ok: false, error: String(data.error ?? res.status) };
+      return { ok: true, data };
+    }
+
+    async function call(method: "GET" | "POST", path: string, body?: unknown): Promise<string> {
+      // Who live.service is logged in as, checked before every call (it can be restarted with
+      // other settings at any time).
+      const who = await request("GET", "/status");
+      if (!who.ok) return `失敗:${who.error}`;
+      const problem = accountProblem(who.data.user, account, blocked);
+      if (problem !== null) {
+        ctx.log.error("osu! AI refused: wrong account", { user: String(who.data.user ?? "") });
+        return `失敗:${problem}`;
+      }
+      if (method === "GET" && path === "/status") return JSON.stringify(who.data);
+      const r = await request(method, path, body);
+      if (!r.ok) return `失敗:${r.error}`;
+      const data = r.data;
       if (typeof data.replay_url === "string") data.replay_url = publicBase + data.replay_url;
       return JSON.stringify(data);
     }
@@ -123,6 +182,6 @@ export default defineExtension({
         }),
     });
 
-    ctx.log.info("osu extension activated", { url: base });
+    ctx.log.info("osu extension activated", { url: base, account });
   },
 });

@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { PassThrough } from "node:stream";
 import { type InitializeResult, RpcPeer, runExtension } from "@miyoria/sdk";
 import { afterEach, describe, expect, it } from "vitest";
-import extension from "../src/index.js";
+import extension, { accountProblem } from "../src/index.js";
 
 const TOKEN = "test-token-0123456789";
 const context = { platform: "discord", scope: null, channel: "c1", kind: "voice" };
@@ -28,8 +28,8 @@ afterEach(async () => {
   server = undefined;
 });
 
-/** Fake live.service: records requests, answers like the real one. */
-async function fakeService() {
+/** Fake live.service logged in as `user`: records requests, answers like the real one. */
+async function fakeService(user: string | null = "Miyoria AI") {
   const requests: Array<{ method: string; path: string; auth?: string; body: unknown }> = [];
   const s = createServer((req, res) => {
     let raw = "";
@@ -50,7 +50,7 @@ async function fakeService() {
       if (req.url === "/join") return reply(400, { error: "already_in_room" });
       if (req.url === "/play")
         return reply(200, { accuracy: 0.99, rank: "S", replay_url: "/replays/abc.osr" });
-      return reply(200, { room: 7, level: "expert", ready: true });
+      return reply(200, { user, room: 7, level: "expert", ready: true });
     });
   });
   server = s;
@@ -96,6 +96,8 @@ describe("extension", () => {
       url: service.url,
       token: TOKEN,
       public_url: "https://ai.example",
+      account: "miyoria ai",
+      blocked_accounts: ["owner"],
     });
     const tools = result.contributions.tools;
     expect(tools.map((t) => t.name)).toEqual([
@@ -116,6 +118,7 @@ describe("extension", () => {
       (await peer.request<{ content: string }>("tools.call", { name, args, context: toolContext }))
         .content;
     expect(JSON.parse(await call("osu_ai.status", {}))).toEqual({
+      user: "Miyoria AI",
       room: 7,
       level: "expert",
       ready: true,
@@ -126,9 +129,12 @@ describe("extension", () => {
     ).toMatchObject({
       replay_url: "https://ai.example/replays/abc.osr",
     });
+    // Every call first asks who live.service is logged in as.
     expect(service.requests.map((r) => [r.method, r.path, r.body])).toEqual([
       ["GET", "/status", null],
+      ["GET", "/status", null],
       ["POST", "/join", { room_id: 7 }],
+      ["GET", "/status", null],
       ["POST", "/play", { beatmap_id: 5, mods: [{ acronym: "HD" }] }],
     ]);
     expect(service.requests.every((r) => r.auth === `Bearer ${TOKEN}`)).toBe(true);
@@ -136,12 +142,54 @@ describe("extension", () => {
 
   it("reports a service that is down instead of throwing", async () => {
     const peer = host();
-    await initialize(peer, { url: "http://127.0.0.1:1", token: TOKEN });
+    await initialize(peer, { url: "http://127.0.0.1:1", token: TOKEN, account: "Miyoria AI" });
     const { content } = await peer.request<{ content: string }>("tools.call", {
       name: "osu_ai.status",
       args: {},
       context: toolContext,
     });
     expect(content).toMatch(/^失敗:連不到 osu! AI 服務/);
+  });
+
+  it.each([
+    ["another account", "Owner", { account: "Miyoria AI" }, /不是設定的 AI 帳號/],
+    [
+      "a blocked account",
+      "Owner",
+      { account: "Owner", blocked_accounts: [" owner "] },
+      /blocked_accounts/,
+    ],
+    ["no account configured", "Miyoria AI", {}, /沒有設定 AI 帳號/],
+    ["a service not logged in", null, { account: "Miyoria AI" }, /還沒登入/],
+  ])("refuses every tool when live.service runs with %s", async (_, user, extra, why) => {
+    const service = await fakeService(user);
+    const peer = host();
+    await initialize(peer, { url: service.url, token: TOKEN, ...extra });
+    for (const [name, args] of [
+      ["osu_ai.status", {}],
+      ["osu_ai.list_rooms", {}],
+      ["osu_ai.join_room", { room_id: 7 }],
+      ["osu_ai.play_map", { beatmap_id: 5 }],
+    ] as const) {
+      const { content } = await peer.request<{ content: string }>("tools.call", {
+        name,
+        args,
+        context: toolContext,
+      });
+      expect(content).toMatch(why);
+    }
+    // Nothing but the account check ever reached it.
+    expect(service.requests.every((r) => r.method === "GET" && r.path === "/status")).toBe(true);
+  });
+});
+
+describe("accountProblem", () => {
+  it("allows only the configured account, never a blocked one", () => {
+    expect(accountProblem("Miyoria_AI", "miyoria_ai", ["owner"])).toBeNull();
+    expect(accountProblem("owner", "owner", ["Owner"])).toMatch(/blocked_accounts/);
+    expect(accountProblem("OWNER", "Miyoria_AI", ["owner"])).toMatch(/不能用的帳號/);
+    expect(accountProblem("someone", "Miyoria_AI", [])).toMatch(/不是設定的 AI 帳號/);
+    expect(accountProblem(undefined, "Miyoria_AI", [])).toMatch(/還沒登入/);
+    expect(accountProblem("Miyoria_AI", "  ", [])).toMatch(/沒有設定/);
   });
 });

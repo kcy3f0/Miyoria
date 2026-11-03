@@ -23,6 +23,18 @@ AI 本體是 [osu_rl](https://github.com/SQL1024-sql/osu_RL) 的 `live.service`:
 
 服務出錯或連不上時,工具會回 `失敗:<原因>`(例如 `失敗:already_in_room`),不會讓回合當掉。
 
+## 帳號保護
+
+`live.service` 用它自己設定裡的帳號(`OSU_RL_AI_USERNAME`)登入,這個擴充看不到那邊的設定。所以每一次呼叫前,擴充都會先問 `live.service`「你現在登入的是誰」(`GET /status` 的 `user`):
+
+- 不是 `account` 設定的 AI 帳號 → 拒絕,回 `失敗:osu! AI 登入的帳號(…)不是設定的 AI 帳號`;
+- 是 `blocked_accounts` 裡的帳號(例如擁有者自己的)→ 拒絕,就算 `account` 也寫成那個名字;
+- 沒設定 `account`、或 `live.service` 還沒登入 → 拒絕。
+
+被拒絕時除了這個檢查,什麼請求都不會送到 `live.service`。帳號名稱比對不分大小寫。
+
+AI 一定要用**另外註冊的帳號**,不要把自己的帳號密碼填進 `live/.env`。在同一台電腦上架 `live.service` 或跑 `live.e2e` 之前,自己的 lazer 登入不用動,但 `live/.env` 裡只能放 AI 帳號(`OSU_RL_TESTER_*` 也不要放自己的帳號)。
+
 ## 設定
 
 1. 照 osu_rl 的 [live/README.md](https://github.com/SQL1024-sql/osu_RL/blob/master/live/README.md) 架好 `live.service`(需要 Python、.NET 10、編好的 ppy/osu,和伺服器上一個 AI 帳號),記下 `OSU_RL_CONTROL_TOKEN`。
@@ -36,6 +48,8 @@ dirs = ["extensions"]
 call_timeout_ms = 120000
 
 [extensions."miyoria.osu"]
+account = "Miyoria AI"                    # AI 自己的帳號名稱(MIYORIA_OSU_ACCOUNT);live.service 登入的不是它就全部拒絕
+blocked_accounts = ["你自己的帳號"]        # 絕對不能用的帳號
 url = "http://127.0.0.1:8765"            # live.service;也可以用環境變數 MIYORIA_OSU_URL
 public_url = "https://osu-ai.example"     # 可選:replay 連結用的對外網址(MIYORIA_OSU_PUBLIC_URL)
 env = { MIYORIA_OSU_TOKEN = "<OSU_RL_CONTROL_TOKEN>" }
@@ -46,6 +60,8 @@ env = { MIYORIA_OSU_TOKEN = "<OSU_RL_CONTROL_TOKEN>" }
 | `url` | `MIYORIA_OSU_URL` | `http://127.0.0.1:8765` |
 | `token` | `MIYORIA_OSU_TOKEN` | 無(沒設會在 log 警告,每次呼叫都被拒絕) |
 | `public_url` | `MIYORIA_OSU_PUBLIC_URL` | 同 `url` |
+| `account` | `MIYORIA_OSU_ACCOUNT` | 無(沒設就全部拒絕) |
+| `blocked_accounts` | | `[]` |
 | `request_timeout_ms` | | `120000` |
 
 `live.service` 預設只聽 `127.0.0.1`;不在同一台機器時,`live.service` 用 `--host 0.0.0.0` 並在前面加 HTTPS 反向代理,manifest 的 `network` 也要改成那個位址。
