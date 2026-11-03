@@ -87,13 +87,32 @@ const TSUNDERE: Readonly<Record<EmotionName, Rule>> = {
 };
 
 /**
+ * Who is watching: the shown emotion is a pure function of what she feels, her display rules
+ * and this. A tsundere lets feelings leak a little sooner in front of someone she cares about
+ * and guards them a little more in a crowd; `open` ignores it.
+ */
+export interface Audience {
+  /** 0..1, how much she cares about the person she is with (the most cared about, if several). */
+  care: number;
+  /** How many people are there (1 = just one). */
+  people: number;
+}
+
+/** How much closer to the surface a feeling leaks per unit of care. */
+const CARE_LEAK = 0.15;
+/** How much further down a feeling is held back in a crowd (3 people or more). */
+const CROWD_GUARD = 0.1;
+const CROWD = 3;
+
+/**
  * What shows of the strongest noticeable emotion (`notice` and above); `null` when nothing
- * stands out.
+ * stands out. Pure: `shown = f(felt, rules, audience)`.
  */
 export function shownEmotion(
   felt: readonly EmotionReading[],
   rules: DisplayRules,
   notice: number,
+  audience?: Audience,
 ): ShownEmotion | null {
   const top = felt.find((e) => e.intensity >= notice);
   if (!top) return null;
@@ -103,8 +122,10 @@ export function shownEmotion(
   let shown: Show = { tag: rule.tag, style: rule.style };
   if (rule.weak && rule.weakBelow !== undefined && top.intensity < rule.weakBelow) {
     shown = rule.weak;
-  } else if (rule.leak && rule.leakAt !== undefined && top.intensity >= rule.leakAt) {
-    shown = rule.leak;
+  } else if (rule.leak && rule.leakAt !== undefined) {
+    const care = Math.min(Math.max(audience?.care ?? 0, 0), 1);
+    const crowd = (audience?.people ?? 1) >= CROWD ? CROWD_GUARD : 0;
+    if (top.intensity >= rule.leakAt - CARE_LEAK * care + crowd) shown = rule.leak;
   }
   return { from: top.name, tag: shown.tag, style: shown.style, masked: shown.tag !== open.tag };
 }
