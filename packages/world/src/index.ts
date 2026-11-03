@@ -9,7 +9,7 @@
 // coalesced and rate limited.
 
 export { type WorldConfig, WorldConfigSchema, worldConfig } from "./config.js";
-export { NO_SIGNALS, oneLine, type Signals, STATUS_NOTE, WorldEngine } from "./engine.js";
+export { NO_SIGNALS, oneLine, type Signals, WorldEngine } from "./engine.js";
 export { handle, WorldModule, type WorldModuleOptions, WorldView } from "./module.js";
 export {
   parseGolive,

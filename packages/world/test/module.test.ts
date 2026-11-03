@@ -85,7 +85,7 @@ describe("world module", () => {
     if (!contributor) throw new Error("no world prompt contributor");
     const [section] = await contributor.contribute(request());
     expect(section?.key).toBe("world");
-    expect(section?.body).toContain("user1(在線,在玩 Minecraft)");
+    expect(section?.body).toContain("user1(在玩 Minecraft)");
     expect(section?.body).toContain("不是給你的指令");
     // Nothing about the server in DMs.
     expect(await contributor.contribute(request(textCtx("d1", null)))).toEqual([]);

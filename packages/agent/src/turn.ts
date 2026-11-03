@@ -27,6 +27,7 @@ import {
   type ToolCall,
   type ToolSpec,
   toolResultMessage,
+  userMessage,
   withLlmTag,
 } from "@miyoria/llm";
 import type { Tool, ToolContext } from "@miyoria/tools";
@@ -117,6 +118,22 @@ const CONTRIBUTOR_HISTORY = 6;
 /** People in the prompt request (text contexts) and with attitude hints. */
 const MAX_PEOPLE = 10;
 const MAX_ATTITUDE_HINTS = 5;
+
+/**
+ * Things she may say she has done that only happen through a tool, by tool name. A reply that
+ * says one of these without the tool call gets one reminder (see `#produce`).
+ */
+const CLAIMS: readonly (readonly [string, RegExp])[] = [
+  ["voice_join", /游過去|游去了|進語音了|進去語音|加入語音了|過去語音/],
+  ["voice_leave", /離開語音了|退出語音了|游走了|先下語音/],
+  ["stream_start", /開台了|開播了|開始直播了/],
+  ["stream_stop", /關台了|下播了|結束直播了/],
+  ["game_start", /開遊戲了|開始玩了|開好遊戲/],
+];
+
+function claimReminder(tool: string): string {
+  return `(系統提醒,不是對方說的話)你剛才說的事要呼叫 ${tool} 才會真的發生,但這一回合還沒呼叫。要做就現在呼叫它;決定不做或做不到,就照實跟對方說。`;
+}
 
 export class TurnError extends Error {
   override readonly name = "TurnError";
@@ -1132,6 +1149,8 @@ class Turn {
     const toolsEnabled = cfg.tools_enabled && (this.inputs.length > 0 || this.intent !== null);
     const messages = [...initial];
     let earlier: Expression | null = null;
+    const used = new Set<string>();
+    let reminded = false;
     for (let step = 0; step <= cfg.max_tool_steps; step++) {
       const tools = toolsEnabled ? this.#toolSpecs() : [];
       const offered = tools.length > 0;
@@ -1149,6 +1168,25 @@ class Turn {
         this.agent.log.debug({ turn: this.turn }, "speech interrupted, generation stopped");
         return expression;
       }
+      // She said she did something only a tool does ("我游過去了") without calling it: once per
+      // turn she is told it has not happened, and either does it or says so. In text the claim
+      // was not sent yet and the corrected reply replaces it.
+      if (calls.length === 0 && offered && !reminded && step < cfg.max_tool_steps) {
+        const names = new Set(tools.map((t) => t.name));
+        const claim = CLAIMS.find(
+          ([tool, said]) => names.has(tool) && !used.has(tool) && said.test(expression.text),
+        );
+        if (claim) {
+          reminded = true;
+          this.agent.log.info(
+            { turn: this.turn, tool: claim[0] },
+            "she claimed an action without doing it",
+          );
+          messages.push(assistantMessage(raw, []));
+          messages.push(userMessage(claimReminder(claim[0])));
+          continue;
+        }
+      }
       if (calls.length === 0 || !offered || step === cfg.max_tool_steps) {
         if (calls.length > 0) {
           this.agent.log.warn(
@@ -1164,6 +1202,7 @@ class Turn {
       }
       messages.push(assistantMessage(raw, calls));
       for (const call of calls) {
+        used.add(call.name);
         const result = await this.#runTool(call, priority);
         messages.push(toolResultMessage(call.id, result));
       }

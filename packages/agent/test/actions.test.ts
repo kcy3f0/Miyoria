@@ -124,6 +124,25 @@ describe("channel.activeness", () => {
     expect(ctx?.principal).toEqual(Principals.user(OWEN, channel("c")));
   });
 
+  it("a claimed action without its tool call gets one reminder", async () => {
+    const mock = new MockProvider("chat")
+      .reply("好啦，我游過去了。")
+      .events([
+        { type: "tool_call_delta", index: 0, id: "c1", name: "voice_join", arguments: "{}" },
+        { type: "done", finish_reason: "tool_calls", usage: null },
+      ])
+      .reply("到了。");
+    const join = new Probe("voice_join");
+    const h = await Harness.build("always", noCheck(), mock, null, { tools: [join] });
+    h.say(mention(channel("c"), "Owen", "進語音"));
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(join.calls).toHaveLength(1);
+    // The claim was never sent; the reply after the real join was.
+    expect(h.sink.texts()).toEqual(["到了。"]);
+    const second = mock.requests()[1]?.messages ?? [];
+    expect(String(second.at(-1)?.content)).toContain("voice_join");
+  });
+
   it("registers in the app's actuator registry while running", async () => {
     const appTools = new ToolRegistry();
 

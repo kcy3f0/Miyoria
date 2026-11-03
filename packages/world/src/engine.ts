@@ -121,20 +121,6 @@ export function oneLine(text: string, max = 40): string {
   return chars.length > max ? `${chars.slice(0, max).join("")}…` : flat;
 }
 
-/**
- * Statuses are habits more than signals (many keep do-not-disturb on all day) and messages wait
- * for people: none of it says whom she may talk to.
- */
-export const STATUS_NOTE =
-  "(這些只是 Discord 狀態,很多人習慣一直掛著「請勿打擾」或閒置;不代表他在忙、不能找他,也不代表大家要你安靜。訊息對方之後會看到,想找誰就找,閒置或離線的人也可以。)";
-
-const STATUS_TEXT: Record<PresenceStatus, string> = {
-  online: "在線",
-  idle: "閒置",
-  dnd: "請勿打擾",
-  offline: "離線",
-};
-
 function interestMatcher(interests: readonly string[]): (name: string) => boolean {
   const tests: ((name: string) => boolean)[] = [];
   for (const raw of interests) {
@@ -684,10 +670,9 @@ export class WorldEngine {
     const now = Date.parse(view.at);
     const online = view.people.filter((p) => p.status !== null && p.status !== "offline");
     if (online.length > 0 && max > 0) {
-      lines.push("在線的人:");
+      lines.push("在線的人(訊息誰都能傳,不在線的人之後也會看到):");
       for (const p of online.slice(0, max)) lines.push(`- ${describePerson(p, now)}`);
       if (online.length > max) lines.push(`- 還有 ${online.length - max} 人`);
-      lines.push(STATUS_NOTE);
     }
 
     if (ctx && ctx.kind !== "voice" && ctx.kind !== "dm") {
@@ -869,13 +854,18 @@ function describeActivity(a: PresenceActivity, now: number): string | null {
   }
 }
 
+/**
+ * A person as she sees them: what they are doing. Not their status: online / idle /
+ * do-not-disturb are habits more than signals, and she read a row of them as "keep quiet".
+ */
 function describePerson(p: PersonPresence, now: number): string {
-  const parts = [STATUS_TEXT[p.status ?? "offline"]];
+  const parts: string[] = [];
   for (const a of p.activities) {
     const text = describeActivity(a, now);
     if (text) parts.push(text);
   }
-  return `${oneLine(p.display_name, 24)}(${parts.join(",")})`;
+  const name = oneLine(p.display_name, 24);
+  return parts.length > 0 ? `${name}(${parts.join(",")})` : name;
 }
 
 const voiceKey = (platform: string, guild: string, channel: string) =>
