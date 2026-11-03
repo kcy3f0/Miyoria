@@ -18,7 +18,9 @@ Discord-login moderators, some read-only (no `admin.panel.write`).
 ## Product Purpose
 
 The admin panel of the Miyoria Core: see whether she is healthy, what she heard and decided,
-steer the live show (scene, expression, stream, queue, say a line), and edit who she is
+steer the live show (voice channel, Go Live, scene, expression, stream, songs, game, queue,
+how much she talks per channel, say a line, emergency stop), see how she has been over time
+(mood, drives, thoughts, conversations, LLM use), and edit who she is
 (persona, memories, relationships) and who may do what (roles).
 
 ## Operating Context

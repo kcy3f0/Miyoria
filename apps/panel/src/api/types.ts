@@ -1130,3 +1130,81 @@ export interface ReflectionView {
   lessons: Lesson[];
   feedback: FeedbackTally[];
 }
+
+// ---------------------------------------------------------------------------
+// live controls and telemetry (`packages/api/src/control.ts`, `telemetry.ts`)
+
+/** What a control route's capability said it did. */
+export interface ControlResult {
+  text: string;
+}
+
+export type SongState = "preparing" | "ready" | "playing" | "done" | "failed" | "cancelled";
+
+/** One song of her set list. */
+export interface SongView {
+  no: number;
+  /** What was asked for (a name or a link). */
+  query: string;
+  title: string | null;
+  artist: string | null;
+  duration_s: number | null;
+  /** Transposition in semitones. */
+  key: number;
+  requester_name: string;
+  state: SongState;
+  /** Worker stage while preparing (`download`, `separate`, `convert`, ...). */
+  stage: string;
+  /** 0..1 while preparing. */
+  progress: number;
+  error: string | null;
+  forced: boolean;
+  created_at: Timestamp;
+  ready_at: Timestamp | null;
+}
+
+/** `GET /api/songs`. */
+export interface SongsState {
+  playing: number | null;
+  /** Why speech is paused (a song job has the GPU). */
+  paused: string | null;
+  songs: SongView[];
+}
+
+export interface TelemetryLlm {
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_prompt_tokens: number;
+  cost_usd: number;
+  errors: number;
+  /** Cumulative counts at each finite upper bound (seconds). */
+  first_token: { count: number; sum_s: number; buckets: { le_s: number; count: number }[] };
+}
+
+/** One minute's sample. Counters are process totals; `events` count since the previous sample. */
+export interface TelemetryPoint {
+  at: Timestamp;
+  mood: Mood | null;
+  boredom: number | null;
+  drives: Record<DriveName, number> | null;
+  initiative: number | null;
+  llm: TelemetryLlm;
+  mind: { calls_total: number; tokens_total: number } | null;
+  voice_sessions: number;
+  speaking: boolean;
+  /** `messages`, `turns`, `initiatives`, `utterances`, `actions`. */
+  events: Record<string, number>;
+}
+
+/** `GET /api/telemetry?minutes=`. */
+export interface TelemetryView {
+  interval_ms: number;
+  points: TelemetryPoint[];
+}
+
+export interface GameStartRequest {
+  game?: string;
+  goal?: string;
+  stream?: boolean;
+}

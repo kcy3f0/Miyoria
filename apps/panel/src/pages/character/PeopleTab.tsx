@@ -10,6 +10,7 @@ import { Bipolar, Meter } from "@/components/status";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { fmtDateTime, fmtRelative } from "@/lib/format";
+import { AffinityTrends } from "./AffinityTrends";
 
 export function PeopleTab({ onOpen }: { onOpen: (id: string) => void }) {
   const [q, setQ] = useState("");
@@ -100,6 +101,7 @@ export function PeopleTab({ onOpen }: { onOpen: (id: string) => void }) {
 
   return (
     <div className="grid gap-4">
+      {!deferred && people.data && <AffinityTrends people={people.data.items} />}
       <Toolbar>
         <SearchInput value={q} onChange={setQ} placeholder="名稱或帳號 id" label="搜尋人" />
       </Toolbar>

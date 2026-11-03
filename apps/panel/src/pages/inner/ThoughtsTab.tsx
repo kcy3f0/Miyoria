@@ -1,7 +1,19 @@
 import { Check, X } from "lucide-react";
 import { type ReactNode, useId } from "react";
-import type { MindView, PendingApproval, Thought, ThoughtDigest, ThoughtIntent } from "@/api/types";
-import { useApprovals, useDigests, useMind, useMindMutations, useThoughts } from "@/app/queries";
+import type {
+  IntentStatus,
+  MindView,
+  PendingApproval,
+  Thought,
+  ThoughtDigest,
+  ThoughtIntent,
+  ThoughtTriggerKind,
+} from "@/api/types";
+import { useApprovals, useDigests, useMind, useMindMutations, useThoughtHistory, useThoughts } from "@/app/queries";
+import { BarList, ChartBlock, SegmentBar } from "@/components/charts/charts";
+import { RangeToggle, ThoughtsBlock, useRange } from "@/components/trends";
+import { fmtInt } from "@/lib/format";
+import { rangeOf, tally } from "@/lib/telemetry";
 import { READ_ONLY_HINT, useCanWrite } from "@/app/session";
 import { EmptyLine, QueryView, SkeletonRows } from "@/components/query-state";
 import { StatusBadge, type Tone } from "@/components/status";
@@ -305,11 +317,67 @@ function DigestsCard() {
   );
 }
 
+const INTENT_COLOR: Record<IntentStatus, string> = {
+  done: "var(--success)",
+  started: "var(--chart-1)",
+  pending: "var(--chart-quiet)",
+  dropped: "oklch(0.32 0 0)",
+  denied: "var(--destructive)",
+  failed: "var(--warning)",
+};
+
+const INTENT_ORDER: IntentStatus[] = ["done", "started", "pending", "dropped", "denied", "failed"];
+
+/** How often she thinks, what sets her thinking, and what came of it. */
+function ThoughtStats() {
+  const [range, setRange] = useRange();
+  const cfg = rangeOf(range);
+  const history = useThoughtHistory();
+  const since = Date.now() - cfg.minutes * 60_000;
+  const inRange = (history.data ?? []).filter((t) => Date.parse(t.at) >= since);
+  const triggers = tally(
+    inRange.flatMap((t) => [...new Set(t.triggers.map((x) => x.kind))]),
+    (k) => k,
+  );
+  const intents = inRange.flatMap((t) => t.intents);
+  return (
+    <div className="grid gap-4">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-base font-semibold tracking-tight">她怎麼想</h2>
+        <RangeToggle range={range} onChange={setRange} />
+      </div>
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <ThoughtsBlock range={range} />
+        <ChartBlock title="觸發原因與結果" value={fmtInt(intents.length)} unit="個意圖">
+          {history.isPending ? (
+            <SkeletonRows count={3} />
+          ) : inRange.length === 0 ? (
+            <EmptyLine className="py-6">這段時間沒有想法</EmptyLine>
+          ) : (
+            <div className="grid gap-6">
+              <SegmentBar
+                label="意圖的結果"
+                parts={INTENT_ORDER.map((s) => ({ key: s, label: INTENT_LABEL[s], value: intents.filter((i) => i.status === s).length, color: INTENT_COLOR[s] })).filter((p) => p.value > 0)}
+              />
+              <BarList
+                label="觸發原因"
+                format={fmtInt}
+                items={triggers.map((t) => ({ key: t.key, label: TRIGGER_LABEL[t.key as ThoughtTriggerKind] ?? t.key, value: t.value }))}
+              />
+            </div>
+          )}
+        </ChartBlock>
+      </div>
+    </div>
+  );
+}
+
 export function ThoughtsTab() {
   return (
     <div className="grid gap-6">
       <AutonomyCard />
       <ApprovalsCard />
+      <ThoughtStats />
       <TimelineCard />
       <DigestsCard />
     </div>

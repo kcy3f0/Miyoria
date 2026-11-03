@@ -9,6 +9,7 @@ import type {
   PendingApproval,
   ReflectionView,
   SelfView,
+  TelemetryPoint,
   Thought,
   WorldView,
 } from "@/api/types";
@@ -247,7 +248,9 @@ describe("Inner", () => {
   it("shows her state, policy and agenda with what she is doing", async () => {
     serve();
     renderRoute("/inner");
-    const list = await screen.findByLabelText("她的狀態");
+    // Without telemetry (an older Core) the state shows as current values.
+    await screen.findByRole("meter", { name: "想聊天 0.80" });
+    const list = screen.getByLabelText("她的狀態");
     expect(within(list).getByText("心情")).toBeInTheDocument();
     expect(within(list).getByText("想聊天")).toBeInTheDocument();
     expect(within(list).getByRole("meter", { name: "想聊天 0.80" })).toBeInTheDocument();
@@ -302,22 +305,36 @@ describe("Inner", () => {
     expect(within(channels).getByText("鯨魚、minecraft")).toBeInTheDocument();
   });
 
-  it("sets a text channel's level on the world tab", async () => {
-    const fetch = serve();
-    const user = userEvent.setup();
-    renderRoute("/inner?tab=world");
-    const level = await screen.findByRole("combobox", { name: "Miyoria / 雜談 的聊天等級" });
-    expect(level).toHaveTextContent("安靜");
-    expect(screen.getByText("很少插話 · 預設")).toBeInTheDocument();
-    await user.click(level);
-    await user.click(await screen.findByRole("option", { name: "活躍" }));
-    expect(await screen.findByText("已將 Miyoria / 雜談 設為「活躍」")).toBeInTheDocument();
-    const put = fetch.mock.calls.find(([, init]) => init?.method === "PUT");
-    expect(JSON.parse(String(put?.[1]?.body))).toEqual({
-      context: { platform: "discord", scope: "g1", channel: "c1", kind: "channel" },
-      mode: "lively",
+  it("charts her state over time from the telemetry, ending at the live values", async () => {
+    const now = Date.now();
+    const point = (minsAgo: number, social: number): TelemetryPoint => ({
+      at: new Date(now - minsAgo * 60_000).toISOString(),
+      mood: { valence: 0.1, arousal: 0.4, energy: 0.6 },
+      boredom: 0.3,
+      drives: { social, play: 0.5, attention: 0.3, rest: 0.2, curiosity: 0.4 },
+      initiative: 0.5,
+      llm: { calls: 0, prompt_tokens: 0, completion_tokens: 0, cached_prompt_tokens: 0, cost_usd: 0, errors: 0, first_token: { count: 0, sum_s: 0, buckets: [] } },
+      mind: null,
+      voice_sessions: 0,
+      speaking: false,
+      events: {},
     });
-    expect(screen.getByText("比較常加入對話")).toBeInTheDocument();
+    const live = { ...SELF, at: new Date(now).toISOString() };
+    mockFetch((_m, url) => {
+      if (url.pathname === "/api/self") return { body: live };
+      if (url.pathname === "/api/world") return { body: WORLD };
+      if (url.pathname === "/api/telemetry") return { body: { interval_ms: 60_000, points: [point(30, 0.1), point(10, 0.4)] } };
+      return undefined;
+    });
+    renderRoute("/inner");
+    const state = await screen.findByRole("region", { name: "她的狀態" });
+    // The newest value is the live one (0.80), not the last sample (0.40).
+    const [social] = await within(state).findAllByText("想聊天");
+    expect(social?.parentElement).toHaveTextContent("0.80");
+    // Each chart carries its values as a table for screen readers.
+    const table = within(state).getByRole("table", { name: "想聊天走勢" });
+    expect(within(table).getAllByRole("row")).toHaveLength(4);
+    expect(within(state).getByRole("radiogroup", { name: "時間範圍" })).toBeInTheDocument();
   });
 
   it("says when the modules are not running", async () => {

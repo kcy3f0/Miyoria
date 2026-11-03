@@ -539,3 +539,74 @@ export interface ReflectionView {
   lessons: LessonView[];
   feedback: FeedbackTally[];
 }
+
+// ---- live controls (`control.ts`) and telemetry (`telemetry.ts`) ----------------------------
+
+/** Answer of a control route: what the capability said it did. */
+export interface ControlResult {
+  text: string;
+}
+
+/** One song of her set list (`GET /api/songs`). */
+export interface SongView {
+  no: number;
+  /** What was asked for. Untrusted. */
+  query: string;
+  title: string | null;
+  artist: string | null;
+  duration_s: number | null;
+  key: number;
+  requester_name: string;
+  state: "preparing" | "ready" | "playing" | "done" | "failed" | "cancelled";
+  /** Worker stage while preparing (`download`, `separate`, `convert`, ...). */
+  stage: string;
+  /** 0..1 while preparing. */
+  progress: number;
+  error: string | null;
+  /** Sung as soon as she is free once ready. */
+  forced: boolean;
+  created_at: string;
+  ready_at: string | null;
+}
+
+/** `GET /api/songs` (and the answers of the song routes, with `text`). */
+export interface SongsState {
+  /** Number of the song she is singing. */
+  playing: number | null;
+  /** Why speech is paused (a song job has the GPU), else `null`. */
+  paused: string | null;
+  songs: SongView[];
+}
+
+/** Process-wide LLM counters at a sample, summed over models and purposes. */
+export interface TelemetryLlm {
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_prompt_tokens: number;
+  cost_usd: number;
+  errors: number;
+  /** `miyoria_llm_first_token_seconds`: cumulative counts at each finite upper bound. */
+  first_token: { count: number; sum_s: number; buckets: { le_s: number; count: number }[] };
+}
+
+/** One sample. Counters are totals since the process started; `events` count since the last one. */
+export interface TelemetryPoint {
+  at: string;
+  mood: { valence: number; arousal: number; energy: number } | null;
+  boredom: number | null;
+  drives: Record<string, number> | null;
+  initiative: number | null;
+  llm: TelemetryLlm;
+  mind: { calls_total: number; tokens_total: number } | null;
+  voice_sessions: number;
+  speaking: boolean;
+  /** `messages`, `turns`, `initiatives`, `utterances`, `actions` since the previous sample. */
+  events: Record<string, number>;
+}
+
+/** `GET /api/telemetry?minutes=360`: samples, oldest first. */
+export interface TelemetryView {
+  interval_ms: number;
+  points: TelemetryPoint[];
+}

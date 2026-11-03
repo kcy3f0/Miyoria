@@ -5,6 +5,7 @@ import { SettingsStoreKey } from "@miyoria/store";
 import { AuthorizerKey } from "@miyoria/types";
 import { Hono } from "hono";
 import { channelRoutes } from "./channels.js";
+import { controlRoutes } from "./control.js";
 import { coreRoutes } from "./core.js";
 import { dataRoutes } from "./data.js";
 import { ApiError, NO_SUCH_ENDPOINT } from "./errors.js";
@@ -30,6 +31,7 @@ import {
   tokenMatches,
 } from "./session.js";
 import type { ApiContext, ApiEnv, ApiState } from "./state.js";
+import { telemetryRoutes } from "./telemetry.js";
 
 const log = getLogger("api.server");
 
@@ -105,6 +107,8 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...sandboxRoutes(state),
     ...mindRoutes(state),
     ...learningRoutes(state),
+    ...controlRoutes(state),
+    ...telemetryRoutes(state),
 
     ...metricsRoutes(state, { public: options.metricsPublic ?? false }),
   ];

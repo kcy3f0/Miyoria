@@ -53,6 +53,7 @@ export const INNER_TABS = [
 
 export const SYSTEM_TABS = [
   { tab: "modules", label: "子系統" },
+  { tab: "llm", label: "LLM" },
   { tab: "extensions", label: "擴充套件" },
   { tab: "mcp", label: "MCP" },
 ] as const;

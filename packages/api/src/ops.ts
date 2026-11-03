@@ -17,6 +17,7 @@ import {
 } from "@miyoria/stage";
 import { type ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
 import {
+  type ContextKey,
   contextKeyString,
   type JsonObject,
   newId,
@@ -302,18 +303,19 @@ async function stageScene(state: ApiState, c: ApiContext): Promise<Response> {
 }
 
 /**
- * Runs a capability through the gate as the panel (principal `panel`, the request's actor).
- * Returns the error to answer with, or `null` when it ran.
+ * Runs a capability through the gate as the panel (principal `panel`, the request's actor, in
+ * `context` when given). Returns the capability's result text, or the error to answer with.
  */
-async function act(
+export async function actAs(
   state: ApiState,
   c: ApiContext,
   capability: string,
   args: JsonObject,
-): Promise<ApiError | null> {
+  context: ContextKey | null = null,
+): Promise<{ text: string; error: null } | { text: null; error: ApiError }> {
   const actuators = state.service(ActuatorRegistryKey, "actuator registry");
   const outcome = await actuators.invoke({
-    principal: Principals.panel(actorOf(c)),
+    principal: Principals.panel(actorOf(c), context),
     capability,
     args,
     why: "admin panel",
@@ -321,16 +323,30 @@ async function act(
   });
   switch (outcome.status) {
     case "done":
-      return null;
+      return { text: outcome.result.text, error: null };
     case "denied":
-      return outcome.decision.stage === "args"
-        ? ApiError.badRequest(outcome.decision.reason)
-        : outcome.decision.stage === "unknown"
-          ? ApiError.unavailable(`\`${capability}\` is not available`)
-          : ApiError.conflict(`refused by the gate: ${outcome.decision.reason}`);
+      return {
+        text: null,
+        error:
+          outcome.decision.stage === "args"
+            ? ApiError.badRequest(outcome.decision.reason)
+            : outcome.decision.stage === "unknown"
+              ? ApiError.unavailable(`\`${capability}\` is not available`)
+              : ApiError.conflict(`refused by the gate: ${outcome.decision.reason}`),
+      };
     case "failed":
-      return ApiError.badGateway(outcome.cause);
+      return { text: null, error: ApiError.badGateway(outcome.cause) };
   }
+}
+
+/** `actAs` for routes that only need to know whether it ran: the error, or `null`. */
+async function act(
+  state: ApiState,
+  c: ApiContext,
+  capability: string,
+  args: JsonObject,
+): Promise<ApiError | null> {
+  return (await actAs(state, c, capability, args)).error;
 }
 
 function sceneRoles(state: ApiState): SceneRoles {

@@ -37,8 +37,19 @@
   --success: oklch(0.74 0.15 155);
   --warning: oklch(0.8 0.14 78);
 
+  /*
+   * Chart series, in this fixed order (validated for CVD on the card surface; the first three
+   * hold for all pairs): her blue, orange, aqua, yellow, magenta. Status colors never stand in
+   * for a series. `--chart-quiet` is the de-emphasis gray ("nothing happened", "other").
+   */
   --chart-1: oklch(0.66 0.18 267);
-  --chart-2: oklch(0.74 0.15 155);
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-4: #c98500;
+  --chart-5: #d55181;
+  --chart-quiet: oklch(0.42 0 0);
+  --chart-grid: oklch(1 0 0 / 6%);
+  --chart-axis: oklch(1 0 0 / 16%);
 
   --sidebar: oklch(0.115 0 0);
   --sidebar-foreground: oklch(0.86 0 0);
@@ -87,6 +98,10 @@
   --color-warning: var(--warning);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-quiet: var(--chart-quiet);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
