@@ -26,6 +26,7 @@ import { type RequestQueue, RequestQueueKey } from "@miyoria/queue";
 import { SettingsStoreKey } from "@miyoria/store";
 import {
   type AccountRef,
+  ARBITER_IMPULSE_TOPIC,
   type ContextKey,
   contextKeyEquals,
   customEvent,
@@ -33,6 +34,7 @@ import {
   isJsonObject,
   type JsonValue,
   MindKey,
+  newImpulse,
   type PlaybackState,
   SONG_PREPARE_TOPIC,
   SONG_TOPIC,
@@ -47,6 +49,7 @@ import {
   toTimestamp,
   type VoiceFloor,
   VoicePlayerKey,
+  v2Event,
   WorldStateKey,
 } from "@miyoria/types";
 import { type SingWorker, SingWorkerError, type SongQuery, type WorkerJob } from "./client.js";
@@ -63,6 +66,9 @@ const STORE_PROFILE = "_global";
 /** After a song is started without a turn, she gets this long to start an opening line. */
 const EXPECT_OPENING_MS = 6000;
 const TURNS_REMEMBERED = 64;
+
+/** An announcement no longer makes sense after this. */
+const ANNOUNCE_TTL_MS = 2 * 60_000;
 
 /** Initiative / mind suggestion reasons. */
 export const REASONS = {
@@ -868,20 +874,32 @@ export class Singer implements VoiceFloor, SpeechPause {
 
   // ----- talking to her -----
 
+  /**
+   * An announcement (a song starting, done or failed, her voice about to go away): an impulse
+   * of source `song` for the Arbiter, never her own topic (it does not count toward what she
+   * raised on her own, nor its backoff).
+   */
   #tell(where: ContextKey, reason: string, hint: string, entry: SongEntry): void {
     const about: AccountRef[] = entry.requester ? [entry.requester] : [];
-    const mind = this.ctx.services.get(MindKey);
-    // A song about to start, or her voice about to go away, needs her words now, not after her
-    // next thought.
-    if (
-      reason !== REASONS.start &&
-      reason !== REASONS.prepare &&
-      mind?.accepting &&
-      mind.suggest({ source: "sing", reason, context: where, hint, about })
-    ) {
-      return;
-    }
-    this.ctx.publish({ type: "agent_initiative", data: { context: where, reason, hint, about } });
+    const impulse = newImpulse(
+      {
+        source: "song",
+        context: where,
+        account: entry.requester,
+        // A song about to start, or her voice about to go away, needs her words now or never.
+        ttlMs:
+          reason === REASONS.start || reason === REASONS.prepare
+            ? EXPECT_OPENING_MS
+            : ANNOUNCE_TTL_MS,
+        why: `${songLabel(entry)}(${reason})`,
+        hint,
+        about,
+        reason,
+        coalesce_key: `song:${entry.no}:${reason}`,
+      },
+      this.ctx.clock.now(),
+    );
+    this.ctx.publish(v2Event(ARBITER_IMPULSE_TOPIC, impulse));
   }
 
   #cue(cue: SongCue): void {

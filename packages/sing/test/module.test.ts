@@ -10,10 +10,12 @@ import { RequestQueue, RequestQueueKey } from "@miyoria/queue";
 import { MemorySettingsStore, SettingsStoreKey } from "@miyoria/store";
 import {
   type AccountRef,
+  ARBITER_IMPULSE_TOPIC,
   AuthorizerKey,
   BaseAuthorizer,
   type ContextKey,
   type Event,
+  impulseReason,
   type JsonValue,
   type Mind,
   MindKey,
@@ -35,6 +37,7 @@ import {
   VoiceFloorKey,
   type VoicePlayer,
   VoicePlayerKey,
+  v2Payload,
   type WorldState,
   WorldStateKey,
 } from "@miyoria/types";
@@ -364,8 +367,22 @@ class Harness {
       .map((e) => (e.type === "custom" ? (e.data.payload as unknown as SongCue) : (null as never)));
   }
 
+  /** Her announcements: impulses of source `song` for the Arbiter (never `agent.initiative`). */
   initiatives() {
-    return this.events.flatMap((e) => (e.type === "agent_initiative" ? [e.data] : []));
+    expect(this.events.some((e) => e.type === "agent_initiative")).toBe(false);
+    return this.events.flatMap((e) => {
+      const impulse = v2Payload(e, ARBITER_IMPULSE_TOPIC);
+      if (!impulse) return [];
+      expect(impulse.source).toBe("song");
+      return [
+        {
+          context: impulse.target.context,
+          reason: impulseReason(impulse),
+          hint: impulse.hint ?? "",
+          about: impulse.about,
+        },
+      ];
+    });
   }
 
   async section(): Promise<string> {
@@ -449,8 +466,10 @@ describe("sing module", () => {
     expect(h.cues()[3]).toMatchObject({ state: "ended", outcome: "finished" });
     expect(h.singer.list.get(1)?.state).toBe("done");
     expect(h.sup.services.require(VoiceFloorKey).holder("g1")).toBeNull();
-    // After a song that played to the end she may say something about it.
-    expect(h.mind.suggestions.at(-1)?.reason).toBe("song_done");
+    // After a song that played to the end she may say something about it: an announcement,
+    // not something for her mind to raise as her own topic.
+    expect(h.initiatives().at(-1)?.reason).toBe("song_done");
+    expect(h.mind.suggestions.some((s) => s.reason === "song_done")).toBe(false);
   });
 
   it("starts a requested song on its own once she let every reminder pass", async () => {
@@ -757,7 +776,7 @@ describe("sing module", () => {
     expect(h.voice.plays[0]?.stoppedWith).toBe(1500);
     expect(h.cues().at(-1)).toMatchObject({ state: "ended", outcome: "interrupted" });
     // A skipped song gets no "how was it" turn.
-    expect(h.mind.suggestions.some((s) => s.reason === "song_done")).toBe(false);
+    expect(h.initiatives().some((s) => s.reason === "song_done")).toBe(false);
 
     expect(await h.command("queue song stop")).toContain("取消了歌單上的 1 首");
     expect(h.worker.cancelled).toEqual(["j2"]);
