@@ -31,6 +31,22 @@ mind = true          # 她的內心獨白(心智迴圈)
 summarizer = true    # 記憶整理
 fast = false         # 要不要插話的快速判斷(語音裡一律不思考)
 
+# 推理等級(off | low | medium | high),依用途;取代上面的開關(這裡沒列的用途才看 [llm.thinking],
+# 兩邊都沒列就用預設值)。支援 reasoning_effort 的 provider 直接送等級;只有開關的
+# (deepseek / opencode)low / medium / high 都是「開」,再用 max_tokens 限制推理長度
+# (provider 設定的 reasoning_effort = true / reasoning_max_tokens = { low = 2048, medium = 8192 })
+[llm.reasoning]
+chat_voice = "off"     # 語音回話,要即時
+chat_text = "off"      # 一般文字回話
+chat_intent = "low"    # 她自己發起、會用工具的回合
+fast = "off"           # 灰色區判斷、翻譯
+appraise = "low"
+plan = "medium"
+plan_daily = "high"    # 每天的日計畫
+reflect = "high"
+# review = "medium"    # 高風險動作的自我審核
+# summarizer = "off"   # 對話整理、記憶整理(沒設的話照 [llm.thinking] summarizer)
+
 # 看圖:聊天模型支援圖片時,她直接用它看圖(deepseek-v4.1-flash 可以)。
 # 不收圖片的模型或 provider 標 false(沒列的 = 收);被 API 拒絕時也會自動改送文字並記住
 # [llm.image_input]
@@ -231,6 +247,13 @@ barge_in = "selective"     # 有人插話時:selective(只有這回合要回的�
 # max_prompt_chars = 16000
 # max_entry_chars = 2000
 # mention_users = true
+# 回合:最後一則訊息後等多久才開始回(打字中會延長);回覆會引用叫她的那則訊息;
+# 對話整理過後至少留幾則原文
+# debounce_ms = 800
+# reply_reference = true
+# history_after_fold = 25
+# 合併後的 talkativeness 下限(她自己明確設成 0 除外;別人在回她剛說的話時一律不擋)
+# attention = { talk_floor = 0.15 }
 
 # 語音聊天:比文字更保守,偶爾才插話。也可以用 /voice mode 即時切換
 # 她自己定了多話程度(心智迴圈或「活躍點」)的地方,插話機率、冷卻與門檻都照她的;
@@ -243,6 +266,8 @@ min_cooldown_ms = 5000     # 她定了多話程度時,冷卻的底線
 debounce_ms = 700          # 對方講完後等多久(看他是不是還要繼續講)
 text_chat = true           # 她在語音頻道裡時,那個頻道文字區打的字她也用說的回
 text_aside = true          # 用說的回時,網址和程式碼改貼到語音頻道的文字區
+direct_debounce_ms = 400   # 有人叫她(名字、她剛講完就問她)時只等這麼久
+# voice_first = true       # 雙語語音:先寫 <voice> 那句,寫完馬上送 TTS,中文字幕後補(false = 等中文寫完一起送)
 
 # 她沒親眼看到的上下文:重開後(或很久沒人講話後)補抓頻道之前的訊息、回覆鏈。
 # 需要 Bot 的「讀取訊息歷史」權限;抓不到就用自己的訊息紀錄
@@ -258,6 +283,14 @@ enabled = true
 max_images = 3             # 每回合最多幾張
 max_image_bytes = 5000000  # 單張上限
 # detail = "auto"          # auto | low | high(low 最便宜)
+
+# prompt 編譯器:每一段參考資料有自己的字數上限(超過就留整行、標「還有幾行略過」),
+# 其他模組附上的段落加起來不超過 max_context_chars(超過時公平分配,不是後面的直接被砍)
+[modules.agent.prompt]
+default_budget = 600       # 沒列在 budgets 的段落
+self_chars = 1600          # 她自己的狀態(心情、在做什麼、方針、議程、限制)
+save_every = 1             # 每幾個回合存一份壓縮過的實際 prompt(面板看;0 = 不存)
+# budgets = { conversation = 900, memory = 1000, knowledge = 700, lessons = 500, world = 500, game = 700, sing = 400, people = 800, examples = 2500 }
 
 # 她的感知:誰在線、在玩什麼、誰在哪個語音頻道、各頻道熱不熱鬧。
 # 每個人都能用 /me privacy presence:off 不讓她讀自己的狀態
