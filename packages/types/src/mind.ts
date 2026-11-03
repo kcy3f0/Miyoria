@@ -126,6 +126,61 @@ export interface ThoughtIntent {
   decisions: ThoughtDecision[];
   /** What she said in the turn she opened. */
   said: string | null;
+  /** Every status it went through, oldest first (newer journals only). */
+  history?: { at: Timestamp; status: IntentStatus; detail: string | null }[];
+}
+
+/**
+ * What one thought saw, as the panel shows it: bounded copies of the prompt's data. Only the
+ * newest thoughts of the journal keep it.
+ */
+export interface ThoughtInput {
+  /** Her local time as she was told it. */
+  time: string;
+  night: boolean;
+  self: {
+    mood: { valence: number; arousal: number; energy: number } | null;
+    boredom: number;
+    drives: Record<string, number>;
+    initiative: number;
+  } | null;
+  suggestions: MindSuggestion[];
+  world: string;
+  places: { ref: string; label: string; note: string; here: boolean }[];
+  people: {
+    ref: string;
+    name: string;
+    person: string | null;
+    relation: string | null;
+    feeling: string | null;
+    doing: string | null;
+  }[];
+  agenda: { ref: string; text: string; due: Timestamp | null; blocked: string | null }[];
+  memories: string | null;
+  documents: string | null;
+  lessons: string[];
+  recap: string | null;
+  digest: string | null;
+  unanswered: string[];
+  blocked: { capability: string; reason: string }[];
+  /** Thoughts in a row that did nothing, and since when (minutes). */
+  idle: { thoughts: number; minutes: number } | null;
+  /** Capabilities she was offered. */
+  capabilities: string[];
+  /** Her earlier thoughts she was shown. */
+  recent: number;
+}
+
+/** What one thought changed, item by item (`changes` says it in words). */
+export interface ThoughtEffects {
+  drives: Record<string, number>;
+  talkativeness: { scope: string; level: number; minutes: number; why: string }[];
+  initiative: { level: number; why: string } | null;
+  feelings: { person: string; name: string; note: string | null; hint: "+" | "-" | null }[];
+  agenda_added: { text: string; why: string }[];
+  agenda_done: string[];
+  agenda_dropped: string[];
+  documents: { type: string; title: string | null; ok: boolean; error: string | null }[];
 }
 
 /** One entry of her thought journal. */
@@ -144,6 +199,21 @@ export interface Thought {
   error: string | null;
   /** Latency of the call. */
   ms: number;
+  /** The suggestions that woke her (newer journals only). */
+  suggestions?: MindSuggestion[];
+  /** What she saw (only the newest thoughts keep it). */
+  input?: ThoughtInput | null;
+  /** The model's reasoning, when it thought out loud (only the newest thoughts keep it). */
+  reasoning?: string | null;
+  effects?: ThoughtEffects | null;
+  /** Ids of her LLM calls for this thought (the call inspector's). */
+  calls?: string[];
+  /** Cost of those calls in USD (`[llm.pricing]`). */
+  cost_usd?: number | null;
+  /** Calls made (2 = one repair). */
+  attempts?: number;
+  /** Thoughts in a row that did nothing before this one, and for how long. */
+  idle?: { thoughts: number; minutes: number } | null;
 }
 
 /** Older journal entries condensed into one record (the journal keeps a bounded number raw). */
@@ -207,6 +277,8 @@ export interface Mind {
   suggest(suggestion: MindSuggestion): boolean;
   /** Newest first. */
   thoughts(limit?: number): Thought[];
+  /** One journal entry, with what it saw while it still keeps that. */
+  thought?(id: string): Thought | null;
   /** Digests of older thoughts, newest first. */
   digests?(limit?: number): ThoughtDigest[];
   stats(): MindStats;

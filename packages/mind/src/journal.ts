@@ -17,6 +17,8 @@ import {
   type TurnId,
 } from "@miyoria/types";
 
+import { DETAIL_KEEP } from "./record.js";
+
 const log = getLogger("mind.journal");
 
 /** Settings key prefix of journal entries. */
@@ -94,6 +96,14 @@ function parseThought(value: JsonValue): Thought | null {
   return value as unknown as Thought;
 }
 
+/** Drops the input snapshot and the reasoning; `true` when there was any. */
+export function stripDetail(thought: Thought): boolean {
+  if (!thought.input && !thought.reasoning) return false;
+  thought.input = null;
+  thought.reasoning = null;
+  return true;
+}
+
 function toJson(thought: Thought): JsonValue {
   return JSON.parse(JSON.stringify(thought)) as JsonValue;
 }
@@ -116,6 +126,8 @@ export class Journal {
     private readonly changed: (thought: Thought) => void = () => {},
     /** Without it, thoughts beyond `keep` are dropped. */
     private readonly digest: DigestOptions | null = null,
+    /** The newest thoughts that keep their input snapshot and reasoning. */
+    private readonly detailKeep = DETAIL_KEEP,
   ) {}
 
   async load(): Promise<void> {
@@ -127,6 +139,9 @@ export class Journal {
       if (thought) this.#items.push(thought);
     }
     this.#items.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    for (const old of this.#items.slice(0, Math.max(this.#items.length - this.detailKeep, 0))) {
+      if (stripDetail(old)) void this.#persist(old.id, []);
+    }
     this.#digests.length = 0;
     for (const value of (await this.store.list(this.profile, DIGEST_PREFIX)).values()) {
       const d = parseDigest(value);
@@ -202,6 +217,12 @@ export class Journal {
       .map((t) => structuredClone(t));
   }
 
+  /** The thought `id`, if the journal still has it raw. */
+  get(id: string): Thought | null {
+    const t = this.#items.find((x) => x.id === id);
+    return t ? structuredClone(t) : null;
+  }
+
   /** The most recent `n`, oldest first. */
   recent(n: number): Thought[] {
     return this.#items.slice(-Math.max(n, 0)).map((t) => structuredClone(t));
@@ -216,6 +237,9 @@ export class Journal {
     const retired = this.#overflow();
     this.changed(structuredClone(thought));
     if (retired.length > 0) void this.#retire(retired);
+    // Only the newest thoughts keep what they saw and the model's reasoning.
+    const aged = this.#items[this.#items.length - 1 - this.detailKeep];
+    if (aged && stripDetail(aged)) void this.#persist(aged.id, []);
     return this.#persist(thought.id, []);
   }
 
