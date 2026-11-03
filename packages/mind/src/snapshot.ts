@@ -12,6 +12,7 @@ import {
   ConversationStatesKey,
   contextKeyString,
   dataBlock,
+  HandleDirectoryKey,
   IntentSinkKey,
   KnowledgeKey,
   type KnowledgeSubject,
@@ -30,6 +31,7 @@ import {
   SelfStateKey,
   SocialSignalsKey,
   SpeechPauseKey,
+  safeName,
   sameAccount,
   type ThoughtTrigger,
   toTimestamp,
@@ -44,6 +46,13 @@ const log = getLogger("mind.snapshot");
 
 /** Capabilities that are not hers to start (the panel's "say", the director's game moves). */
 export const NOT_FOR_HER: readonly string[] = ["speak", "game.act", "stage.stream", "message.dm"];
+
+/** Without a handle table: the person's name, with `#2` for a second one of the same name. */
+function nameRef(name: string, taken: readonly string[]): string {
+  const base = safeName(name) || "?";
+  if (!taken.includes(base)) return base;
+  for (let n = 2; ; n++) if (!taken.includes(`${base}#${n}`)) return `${base}#${n}`;
+}
 
 const MAX_PLACES = 8;
 const MAX_PEOPLE = 10;
@@ -84,6 +93,22 @@ export interface GatherInput {
 }
 
 /** The context the thought is mostly about. */
+/**
+ * The person a reply's `person` refers to: the handle shown in the snapshot, else a name that
+ * is exactly one of theirs, else a legacy `u<N>` meaning the N-th person listed in this very
+ * snapshot (a reply may still use the old codes; they are resolved here and never stored).
+ */
+export function personByRef(people: readonly PersonRef[], ref: string): PersonRef | undefined {
+  const r = ref.trim();
+  if (r === "") return undefined;
+  const exact = people.find((p) => p.ref === r);
+  if (exact) return exact;
+  const named = people.filter((p) => p.name === r);
+  if (named.length === 1) return named[0];
+  const legacy = /^u([0-9]{1,4})$/.exec(r)?.[1];
+  return legacy === undefined ? undefined : people[Number(legacy) - 1];
+}
+
 export function focusOf(
   triggers: readonly ThoughtTrigger[],
   suggestions: readonly MindSuggestion[],
@@ -274,6 +299,7 @@ export async function gather(input: GatherInput): Promise<Gathered> {
   const social = services.get(SocialSignalsKey);
   const self: SelfState | undefined = services.get(SelfStateKey);
   const people: PersonRef[] = [];
+  const handles = services.get(HandleDirectoryKey);
   const addPerson = (account: AccountRef, name: string | null) => {
     if (people.length >= MAX_PEOPLE || people.some((p) => sameAccount(p.account, account))) return;
     const presence = worldState?.person(account) ?? null;
@@ -281,8 +307,17 @@ export async function gather(input: GatherInput): Promise<Gathered> {
     if (attitude?.blocked) return;
     const person = attitude?.person ?? presence?.person ?? null;
     const activity = presence?.activities.find((a) => a.type !== "custom") ?? null;
+    // Her stable name for the person (the same in every snapshot), never a per-call `u1`:
+    // what she writes down about them (agenda, thoughts) must still mean them later.
+    const shown = name ?? presence?.display_name ?? account.id;
+    const handle =
+      handles?.ofAccount(account, shown, person) ??
+      nameRef(
+        shown,
+        people.map((p) => p.ref),
+      );
     people.push({
-      ref: `u${people.length + 1}`,
+      ref: handle,
       account,
       person,
       name: name ?? presence?.display_name ?? account.id,

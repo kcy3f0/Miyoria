@@ -256,7 +256,7 @@ describe("mind module", () => {
     expect(self.agenda().map((a) => a.text)).toEqual(["問他考試考得怎樣"]);
     await wait(5000);
     expect(dataText(provider)).toContain("可能的契機");
-    expect(dataText(provider)).toContain("問他考試考得怎樣(p1 u1)");
+    expect(dataText(provider)).toContain("問他考試考得怎樣(p1 Owen)");
     await wait(10);
     expect(r.intents.intents.map((i) => [i.capability, i.context, i.about])).toEqual([
       ["chat.start", TEXT, OWEN],

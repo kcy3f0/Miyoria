@@ -74,7 +74,7 @@ import {
   SelfStarts,
   type Situation,
 } from "./selfstart.js";
-import { capabilityInfo, gather, NOT_FOR_HER } from "./snapshot.js";
+import { capabilityInfo, gather, NOT_FOR_HER, personByRef } from "./snapshot.js";
 
 const MINUTE_MS = 60_000;
 /** Her own turns make her reflect at most this often. */
@@ -919,8 +919,7 @@ export class MindLoop implements Mind {
   ): Promise<string[]> {
     const changes: string[] = [];
     const now = this.#now();
-    const person = (ref: string | null) =>
-      ref === null ? undefined : people.find((p) => p.ref === ref);
+    const person = (ref: string | null) => (ref === null ? undefined : personByRef(people, ref));
     const place = (ref: string | null) =>
       ref === null ? undefined : places.find((p) => p.ref === ref);
     const social = this.#d.services.get(SocialKey);
@@ -1048,7 +1047,7 @@ export class MindLoop implements Mind {
           : null;
       }
       if (r.startsWith("topic:") && r.length > 6) return { type: "topic", name: r.slice(6) };
-      const person = people.find((p) => p.ref === r)?.person ?? null;
+      const person = personByRef(people, r)?.person ?? null;
       return person === null ? null : { type: "person", person };
     };
     for (const d of drafts) {
@@ -1158,7 +1157,7 @@ export class MindLoop implements Mind {
     const now = this.#now();
     return reply.intents.map((draft) => {
       const place = draft.place === null ? undefined : places.find((p) => p.ref === draft.place);
-      const who = draft.person === null ? undefined : people.find((p) => p.ref === draft.person);
+      const who = draft.person === null ? undefined : personByRef(people, draft.person);
       let context: ContextKey | null = place?.context ?? focus;
       const args = { ...draft.args };
       let problem: string | null = null;
