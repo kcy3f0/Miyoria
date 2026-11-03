@@ -9,14 +9,21 @@ import type { ToolRegistry } from "@miyoria/tools";
 import {
   type AccountRef,
   type ActionId,
+  ARBITER_IMPULSE_TOPIC,
+  ArbiterKey,
   type Attitude,
   type ContextKey,
+  type ConversationFacts,
   customEvent,
   type Envelope,
   type Handle,
   HandleDirectoryKey,
+  type Impulse,
+  type ImpulseRun,
+  type ImpulseSource,
   type IncomingMessage,
   type Intent,
+  impulseReason,
   isJsonObject,
   type JsonValue,
   type Mood,
@@ -24,6 +31,7 @@ import {
   NOTICE_TOPIC,
   type Notice,
   newId,
+  newImpulse,
   type PlatformId,
   type PlaybackState,
   type SavedPrompt,
@@ -60,6 +68,8 @@ import { type FetchLike, ImageLoader } from "./vision.js";
 /** Module whose restart means the agent commands must be registered again. */
 const COMMANDS_MODULE = "commands";
 const MINUTE_MS = 60_000;
+/** How long the Arbiter waits for a coordinator to take (or refuse) an impulse's turn. */
+const OPEN_TIMEOUT_MS = 5_000;
 /** Topic of the voice module's barge-in reports (`packages/voice/src/topics.ts`, W2). */
 export const BARGE_IN_TOPIC = "voice.barge_in";
 /** Topic of the subtitle of a line she spoke before writing it (payload: see `noteSubtitle`). */
@@ -76,6 +86,24 @@ export interface Initiative {
   about: AccountRef[];
 }
 
+/**
+ * The Arbiter's source for an `agent.initiative` reason (publishers that were not converted to
+ * impulses yet, extensions): game commentary, a song, a result or notice, else a reaction to
+ * the world. None of them is her own initiative.
+ */
+export function initiativeSource(reason: string): ImpulseSource {
+  if (reason === "game") return "game";
+  if (reason === "notice") return "notice";
+  if (reason === "action_result" || reason === "followup") return "followup";
+  if (reason.startsWith("song_")) return "song";
+  return "world";
+}
+
+/** How long a converted `agent.initiative` stays worth saying while the place is busy. */
+const INITIATIVE_TTL_MS = 2 * MINUTE_MS;
+/** Results someone waits for stay longer (the old follow-up retry window). */
+const RESULT_TTL_MS = 10 * MINUTE_MS;
+
 /** One of her intents (from her mind loop), to be opened as a turn she starts herself. */
 export interface IntentTurn {
   intent: Intent;
@@ -85,6 +113,11 @@ export interface IntentTurn {
   done: string | null;
   /** Summary of the capability she used, for the prompt. */
   summary: string | null;
+  /**
+   * The Arbiter already decided on it: no level gap or budget check here (it booked her start
+   * itself, so checking again would see that start).
+   */
+  gated?: boolean;
 }
 
 export type Input =
@@ -95,8 +128,11 @@ export type Input =
   | { type: "speaking" }
   /** Playback of her speech for `turn` changed. */
   | { type: "playback"; turn: TurnId; state: PlaybackState }
-  /** Start a turn on her own (no new input), if the context is quiet. */
-  | { type: "initiative"; initiative: Initiative }
+  /**
+   * Start a turn on her own (no new input), if the context is quiet. `reply`: the Arbiter's
+   * impulse (it decided the rules; the coordinator only says whether the place is free).
+   */
+  | { type: "initiative"; initiative: Initiative; reply?: (run: ImpulseRun) => void }
   /** Start a turn she decided on (principal `self`, with tools) once the context is free. */
   | { type: "intent"; intent: IntentTurn };
 
@@ -220,6 +256,7 @@ export class Agent {
       "agent.initiative",
       NOTICE_TOPIC,
       BUDGET_TOPIC,
+      ARBITER_IMPULSE_TOPIC,
     ];
   }
 
@@ -305,7 +342,10 @@ export class Agent {
       case "custom":
         if (event.data.topic === BUDGET_TOPIC) this.#onBudget(event.data.payload);
         else if (event.data.topic === BARGE_IN_TOPIC) this.#onBargeIn(event.data.payload);
-        else if (event.data.topic === NOTICE_TOPIC) {
+        else if (event.data.topic === ARBITER_IMPULSE_TOPIC) {
+          const impulse = v2Payload(event, ARBITER_IMPULSE_TOPIC);
+          if (impulse) this.#onImpulseEvent(impulse);
+        } else if (event.data.topic === NOTICE_TOPIC) {
           const notice = v2Payload(event, NOTICE_TOPIC);
           if (notice) this.#onNotice(notice);
         }
@@ -390,7 +430,7 @@ export class Agent {
    * is free. Returns why it cannot, or `null` when delivered.
    */
   deliverIntent(context: ContextKey, input: IntentTurn): string | null {
-    const why = this.#intentBlocked(context);
+    const why = input.gated ? null : this.#intentBlocked(context);
     if (why !== null) {
       this.intentSkipped(context, input, why);
       return why;
@@ -436,9 +476,21 @@ export class Agent {
   /**
    * Why the channel's mode or level does not let her start a conversation in `context` now
    * (`off` / `mention-only`, or the level's gap since her last start there), or `null`. DMs
-   * she opens herself have no mode.
+   * she opens herself have no mode. While the Arbiter runs, its ledger says when she may start
+   * there next (its one rule set includes the level's gap).
    */
   startBlocked(context: ContextKey): string | null {
+    const arbiter = this.ctx.services.get(ArbiterKey);
+    if (arbiter) {
+      if (context.kind !== "dm") {
+        const mode = this.handle.channelMode(context);
+        if (mode === "off" || mode === "mention-only") return `mode ${mode}`;
+      }
+      const next = arbiter.ledger(context).limits.next_initiative_at;
+      const left = next === null ? 0 : Date.parse(next) - this.ctx.clock.now();
+      if (left <= 0) return null;
+      return `the arbiter: next in ${Math.max(Math.ceil(left / MINUTE_MS), 1)} min`;
+    }
     if (context.kind === "dm") return null;
     const mode = this.handle.channelMode(context);
     if (mode === "off" || mode === "mention-only") return `mode ${mode}`;
@@ -454,6 +506,8 @@ export class Agent {
 
   /** She starts a conversation herself in `context` now (for the level's gap). */
   noteStart(context: ContextKey): void {
+    // The Arbiter books her starts itself.
+    if (this.ctx.services.get(ArbiterKey)) return;
     if (context.kind === "dm" || context.kind === "voice") return;
     this.#starts.set(contextId(context), this.ctx.clock.now());
   }
@@ -657,7 +711,88 @@ export class Agent {
     if (turn !== null) h.inbox.push({ type: "playback", turn, state });
   }
 
+  /**
+   * An `agent.initiative` request (or a notice to tell). While the Arbiter runs it is an impulse
+   * for the Arbiter (the one gate); without it the old checks apply here.
+   */
   #onInitiative(context: ContextKey, initiative: Initiative): void {
+    const arbiter = this.ctx.services.get(ArbiterKey);
+    if (arbiter) {
+      const source = initiativeSource(initiative.reason);
+      const now = this.ctx.clock.now();
+      const impulse = newImpulse(
+        {
+          source,
+          context,
+          account: initiative.about.length === 1 ? (initiative.about[0] ?? null) : null,
+          ttlMs: source === "followup" || source === "notice" ? RESULT_TTL_MS : INITIATIVE_TTL_MS,
+          why: initiative.reason,
+          hint: initiative.hint,
+          about: initiative.about,
+          reason: initiative.reason,
+          coalesce_key: initiative.reason === "notice" ? `notice:${contextId(context)}` : null,
+        },
+        now,
+      );
+      void arbiter.submit(impulse).catch((error: unknown) => {
+        this.log.warn({ error: errorMessage(error) }, "the arbiter failed on an initiative");
+      });
+      return;
+    }
+    this.#legacyInitiative(context, initiative);
+  }
+
+  /** An `arbiter.impulse` while no Arbiter runs: a speak impulse is an initiative as before. */
+  #onImpulseEvent(impulse: Impulse): void {
+    if (this.ctx.services.get(ArbiterKey)) return;
+    const context = impulse.target?.context ?? null;
+    if (impulse.kind !== "speak" || context === null) return;
+    if (Date.parse(impulse.expires_at) <= this.ctx.clock.now()) return;
+    this.#legacyInitiative(context, {
+      reason: impulseReason(impulse),
+      hint: impulse.hint ?? "",
+      about: [...(impulse.about ?? [])],
+    });
+  }
+
+  /** Conversation facts for the Arbiter's floors (`ImpulseHost.facts`). */
+  facts(context: ContextKey): ConversationFacts {
+    const text = context.kind !== "voice" && context.kind !== "dm";
+    const mode = text ? this.handle.channelMode(context) : null;
+    return {
+      mode,
+      start_gap_ms: mode === null ? 0 : (ceilingFor(mode, context)?.startGapMs ?? 0),
+      present: context.kind !== "voice" || this.inVoice(context),
+      last_spoke_at: this.#existing(context)?.session.lastSelfAt() ?? null,
+    };
+  }
+
+  /**
+   * Opens a turn of hers for an impulse the Arbiter accepted (not one of her own intents):
+   * resolves once the context's coordinator started it or found the place busy.
+   */
+  openInitiative(context: ContextKey, initiative: Initiative): Promise<ImpulseRun> {
+    if (context.kind === "voice" && !this.inVoice(context)) {
+      return Promise.resolve({ status: "refused", reason: "denied", detail: "不在那個語音頻道" });
+    }
+    return new Promise<ImpulseRun>((resolve) => {
+      let settled = false;
+      const reply = (run: ImpulseRun): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(run);
+      };
+      const timer = setTimeout(
+        () => reply({ status: "busy", detail: "the context did not answer" }),
+        OPEN_TIMEOUT_MS,
+      );
+      const pushed = this.#context(context).inbox.push({ type: "initiative", initiative, reply });
+      if (!pushed) reply({ status: "busy", detail: "the context is closing" });
+    });
+  }
+
+  #legacyInitiative(context: ContextKey, initiative: Initiative): void {
     const mode = this.handle.channelMode(context);
     if (mode === "off" || mode === "mention-only") {
       this.initiativeSkipped(context, initiative.reason, `mode ${mode}`);

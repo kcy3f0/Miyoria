@@ -3,7 +3,7 @@ import { defineManifest, errorMessage, type Module, type ModuleContext } from "@
 import type { Profile } from "@miyoria/profile";
 import { SettingsStoreKey } from "@miyoria/store";
 import { ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
-import { IntentSinkKey, SelfStateKey, TurnFocusViewKey } from "@miyoria/types";
+import { ImpulseHostKey, IntentSinkKey, SelfStateKey, TurnFocusViewKey } from "@miyoria/types";
 
 import { activenessCapability, chatCapabilities } from "./actions.js";
 import { type RandomSource, SeededRandom } from "./attention.js";
@@ -44,7 +44,9 @@ const SETTINGS_LOAD_TIMEOUT_MS = 5_000;
  * while running, and the capabilities `channel.activeness` (her talkativeness here for a while,
  * offered as the `channel_activeness` tool), `chat.start` and `chat.dm` (talking on her own) in
  * the actuator registry. Provides `IntentSinkKey`: her mind loop's intents become turns she
- * starts herself (principal `self`, with tools). Provides `TurnFocusViewKey` (whom each turn in
+ * starts herself (principal `self`, with tools). Provides `ImpulseHostKey`: the Arbiter's
+ * accepted impulses open her turns here (and her intents go through the Arbiter while it runs).
+ * Provides `TurnFocusViewKey` (whom each turn in
  * flight answers, for voice barge-in) and `SavedPromptsKey` (compressed prompts of recent turns,
  * also published as `agent.prompt`); every turn ends with an `agent.turn.outcome`.
  *
@@ -176,6 +178,7 @@ export class AgentModule implements Module {
       this.#unregister.push(actuators.register(capability));
     }
     ctx.provide(IntentSinkKey, intents);
+    ctx.provide(ImpulseHostKey, intents);
     ctx.provide(TurnFocusViewKey, agent.focusBoard);
     ctx.provide(SavedPromptsKey, agent.prompts);
     ctx.spawn("events", () => agent.run(events));

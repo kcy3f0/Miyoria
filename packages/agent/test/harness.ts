@@ -191,6 +191,8 @@ export interface Setup {
   fetchImage?: FetchLike;
   /** Provides more "app" services before the agent starts. */
   provide?: (services: Supervisor["services"]) => void;
+  /** More modules to run next to the agent (e.g. the arbiter), with their config. */
+  modules?: [Module, JsonValue][];
 }
 
 export function profile(mode: string): Profile {
@@ -277,6 +279,7 @@ export class Harness {
     );
     for (const tool of setup.tools ?? []) agent.tools().register(tool);
     await sup.register(agent, config, true);
+    for (const [module, cfg] of setup.modules ?? []) await sup.register(module, cfg, true);
     await sup.startAll();
     const h = new Harness(sup, sink, events);
     running.push(h);

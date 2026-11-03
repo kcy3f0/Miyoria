@@ -22,9 +22,10 @@
 // extended (up to `voice.max_debounce_ms`) while someone is speaking.
 //
 // An initiative request starts a turn without input, but only when the context is quiet: no
-// turn in flight, no debounce pending, no speech of hers still queued and her last words older
-// than the ambient cooldown. (Those checks become the Arbiter's, docs/design/v2-implementation.md
-// W6.)
+// turn in flight, no debounce pending, no speech of hers still queued. While the Arbiter runs
+// that is all the coordinator decides (the Arbiter retries a busy place); every rule (cooldowns,
+// the level's gap, caps) is the Arbiter's. Without it the old checks apply here: her last words
+// older than the ambient cooldown and the level's gap.
 //
 // An intent (something her mind loop decided) waits instead: it never interrupts a turn in
 // flight, waiting messages or her queued speech (nor, in voice, someone still talking) and
@@ -35,6 +36,7 @@ import { errorMessage } from "@miyoria/kernel";
 import {
   ActionSinkKey,
   type ContextKey,
+  type ImpulseRun,
   type IncomingMessage,
   inputDisposition,
   newId,
@@ -225,8 +227,9 @@ export class Coordinator {
               const started = await this.#initiative(
                 input.initiative,
                 running !== null,
-                pending.length > 0,
+                pending.length > 0 || waiting !== null,
                 unplayed !== null && now < unplayed.since + cfg.voice.speak_ttl_ms,
+                input.reply ?? null,
               );
               if (started) running = started;
               break;
@@ -299,13 +302,16 @@ export class Coordinator {
       this.#cancelled(input.turn, "initiative", "expired");
       return null;
     }
-    // The channel's level (checked again: another start may have come first).
-    const blocked = this.#agent.startBlocked(this.#key);
-    if (blocked !== null) {
-      this.#agent.intentSkipped(this.#key, input, blocked);
-      return null;
+    // The channel's level (checked again: another start may have come first). An intent the
+    // Arbiter let through was checked there and booked as her start.
+    if (!input.gated) {
+      const blocked = this.#agent.startBlocked(this.#key);
+      if (blocked !== null) {
+        this.#agent.intentSkipped(this.#key, input, blocked);
+        return null;
+      }
+      this.#agent.noteStart(this.#key);
     }
-    this.#agent.noteStart(this.#key);
     return this.#start([], null, signal, input);
   }
 
@@ -361,12 +367,17 @@ export class Coordinator {
     }
   }
 
-  /** Handles an initiative request; returns the started turn, if any. */
+  /**
+   * Handles an initiative request; returns the started turn, if any. With `reply` it is an
+   * impulse the Arbiter accepted: the rules were the Arbiter's, only whether the place is free
+   * is decided here (and told back through `reply`).
+   */
   async #initiative(
     initiative: Initiative,
     turnRunning: boolean,
     messagesWaiting: boolean,
     speechQueued: boolean,
+    reply: ((run: ImpulseRun) => void) | null,
   ): Promise<Running | null> {
     const busy = turnRunning
       ? "a turn is in flight"
@@ -375,6 +386,15 @@ export class Coordinator {
         : speechQueued
           ? "her speech is still queued"
           : null;
+    if (reply !== null) {
+      if (busy !== null || (this.#voice && this.#session.someoneSpeaking())) {
+        reply({ status: "busy", detail: busy ?? "someone is speaking" });
+        return null;
+      }
+      const started = this.#start([], initiative, this.#agent.ctx.signal);
+      reply({ status: "started", turn: started.turn, task: null, detail: "" });
+      return started;
+    }
     if (busy !== null) {
       this.#agent.initiativeSkipped(this.#key, initiative.reason, busy);
       return null;
