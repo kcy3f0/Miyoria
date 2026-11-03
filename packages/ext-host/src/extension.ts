@@ -4,6 +4,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { isDeepStrictEqual } from "node:util";
+import { GatedToolsKey, isGatedToolName } from "@miyoria/actions";
 import {
   type CommandRegistry,
   CommandRegistryKey,
@@ -32,6 +33,7 @@ import {
   type ModuleId,
   type PromptContributors,
   PromptContributorsKey,
+  V2_TOPIC_PREFIXES,
 } from "@miyoria/types";
 import { z } from "zod";
 import { type HostConfig, runtimeCommand } from "./config.js";
@@ -69,9 +71,26 @@ export const EXTENSIONS_MODULE_ID = "extensions";
 
 /**
  * Topic prefixes of built-in events; extensions can never publish on them (except a game
- * adapter on its own `game.<id>.*`).
+ * adapter on its own `game.<id>.*`). The v2 prefixes (`activity`, `arbiter`, `affect`, `plan`)
+ * are trusted by their consumers (`v2Payload` only checks for an object), and `gate` /
+ * `actions` carry the gate's decisions and outcomes: forging them is not allowed either.
  */
-const RESERVED_PREFIXES = ["platform", "agent", "voice", "action", "system", "game"];
+export const RESERVED_PREFIXES: readonly string[] = [
+  "platform",
+  "agent",
+  "voice",
+  "action",
+  "system",
+  "game",
+  "gate",
+  "actions",
+  ...V2_TOPIC_PREFIXES,
+];
+
+/** Whether an extension may never publish on `topic` (outside its own namespaces). */
+export function reservedTopic(topic: string): boolean {
+  return RESERVED_PREFIXES.some((r) => topic === r || topic.startsWith(`${r}.`));
+}
 
 /** Lines an extension writes to stderr and `log` calls go here (legacy target `miyoria_ext`). */
 const extLog = getLogger("miyoria_ext");
@@ -483,7 +502,7 @@ class Session implements RpcHandler {
     const own = `ext.${this.id}.`;
     const game = this.spec.manifest.gameId();
     const ownGame = game !== null && p.topic.startsWith(`game.${game}.`);
-    const reserved = RESERVED_PREFIXES.some((r) => p.topic === r || p.topic.startsWith(`${r}.`));
+    const reserved = reservedTopic(p.topic);
     const allowed =
       p.topic.startsWith(own) || ownGame || (!reserved && this.grants.matches(p.topic));
     if (!allowed) throw RpcError.denied(`publishing on \`${p.topic}\` is not permitted`);
@@ -505,9 +524,19 @@ class Session implements RpcHandler {
         `tool \`${decl.name}\` is in another game's namespace; only the adapter declaring that \`game\` may use \`game.<id>.*\``,
       );
     }
-    const registry = this.ctx.services.get(ToolRegistryKey);
-    if (!registry) throw new RpcError(UNAVAILABLE, "the tool registry is not available");
     const name = registryToolName(decl.name);
+    // A game adapter's raw tools (`game_<id>_*`: launch, quit, game chat) are never offered to
+    // chat turns: they go to the gated registry, which only capabilities behind the gate use.
+    const gated = isGatedToolName(name);
+    const registry = gated
+      ? this.ctx.services.get(GatedToolsKey)
+      : this.ctx.services.get(ToolRegistryKey);
+    if (!registry) {
+      throw new RpcError(
+        UNAVAILABLE,
+        gated ? "the gated tool registry is not available" : "the tool registry is not available",
+      );
+    }
     if (this.stopping) throw Session.closedError();
     if (registry.get(name) !== undefined && !this.#tools.has(name)) {
       throw new RpcError(CONFLICT, `tool \`${name}\` is already registered`);

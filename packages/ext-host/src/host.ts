@@ -2,6 +2,7 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { GatedToolsKey } from "@miyoria/actions";
 import {
   type Config,
   defineManifest,
@@ -13,6 +14,7 @@ import {
   SupervisorKey,
   sleep,
 } from "@miyoria/kernel";
+import { ToolRegistry } from "@miyoria/tools";
 import { type JsonValue, type ModuleId, serviceKey } from "@miyoria/types";
 import {
   extensionSettings,
@@ -237,6 +239,8 @@ export class ExtensionsModule implements Module {
   async start(ctx: ModuleContext): Promise<void> {
     const host = ctx.config(HostConfigSchema);
     ctx.provide(ExtensionCatalogKey, this.catalog);
+    // Game adapters' raw tools: the game director's capabilities use them, chat turns never.
+    ctx.provide(GatedToolsKey, new ToolRegistry());
     if (host.dev) {
       const targets = this.catalog.entries.map((e) => ({
         id: extensionModuleId(e.spec),

@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { GatedToolsKey } from "@miyoria/actions";
 import { CommandRegistry, CommandRegistryKey, Invocation, Permissions } from "@miyoria/commands";
 import {
   Config,
@@ -264,9 +265,13 @@ describe("ext host end to end", { timeout: 30_000 }, () => {
     const GAME = "ext.test.game";
     let h = await harness([join(FIXTURES, "game-ext")]);
     await waitState(h, GAME, "running", 5000);
-    // The declared game id reaches the extension in `initialize`.
-    expect(h.tools.names()).toContain("game_fake_id");
-    expect(await call(h, "game_fake_id", {})).toBe("fake");
+    // The declared game id reaches the extension in `initialize`. The adapter's `game_*` tools
+    // are gated: never in the chat turns' tool registry, only in the one capabilities use.
+    expect(h.tools.names()).not.toContain("game_fake_id");
+    const gated = h.sup.services.get(GatedToolsKey);
+    expect(gated?.names()).toContain("game_fake_id");
+    const tool = gated?.get("game_fake_id");
+    expect(await tool?.call(toolCtx(), {})).toBe("fake");
 
     const publish = (topic: string) => call(h, "try_publish", { topic });
     expect(await publish("game.fake.death")).toBe("ok");

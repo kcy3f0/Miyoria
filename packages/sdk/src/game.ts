@@ -5,6 +5,10 @@
 // The `game.<id>.*` namespace belongs to the extension whose manifest has
 // kind `game-adapter` and `game = "<id>"`; the host refuses game topics and
 // tools from anyone else (docs/protocols/extension-rpc.md, "Game adapters").
+//
+// The two tools are raw adapter controls (launch, quit, game chat): the host
+// keeps them out of the chat turns' tool list and only the game director's
+// capabilities (behind the gate) call them.
 
 import type { ExtensionContext } from "./extension.js";
 import { isValidTopic } from "./topics.js";
@@ -63,8 +67,13 @@ export interface GameEvent {
 
 export interface GameAdapter {
   describe(): GameInfo;
-  observe(): Promise<GameObservation>;
-  act(action: GameAction): Promise<ActionResult>;
+  /** `signal`: aborted when the host stops waiting (see `ToolCallContext.signal`). */
+  observe(signal?: AbortSignal): Promise<GameObservation>;
+  /**
+   * `signal`: aborted when the host stops waiting (the director's step timed out); stop the
+   * action rather than finish it late.
+   */
+  act(action: GameAction, signal?: AbortSignal): Promise<ActionResult>;
   events(): AsyncIterable<GameEvent>;
 }
 
@@ -132,13 +141,13 @@ export async function registerGameAdapter(
     name: `${base}.observe`,
     description: `查看 ${info.name} 現在的狀態`,
     parameters: { type: "object", properties: {} },
-    run: async () => formatObservation(await adapter.observe()),
+    run: async (_args, call) => formatObservation(await adapter.observe(call.signal)),
   });
   await ctx.tools.register({
     name: `${base}.act`,
     description: describeActions(info),
     parameters: actToolSchema(info),
-    run: async (args) => {
+    run: async (args, call) => {
       const action: GameAction = {
         name: String(args.action),
         args: (args.args as Record<string, unknown> | undefined) ?? {},
@@ -146,7 +155,7 @@ export async function registerGameAdapter(
       if (!info.actions.some((a) => a.name === action.name)) {
         return formatActionResult({ ok: false, message: `沒有「${action.name}」這個動作` });
       }
-      return formatActionResult(await adapter.act(action));
+      return formatActionResult(await adapter.act(action, call.signal));
     },
   });
   if (info.prompt) {

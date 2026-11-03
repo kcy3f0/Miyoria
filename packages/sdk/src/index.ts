@@ -36,6 +36,13 @@ export {
   formatObservation,
   registerGameAdapter,
 } from "./game.js";
-export { type NotificationHandler, type PeerOptions, type RequestHandler, RpcError, RpcPeer } from "./rpc.js";
+export {
+  CANCEL_METHOD,
+  type NotificationHandler,
+  type PeerOptions,
+  type RequestHandler,
+  RpcError,
+  RpcPeer,
+} from "./rpc.js";
 export { isValidTopic, topicMatches } from "./topics.js";
 export * from "./types.js";

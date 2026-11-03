@@ -46,6 +46,8 @@ export {
   extensionModuleId,
   gameToolAllowed,
   HOST_VERSION,
+  RESERVED_PREFIXES,
+  reservedTopic,
   specEnv,
 } from "./extension.js";
 export {
@@ -107,6 +109,7 @@ export {
   toolResultText,
 } from "./proxy.js";
 export {
+  CANCEL_METHOD,
   CLOSED,
   CONFLICT,
   encodeFrame,

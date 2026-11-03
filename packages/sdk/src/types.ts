@@ -202,6 +202,11 @@ export interface ToolCallContext {
   account: AccountRef;
   message: MessageRef;
   priority: Priority;
+  /**
+   * Aborted when the host stops waiting for this call (`$/cancelRequest`: it timed out or the
+   * turn was cancelled). Not on the wire; set by the SDK.
+   */
+  signal?: AbortSignal;
 }
 
 // ---- commands ---------------------------------------------------------------
@@ -303,6 +308,8 @@ export const ErrorCode = {
   Conflict: -32003,
   Unavailable: -32004,
   Closed: -32005,
+  /** The caller cancelled the request (`$/cancelRequest`, LSP's code). */
+  Cancelled: -32800,
 } as const;
 
 export interface RpcErrorObject {

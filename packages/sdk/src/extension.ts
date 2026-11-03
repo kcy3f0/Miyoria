@@ -224,7 +224,7 @@ export class ExtensionRuntime {
       input: opts.input,
       output: opts.output,
       timeoutMs: opts.timeoutMs ?? 10_000,
-      onRequest: (method, params) => this.#onRequest(method, params),
+      onRequest: (method, params, signal) => this.#onRequest(method, params, signal),
       onNotification: (method, params) => this.#onNotification(method, params),
       onClose: () => {
         if (this.#phase !== "stopping") this.#exit(0);
@@ -236,7 +236,7 @@ export class ExtensionRuntime {
     return this.#phase;
   }
 
-  async #onRequest(method: string, params: unknown): Promise<unknown> {
+  async #onRequest(method: string, params: unknown, signal: AbortSignal): Promise<unknown> {
     switch (method) {
       case "initialize":
         return this.#initialize(params as InitializeParams);
@@ -244,7 +244,8 @@ export class ExtensionRuntime {
         const p = params as { name: string; args?: Record<string, unknown>; context: ToolCallContext };
         const tool = this.#tools.get(p.name);
         if (!tool) throw new RpcError(ErrorCode.MethodNotFound, `unknown tool "${p.name}"`);
-        return { content: toText(await tool.run(p.args ?? {}, p.context)) };
+        // `signal` aborts when the host stops waiting (timed out, the turn was cancelled).
+        return { content: toText(await tool.run(p.args ?? {}, { ...p.context, signal })) };
       }
       case "commands.invoke": {
         const inv = params as Invocation;

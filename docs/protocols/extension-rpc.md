@@ -182,7 +182,7 @@ agent 組 prompt 時,對每個已註冊的 prompt key 送出。逾時 `prompt_ti
 
 - `ext.<id>.*`(自己的命名空間)永遠可以;
 - `game.<遊戲 id>.*`:只有宣告了這個遊戲的 game adapter 可以(不需要 `events` 權限,見〈Game adapter〉);
-- 其他 topic 要符合權限 `events` 的某個 pattern,而且**不能**在保留前綴 `platform`、`agent`、`voice`、`action`、`system`、`game` 底下(防止偽造內建事件和遊戲事件)。
+- 其他 topic 要符合權限 `events` 的某個 pattern,而且**不能**在保留前綴 `platform`、`agent`、`voice`、`action`、`system`、`game`、`gate`、`actions`,以及 v2 的 `activity`、`arbiter`、`affect`、`plan` 底下(防止偽造內建事件、遊戲事件、閘門決定與 v2 的狀態事件;v2 的消費者信任這些 payload 的形狀)。
 
 `correlation`(選填)是 TurnId,讓事件掛在某個回合底下。
 
@@ -292,7 +292,7 @@ game = "minecraft"          # 遊戲 id:1–32 個小寫英數、`-`、`_`(一�
 - 同一個遊戲 id 只能有一個擴充;第二個在 discovery 時被略過。
 - 宿主在 `initialize` 的 `extension.game` 送出這個 id。
 - **事件**:adapter 可以發佈 `game.<id>.<type>`(例如 `game.minecraft.death`),不需要 `events` 權限。別的擴充即使有 `events = ["game.*"]` 也只能**訂閱**、不能發佈 `game.*`。
-- **工具**:`game.<id>.observe`、`game.<id>.act`(登記成 `game_<id>_observe` / `game_<id>_act`;慢迴路 `@miyoria/game` 就是呼叫這兩個)。`game.` 底下的工具名稱只保留給該 adapter。
+- **工具**:`game.<id>.observe`、`game.<id>.act`(登記成 `game_<id>_observe` / `game_<id>_act`;慢迴路 `@miyoria/game` 就是呼叫這兩個)。`game.` 底下的工具名稱只保留給該 adapter。這些是 adapter 的原始控制(開 / 關遊戲、遊戲內聊天),**不會**出現在聊天回合的工具清單裡:宿主把 `game_*` 工具登記在另一個只給能力用的 registry(`GatedToolsKey`),她只能透過過閘門的能力(`game.start` / `game.stop` / `game.goal`,導演的 `game.act`)使用它們。
 - **prompt**:`prompt.register` 的 key 照常加上 `ext.<id>.` 前綴。
 
 SDK 的 `ctx.game.registerAdapter(adapter)` 負責這些對應;`describe().id` 必須等於 `ctx.game.id`(= `extension.game`),否則丟出錯誤、啟動失敗。事件的 `payload` 是 `GameEvent`:
@@ -313,6 +313,8 @@ SDK 的 `ctx.game.registerAdapter(adapter)` 負責這些對應;`describe().id` �
 | 停止 | `shutdown` 後等待結束 | `shutdown_grace_ms` | 2000 |
 
 逾時的 request 在呼叫端得到 `-32002`,之後才到的 response 會被忽略;連線本身不受影響。SDK 對宿主的 request 預設 10 秒逾時。
+
+**取消**:呼叫端不再等一個 request 時(逾時,或呼叫被中止:工具逾時、回合被取消、遊戲導演的步驟逾時),宿主送 notification `$/cancelRequest` `{"id": <那個 request 的 id>}`(跟 LSP 一樣)。擴充可以據此停止那件工作(SDK 會中止交給處理函式的 `AbortSignal`:工具的 `ctx.signal`、game adapter 的 `act(action, signal)` / `observe(signal)`),讓過期的工作無害;不認得這個 notification 的擴充照舊忽略它。之後送回的 response 會被忽略(被 SDK 取消的處理函式回 `-32800`)。
 
 ## 錯誤碼
 
