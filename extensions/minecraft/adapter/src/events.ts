@@ -47,6 +47,44 @@ function failure(d: Record<string, unknown>): string {
   return error;
 }
 
+/** What a reflex of the mod did (`reflex` / `reflex_end` `kind`). */
+const REFLEX: Record<string, string> = {
+  lava: "掉進岩漿 / 著火了,身體自己逃開",
+  suffocation: "卡在方塊裡快窒息了,自己把它挖開",
+  falling_block: "頭上有沙子或礫石掉下來,自己閃開",
+  drowning: "快沒氣了,自己往上游",
+  flee: "血太少,自己逃開",
+  fight: "被攻擊,自己反擊",
+  eat: "肚子餓,自己吃東西",
+  unstuck: "卡住了,自己掙脫",
+  pickup: "撿起掉在地上的東西",
+};
+const REFLEX_END: Record<string, string> = {
+  lava: "逃出岩漿了",
+  suffocation: "從方塊裡出來了",
+  falling_block: "閃開了",
+  drowning: "浮上來換氣了",
+  flee: "逃開了",
+  fight: "打完了",
+  eat: "吃飽了",
+  unstuck: "掙脫了",
+  pickup: "撿完了",
+};
+/** Reflexes worth an immediate reaction. */
+const URGENT_REFLEX = new Set(["lava", "suffocation", "falling_block", "drowning", "flee", "fight"]);
+/** What the mod reports a reflex interrupted (a Baritone process name, `craft`, `smelt`). */
+const INTERRUPTED: Record<string, string> = { craft: "合成", smelt: "熔爐", Mine: "挖礦", "Custom Goal": "走路" };
+
+function reflexText(d: Record<string, unknown>): string {
+  const kind = str(d.kind) ?? "";
+  let text = REFLEX[kind] ?? `反射動作 ${kind}`;
+  const what = str(d.target) ?? str(d.food);
+  if (what) text += `(${zh(what)})`;
+  const interrupted = str(d.interrupted);
+  if (interrupted) text += `,打斷了${INTERRUPTED[interrupted] ?? interrupted}`;
+  return text;
+}
+
 function event(type: string, data: Record<string, unknown>, text: string, important = false): GameEvent {
   return { type, data: { ...data, text }, important };
 }
@@ -99,6 +137,7 @@ export function mapEvent(e: BridgeEvent, opts: EventOptions = {}): GameEvent | n
       if (d.reason === "nothing_visible") {
         return event("baritone_idle", d, "看得到的都挖完了(附近看不到更多),停下來");
       }
+      if (d.reason === "reflex") return event("baritone_idle", d, "被身體的本能反應打斷,停下來");
       return event("baritone_idle", d, d.cancelled === true ? "Baritone 被叫停了" : "Baritone 做完了,停下來");
     case "craft_finished": {
       const crafted = num(d.crafted) ?? 0;
@@ -122,6 +161,19 @@ export function mapEvent(e: BridgeEvent, opts: EventOptions = {}): GameEvent | n
     }
     case "smelt_failed":
       return event("smelt_failed", d, `熔爐:${failure(d)}`, d.cancelled !== true);
+    case "reflex": {
+      // Picking up drops is routine (item_picked tells what she got).
+      if (d.kind === "pickup") return null;
+      return event("reflex", d, reflexText(d), URGENT_REFLEX.has(str(d.kind) ?? ""));
+    }
+    case "reflex_end": {
+      // Only worth a new decision when it stopped something she was doing, or did not work.
+      if (d.yielded === true || (!str(d.interrupted) && d.ok !== false)) return null;
+      const kind = str(d.kind) ?? "";
+      const text =
+        d.ok === false ? `本能反應(${REFLEX[kind] ?? kind})沒有成功` : `${REFLEX_END[kind] ?? "本能反應結束了"},可以繼續了`;
+      return event("reflex_end", d, text);
+    }
     default:
       return SEGMENT.test(e.name) ? { type: e.name, data: d } : null;
   }

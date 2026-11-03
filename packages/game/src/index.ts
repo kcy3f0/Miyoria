@@ -4,7 +4,8 @@
 // publishes `game.<id>.*` events. While a session runs (`game start`) the director observes the
 // game every `decide_secs` (sooner on trigger events), asks the LLM purpose `game` (JSON mode)
 // for `{goal, goal_status, action, commentary, mood_nudge}` and runs the action through the act
-// tool; consumes `queue.item_activated` items of kind `game_goal` as locked goals; requests live
+// tool (after a failure it withholds the low-level move / mine actions for a while, so she
+// changes method or goal); consumes `queue.item_activated` items of kind `game_goal` as locked goals; requests live
 // commentary with `agent.initiative` (reason `game`); nudges the mood on deaths and
 // achievements; and contributes a `game` prompt section.
 
@@ -65,6 +66,14 @@ export {
   SESSION_TOPIC,
   View,
 } from "./director.js";
+export {
+  activeGuard,
+  afterSuccess,
+  type FailureGuard,
+  guardAfter,
+  guardNote,
+  withheld,
+} from "./guard.js";
 export { LIVE_TOPICS, LiveState } from "./live.js";
 export {
   GameControl,

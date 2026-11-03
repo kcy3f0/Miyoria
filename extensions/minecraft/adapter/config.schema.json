@@ -16,7 +16,21 @@
     "reconnect_min_ms": { "type": "integer", "minimum": 100, "default": 1000 },
     "reconnect_max_ms": { "type": "integer", "minimum": 1000, "default": 15000 },
     "damage_important": { "type": "number", "minimum": 0, "default": 4, "description": "一次受傷超過幾點算重要事件(會觸發實況)" },
-    "allow_commands": { "type": "boolean", "default": false, "description": "允許 chat 動作送 / 開頭的遊戲指令" }
+    "allow_commands": { "type": "boolean", "default": false, "description": "允許 chat 動作送 / 開頭的遊戲指令" },
+    "auto_launch": { "type": "boolean", "default": true, "description": "遊戲沒開時,開始玩會自己用 Prism Launcher 開遊戲" },
+    "prism_path": {
+      "type": "string",
+      "description": "Prism Launcher 執行檔;預設自動找:實例旁(可攜版)、%LOCALAPPDATA%\\Programs\\PrismLauncher、Program Files、scoop(環境變數 MIYORIA_MC_PRISM)"
+    },
+    "prism_instance": { "type": "string", "description": "要開的 Prism 實例 id(instances/ 底下的資料夾名);預設從 minecraft_dir 推" },
+    "launch_world": { "type": "string", "default": "latest", "description": "開遊戲時直接進入的存檔資料夾;latest = 最近玩的那個,空字串 = 停在主選單" },
+    "launch_timeout_secs": { "type": "integer", "minimum": 10, "default": 180, "description": "開遊戲後最多等模組連上幾秒" },
+    "quit_on_stop": {
+      "type": "string",
+      "enum": ["launched", "always", "never"],
+      "default": "launched",
+      "description": "停止玩的時候關遊戲:launched = 只關她自己開的、always、never"
+    }
   },
   "additionalProperties": false
 }

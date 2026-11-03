@@ -1,8 +1,8 @@
 // The director: one game session at a time, a decision every `decide_secs` (sooner on important
 // events), goal tracking, queue goals, commentary and mood nudges.
 
-import type { ActuatorRegistry } from "@miyoria/actions";
-import { errorMessage, getLogger, type ModuleContext, withTimeout } from "@miyoria/kernel";
+import { type ActuatorRegistry, deniedText } from "@miyoria/actions";
+import { errorMessage, getLogger, type ModuleContext, sleep, withTimeout } from "@miyoria/kernel";
 import { type ChatRequest, type LlmRouter, LlmRouterKey, sessionId } from "@miyoria/llm";
 import { RequestQueueKey } from "@miyoria/queue";
 import { type ToolContext, type ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
@@ -39,6 +39,14 @@ import {
   type Verdict,
   verdictDebug,
 } from "./decision.js";
+import {
+  activeGuard,
+  afterSuccess,
+  type FailureGuard,
+  guardAfter,
+  guardNote,
+  withheld,
+} from "./guard.js";
 
 const log = getLogger("game");
 
@@ -165,6 +173,8 @@ interface Session {
   decideStarted: number | null;
   trigger: Trigger | null;
   lastComment: number | null;
+  /** Low-level actions withheld after a failure (see guard.ts). */
+  guard: FailureGuard | null;
 }
 
 const observeTool = (s: Session): string => `game_${s.game}_observe`;
@@ -297,6 +307,8 @@ interface DecideInput {
   lastAction: string | null;
   backlog: string[];
   recent: string[];
+  /** The failure guard's prompt line, if it is on. */
+  withheld: string | null;
 }
 
 async function decide(input: DecideInput): Promise<Done> {
@@ -338,6 +350,7 @@ async function ask(input: DecideInput, observation: string): Promise<Decision> {
     backlog: input.backlog,
     recent: input.recent,
     observation,
+    withheld: input.withheld,
   };
   const { system, user } = prompts(parts);
   const request: ChatRequest = {
@@ -528,13 +541,96 @@ export class Director {
     } catch (error) {
       throw new GameError(`看不到 ${name} 的狀態（${errorMessage(error)}），沒辦法開始玩。`);
     }
-    const { state } = splitObservation(raw);
+    let { state } = splitObservation(raw);
     if (state?.connected === false) {
-      throw new GameError(
-        `${name} 還沒開，或遊戲裡的模組沒有連上，沒辦法開始玩。請擁有者先在直播機開遊戲並進入世界。`,
-      );
+      const launch = asObject(state.launch);
+      if (this.#cfg.auto_launch && launch?.available === true) {
+        state = await this.#launch(game, name, context, tools, ctx);
+      } else {
+        const problem =
+          launch?.available === false && typeof launch.problem === "string"
+            ? `（沒辦法自己開：${launch.problem}）`
+            : "";
+        throw new GameError(
+          `${name} 還沒開，或遊戲裡的模組沒有連上，沒辦法開始玩。請擁有者先在直播機開遊戲並進入世界。${problem}`,
+        );
+      }
     }
     return { inMenu: state?.in_game === false };
+  }
+
+  /**
+   * Starts the game with the adapter's `launch` action (through the gate, as the director) and
+   * polls the observe tool until the game connects and, when the launch joins a world, loads it.
+   * A refused or failed launch, a launcher error and running out of time throw `GameError`.
+   */
+  async #launch(
+    game: string,
+    name: string,
+    context: ContextKey,
+    tools: ToolRegistry,
+    ctx: ToolContext,
+  ): Promise<JsonObject | null> {
+    const cfg = this.#cfg;
+    const outcome = await this.#actuators.invoke(
+      {
+        principal: Principals.director(context),
+        capability: GAME_ACT,
+        args: { game, call: { action: "launch", args: {} } },
+        why: "要開始玩了,先把遊戲開起來",
+        turn: null,
+      },
+      { signal: ctx.signal },
+    );
+    if (outcome.status === "denied") {
+      throw new GameError(
+        `沒辦法開 ${name}：${deniedText(outcome.decision.stage)}（${outcome.decision.reason}）`,
+      );
+    }
+    if (outcome.status === "failed") throw new GameError(`${name} 開不起來：${outcome.error}`);
+    // The SDK formats a failed action as `失敗:…`.
+    const text = outcome.result.text;
+    if (text.startsWith("失敗"))
+      throw new GameError(`${name} 開不起來：${text.replace(/^失敗:?/, "")}`);
+    log.info({ game }, "launching the game");
+    const deadline = this.#now() + this.#secs(cfg.launch_wait_secs);
+    let world = false;
+    let last: JsonObject | null = null;
+    for (;;) {
+      await sleep(this.#secs(cfg.launch_poll_secs), ctx.signal);
+      let raw: string;
+      try {
+        raw = await callTool(
+          tools,
+          `game_${game}_observe`,
+          ctx,
+          {},
+          this.#secs(cfg.tool_timeout_secs),
+        );
+      } catch (error) {
+        log.debug({ error: errorMessage(error) }, "observing the starting game failed");
+        raw = "";
+      }
+      const { state } = splitObservation(raw);
+      const timeUp = this.#now() >= deadline;
+      if (state && state.connected !== false) {
+        last = state;
+        // Joining a world: wait for it to load (the main menu only while time is left).
+        if (state.in_game !== false || !world || timeUp) return state;
+      } else if (state) {
+        const launch = asObject(state.launch);
+        if (launch?.world) world = true;
+        if (launch?.state === "failed") {
+          throw new GameError(`${name} 開不起來：${String(launch.error ?? "不明原因")}`);
+        }
+      }
+      if (timeUp) {
+        if (last) return last;
+        throw new GameError(
+          `等了 ${cfg.launch_wait_secs} 秒，${name} 還是沒有連上，沒辦法開始玩。請擁有者看一下直播機。`,
+        );
+      }
+    }
   }
 
   /** Starts a session. Throws `GameError` (user-facing message) when it cannot. */
@@ -630,6 +726,7 @@ export class Director {
       decideStarted: null,
       trigger: { text: ["剛開始玩"], important: true },
       lastComment: null,
+      guard: null,
     };
     this.#publishSession("started", this.#session);
     return `她開始玩 ${name} 了，實況會在${where}進行。`;
@@ -654,14 +751,19 @@ export class Director {
     log.info({ game: s.game }, "game session stopped");
     this.#publishSession("stopped", s);
     const tools = this.#ctx.services.get(ToolRegistryKey);
-    if (tools?.get(actTool(s))) {
+    const act = tools?.get(actTool(s));
+    if (act) {
       const actuators = this.#actuators;
+      const quit = this.#cfg.close_on_stop && offers(act.spec.parameters, "quit");
       this.#ctx.spawn("game-stop", async (signal) => {
-        const args = new ActionCall("stop", {}).toolArgs();
-        try {
-          await actThroughGate(actuators, s, args, signal);
-        } catch (error) {
-          log.debug({ error: errorMessage(error) }, "stopping the game bot failed");
+        const calls = quit ? ["stop", "quit"] : ["stop"];
+        for (const name of calls) {
+          try {
+            // `quit` closes the game when the adapter's own rule says so (e.g. she launched it).
+            await actThroughGate(actuators, s, new ActionCall(name, {}).toolArgs(), signal);
+          } catch (error) {
+            log.debug({ action: name, error: errorMessage(error) }, "stopping the game failed");
+          }
         }
       });
     }
@@ -749,6 +851,7 @@ export class Director {
       issuedAt !== null && this.#now() - issuedAt >= this.#secs(this.#cfg.settle_secs);
     const cancelled = dataObj?.cancelled === true;
     if (settled && this.#cfg.failed_events.includes(kind)) {
+      if (s) s.guard = guardAfter(this.#cfg, firstLine(text, 80), this.#now()) ?? s.guard;
       this.#finishGoal({ type: "failed", why: text });
     } else if (settled && !cancelled && this.#cfg.reached_events.includes(kind)) {
       this.#finishGoal({ type: "reached" });
@@ -994,6 +1097,7 @@ export class Director {
       lastAction: s.lastAction,
       backlog: s.backlog.map((q) => `${q.text}(${q.requester})`),
       recent: [...s.recent],
+      withheld: guardNote(s.guard, now),
     };
     return (signal) => decide({ ...input, toolCtx: { ...input.toolCtx, signal } });
   }
@@ -1082,6 +1186,16 @@ export class Director {
           }
         : null;
       verdict = judge(cfg, facts, decision.action, decision.goal, cur.busy, trigger.important);
+      const guard = activeGuard(cur.guard, now);
+      if (verdict.type !== "keep" && guard && withheld(guard, decision.action.name, now)) {
+        // The same kind of low-level retry right after a failure: she has to change method.
+        verdict = { type: "keep", why: `withheld after a failure: ${guard.why}` };
+        cur.lastAction = `${decision.action.display()} → 暫時不行:剛剛失敗過(${guard.why}),換個方法或目標`;
+        if (!guard.nudged) {
+          guard.nudged = true;
+          this.#trigger("動作被擋下了,換個方法或目標", false);
+        }
+      }
     }
     this.#ctx.publish(
       customEvent(DECISION_TOPIC, {
@@ -1129,6 +1243,11 @@ export class Director {
     log.debug({ action: action.display(), ok }, "game action");
     let failedGoal = false;
     const now = this.#now();
+    if (!instant) {
+      s.guard = ok
+        ? afterSuccess(s.guard, action.name, now)
+        : (guardAfter(this.#cfg, firstLine(text, 80), now) ?? s.guard);
+    }
     if (verdict.type === "replace" && ok) {
       const goal = newGoal(goalText ?? action.display(), { type: "director" }, now);
       goal.action = action;
@@ -1149,6 +1268,13 @@ export class Director {
     if (failedGoal) this.#finishGoal({ type: "failed", why: firstLine(text, 60) });
     else if (!ok) this.#trigger("上一個動作失敗了", false);
   }
+}
+
+/** Whether the act tool's schema lists `action` (its `action` enum). */
+function offers(parameters: JsonValue, action: string): boolean {
+  const actionSchema = asObject(asObject(asObject(parameters)?.properties)?.action);
+  const names = actionSchema?.enum;
+  return Array.isArray(names) && names.includes(action);
 }
 
 function asObject(value: JsonValue | undefined): JsonObject | null {

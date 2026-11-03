@@ -23,6 +23,8 @@ public final class Protocol {
     public static final String T_CRAFT = "craft";
     public static final String T_SMELT = "smelt";
     public static final String T_PLACE = "place";
+    /** Close the game the way the window's close button does (saves and leaves the world). */
+    public static final String T_QUIT = "quit";
 
     // server -> client
     public static final String T_HELLO_ACK = "hello_ack";
@@ -52,5 +54,7 @@ public final class Protocol {
     public static final String E_NEEDS_STATION = "needs_station";
     /** A craft / smelt job is still running. */
     public static final String E_BUSY = "busy";
+    /** A survival reflex (escaping lava, a fight...) has her body; try again when it ends. */
+    public static final String E_REFLEX_ACTIVE = "reflex_active";
     public static final String E_INTERNAL = "internal";
 }

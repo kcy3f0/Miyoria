@@ -51,6 +51,8 @@ class Flow {
   readonly streams: { principal: Principal; args: JsonValue }[] = [];
   readonly acts: { args: JsonValue; principal: Principal | undefined }[] = [];
   observeText = READY;
+  /** What the act tool answers (default: success). */
+  actResult: (args: JsonValue) => string = () => "成功:好";
 
   private constructor() {
     this.registry = new ActuatorRegistry({
@@ -71,11 +73,16 @@ class Flow {
       spec: {
         name: "game_minecraft_act",
         description: "在 Minecraft 裡做一個高階動作。可用動作:\n- mine:挖\n- chat:說話",
-        parameters: { type: "object" },
+        parameters: {
+          type: "object",
+          properties: {
+            action: { type: "string", enum: ["mine", "chat", "stop", "launch", "quit"] },
+          },
+        },
       },
       call: async (ctx: ToolContext, args) => {
         this.acts.push({ args, principal: ctx.principal });
-        return "成功:好";
+        return this.actResult(args);
       },
     };
     this.tools.register(observe);
@@ -292,6 +299,94 @@ describe("去玩 Minecraft", () => {
     });
     expect(out.status).toBe("done");
     expect(f.acts.at(-1)?.args).toEqual({ action: "chat", args: { message: "goto 0 0 好" } });
+    await f.stop();
+  });
+});
+
+const LAUNCHABLE =
+  '沒有連上 Minecraft。\n\n狀態:{"connected":false,"launch":{"available":true,"state":"idle"}}';
+const STARTING =
+  '沒有連上 Minecraft。遊戲正在用 Prism 開。\n\n狀態:{"connected":false,"launch":{"available":true,"state":"starting","world":"New World"}}';
+const actions = (f: Flow) =>
+  f.acts.map((a) => (a.args as { action?: string } | null)?.action ?? "?");
+
+describe("她自己開遊戲", () => {
+  it("launches the game through the gate, waits for it to connect and load, then plays", async () => {
+    const f = await Flow.create();
+    f.observeText = LAUNCHABLE;
+    f.actResult = (args) => {
+      if ((args as { action?: string }).action === "launch") f.observeText = STARTING;
+      return "成功:正在用 Prism Launcher 開 Miyoria-1.21.1";
+    };
+    const started = f.startTool({});
+    await vi.advanceTimersByTimeAsync(4_000);
+    // Connected, still loading the world it asked for: keep waiting.
+    f.observeText = MENU;
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(f.sessions()).toEqual([]);
+    f.observeText = READY;
+    await vi.advanceTimersByTimeAsync(2_000);
+    const text = await started;
+    expect(text).toContain("她開始玩 Minecraft 了");
+    expect(text).not.toContain("主選單");
+    expect(actions(f)[0]).toBe("launch");
+    expect(f.acts[0]?.principal?.kind).toBe("director");
+    expect(f.gate.map((d) => [d.capability, d.principal.kind])).toContainEqual([
+      "game.act",
+      "director",
+    ]);
+
+    // Stopping also asks the adapter to close the game (it decides whether it does).
+    await f.sup.services.require(GameControlKey).stop();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(actions(f).slice(-2)).toEqual(["stop", "quit"]);
+    await f.stop();
+  });
+
+  it("a launcher that fails is a failed start with the reason", async () => {
+    const f = await Flow.create();
+    f.observeText = LAUNCHABLE;
+    f.actResult = () => {
+      f.observeText =
+        '沒有連上。\n\n狀態:{"connected":false,"launch":{"available":true,"state":"failed","error":"Prism Launcher 結束了(代碼 1),遊戲沒有開起來"}}';
+      return "成功:正在開";
+    };
+    const started = f.startTool({});
+    const outcome = expect(started).rejects.toThrow(/Minecraft 開不起來.*代碼 1/);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await outcome;
+    expect(f.sessions()).toEqual([]);
+    await f.stop();
+  });
+
+  it("gives up after launch_wait_secs", async () => {
+    const f = await Flow.create();
+    f.observeText = LAUNCHABLE;
+    f.actResult = () => {
+      f.observeText = STARTING;
+      return "成功:正在開";
+    };
+    const started = f.startTool({});
+    const outcome = expect(started).rejects.toThrow(/等了 240 秒.*還是沒有連上/);
+    await vi.advanceTimersByTimeAsync(242_000);
+    await outcome;
+    await f.stop();
+  });
+
+  it("a refused launch action fails the start with what the adapter said", async () => {
+    const f = await Flow.create();
+    f.observeText = LAUNCHABLE;
+    f.actResult = () => "失敗:沒辦法開遊戲:找不到 Prism Launcher";
+    await expect(f.startTool({})).rejects.toThrow(/開不起來.*找不到 Prism Launcher/);
+    await f.stop();
+  });
+
+  it("says why it cannot start the game itself", async () => {
+    const f = await Flow.create();
+    f.observeText =
+      '沒有連上。\n\n狀態:{"connected":false,"launch":{"available":false,"problem":"找不到 Prism Launcher(prismlauncher)"}}';
+    await expect(f.startTool({})).rejects.toThrow(/還沒開.*沒辦法自己開：找不到 Prism Launcher/);
+    expect(f.acts).toEqual([]);
     await f.stop();
   });
 });

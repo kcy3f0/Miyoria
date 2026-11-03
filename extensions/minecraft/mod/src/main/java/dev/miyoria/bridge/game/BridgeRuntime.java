@@ -10,6 +10,7 @@ import dev.miyoria.bridge.model.RawObservation;
 import dev.miyoria.bridge.protocol.Protocol;
 import dev.miyoria.bridge.protocol.ProtocolException;
 import dev.miyoria.bridge.protocol.Request;
+import dev.miyoria.bridge.reflex.ReflexBrain;
 import dev.miyoria.bridge.server.ActionHandler;
 import dev.miyoria.bridge.server.BridgeServer;
 import dev.miyoria.bridge.snapshot.SnapshotSummarizer;
@@ -26,6 +27,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -50,7 +52,11 @@ public final class BridgeRuntime implements ActionHandler {
     private final AltoClefBridge alto = new AltoClefBridge();
     private final EventDetector detector;
     private final SnapshotSummarizer.Options snapshotOptions;
+    private final Reflexes reflexes;
     private BaritoneBridge baritone; // null when Baritone is not installed
+    /** Requests that move her body; they wait while a reflex has it (see {@link #dispatch}). */
+    private static final Set<String> BODY_REQUESTS = Set.of(Protocol.T_BARITONE, Protocol.T_ALTOCLEF, Protocol.T_LOOK,
+            Protocol.T_USE, Protocol.T_ATTACK, Protocol.T_SELECT_SLOT, Protocol.T_PLACE, Protocol.T_CRAFT, Protocol.T_SMELT);
     /** Off-client-thread Baritone block lookups (see {@link #handle}). */
     private static final ExecutorService PREWARM = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "miyoria-bridge-prewarm");
@@ -70,6 +76,9 @@ public final class BridgeRuntime implements ActionHandler {
         this.detector = new EventDetector(new EventDetector.Config(cfg.lowHealthThreshold, cfg.hostileRadius, 100, 10));
         this.snapshotOptions = new SnapshotSummarizer.Options(cfg.maxEntities, cfg.maxBlockKinds);
         this.workbench = new Workbench(this::emit, actions);
+        ReflexBrain.Config reflexCfg = new ReflexBrain.Config(cfg.reflexes, cfg.reflexFight, cfg.reflexPickup,
+                cfg.reflexFleeHealth, cfg.reflexEatFood, cfg.reflexEatFoodBusy, cfg.reflexStuckSecs * 20);
+        this.reflexes = new Reflexes(new ReflexBrain(reflexCfg), this::emit, actions, workbench, alto);
 
         if (FabricLoader.getInstance().isModLoaded("baritone")) {
             if (!baritoneApiPresent()) {
@@ -140,6 +149,17 @@ public final class BridgeRuntime implements ActionHandler {
             out.ok(d);
             return;
         }
+        if (Protocol.T_QUIT.equals(req.type())) {
+            // Like the window's close button: the client leaves the world (saving it) and exits.
+            mc.execute(() -> {
+                JsonObject d = new JsonObject();
+                d.addProperty("quitting", true);
+                out.ok(d);
+                LOG.info("closing the game (quit request)");
+                mc.scheduleStop();
+            });
+            return;
+        }
         // Baritone block lookups (mine) resolve on a worker first: on the client thread they wait on
         // a future the client thread itself has to run, and the game hangs for good.
         List<String> lookups =
@@ -180,10 +200,18 @@ public final class BridgeRuntime implements ActionHandler {
         if (mc.player == null || mc.world == null) {
             throw new ProtocolException(Protocol.E_NOT_IN_GAME, "no world loaded (main menu / loading)");
         }
+        if (BODY_REQUESTS.contains(req.type())) {
+            // Escaping lava or fighting comes first; a pickup or a meal gives way to her request.
+            if (reflexes.blocksRequests()) {
+                throw new ProtocolException(Protocol.E_REFLEX_ACTIVE, "busy with a reflex: " + reflexes.active());
+            }
+            reflexes.yieldTo(mc, baritone);
+        }
         switch (req.type()) {
             case Protocol.T_OBSERVE -> {
                 RawObservation raw = observer.observe(baritone, alto);
                 raw.crafting = workbench.state();
+                raw.reflex = reflexes.active();
                 out.ok(SnapshotSummarizer.summarize(raw, snapshotOptions));
             }
             case Protocol.T_BARITONE -> {
@@ -224,6 +252,7 @@ public final class BridgeRuntime implements ActionHandler {
 
     private JsonObject stopAll() {
         JsonObject o = new JsonObject();
+        reflexes.yieldTo(mc, baritone); // survival reflexes keep going; a pickup or a meal stops
         workbench.cancel(mc);
         if (baritone != null) {
             baritone.cancel();
@@ -250,6 +279,15 @@ public final class BridgeRuntime implements ActionHandler {
                 baritone.tick();
             } catch (Throwable t) {
                 if (tickCount % 200 == 0) LOG.debug("baritone tick failed", t);
+            }
+        }
+
+        // Her reflexes, only while she is connected: someone playing by hand keeps the controls.
+        if (server.authenticatedClients() > 0) {
+            try {
+                reflexes.tick(client, baritone);
+            } catch (Throwable t) {
+                if (tickCount % 200 == 0) LOG.warn("reflex tick failed", t);
             }
         }
 

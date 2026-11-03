@@ -90,18 +90,50 @@ export const GameConfigSchema = z.object({
       "advancement",
       "chat",
       "connected",
+      "plan_finished",
+      "plan_failed",
+      "reflex_end",
     ]),
   /** Event types meaning the current goal was reached. */
   reached_events: z
     .array(z.string())
-    .default(["goal_reached", "baritone_idle", "craft_finished", "smelt_finished"]),
+    .default([
+      "goal_reached",
+      "baritone_idle",
+      "craft_finished",
+      "smelt_finished",
+      "plan_finished",
+    ]),
   /** Event types meaning the current goal failed. */
-  failed_events: z.array(z.string()).default(["goal_failed", "craft_failed", "smelt_failed"]),
+  failed_events: z
+    .array(z.string())
+    .default(["goal_failed", "craft_failed", "smelt_failed", "plan_failed"]),
   /**
    * `game start` first checks (with the observe tool) that the game is running and its adapter
    * connected, and refuses otherwise so she can tell the owner. In the main menu is fine.
    */
   require_connected: z.boolean().default(true),
+  /**
+   * When the game is not running but its adapter can start it (`state.launch.available`),
+   * `game start` sends the adapter's `launch` action through the gate and waits for the game.
+   */
+  auto_launch: z.boolean().default(true),
+  /** Longest `game start` waits for a launched game to connect (and load the world). */
+  launch_wait_secs: z.number().default(240),
+  /** How often the observe tool is polled while the game starts. */
+  launch_poll_secs: z.number().default(2),
+  /** `game stop` also sends `quit` (the adapter decides whether it really closes the game). */
+  close_on_stop: z.boolean().default(true),
+  /** Adapter actions only `game start` / `stop` use; the decision loop never runs them. */
+  session_actions: z.array(z.string()).default(["launch", "quit"]),
+  /**
+   * After an action fails (or a failed event ends the goal), `guarded_actions` are withheld this
+   * long so she changes method or goal instead of retrying; a successful other action ends it
+   * early. 0 turns the guard off.
+   */
+  failure_guard_secs: z.number().default(45),
+  /** The low-level move / mine actions the failure guard withholds. */
+  guarded_actions: z.array(z.string()).default(["goto", "mine", "look", "attack"]),
   /** Largest mood change the model may ask for per decision. */
   max_llm_nudge: z.number().default(0.1),
   permissions: GamePermissionsSchema.prefault({}),

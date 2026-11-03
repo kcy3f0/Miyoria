@@ -33,6 +33,27 @@ public interface BaritoneBridge {
     /** Cancel whatever Baritone is doing. */
     void cancel();
 
+    /** Cancel her task because a reflex takes over; its {@code baritone_idle} says {@code reason:"reflex"}. */
+    void interrupt();
+
+    /**
+     * Reflex movement: path next to {@code pos} (a drop to pick up). While a reflex drives
+     * Baritone its path / idle events are not reported: they are not her task's.
+     */
+    void reflexGoTo(net.minecraft.util.math.BlockPos pos);
+
+    /** Reflex movement: get at least {@code distance} blocks away from {@code from}. */
+    void reflexRunAway(double distance, java.util.List<net.minecraft.util.math.BlockPos> from);
+
+    /** Stop the reflex's movement (nothing happens when a request has taken Baritone over since). */
+    void reflexCancel();
+
+    /** A reflex drives Baritone right now. */
+    boolean reflexDriving();
+
+    /** Baritone is walking a path (standing next to a followed target or waiting for crops is not). */
+    boolean pathing();
+
     RawObservation.BaritoneState state();
 
     /** Called every client tick: lazily registers listeners and detects the busy -> idle edge. */

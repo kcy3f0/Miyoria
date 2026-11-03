@@ -264,8 +264,31 @@ describe("goalNote and config", () => {
       "baritone_idle",
       "craft_finished",
       "smelt_finished",
+      "plan_finished",
     ]);
-    expect(cfg.failed_events).toEqual(["goal_failed", "craft_failed", "smelt_failed"]);
+    expect(cfg.failed_events).toEqual([
+      "goal_failed",
+      "craft_failed",
+      "smelt_failed",
+      "plan_failed",
+    ]);
     expect(cfg.trigger_events).toContain("hostile_near");
+    expect(cfg.trigger_events).toContain("reflex_end");
+    expect(cfg).toMatchObject({
+      auto_launch: true,
+      launch_wait_secs: 240,
+      close_on_stop: true,
+      session_actions: ["launch", "quit"],
+      failure_guard_secs: 45,
+      guarded_actions: ["goto", "mine", "look", "attack"],
+    });
+  });
+
+  it("never runs session actions from a decision", () => {
+    const cfg = GameConfigSchema.parse({});
+    expect(judge(cfg, null, new ActionCall("quit"), null, false, true)).toEqual({
+      type: "keep",
+      why: "session actions belong to game start / stop",
+    });
   });
 });

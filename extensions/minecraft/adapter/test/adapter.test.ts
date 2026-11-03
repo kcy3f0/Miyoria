@@ -166,6 +166,7 @@ describe("MinecraftAdapter", () => {
       "farm",
       "build",
       "get",
+      "obtain",
       "craft",
       "smelt",
       "place",
@@ -176,6 +177,8 @@ describe("MinecraftAdapter", () => {
       "use",
       "select",
       "respawn",
+      "launch",
+      "quit",
     ]);
   });
 
@@ -196,7 +199,7 @@ describe("MinecraftAdapter", () => {
     const b = new BridgeClient({ endpoint: () => ({ url: "ws://127.0.0.1:1", token: "x" }) });
     const adapter = new MinecraftAdapter(b);
     const obs = await adapter.observe();
-    expect(obs.state).toEqual({ connected: false });
+    expect(obs.state).toMatchObject({ connected: false, launch: { available: false } });
     expect(obs.summary).toContain("沒有連上 Minecraft");
     expect(await adapter.act({ name: "stop" })).toMatchObject({ ok: false, message: expect.stringContaining("沒有連上") });
   });
@@ -350,5 +353,108 @@ describe("path events", () => {
     m.emit("baritone_idle", { process: "Custom Goal", goal: null, cancelled: true });
     await waitFor(() => types(events).includes("baritone_idle"));
     expect(m.requests.some((r) => r.type === "observe")).toBe(false);
+  });
+});
+
+describe("obtain", () => {
+  it("plans from the inventory, runs the steps and reports only the plan's end", async () => {
+    const { mod: m, adapter } = await setup();
+    let inventory: Record<string, number> = { oak_planks: 2 };
+    m.respond = (req) =>
+      req.type === "observe"
+        ? { ok: true, data: { ...SNAPSHOT, inventory, nearby_blocks: [], baritone: { available: true, busy: false } } }
+        : { ok: true, data: {} };
+    const events = collect(adapter);
+    await waitFor(() => events.length === 1);
+
+    const started = await adapter.act({ name: "obtain", args: { item: "stick" } });
+    expect(started).toMatchObject({ ok: true, message: "開始取得木棒:做木棒×4(共 1 步)" });
+    expect(adapter.task).toBe("plan");
+    await waitFor(() => m.requests.some((r) => r.type === "craft"));
+    expect(m.requests.find((r) => r.type === "craft")).toMatchObject({ item: "stick", count: 4 });
+    const busy = await adapter.observe();
+    expect(busy.state).toMatchObject({ busy: true, plan: { target: "stick", step: 1, total: 1, doing: "做木棒×4" } });
+    expect(busy.summary).toContain("正在取得 木棒(第 1/1 步:做木棒×4)");
+
+    inventory = { stick: 4 };
+    m.emit("craft_finished", { item: "stick", crafted: 4, requested: 4 });
+    await waitFor(() => events.some((e) => e.type === "plan_finished"));
+    expect(events.map((e) => e.type)).toEqual(["connected", "plan_step", "plan_finished"]);
+    expect(events.at(-1)).toMatchObject({ important: true, data: { text: "拿到木棒了" } });
+    expect(adapter.task).toBeNull();
+  });
+
+  it("answers right away when she has it, does not know it, or the plan is impossible", async () => {
+    const { mod: m, adapter } = await setup();
+    m.respond = (req) => (req.type === "observe" ? { ok: true, data: SNAPSHOT } : { ok: true, data: {} });
+    expect(await adapter.act({ name: "obtain", args: { item: "apple" } })).toMatchObject({ ok: false });
+    expect(await adapter.act({ name: "obtain", args: { item: "iron_pickaxe" } })).toMatchObject({
+      ok: true,
+      message: "背包裡已經有鐵鎬了",
+    });
+    expect(adapter.plan).toBeNull();
+  });
+
+  it("another action replaces the plan", async () => {
+    const { mod: m, adapter } = await setup();
+    m.respond = (req) =>
+      req.type === "observe" ? { ok: true, data: { ...SNAPSHOT, inventory: {}, nearby_blocks: [] } } : { ok: true, data: {} };
+    const events = collect(adapter);
+    await adapter.act({ name: "obtain", args: { item: "crafting_table" } });
+    const runner = adapter.plan;
+    expect(runner).not.toBeNull();
+    await adapter.act({ name: "stop" });
+    expect(adapter.plan).toBeNull();
+    expect(runner?.cancelled).toBe(true);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(events.some((e) => e.type === "plan_failed")).toBe(false);
+  });
+});
+
+describe("reflexes", () => {
+  it("maps reflex events: urgent ones are important, routine ones stay quiet", () => {
+    expect(mapEvent({ name: "reflex", data: { kind: "fight", target: "zombie", interrupted: "Mine" } })).toMatchObject({
+      type: "reflex",
+      important: true,
+      data: { text: "被攻擊,自己反擊(殭屍),打斷了挖礦" },
+    });
+    expect(mapEvent({ name: "reflex", data: { kind: "eat", food: "bread", interrupted: null } })).toMatchObject({
+      important: false,
+      data: { text: "肚子餓,自己吃東西(麵包)" },
+    });
+    expect(mapEvent({ name: "reflex", data: { kind: "pickup" } })).toBeNull();
+    expect(mapEvent({ name: "reflex_end", data: { kind: "eat", ok: true } })).toBeNull();
+    expect(mapEvent({ name: "reflex_end", data: { kind: "lava", ok: true, interrupted: "Mine" } })).toMatchObject({
+      data: { text: "逃出岩漿了,可以繼續了" },
+    });
+    expect(mapEvent({ name: "baritone_idle", data: { cancelled: true, reason: "reflex" } })?.data).toMatchObject({
+      text: "被身體的本能反應打斷,停下來",
+    });
+  });
+
+  it("an action refused during a reflex waits for it to end and goes through", async () => {
+    const { mod: m, adapter } = await setup();
+    let refused = 0;
+    m.respond = (req) => {
+      if (req.type === "baritone" && refused === 0) {
+        refused++;
+        setTimeout(() => m.emit("reflex_end", { kind: "lava", ok: true, interrupted: null }), 10);
+        return { ok: false, code: "reflex_active", message: "busy with a reflex: lava" };
+      }
+      return { ok: true, data: {} };
+    };
+    const result = await adapter.act({ name: "explore" });
+    expect(result.ok).toBe(true);
+    expect(m.requests.filter((r) => r.type === "baritone")).toHaveLength(2);
+  });
+
+  it("an interrupting reflex ends the running Baritone task", async () => {
+    const { mod: m, adapter } = await setup();
+    const events = collect(adapter);
+    await adapter.act({ name: "mine", args: { block: "oak_log" } });
+    expect(adapter.task).toBe("baritone");
+    m.emit("reflex", { kind: "flee", target: "creeper", interrupted: "Mine" });
+    await waitFor(() => events.some((e) => e.type === "reflex"));
+    expect(adapter.task).toBeNull();
   });
 });

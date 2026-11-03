@@ -2,9 +2,10 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { LauncherConfig } from "./launcher.js";
 
-/** `[extensions."miyoria.minecraft"]` config (everything optional). */
-export interface AdapterConfig {
+/** `[extensions."miyoria.minecraft"]` config (everything optional; launcher keys in `LauncherConfig`). */
+export interface AdapterConfig extends LauncherConfig {
   /** Full WebSocket URL, e.g. `"ws://127.0.0.1:7890"`. Wins over `host` / `port`. */
   url?: string;
   host?: string;

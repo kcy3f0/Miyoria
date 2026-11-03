@@ -83,17 +83,27 @@ dirs = ["extensions"]   # 預設值;Miyoria 要在 repo 根目錄啟動,才找�
 
 [extensions."miyoria.minecraft"]
 # 遊戲目錄(含 config\ 的那層)。用單引號,Windows 的反斜線才不用跳脫。
-minecraft_dir = 'C:\Users\owenl\AppData\Roaming\PrismLauncher\instances\Miyoria-1.21.1\minecraft'
+minecraft_dir = 'C:\Users\owenl\AppData\Roaming\PrismLauncher\instances\Miyoria-1.21.1\.minecraft'
 # minecraft_dir = 'C:\Games\Miyoria-1.21.1'   # 官方啟動器的例子
 # allow_commands = false   # true 才讓她送 / 開頭的遊戲指令
 # damage_important = 4     # 一次受傷幾點以上算大事(會馬上實況)
+# 她要玩的時候自己用 Prism Launcher 開遊戲(預設開著;實例 id 從 minecraft_dir 推)
+# prism_path = 'C:\Users\owenl\AppData\Local\Programs\PrismLauncher\prismlauncher.exe'   # 預設自動找
+# prism_instance = "Miyoria-1.21.1"
+# launch_world = "latest"      # 直接進入最近玩的存檔;"" = 停在主選單;或存檔資料夾名
+# launch_timeout_secs = 180
+# quit_on_stop = "launched"    # 停止玩時關遊戲:launched(只關她開的)| always | never
+# auto_launch = true
 
 [modules.game]
 default_game = "minecraft"
 decide_secs = 20           # 多久想一次下一步(有事件時會提早,最快每 4 秒)
 # 她不在語音頻道時,實況送到哪(可省略;省略就送到下 /game start 的頻道)
 # stream_context = { platform = "discord", scope = "<伺服器 id>", channel = "<頻道 id>", kind = "voice" }
-# require_connected = true   # 開始前先確認遊戲開著、模組連上;沒開就拒絕(她會請你開遊戲)
+# require_connected = true   # 開始前先確認遊戲開著、模組連上;沒開就自己開(auto_launch),開不起來就拒絕並說原因
+# launch_wait_secs = 240     # 自己開遊戲時最多等幾秒
+# close_on_stop = true       # 停止玩時也請 adapter 關遊戲(它照自己的 quit_on_stop 決定要不要真的關)
+# failure_guard_secs = 45    # 動作失敗後這段時間不給 goto / mine / look / attack,逼她換方法或目標(0 = 關)
 
 # 遊戲內聊天變成她的一段對話(預設就開著,這段可省略)
 [modules."game.chat"]
@@ -132,7 +142,7 @@ pnpm dev ext list          # 要列出 miyoria.minecraft 0.1.0  ...\extensions\m
 
 不用指令也可以:在 Discord 跟她說「去玩 Minecraft 吧」「開台玩 Minecraft」。她自己決定要不要(好感、心情),要的話會用 `game_start` 工具:
 
-1. 先確認遊戲開著、模組連上。**沒開的話她會說遊戲沒開、請你先開**(Miyoria 不會自己啟動 Minecraft);還在主選單可以開始,進入世界後她就會動。
+1. 先確認遊戲開著、模組連上。**沒開的話她會自己用 Prism Launcher 開**(`prismlauncher --launch Miyoria-1.21.1 --world <最近玩的存檔>`,等模組連上、進入世界,最多約 4 分鐘);Prism 找不到、啟動器出錯或逾時,`game_start` 會失敗並說原因,她就會跟大家說。還在主選單也可以開始,進入世界後她就會動。停止玩的時候,她自己開的遊戲會再關掉(你開的不會)。
 2. 開始一個 session(她在語音頻道就在語音裡實況),直播畫面自動切到遊戲場景(見第 7 步)。
 3. 你說了要做什麼(「去挖鐵礦」)她會把它當第一個目標;說了要開台、她也願意的話會順便 Go Live(OBS 跟著開播,也要過閘門,太頻繁或你禁止 `stream.*` 時會被擋)。從遊戲聊天室裡要求開台不行(跨伺服器禁令),要在 Discord 講。
 4. 之後導演迴路自己決定目標和動作,邊玩邊實況;「別玩了」或 `/game stop` 停止,畫面切回聊天場景。

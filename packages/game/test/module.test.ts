@@ -634,6 +634,58 @@ describe("game director", () => {
     expect(h.status()?.goal).toBeNull();
     await h.stop();
   });
+
+  it("withholds low-level actions after a failure until she changes method", async () => {
+    const replies = [
+      decision("挖鐵礦", { name: "mine", args: { block: "iron_ore" } }),
+      decision("挖鐵礦", { name: "mine", args: { block: "iron_ore" } }),
+      decision("找鐵礦", { name: "explore", args: {} }),
+      decision("挖鐵礦", { name: "mine", args: { block: "iron_ore" } }),
+    ];
+    const llm = new FnProvider(() => replies.shift() ?? decision("挖鐵礦", null));
+    const h = await Harness.create(llm);
+    h.actReply = "失敗:附近看不到鐵礦";
+    await h.start();
+    expect(h.actNames()).toEqual(["mine"]);
+
+    // The same kind of retry right away is not sent; she is told why in the next prompt.
+    h.actReply = "成功:開始了";
+    await secs(5);
+    expect(h.actNames()).toEqual(["mine"]);
+    const prompt = contentText(llm.requests[1]?.messages.at(-1)?.content ?? "");
+    expect(prompt).toContain("暫時不能用 goto、mine、look、attack");
+    expect(prompt).toContain("附近看不到鐵礦");
+    expect(h.traceLog.items.at(-1)?.verdict).toBe(
+      'Keep("withheld after a failure: 失敗:附近看不到鐵礦")',
+    );
+    expect(h.status()?.last_action).toContain("暫時不行");
+
+    // Another method works: the guard is off again.
+    await secs(5);
+    expect(h.actNames()).toEqual(["mine", "explore"]);
+    await secs(60);
+    expect(h.actNames()).toContain("mine");
+    expect(h.actNames().length).toBeGreaterThan(2);
+    await h.stop();
+  });
+
+  it("a failed plan event also starts the guard", async () => {
+    const replies = [decision("拿鐵鎬", { name: "obtain", args: { item: "iron_pickaxe" } })];
+    const llm = new FnProvider(() => replies.shift() ?? decision("拿鐵鎬", null));
+    const h = await Harness.create(llm);
+    await h.start();
+    expect(h.actNames()).toEqual(["obtain"]);
+    await secs(4);
+    await h.gameEvent("plan_failed", "取得鐵鎬失敗,卡在「挖粗鐵×3」:附近看不到鐵礦", true);
+    expect(h.status()?.goal).toBeNull();
+    // the failure triggers the next decision, which is told what is withheld
+    await secs(1);
+    expect(llm.requests).toHaveLength(2);
+    expect(contentText(llm.requests.at(-1)?.messages.at(-1)?.content ?? "")).toContain(
+      "暫時不能用",
+    );
+    await h.stop();
+  });
 });
 
 describe("game director details", () => {

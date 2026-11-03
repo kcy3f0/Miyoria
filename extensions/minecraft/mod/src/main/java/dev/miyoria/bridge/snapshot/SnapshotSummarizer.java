@@ -124,6 +124,10 @@ public final class SnapshotSummarizer {
             o.add("crafting", null);
         }
 
+        JsonObject reflex = new JsonObject();
+        reflex.addProperty("active", raw.reflex);
+        o.add("reflex", reflex);
+
         return o;
     }
 
