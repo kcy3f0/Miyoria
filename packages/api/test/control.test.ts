@@ -3,6 +3,14 @@
 
 import { ActuatorRegistry, ActuatorRegistryKey, defineCapability } from "@miyoria/actions";
 import { Supervisor, SupervisorKey } from "@miyoria/kernel";
+import {
+  LlmRouter,
+  LlmRouterKey,
+  MockProvider,
+  pricing,
+  userMessage,
+  withLlmTag,
+} from "@miyoria/llm";
 import { SingerKey } from "@miyoria/sing";
 import { type Principal, SelfStateKey } from "@miyoria/types";
 import { afterEach, describe, expect, it } from "vitest";
@@ -182,6 +190,47 @@ describe("telemetry", () => {
     const served = await raw(h.base, "GET", "/api/telemetry?minutes=30", { token: TOKEN });
     expect(served.status).toBe(200);
     expect(served.body).toMatchObject({ interval_ms: 60_000 });
+  });
+
+  it("serves the LLM call inspector: filtered calls, one call in full, and the breakdowns", async () => {
+    const h = await harness();
+    const provider = new MockProvider("p").reply("好。");
+    const router = new LlmRouter(
+      new Map([["p", provider]]),
+      new Map([["chat", [{ provider: "p", model: "m" }]]]),
+      {
+        pricing: new Map([["p:m", pricing({ input_per_mtok: 0.15, output_per_mtok: 0.6 })]]),
+      },
+    );
+    h.sup.services.provide("llm", LlmRouterKey, router);
+    await withLlmTag({ module: "mind", thought: "t1" }, () =>
+      router.complete("mind", { messages: [userMessage("token: abcdefghijklmnop")] }),
+    );
+    await router.complete("chat", { messages: [userMessage("嗨")] });
+    const get = (path: string) => raw(h.base, "GET", path, { token: TOKEN });
+    const all = await get("/api/llm/calls");
+    expect(all.body).toMatchObject({ matched: 2, kept: 2, next_cursor: null });
+    const mind = await get("/api/llm/calls?purpose=mind&thought=t1");
+    const [call] = (mind.body as { items: { id: string }[] }).items;
+    expect(mind.body).toMatchObject({
+      matched: 1,
+      items: [{ module: "mind", pricing: { input_per_mtok: 0.15 } }],
+    });
+    const one = await get(`/api/llm/calls/${call?.id}`);
+    expect(one.body).toMatchObject({
+      call: { id: call?.id, status: "ok" },
+      detail: {
+        messages: [{ role: "user", content: "token: [已遮蔽]" }],
+        response: { text: "好。" },
+      },
+    });
+    expect((await get("/api/llm/calls/nope")).status).toBe(404);
+    const stats = await get("/api/llm/stats?minutes=60");
+    expect(stats.body).toMatchObject({
+      total: { calls: 2 },
+      prices: { "p:m": { input_per_mtok: 0.15, output_per_mtok: 0.6 } },
+    });
+    expect((await get("/api/llm/calls?status=nope")).status).toBe(400);
   });
 
   it("sums the LLM counters over models", () => {
