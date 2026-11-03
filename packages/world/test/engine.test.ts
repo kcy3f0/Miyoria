@@ -367,3 +367,38 @@ describe("snapshot and summary", () => {
     });
   });
 });
+
+describe("her status", () => {
+  it("comes from the ActivityManager's snapshot when there is one, singing included", () => {
+    const w = engine();
+    const at = new Date(T0).toISOString();
+    const channel = { platform: "discord", scope: "g1", channel: "v1", kind: "voice" as const };
+    const her = w.her("Minecraft", {
+      version: 3,
+      at,
+      presence: { type: "in", channel, since: at },
+      broadcast: { type: "live", guild: "g1", golive: true, obs: true, task: null, since: at },
+      activity: {
+        type: "singing",
+        target: "夜に駆ける",
+        phase: "running",
+        task: null,
+        failure: null,
+        since: at,
+      },
+      override: null,
+      scene: "唱歌",
+    });
+    expect(her).toEqual({
+      voice: channel,
+      voice_name: null,
+      golive: "live",
+      streaming: true,
+      scene: null,
+      game: null,
+      singing: "夜に駆ける",
+    });
+    // Without the manager: what the world saw on the bus, never singing.
+    expect(w.her(null).singing).toBeNull();
+  });
+});

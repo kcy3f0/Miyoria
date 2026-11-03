@@ -15,6 +15,7 @@
 
 import {
   type AccountRef,
+  type ActivitySnapshot,
   type Attitude,
   type Author,
   accountRefString,
@@ -457,11 +458,16 @@ export class WorldEngine {
 
   // ---- queries --------------------------------------------------------------------------
 
-  snapshot(now: number, sig: Signals, game: string | null): WorldSnapshot {
+  snapshot(
+    now: number,
+    sig: Signals,
+    game: string | null,
+    activity: ActivitySnapshot | null = null,
+  ): WorldSnapshot {
     return {
       at: toTimestamp(now),
       time: this.time(now),
-      her: this.her(game),
+      her: this.her(game, activity),
       people: this.people(sig),
       voice_channels: this.voiceChannels(sig, now),
       channels: this.channels(now),
@@ -472,7 +478,13 @@ export class WorldEngine {
     return timeContext(now, this.config.utc_offset_minutes);
   }
 
-  her(game: string | null): HerStatus {
+  /**
+   * Her own situation. With the ActivityManager's snapshot (`activity`) her voice channel, the
+   * broadcast, the game and the song come from it (the one copy everyone reads); without it, from
+   * what the world saw on the bus. The OBS scene is always the one OBS reports.
+   */
+  her(game: string | null, activity: ActivitySnapshot | null = null): HerStatus {
+    if (activity !== null) return this.#herFrom(game, activity);
     const voice = this.#herVoice;
     let voiceName: string | null = null;
     if (voice) {
@@ -491,6 +503,34 @@ export class WorldEngine {
       streaming: this.#stage.streaming,
       scene: this.#stage.scene,
       game,
+      singing: null,
+    };
+  }
+
+  #herFrom(game: string | null, snapshot: ActivitySnapshot): HerStatus {
+    const p = snapshot.presence;
+    const voice = p.type === "in" ? { ...p.channel } : null;
+    let voiceName: string | null = null;
+    if (voice) {
+      for (const v of this.#voice.values()) {
+        if (v.guild === voice.scope && v.channel === voice.channel && v.channel_name !== null) {
+          voiceName = v.channel_name;
+          break;
+        }
+      }
+    }
+    const b = snapshot.broadcast;
+    const golive = b.type === "off" ? null : b.golive ? "live" : b.type === "live" ? null : b.type;
+    const a = snapshot.activity;
+    const running = a.type !== "idle" && a.phase === "running";
+    return {
+      voice,
+      voice_name: voiceName,
+      golive,
+      streaming: b.type !== "off" && b.obs,
+      scene: this.#stage.scene,
+      game: running && a.type === "game" ? (game ?? a.target) : null,
+      singing: running && a.type === "singing" ? a.target : null,
     };
   }
 
