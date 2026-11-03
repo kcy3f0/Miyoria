@@ -57,16 +57,9 @@ export function repairHandleText(text: string, options: RepairOptions = {}): str
     return name;
   });
   const left = ephemeralHandlesIn(out);
-  const first = left[0];
-  const sole =
-    options.sole != null &&
-    options.sole !== "" &&
-    left.length === 1 &&
-    first !== undefined &&
-    first.startsWith("u") &&
-    !known.has(first)
-      ? options.sole
-      : null;
+  const first = left[0] ?? "";
+  const only = left.length === 1 && first.startsWith("u") && !known.has(first);
+  const sole = only && options.sole ? options.sole : null;
   out = out.replace(ANY_CODE, (code) => known.get(code) ?? sole ?? code);
   if (ephemeralHandlesIn(out).length > 0) {
     out = out

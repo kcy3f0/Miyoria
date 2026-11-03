@@ -388,6 +388,12 @@ export {
   MAX_HANDLE_LENGTH,
 } from "./handle.js";
 export {
+  hasEphemeralHandle,
+  type RepairOptions,
+  repairHandleJson,
+  repairHandleText,
+} from "./handle-text.js";
+export {
   type Desire,
   GOAL_TOPIC,
   type Goal,
@@ -470,9 +476,3 @@ export {
   type VoiceBargeInAction,
   type VoiceBargeInReason,
 } from "./voice-barge.js";
-export {
-  hasEphemeralHandle,
-  type RepairOptions,
-  repairHandleJson,
-  repairHandleText,
-} from "./handle-text.js";
