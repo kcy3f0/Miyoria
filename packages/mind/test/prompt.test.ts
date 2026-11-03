@@ -196,7 +196,8 @@ describe("mind prompt", () => {
     expect(system).toContain("別人看到的你:兇回去、嫌棄對方,但臉紅了(<emo:embarrassed>)");
     expect(system).toContain("你有偷偷喜歡的人");
     expect(system).not.toContain("Owen");
-    expect(system).toContain('"emotions"');
+    // The model is not asked for emotion numbers any more (the program computes them).
+    expect(system).not.toContain('"emotions"');
     expect(data).toContain("你偷偷喜歡的人;想念 0.40");
   });
 });

@@ -163,7 +163,7 @@ describe("mind module", () => {
     expect(r.mind().stats()).toMatchObject({ calls_last_hour: 1, calls_total: 1 });
   });
 
-  it("nudges her emotions, her own and toward someone, from her reply", async () => {
+  it("does not write her emotions, her own or toward someone, from her reply", async () => {
     const provider = new MockProvider("p").reply(
       JSON.stringify({
         thought: "Owen 進語音了……才、才沒有很開心。",
@@ -176,13 +176,14 @@ describe("mind module", () => {
     await wait(4100);
     expect(provider.requests().length).toBe(1);
     const self = r.sup.services.require(SelfStateKey);
+    // The affect service computes emotions from events; a model's numbers are ignored.
     const felt = Object.fromEntries(self.emotions(0).map((e) => [e.name, e.intensity]));
-    expect(felt.joy).toBeCloseTo(0.3, 2);
-    expect(felt.shy).toBeCloseTo(0.2, 2);
-    expect(self.heart("person-owen")?.emotions.gratitude).toBeCloseTo(0.25, 2);
+    expect(felt.joy ?? 0).toBe(0);
+    expect(felt.shy ?? 0).toBe(0);
+    expect(self.heart("person-owen")?.emotions.gratitude ?? 0).toBe(0);
     const [thought] = r.mind().thoughts();
-    expect(thought?.effects?.emotions).toEqual({ joy: 0.3, shy: 0.2 });
-    expect(thought?.changes).toContain("情緒 喜 +0.30、害羞 +0.20");
+    expect(thought?.effects?.emotions).toBeUndefined();
+    expect(thought?.changes.join("")).not.toContain("情緒");
   });
 
   it("adapts the heartbeat and keeps to the hourly cap", async () => {

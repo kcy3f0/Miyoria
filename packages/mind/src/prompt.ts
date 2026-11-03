@@ -144,9 +144,8 @@ const TRIGGER_TEXT: Record<ThoughtTrigger["kind"], string> = {
 
 export const OUTPUT_FORMAT = `{
   "thought": "你的內心獨白(第一人稱、你的口吻,一到三句)",
-  "feelings": [{"person": "u1", "note": "你現在對他的感覺(整段改寫,可省略)", "affinity_hint": "+ / - / 0", "emotions": {"missing": 0.1, "jealousy": 0, "gratitude": 0, "resentment": -0.1}}],
-  "emotions": {"joy": 0.1, "shy": 0, "lonely": -0.1},
-  "drives": {"social": -0.1, "play": 0.1, "attention": 0, "rest": 0, "curiosity": 0, "boredom": -0.1},
+  "feelings": [{"person": "u1", "note": "你現在對他的感覺(整段改寫,可省略)", "affinity_hint": "+ / - / 0"}],
+  "drives": {"social": 0, "play": 0, "attention": 0, "rest": 0, "curiosity": 0, "boredom": 0},
   "policy": {
     "talkativeness": [{"scope": "p1 / server / voice / text / *", "level": 0.7, "for_min": 30, "why": "理由"}],
     "initiative": {"level": 0.5, "why": "理由"}
@@ -237,7 +236,7 @@ function rules(input: MindInput): string {
     "- 自己主動開口沒人接,就是大家在忙別的:不要一直找話題、不要重複同一件事;放下它,或過一陣子再換個完全不同的話題。",
     "- 好感只能用 affinity_hint 表達(+ / - / 0),實際數值由系統決定;feelings 的 note 是你自己對他的感覺描述。",
     "- thought 照你真正的感受想(包括嘴上不會承認的);開口(opening)照別人看到的你,不要把真正的感受和喜歡誰說出來。",
-    "- emotions 是想完之後感受的變化(-0.3~0.3,joy 喜、anger 怒、sorrow 哀、fear 懼、surprise 驚、disgust 厭、shy 害羞、pride 得意、jealousy 嫉妒、lonely 寂寞、missing 想念、gratitude 感激、guilt 愧疚、frustration 不甘心),feelings 的 emotions 是對那個人的(missing 想念、jealousy 嫉妒、gratitude 感激、resentment 不爽);真的有變化才給。",
+    "- 情緒不用寫:你的情緒由系統依發生的事計算,不是你填的數字;drives 範例的 0 只是占位,真的有變化才給。",
     "- 只能用參考資料裡的代號(u1、p1、g1…)指人、地點和議程。",
     "- documents 是你自己整理的資料庫(關於人、伺服器、你自己、你取名的主題),結構和種類都由你決定(JSON,文字可以用 Markdown);想到值得整理的才改,通常是空的。修改用 JSON Pointer 路徑,例如 /喜歡/-。",
     "",
