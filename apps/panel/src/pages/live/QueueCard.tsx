@@ -4,16 +4,16 @@ import { useId, useMemo } from "react";
 import type { QueueItem } from "@/api/types";
 import { useQueue, useQueueMutations } from "@/app/queries";
 import { READ_ONLY_HINT, useCanWrite } from "@/app/session";
-import { RowActions } from "@/components/controls";
 import { DataTable } from "@/components/data-table";
 import { QueryView } from "@/components/query-state";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardHeader, CardTitle } from "@/components/ui/card";
-import { DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { contextShort, fmtDateTime, fmtRelative } from "@/lib/format";
 import { notify } from "@/lib/notify";
+import { cn } from "@/lib/utils";
 
 const KIND: Record<string, string> = {
   chat: "聊天",
@@ -75,35 +75,40 @@ export function QueueCard() {
       {
         id: "actions",
         header: () => <span className="sr-only">動作</span>,
-        meta: { className: "w-12 text-right" },
+        meta: { className: "w-px whitespace-nowrap text-right" },
         cell: ({ row }) => {
           const i = row.original;
           const n = items.length;
+          const busy = (move.isPending && move.variables?.id === i.id) || (skip.isPending && skip.variables === i.id);
           const moveTo = (position: number) =>
             move.mutate({ id: i.id, position }, { onError: (e) => notify.error(e, "移動失敗") });
+          const act = (label: string, icon: React.ReactNode, onClick: () => void, disabled: boolean, className?: string) => (
+            <Button
+              writes
+              size="icon-sm"
+              variant="ghost"
+              aria-label={`${label} #${row.index + 1}`}
+              title={label}
+              disabled={disabled || busy}
+              onClick={onClick}
+              className={cn("size-7 text-muted-foreground hover:text-foreground", className)}
+            >
+              {icon}
+            </Button>
+          );
           return (
-            <RowActions label={`#${row.index + 1} 的動作`}>
-              <DropdownMenuItem disabled={row.index === 0} onSelect={() => moveTo(0)}>
-                <ChevronsUp />
-                移到最前
-              </DropdownMenuItem>
-              <DropdownMenuItem disabled={row.index === 0} onSelect={() => moveTo(row.index - 1)}>
-                <ArrowUp />
-                往前
-              </DropdownMenuItem>
-              <DropdownMenuItem disabled={row.index === n - 1} onSelect={() => moveTo(row.index + 1)}>
-                <ArrowDown />
-                往後
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                variant="destructive"
-                onSelect={() => skip.mutate(i.id, { onError: (e) => notify.error(e, "跳過失敗") })}
-              >
-                <SkipForward />
-                跳過
-              </DropdownMenuItem>
-            </RowActions>
+            <div className="inline-flex items-center gap-0.5">
+              {act("移到最前", <ChevronsUp />, () => moveTo(0), row.index === 0, "hidden sm:inline-flex")}
+              {act("往前", <ArrowUp />, () => moveTo(row.index - 1), row.index === 0)}
+              {act("往後", <ArrowDown />, () => moveTo(row.index + 1), row.index === n - 1)}
+              {act(
+                "跳過",
+                <SkipForward />,
+                () => skip.mutate(i.id, { onSuccess: () => notify.ok(`已跳過 #${row.index + 1}`), onError: (e) => notify.error(e, "跳過失敗") }),
+                false,
+                "hover:bg-destructive/12 hover:text-[oklch(0.78_0.14_25)]",
+              )}
+            </div>
           );
         },
       },
@@ -115,7 +120,7 @@ export function QueueCard() {
     <Card className="overflow-hidden">
       <CardHeader>
         <CardTitle>
-          佇列
+          請求佇列
           {items.length > 0 && <span className="font-normal text-muted-foreground tabular-nums">{items.length}</span>}
         </CardTitle>
         {queue.isSuccess && (

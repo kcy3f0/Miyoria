@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { SelfView } from "@/api/types";
 import { EmptyLine } from "@/components/query-state";
 import { Bipolar, Meter, StatusBadge } from "@/components/status";
+import { RangeToggle, StateFacets, useRange, useTrend } from "@/components/trends";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtDateTime, fmtRelative } from "@/lib/format";
@@ -162,14 +163,22 @@ function AgendaCard({ self }: { self: SelfView }) {
   );
 }
 
+/** Her state over time; just the current values on a Core without telemetry. */
+function StateTrend({ self }: { self: SelfView }) {
+  const [range, setRange] = useRange();
+  const trend = useTrend(range);
+  if (trend.query.isError) return <StateCard self={self} />;
+  return <StateFacets trend={trend} live={self} action={<RangeToggle range={range} onChange={setRange} />} />;
+}
+
 export function StateTab({ self }: { self: SelfView }) {
   return (
     <div className="grid gap-6">
-      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
-        <StateCard self={self} />
+      <StateTrend self={self} />
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
         <PolicyCard self={self} />
+        <AgendaCard self={self} />
       </div>
-      <AgendaCard self={self} />
     </div>
   );
 }

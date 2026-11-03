@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ContextKey, DecisionRecord } from "@/api/types";
 import { useDecisions } from "@/app/queries";
+import { ChartBlock, type Column, ColumnChart } from "@/components/charts/charts";
 import { SearchInput } from "@/components/controls";
 import { Facts } from "@/components/json-view";
 import { Toolbar } from "@/components/page";
@@ -52,6 +53,36 @@ function DecisionSheet({ record, onClose }: { record: DecisionRecord | null; onC
         )}
       </SheetContent>
     </Sheet>
+  );
+}
+
+const BUCKETS = [5, 15, 30, 60, 180, 360, 1440].map((m) => m * 60_000);
+const DECIDED = [
+  { key: "respond", label: "回應", color: "var(--chart-1)" },
+  { key: "ignore", label: "略過", color: "var(--chart-quiet)" },
+];
+
+/** Replied and skipped messages over the span of the loaded decisions. */
+function DecisionChart({ records }: { records: DecisionRecord[] }) {
+  const { columns, bucketMs, rate } = useMemo(() => {
+    const ts = records.map((r) => Date.parse(r.ts));
+    const lo = Math.min(...ts);
+    const hi = Math.max(...ts);
+    const bucketMs = BUCKETS.find((b) => (hi - lo) / b <= 30) ?? (BUCKETS[BUCKETS.length - 1] as number);
+    const start = Math.floor(lo / bucketMs) * bucketMs;
+    const columns: Column[] = [];
+    for (let t = start; t <= hi; t += bucketMs) columns.push({ t, values: { respond: 0, ignore: 0 } });
+    records.forEach((r, i) => {
+      const col = columns[Math.floor(((ts[i] as number) - start) / bucketMs)];
+      if (col) col.values[r.trace.respond ? "respond" : "ignore"] = (col.values[r.trace.respond ? "respond" : "ignore"] ?? 0) + 1;
+    });
+    const rate = records.filter((r) => r.trace.respond).length / records.length;
+    return { columns, bucketMs, rate };
+  }, [records]);
+  return (
+    <ChartBlock title="要不要回" value={`${Math.round(rate * 100)}%`} aside={`回應了 ${records.length} 則中的 ${Math.round(rate * records.length)} 則`}>
+      <ColumnChart label="每段時間的決策" columns={columns} series={DECIDED} bucketMs={bucketMs} height={150} totalLabel="合計" />
+    </ChartBlock>
   );
 }
 
@@ -138,6 +169,7 @@ export function DecisionsTab() {
           </SelectContent>
         </Select>
       </Toolbar>
+      {data && data.length > 1 && <DecisionChart records={data} />}
       <Card className="overflow-hidden">
         <QueryView query={decisions} isEmpty={(d) => d.length === 0} empty="還沒有決策紀錄">
           {() =>

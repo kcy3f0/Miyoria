@@ -25,7 +25,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useConnection } from "./connection";
 import { useEvents } from "./events-store";
 import { NAV, titleFor } from "./nav";
-import { useHealth } from "./queries";
+import { useHealth, useMind, useStage, useWorld } from "./queries";
 import { READ_ONLY_HINT, useSession } from "./session";
 
 const MOD_KEY = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
@@ -127,6 +127,46 @@ function SessionFooter() {
   );
 }
 
+/** State worth seeing from anywhere: live on 直播, approvals waiting on 內心. */
+function NavHint({ to }: { to: string }) {
+  const stage = useStage();
+  const world = useWorld();
+  const mind = useMind();
+  if (to === "/live" && (stage.data?.streaming || world.data?.her.golive === "live")) {
+    return (
+      <span className="ml-auto flex items-center group-data-[collapsible=icon]:absolute group-data-[collapsible=icon]:top-1 group-data-[collapsible=icon]:right-1" title="直播中">
+        <Dot tone="danger" pulse className="size-1.5 [&>span]:size-1.5" />
+        <span className="sr-only">直播中</span>
+      </span>
+    );
+  }
+  const n = mind.data?.pending_approvals ?? 0;
+  if (to === "/inner" && n > 0) {
+    return (
+      <span className="ml-auto rounded-full bg-warning/15 px-1.5 text-[11px] font-medium text-warning tabular-nums group-data-[collapsible=icon]:hidden" title={`${n} 件等待確認`}>
+        {n}
+      </span>
+    );
+  }
+  return null;
+}
+
+/** Shown in the header on every page while her autonomy is stopped. */
+function PausedPill() {
+  const mind = useMind();
+  if (!mind.data?.paused) return null;
+  return (
+    <Link
+      to="/inner"
+      search={{ tab: "thoughts" }}
+      className="flex h-7 items-center gap-2 rounded-full border border-warning/30 bg-warning/10 px-2.5 text-xs font-medium text-warning outline-none hover:bg-warning/15 focus-visible:ring-2 focus-visible:ring-ring/50"
+    >
+      <Dot tone="warning" />
+      自主行動已暫停
+    </Link>
+  );
+}
+
 function AppSidebar({ pathname }: { pathname: string }) {
   const { setOpenMobile } = useSidebar();
   return (
@@ -157,6 +197,7 @@ function AppSidebar({ pathname }: { pathname: string }) {
                       >
                         <item.icon aria-hidden />
                         <span>{item.label}</span>
+                        <NavHint to={item.to} />
                       </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
@@ -205,6 +246,7 @@ export function Shell() {
       <SidebarInset>
         <header className="sticky top-0 z-10 flex h-12 items-center gap-2 border-b bg-background/85 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/70 sm:px-4">
           <SidebarTrigger />
+          <PausedPill />
           <button
             type="button"
             onClick={() => setPaletteOpen(true)}
