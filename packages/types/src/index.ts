@@ -472,6 +472,18 @@ export {
   taskTopic,
 } from "./task.js";
 export {
+  gameTaskOwner,
+  isStructuredStateLike,
+  isTaskSpec,
+  MAX_TASK_BUDGET_S,
+  parseTaskEvent,
+  type RegisteredTaskExecutor,
+  type TaskExecutorInfo,
+  type TaskExecutors,
+  TaskExecutorsKey,
+  type TaskGoalSpec,
+} from "./task-executors.js";
+export {
   type InputDisposition,
   inputDisposition,
   isShortReply,

@@ -288,6 +288,15 @@ export interface Contributions {
   commands: CommandSpec[];
   prompts: string[];
   subscriptions: string[];
+  /** The extension's task executor (`tasks.register`), if it has one. */
+  executor?: ExecutorDecl | null;
+}
+
+/** `tasks.register` params / `contributions.executor`: what the extension's executor offers. */
+export interface ExecutorDecl {
+  name: string;
+  goals: { name: string; description: string; parameters: JsonSchema | null; budget_s: number | null }[];
+  guide: string | null;
 }
 
 /** `initialize` result (extension → host). */
