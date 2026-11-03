@@ -278,6 +278,12 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
         ts: "ts",
         trace: "json",
       }),
+      table("turn_outcomes", "turn_outcomes", "profile", "ts", "ts, id", {
+        id: "text",
+        ts: "ts",
+        outcome: "text",
+        record: "json",
+      }),
     ],
     { confirm: "simple" },
   ),
@@ -308,6 +314,8 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
         account_id: "text",
         expires_at: "ts",
       }),
+      // @miyoria/store `HANDLE_PREFIX` under `GLOBAL_SETTINGS_PROFILE`: the stable names of people.
+      settings("handles", "global", [], ["handle:"]),
     ],
     {
       // Relationships, feelings, documents, lessons and feedback are keyed by person.

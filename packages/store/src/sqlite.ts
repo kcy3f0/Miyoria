@@ -31,6 +31,7 @@ import {
   type ProfileId,
   systemClock,
   type Timestamp,
+  type TurnOutcomeRecord,
 } from "@miyoria/types";
 import {
   authScopeKey,
@@ -633,6 +634,59 @@ class SqliteDecisionLog implements DecisionLog {
     }
   }
 
+  async appendOutcome(profile: ProfileId, record: TurnOutcomeRecord): Promise<void> {
+    const params = {
+      id: record.turn,
+      profile,
+      key: contextLookupKey(record.context),
+      ts: toMicros(record.at),
+      outcome: record.outcome.type,
+      record: JSON.stringify(record),
+    };
+    try {
+      this.db.tx(() => {
+        this.db.run(
+          "INSERT INTO turn_outcomes (id, profile_id, context_key, ts, outcome, record) " +
+            "VALUES ($id, $profile, $key, $ts, $outcome, $record) " +
+            "ON CONFLICT(id) DO UPDATE SET profile_id = excluded.profile_id, " +
+            "context_key = excluded.context_key, ts = excluded.ts, " +
+            "outcome = excluded.outcome, record = excluded.record",
+          params,
+        );
+        if (this.cap !== null) {
+          this.db.run(
+            "DELETE FROM turn_outcomes WHERE id IN (SELECT id FROM turn_outcomes WHERE " +
+              "profile_id = $p ORDER BY ts DESC, id DESC LIMIT -1 OFFSET $cap)",
+            { p: profile, cap: this.cap },
+          );
+        }
+      });
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot append turn outcome", { cause });
+    }
+  }
+
+  async recentOutcomes(
+    profile: ProfileId,
+    context: ContextKey | null,
+    limit: number,
+  ): Promise<TurnOutcomeRecord[]> {
+    const rows =
+      context === null
+        ? this.db.all(
+            "SELECT record FROM turn_outcomes WHERE profile_id = $profile " +
+              "ORDER BY ts DESC, id DESC LIMIT $limit",
+            { profile, limit: limitParam(limit) },
+          )
+        : this.db.all(
+            "SELECT record FROM turn_outcomes WHERE profile_id = $profile AND " +
+              "context_key = $key ORDER BY ts DESC, id DESC LIMIT $limit",
+            { profile, key: contextLookupKey(context), limit: limitParam(limit) },
+          );
+    return rows.map((r) => json<TurnOutcomeRecord>(r, "record", "turn outcome"));
+  }
+
   #trim(profile: ProfileId, cap: number): void {
     let count = this.#counts.get(profile);
     if (count === undefined) {
@@ -967,14 +1021,30 @@ class SqliteMemories implements MemoryRecordStore {
     );
   }
 
-  async dueFollowups(profile: ProfileId, now: Timestamp): Promise<MemoryRecord[]> {
+  async dueFollowups(
+    profile: ProfileId,
+    now: Timestamp,
+    maxAgeMs: number | null = null,
+  ): Promise<MemoryRecord[]> {
     const rows = this.db.all(
       "SELECT * FROM memory_records WHERE profile_id = $profile AND kind = 'followup' AND " +
-        "NOT done AND due IS NOT NULL AND superseded_by IS NULL AND due <= $now " +
-        "ORDER BY due ASC, id ASC",
-      { profile, now: toMicros(now) },
+        "NOT done AND due IS NOT NULL AND superseded_by IS NULL AND due <= $now AND " +
+        "($since IS NULL OR due >= $since) ORDER BY due DESC, id DESC",
+      {
+        profile,
+        now: toMicros(now),
+        since: maxAgeMs === null ? null : toMicros(now) - Math.round(maxAgeMs * 1000),
+      },
     );
     return rows.map(memoryFromRow);
+  }
+
+  async expireFollowups(profile: ProfileId, dueBefore: Timestamp): Promise<number> {
+    return this.db.run(
+      "UPDATE memory_records SET done = 1 WHERE profile_id = $profile AND kind = 'followup' " +
+        "AND NOT done AND due IS NOT NULL AND due < $before",
+      { profile, before: toMicros(dueBefore) },
+    );
   }
 
   async prune(profile: ProfileId, policy: PrunePolicy): Promise<number> {

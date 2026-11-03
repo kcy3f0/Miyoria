@@ -30,6 +30,7 @@ export {
   type WipeCounts,
   type WipeOptions,
 } from "./data.js";
+export { HANDLE_PREFIX, handleKey, StoredHandleDirectory } from "./handles.js";
 export { MemorySettingsStore } from "./memory-settings.js";
 export {
   DEFAULT_STORE_URL,

@@ -144,6 +144,9 @@ export class MemoryRecords implements MemoryRecordStore {
       .map(clone);
   }
   async touch(): Promise<void> {}
+  async expireFollowups(): Promise<number> {
+    return 0;
+  }
   async dueFollowups(): Promise<MemoryRecord[]> {
     return [];
   }

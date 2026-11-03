@@ -19,6 +19,7 @@ import {
   type PlatformId,
   type ProfileId,
   type Timestamp,
+  type TurnOutcomeRecord,
 } from "@miyoria/types";
 import pg from "pg";
 import {
@@ -715,6 +716,42 @@ class PgDecisionLog implements DecisionLog {
       trace: parseJson<DecisionTrace>(str(r, "trace"), "decision trace"),
     }));
   }
+
+  async appendOutcome(profile: ProfileId, record: TurnOutcomeRecord): Promise<void> {
+    try {
+      await this.db.execute(
+        "INSERT INTO turn_outcomes (id, profile_id, context_key, ts, outcome, record) " +
+          "VALUES ($1, $2, $3, $4, $5, $6::jsonb) " +
+          "ON CONFLICT (id) DO UPDATE SET profile_id = EXCLUDED.profile_id, " +
+          "context_key = EXCLUDED.context_key, ts = EXCLUDED.ts, " +
+          "outcome = EXCLUDED.outcome, record = EXCLUDED.record",
+        [
+          record.turn,
+          profile,
+          contextLookupKey(record.context),
+          tsParam(record.at),
+          record.outcome.type,
+          JSON.stringify(record),
+        ],
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot append turn outcome", { cause });
+    }
+  }
+
+  async recentOutcomes(
+    profile: ProfileId,
+    context: ContextKey | null,
+    limit: number,
+  ): Promise<TurnOutcomeRecord[]> {
+    const rows = await this.db.query(
+      "SELECT record::text AS record FROM turn_outcomes WHERE profile_id = $1 AND " +
+        '($2::text IS NULL OR context_key = $2) ORDER BY ts DESC, id COLLATE "C" DESC LIMIT $3',
+      [profile, context === null ? null : contextLookupKey(context), limitParam(limit)],
+    );
+    return rows.map((r) => parseJson<TurnOutcomeRecord>(str(r, "record"), "turn outcome"));
+  }
 }
 
 // ---- settings -----------------------------------------------------------------------------
@@ -1019,14 +1056,27 @@ class PgMemories implements MemoryRecordStore {
     );
   }
 
-  async dueFollowups(profile: ProfileId, now: Timestamp): Promise<MemoryRecord[]> {
+  async dueFollowups(
+    profile: ProfileId,
+    now: Timestamp,
+    maxAgeMs: number | null = null,
+  ): Promise<MemoryRecord[]> {
     const rows = await this.db.query(
       `SELECT ${MEMORY_COLUMNS} FROM memory_records WHERE profile_id = $1 AND ` +
-        "kind = 'followup' AND NOT done AND superseded_by IS NULL AND due <= $2 " +
-        'ORDER BY due ASC, id COLLATE "C" ASC',
-      [profile, tsParam(now)],
+        "kind = 'followup' AND NOT done AND superseded_by IS NULL AND due <= $2 AND " +
+        "($3::bigint IS NULL OR due >= $2::timestamptz - ($3::bigint * interval '1 millisecond')) " +
+        'ORDER BY due DESC, id COLLATE "C" DESC',
+      [profile, tsParam(now), maxAgeMs === null ? null : Math.round(maxAgeMs)],
     );
     return rows.map(memoryFromRow);
+  }
+
+  async expireFollowups(profile: ProfileId, dueBefore: Timestamp): Promise<number> {
+    return this.db.execute(
+      "UPDATE memory_records SET done = TRUE WHERE profile_id = $1 AND kind = 'followup' " +
+        "AND NOT done AND due IS NOT NULL AND due < $2",
+      [profile, tsParam(dueBefore)],
+    );
   }
 
   async prune(profile: ProfileId, policy: PrunePolicy): Promise<number> {

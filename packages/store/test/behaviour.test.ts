@@ -16,6 +16,7 @@ import {
   type ProfileId,
   type Timestamp,
   toTimestamp,
+  type TurnOutcomeRecord,
 } from "@miyoria/types";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -96,6 +97,31 @@ function decision(
 }
 
 const reasons = (records: DecisionRecord[]) => records.map((r) => r.trace.reasons[0]);
+
+function outcome(
+  context: ContextKey,
+  kind: "sent" | "silence" | "cancelled",
+  ts: Timestamp,
+  turn: string = newId(),
+): TurnOutcomeRecord {
+  return {
+    turn,
+    context,
+    reason: "addressed",
+    outcome:
+      kind === "sent"
+        ? { type: "sent", parts: 2 }
+        : kind === "silence"
+          ? { type: "silence" }
+          : { type: "cancelled", cause: "input", by: "Owen" },
+    addressed_by: ["Owen"],
+    focus: [],
+    restarts: 0,
+    reasoning: null,
+    latency_ms: null,
+    at: ts,
+  };
+}
 
 function memory(
   profile: ProfileId,
@@ -409,6 +435,36 @@ function behaviour(open: () => Promise<Store>): void {
     const got = await log.recent(profile, ctx, 10);
     expect(got).toEqual([d]);
     await expect(log.append(d), "duplicate id must fail").rejects.toThrow(/already exists/);
+  });
+
+  it("turn_outcomes_round_trip", async () => {
+    const log = store.decisions;
+    expect(log.appendOutcome).toBeTypeOf("function");
+    expect(log.recentOutcomes).toBeTypeOf("function");
+    const profile = unique("profile");
+    const other = unique("profile");
+    const a = channel("guild", unique("chan"), "channel");
+    const b = channel("guild", unique("chan"), "voice");
+    const t0 = Date.now();
+    const sent = outcome(a, "sent", at(t0 + SECOND));
+    const silent = outcome(a, "silence", at(t0 + 2 * SECOND));
+    const cancelled = outcome(b, "cancelled", at(t0 + 3 * SECOND));
+    for (const o of [silent, sent, cancelled]) await log.appendOutcome?.(profile, o);
+    await log.appendOutcome?.(other, outcome(a, "sent", at(t0)));
+
+    // Newest first, per context or for the whole profile, and the record comes back as written.
+    expect(await log.recentOutcomes?.(profile, null, 10)).toEqual([cancelled, silent, sent]);
+    expect(await log.recentOutcomes?.(profile, a, 10)).toEqual([silent, sent]);
+    expect(await log.recentOutcomes?.(profile, b, 1)).toEqual([cancelled]);
+    expect(await log.recentOutcomes?.(profile, null, 0)).toEqual([]);
+
+    // One row per turn: writing a turn again replaces it ("decided to reply" → "nothing sent").
+    const revised: TurnOutcomeRecord = {
+      ...sent,
+      outcome: { type: "error", error: "provider timeout" },
+    };
+    await log.appendOutcome?.(profile, revised);
+    expect(await log.recentOutcomes?.(profile, a, 10)).toEqual([silent, revised]);
   });
 
   it("settings", async () => {
@@ -753,18 +809,59 @@ function behaviour(open: () => Promise<Store>): void {
       await memories.upsert(r);
     }
 
+    // Newest due first: the oldest are the ones nobody brought up in time.
     expect(recordIds(await memories.dueFollowups(profile, at(now)))).toEqual([
-      earlier.id,
-      later.id,
       exactlyNow.id,
+      later.id,
+      earlier.id,
     ]);
     expect(recordIds(await memories.dueFollowups(profile, at(now + 2 * HOUR)))).toEqual([
-      earlier.id,
-      later.id,
-      exactlyNow.id,
       future.id,
+      exactlyNow.id,
+      later.id,
+      earlier.id,
     ]);
     expect(await memories.dueFollowups(profile, at(now - 2 * DAY))).toEqual([]);
+  });
+
+  it("memory_followups_age_cap_and_expiry", async () => {
+    const memories = store.memories;
+    const profile = unique("profile");
+    const otherProfile = unique("profile");
+    const now = Date.now();
+    const followup = (p: ProfileId, due: number) => {
+      const r = memory(p, "followup", { type: "global" }, "ask", at(now - DAY));
+      r.due = at(due);
+      return r;
+    };
+    const fresh = followup(profile, now - 30 * MINUTE);
+    const stale = followup(profile, now - 5 * HOUR);
+    const ancient = followup(profile, now - 3 * DAY);
+    const foreign = followup(otherProfile, now - 5 * HOUR);
+    for (const r of [fresh, stale, ancient, foreign]) await memories.upsert(r);
+
+    // The age cap leaves the old ones out, without closing them.
+    expect(recordIds(await memories.dueFollowups(profile, at(now), 2 * HOUR))).toEqual([fresh.id]);
+    expect(recordIds(await memories.dueFollowups(profile, at(now), 6 * HOUR))).toEqual([
+      fresh.id,
+      stale.id,
+    ]);
+    expect(recordIds(await memories.dueFollowups(profile, at(now), null))).toEqual([
+      fresh.id,
+      stale.id,
+      ancient.id,
+    ]);
+
+    // Closing: everything that became due before the cut-off, in this profile only.
+    expect(await memories.expireFollowups(profile, at(now - 4 * HOUR))).toBe(2);
+    expect((await memories.get(ancient.id))?.done).toBe(true);
+    expect((await memories.get(stale.id))?.done).toBe(true);
+    expect((await memories.get(fresh.id))?.done).toBe(false);
+    expect(await memories.expireFollowups(profile, at(now - 4 * HOUR))).toBe(0);
+    expect(recordIds(await memories.dueFollowups(profile, at(now)))).toEqual([fresh.id]);
+    expect(await memories.expireFollowups(profile, at(now - 10 * MINUTE))).toBe(1);
+    expect(await memories.dueFollowups(profile, at(now))).toEqual([]);
+    expect((await memories.get(foreign.id))?.done).toBe(false);
   });
 
   it("memory_prune", async () => {
@@ -1303,6 +1400,7 @@ function behaviour(open: () => Promise<Store>): void {
       await store.relationships.recordDelta(p, person, delta(at(t0), 1, "nice"));
       await store.messages.append(entry(p, ctx, "嗨", at(t0)));
       await store.decisions.append(decision(p, ctx, "replied", at(t0)));
+      await store.decisions.appendOutcome?.(p, outcome(ctx, "sent", at(t0)));
       await store.personaOverrides.set(p, "style", "新的口吻", "test");
       for (const [key, value] of [
         ["memory_maintenance_last", "2026-01-01T00:00:00Z"],
@@ -1332,7 +1430,7 @@ function behaviour(open: () => Promise<Store>): void {
     expect(count("inner")).toBe(2);
     expect(count("mood")).toBe(1);
     expect(count("messages")).toBe(3); // one line + two watermarks
-    expect(count("decisions")).toBe(1);
+    expect(count("decisions")).toBe(2); // decision log + turn outcome
     expect(count("channels")).toBe(2);
     expect(count("persona")).toBe(1);
     expect(count("proposed_tools")).toBe(1);
@@ -1391,6 +1489,7 @@ function behaviour(open: () => Promise<Store>): void {
       mind_digests: 0,
       mood: 1,
       decision_log: 1,
+      turn_outcomes: 1,
       channel_modes: 1,
       channel_activeness: 1,
       persona_overrides: 1,

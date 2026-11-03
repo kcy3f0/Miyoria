@@ -14,6 +14,7 @@ import {
   type ProfileId,
   serviceKey,
   type Timestamp,
+  type TurnOutcomeRecord,
 } from "@miyoria/types";
 import type { DataCategoryId, DataExport, DataInventory, WipeCounts, WipeOptions } from "./data.js";
 import type {
@@ -84,6 +85,18 @@ export interface DecisionLog {
   append(record: DecisionRecord): Promise<void>;
   /** Newest first, optionally only for one context. */
   recent(profile: ProfileId, context: ContextKey | null, limit: number): Promise<DecisionRecord[]>;
+  /**
+   * Records how a turn ended (`agent.turn.outcome`), one row per turn (a repeated write of the
+   * same turn replaces it). Optional so older backends and test doubles keep working; callers
+   * use `?.`.
+   */
+  appendOutcome?(profile: ProfileId, record: TurnOutcomeRecord): Promise<void>;
+  /** Turn outcomes, newest first, optionally only for one context. */
+  recentOutcomes?(
+    profile: ProfileId,
+    context: ContextKey | null,
+    limit: number,
+  ): Promise<TurnOutcomeRecord[]>;
 }
 
 /**
@@ -115,8 +128,21 @@ export interface MemoryRecordStore {
   list(profile: ProfileId, filter: MemoryFilter): Promise<MemoryRecord[]>;
   /** Records access (bumps `access_count`, sets `last_accessed`). */
   touch(ids: readonly string[], at: Timestamp): Promise<void>;
-  /** Followups with `due <= now` and `done == false`, oldest due first. */
-  dueFollowups(profile: ProfileId, now: Timestamp): Promise<MemoryRecord[]>;
+  /**
+   * Open followups with `due <= now`, newest due first (the oldest ones are the ones nobody
+   * brought up in time). With `maxAgeMs`, followups that became due longer ago than that are
+   * not returned.
+   */
+  dueFollowups(
+    profile: ProfileId,
+    now: Timestamp,
+    maxAgeMs?: number | null,
+  ): Promise<MemoryRecord[]>;
+  /**
+   * Closes (`done`) every open followup that became due before `dueBefore`; returns how many.
+   * A followup nobody picked up within a few hours is not worth bringing up any more.
+   */
+  expireFollowups(profile: ProfileId, dueBefore: Timestamp): Promise<number>;
   /** Deletes forgettable episodes; returns how many. */
   prune(profile: ProfileId, policy: PrunePolicy): Promise<number>;
   /** Deletes everything about a person (they asked her to forget them). */
