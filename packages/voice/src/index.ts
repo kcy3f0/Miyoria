@@ -11,7 +11,20 @@
 // `asr` (`asr_ms`, `transcribe_ms`) or `tts` (`first_audio_ms`); the agent adds `llm`
 // (`first_token_ms`).
 
-export { BargeIn } from "./barge.js";
+export {
+  type BargeDecision,
+  type BargeFacts,
+  BargeIn,
+  type BargeOptions,
+  type BargeTarget,
+  type BargeThresholds,
+  type BargeVerdict,
+  type BargeWho,
+  DEFAULT_BARGE_OPTIONS,
+  decideBargeIn,
+  type PlaybackInfo,
+  type SpeakerRole,
+} from "./barge.js";
 export { joinAnnouncement, PATHS, registerCommands, unregisterCommands } from "./commands.js";
 export {
   type BargeInMode,
@@ -29,6 +42,7 @@ export {
   consentKey,
   defaultAllowed,
 } from "./consent.js";
+export { containment, looksLikeHintEcho, matchCore, SelfEchoGuard } from "./echo.js";
 export { type GoLiveState, type GoLiveStatus, VoiceLinkError } from "./link/conn.js";
 export {
   type AudioEvent,
@@ -44,8 +58,22 @@ export {
   voiceContext,
 } from "./link/link.js";
 export { VOICE_LINK_PATH, VoiceLinkModule } from "./link/module.js";
-export { Playback, type Stoppable } from "./link/playback.js";
+export {
+  CAP_DUCK,
+  CAP_PAUSE,
+  Playback,
+  type PlaybackControl,
+  type Stoppable,
+} from "./link/playback.js";
 export { VoiceModule } from "./module.js";
+export {
+  BufferedAudio,
+  LinePrefetch,
+  type PrefetchOptions,
+  type PreparedLine,
+  type Producer,
+  type Production,
+} from "./prefetch.js";
 export {
   CLOSE,
   type CoreMessage,
@@ -71,13 +99,17 @@ export {
   stripTags,
   toTraditional,
 } from "./text.js";
-export { LATENCY_TOPIC } from "./topics.js";
+export { LATENCY_TOPIC, VOICE_BARGE_IN_TOPIC } from "./topics.js";
 export { BoundedQueue, Semaphore, Watch } from "./util.js";
 export {
+  createVad,
   DEFAULT_ENERGY_VAD,
   EnergyVad,
   type EnergyVadConfig,
   energyDb,
+  registerVadEngine,
   type Vad,
+  type VadFactory,
+  type VadSettings,
   zeroCrossingRate,
 } from "./vad.js";

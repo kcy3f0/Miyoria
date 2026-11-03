@@ -4,8 +4,12 @@ import type { JsonObject } from "@miyoria/types";
 import { z } from "zod";
 import { DEFAULT_SEGMENTER, type SegmenterConfig } from "./segment.js";
 
-/** What happens when someone talks over her: `stop` (fade out and stop) or `ignore`. */
-export const BargeInModeSchema = z.enum(["stop", "ignore"]);
+/**
+ * What happens when someone talks over her: `selective` (default: the turn's focus person, her
+ * name or substantive content for her stops her; anybody else only ducks her volume), `stop`
+ * (anybody talking long enough stops her, the pre-v2 behaviour) or `ignore`.
+ */
+export const BargeInModeSchema = z.enum(["selective", "stop", "ignore"]);
 export type BargeInMode = z.output<typeof BargeInModeSchema>;
 
 /** `[modules.voice]` config section. */
@@ -32,12 +36,51 @@ export const VoiceConfigSchema = z.object({
   asr_prompt_participants: z.boolean().default(false),
   /** Extra hallucination phrases to drop (substring match). */
   hallucinations: z.array(z.string()).default([]),
-  /** Barge-in behaviour. Default `stop`. */
-  barge_in: BargeInModeSchema.default("stop"),
-  /** Someone must talk this long over her before she stops. Default 600. */
+  /** Barge-in behaviour. Default `selective`. */
+  barge_in: BargeInModeSchema.default("selective"),
+  /**
+   * The turn's focus person must talk this long over her before she pauses (`stop` mode: before
+   * anybody stops her). Default 600.
+   */
   barge_in_ms: z.number().int().nonnegative().default(600),
   /** Fade-out when stopping for barge-in. Default 150. */
   barge_in_fade_ms: z.number().int().nonnegative().default(150),
+  /** Somebody else talking this long ducks her volume (`selective`). Default 250. */
+  barge_in_duck_ms: z.number().int().nonnegative().default(250),
+  /** Her volume while ducked, 0..1. Default 0.3. */
+  barge_in_duck_gain: z.number().min(0).max(1).default(0.3),
+  /** The focus person who talks this long stops her without waiting for ASR. Default 3000. */
+  barge_in_focus_stop_ms: z.number().int().nonnegative().default(3_000),
+  /**
+   * Words that mean somebody is calling her (her name and nicknames): a transcript with one
+   * stops her whoever says it. The profile's names are added by the module when it knows them.
+   */
+  names: z.array(z.string()).default([]),
+  /**
+   * While a song plays, only utterances that call her by name count as speech (the song, and
+   * people singing along, are not turns). Default true.
+   */
+  music_gate: z.boolean().default(true),
+  /** A transcript that repeats her own words this long after she spoke is an echo. Default 5000. */
+  self_echo_tail_ms: z.number().int().nonnegative().default(5_000),
+  /** Voice activity detector: `energy` (default) or `silero` (needs a registered engine). */
+  vad_engine: z.enum(["energy", "silero"]).default("energy"),
+  /** Path of the Silero VAD model (`silero_vad.onnx`) for `vad_engine = "silero"`. */
+  vad_silero_model: z.string().nullable().default(null),
+  /** Silero speech probability above which a frame is speech. Default 0.5. */
+  vad_silero_threshold: z.number().min(0).max(1).default(0.5),
+  /**
+   * Lines synthesized ahead while the previous one plays (TTS runs concurrently on at most this
+   * many lines). 0 turns the prefetch off. Default 2.
+   */
+  tts_prefetch: z.number().int().nonnegative().default(2),
+  /** A prefetched line nobody asked for is dropped after this long. Default 30 000. */
+  tts_prefetch_ttl_ms: z.number().int().nonnegative().default(30_000),
+  /**
+   * Her line waits this long while a song or the GPU loan holds the floor, then it is dropped
+   * (it would be stale by then). Default 90 000.
+   */
+  speech_hold_max_ms: z.number().int().nonnegative().default(90_000),
   /** Language hint sent to TTS. Default `Chinese`. */
   tts_language: z.string().default("Chinese"),
   /**

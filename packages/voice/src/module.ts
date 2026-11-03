@@ -13,8 +13,10 @@ import { LlmRouterKey } from "@miyoria/llm";
 import { SpeechServiceKey } from "@miyoria/speech";
 import { SettingsStoreKey } from "@miyoria/store";
 import {
+  customEvent,
   type JsonObject,
   type ProfileId,
+  VOICE_BARGE_IN_TOPIC,
   VoiceFloorKey,
   VoiceSinkKey,
   WorldStateKey,
@@ -24,9 +26,11 @@ import { BargeIn } from "./barge.js";
 import { registerCommands, unregisterCommands } from "./commands.js";
 import { VoiceConfigSchema, VoiceProfile } from "./config.js";
 import { Consent } from "./consent.js";
+import { SelfEchoGuard } from "./echo.js";
 import { type VoiceLink, VoiceLinkKey } from "./link/link.js";
 import { VoiceLinkModule } from "./link/module.js";
 import { Listener } from "./listen.js";
+import { LinePrefetch } from "./prefetch.js";
 import { Speaker } from "./sink.js";
 import { SpeechTranslator } from "./translate.js";
 import { Semaphore } from "./util.js";
@@ -51,14 +55,20 @@ export class VoiceModule implements Module {
   });
   readonly #profileId: ProfileId;
   readonly #voice: JsonObject | null;
+  readonly #names: readonly string[];
+  #barge: BargeIn | null = null;
   #link: VoiceLink | null = null;
   #commands: CommandMount | null = null;
   #capabilities: (() => void)[] = [];
 
-  /** `voice` is the profile's `voice.toml` (`Profile.voice`). */
-  constructor(profileId: ProfileId, voice: JsonObject | null) {
+  /**
+   * `voice` is the profile's `voice.toml` (`Profile.voice`); `names`: what people call her
+   * (`Profile.names()`), so her name in a transcript stops her when somebody talks over her.
+   */
+  constructor(profileId: ProfileId, voice: JsonObject | null, names: readonly string[] = []) {
     this.#profileId = profileId;
     this.#voice = voice;
+    this.#names = names;
   }
 
   async start(ctx: ModuleContext): Promise<void> {
@@ -71,7 +81,49 @@ export class VoiceModule implements Module {
       ctx.log.warn("no settings store: voice consent choices are kept in memory only");
     }
     const consent = new Consent(config.consent, store, ctx.clock);
-    const barge = new BargeIn(config.barge_in, config.barge_in_ms, config.barge_in_fade_ms);
+    let speaker: Speaker | null = null;
+    const barge = new BargeIn(
+      config.barge_in,
+      config.barge_in_ms,
+      config.barge_in_fade_ms,
+      {
+        duckMs: config.barge_in_duck_ms,
+        duckGain: config.barge_in_duck_gain,
+        focusStopMs: config.barge_in_focus_stop_ms,
+        // The utterance of somebody who just stopped talking arrives after the end silence.
+        settleMs: config.end_silence_ms + 500,
+        publish: (record) => {
+          ctx.publish(
+            customEvent(VOICE_BARGE_IN_TOPIC, {
+              context: { ...record.context },
+              turn: record.turn,
+              account: record.account === null ? null : { ...record.account },
+              action: record.action,
+              reason: record.reason,
+            }),
+            { turn: record.turn },
+          );
+          // The rest of her lines are dropped: do not synthesize them for nothing.
+          if (record.action === "stop" && record.context.scope !== null) {
+            speaker?.cancelPrefetch(record.context.scope);
+          }
+        },
+      },
+      () => ctx.clock.now(),
+    );
+    this.#barge = barge;
+    const echo = new SelfEchoGuard({
+      now: () => ctx.clock.now(),
+      tailMs: config.self_echo_tail_ms,
+    });
+    const prefetch =
+      config.tts_prefetch > 0
+        ? new LinePrefetch({
+            limit: config.tts_prefetch,
+            ttlMs: config.tts_prefetch_ttl_ms,
+            signal: ctx.signal,
+          })
+        : null;
 
     if (!speech.hasTts()) ctx.log.warn("no TTS provider configured: she cannot speak");
     let translator: SpeechTranslator | null = null;
@@ -88,10 +140,18 @@ export class VoiceModule implements Module {
         ctx.log.warn("tts_translate is set but there is no LLM router: she speaks untranslated");
       }
     }
-    ctx.provide(
-      VoiceSinkKey,
-      new Speaker({ ctx, link, speech, profile, config, barge, translator }),
-    );
+    speaker = new Speaker({
+      ctx,
+      link,
+      speech,
+      profile,
+      config,
+      barge,
+      translator,
+      echo,
+      prefetch,
+    });
+    ctx.provide(VoiceSinkKey, speaker);
 
     if (speech.hasAsr()) {
       const listener = new Listener({
@@ -102,6 +162,8 @@ export class VoiceModule implements Module {
         config,
         barge,
         asrSlots: new Semaphore(Math.max(1, config.asr_concurrency)),
+        echo,
+        names: [...config.names, ...this.#names],
       });
       const audio = link.subscribeAudio(ctx.signal);
       ctx.spawn("listen", (signal) => listener.run(audio, signal));
@@ -131,6 +193,8 @@ export class VoiceModule implements Module {
   }
 
   async stop(): Promise<void> {
+    this.#barge?.close();
+    this.#barge = null;
     this.#commands?.detach();
     this.#commands = null;
     for (const unregister of this.#capabilities) unregister();

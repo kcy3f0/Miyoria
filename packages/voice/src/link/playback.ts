@@ -3,7 +3,7 @@
 import { errorMessage, getLogger } from "@miyoria/kernel";
 import type { AudioChunk, AudioStream } from "@miyoria/speech";
 import type { PlaybackState } from "@miyoria/types";
-import { encodeAudio, TAG_LEVELS, TAG_PLAYBACK } from "../protocol.js";
+import { type CoreMessage, encodeAudio, TAG_LEVELS, TAG_PLAYBACK } from "../protocol.js";
 import { deferred, Watch } from "../util.js";
 import type { Conn } from "./conn.js";
 
@@ -14,9 +14,23 @@ export interface Stoppable {
   stop(fadeMs: number): void;
 }
 
+/**
+ * How a playback talks to its node beyond the audio: control messages, and whether the node
+ * understands them (`play_duck` / `play_pause` are announced in the node's hello `capabilities`).
+ */
+export interface PlaybackControl {
+  send(msg: CoreMessage): void;
+  supports(capability: string): boolean;
+}
+
+/** Capability names of the node's `hello.capabilities`. */
+export const CAP_DUCK = "play_duck";
+export const CAP_PAUSE = "play_pause";
+
 /** Handle of one playback started with `VoiceLink.play`. */
 export class Playback implements Stoppable {
   readonly id: number;
+  readonly #control: PlaybackControl | null;
   readonly #stop = deferred<void>();
   #stopped = false;
   #fadeMs = 0;
@@ -24,8 +38,41 @@ export class Playback implements Stoppable {
   readonly state$ = new Watch<PlaybackState | null>(null);
 
   /** @internal Created by `VoiceLink.play`. */
-  constructor(id: number) {
+  constructor(id: number, control: PlaybackControl | null = null) {
     this.id = id;
+    this.#control = control;
+  }
+
+  /**
+   * Sets this playback's volume to `gain` (0..1, 1 = normal) over `fadeMs`. Returns whether the
+   * node supports it (older nodes do not) and the playback is still running.
+   */
+  duck(gain: number, fadeMs: number): boolean {
+    const c = this.#control;
+    if (!c?.supports(CAP_DUCK) || this.#stopped || this.state$.value === "finished") {
+      return false;
+    }
+    c.send({ type: "play_duck", play: this.id, gain, fade_ms: fadeMs });
+    return true;
+  }
+
+  /**
+   * Holds the playback (fading out over `fadeMs`) until `resume`; the audio already sent waits
+   * in the node. Returns whether the node supports it.
+   */
+  pause(fadeMs: number): boolean {
+    const c = this.#control;
+    if (!c?.supports(CAP_PAUSE) || this.#stopped) return false;
+    c.send({ type: "play_pause", play: this.id, fade_ms: fadeMs });
+    return true;
+  }
+
+  /** Continues a paused playback, fading in over `fadeMs`. */
+  resume(fadeMs: number): boolean {
+    const c = this.#control;
+    if (!c?.supports(CAP_PAUSE) || this.#stopped) return false;
+    c.send({ type: "play_resume", play: this.id, fade_ms: fadeMs });
+    return true;
   }
 
   /**
@@ -81,8 +128,9 @@ export function startPlayback(
   sampleRate: number,
   audio: AudioStream | AsyncIterable<LeveledChunk>,
   node: Watch<PlaybackState | null>,
+  control: PlaybackControl | null = null,
 ): Playback {
-  const playback = new Playback(id);
+  const playback = new Playback(id, control);
   void pump(conn, playback, sampleRate, audio, node)
     .catch((error: unknown) => {
       log.warn({ play: id, err: errorMessage(error) }, "playback pump failed");

@@ -446,7 +446,7 @@ describe("config", () => {
   it("config_defaults", () => {
     const c = VoiceConfigSchema.parse({});
     expect(c.consent).toBe("opt-out");
-    expect(c.barge_in).toBe("stop");
+    expect(c.barge_in).toBe("selective");
     expect([c.end_silence_ms, c.max_utterance_ms, c.min_utterance_ms]).toEqual([600, 15_000, 300]);
     const d = VoiceConfigSchema.parse({ consent: "opt-in", barge_in: "ignore" });
     expect(d.consent).toBe("opt-in");

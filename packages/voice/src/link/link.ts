@@ -111,7 +111,7 @@ function tokenMatches(expected: string, got: string): boolean {
 }
 
 type HelloOutcome =
-  | { ok: true; account: AccountRef; node: string }
+  | { ok: true; account: AccountRef; node: string; capabilities: string[] }
   | { ok: false; code: number; reason: string };
 
 function readHello(text: string, token: string): HelloOutcome {
@@ -141,6 +141,7 @@ function readHello(text: string, token: string): HelloOutcome {
     ok: true,
     account: { platform: hello.self_account.platform, id: hello.self_account.id },
     node: hello.node,
+    capabilities: hello.capabilities,
   };
 }
 
@@ -331,7 +332,10 @@ export class VoiceLink {
       conn.state.plays.delete(id);
       throw error;
     }
-    return startPlayback(conn, id, sampleRate, audio, node);
+    return startPlayback(conn, id, sampleRate, audio, node, {
+      send: (msg) => conn.trySend(msg),
+      supports: (capability) => conn.capabilities.has(capability),
+    });
   }
 
   /**
@@ -475,7 +479,7 @@ export class VoiceLink {
         }
         phase = "open";
         endHello();
-        conn = this.#open(ws, hello.account, hello.node);
+        conn = this.#open(ws, hello.account, hello.node, hello.capabilities);
         stopOpen = this.#attach(conn, ws);
         return;
       }
@@ -502,8 +506,8 @@ export class VoiceLink {
     });
   }
 
-  #open(ws: WebSocket, account: AccountRef, node: string): Conn {
-    const conn = new Conn(this.#nextConn++, account, ws);
+  #open(ws: WebSocket, account: AccountRef, node: string, capabilities: string[]): Conn {
+    const conn = new Conn(this.#nextConn++, account, ws, capabilities);
     const session = newId();
     // Welcome goes out before anything else on this connection.
     conn.trySend({ type: "welcome", session });

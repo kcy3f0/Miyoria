@@ -34,6 +34,8 @@ import {
   type JsonValue,
   type PlaybackState,
   SpeechPauseKey,
+  type TurnFocus,
+  TurnFocusViewKey,
   VoiceFloorKey,
   VoiceSinkKey,
   type VoiceUtterance,
@@ -178,9 +180,13 @@ afterEach(async () => {
   env = null;
 });
 
+/** What a current voice node announces. */
+const NODE_CAPS = ["play_duck", "play_pause"];
+
 async function boot(
   voiceConfig: JsonObject = {},
   router: Pick<LlmRouter, "complete"> | null = null,
+  capabilities: string[] = NODE_CAPS,
 ): Promise<Env> {
   const asr = new FakeAsr();
   asr.text = "这个游戏好难";
@@ -200,7 +206,7 @@ async function boot(
     },
   );
   expect(h.moduleState("voice").state).toBe("running");
-  const node = await h.node(SELF_ID);
+  const node = await h.node(SELF_ID, capabilities);
   node.sendJson({
     type: "voice_state",
     guild: "g1",
@@ -375,7 +381,8 @@ describe("voice", () => {
   });
 
   it("barge_in_stops_playback", async () => {
-    const e = await boot();
+    // The pre-v2 mode: anybody talking long enough stops her.
+    const e = await boot({ barge_in: "stop" });
     e.tts.endless = true;
     const events = e.h.subscribe(["voice.playback"]);
     const sink = e.h.services.require(VoiceSinkKey);
@@ -598,18 +605,42 @@ describe("voice", () => {
     });
   });
 
-  it("her_lines_are_dropped_while_a_song_holds_the_channel", async () => {
+  it("her_lines_wait_while_a_song_holds_the_channel", async () => {
     const e = await boot();
     let holder: string | null = "song";
     e.h.services.provide("sing", VoiceFloorKey, { holder: (g) => (g === "g1" ? holder : null) });
     const sink = e.h.services.require(VoiceSinkKey);
-    expect(await sink.speak(voiceCtx, "唱歌的時候說話", null, null)).toBe("interrupted");
+    let outcome: string | null = null;
+    const speaking = sink.speak(voiceCtx, "唱歌的時候說話", null, null).then((o) => {
+      outcome = o;
+      return o;
+    });
+    // Not dropped, not sent to TTS: it waits for the song to end.
+    await sleepMs(600);
+    expect(outcome).toBeNull();
     expect(e.tts.requests).toHaveLength(0);
     holder = null;
-    const speaking = sink.speak(voiceCtx, "唱完了", null, null);
     const start = await e.node.recvType("play_start");
     e.node.sendJson({ type: "playback", play: start.play as number, state: "finished" });
     expect(await speaking).toBe("completed");
+    expect(e.tts.requests).toHaveLength(1);
+  });
+
+  it("a line that waits too long for the floor is dropped and the drop is recorded", async () => {
+    const e = await boot({ speech_hold_max_ms: 400 });
+    e.h.services.provide("sing", VoiceFloorKey, { holder: () => "song" });
+    const events = e.h.subscribe(["voice.barge_in"]);
+    const sink = e.h.services.require(VoiceSinkKey);
+    expect(await sink.speak(voiceCtx, "唱歌的時候說話", null, "turn-1")).toBe("interrupted");
+    expect(e.tts.requests).toHaveLength(0);
+    const ev = (await nextEvent(events)).event;
+    expect(ev.type === "custom" && ev.data.payload).toEqual({
+      context: voiceCtx,
+      turn: "turn-1",
+      account: null,
+      action: "stop",
+      reason: "floor",
+    });
   });
 
   it("speech_pauses_while_the_song_worker_has_the_gpu", async () => {
@@ -617,9 +648,15 @@ describe("voice", () => {
     let paused: string | null = "song";
     e.h.services.provide("sing", SpeechPauseKey, { paused: () => paused });
     const sink = e.h.services.require(VoiceSinkKey);
-    // Her line is not sent to the (offloaded) TTS worker.
-    expect(await sink.speak(voiceCtx, "準備中說話", null, null)).toBe("interrupted");
+    // Her line is not sent to the (offloaded) TTS worker; it waits for the GPU to come back.
+    const speaking = sink.speak(voiceCtx, "準備中說話", null, null);
+    await sleepMs(400);
     expect(e.tts.requests).toHaveLength(0);
+    paused = null;
+    const start = await e.node.recvType("play_start");
+    e.node.sendJson({ type: "playback", play: start.play as number, state: "finished" });
+    expect(await speaking).toBe("completed");
+    paused = "song";
     // What people say is dropped, not queued for later.
     e.speakStream(1, "u1", utteranceAudio());
     await new Promise((r) => setTimeout(r, 300));
@@ -640,5 +677,268 @@ describe("voice", () => {
       status: "degraded",
       reason: "voice node not connected",
     });
+  });
+});
+
+// ------------------------------------------------------------- selective barge-in
+
+/** A turn in flight in `voiceCtx` that is for `accounts`. */
+function turnFor(...accounts: string[]): TurnFocus {
+  return {
+    turn: "turn-1",
+    context: voiceCtx,
+    reason: "addressed",
+    phase: "speaking",
+    addressed_by: accounts.map((a) => `h${a}`),
+    addressed_accounts: accounts.map(account),
+    focus: [],
+    background: [],
+    restarts: 0,
+    started_at: "2026-11-04T00:00:00.000Z",
+    updated_at: "2026-11-04T00:00:00.000Z",
+  };
+}
+
+function provideFocus(e: Env, turn: TurnFocus | null): void {
+  e.h.services.provide("agent", TurnFocusViewKey, {
+    current: (context) => (context.channel === voiceCtx.channel ? turn : null),
+    all: () => (turn === null ? [] : [turn]),
+  });
+}
+
+interface Barge {
+  action: string;
+  reason: string;
+  account: string | null;
+}
+
+/** The next `n` `voice.barge_in` records. */
+async function nextBarges(sub: Subscription, n: number): Promise<Barge[]> {
+  const out: Barge[] = [];
+  while (out.length < n) {
+    const ev = (await nextEvent(sub)).event;
+    if (ev.type !== "custom") continue;
+    const p = ev.data.payload as {
+      action: string;
+      reason: string;
+      account: { id: string } | null;
+    };
+    out.push({ action: p.action, reason: p.reason, account: p.account?.id ?? null });
+  }
+  return out;
+}
+
+/** No utterance is published within `ms` (leaves a read pending on `sub`: use a fresh one after). */
+async function expectNoUtterance(sub: Subscription, ms = 800): Promise<void> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    const got = await Promise.race([sub.recv(), sleepMs(until - Date.now()).then(() => null)]);
+    if (got === null) return;
+    expect(got.event.type).not.toBe("voice_utterance");
+  }
+}
+
+/** Starts a long line and returns once it plays. */
+async function startLongLine(e: Env): Promise<{ id: number; speaking: Promise<string> }> {
+  e.tts.endless = true;
+  const sink = e.h.services.require(VoiceSinkKey);
+  const speaking = sink.speak(voiceCtx, "我跟你說喔", null, "turn-1");
+  // When the test ends the node goes away and the line fails: nobody needs to hear about it.
+  speaking.catch(() => undefined);
+  const start = await e.node.recvType("play_start");
+  return { id: start.play as number, speaking };
+}
+
+describe("selective barge-in", () => {
+  it("somebody the turn is not for only ducks her, then she gets her volume back", async () => {
+    const e = await boot();
+    provideFocus(e, turnFor("u2"));
+    const events = e.h.subscribe(["voice.barge_in"]);
+    const { id, speaking } = await startLongLine(e);
+    let done = false;
+    void speaking.then(
+      () => {
+        done = true;
+      },
+      () => undefined,
+    );
+
+    e.speakStream(9, "u1", utteranceAudio());
+    expect(await e.node.recvType("play_duck")).toMatchObject({ play: id, gain: 0.3 });
+    // ASR returns ordinary talk that does not call her: back to normal volume.
+    expect(await e.node.recvType("play_duck")).toMatchObject({ play: id, gain: 1 });
+    expect(done).toBe(false);
+    expect(await nextBarges(events, 2)).toEqual([
+      { action: "duck", reason: "other", account: "u1" },
+      { action: "resume", reason: "other", account: "u1" },
+    ]);
+    // Nothing stopped or paused her meanwhile.
+    expect(await e.node.collect(150)).toEqual([]);
+  });
+
+  it("the focus person pauses her, and a short reply lets her carry on", async () => {
+    const e = await boot();
+    provideFocus(e, turnFor("u1"));
+    e.asr.text = "嗯";
+    const events = e.h.subscribe(["voice.barge_in"]);
+    const { id, speaking } = await startLongLine(e);
+    let done = false;
+    void speaking.then(
+      () => {
+        done = true;
+      },
+      () => undefined,
+    );
+
+    e.speakStream(9, "u1", utteranceAudio());
+    expect(await e.node.recvType("play_duck")).toMatchObject({ play: id, gain: 0.3 });
+    expect(await e.node.recvType("play_pause")).toMatchObject({ play: id });
+    expect(await e.node.recvType("play_resume")).toMatchObject({ play: id });
+    expect(done).toBe(false);
+    // Her volume went down with the pause: the record says what her speech does, which is pause.
+    const seen = await nextBarges(events, 2);
+    expect(seen).toEqual([
+      { action: "pause", reason: "focus", account: "u1" },
+      { action: "resume", reason: "short_reply", account: "u1" },
+    ]);
+  });
+
+  it("the focus person's real content stops her and the turn's later lines are not said", async () => {
+    const e = await boot();
+    provideFocus(e, turnFor("u1"));
+    e.asr.text = "等一下我有話要跟你說";
+    const events = e.h.subscribe(["voice.barge_in"]);
+    const { id, speaking } = await startLongLine(e);
+    const sink = e.h.services.require(VoiceSinkKey);
+
+    e.speakStream(9, "u1", utteranceAudio());
+    expect(await e.node.recvType("play_stop")).toMatchObject({ play: id, fade_ms: 150 });
+    expect(await speaking).toBe("interrupted");
+    expect(await nextBarges(events, 2)).toEqual([
+      { action: "pause", reason: "focus", account: "u1" },
+      { action: "stop", reason: "substantive", account: "u1" },
+    ]);
+    // The rest of that turn is dropped.
+    expect(await sink.speak(voiceCtx, "還有下一句", null, "turn-1")).toBe("interrupted");
+    expect(e.tts.requests).toHaveLength(1);
+  });
+
+  it("somebody saying her name stops her even when the turn is for someone else", async () => {
+    const e = await boot({ names: ["小深"] });
+    provideFocus(e, turnFor("u2"));
+    e.asr.text = "小深你先別說了";
+    const { id, speaking } = await startLongLine(e);
+    e.speakStream(9, "u1", utteranceAudio());
+    expect(await e.node.recvType("play_stop")).toMatchObject({ play: id });
+    expect(await speaking).toBe("interrupted");
+  });
+
+  it("her own voice coming back through a microphone does not count and does not stop her", async () => {
+    const e = await boot();
+    provideFocus(e, turnFor("u1"));
+    e.asr.text = "我跟你說喔";
+    const utterances = e.h.subscribe(["voice.utterance"]);
+    const { id, speaking } = await startLongLine(e);
+    let done = false;
+    void speaking.then(
+      () => {
+        done = true;
+      },
+      () => undefined,
+    );
+    e.speakStream(9, "u1", utteranceAudio());
+    expect(await e.node.recvType("play_resume")).toMatchObject({ play: id });
+    expect(done).toBe(false);
+    await expectNoUtterance(utterances);
+  });
+
+  it("an ASR prompt echo does not count as speech", async () => {
+    const e = await boot({ asr_prompt: "御坂10514號、DeepSeek醬、Miyo、米優" });
+    e.asr.text = "御坂10514號、v(t) = Vm·sin(ωt + φ)、DeepSeek醬";
+    const utterances = e.h.subscribe(["voice.utterance"]);
+    e.speakStream(1, "u1", utteranceAudio());
+    await waitUntil(() => e.asr.calls.length === 1);
+    await expectNoUtterance(utterances);
+  });
+
+  it("without a turn focus she is only ducked, never stopped", async () => {
+    const e = await boot();
+    e.asr.text = "等一下我有話要跟你說";
+    const { id, speaking } = await startLongLine(e);
+    let done = false;
+    void speaking.then(
+      () => {
+        done = true;
+      },
+      () => undefined,
+    );
+    e.speakStream(9, "u1", utteranceAudio());
+    expect(await e.node.recvType("play_duck")).toMatchObject({ play: id, gain: 0.3 });
+    expect(await e.node.recvType("play_duck")).toMatchObject({ play: id, gain: 1 });
+    expect(done).toBe(false);
+  });
+
+  it("with an older node (no duck / pause) ducking does nothing and a pause is a stop", async () => {
+    const e = await boot({}, null, []);
+    provideFocus(e, turnFor("u1"));
+    e.asr.text = "嗯";
+    const { id, speaking } = await startLongLine(e);
+    e.speakStream(9, "u1", utteranceAudio());
+    expect(await e.node.recvType("play_stop")).toMatchObject({ play: id });
+    expect(await speaking).toBe("interrupted");
+  });
+
+  it("people talking while a song plays are not heard unless they call her", async () => {
+    const e = await boot({ names: ["小深"] });
+    e.h.services.provide("sing", VoiceFloorKey, { holder: () => "song" });
+    const utterances = e.h.subscribe(["voice.utterance"]);
+    e.speakStream(1, "u1", utteranceAudio());
+    await waitUntil(() => e.asr.calls.length === 1);
+    await expectNoUtterance(utterances);
+    e.asr.text = "小深幫我跳過這首";
+    const later = e.h.subscribe(["voice.utterance"]);
+    e.speakStream(2, "u1", utteranceAudio());
+    expect((await nextUtterance(later)).text).toBe("小深幫我跳過這首");
+  });
+});
+
+describe("TTS prefetch", () => {
+  it("synthesizes the next line while the current one plays, and speaks it from the prefetch", async () => {
+    const e = await boot();
+    const sink = e.h.services.require(VoiceSinkKey);
+    sink.prepare?.(voiceCtx, "第一句");
+    const first = sink.speak(voiceCtx, "第一句", "happy", "turn-1");
+    const p1 = await e.node.recvType("play_start");
+    // The second line is queued behind the first: its TTS already ran.
+    (sink as unknown as { prepare: (...a: unknown[]) => void }).prepare(
+      voiceCtx,
+      "第二句",
+      undefined,
+      "happy",
+    );
+    await waitUntil(() => e.tts.requests.length === 2);
+    expect(e.tts.requests.map((r) => r.text)).toEqual(["第一句", "第二句"]);
+    e.node.sendJson({ type: "playback", play: p1.play as number, state: "finished" });
+    expect(await first).toBe("completed");
+
+    const second = sink.speak(voiceCtx, "第二句", "happy", "turn-1");
+    const p2 = await e.node.recvType("play_start");
+    e.node.sendJson({ type: "playback", play: p2.play as number, state: "finished" });
+    expect(await second).toBe("completed");
+    // Spoken from the prefetch: no third request.
+    expect(e.tts.requests).toHaveLength(2);
+  });
+
+  it("does not prefetch when the emotion is not known, or when it is turned off", async () => {
+    const e = await boot({ tts_prefetch: 0 });
+    const sink = e.h.services.require(VoiceSinkKey);
+    (sink as unknown as { prepare: (...a: unknown[]) => void }).prepare(
+      voiceCtx,
+      "第二句",
+      undefined,
+      "happy",
+    );
+    await sleepMs(100);
+    expect(e.tts.requests).toHaveLength(0);
   });
 });

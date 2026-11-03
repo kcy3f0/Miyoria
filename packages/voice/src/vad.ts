@@ -110,3 +110,46 @@ export function zeroCrossingRate(frame: Int16Array): number {
   }
   return crossings / (frame.length - 1);
 }
+
+// ---- engines ----------------------------------------------------------------------------------
+
+/** Which detector the listener builds for a stream. */
+export interface VadSettings {
+  engine: "energy" | "silero";
+  /** Sample rate of the captured audio (16 kHz from the voice node). */
+  sampleRate: number;
+  /** `silero_vad.onnx`, for `silero`. */
+  sileroModel: string | null;
+  /** Speech probability above which a Silero frame is speech. */
+  sileroThreshold: number;
+}
+
+/** Builds a detector for one stream. */
+export type VadFactory = (settings: VadSettings) => Vad;
+
+const engines = new Map<string, VadFactory>();
+
+/**
+ * Plugs in a detector engine. Silero (ONNX Runtime) is not bundled; a deployment that has it
+ * registers `silero` here (before the voice module starts) and sets `vad_engine = "silero"`.
+ * The factory returns a `Vad` whose `frameLen` is what the model takes (512 samples at 16 kHz).
+ */
+export function registerVadEngine(name: string, factory: VadFactory): void {
+  engines.set(name, factory);
+}
+
+/** The detector for `settings`; the energy detector when the engine is not available. */
+export function createVad(settings: VadSettings, onFallback?: (engine: string) => void): Vad {
+  if (settings.engine !== "energy") {
+    const factory = engines.get(settings.engine);
+    if (factory) {
+      try {
+        return factory(settings);
+      } catch {
+        // Falls through to the energy detector.
+      }
+    }
+    onFallback?.(settings.engine);
+  }
+  return new EnergyVad({ sampleRate: settings.sampleRate });
+}

@@ -2,16 +2,25 @@
 
 import { errorMessage, interval, type ModuleContext } from "@miyoria/kernel";
 import { type AsrHint, durationMs, isOffloaded, type SpeechService } from "@miyoria/speech";
-import { newId, SpeechPauseKey, sameAccount, toTimestamp } from "@miyoria/types";
-import type { BargeIn } from "./barge.js";
+import {
+  type AccountRef,
+  newId,
+  SpeechPauseKey,
+  sameAccount,
+  TurnFocusViewKey,
+  toTimestamp,
+  VoiceFloorKey,
+} from "@miyoria/types";
+import type { BargeIn, BargeWho, SpeakerRole } from "./barge.js";
 import { segmenterConfig, type VoiceConfig } from "./config.js";
 import type { Consent } from "./consent.js";
+import { looksLikeHintEcho, matchCore, type SelfEchoGuard } from "./echo.js";
 import type { AudioEvent, StreamInfo, VoiceLink } from "./link/link.js";
 import { Segmenter, type Utterance } from "./segment.js";
 import { cleanTranscript, echoesHint } from "./text.js";
 import { LATENCY_TOPIC } from "./topics.js";
 import type { Semaphore } from "./util.js";
-import { EnergyVad } from "./vad.js";
+import { createVad, type Vad } from "./vad.js";
 
 /** Streams without frames for this long are closed. */
 const STALE_STREAM_MS = 30_000;
@@ -20,8 +29,10 @@ const SWEEP_MS = 5_000;
 interface Stream {
   info: StreamInfo;
   /** `null` when the speaker is not listened to (no consent, self). */
-  segmenter: Segmenter<EnergyVad> | null;
+  segmenter: Segmenter<Vad> | null;
   lastFrame: number;
+  /** Their voice activity is on (barge-in was told they talk). */
+  talking: boolean;
 }
 
 /** Everything the listening loop and its ASR tasks need. */
@@ -33,6 +44,10 @@ export interface ListenerDeps {
   config: VoiceConfig;
   barge: BargeIn;
   asrSlots: Semaphore;
+  /** Remembers her own lines, to tell her voice coming back from somebody talking. */
+  echo: SelfEchoGuard;
+  /** Words that call her (config `names` plus the profile's), lower-case not required. */
+  names: readonly string[];
 }
 
 export class Listener {
@@ -103,12 +118,52 @@ export class Listener {
       listen = true;
     }
     const segmenter = listen
-      ? new Segmenter(new EnergyVad({ sampleRate: info.sampleRate }), {
-          ...segmenterConfig(config),
-          sampleRate: info.sampleRate,
-        })
+      ? new Segmenter(
+          createVad(
+            {
+              engine: config.vad_engine,
+              sampleRate: info.sampleRate,
+              sileroModel: config.vad_silero_model,
+              sileroThreshold: config.vad_silero_threshold,
+            },
+            (engine) =>
+              ctx.log.warn({ engine }, "VAD engine is not available: using the energy detector"),
+          ),
+          { ...segmenterConfig(config), sampleRate: info.sampleRate },
+        )
       : null;
-    return { info, segmenter, lastFrame: ctx.clock.now() };
+    return { info, segmenter, lastFrame: ctx.clock.now(), talking: false };
+  }
+
+  /** A song holds the channel (only an utterance that calls her counts then). */
+  #music(guild: string): boolean {
+    if (!this.#d.config.music_gate) return false;
+    return (this.#d.ctx.services.get(VoiceFloorKey)?.holder(guild) ?? null) !== null;
+  }
+
+  /** How `speaker` relates to the turn in flight in `context`. */
+  #who(info: StreamInfo, guild: string): BargeWho {
+    const turn = this.#d.ctx.services.get(TurnFocusViewKey)?.current(info.context) ?? null;
+    let role: SpeakerRole = "unknown";
+    if (turn !== null) {
+      role = turn.addressed_accounts.some((a) => sameAccount(a, info.speaker)) ? "focus" : "other";
+    }
+    return {
+      speaker: info.speaker,
+      role,
+      context: info.context,
+      turn: turn === null ? null : { id: turn.turn, phase: turn.phase },
+      music: this.#music(guild),
+    };
+  }
+
+  /** The transcript calls her. */
+  #named(text: string): boolean {
+    const heard = matchCore(text);
+    return this.#d.names.some((n) => {
+      const name = matchCore(n);
+      return name !== "" && heard.includes(name);
+    });
   }
 
   #frame(stream: Stream, samples: Int16Array): void {
@@ -117,11 +172,25 @@ export class Listener {
     if (!seg) return; // Not listened to: the audio is discarded right here.
     const utterances = seg.push(samples);
     const guild = stream.info.context.scope;
-    if (guild !== null) this.#d.barge.observe(guild, seg.speechRunMs());
+    if (guild !== null) {
+      const run = seg.speechRunMs();
+      if (run > 0) {
+        stream.talking = true;
+        this.#d.barge.observe(guild, run, this.#who(stream.info, guild));
+      } else if (stream.talking) {
+        stream.talking = false;
+        this.#d.barge.speechEnded(guild, stream.info.speaker);
+      }
+    }
     for (const u of utterances) this.#transcribe(stream.info, u);
   }
 
   #close(stream: Stream): void {
+    const guild = stream.info.context.scope;
+    if (guild !== null && stream.talking) {
+      stream.talking = false;
+      this.#d.barge.speechEnded(guild, stream.info.speaker);
+    }
     const u = stream.segmenter?.finish() ?? null;
     if (u) this.#transcribe(stream.info, u);
   }
@@ -135,8 +204,11 @@ export class Listener {
         { speaker: info.speaker.id, speech_ms: utterance.speechMs, reason: paused },
         "speech is paused; dropping an utterance",
       );
+      this.#letGo(info.context.scope, info.speaker, "timeout");
       return;
     }
+    const guild = info.context.scope;
+    if (guild !== null) this.#d.barge.utterance(guild, info.speaker);
     const detected = this.#d.ctx.clock.now();
     const endedAt = detected - utterance.trailingSilenceMs;
     const startedAt = endedAt - utterance.speechMs;
@@ -149,6 +221,11 @@ export class Listener {
         }
       }
     });
+  }
+
+  /** The speaker's utterance came to nothing: barge-in need not wait for it. */
+  #letGo(guild: string | null, speaker: AccountRef, reason: "echo" | "music" | "timeout"): void {
+    if (guild !== null) this.#d.barge.dropped(guild, speaker, reason);
   }
 
   #hint(guild: string): AsrHint {
@@ -175,10 +252,16 @@ export class Listener {
     endedAt: number,
     signal: AbortSignal,
   ): Promise<void> {
-    const { ctx, speech, config, link, asrSlots } = this.#d;
+    const { ctx, speech, config, link, asrSlots, barge, echo } = this.#d;
     const release = await asrSlots.acquire(signal);
+    const guild = info.context.scope ?? "";
+    // Barge-in waits for this transcript; whatever happens, it must not wait forever.
+    let settled = false;
+    const letGo = (reason: "echo" | "music" | "timeout") => {
+      settled = true;
+      this.#letGo(info.context.scope, info.speaker, reason);
+    };
     try {
-      const guild = info.context.scope ?? "";
       const hint = this.#hint(guild);
       const audio = { sampleRate: info.sampleRate, samples: utterance.samples };
       const audioMs = durationMs(audio);
@@ -200,15 +283,32 @@ export class Listener {
       const text = cleanTranscript(transcript.text, config.to_traditional, config.hallucinations);
       if (text === null) {
         ctx.log.debug({ raw: transcript.text }, "dropped empty or hallucinated transcript");
+        letGo("echo");
         return;
       }
-      if (echoesHint(text, hint.prompt)) {
+      if (echoesHint(text, hint.prompt) || looksLikeHintEcho(text, hint.prompt)) {
         ctx.log.debug(
           { raw: transcript.text },
           "dropped a transcript that only repeats the ASR hint",
         );
+        letGo("echo");
         return;
       }
+      if (echo.isEcho(guild, text)) {
+        ctx.log.debug({ raw: transcript.text }, "dropped a transcript of her own voice");
+        letGo("echo");
+        return;
+      }
+      const named = this.#named(text);
+      const who = this.#who(info, guild);
+      if (who.music === true && !named) {
+        ctx.log.debug({ raw: transcript.text }, "dropped a transcript while a song plays");
+        letGo("music");
+        return;
+      }
+      // Stops her (or lets her go on) before the utterance travels on to the agent.
+      settled = true;
+      barge.verdict(guild, { ...who, text, named, echo: false });
       const displayName =
         link.participants(guild).find((p) => sameAccount(p.account, info.speaker))?.display_name ||
         info.displayName;
@@ -244,6 +344,7 @@ export class Listener {
         },
       });
     } finally {
+      if (!settled) letGo("timeout");
       release();
     }
   }
