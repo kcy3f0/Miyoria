@@ -136,13 +136,6 @@ const log = getLogger("mind.loop");
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
-/** A voice lull counts after at least this many lines within `CONVERSATION_MS`. */
-const CONVERSATION_LINES = 3;
-const CONVERSATION_MS = 5 * MINUTE_MS;
-/** At most one voice-lull wake per channel in this time. */
-const VOICE_QUIET_GAP_MS = 3 * MINUTE_MS;
-/** While she is in voice the loop checks for lulls this often. */
-const VOICE_CHECK_MS = 5_000;
 /** Pending wakes kept (older ones are merged away). */
 const MAX_PENDING = 12;
 const RECENT_THOUGHTS = 5;
@@ -175,18 +168,6 @@ export interface MindDeps {
   goals: GoalBook;
   /** Where her plan state is kept (`null`: memory only). */
   store?: SettingsStore | null;
-}
-
-interface VoiceRoom {
-  context: ContextKey;
-  people: number;
-  /** When the people there said something (her own lines are not conversation). */
-  lines: number[];
-  /** Their last line. */
-  last: number | null;
-  /** Her own last line there. */
-  herLast: number | null;
-  lullAt: number | null;
 }
 
 /** A turn she started herself: what it was about, and whom (for a DM). */
@@ -391,7 +372,6 @@ export class MindLoop implements Mind {
   #fallbackWarned = false;
   #tokens = 0;
   readonly #selfIds = new Set<string>();
-  readonly #rooms = new Map<string, VoiceRoom>();
   readonly #labels = new Map<string, string>();
   /** Turns of her intents (and events seen for turns not yet known to be hers). */
   readonly #turnEvents = new Map<TurnId, TurnEvent[]>();
@@ -575,31 +555,12 @@ export class MindLoop implements Mind {
         return;
       }
       case "voice_joined":
-      case "voice_participants": {
-        const id = contextKeyString(event.data.context);
-        const room = this.#rooms.get(id) ?? {
-          context: event.data.context,
-          people: 0,
-          lines: [],
-          last: null,
-          herLast: null,
-          lullAt: null,
-        };
-        room.people = event.data.participants.filter(
-          (p) => !p.is_self && !this.#selfIds.has(p.account.id),
-        ).length;
-        if (event.type === "voice_joined") this.#rooms.set(id, room);
-        else if (this.#rooms.has(id)) this.#rooms.set(id, room);
+      case "voice_participants":
         this.#wake?.();
-        return;
-      }
-      case "voice_left":
-        this.#rooms.delete(contextKeyString(event.data.context));
         return;
       case "voice_utterance": {
         const u = event.data;
         if (u.speaker.is_bot || this.#selfIds.has(u.speaker.account.id)) return;
-        this.#voiceLine(u.context, now);
         const handle = this.#handleOfAccount(u.speaker.account, u.speaker.display_name);
         if (handle !== null) this.#presence.seen(handle, now);
         this.#segments.line(u.context, {
@@ -610,12 +571,6 @@ export class MindLoop implements Mind {
           // In voice everyone in the room talks with her.
           addressed: false,
         });
-        return;
-      }
-      case "voice_playback": {
-        // Her own speech: not conversation, but the channel is not quiet while she talks.
-        const room = this.#rooms.get(contextKeyString(event.data.context));
-        if (room && event.data.state === "started") room.herLast = now;
         return;
       }
       case "agent_turn_completed": {
@@ -676,7 +631,11 @@ export class MindLoop implements Mind {
         if (this.#budget() === "degraded" && salient.score < DEGRADED_MIN_SCORE && !cared) return;
         // Someone coming online may fire a `when_online` goal: check right away.
         if (arrival) this.#wake?.();
-        if (salient.score < SALIENT_MIN_SCORE && !cared) return;
+        // The one cold-channel detector is world's `channel_quiet` (v2 §3.3); the voice channel
+        // she is in going quiet after a conversation wakes her Plan whatever its score.
+        const voiceLull = salient.kind === "channel_quiet" && salient.context?.kind === "voice";
+        if (voiceLull && salient.context && !this.#mayStartIn(salient.context, now)) return;
+        if (salient.score < SALIENT_MIN_SCORE && !cared && !voiceLull) return;
         this.#salient = [...this.#salient, salient].slice(-MAX_PENDING);
         this.wakeUp({ kind: "salient", detail: salient.detail, context: salient.context });
         return;
@@ -760,13 +719,6 @@ export class MindLoop implements Mind {
     const her = this.#herVoice();
     if (her !== null) this.#segments.event(her, detail, now);
     this.wakeUp({ kind: "activity_ended", detail, context: null });
-  }
-
-  #voiceLine(context: ContextKey, now: number): void {
-    const room = this.#rooms.get(contextKeyString(context));
-    if (!room) return;
-    room.lines = [...room.lines.filter((t) => now - t < CONVERSATION_MS), now];
-    room.last = now;
   }
 
   /** The place key of `context` (a DM channel maps to its partner once known). */
@@ -876,39 +828,12 @@ export class MindLoop implements Mind {
   }
 
   /**
-   * Voice channels she is in that went quiet after a conversation: nobody (her included) said
-   * anything for `voice_quiet_secs` after at least a few lines of the others. Never while the
-   * world still sees people talking there, nor while she may not start talking there anyway.
+   * Without the Arbiter, mind's own floor: no lull wake while she may not start talking there
+   * anyway (her self-start gap). With the Arbiter its ledger is what she plans with.
    */
-  #checkVoice(now: number): void {
-    const quietMs = this.#d.config.voice_quiet_secs * 1000;
-    let channels: { channel: string; guild: string; secs: number | null }[] | null = null;
-    const arbiter = this.#d.services.get(ArbiterKey);
-    for (const room of this.#rooms.values()) {
-      if (room.people === 0 || room.last === null) continue;
-      if (now - room.last < quietMs) continue;
-      if (room.herLast !== null && now - room.herLast < quietMs) continue;
-      const conversation = room.lines.filter(
-        (t) => room.last !== null && room.last - t < CONVERSATION_MS,
-      );
-      if (conversation.length < CONVERSATION_LINES) continue;
-      if (room.lullAt !== null && now - room.lullAt < VOICE_QUIET_GAP_MS) continue;
-      channels ??= (this.#d.services.get(WorldStateKey)?.snapshot().voice_channels ?? []).map(
-        (v) => ({ channel: v.channel, guild: v.guild, secs: v.activity?.secs_since_last ?? null }),
-      );
-      const seen = channels.find(
-        (v) => v.channel === room.context.channel && v.guild === room.context.scope,
-      );
-      if (seen?.secs != null && seen.secs * 1000 < quietMs) continue;
-      if (!arbiter && this.#starts.wait(this.#placeOf(room.context), "voice", now).ms > 0) continue;
-      room.lullAt = now;
-      room.lines = [];
-      this.wakeUp({
-        kind: "salient",
-        detail: `語音裡大家 ${Math.round((now - room.last) / 1000)} 秒沒說話了(之前 5 分鐘 ${conversation.length} 句)`,
-        context: room.context,
-      });
-    }
+  #mayStartIn(context: ContextKey, now: number): boolean {
+    if (this.#d.services.get(ArbiterKey)) return true;
+    return this.#starts.wait(this.#placeOf(context), "voice", now).ms <= 0;
   }
 
   // ---- goal triggers ------------------------------------------------------------------------
@@ -973,7 +898,6 @@ export class MindLoop implements Mind {
       }
       while (!signal.aborted) {
         const now = this.#now();
-        this.#checkVoice(now);
         this.#checkGoals(now);
         const segments = this.#segments.ready(
           now,
@@ -991,7 +915,7 @@ export class MindLoop implements Mind {
           await this.#planPending(signal);
           continue;
         }
-        let nap = Math.min(delay, this.#rooms.size > 0 ? VOICE_CHECK_MS : 60_000);
+        let nap = Math.min(delay, 60_000);
         const seg = this.#segments.nextMs(now, this.#d.config.appraise_quiet_secs * 1000);
         if (seg !== null) nap = Math.min(nap, Math.max(seg, 1000));
         const at = TriggerWatch.nextAt(this.#d.goals.goals(), now);

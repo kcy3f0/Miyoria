@@ -349,7 +349,6 @@ max_calls_per_hour = 12          # 一小時最多想幾次(心跳會依狀況�
 min_interval_secs = 45           # 兩次之間至少隔多久
 # max_heartbeat_mins = 30        # 心跳最慢多久一次
 # max_intents = 2                # 一次想法最多做幾件事
-# voice_quiet_secs = 40          # 語音裡聊完後安靜多久算冷場
 # self_start_gap_voice_secs = 300 # 同一個語音頻道,她自己主動開口至少隔多久
 # self_start_gap_text_secs = 600 # 同一個文字頻道 / 私訊
 # self_start_max_backoff = 8     # 主動開口沒人接,間隔每次加倍,最多到這麼多倍;有人跟她說話就恢復
@@ -373,7 +372,8 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # cared_attachment = 0.3         # 在意程度到這裡的人上線會叫醒她
 # mood_drop = 0.25               # 心情(愉快度)比上次計畫時掉這麼多就重新計畫
 # daily_hour = 6                 # 這個時間之後的第一次 Plan 是今天的計畫
-# quiet_start_hour / quiet_end_hour 已移除(留著會警告):安靜時段只有 [modules.arbiter] 一份
+# quiet_start_hour / quiet_end_hour / voice_quiet_secs 已移除(留著會警告):安靜時段只有
+# [modules.arbiter] 一份,語音冷場只有 [modules.world] 的 voice_quiet_secs 一個偵測器
 
 # ---- 反思與學習(自主層階段 G)-------------------------------------------------
 

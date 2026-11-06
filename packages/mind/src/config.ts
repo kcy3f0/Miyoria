@@ -53,8 +53,6 @@ export const MindConfigSchema = z.object({
     .number()
     .int()
     .default(8 * 60),
-  /** The voice channel she is in counts as gone quiet after a conversation after this long. */
-  voice_quiet_secs: count().default(40),
   /**
    * Without the Arbiter: at least this long between two conversations she starts herself in
    * one voice channel / one text channel or DM. Each one nobody responded to doubles it, up to
@@ -101,10 +99,16 @@ export type MindConfig = z.output<typeof MindConfigSchema>;
 
 /**
  * Keys of `[modules.mind]` that are gone: her own quiet hours (one owner now: the Arbiter's
- * ledger limits, `quiet_hours.active` makes her heartbeat sparser). An old `miyoria.toml` that
- * still sets them loads (they are ignored) with a deprecation warning.
+ * ledger limits, `quiet_hours.active` makes her heartbeat sparser) and her own voice-lull
+ * detector (one cold-channel signal now: world's `channel_quiet`, `[modules.world]
+ * voice_quiet_secs`). An old `miyoria.toml` that still sets them loads (they are ignored) with
+ * a deprecation warning.
  */
-export const DEPRECATED_MIND_KEYS: readonly string[] = ["quiet_start_hour", "quiet_end_hour"];
+export const DEPRECATED_MIND_KEYS: readonly string[] = [
+  "quiet_start_hour",
+  "quiet_end_hour",
+  "voice_quiet_secs",
+];
 
 /** The defaults, optionally overridden. */
 export function mindConfig(overrides: Partial<MindConfig> = {}): MindConfig {

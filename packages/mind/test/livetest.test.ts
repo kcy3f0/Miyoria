@@ -331,6 +331,39 @@ describe("a busy voice channel", () => {
     expect(texts(plans.at(-1)).data).toContain("正在聊天:最近 14 句(Owen、Aquatf),最後一句 5 秒前");
   });
 
+  it("world's channel_quiet for her voice channel wakes Plan (the one cold-channel signal)", async () => {
+    const provider = new MockProvider("p").reply('{"thought": "大家怎麼不說話了。"}');
+    const r = await rig(provider, { config: { min_interval_secs: 0 } });
+    join(r);
+    const quiet = (context: typeof VOICE | typeof TEXT, detail: string) =>
+      r.publish({
+        type: "custom",
+        data: {
+          topic: "world.salient",
+          payload: {
+            kind: "channel_quiet",
+            key: `channel_quiet:${context.channel}`,
+            account: null,
+            person: null,
+            display_name: null,
+            context: { ...context },
+            detail,
+            score: 0.3,
+            count: 1,
+            first_at: toTimestamp(Date.now()),
+            at: toTimestamp(Date.now()),
+          },
+        },
+      });
+    // A text channel going quiet stays below her wake score.
+    quiet(TEXT, "剛剛很熱鬧的頻道安靜下來了");
+    await wait(10_000);
+    expect(lulls(r)).toEqual([]);
+    quiet(VOICE, "語音裡大家 45 秒沒說話了(之前 5 分鐘 6 句)");
+    await wait(10_000);
+    expect(lulls(r)).toHaveLength(1);
+  });
+
   it("does not count her own lines as a conversation that went quiet", async () => {
     const provider = new MockProvider("p").reply('{"thought": "嗯。"}');
     const r = await rig(provider);

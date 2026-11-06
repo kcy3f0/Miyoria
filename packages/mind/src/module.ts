@@ -56,10 +56,8 @@ export const MIND_TOPICS = [
   "agent.decision",
   "gate.decision",
   "voice.joined",
-  "voice.left",
   "voice.participants",
   "voice.utterance",
-  "voice.playback",
   "llm.budget",
   // What she is doing (the one owner of it): a game coming up, an activity ending.
   ACTIVITY_CHANGED_TOPIC,
@@ -101,7 +99,7 @@ export class MindModule implements Module {
     if (gone.length > 0) {
       ctx.log.warn(
         { keys: gone },
-        "[modules.mind] keys are deprecated and ignored: quiet hours are [modules.arbiter]",
+        "[modules.mind] keys are deprecated and ignored: quiet hours are [modules.arbiter], a quiet voice channel is [modules.world] voice_quiet_secs",
       );
     }
     const store = ctx.services.get(SettingsStoreKey) ?? null;
