@@ -341,7 +341,7 @@ describe("mood signals", () => {
     });
     h.say(incoming(channel("c"), "Owen", "嗨"));
     await wait(3000);
-    expect(situation(mock, 0)).toContain("- 你現在的狀態:心情不錯、平靜、有點累");
+    expect(situation(mock, 0)).toContain("- 你現在的心情:心情很好、很睏、很平靜");
   });
 });
 

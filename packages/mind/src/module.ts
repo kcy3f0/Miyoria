@@ -3,6 +3,7 @@ import {
   errorMessage,
   type Module,
   type ModuleContext,
+  presentKeys,
   type ServiceLookup,
   withTimeout,
 } from "@miyoria/kernel";
@@ -27,7 +28,7 @@ import {
   type ThoughtDigest,
 } from "@miyoria/types";
 import { z } from "zod";
-import { type MindConfig, MindConfigSchema } from "./config.js";
+import { DEPRECATED_MIND_KEYS, type MindConfig, MindConfigSchema } from "./config.js";
 import { GoalBook } from "./goals.js";
 import { type Condense, intentCounts, Journal, ruleDigest } from "./journal.js";
 import { MindLoop } from "./mind.js";
@@ -96,6 +97,13 @@ export class MindModule implements Module {
 
   async start(ctx: ModuleContext): Promise<void> {
     const config = ctx.config(MindConfigSchema);
+    const gone = presentKeys(ctx.rawConfig, DEPRECATED_MIND_KEYS);
+    if (gone.length > 0) {
+      ctx.log.warn(
+        { keys: gone },
+        "[modules.mind] keys are deprecated and ignored: quiet hours are [modules.arbiter]",
+      );
+    }
     const store = ctx.services.get(SettingsStoreKey) ?? null;
     const journal = new Journal(
       store,

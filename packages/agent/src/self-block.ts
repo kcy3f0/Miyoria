@@ -30,6 +30,7 @@ import {
   type HerStatus,
   type LedgerView,
   type Mood,
+  moodLine,
   type Notice,
   neutralize,
   PERSON_EMOTION_LABELS,
@@ -44,7 +45,7 @@ import {
   safeName,
 } from "@miyoria/types";
 import type { SelfBlock } from "./compiler.js";
-import { herStatusHint, moodHint, shownHint, unansweredHint } from "./signals.js";
+import { herStatusHint, shownHint, unansweredHint } from "./signals.js";
 
 /** What the self renderers read; every source is optional. */
 export interface SelfSources {
@@ -112,7 +113,7 @@ export function moodBlock(src: SelfSources): string {
     if (snap.top.length > 0) lines.push(`心裡最強的感受:${emotionNames(snap.top.slice(0, 3))}`);
     shown = snap.shown;
   } else {
-    if (src.mood) lines.push(moodHint(src.mood));
+    if (src.mood) lines.push(`你現在的心情:${moodLine(src.mood)}`);
     const felt = src.self?.emotions().slice(0, 3) ?? [];
     if (felt.length > 0) lines.push(`心裡最強的感受:${emotionNames(felt)}`);
     shown = src.self?.shown() ?? null;

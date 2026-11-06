@@ -176,8 +176,6 @@ export const SelfConfigSchema = z.object({
   keep_closed_agenda: count().default(20),
   /** Longest feelings text per person. */
   max_feeling_chars: count().default(500),
-  /** Add the `self` and `emotion` prompt sections. */
-  prompt: z.boolean().default(true),
   /** Her local time zone as a UTC offset (times in the prompt section, local days). */
   utc_offset_minutes: z
     .number()
@@ -189,6 +187,12 @@ export type SelfConfig = z.output<typeof SelfConfigSchema>;
 export type EmotionsConfig = SelfConfig["emotions"];
 export type HeartConfig = SelfConfig["heart"];
 export type BondConfig = SelfConfig["bond"];
+
+/**
+ * Keys of `[modules.self]` that are gone: `prompt` switched her `self` / `emotion` prompt
+ * sections, which the agent renders itself now (v2 §3.5). Still loads, with a warning.
+ */
+export const DEPRECATED_SELF_KEYS: readonly string[] = ["prompt"];
 
 /** The defaults, optionally overridden. */
 export function selfConfig(overrides: Partial<SelfConfig> = {}): SelfConfig {

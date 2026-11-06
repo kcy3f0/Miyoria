@@ -1,21 +1,12 @@
 import { Supervisor } from "@miyoria/kernel";
 import { MemorySettingsStore, SettingsStoreKey } from "@miyoria/store";
-import {
-  customEvent,
-  type Event,
-  type Mood,
-  MoodSignalsKey,
-  PromptContributors,
-  PromptContributorsKey,
-} from "@miyoria/types";
+import { customEvent, type Event, type Mood, MoodSignalsKey } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import {
-  describe as describeMood,
   eventNudge,
   MoodConfigSchema,
   MoodEngine,
   MoodModule,
-  MoodPrompt,
   MoodState,
   MoodStateKey,
   moodConfig,
@@ -109,12 +100,6 @@ describe("mood", () => {
     expect(close(m.valence, 0), `half decayed: ${fmt(m)}`).toBe(true);
   });
 
-  it("describes_in_one_line", () => {
-    const line = describeMood({ valence: 0.6, arousal: 0.9, energy: 0.2 });
-    expect(line.includes("心情很好") && line.includes("很睏") && line.includes("激動")).toBe(true);
-    expect(line.includes("\n")).toBe(false);
-  });
-
   // ---- TS-specific -----------------------------------------------------------------------
 
   it("config defaults match legacy", () => {
@@ -144,24 +129,7 @@ describe("mood", () => {
     expect(state.handle(ready, t0)).toBeNull();
   });
 
-  it("prompt section and module persistence", async () => {
-    const t0 = local(12, 0);
-    const state = new MoodState(baseline(), moodConfig(), t0);
-    const [section] = await new MoodPrompt(state).contribute({
-      profile: "p",
-      turn: "t",
-      context: { platform: "discord", scope: null, channel: "1", kind: "dm" },
-      participants: [],
-      speakers: [],
-      query: "",
-      recent: [],
-      voice: false,
-      now: new Date(t0).toISOString(),
-    });
-    expect(section?.key).toBe("mood");
-    expect(section?.title).toBe("你現在的狀態");
-    expect(section?.order).toBe(30);
-
+  it("module persistence", async () => {
     const sup = new Supervisor();
     const settings = new MemorySettingsStore();
     await settings.set("p", SETTINGS_KEY, {
@@ -170,16 +138,12 @@ describe("mood", () => {
       energy: 0.7,
       at: new Date().toISOString(),
     });
-    const contributors = new PromptContributors();
     sup.services.provide("kernel", SettingsStoreKey, settings);
-    sup.services.provide("kernel", PromptContributorsKey, contributors);
     await sup.register(new MoodModule("p", baseline()), null, true);
     await sup.startAll();
     expect(sup.services.require(MoodSignalsKey).mood().valence < -0.4).toBe(true);
     expect(sup.services.has(MoodStateKey)).toBe(true);
-    expect(contributors.all().map((c) => c.key)).toEqual(["mood"]);
     await sup.stopAll();
-    expect(contributors.all()).toEqual([]);
     const saved = (await settings.get("p", SETTINGS_KEY)) as Record<string, number>;
     expect((saved.valence ?? 0) < -0.4).toBe(true);
   });

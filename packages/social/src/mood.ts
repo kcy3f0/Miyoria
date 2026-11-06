@@ -34,18 +34,11 @@ import {
   type Mood,
   type MoodSignals,
   MoodSignalsKey,
-  moodLine,
   nightShape,
   type ProfileId,
-  type PromptContributor,
-  type PromptContributors,
-  PromptContributorsKey,
-  type PromptRequest,
-  type PromptSection,
   SelfStateKey,
   serviceKey,
   systemClock,
-  timestampMs,
   toTimestamp,
 } from "@miyoria/types";
 import { z } from "zod";
@@ -271,14 +264,6 @@ export function eventNudge(event: Event, config: MoodConfig): MoodNudge | null {
   }
 }
 
-/**
- * One-line hint for the prompt: the canonical mood line (`moodLine`, the only place its
- * thresholds live) and how to carry it.
- */
-export function describe(m: Mood): string {
-  return `你現在${moodLine(m)}。語氣可以自然帶出來,但不用直接說出自己的心情。`;
-}
-
 /** Shared mood state. Provided as `MoodStateKey` and `MoodSignalsKey`. */
 export class MoodState implements MoodSignals {
   readonly engine: MoodEngine;
@@ -377,32 +362,9 @@ export class MoodState implements MoodSignals {
 /** The service key of the shared mood state (Rust `Arc<MoodState>`). */
 export const MoodStateKey = serviceKey<MoodState>("MoodState");
 
-/** Prompt contributor `mood`: one line about how she feels. */
-export class MoodPrompt implements PromptContributor {
-  static readonly KEY = "mood";
-  readonly key = MoodPrompt.KEY;
-  readonly #state: MoodState;
-
-  constructor(state: MoodState) {
-    this.#state = state;
-  }
-
-  async contribute(request: PromptRequest): Promise<PromptSection[]> {
-    return [
-      {
-        key: MoodPrompt.KEY,
-        title: "你現在的狀態",
-        body: describe(this.#state.at(timestampMs(request.now))),
-        order: 30,
-      },
-    ];
-  }
-}
-
 interface Running {
   state: MoodState;
   store: SettingsStore | undefined;
-  contributors: PromptContributors | undefined;
   ctx: ModuleContext;
   saves: SerialQueue;
 }
@@ -454,10 +416,8 @@ export class MoodModule implements Module {
     }
     ctx.provide(MoodSignalsKey, state);
     ctx.provide(MoodStateKey, state);
-    const contributors = ctx.services.get(PromptContributorsKey);
-    contributors?.register(new MoodPrompt(state));
     const saves = new SerialQueue();
-    this.#running = { state, store, contributors, ctx, saves };
+    this.#running = { state, store, ctx, saves };
 
     const changed = async (mood: Mood, reason: string) => {
       ctx.log.debug({ mood, reason }, "mood changed");
@@ -492,7 +452,6 @@ export class MoodModule implements Module {
     const running = this.#running;
     this.#running = null;
     if (!running) return;
-    running.contributors?.unregister(MoodPrompt.KEY);
     const store = running.store;
     if (store) await running.saves.run(() => this.#save(running.ctx, store, running.state));
   }

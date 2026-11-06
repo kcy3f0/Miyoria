@@ -2,22 +2,9 @@
 // tags that never feed back, and the bond changes Reflect proposes.
 
 import type { Relationship } from "@miyoria/store";
-import {
-  AFFECT_BOND_TOPIC,
-  customEvent,
-  type Mood,
-  moodLine,
-  relationshipLabel,
-} from "@miyoria/types";
+import { AFFECT_BOND_TOPIC, customEvent, type Mood, relationshipLabel } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
-import {
-  applyBond,
-  describe as describeMood,
-  label,
-  MoodState,
-  moodConfig,
-  socialConfig,
-} from "../src/index.js";
+import { applyBond, label, MoodState, moodConfig, socialConfig } from "../src/index.js";
 import { acc, dm, Harness, t } from "./helpers.js";
 
 const baseline = { valence: 0.1, arousal: 0.5, energy: 0.7 };
@@ -73,12 +60,6 @@ describe("a derived mood", () => {
     expect(
       state.handle(customEvent("mood.nudge", { valence: -0.1, reason: "game" }), noon),
     ).not.toBeNull();
-  });
-
-  it("has one set of mood words: the canonical line", () => {
-    for (const m of [derived, { valence: -0.6, arousal: 0.9, energy: 0.1 }]) {
-      expect(describeMood(m)).toContain(moodLine(m));
-    }
   });
 });
 

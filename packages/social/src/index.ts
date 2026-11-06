@@ -39,14 +39,12 @@ export {
 } from "./engine.js";
 export { applyBond, SocialError, SocialModule } from "./module.js";
 export {
-  describe,
   eventNudge,
   type MoodConfig,
   MoodConfigSchema,
   MoodEngine,
   MoodModule,
   type MoodNudge,
-  MoodPrompt,
   MoodState,
   MoodStateKey,
   moodConfig,
@@ -54,7 +52,6 @@ export {
   SETTINGS_KEY,
   TOPIC_CHANGED,
 } from "./mood.js";
-export { SocialPrompt } from "./prompt.js";
 export {
   apply,
   BLOCKED_TAG,

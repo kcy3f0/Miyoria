@@ -5,6 +5,7 @@ import {
   interval,
   type Module,
   type ModuleContext,
+  presentKeys,
 } from "@miyoria/kernel";
 import { LlmRouterKey } from "@miyoria/llm";
 import type { Profile } from "@miyoria/profile";
@@ -25,17 +26,14 @@ import {
   type JsonValue,
   type PersonId,
   type ProfileId,
-  type PromptContributors,
-  PromptContributorsKey,
   type SelfState,
   SelfStateKey,
   SocialSignalsKey,
   safeName,
 } from "@miyoria/types";
 import { registerCommands, unregisterCommands } from "./commands.js";
-import { SocialConfigSchema } from "./config.js";
+import { DEPRECATED_SOCIAL_KEYS, SocialConfigSchema } from "./config.js";
 import { type Observed, Social, SocialKey, type SocialStores } from "./engine.js";
-import { SocialPrompt } from "./prompt.js";
 
 /** Thrown by `start` when a required store is missing. */
 export class SocialError extends Error {
@@ -45,7 +43,6 @@ export class SocialError extends Error {
 interface Running {
   social: Social;
   commands: CommandMount;
-  contributors: PromptContributors | undefined;
 }
 
 /** Liked this much counts as someone she cares about, for the appraisal. */
@@ -127,6 +124,13 @@ export class SocialModule implements Module {
 
   async start(ctx: ModuleContext): Promise<void> {
     const config = ctx.config(SocialConfigSchema);
+    const gone = presentKeys(ctx.rawConfig, DEPRECATED_SOCIAL_KEYS);
+    if (gone.length > 0) {
+      ctx.log.warn(
+        { keys: gone },
+        "[modules.social] keys are deprecated and ignored: the agent renders the people present itself",
+      );
+    }
     const social = new Social(
       this.#profile,
       this.#herName,
@@ -149,15 +153,13 @@ export class SocialModule implements Module {
     ctx.provide(SocialSignalsKey, social);
     ctx.provide(SocialKey, social);
 
-    const contributors = ctx.services.get(PromptContributorsKey);
-    contributors?.register(new SocialPrompt(social));
     const commands = new CommandMount(
       "social",
       (registry) => registerCommands(registry, social),
       unregisterCommands,
     );
     commands.attach(ctx);
-    this.#running = { social, commands, contributors };
+    this.#running = { social, commands };
 
     // Subscribe before returning so no event published after start is missed.
     const sub = ctx.subscribe([
@@ -255,7 +257,6 @@ export class SocialModule implements Module {
     this.#running = null;
     if (!running) return;
     running.commands.detach();
-    running.contributors?.unregister(SocialPrompt.KEY);
     await running.social.flush();
   }
 }

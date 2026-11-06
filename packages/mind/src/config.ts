@@ -53,12 +53,6 @@ export const MindConfigSchema = z.object({
     .number()
     .int()
     .default(8 * 60),
-  /**
-   * Tolerated, no longer used: quiet hours have one owner now (the Arbiter's ledger limits,
-   * `quiet_hours.active` makes her heartbeat sparser).
-   */
-  quiet_start_hour: z.number().int().min(0).max(23).default(1),
-  quiet_end_hour: z.number().int().min(0).max(23).default(7),
   /** The voice channel she is in counts as gone quiet after a conversation after this long. */
   voice_quiet_secs: count().default(40),
   /**
@@ -104,6 +98,13 @@ export const MindConfigSchema = z.object({
 });
 
 export type MindConfig = z.output<typeof MindConfigSchema>;
+
+/**
+ * Keys of `[modules.mind]` that are gone: her own quiet hours (one owner now: the Arbiter's
+ * ledger limits, `quiet_hours.active` makes her heartbeat sparser). An old `miyoria.toml` that
+ * still sets them loads (they are ignored) with a deprecation warning.
+ */
+export const DEPRECATED_MIND_KEYS: readonly string[] = ["quiet_start_hour", "quiet_end_hour"];
 
 /** The defaults, optionally overridden. */
 export function mindConfig(overrides: Partial<MindConfig> = {}): MindConfig {

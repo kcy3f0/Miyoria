@@ -31,7 +31,6 @@ import {
   newId,
   PromptContributors,
   PromptContributorsKey,
-  type PromptRequest,
   SocialSignalsKey,
 } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
@@ -50,7 +49,6 @@ import {
   SocialConfigSchema,
   SocialKey,
   SocialModule,
-  SocialPrompt,
   socialConfig,
   stripTags,
 } from "../src/index.js";
@@ -258,11 +256,6 @@ describe("social engine", () => {
     await h.say("discord:5", "Troll", "去死啦白痴", dm(), t(1, 11));
     expect(h.store.deltas(p), "no changes while blocked").toHaveLength(n);
     expect(h.social.attitude(acc("discord:5"))?.blocked).toBe(true);
-    const lines = h.social.describePeople(
-      [{ account: acc("discord:5"), display_name: "Troll", person: null }],
-      [],
-    );
-    expect(lines[0], JSON.stringify(lines)).toContain("不理");
   });
 
   it("llm_appraisal_is_parsed_and_applied", async () => {
@@ -333,27 +326,6 @@ describe("social engine", () => {
     expect(mock.requests()[0]?.messages[1]?.content).toContain("DeepSeek-chan: 鯨魚很可愛吧!");
     expect(h.social.dueNotes(t(1, 10))).toEqual([]);
     await h.social.setCallName(p, "阿美", t(1, 10));
-
-    const prompt = new SocialPrompt(h.social);
-    const request: PromptRequest = {
-      profile: profile(),
-      turn: "turn",
-      context: dm(),
-      participants: [
-        { account: acc("discord:9"), display_name: "Newbie", person: null },
-        { account: acc("discord:2"), display_name: "Amy", person: null },
-      ],
-      speakers: [acc("discord:2")],
-      query: "",
-      recent: [],
-      voice: false,
-      now: new Date(t(1, 10)).toISOString(),
-    };
-    const sections = await prompt.contribute(request);
-    expect(sections[0]?.title).toBe("在場的人");
-    const body = sections[0]?.body ?? "";
-    expect(body.startsWith("- Amy:陌生人;稱呼「阿美」;印象:喜歡鯨魚的人"), body).toBe(true);
-    expect(body).toContain("- Newbie:陌生人");
   });
 
   it("link_code_flow", async () => {
@@ -637,7 +609,6 @@ describe("social engine", () => {
       notes_min_interval_hours: 12,
       tick_secs: 15,
       auto_owner_tag: true,
-      prompt_max_people: 8,
       llm_purpose: "fast",
     });
   });
@@ -734,7 +705,7 @@ describe("modules", () => {
     const signals = services.require(SocialSignalsKey);
     const mood = services.require(MoodSignalsKey);
     expect(services.has(SocialKey)).toBe(true);
-    expect(contributors.all().map((c) => c.key)).toEqual(["mood", "social"]);
+    expect(contributors.all()).toEqual([]);
     expect(registry.specs().map((s) => s.path.join(" "))).toContain("admin person adjust");
     const valenceBefore = mood.mood().valence;
 

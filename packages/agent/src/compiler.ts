@@ -42,6 +42,8 @@ import { charCount } from "./util.js";
 /**
  * Contributor keys whose concept the compiler renders itself (mood, emotions and inner state,
  * the people present): their sections are ignored (docs/design/v2-implementation.md, item 18).
+ * The core modules' contributors of these keys are gone; the list keeps an extension (or an
+ * old module) that still contributes one from becoming a second renderer.
  */
 export const SUPERSEDED: readonly string[] = ["mood", "emotion", "self", "social"];
 

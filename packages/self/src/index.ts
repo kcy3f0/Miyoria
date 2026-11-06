@@ -91,6 +91,5 @@ export {
   type SelfModuleOptions,
   STATE_KEY,
 } from "./module.js";
-export { EmotionPrompt, feltLine, SelfPrompt, shownLine } from "./prompt.js";
 export { EmotionRules, FEEL_TOPIC, type RuleDeps } from "./rules.js";
 export { SelfService, type SelfServiceDeps } from "./state.js";

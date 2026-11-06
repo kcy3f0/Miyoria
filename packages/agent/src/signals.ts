@@ -1,13 +1,7 @@
 // Signals from other modules that shape her behaviour: how she feels about people
 // (`SocialSignals`), her mood (`MoodSignals`) and the LLM budget (`llm.budget` events).
 
-import {
-  type HerStatus,
-  type Mood,
-  neutralize,
-  type RaisedTopic,
-  type ShownEmotion,
-} from "@miyoria/types";
+import { type HerStatus, neutralize, type RaisedTopic, type ShownEmotion } from "@miyoria/types";
 import { ParseError } from "./config.js";
 
 /**
@@ -78,15 +72,4 @@ export function shownHint(shown: ShownEmotion): string {
   const style = neutralize(shown.style).replace(/\s+/g, " ").trim().slice(0, 80);
   const hide = shown.masked ? ";心裡真正的感受藏起來,不要直接說出來" : "";
   return `你現在表現出來的樣子:${style}。台詞和 <emo:…> 照這個走(多半是 <emo:${tag}>)${hide}`;
-}
-
-/**
- * One line describing her mood, e.g. `"你現在的狀態:心情不錯、平靜、有點累"` (the fallback
- * while `AffectState` is not running; its `mood_line` replaces it).
- */
-export function moodHint(mood: Mood): string {
-  const valence = mood.valence < -0.3 ? "心情不太好" : mood.valence > 0.3 ? "心情不錯" : "心情普通";
-  const arousal = mood.arousal > 0.7 ? "有點興奮" : mood.arousal < 0.3 ? "平靜" : "還算放鬆";
-  const energy = mood.energy < 0.3 ? "有點累" : mood.energy > 0.7 ? "精神很好" : "精神普通";
-  return `你現在的狀態:${valence}、${arousal}、${energy}`;
 }

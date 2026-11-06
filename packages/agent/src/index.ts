@@ -212,7 +212,6 @@ export {
   type BudgetState,
   EXHAUSTED_LINE,
   herStatusHint,
-  moodHint,
   parseBudgetState,
   shownHint,
   unansweredHint,

@@ -4,6 +4,7 @@ import {
   interval,
   type Module,
   type ModuleContext,
+  presentKeys,
   SerialQueue,
   withTimeout,
 } from "@miyoria/kernel";
@@ -29,8 +30,6 @@ import {
   type JsonValue,
   type Mood,
   type ProfileId,
-  type PromptContributors,
-  PromptContributorsKey,
   SALIENT_TOPIC,
   SelfStateKey,
   SOCIAL_APPRAISAL_TOPIC,
@@ -40,12 +39,11 @@ import {
   WorldStateKey,
 } from "@miyoria/types";
 import { AffectService } from "./affect.js";
-import { type SelfConfig, SelfConfigSchema } from "./config.js";
+import { DEPRECATED_SELF_KEYS, type SelfConfig, SelfConfigSchema } from "./config.js";
 import { type TemperamentInput, temperament } from "./emotions.js";
 import { type Circumstances, IDLE, SelfEngine } from "./engine.js";
 import { FeelingsBook } from "./feelings.js";
 import { migrateCards } from "./migrate.js";
-import { EmotionPrompt, SelfPrompt } from "./prompt.js";
 import { EmotionRules, FEEL_TOPIC } from "./rules.js";
 import { SelfService } from "./state.js";
 
@@ -148,7 +146,6 @@ export function parseAffectEvent(payload: JsonValue): AffectEvent | null {
 }
 
 interface Running {
-  contributors: PromptContributors | undefined;
   save: () => Promise<void>;
 }
 
@@ -177,6 +174,13 @@ export class SelfModule implements Module {
 
   async start(ctx: ModuleContext): Promise<void> {
     const config = ctx.config(SelfConfigSchema);
+    const gone = presentKeys(ctx.rawConfig, DEPRECATED_SELF_KEYS);
+    if (gone.length > 0) {
+      ctx.log.warn(
+        { keys: gone },
+        "[modules.self] keys are deprecated and ignored: the agent renders her state in its prompt itself",
+      );
+    }
     const clock = this.#options.clock ?? ctx.clock;
     const profile = this.#profile;
     const temper = temperament(this.#options.temperament);
@@ -324,12 +328,7 @@ export class SelfModule implements Module {
     });
     ctx.provide(SelfStateKey, service);
     ctx.provide(AffectStateKey, affect);
-    const contributors = ctx.services.get(PromptContributorsKey);
-    if (config.prompt) {
-      contributors?.register(new SelfPrompt(service, config.utc_offset_minutes));
-      contributors?.register(new EmotionPrompt(service, config.emotions.prompt_max));
-    }
-    this.#running = { contributors, save: () => saves.run(save) };
+    this.#running = { save: () => saves.run(save) };
 
     const selfIds = new Set<string>();
     const rules = new EmotionRules({
@@ -407,8 +406,6 @@ export class SelfModule implements Module {
     const running = this.#running;
     this.#running = null;
     if (!running) return;
-    running.contributors?.unregister(SelfPrompt.KEY);
-    running.contributors?.unregister(EmotionPrompt.KEY);
     await running.save();
   }
 }

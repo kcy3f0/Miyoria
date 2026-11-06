@@ -1,14 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { herStatusHint, moodHint, parseBudgetState, shownHint } from "../src/index.js";
+import { herStatusHint, parseBudgetState, shownHint } from "../src/index.js";
 
 describe("signals", () => {
-  it("mood_hint", () => {
-    const tired = { valence: -0.5, arousal: 0.1, energy: 0.0 };
-    const fresh = { valence: 0.8, arousal: 0.9, energy: 1.0 };
-    expect(moodHint(tired)).toBe("你現在的狀態:心情不太好、平靜、有點累");
-    expect(moodHint(fresh)).toBe("你現在的狀態:心情不錯、有點興奮、精神很好");
-  });
-
   it("shown emotion hint: her lines and tags follow what she shows", () => {
     const hint = shownHint({
       from: "shy",

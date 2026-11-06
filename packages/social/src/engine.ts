@@ -23,7 +23,6 @@ import {
   customEvent,
   type Event,
   newId,
-  type Participant,
   type PersonId,
   type ProfileId,
   SOCIAL_APPRAISAL_TOPIC,
@@ -44,12 +43,10 @@ import {
   parseAppraisal,
   parseHeartAppraisal,
   parseNotes,
-  truncate,
 } from "./appraisal.js";
 import type { SocialConfig } from "./config.js";
 import {
   apply,
-  BLOCKED_TAG,
   baseChange,
   DayLedger,
   dayStart,
@@ -1010,31 +1007,6 @@ export class Social implements SocialSignals {
     });
   }
 
-  /** Prompt lines for the people in a turn, speakers first. */
-  describePeople(participants: readonly Participant[], speakers: readonly AccountRef[]): string[] {
-    const isSpeaker = (p: Participant) => speakers.some((s) => sameAccount(s, p.account));
-    // Stable sort: speakers first, otherwise in the given order.
-    const ordered = [...participants].sort((a, b) => Number(!isSpeaker(a)) - Number(!isSpeaker(b)));
-    const seenPeople = new Set<PersonId>();
-    const seenAccounts = new Set<string>();
-    const out: string[] = [];
-    for (const p of ordered) {
-      if (out.length >= this.config.prompt_max_people) break;
-      const key = accountRefString(p.account);
-      if (this.#selfAccounts.has(key) || seenAccounts.has(key)) continue;
-      seenAccounts.add(key);
-      const person = p.person ?? this.#accounts.get(key) ?? null;
-      if (person !== null) {
-        if (seenPeople.has(person)) continue;
-        seenPeople.add(person);
-      }
-      const name = p.display_name.trim();
-      const r = person === null ? undefined : this.#rels.get(person);
-      out.push(r ? personLine(name, r) : `- ${name}:陌生人`);
-    }
-    return out;
-  }
-
   attitude(account: AccountRef): Attitude | null {
     const person = this.#accounts.get(accountRefString(account));
     if (person === undefined) return null;
@@ -1100,15 +1072,4 @@ export function mergeInto(keep: Relationship, other: Relationship): void {
     interactions,
     last_interaction: last,
   });
-}
-
-function personLine(name: string, r: Relationship): string {
-  let line = `- ${name}:${label(r)}`;
-  if (r.call_name !== null) line += `;稱呼「${r.call_name}」`;
-  const tags = r.tags.filter((t) => t !== BLOCKED_TAG);
-  if (tags.length > 0) line += `;標籤 ${tags.join("、")}`;
-  const notes = r.notes.trim();
-  if (notes !== "") line += `;印象:${truncate(notes, 60)}`;
-  if (isBlocked(r)) line += "(你決定不理這個人)";
-  return line;
 }

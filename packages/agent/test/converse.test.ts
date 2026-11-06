@@ -328,7 +328,7 @@ describe("self and people renderers", () => {
       now,
       mood: { valence: 0.5, arousal: 0.1, energy: 0.1 },
     });
-    expect(fallback).toBe("你現在的狀態:心情不錯、平靜、有點累");
+    expect(fallback).toBe("你現在的心情:心情很好、很睏、很平靜");
   });
 
   it("activity_ledger_and_notices", () => {

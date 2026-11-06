@@ -12,7 +12,6 @@ import {
   type JsonValue,
   PromptContributors,
   PromptContributorsKey,
-  type PromptRequest,
   SelfStateKey,
   SocialSignalsKey,
   toTimestamp,
@@ -21,7 +20,7 @@ import {
   WorldStateKey,
 } from "@miyoria/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type EmotionPrompt, SelfModule, type SelfService } from "../src/index.js";
+import { SelfModule, type SelfService } from "../src/index.js";
 
 const T0 = Date.parse("2026-11-02T12:00:00.000Z");
 const MINUTE = 60_000;
@@ -337,61 +336,29 @@ describe("rule triggers", () => {
   });
 });
 
-describe("emotion prompt", () => {
-  const request = (people: [string, string][]): PromptRequest => ({
-    profile: "p",
-    turn: "t",
-    context: text,
-    participants: people.map(([id, name]) => ({
-      account: acc(id),
-      display_name: name,
-      person: `p${id}`,
-    })),
-    speakers: [],
-    query: "",
-    recent: [],
-    voice: false,
-    now: toTimestamp(T0),
-  });
-
-  it("shows the felt and the shown emotion, her secret crush and feelings toward who is present", async () => {
+describe("felt and shown emotions", () => {
+  it("keeps the felt and the shown emotion, her secret crush and feelings toward people", async () => {
     const h = await boot();
-    const prompt = h.contributors.all().find((c) => c.key === "emotion") as EmotionPrompt;
-    expect(await prompt.contribute(request([]))).toEqual([]);
+    expect(h.self.emotions()).toEqual([]);
 
     makeCrush(h);
     h.self.feel("joy", 0.3, "Owen 誇我", "p1");
     h.clock.at += 11 * MINUTE;
     h.self.feel("shy", 0.4, "Owen 誇我", "p1");
     h.self.feelToward("p3", "resentment", 0.5, "Carol 罵我");
-    const [section] = await prompt.contribute(
-      request([
-        ["1", "Owen"],
-        ["3", "Carol"],
-      ]),
-    );
-    expect(section).toMatchObject({ key: "emotion", title: "你的情緒", order: 34 });
-    const lines = section?.body.split("\n") ?? [];
-    // Strongest first, with what stirred the strongest one.
-    expect(lines[0]).toMatch(/^你心裡真正的感受:害羞 0\.\d\d、怒 0\.\d\d、喜 0\.\d\d/);
-    expect(lines[0]).toContain("Owen 誇我");
-    expect(lines[1]).toBe("表現出來的樣子:兇回去、嫌棄對方,但臉紅了(<emo:embarrassed>)");
-    expect(lines[2]).toContain("你偷偷喜歡Owen(他現在在這裡)。這是祕密");
-    expect(lines).toContain("你對在場的人:");
-    expect(lines).toContain("- Carol:不爽 0.50");
-    expect(lines.at(-1)).toContain("照「表現出來的樣子」走");
-    // Away: the line says so.
-    const [away] = await prompt.contribute(request([["3", "Carol"]]));
-    expect(away?.body).toContain("他現在不在這裡");
+    // Strongest first, with what stirred it.
+    const felt = h.self.emotions();
+    expect(felt[0]?.name).toBe("shy");
+    expect(felt.map((e) => e.name)).toContain("joy");
+    expect(h.self.shown()).toMatchObject({ from: "shy", tag: "embarrassed" });
+    expect(h.self.crush()?.person).toBe("p1");
+    expect(h.self.heart("p3")?.emotions.resentment ?? 0).toBeGreaterThan(0.4);
   });
 
-  it("open display rules show the felt emotion as it is; no crush, no crush line", async () => {
+  it("open display rules show the felt emotion as it is; no crush", async () => {
     const h = await boot("open");
     h.self.feel("missing", 0.5, "想念某個人");
-    const prompt = h.contributors.all().find((c) => c.key === "emotion") as EmotionPrompt;
-    const [section] = await prompt.contribute(request([]));
-    expect(section?.body).toContain("表現出來的樣子:想念(<emo:sad>)");
-    expect(section?.body).not.toContain("偷偷喜歡");
+    expect(h.self.shown()).toMatchObject({ from: "missing", tag: "sad", masked: false });
     // The snapshot has it all for the panel.
     const snap = h.self.snapshot();
     expect(snap.emotions?.[0]?.name).toBe("missing");
