@@ -58,7 +58,7 @@ import {
   voiceLane,
 } from "@miyoria/types";
 import { type ActivityConfig, defaultActivityConfig } from "./config.js";
-import { Facts } from "./facts.js";
+import { Facts, startedSession } from "./facts.js";
 import { type ActivityPort, failureCode, type PrimaryStep, StepError } from "./port.js";
 import { answerText, doneText, endedText, failedText, what } from "./texts.js";
 
@@ -1058,7 +1058,13 @@ export class ActivityService implements ActivityManager, ActivityRouter {
     } finally {
       clearTimeout(timer);
     }
-    await this.#until(() => this.facts.session?.game === target, CONFIRM_MS, signal);
+    // The step ended once the launch task ended `done` and the session started: its result
+    // says which, so there is nothing to wait for (the session event confirms it again later).
+    const started = startedSession(result.data);
+    if (started !== null && started.game === target) {
+      this.facts.session = started;
+      this.facts.sessionEnd = null;
+    }
     entry.name = this.facts.session?.name ?? null;
     entry.data = result.data;
     return result.text;

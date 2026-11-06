@@ -215,14 +215,20 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
         ctx.task ?? null,
       );
       if (args.goal) text += await o.control.goal(args.goal, byOf(ctx.principal, null));
+      // The session it started (the launch task ended `done` before it did): the
+      // ActivityManager takes it from here instead of waiting for the session event.
+      const session = o.control.session();
+      const data: JsonValue = {
+        session: session === null ? null : (session as unknown as JsonValue),
+      };
       // Run by the ActivityManager, going live is a transition of its own (`ensure_live`).
-      if (ctx.task) return text;
+      if (ctx.task) return { text, data };
       if (args.stream === true) {
         text += await goLive(o, ctx.principal, ctx.request.turn, ctx.signal);
       } else if (o.live && !o.live()) {
         text += "(現在沒有在直播;想讓大家看的話可以開台。)";
       }
-      return text;
+      return { text, data };
     },
   });
 

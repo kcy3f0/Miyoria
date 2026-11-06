@@ -72,6 +72,11 @@ export class GameControl {
     return checked.inMenu ? `${text}（遊戲還在主選單，進入世界後她就會開始動。）` : text;
   }
 
+  /** The session running now, if any (`game`, `game_name`, `context`). */
+  session(): { game: string; game_name: string; context: ContextKey } | null {
+    return this.#director.session();
+  }
+
   /** A voice channel she is in (on `platform` when given), if any. */
   voiceContext(platform: string | null = null): ContextKey | null {
     return this.#director.voiceContext(platform);

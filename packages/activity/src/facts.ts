@@ -55,6 +55,19 @@ export interface SessionFact {
   context: ContextKey | null;
 }
 
+/**
+ * The session a `game.start` step's result says it started (`data.session`: `game`,
+ * `game_name`, `context`), or `null`.
+ */
+export function startedSession(data: unknown): SessionFact | null {
+  if (!isJsonObject(data)) return null;
+  const session = data.session;
+  if (!isJsonObject(session)) return null;
+  const game = str(session.game);
+  if (game === null) return null;
+  return { game, name: str(session.game_name) ?? game, context: contextOf(session.context) };
+}
+
 /** How the last session ended (when the director said why). */
 export interface SessionEnd {
   game: string;

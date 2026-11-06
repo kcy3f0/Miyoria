@@ -220,6 +220,16 @@ describe("activity", () => {
     expect(w.published(ACTIVITY_STARTED_TOPIC).length).toBe(1);
   });
 
+  it("a game start ends with its step, without waiting for the session event", async () => {
+    const w = new FakeWorld({ launchMs: 20 });
+    w.sessionEvent = false;
+    const a = await w.service.request(w.transition(MC));
+    await settle(w, a.status === "started" ? a.task : null);
+    expect(w.service.task(a.status === "started" ? a.task : "")?.status).toBe("done");
+    expect(w.service.snapshot().activity).toMatchObject({ type: "game", phase: "running" });
+    expect(w.published(NOTICE_TOPIC).at(-1)?.text).toBe("Minecraft 開好了,已經開始玩。");
+  });
+
   it("stop while the game is still launching cancels the launch", async () => {
     const w = new FakeWorld({ launchMs: 200 });
     const start = await w.service.request(w.transition(MC));

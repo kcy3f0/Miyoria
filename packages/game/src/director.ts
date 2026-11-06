@@ -584,6 +584,12 @@ export class Director {
     return this.#voices;
   }
 
+  /** The session running now (what `game.director.session` `started` said), if any. */
+  session(): { game: string; game_name: string; context: ContextKey } | null {
+    const s = this.#session;
+    return s === null ? null : { game: s.game, game_name: s.gameName, context: { ...s.context } };
+  }
+
   /** Keeps a goal for the session about to start; returns the reply text. */
   pendingGoal(text: string, by: string): string {
     const goal = text.trim();

@@ -57,6 +57,8 @@ export class FakeWorld implements ActivityPort {
   goliveFails: string | null = null;
   /** OBS does not start streaming. */
   obsStuck = false;
+  /** The director publishes `game.director.session` when a game starts. */
+  sessionEvent = true;
   /** Capabilities that are not registered. */
   readonly missing = new Set<string>();
   /** Run primary steps through the routed call's executor (router tests). */
@@ -232,15 +234,25 @@ export class FakeWorld implements ActivityPort {
         });
         this.session = game;
         this.starts += 1;
-        this.emit(
-          customEvent("game.director.session", {
-            state: "started",
-            game,
-            game_name: game === "minecraft" ? "Minecraft" : game,
-            context: null,
-          }),
-        );
-        return { text: `她開始玩 ${game} 了`, data: null };
+        if (this.sessionEvent)
+          this.emit(
+            customEvent("game.director.session", {
+              state: "started",
+              game,
+              game_name: game === "minecraft" ? "Minecraft" : game,
+              context: null,
+            }),
+          );
+        return {
+          text: `她開始玩 ${game} 了`,
+          data: {
+            session: {
+              game,
+              game_name: game === "minecraft" ? "Minecraft" : game,
+              context: null,
+            },
+          },
+        };
       }
       case "game.stop": {
         const game = this.session;

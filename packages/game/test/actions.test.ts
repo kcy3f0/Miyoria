@@ -45,6 +45,9 @@ function setup(nodes: string[]) {
       calls.push(`goal ${text} ${by}`);
       return `已設定新目標:${text}`;
     },
+    session() {
+      return null;
+    },
   } as unknown as GameControl;
   const services = new ServiceRegistry();
   services.provide("test", AuthorizerKey, new Grants(new Set(nodes)));
