@@ -15,6 +15,7 @@ import {
   SupervisorKey,
 } from "@miyoria/kernel";
 import type { Profile } from "@miyoria/profile";
+import { ReplayRecorderModule } from "@miyoria/replay";
 import {
   AuditLogKey,
   AuthStoreKey,
@@ -252,6 +253,8 @@ export async function buildCoreWith(
   const modules: Module[] = [
     ...(await catalog.coreModules(deps)),
     new RecorderModule(store, profileId),
+    // Opt-in (`[modules.replay] record = true`): what she perceives, for `pnpm replay`.
+    new ReplayRecorderModule({ baseDir }),
   ];
   if (options.discord ?? true) modules.push(catalog.discord(deps));
   if (options.api ?? true) modules.push(catalog.api(deps));

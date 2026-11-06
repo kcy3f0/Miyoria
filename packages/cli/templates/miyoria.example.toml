@@ -489,3 +489,9 @@ port = 4455
 password = "${OBS_PASSWORD:-}"
 # subtitle_source = "Miyoria 字幕"   # 她最新的一句話;OBS 沒有這個文字來源時自動建在目前場景下方
 
+# 回放紀錄(v2 §4):把她聽到、看到的事件(訊息、語音轉錄、在線狀態、遊戲 / 唱歌事件)逐行寫進
+# <dir>/<日期>.jsonl,之後用 `pnpm replay <檔案>` 拿假模型重播,看回合、Arbiter 與活動狀態的決策。
+# 紀錄裡有大家說的話,所以預設關閉,只存在這台電腦上。
+[modules.replay]
+record = false
+# dir = "data/replay"

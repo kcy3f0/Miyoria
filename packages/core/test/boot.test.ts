@@ -55,7 +55,7 @@ class Fake implements Module {
 }
 
 const CORE_IDS = MODULE_IDS.filter(
-  (id) => !["extensions", "platform.discord.bot", "recorder", "api"].includes(id),
+  (id) => !["extensions", "platform.discord.bot", "recorder", "replay", "api"].includes(id),
 );
 
 function catalog(seen: { deps?: ModuleDeps } = {}): ModuleCatalog {
@@ -104,6 +104,7 @@ describe("buildCore", () => {
     expect(ids).toEqual([
       ...CORE_IDS,
       "recorder",
+      "replay",
       "platform.discord.bot",
       "api",
       "platform.cli",

@@ -34,6 +34,7 @@ export const MODULE_IDS: readonly string[] = [
   "extensions",
   "platform.discord.bot",
   "recorder",
+  "replay",
   "api",
 ];
 
