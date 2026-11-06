@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useSyncExternalStore } from "react";
 import { type StreamStatus, streamEvents } from "../api/sse";
 import type { Envelope } from "../api/types";
@@ -6,6 +6,47 @@ import { useConnection } from "./connection";
 import { queryKeys } from "./queries";
 
 export const EVENT_BUFFER = 500;
+
+/**
+ * Keeps the body, arbiter, affect, plan and turn views fresh from the v2 topics. The topics that
+ * carry the whole new state (`activity.changed`, `affect.changed`) are written straight into the
+ * cache; the others only mark their lists stale.
+ */
+export function applyCustomEvent(queryClient: QueryClient, env: Envelope): void {
+  if (env.event.type !== "custom") return;
+  const { topic, payload } = env.event.data;
+  const stale = (queryKey: readonly unknown[]) => void queryClient.invalidateQueries({ queryKey });
+  switch (topic) {
+    case "activity.changed":
+      queryClient.setQueryData(queryKeys.activity, payload);
+      stale(queryKeys.activityTasks);
+      stale(queryKeys.world);
+      break;
+    case "activity.started":
+    case "activity.done":
+    case "activity.failed":
+      stale(queryKeys.activityTasks);
+      break;
+    case "arbiter.decision":
+    case "arbiter.ledger":
+      stale(queryKeys.arbiter);
+      break;
+    case "affect.changed":
+      queryClient.setQueryData(queryKeys.affect, payload);
+      stale(queryKeys.affectPeople);
+      break;
+    case "plan.goal":
+      stale(queryKeys.goals);
+      stale(queryKeys.dayPlan);
+      break;
+    case "agent.turn.outcome":
+      stale(queryKeys.turnsAll);
+      break;
+    case "agent.prompt":
+      stale(queryKeys.prompts);
+      break;
+  }
+}
 
 export interface EventSnapshot {
   /** Newest first, at most `EVENT_BUFFER`. */
@@ -86,6 +127,7 @@ export function EventStreamProvider({ children }: { children: ReactNode }) {
         if (t === "module_state_changed") void queryClient.invalidateQueries({ queryKey: queryKeys.modules });
         else if (t === "agent_decision") void queryClient.invalidateQueries({ queryKey: queryKeys.decisionsAll });
         else if (t === "agent_turn_completed") void queryClient.invalidateQueries({ queryKey: queryKeys.usage });
+        else if (t === "custom") applyCustomEvent(queryClient, env);
       },
     });
     return () => ctl.abort();

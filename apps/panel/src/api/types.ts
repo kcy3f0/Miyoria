@@ -796,6 +796,8 @@ export interface HerStatus {
   streaming: boolean;
   scene: string | null;
   game: string | null;
+  /** The song she is singing. Absent on a Core from before the ActivityManager. */
+  singing?: string | null;
 }
 
 export interface TimeContext {
@@ -1390,4 +1392,341 @@ export interface GameStartRequest {
   game?: string;
   goal?: string;
   stream?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// body, arbiter, affect, plan, prompts (`packages/api/src/{body,affect,plan,prompts}.ts`)
+
+export type TaskId = string;
+export type Handle = string;
+
+export type ActivityResource = "presence" | "broadcast" | "activity";
+export type ActivityType = "idle" | "chatting" | "singing" | "game" | "browse";
+export type ActivityPhase = "starting" | "running" | "stopping" | "failed";
+
+export type HerPresence =
+  | { type: "none" }
+  | { type: "joining" | "in" | "leaving"; channel: ContextKey; task?: TaskId; since: Timestamp };
+
+export type HerBroadcast =
+  | { type: "off" }
+  | {
+      type: "starting" | "live" | "stopping";
+      guild: string;
+      golive: boolean;
+      obs: boolean;
+      task: TaskId | null;
+      since: Timestamp;
+    };
+
+export interface ActivityFailure {
+  code: string;
+  detail: string;
+  at: Timestamp;
+}
+
+export type HerActivity =
+  | { type: "idle"; since: Timestamp }
+  | {
+      type: Exclude<ActivityType, "idle">;
+      target: string | null;
+      phase: ActivityPhase;
+      task: TaskId | null;
+      failure: ActivityFailure | null;
+      since: Timestamp;
+    };
+
+export interface SceneOverride {
+  scene: string;
+  until: Timestamp;
+  by: string;
+}
+
+/** `GET /api/activity` (and the payload of `activity.changed`). */
+export interface ActivitySnapshot {
+  version: number;
+  at: Timestamp;
+  presence: HerPresence;
+  broadcast: HerBroadcast;
+  activity: HerActivity;
+  override: SceneOverride | null;
+  scene: string | null;
+}
+
+export type ActivityRequest =
+  | { type: "ensure_voice"; platform: string; guild: string; channel: string | null; follow: AccountRef | null }
+  | { type: "leave_voice" }
+  | { type: "ensure_live"; platform: string; guild: string; source: string | null }
+  | { type: "stop_live" }
+  | { type: "start"; activity: Exclude<ActivityType, "idle">; target: string | null; goal: string | null }
+  | { type: "stop"; activity: Exclude<ActivityType, "idle"> | null }
+  | { type: "scene_override"; scene: string; duration_ms: number }
+  | { type: "clear_override" };
+
+/** `GET /api/activity/tasks`, newest first. */
+export interface ActivityTask {
+  id: TaskId;
+  resource: ActivityResource;
+  request: ActivityRequest;
+  by: string;
+  turn: TurnId | null;
+  context: ContextKey | null;
+  status: "queued" | "running" | "done" | "failed";
+  created_at: Timestamp;
+  ended_at: Timestamp | null;
+  failure: ActivityFailure | null;
+  detail: string | null;
+}
+
+export type LedgerKind = "impulse" | "turn" | "task" | "notice";
+export type LedgerOutcome = "pending" | "ok" | "ignored" | "failed" | "denied";
+
+export interface LedgerEntry {
+  id: string;
+  at: Timestamp;
+  kind: LedgerKind;
+  source: string;
+  self_initiated: boolean;
+  context: ContextKey | null;
+  person: Handle | null;
+  summary: string;
+  outcome: LedgerOutcome;
+  detail: string | null;
+  impulse: string | null;
+  turn: TurnId | null;
+  task: TaskId | null;
+  updated_at: Timestamp;
+}
+
+export interface LedgerLimits {
+  initiatives_today: number;
+  initiative_cap: number | null;
+  unanswered_streak: number;
+  next_initiative_at: Timestamp | null;
+  quiet_hours: { start_hour: number; end_hour: number; active: boolean } | null;
+  paused: boolean;
+  blocked: { capability: string; reason: string; until: Timestamp | null }[];
+}
+
+export interface RaisedTopic {
+  /** What she said (her words, short). */
+  text: string;
+  context: ContextKey | null;
+  at: Timestamp;
+  status: "waiting" | "engaged" | "ignored";
+}
+
+/** `GET /api/arbiter/ledger`. */
+export interface LedgerView {
+  at: Timestamp;
+  entries: LedgerEntry[];
+  limits: LedgerLimits;
+  unanswered: RaisedTopic[];
+}
+
+export type ArbiterVerdict = "accepted" | "merged" | "deferred" | "rejected" | "preempted" | "expired";
+
+export type ArbiterReason =
+  | "budget"
+  | "rate"
+  | "cooldown"
+  | "quiet_hours"
+  | "consent"
+  | "paused"
+  | "ceiling"
+  | "busy"
+  | "unanswered"
+  | "superseded"
+  | "expired"
+  | "denied";
+
+/** One verdict of `GET /api/arbiter/decisions` (`data.decisions`). */
+export interface ArbiterDecisionView {
+  impulse: string;
+  source: string;
+  verdict: ArbiterVerdict;
+  reason: ArbiterReason | null;
+  detail: string;
+  retry_at: Timestamp | null;
+  merged_into: string | null;
+  turn: TurnId | null;
+  task: TaskId | null;
+  at: Timestamp;
+  context: ContextKey | null;
+  summary: string | null;
+}
+
+export interface ArbiterDecisionsView {
+  decisions: ArbiterDecisionView[];
+}
+
+export type EmotionName =
+  | "joy"
+  | "anger"
+  | "sorrow"
+  | "fear"
+  | "surprise"
+  | "disgust"
+  | "shy"
+  | "pride"
+  | "jealousy"
+  | "lonely"
+  | "missing"
+  | "gratitude"
+  | "guilt"
+  | "frustration";
+
+export type AffectDriveName = DriveName | "esteem" | "hunger" | "longing";
+
+export interface EmotionReading {
+  name: EmotionName;
+  intensity: number;
+  cause: string;
+  at: Timestamp;
+  person: PersonId | null;
+}
+
+export interface ShownEmotion {
+  from: EmotionName;
+  tag: string;
+  style: string;
+  masked: boolean;
+}
+
+export interface AffectBiases {
+  talkativeness: number;
+  initiative: number;
+  wants: { want: string; weight: number; person: Handle | null; why: string }[];
+}
+
+/** `GET /api/affect`. */
+export interface AffectSnapshot {
+  at: Timestamp;
+  drives: Partial<Record<AffectDriveName, number>>;
+  boredom: number;
+  top: EmotionReading[];
+  mood: Mood;
+  mood_line: string;
+  shown: ShownEmotion | null;
+  biases: AffectBiases;
+}
+
+export type RelationshipLabel = "很討厭" | "討厭" | "陌生人" | "認識" | "朋友" | "好朋友" | "摯友";
+
+/** `GET /api/affect/people`, highest attachment first. */
+export interface PersonCard {
+  person: PersonId;
+  handle: Handle;
+  call_name: string | null;
+  affinity: number;
+  trust: number;
+  familiarity: number;
+  attachment: number;
+  emotions: Partial<Record<"missing" | "jealousy" | "gratitude" | "resentment", number>>;
+  feeling: string;
+  label: RelationshipLabel;
+  owner: boolean;
+  blocked: boolean;
+  last_seen: Timestamp | null;
+  last_together: Timestamp | null;
+  updated_at: Timestamp;
+}
+
+export type GoalTrigger =
+  | { kind: "at"; time: Timestamp }
+  | { kind: "when_online"; person: Handle }
+  | { kind: "after_activity"; activity: string }
+  | { kind: "whenever" };
+
+export type GoalStatus = "pending" | "active" | "done" | "dropped";
+
+export interface Goal {
+  id: string;
+  what: string;
+  why: string;
+  trigger: GoalTrigger;
+  steps: string[];
+  status: GoalStatus;
+  expires: Timestamp;
+  person: Handle | null;
+  context: ContextKey | null;
+  source: "plan" | "plan_daily" | "reflect" | "panel";
+  created_at: Timestamp;
+  updated_at: Timestamp;
+  closed_at: Timestamp | null;
+  close_reason: string | null;
+}
+
+/** `GET /api/mind/goals`. */
+export interface GoalsView {
+  goals: Goal[];
+  closed_included: boolean;
+}
+
+/** `GET /api/mind/plan`. */
+export interface DayPlanView {
+  day_plan: string | null;
+}
+
+export type ReasoningLevel = string;
+
+export interface CompiledBlock {
+  key: string;
+  authority: string;
+  source: string;
+  chars_in: number;
+  chars_out: number;
+  budget_chars: number;
+  fate: "kept" | "summarized" | "truncated" | "dropped";
+}
+
+/** `GET /api/prompts/{turn}`. */
+export interface SavedPrompt {
+  turn: TurnId;
+  context: ContextKey;
+  at: Timestamp;
+  purpose: string;
+  reasoning: ReasoningLevel;
+  blocks: CompiledBlock[];
+  messages: { role: "system" | "user" | "assistant"; text: string }[];
+  prompt_tokens: number | null;
+}
+
+/** `GET /api/prompts` items. */
+export interface PromptSummary {
+  turn: TurnId;
+  context: ContextKey;
+  at: Timestamp;
+  purpose: string;
+  reasoning: ReasoningLevel;
+  prompt_tokens: number | null;
+  blocks: number;
+  messages: number;
+  chars: number;
+}
+
+export type TurnReason = "addressed" | "reply_to_her" | "ambient" | "initiative" | "notice";
+
+export type TurnCancelCause = "input" | "barge_in" | "superseded" | "expired" | "floor" | "shutdown";
+
+export type TurnOutcome =
+  | { type: "sent"; parts: number }
+  | { type: "silence" }
+  | { type: "cancelled"; cause: TurnCancelCause; by: Handle | null }
+  | { type: "error"; error: string };
+
+export type TurnOutcomeKind = TurnOutcome["type"];
+
+/** `GET /api/turns/outcomes` items, newest first. */
+export interface TurnOutcomeRecord {
+  turn: TurnId;
+  context: ContextKey;
+  reason: TurnReason;
+  outcome: TurnOutcome;
+  addressed_by: Handle[];
+  focus: MessageRef[];
+  restarts: number;
+  reasoning: ReasoningLevel | null;
+  latency_ms: number | null;
+  at: Timestamp;
 }

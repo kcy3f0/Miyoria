@@ -4,10 +4,21 @@ import { EmptyLine } from "@/components/query-state";
 import { Card } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtDateTime, fmtRelative } from "@/lib/format";
+import { PersonCards } from "./PersonCards";
 
 const BY_LABEL: Record<string, string> = { self: "她", panel: "面板" };
 
 export function FeelingsTab({ self }: { self: SelfView }) {
+  return (
+    <div className="grid gap-6">
+      <PersonCards />
+      <FeelingNotes self={self} />
+    </div>
+  );
+}
+
+/** Her short notes about people (`self:feeling:*`), the older form of the person card's feeling. */
+function FeelingNotes({ self }: { self: SelfView }) {
   return (
     <Card className="overflow-hidden">
       {self.feelings.length === 0 ? (

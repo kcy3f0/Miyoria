@@ -11,6 +11,7 @@ import {
 import { isApiError } from "@/api/http";
 import type {
   AdjustPersonRequest,
+  ArbiterVerdict,
   AssignRoleRequest,
   ChannelLevelsView,
   ContextKey,
@@ -31,6 +32,7 @@ import type {
   SongsState,
   StageState,
   StreamAction,
+  TurnOutcomeKind,
   UpdateMemoryRequest,
   UpdatePersonRequest,
   UpsertRoleRequest,
@@ -71,6 +73,18 @@ export const queryKeys = {
   reflection: ["reflection"] as const,
   songs: ["songs"] as const,
   telemetry: (minutes: number) => ["telemetry", minutes] as const,
+  activity: ["activity"] as const,
+  activityTasks: ["activity", "tasks"] as const,
+  arbiter: ["arbiter"] as const,
+  ledger: (context: ContextKey | undefined) => ["arbiter", "ledger", context ?? null] as const,
+  arbiterDecisions: (q: object) => ["arbiter", "decisions", q] as const,
+  affect: ["affect"] as const,
+  affectPeople: ["affect", "people"] as const,
+  goals: ["mind", "goals"] as const,
+  dayPlan: ["mind", "plan"] as const,
+  prompts: ["prompts"] as const,
+  turnOutcomes: (q: object) => ["turns", "outcomes", q] as const,
+  turnsAll: ["turns"] as const,
 };
 
 /** Errors that retrying cannot fix. */
@@ -613,3 +627,92 @@ export function usePeopleDetails(ids: string[]) {
   });
 }
 
+
+// --- body, arbiter, affect, plan, prompts -----------------------------------------
+// Older Cores answer 404 and a stopped module 503: `poll` then stops asking.
+
+/** Presence, broadcast, activity and scene. Kept fresh by `activity.changed`. */
+export function useActivity() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.activity, queryFn: ({ signal }) => api.activity({ signal }), refetchInterval: poll(10_000) });
+}
+
+export function useActivityTasks(limit = 20) {
+  const api = useApi();
+  return useQuery({
+    queryKey: queryKeys.activityTasks,
+    queryFn: ({ signal }) => api.activityTasks(limit, { signal }),
+    refetchInterval: poll(10_000),
+  });
+}
+
+export function useLedger(context?: ContextKey, limit = 50) {
+  const api = useApi();
+  return useQuery({
+    queryKey: queryKeys.ledger(context),
+    queryFn: ({ signal }) => api.ledger(context, limit, { signal }),
+    refetchInterval: poll(10_000),
+  });
+}
+
+export function useArbiterDecisions(q: { limit?: number; verdict?: ArbiterVerdict; context?: ContextKey }) {
+  const api = useApi();
+  return useQuery({
+    queryKey: queryKeys.arbiterDecisions(q),
+    queryFn: ({ signal }) => api.arbiterDecisions(q, { signal }),
+    refetchInterval: poll(15_000),
+  });
+}
+
+export function useAffect() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.affect, queryFn: ({ signal }) => api.affect({ signal }), refetchInterval: poll(10_000) });
+}
+
+export function useAffectPeople() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.affectPeople, queryFn: ({ signal }) => api.affectPeople({ signal }), refetchInterval: poll(30_000) });
+}
+
+export function useGoals(closed: boolean) {
+  const api = useApi();
+  return useQuery({
+    queryKey: [...queryKeys.goals, closed],
+    queryFn: ({ signal }) => api.goals(closed, { signal }),
+    refetchInterval: poll(15_000),
+  });
+}
+
+export function useDayPlan() {
+  const api = useApi();
+  return useQuery({ queryKey: queryKeys.dayPlan, queryFn: ({ signal }) => api.dayPlan({ signal }), refetchInterval: poll(60_000) });
+}
+
+export function usePrompts(limit = 30) {
+  const api = useApi();
+  return useQuery({
+    queryKey: [...queryKeys.prompts, "list", limit],
+    queryFn: ({ signal }) => api.prompts(limit, undefined, { signal }),
+    refetchInterval: poll(15_000),
+  });
+}
+
+/** The saved prompt of one turn; `404` when it is too old or was not kept. */
+export function usePrompt(turn: string | undefined) {
+  const api = useApi();
+  return useQuery({
+    queryKey: [...queryKeys.prompts, "one", turn ?? ""],
+    queryFn: ({ signal }) => api.prompt(turn ?? "", { signal }),
+    enabled: Boolean(turn),
+    retry: false,
+  });
+}
+
+export function useTurnOutcomes(q: { limit?: number; outcome?: TurnOutcomeKind; context?: ContextKey } = {}) {
+  const api = useApi();
+  return useQuery({
+    queryKey: queryKeys.turnOutcomes(q),
+    queryFn: ({ signal }) => api.turnOutcomes(q, { signal }),
+    refetchInterval: poll(15_000),
+  });
+}

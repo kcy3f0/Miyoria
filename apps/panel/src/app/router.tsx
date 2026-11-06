@@ -39,7 +39,10 @@ const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim
 export const activityRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/activity",
-  validateSearch: (s: Record<string, unknown>): { tab?: ActivityTab } => ({ tab: oneOf(ACTIVITY_TABS, s.tab) }),
+  validateSearch: (s: Record<string, unknown>): { tab?: ActivityTab; turn?: string } => ({
+    tab: oneOf(ACTIVITY_TABS, s.tab),
+    turn: str(s.turn),
+  }),
   component: ActivityPage,
 });
 

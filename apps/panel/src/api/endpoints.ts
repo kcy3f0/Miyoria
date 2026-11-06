@@ -65,6 +65,19 @@ import type {
   LlmCallsPage,
   LlmCallsQuery,
   LlmCallStats,
+  ActivitySnapshot,
+  ActivityTask,
+  AffectSnapshot,
+  ArbiterDecisionsView,
+  ArbiterVerdict,
+  DayPlanView,
+  GoalsView,
+  LedgerView,
+  PersonCard,
+  PromptSummary,
+  SavedPrompt,
+  TurnOutcomeKind,
+  TurnOutcomeRecord,
 } from "./types";
 
 type Opts = { signal?: AbortSignal };
@@ -226,6 +239,37 @@ export function createApi(client: ApiClient) {
       client.get<{ call: LlmCallRecord; detail: LlmCallDetail | null }>(`/api/llm/calls/${seg(id)}`, o),
     llmStats: (minutes: number | null, o?: Opts) =>
       client.get<LlmCallStats>("/api/llm/stats", { ...o, query: { minutes: minutes ?? undefined } }),
+
+    // body, arbiter, affect, plan, prompts
+    activity: (o?: Opts) => client.get<ActivitySnapshot>("/api/activity", o),
+    activityTasks: (limit: number, o?: Opts) =>
+      client.get<ActivityTask[]>("/api/activity/tasks", { ...o, query: { limit } }),
+    ledger: (context: ContextKey | undefined, limit: number, o?: Opts) =>
+      client.get<LedgerView>("/api/arbiter/ledger", {
+        ...o,
+        query: { limit, context: context ? JSON.stringify(context) : undefined },
+      }),
+    arbiterDecisions: (q: { limit?: number; verdict?: ArbiterVerdict; context?: ContextKey }, o?: Opts) =>
+      client.get<ArbiterDecisionsView>("/api/arbiter/decisions", {
+        ...o,
+        query: { limit: q.limit, verdict: q.verdict, context: q.context ? JSON.stringify(q.context) : undefined },
+      }),
+    affect: (o?: Opts) => client.get<AffectSnapshot>("/api/affect", o),
+    affectPeople: (o?: Opts) => client.get<PersonCard[]>("/api/affect/people", o),
+    goals: (closed: boolean, o?: Opts) =>
+      client.get<GoalsView>("/api/mind/goals", { ...o, query: { closed: closed ? "true" : undefined } }),
+    dayPlan: (o?: Opts) => client.get<DayPlanView>("/api/mind/plan", o),
+    prompts: (limit: number, context?: ContextKey, o?: Opts) =>
+      client.get<PromptSummary[]>("/api/prompts", {
+        ...o,
+        query: { limit, context: context ? JSON.stringify(context) : undefined },
+      }),
+    prompt: (turn: string, o?: Opts) => client.get<SavedPrompt>(`/api/prompts/${seg(turn)}`, o),
+    turnOutcomes: (q: { limit?: number; outcome?: TurnOutcomeKind; context?: ContextKey }, o?: Opts) =>
+      client.get<TurnOutcomeRecord[]>("/api/turns/outcomes", {
+        ...o,
+        query: { limit: q.limit, outcome: q.outcome, context: q.context ? JSON.stringify(q.context) : undefined },
+      }),
 
     telemetry: (minutes: number, o?: Opts) =>
       client.get<TelemetryView>("/api/telemetry", { ...o, query: { minutes } }),

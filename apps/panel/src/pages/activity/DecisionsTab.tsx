@@ -12,6 +12,7 @@ import { Card } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { contextKeyString, contextKindLabel, contextShort, fmtDateTime, fmtRelative, fmtScore } from "@/lib/format";
+import { TurnDetail } from "./TurnDetail";
 
 type Outcome = "all" | "respond" | "ignore";
 const LIMITS = ["50", "200", "1000"] as const;
@@ -48,6 +49,7 @@ function DecisionSheet({ record, onClose }: { record: DecisionRecord | null; onC
                   "時間": fmtDateTime(record.ts),
                 }}
               />
+              <TurnDetail turn={t.turn} />
             </SheetBody>
           </>
         )}
