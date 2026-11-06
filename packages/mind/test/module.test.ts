@@ -290,6 +290,22 @@ describe("mind module: Plan", () => {
   });
 });
 
+describe("mind module: one agenda", () => {
+  it("closes the old free-text agenda items that became goals", async () => {
+    const r = await rig(new ScriptedProvider(() => "{}"));
+    const self = r.sup.services.require(SelfStateKey);
+    const item = self.addAgenda({ text: "等 Owen 上線問他報告結果" });
+    // The next start migrates it (as the first start after an upgrade does).
+    await r.sup.restart("mind");
+    const goals = r.sup.services.require(GoalAgendaKey).goals();
+    expect(goals.map((g) => [g.id, g.what])).toEqual([[`agenda-${item.id}`, item.text]]);
+    expect(self.agenda()).toEqual([]);
+    // Restarting again changes nothing.
+    await r.sup.restart("mind");
+    expect(r.sup.services.require(GoalAgendaKey).goals()).toHaveLength(1);
+  });
+});
+
 describe("mind module: Appraise", () => {
   it("appraises a segment once it ended (reasoning `appraise`), into her affect", async () => {
     const provider = new ScriptedProvider((req) =>

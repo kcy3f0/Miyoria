@@ -957,8 +957,15 @@ export class MindLoop implements Mind {
     const self = this.#d.services.get(SelfStateKey);
     if (self) {
       const handles = this.#d.services.get(HandleDirectoryKey);
-      const added = this.#d.goals.migrate(self.agenda(), (p) => handles?.ofPerson(p) ?? null);
+      const open = self.agenda();
+      const added = this.#d.goals.migrate(open, (p) => handles?.ofPerson(p) ?? null);
       if (added > 0) this.#d.log.info({ goals: added }, "her agenda became goals");
+      // One agenda: what became a goal is closed in the old free-text one (`self:state`).
+      let closed = 0;
+      for (const item of open) {
+        if (this.#d.goals.migrated(item.id) && self.dropAgenda(item.id) !== null) closed++;
+      }
+      if (closed > 0) this.#d.log.info({ items: closed }, "closed her migrated agenda items");
     }
   }
 

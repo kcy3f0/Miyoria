@@ -12,7 +12,8 @@
 //
 // The free-text agenda (`SelfState.agenda()`) is migrated once into goals with trigger
 // `whenever` and a default expiry; the migration remembers which items it took
-// (`mind:plan:migration`), so it is idempotent across restarts.
+// (`mind:plan:migration`), so it is idempotent across restarts. The mind then closes the
+// migrated items in `self:state`, so there is one agenda.
 
 import { errorMessage, getLogger, SerialQueue } from "@miyoria/kernel";
 import type { SettingsStore } from "@miyoria/store";
@@ -398,6 +399,11 @@ export class GoalBook implements GoalAgenda {
    * Items migrated before are never taken again, even when their goal is gone. Returns how many
    * goals it added.
    */
+  /** The old agenda item `id` became a goal (now or on an earlier start). */
+  migrated(id: string): boolean {
+    return this.#migrated.has(id);
+  }
+
   migrate(items: readonly AgendaItem[], handleOf: (person: PersonId) => Handle | null): number {
     let added = 0;
     for (const item of items) {
