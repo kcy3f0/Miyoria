@@ -177,7 +177,8 @@ export function StateTab({ self }: { self: SelfView }) {
       <StateTrend self={self} />
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
         <PolicyCard self={self} />
-        <AgendaCard self={self} />
+        {/* Her plans live in GoalAgenda (the 目標 tab); this list only fills without the mind. */}
+        {self.agenda.length > 0 && <AgendaCard self={self} />}
       </div>
     </div>
   );
