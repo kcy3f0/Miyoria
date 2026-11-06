@@ -284,6 +284,19 @@ Arbiter 接受 `speak` impulse 後,開回合仍走既有的 `agent_initiative` �
 - **Mod**(Java):`game/TaskTracker.java`(純邏輯,JUnit `TaskTrackerTest`,在這裡以 javac + JUnit standalone 跑過);`BridgeRuntime` 的小 hunk:工作請求讀 `task`、`begin` / `stopped`、`emit` 經過 tracker(工作事件加上 `task` 欄位,之後送 `task_*`)、AltoClef 的 tick、`hello_ack.capabilities.tasks`。協定版本仍是 1(只加欄位與事件),`PROTOCOL.md` §5、§6.1。這裡的 Gradle 抓不到 fabric-loom(離線),整個 mod 沒有編譯過。
 - **Stage 字幕**:`stage/src/link/forward.ts` 收 `agent.subtitle {turn, context, spoken, text}`,把字幕裡她先說出的(日文)那句換成寫好的(中文)句子並重送(已是 final 就送 final);比播放先到的先記著,播放時直接顯示中文。
 
+### W9 整合(第三波)
+
+**實作紀錄(W9)**:
+
+- **工具依活動限定**(§3.4,`agent/src/tool-scope.ts`):聊天回合的工具每一步依 `ActivityManagerKey.snapshot()`(沒有就 world 的 `her`;都沒有 = 全給,舊行為)決定:`game_goal` / `game_stop` 只在遊戲 starting / running 時有,`sing_stop`、`stream_stop`、`voice_leave` 只在唱歌 / 直播 / 在語音時有;開始類工具一直都有。extension 的原始遊戲工具(`game_<id>_*` 且不是 `CapabilityTool`)不論狀態都不給(W3 在 ext-host 已擋,這裡是第二道)。沒提供的工具被呼叫就當成不存在。
+- **`CLAIMS` 正則**(§1.8 #5,`agent/src/claims.ts`):「她說的事有沒有發生」改看結構化訊號:這個回合要求、被接受的 ActivityManager task(她的工具拿到的 `TransitionResult`,`tasks()` 依 `turn` 找)、這個回合告訴她的 `agent.notice`(依 task id)、這個回合成功的工具呼叫、snapshot(本來就在語音 / 在直播)。有任何一個撐住的說法不再被提醒或扣住。**保留的安全網**:只用短語清單判斷「她說了做了某事」——這是唯一沒有結構化訊號的部分;拿掉的話她可以跟人說「我游過去了」但什麼都沒發生(模型真的會這樣),所以留著,但它只負責發現說法,不決定事實。
+- **刪掉的死碼**:`mood`(`social/src/mood.ts` 的 `MoodPrompt` 與 `describe`)、`social`(`SocialPrompt`、`Social.describePeople`)、`self` / `emotion`(`self/src/prompt.ts` 整個檔)四個 contributor;agent 的 `moodHint` 換成唯一的 `moodLine`。編譯器的 `SUPERSEDED` 留著擋 extension。只剩被解析的舊 key 一律刪掉並在啟動時警告(新的 `presentKeys`,`@miyoria/kernel`):`[modules.self] prompt`、`[modules.social] prompt_max_people`、`[modules.mind] quiet_start_hour` / `quiet_end_hour` / `voice_quiet_secs`。
+- **一個冷場偵測器**:mind 收到 world 的 `channel_quiet` 時,她所在語音頻道的那種不看分數直接喚醒 Plan(沒有 Arbiter 時照 mind 自己的自我發起間隔);文字頻道的照舊低於門檻。mind 的語音 room、5 秒輪詢與 `voice_quiet_secs` 刪掉。
+- **開遊戲**:`game.start` 的結果帶 `data.session {game, game_name, context}`(launch 任務 `done`、session 已開始才回);ActivityManager 直接拿它當事實,不再等 `game.director.session` 確認(事件之後到也只是再確認一次)。停止仍等 session 結束的事件(這次沒動)。
+- **一份議程**:mind 啟動把 `SelfState.agenda()` 遷移成目標後,把遷移過的舊議程項目(含之前啟動就遷移過、還開著的)`dropAgenda`。agent 的 self 區塊與 reflect 本來就先讀 `GoalAgendaKey`,沒有 mind 時才退回舊議程。
+- **回放測試**(`packages/replay`,§4):`ReplayRecorderModule`(`[modules.replay] record = false`,`<dir>/<日期>.jsonl`,core 在 recorder 後面多一行);`replay(log, {clock})` 用同一個 supervisor 跑真正的 agent、actions(閘門)、activity、world、self、arbiter、mind,假的只有 LLM(`ScriptedLlm`:回話照腳本、Plan 讀帳本限制「現在不行」就回 `{}`)、排程器 / 平台(`ReplaySink`,依序播放她的句子並發 `voice.playback`)與時間(呼叫端的 fake timers)。只重播她感知到的事件(`isReplayInput`;`arbiter.impulse` 只重播沒在跑的 module 發的,例如 sing)。報告:每回合結果、被叫有沒有回、focus 對不對(叫她的那則在 focus、focus 只有叫她的人、引用的是叫她的那則)、語音直接叫的開口率、Arbiter 的結果與擋下原因、她自己的衝動被擋率、沒人接的話題數、ActivityManager 殘留狀態。`pnpm replay <file> [--json] [--seed N]`(在 Vitest 裡跑,用它的 fake timers)。三個 fixture(`packages/replay/test/fixtures`):語音四個人一直「對 / 嗯」時被叫 8 次 → 開口 8/8、focus 8/8、沒有被輸入取消;「@Miyoria 你可以打osu嗎」等三個提問各被 5 句插話淹沒 → 3/3 回覆、3/3 引用提問的人;8 次報幕沒人接、她自己的 4 個話題 → 被擋 0/4、沒人接的話題 0。
+- **需要 W10**:面板 / API 沒有任何 W9 的路由需求;注意 `self:state` 的舊議程遷移後會變成 dropped,面板的「議程」若還讀 `SelfState`,要改讀 `GoalAgendaKey`(目標)。回放報告目前只有 CLI,沒有 API。
+
 ## 3. 跨工作流整合
 
 **誰發 Impulse(W6 之後)**:收到訊息(agent,source `message`)、Plan / 議程(W7,`plan` / `agenda`)、followup(memory 與 `actions/src/followup.ts`,`followup`)、activity 結果(W3,`notice`)、遊戲評論(game director,`game`)、唱歌報幕(sing,`song`)、上線打招呼(world,`world`)。只有 `plan` / `agenda` 算她主動。W6 之前大家照舊發 `agent_initiative`;W6 逐一改掉上面 §2 W6 表裡的發送點。
