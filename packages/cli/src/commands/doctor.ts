@@ -1,9 +1,14 @@
 // `miyoria doctor`: checks everything needed to run, one line per check.
 
+import { tmpdir } from "node:os";
 import { dirname } from "node:path";
 import { databaseUrl, loadProfile, resolveDatabaseUrl } from "@miyoria/core/light";
 import { Config, configureLogging, errorMessage } from "@miyoria/kernel";
-import { green, println, red } from "../ui.js";
+import { cliVersion } from "../assets.js";
+import { type DeepDeps, deepChecks, type Finding } from "../stack/checks.js";
+import { repoRoot, stackConfig } from "../stack/config.js";
+import { defaultRunner, probePort } from "../stack/system.js";
+import { dim, green, println, red, yellow } from "../ui.js";
 
 /** Discord application flags for the message content intent. */
 const GATEWAY_MESSAGE_CONTENT = 1 << 18;
@@ -13,7 +18,48 @@ export class DoctorError extends Error {
   override readonly name = "DoctorError";
 }
 
-export async function run(configPath: string): Promise<void> {
+export interface DoctorOptions {
+  /** Also check the install: ports, builds, JDK, worker config, VRAM, temp files. */
+  deep?: boolean;
+  /** Only the install checks; no LLM, Discord or database round trips. Implies `deep`. */
+  stackOnly?: boolean;
+  /** Replaces the system seams in tests. */
+  deps?: DeepDeps;
+}
+
+function realDeps(): DeepDeps {
+  return {
+    platform: process.platform,
+    run: defaultRunner,
+    probe: probePort,
+    fetchImpl: fetch,
+    env: process.env,
+    tmpdir: tmpdir(),
+    version: cliVersion(),
+  };
+}
+
+function printFinding(f: Finding): void {
+  const mark = f.level === "ok" ? green("✓") : f.level === "warn" ? yellow("!") : red("✗");
+  println(`${mark} ${f.what}  ${f.detail}`);
+  for (const line of f.fix ?? []) println(dim(`    修正:${line}`));
+}
+
+/** Prints the deep findings; returns how many failed. */
+async function deepReport(config: Config, configPath: string, deps: DeepDeps): Promise<number> {
+  println(`\n部署檢查(只讀,不會改 Windows、防火牆或防毒設定)`);
+  const findings = await deepChecks({
+    config,
+    configDir: dirname(configPath),
+    root: repoRoot(configPath),
+    stack: stackConfig(config),
+    deps,
+  });
+  for (const f of findings) printFinding(f);
+  return findings.filter((f) => f.level === "fail").length;
+}
+
+export async function run(configPath: string, options: DoctorOptions = {}): Promise<void> {
   // The checks print their own lines; module logs would only interleave with them.
   if (!process.env.MIYORIA_LOG_LEVEL) configureLogging({ level: "warn" });
   let failures = 0;
@@ -30,6 +76,13 @@ export async function run(configPath: string): Promise<void> {
   } catch (error) {
     report(false, "設定檔", `${errorMessage(error)}(先執行 \`miyoria init\`)`);
     throw new DoctorError("無法繼續檢查");
+  }
+
+  if (options.stackOnly) {
+    failures += await deepReport(config, configPath, options.deps ?? realDeps());
+    if (failures > 0) throw new DoctorError(`${failures} 項檢查失敗`);
+    println(`\n部署檢查通過`);
+    return;
   }
 
   let profile: Awaited<ReturnType<typeof loadProfile>> | null = null;

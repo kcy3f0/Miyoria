@@ -8,6 +8,8 @@ import * as doctor from "./commands/doctor.js";
 import * as init from "./commands/init.js";
 import * as nodeCmd from "./commands/node.js";
 import * as remote from "./commands/remote.js";
+import * as up from "./commands/up.js";
+import * as update from "./commands/update.js";
 import { captureProcessEnv } from "./process-env.js";
 import {
   ClackPrompter,
@@ -187,8 +189,74 @@ export const COMMANDS: CommandSpec = {
     },
     {
       name: "doctor",
-      help: "檢查設定檔、角色、LLM、Discord 和資料庫連線",
-      run: (ctx) => doctor.run(ctx.config),
+      help: "檢查設定檔、角色、LLM、Discord 和資料庫連線;--deep 加查埠、建置、JDK、worker 設定和顯存",
+      options: [
+        {
+          name: "deep",
+          help: "加查部署:Windows 保留埠、dist / mod jar 是否過期、JDK 21、worker 設定一致、顯存、暫存檔、服務健康",
+        },
+        { name: "deep-only", help: "只做 --deep 的部署檢查(不連 LLM、Discord、資料庫)" },
+      ],
+      run: (ctx) =>
+        doctor.run(ctx.config, { deep: flag(ctx, "deep"), stackOnly: flag(ctx, "deep-only") }),
+    },
+    {
+      name: "up",
+      help: "依序啟動整組服務(worker、core、voice node、stage)並檢查健康;Ctrl+C 停止這次啟動的服務",
+      options: [
+        { name: "only", value: "LIST", help: "只啟動這些服務(逗號分隔,例如 asr,core)" },
+        { name: "skip", value: "LIST", help: "不啟動這些服務" },
+        {
+          name: "timeout",
+          value: "SECS",
+          help: "每個服務等健康檢查的秒數(預設用 [stack] start_timeout_secs)",
+        },
+        { name: "dry-run", help: "只列出啟動順序和指令,不啟動" },
+        { name: "no-check", help: "略過啟動前的 worker 設定和建置檢查" },
+      ],
+      run: (ctx) => {
+        const list = (name: string) =>
+          str(ctx, name)
+            ?.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+        const timeout = str(ctx, "timeout");
+        const timeoutSecs = timeout === undefined ? undefined : Number.parseInt(timeout, 10);
+        if (timeoutSecs !== undefined && !(timeoutSecs > 0))
+          throw new Error("--timeout 要是正整數(秒)");
+        return up.run(ctx.config, {
+          only: list("only"),
+          skip: list("skip"),
+          timeoutSecs,
+          dryRun: flag(ctx, "dry-run"),
+          noCheck: flag(ctx, "no-check"),
+        });
+      },
+    },
+    {
+      name: "update",
+      help: "git pull、安裝相依套件,只重建有變的:SDK、擴充 dist、面板、overlay、Minecraft mod jar",
+      options: [
+        { name: "no-pull", help: "不執行 git pull" },
+        { name: "force", help: "不論有沒有變都全部重建" },
+        { name: "skip-mod", help: "不建置也不安裝 Minecraft mod" },
+        { name: "dry-run", help: "只列出會做的事" },
+      ],
+      run: (ctx) =>
+        update.run(
+          ctx.config,
+          {
+            noPull: flag(ctx, "no-pull"),
+            force: flag(ctx, "force"),
+            skipMod: flag(ctx, "skip-mod"),
+            dryRun: flag(ctx, "dry-run"),
+          },
+          update.defaultUpdateDeps(async (message) => {
+            if (ctx.yes) return true;
+            if (!isInteractive()) return false;
+            return interactivePrompter().confirm(message, false);
+          }),
+        ),
     },
     {
       name: "core",
