@@ -3,6 +3,11 @@
 // decision (audit log + `gate.decision`) and then executes, directly or as an `actuate` action
 // in the scheduler when it comes from a turn.
 //
+// Before the gate, the rules (`DirectivesKey`, docs/design/v3-architecture.md §9): a `deny` stops
+// the request whoever asks, a `require_approval` sends what the gate allowed to the owners, and
+// rules that cannot be read deny. A rule added while a run waits in a lane or in the
+// ActivityManager still stops it: the check runs again right before it starts.
+//
 // Gate order:
 //
 // 1. pause: while paused only `command` and `panel` pass;
@@ -28,6 +33,8 @@ import {
   accountRefString,
   type Clock,
   customEvent,
+  DirectivesKey,
+  type DirectiveVerdict,
   type Event,
   isAutonomous,
   type JsonValue,
@@ -56,6 +63,7 @@ import {
   type GateStage,
 } from "./capability.js";
 import { type ActionsConfig, capabilityMatches, defaultActionsConfig } from "./config.js";
+import { EmergencyStop } from "./emergency.js";
 import { Followups, followupHint } from "./followup.js";
 import { publishNotice, recordOutcome } from "./outcome.js";
 import { PRIVACY_PROFILE, Privacy } from "./privacy.js";
@@ -258,6 +266,8 @@ export class ActuatorRegistry implements ActuatorExecutor {
   readonly escalations: Escalations;
   /** Late outcomes of `followup` tools, delivered as follow-up turns. */
   readonly followups: Followups;
+  /** The one button of §16: what `/admin autonomy pause` and `/api/mind/pause` run. */
+  readonly emergency: EmergencyStop;
 
   constructor(options: ActuatorRegistryOptions) {
     this.#services = options.services;
@@ -270,6 +280,14 @@ export class ActuatorRegistry implements ActuatorExecutor {
       (event) => this.#publish(event),
       () => this.#clock.now(),
     );
+    this.emergency = new EmergencyStop({
+      services: options.services,
+      clock: this.#clock,
+      publish: (event) => this.#publish(event),
+      setPaused: (paused) => this.setPaused(paused),
+      invoke: (request, signal) => this.invoke(request, { signal }),
+      stepMs: () => this.#config.emergency_step_ms,
+    });
     if (options.builtins ?? true) {
       for (const capability of builtinCapabilities()) this.register(capability);
     }
@@ -397,16 +415,22 @@ export class ActuatorRegistry implements ActuatorExecutor {
       verdict = deny("args", `invalid arguments: ${where}${issue?.message ?? "invalid"}`);
     } else {
       const invalid = capability.check?.(parsed.data, request.principal) ?? null;
+      const rule = invalid === null ? await this.#rule(capability, parsed.data, request) : null;
       verdict =
         invalid !== null
           ? deny("args", invalid)
-          : await this.#gate(
-              capability,
-              parsed.data,
-              request,
-              options.signal,
-              options.implied === true,
-            );
+          : rule?.outcome === "deny"
+            ? deny("directive", rule.reason)
+            : await this.#gate(
+                capability,
+                parsed.data,
+                request,
+                options.signal,
+                options.implied === true,
+              );
+      if (rule?.outcome === "approval" && verdict.allowed) {
+        verdict = await this.#escalate(capability, request, rule.reason, options.signal);
+      }
     }
     const decision = this.#decision(request, capability, verdict);
     await this.#record(decision);
@@ -459,6 +483,36 @@ export class ActuatorRegistry implements ActuatorExecutor {
       this.#safely(() => recordOutcome(this.#sink(), capability, request, outcome));
     }
     return outcome;
+  }
+
+  /** What the rules say of a request. The app always provides them; a test may not. */
+  async #rule(
+    capability: Capability,
+    args: unknown,
+    request: ActionRequest,
+  ): Promise<DirectiveVerdict | null> {
+    const directives = this.#services.get(DirectivesKey);
+    if (!directives) return null;
+    try {
+      return await directives.check({
+        capability: capability.name,
+        args,
+        principal: request.principal,
+        about: request.about ?? null,
+      });
+    } catch (error) {
+      return { outcome: "deny", directive: null, reason: `讀不到規則(${errorMessage(error)})` };
+    }
+  }
+
+  /** A run that waited: a rule made since then stops it (the request itself passed the gate). */
+  async #stillAllowed(
+    capability: Capability,
+    args: unknown,
+    request: ActionRequest,
+  ): Promise<void> {
+    const rule = await this.#rule(capability, args, request);
+    if (rule?.outcome === "deny") throw new ActionDroppedError(rule.reason);
   }
 
   /** The ActivityManager route of a call, or `null` to execute it here. */
@@ -540,6 +594,7 @@ export class ActuatorRegistry implements ActuatorExecutor {
     direct: DirectRun,
   ): Promise<ActionResult> {
     const actual = direct.args === undefined ? args : direct.args;
+    await this.#stillAllowed(capability, actual, request);
     const run = { signal: direct.signal, route: null, task: direct.task ?? null };
     if (direct.priority !== undefined && direct.lane) {
       return this.#queue(capability, actual, request, decision, direct.lane, direct.priority, run);
@@ -672,6 +727,7 @@ export class ActuatorRegistry implements ActuatorExecutor {
     if (!t) throw new ActionDroppedError("cancelled");
     this.#tickets.delete(ticket);
     try {
+      await this.#stillAllowed(t.capability, t.args, t.request);
       const result = await this.#execute(t.capability, t.args, t.request, t.decision, {
         signal: AbortSignal.any([signal, t.cancel.signal]),
         route: t.route,

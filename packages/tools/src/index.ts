@@ -30,12 +30,19 @@ export interface ToolContext {
    * the game director. Capability tools pass it to the gate.
    */
   principal: Principal;
+  /**
+   * Everyone the turn speaks for, when more than one person's messages are in it. `account` is
+   * only the one she answers: a tool whose result depends on who asked takes the weakest of them.
+   */
+  askers?: readonly AccountRef[];
   /** The message that triggered the turn (the latest one). */
   message: MessageRef;
   /** Priority for actions the tool submits (same as her reply). */
   priority: Priority;
   /** Aborted when the turn is cancelled. */
   signal: AbortSignal;
+  /** Takes what a capability answered besides its text (`{task}`: it only got accepted). */
+  report?: (data: JsonValue) => void;
 }
 
 export interface Tool {

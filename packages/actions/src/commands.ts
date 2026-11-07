@@ -11,7 +11,7 @@ import {
   defineRoute,
   notice,
 } from "@miyoria/commands";
-import type { PresencePrivacy } from "@miyoria/types";
+import { accountRefString, type EmergencyReport, type PresencePrivacy } from "@miyoria/types";
 import type { ActuatorRegistry } from "./registry.js";
 import { APPROVE_ROUTE, answeredCard, DENY_ROUTE } from "./review.js";
 
@@ -31,7 +31,7 @@ async function statusReply(registry: ActuatorRegistry): Promise<CommandReply> {
   const cfg = registry.config;
   const pending = registry.escalations.list();
   const lines = [
-    `狀態：${registry.paused ? "已暫停（只有指令與面板能讓她行動）" : "運作中"}`,
+    `狀態：${registry.paused ? "已緊急停止（她不回話，只有指令與面板能讓她行動）" : "運作中"}`,
     `能力：${registry.names().join("、") || "—"}`,
   ];
   if (cfg.forbidden.length > 0) lines.push(`禁止：${cfg.forbidden.join("、")}`);
@@ -53,6 +53,23 @@ function privacyText(dm: boolean, approach: boolean, presence: boolean | null): 
   ].join("\n");
 }
 
+const STEP_LABELS: Readonly<Record<string, string>> = {
+  pause: "暫停",
+  silence: "閉嘴",
+  song: "唱歌",
+  stream: "直播",
+  voice: "語音",
+  game: "遊戲",
+  resume: "恢復",
+};
+
+/** One line per step, so a step that did not work is seen. */
+function stepLines(report: EmergencyReport): string {
+  return report.steps
+    .map((s) => `${s.ok ? "✓" : "✗"} ${STEP_LABELS[s.step] ?? s.step}：${s.detail}`)
+    .join("\n");
+}
+
 /** Registers the commands; undo with `unregisterCommands`. */
 export function registerCommands(
   registry: CommandRegistry,
@@ -61,23 +78,31 @@ export function registerCommands(
   presence: () => PresencePrivacy | undefined = () => undefined,
 ): void {
   registry.register(
-    commandSpec("admin autonomy pause", "緊急暫停她的自主行動（指令與面板仍可使用）", {
+    commandSpec("admin autonomy pause", "緊急停止：她閉嘴、關台、離開語音、停遊戲", {
       permission: NODE_TOGGLE,
       ephemeral: true,
     }),
-    async () => {
-      await actuators().setPaused(true);
-      return notice("success", "已暫停她的自主行動。", "她仍會回話；指令與面板照常可用。");
+    async (inv) => {
+      const who = accountRefString(inv.invoker);
+      const report = await actuators().emergency.stop(`command:${who}`, who);
+      const ok = report.steps.every((s) => s.ok);
+      const title = ok ? "已緊急停止。" : "已緊急停止，但有步驟沒有成功。";
+      return notice(ok ? "success" : "warn", title, stepLines(report));
     },
   );
   registry.register(
-    commandSpec("admin autonomy resume", "恢復她的自主行動", {
+    commandSpec("admin autonomy resume", "解除緊急停止，讓她再開口和行動", {
       permission: NODE_TOGGLE,
       ephemeral: true,
     }),
-    async () => {
-      await actuators().setPaused(false);
-      return notice("success", "已恢復她的自主行動。");
+    async (inv) => {
+      const report = await actuators().emergency.resume(`command:${accountRefString(inv.invoker)}`);
+      const ok = report.steps.every((s) => s.ok);
+      return notice(
+        ok ? "success" : "warn",
+        ok ? "已解除緊急停止。" : "解除緊急停止時有問題。",
+        "語音、直播和遊戲不會自動回來。",
+      );
     },
   );
 

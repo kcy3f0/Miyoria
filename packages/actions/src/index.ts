@@ -56,6 +56,7 @@ export {
   type Limit,
   type TierLimit,
 } from "./config.js";
+export { type EmergencyDeps, EmergencyStop } from "./emergency.js";
 export {
   FOLLOWUP_MAX_AGE_MS,
   FOLLOWUP_REASON,

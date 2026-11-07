@@ -161,6 +161,7 @@ export interface ActionRequest {
 export type GateStage =
   | "unknown"
   | "args"
+  | "directive"
   | "pause"
   | "prohibition"
   | "consent"
@@ -199,6 +200,7 @@ export type ActionOutcome =
 const DENIED_TEXT: Readonly<Record<GateStage, string>> = {
   unknown: "這個功能目前無法使用。",
   args: "參數不正確。",
+  directive: "有規則不允許這件事。",
   pause: "她的自主行動已暫停。",
   prohibition: "這個動作被設定禁止。",
   consent: "對方不希望她這樣做。",

@@ -108,6 +108,7 @@ export class CapabilityTool implements Tool {
       priority: ctx.priority,
       activity: "detach",
     });
+    if (outcome.status === "done") ctx.report?.(outcome.result.data);
     return answer(outcome);
   }
 

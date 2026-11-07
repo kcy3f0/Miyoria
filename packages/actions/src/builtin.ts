@@ -6,12 +6,14 @@ import { errorMessage, getLogger } from "@miyoria/kernel";
 import {
   type AccountRef,
   ActionSinkKey,
-  filterOutgoing,
+  ModerationKey,
+  MouthKey,
   newAction,
   newId,
   PlatformSinksKey,
   type Principal,
   type Priority,
+  safeOutgoing,
   textLane,
   VoiceSinkKey,
 } from "@miyoria/types";
@@ -81,7 +83,11 @@ export const messageDm: Capability<DmArgs> = defineCapability<DmArgs>({
     if (to === null) throw new CapabilityError("no recipient");
     const sink = ctx.services.get(PlatformSinksKey)?.get(to.platform);
     if (!sink?.openDm) throw new CapabilityError(`cannot send DMs on ${to.platform}`);
-    const text = filterOutgoing(args.text);
+    const { text, blocked } = safeOutgoing(ctx.services.get(ModerationKey), {
+      path: "other",
+      text: args.text,
+      turn: ctx.request.turn,
+    });
     if (text === "") throw new CapabilityError("nothing left to send after filtering");
     const context = await sink.openDm(to, ctx.signal);
     const actions = ctx.services.get(ActionSinkKey);
@@ -91,7 +97,7 @@ export const messageDm: Capability<DmArgs> = defineCapability<DmArgs>({
           textLane(context),
           priorityFor(ctx.principal),
           { type: "send_message", context, message: { text, reply_to: null } },
-          { turn: ctx.request.turn },
+          { turn: ctx.request.turn, blocked },
         ),
       );
     } else {
@@ -128,7 +134,20 @@ export const speak: Capability<SpeakArgs> = defineCapability<SpeakArgs>({
     const sink = ctx.services.get(VoiceSinkKey);
     if (!sink) throw new CapabilityError("the voice module is not running");
     const turn = args.turn ?? newId();
-    const text = filterOutgoing(args.text);
+    const { text, blocked } = safeOutgoing(ctx.services.get(ModerationKey), {
+      path: "other",
+      text: args.text,
+      aloud: true,
+      context: args.context,
+      turn,
+    });
+    // V3: one mouth. The owner's line goes through the main line like every other.
+    const mouth = ctx.services.get(MouthKey);
+    if (mouth) {
+      const emotion = args.emotion ?? null;
+      await mouth.say({ context: args.context, text, emotion, turn, source: "panel", blocked });
+      return { text: "speaking", data: { turn } };
+    }
     // Speaking lasts as long as the playback; the caller only needs to know it started.
     void sink.speak(args.context, text, args.emotion ?? null, turn).catch((error: unknown) => {
       log.warn({ err: errorMessage(error) }, "speaking failed");
