@@ -1,8 +1,8 @@
 // A replay-style run (docs/design/v2-architecture.md §4 stage 2: "主動開話題被擋率 < 20%,被擋時
 // 她知道原因"). A scripted day of people talking, songs, game commentary and busy moments goes
 // through the Arbiter with fakes; her Plan is modelled as reading the ledger before it submits
-// (it respects `next_initiative_at`, the daily cap and quiet hours) and is compared with a Plan
-// that plans blind, as the old mind did.
+// (it respects `next_initiative_at`, the daily cap, quiet hours and `waiting_for_response`) and
+// is compared with a Plan that plans blind, as the old mind did.
 
 import {
   ARBITER_DECISION_TOPIC,
@@ -50,6 +50,8 @@ async function day(seeing: boolean, seed: number): Promise<Result> {
   const start = Date.UTC(2026, 10, 3, 0, 0, 0); // 08:00 local
   const r: Rig = rig({}, new ManualClock(start));
   const rand = lcg(seed);
+  // Its own stream, so the rest of the day stays the same whatever people say.
+  const talk = lcg(seed + 1);
   let attempts = 0;
   let blocked = 0;
   let started = 0;
@@ -62,6 +64,10 @@ async function day(seeing: boolean, seed: number): Promise<Result> {
     // Busy moments: someone is mid-conversation with her for a minute or two.
     r.host.busy.clear();
     if (awake && rand() < 0.15) r.host.busy.add("discord:g:general");
+    // People talk among themselves, about once every half hour in each place.
+    for (const place of PLACES) {
+      if (awake && talk() < 1 / 30) r.arbiter.heard(place, acct("yui"));
+    }
     // Songs and game commentary (never her own initiative).
     if (awake && rand() < 0.03) {
       await r.arbiter.submit(
@@ -83,6 +89,7 @@ async function day(seeing: boolean, seed: number): Promise<Result> {
       const allowed =
         limits.next_initiative_at === null &&
         !limits.paused &&
+        !limits.waiting_for_response &&
         !(limits.quiet_hours?.active ?? false) &&
         (limits.initiative_cap === null || limits.initiatives_today < limits.initiative_cap);
       // She wants to talk about half the time she wakes up.

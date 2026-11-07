@@ -60,6 +60,12 @@ export const ArbiterConfigSchema = z.object({
   reply_window_voice_secs: count().default(300),
   /** Ignored topics are listed to her (and not raised again) this long. */
   stale_topic_mins: count().default(45),
+  /**
+   * Turns she may start in one place with no person speaking there; then she starts none until
+   * someone does (any human message or speech resets it). Besides her own starts this counts game
+   * narration and memory followups; `unanswered.ts` says exactly what counts. 0 = no limit.
+   */
+  max_unanswered: count().default(3),
   /** A capability that was refused or failed is shown as on hold this long. */
   blocked_mins: count().default(30),
   /** After her game was closed, how long she may not start one on her own (0: no hold). */

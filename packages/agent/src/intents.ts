@@ -179,7 +179,12 @@ export class AgentIntents implements IntentSink, ImpulseHost {
       return { status: "started", detail: result.text, turn };
     }
     if (intent.context === null) return { status: "done", detail: result.text, turn };
-    const why = this.agent.deliverIntent(this.agent.ownLinesContext(intent.context), talk);
+    const where = this.agent.ownLinesContext(intent.context);
+    // She may still act on her own; only talking about it to nobody waits.
+    if (this.agent.waitingForResponse(where)) {
+      return { status: "done", detail: `${result.text} (not talking: nobody answered)`, turn };
+    }
+    const why = this.agent.deliverIntent(where, talk);
     return why === null
       ? { status: "started", detail: result.text, turn }
       : { status: "done", detail: `${result.text} (not talking: ${why})`, turn };

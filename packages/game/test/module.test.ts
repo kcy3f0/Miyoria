@@ -23,6 +23,7 @@ import {
   ARBITER_IMPULSE_TOPIC,
   type ContextKey,
   type Event,
+  type Impulse,
   impulseReason,
   type JsonValue,
   PromptContributors,
@@ -31,6 +32,7 @@ import {
   v2Payload,
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SELF_GOAL_BY } from "../src/decision.js";
 import {
   DECISION_TOPIC,
   GameControl,
@@ -110,6 +112,7 @@ class Harness {
   readonly prompts = new PromptContributors();
   readonly queue: RequestQueue;
   readonly hintLog: Log<string>;
+  readonly lineLog: Log<Impulse>;
   readonly hintContexts: Log<ContextKey>;
   readonly nudgeLog: Log<Record<string, JsonValue>>;
   readonly traceLog: Log<Record<string, JsonValue>>;
@@ -129,6 +132,9 @@ class Harness {
       expect(impulseReason(impulse)).toBe("game");
       return impulse.hint;
     });
+    this.lineLog = collect(this.sup.bus.subscribe(ARBITER_IMPULSE_TOPIC), (e) =>
+      v2Payload(e, ARBITER_IMPULSE_TOPIC),
+    );
     this.hintContexts = collect(
       this.sup.bus.subscribe(ARBITER_IMPULSE_TOPIC),
       (e) => v2Payload(e, ARBITER_IMPULSE_TOPIC)?.target.context ?? null,
@@ -499,15 +505,19 @@ describe("game director", () => {
     expect(hints[0]).toContain("實況:吐槽一下天氣");
     expect(hints[0]).toContain("你正在直播玩 Minecraft");
 
-    // An important event bypasses the regular limit (only the short urgent one applies).
+    // A death is never rate-limited: not even right after a line.
     await secs(1);
-    await h.gameEvent("death", "死掉了(苦力怕)", true);
-    expect(h.hints()).toEqual([]);
-    await secs(3);
     await h.gameEvent("death", "死掉了(苦力怕)", true);
     const urgent = h.hints();
     expect(urgent).toHaveLength(1);
     expect(urgent[0]).toBe("(你正在直播玩 Minecraft)剛剛死掉了(苦力怕)!馬上用一兩句話反應。");
+
+    // An important event that is still narration has only the short urgent limit.
+    await h.gameEvent("advancement", "達成成就「石器時代」", true, { title: "石器時代" });
+    expect(h.hints()).toEqual([]);
+    await secs(3);
+    await h.gameEvent("advancement", "達成成就「石器時代」", true, { title: "石器時代" });
+    expect(h.hints()).toHaveLength(1);
     await h.stop();
   });
 
@@ -729,6 +739,171 @@ describe("game director", () => {
     expect(contentText(llm.requests.at(-1)?.messages.at(-1)?.content ?? "")).toContain(
       "暫時不能用",
     );
+    await h.stop();
+  });
+});
+
+describe("narration and the lines she has to say", () => {
+  const MIN45 = 45 * 60_000;
+
+  it("every way of bringing up the same thing has the same key", async () => {
+    const llm = new MockProvider("mock").reply(decision("閒晃", null, "石鎬做好了,木鎬太慢了"));
+    const h = await Harness.create(llm, { decide_secs: 20 });
+    await h.start();
+    await h.gameEvent("craft_finished", "做好了 石鎬×1", false, { item: "stone_pickaxe" });
+    h.lineLog.take();
+    for (let i = 0; i < 6; i++) await secs(20);
+    const lines = h.lineLog.take();
+    expect(lines.length).toBeGreaterThan(3);
+    for (const l of lines) {
+      expect(l.attention).toEqual({ key: "game:craft:stone_pickaxe", repeat_after_ms: MIN45 });
+    }
+    await h.stop();
+  });
+
+  it("something new to say has its own key", async () => {
+    const llm = new MockProvider("mock").reply(decision("閒晃", null, "這裡的風景好漂亮喔"));
+    const h = await Harness.create(llm, { decide_secs: 20 });
+    await h.start();
+    await h.gameEvent("craft_finished", "做好了 石鎬×1", false, { item: "stone_pickaxe" });
+    h.lineLog.take();
+    await secs(20);
+    expect(h.lineLog.take().at(-1)?.attention?.key).toMatch(/^game:remark:/);
+    await h.stop();
+  });
+
+  it("repeat windows and keys are configurable", async () => {
+    const llm = new MockProvider("mock").reply(decision("閒晃", null));
+    const h = await Harness.create(llm, { narration_repeat_mins: 10, hazard_repeat_secs: 30 });
+    await h.start();
+    h.lineLog.take();
+    await h.gameEvent("advancement", "達成成就「石器時代」", true, { title: "石器時代" });
+    expect(h.lineLog.take().at(-1)?.attention).toEqual({
+      key: "game:advancement:石器時代",
+      repeat_after_ms: 600_000,
+    });
+    await secs(4);
+    await h.gameEvent("damage", "受傷 -5(殭屍),剩 11 血", true, { attacker: "zombie" });
+    expect(h.lineLog.take().at(-1)?.attention).toEqual({
+      key: "game:damage:zombie",
+      repeat_after_ms: 30_000,
+    });
+    await h.stop();
+  });
+
+  it("urgent events are not narration: no key, no rate limit, and they can wait for a turn", async () => {
+    const llm = new MockProvider("mock").reply(decision("閒晃", null));
+    const h = await Harness.create(llm);
+    await h.start();
+    h.lineLog.take();
+    await h.gameEvent("low_health", "血量很低(3)", true);
+    await h.gameEvent("death", "死掉了(苦力怕)", true);
+    await h.gameEvent("reflex", "掉進岩漿 / 著火了,身體自己逃開", true, { kind: "lava" });
+    const lines = h.lineLog.take();
+    expect(lines).toHaveLength(3);
+    for (const l of lines) {
+      expect(l.attention ?? null).toBeNull();
+      // Merged away by nothing, and it outlives the Arbiter's retry while she is talking.
+      expect(l.coalesce_key).toBeNull();
+      expect(Date.parse(l.expires_at) - Date.parse(l.created_at)).toBe(30_000);
+    }
+    await h.stop();
+  });
+
+  it("a fight is narration, a short one", async () => {
+    const llm = new MockProvider("mock").reply(decision("閒晃", null));
+    const h = await Harness.create(llm);
+    await h.start();
+    h.lineLog.take();
+    await h.gameEvent("reflex", "被攻擊,自己反擊", true, { kind: "fight" });
+    expect(h.lineLog.take().at(-1)?.attention).toEqual({
+      key: "game:reflex:fight",
+      repeat_after_ms: 120_000,
+    });
+    await h.stop();
+  });
+
+  it("what a viewer asked for is owed to them: announced and reported without a key", async () => {
+    const llm = new FnProvider((user) =>
+      user.includes("這一步做完了")
+        ? JSON.stringify({ goal: "挖鑽石", goal_status: "done", action: null })
+        : decision("挖鑽石", { name: "goto", args: { block: "diamond_ore" } }),
+    );
+    const h = await Harness.create(llm);
+    await h.start();
+    h.lineLog.take();
+    h.submit("挖鑽石", "Amy");
+    h.queue.next();
+    await settle();
+    await secs(25);
+    await h.taskDone();
+    await secs(25);
+    const lines = h.lineLog.take().filter((l) => (l.hint ?? "").includes("Amy"));
+    expect(lines.map((l) => l.hint)).toEqual([
+      expect.stringContaining("觀眾 Amy 想要你:挖鑽石"),
+      expect.stringContaining("完成了觀眾 Amy 的請求"),
+    ]);
+    for (const l of lines) {
+      expect(l.attention ?? null).toBeNull();
+      expect(Date.parse(l.expires_at) - Date.parse(l.created_at)).toBe(300_000);
+    }
+    await h.stop();
+  });
+
+  it("a goal someone set is reported without a key; one she set herself is narration", async () => {
+    const llm = new FnProvider((user) =>
+      user.includes("這一步做完了")
+        ? JSON.stringify({ goal: "蓋房子", goal_status: "done", action: null })
+        : decision("蓋房子", { name: "obtain", args: { item: "stone_pickaxe" } }),
+    );
+    const finished = async (by: string): Promise<Impulse | undefined> => {
+      const h = await Harness.create(llm);
+      await h.start();
+      await h.sup.services.require(GameControlKey).goal("蓋房子", by);
+      await secs(25);
+      await h.taskDone();
+      await secs(25);
+      const line = h.lineLog.take().find((l) => (l.hint ?? "").includes("剛完成"));
+      await h.stop();
+      return line;
+    };
+    expect((await finished("聊天室"))?.attention ?? null).toBeNull();
+    expect((await finished(SELF_GOAL_BY))?.attention?.key).toBe("game:craft:stone_pickaxe");
+  });
+
+  it("someone talking in game chat without game.chat is an answer, not narration", async () => {
+    const llm = new MockProvider("mock").reply(decision("閒晃", null));
+    const h = await Harness.create(llm);
+    await h.start();
+    h.lineLog.take();
+    await h.gameEvent("chat", "Steve 在遊戲裡說:你好", true, { sender: "Steve" });
+    expect(h.lineLog.take().at(-1)?.attention ?? null).toBeNull();
+    await h.stop();
+  });
+
+  it("she keeps knowing what happened, and the decision model sees what she already said", async () => {
+    const llm = new MockProvider("mock").reply(decision("閒晃", null, "石鎬做好了,木鎬太慢了"));
+    const h = await Harness.create(llm, { decide_secs: 20 });
+    await h.start();
+    await h.gameEvent("craft_finished", "做好了 石鎬×1", false, { item: "stone_pickaxe" });
+    for (let i = 0; i < 3; i++) await secs(20);
+    const section = (await h.prompts.all()[0]?.contribute(promptRequest())) ?? [];
+    expect(section.find((s) => s.key === "game")?.body).toContain("做好了 石鎬×1");
+    const user = llm.requests().at(-1)?.messages.at(-1)?.content ?? "";
+    expect(user).toContain("最近實況提過");
+    expect(user).toContain("石鎬做好了,木鎬太慢了");
+    await h.stop();
+  });
+
+  it("what she said is remembered without the instructions around it", async () => {
+    const llm = new MockProvider("mock").reply(decision("閒晃", null));
+    const h = await Harness.create(llm, { decide_secs: 20 });
+    await h.start();
+    await h.gameEvent("advancement", "達成成就「石器時代」", true, { title: "石器時代" });
+    await secs(20);
+    const user = contentText(llm.requests().at(-1)?.messages.at(-1)?.content ?? "");
+    expect(user).toContain("- 達成成就「石器時代」");
+    expect(user.split("最近實況提過")[1]).not.toContain("馬上用一兩句話反應");
     await h.stop();
   });
 });

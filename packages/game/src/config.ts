@@ -48,8 +48,32 @@ export const GameConfigSchema = z.object({
   max_attempts: z.number().default(3),
   /** Minimum time between regular commentary requests. */
   commentary_min_secs: z.number().default(15),
-  /** Minimum time between urgent ones (death, viewer goals, ...). */
+  /** Minimum time between important ones that are still narration (an advancement, a creeper). */
   urgent_commentary_min_secs: z.number().default(3),
+  /**
+   * Narration about one thing (`game:craft:stone_pickaxe`) does not ask to be said again for this
+   * long after it was said; a later occurrence counts as new. The game state stays in her context
+   * meanwhile, it only does not ask her to speak.
+   */
+  narration_repeat_mins: z.number().positive().default(45),
+  /** The same for `hazard_events`: a second zombie a few minutes later is a new encounter. */
+  hazard_repeat_secs: z.number().positive().default(120),
+  /** Event types (`kind`, or `kind:subject`) that come and go instead of happening once. */
+  hazard_events: z.array(z.string()).default(["damage", "hostile_near", "reflex"]),
+  /**
+   * Event types (`kind`, or `kind:subject`) she always reacts to: no dedupe, no `max_unanswered`.
+   * A session ending (`end_events`) is not here: the ActivityManager's notice tells that one.
+   */
+  urgent_events: z
+    .array(z.string())
+    .default([
+      "death",
+      "low_health",
+      "reflex:lava",
+      "reflex:drowning",
+      "reflex:suffocation",
+      "reflex:flee",
+    ]),
   /** LLM purpose of the decisions. */
   purpose: z.string().default("game"),
   temperature: z.number().default(0.7),

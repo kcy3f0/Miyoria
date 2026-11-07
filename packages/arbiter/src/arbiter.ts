@@ -3,7 +3,9 @@
 //
 // * applies the floors: autonomy pause, LLM budget, consent, the owner's channel level, quiet
 //   hours, and for her own starts (`plan` / `agenda` that make her talk) the daily caps, the
-//   gaps and the unanswered backoff. One rule set (`[modules.arbiter]`);
+//   gaps and the unanswered backoff. Narration (`Impulse.attention`) is not said twice, and
+//   everything that has her talking unasked stops at `max_unanswered` until a person speaks
+//   (`unanswered.ts`). One rule set (`[modules.arbiter]`);
 // * orders, merges and preempts: impulses with the same `coalesce_key` merge (the newest
 //   wins); a place that is busy defers an impulse, retried most urgent first (addressed >
 //   ongoing conversation > her own wishes); once something takes a place, her own wishes
@@ -55,6 +57,7 @@ import {
 import { type ArbiterConfig, isContextDisabled } from "./config.js";
 import { Ledger, type Place, placeOf } from "./ledger.js";
 import { clockText, hasQuietHours, inQuietHours, nextDayStart, quietEndsAt } from "./time.js";
+import { startsTalk } from "./unanswered.js";
 
 const log = getLogger("arbiter");
 
@@ -90,6 +93,11 @@ interface Floor {
   detail: string;
   retryAt: number | null;
   defer: boolean;
+  /**
+   * Decided, but kept out of the ledger: narration asks every few seconds and would push
+   * everything else out of it. `arbiter.decision` still says why she stayed silent.
+   */
+  quiet?: boolean;
 }
 
 interface Queued {
@@ -183,7 +191,10 @@ export class ArbiterCore implements Arbiter {
   // ---- Arbiter --------------------------------------------------------------------------------
 
   async submit(impulse: Impulse, signal?: AbortSignal): Promise<ArbiterDecision> {
-    if (impulse.coalesce_key !== null) {
+    // A repeat is about to be turned down: it must not take the place of something new waiting.
+    const key = impulse.attention?.key ?? null;
+    const repeat = key !== null && this.book.saidUntil(key, this.#now()) !== null;
+    if (impulse.coalesce_key !== null && !repeat) {
       for (const q of [...this.#queue]) {
         if (q.impulse.coalesce_key !== impulse.coalesce_key || q.impulse.id === impulse.id)
           continue;
@@ -238,6 +249,15 @@ export class ArbiterCore implements Arbiter {
         until: null,
       });
     }
+    const waiting = place !== null && this.#waitingForResponse(place);
+    if (waiting) {
+      // Until someone speaks there.
+      blocked.unshift({
+        capability: "chat.start",
+        reason: `你在這裡連續 ${cfg.max_unanswered} 次開口都沒人回應,等有人說話再開口`,
+        until: null,
+      });
+    }
     return {
       initiatives_today: this.book.startsToday(now),
       initiative_cap: cfg.max_per_day > 0 ? cfg.max_per_day : null,
@@ -252,7 +272,14 @@ export class ArbiterCore implements Arbiter {
         : null,
       paused: this.#env.paused?.() ?? false,
       blocked,
+      waiting_for_response: waiting,
     };
+  }
+
+  /** `max_unanswered` turns went out at `place` and no person spoke there since. */
+  #waitingForResponse(place: Place): boolean {
+    const max = this.#cfg.max_unanswered;
+    return max > 0 && this.book.turnsUnanswered(place.key) >= max;
   }
 
   /** When she may start talking on her own (at `place`) again; `null`: now. */
@@ -284,6 +311,9 @@ export class ArbiterCore implements Arbiter {
     const floor = this.#floor(impulse, facts, now);
     if (floor !== null) {
       if (floor.defer && floor.retryAt !== null) return this.#defer(impulse, signal, floor, queued);
+      if (floor.quiet) {
+        return this.#decision(impulse, "rejected", floor.reason, floor.detail, floor.retryAt);
+      }
       return this.#final(impulse, "rejected", floor.reason, floor.detail, floor.retryAt);
     }
     const talk = isSelfTalk(impulse);
@@ -325,6 +355,12 @@ export class ArbiterCore implements Arbiter {
     now: number,
   ): ArbiterDecision {
     const waiting = talk || run.turn !== null;
+    // Before the turn ends: an impulse decided meanwhile sees it. A turn that does not go out
+    // takes it back (`turnOutcome`).
+    const attention = impulse.attention ?? null;
+    if (attention !== null) {
+      this.book.markSaid(attention.key, now + attention.repeat_after_ms, now);
+    }
     const entry = this.book.add(
       {
         kind: run.task !== null ? "task" : run.turn !== null ? "turn" : "impulse",
@@ -530,6 +566,21 @@ export class ArbiterCore implements Arbiter {
     }
     // Only speaking needs her there: `voice.join` is how she gets in.
     if (!facts.present && impulse.kind === "speak") return no("denied", "你不在那個語音頻道");
+    if (impulse.kind === "speak" && startsTalk(impulse)) {
+      const quiet = !isSelfInitiated(source);
+      const attention = impulse.attention ?? null;
+      const until = attention === null ? null : this.book.saidUntil(attention.key, now);
+      if (until !== null) {
+        const detail = "這件事你剛說過了,沒有新進展就不用再提";
+        return { reason: "repeat", detail, retryAt: until, defer: false, quiet };
+      }
+      const place = this.#placeOf(impulse);
+      if (place !== null && this.#waitingForResponse(place)) {
+        const n = this.#cfg.max_unanswered;
+        const detail = `你在這裡連續 ${n} 次開口都沒人回應,等有人說話再開口`;
+        return { reason: "unanswered", detail, retryAt: null, defer: false, quiet };
+      }
+    }
     const self = isSelfInitiated(source);
     if (self) {
       const rules = this.#timeRules(
@@ -800,7 +851,17 @@ export class ArbiterCore implements Arbiter {
     if (tracked) {
       this.#turns.delete(record.turn);
       const o = record.outcome;
+      if (o.type !== "sent" && tracked.impulse.attention) {
+        this.book.forgetSaid(tracked.impulse.attention.key);
+      }
       if (o.type === "sent") {
+        if (startsTalk(tracked.impulse)) {
+          const place =
+            record.context.kind === "dm"
+              ? this.#placeOf(tracked.impulse)
+              : this.#placeOfContext(record.context);
+          if (place !== null) this.book.startedTalking(place, now);
+        }
         // Her own topic waits for a reaction; anything else is done.
         if (!tracked.talk) this.resolve(tracked.entry, "ok", null);
         else this.resolve(tracked.entry, "pending", "說了,等大家的反應");
@@ -823,6 +884,7 @@ export class ArbiterCore implements Arbiter {
 
   /** Someone addressed or answered her in `context` (`account`: who, for DMs). */
   engaged(context: ContextKey, account: AccountRef | null, now = this.#now()): void {
+    this.heard(context, account);
     const place =
       context.kind === "dm" && account !== null
         ? (placeOf(context, account) as Place)
@@ -830,6 +892,22 @@ export class ArbiterCore implements Arbiter {
     if (place === null) return;
     for (const entry of this.book.engaged(place.key, now)) {
       this.resolve(entry, "ok", "有人接話了");
+    }
+  }
+
+  /**
+   * A person spoke in `context` (`humanResponse`; `account`: who, for DMs), or a stay in voice
+   * began or ended there (`null`): she may start talking there again.
+   */
+  heard(context: ContextKey, account: AccountRef | null): void {
+    const place =
+      context.kind === "dm" && account !== null
+        ? (placeOf(context, account) as Place)
+        : this.#placeOfContext(context);
+    if (place !== null) this.book.heard(place.key);
+    // The text chat of a voice channel is the same room (same channel id, kind `channel`).
+    if (context.kind === "channel") {
+      this.book.heard(contextKeyString({ ...context, kind: "voice" }));
     }
   }
 

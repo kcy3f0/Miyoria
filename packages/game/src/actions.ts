@@ -41,6 +41,7 @@ import {
 } from "@miyoria/types";
 import { z } from "zod";
 import { GAME_CHAT_MAX, sanitizeGameChat } from "./chat-text.js";
+import { SELF_GOAL_BY } from "./decision.js";
 import type { Placement } from "./director.js";
 import type { GameControl } from "./module.js";
 import { budgetFor, codeOf, GameTaskError, gameExecutor, offersGoal, runTask } from "./tasks.js";
@@ -86,7 +87,7 @@ type ActArgs = z.output<typeof ActArgs>;
 
 function byOf(principal: Principal, by: string | null | undefined): string {
   if (by) return by;
-  return principal.kind === "self" ? "她自己" : principal.kind === "user" ? "聊天室" : "指令";
+  return principal.kind === "self" ? SELF_GOAL_BY : principal.kind === "user" ? "聊天室" : "指令";
 }
 
 /**

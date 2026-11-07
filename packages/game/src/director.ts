@@ -48,6 +48,7 @@ import {
   type GoalSource,
   goalLocked,
   goalNote,
+  goalRequested,
   judge,
   type MoodNudge,
   type PromptParts,
@@ -64,6 +65,7 @@ import {
   guardNote,
   withheld,
 } from "./guard.js";
+import { type About, eventKey, goalKey, isNoted, matchesEvent, Narration } from "./narration.js";
 import {
   budgetFor,
   codeOf,
@@ -236,6 +238,12 @@ interface Track {
 
 /** Tasks tracked at once (old ones are forgotten; their events are then ignored). */
 const MAX_TRACKED = 32;
+/**
+ * How long a line that must be said waits for a free moment. Longer than the Arbiter's retry, or
+ * it would expire the moment she is talking; a result someone waits for outlasts a song.
+ */
+const URGENT_TTL_MS = 30_000;
+const REQUESTED_TTL_MS = 5 * 60_000;
 
 interface Session {
   generation: number;
@@ -346,6 +354,8 @@ interface DecideInput {
   recent: string[];
   /** The failure guard's prompt line, if it is on. */
   withheld: string | null;
+  /** Her recent commentary. */
+  said: string[];
 }
 
 async function decide(input: DecideInput, signal: AbortSignal): Promise<Done> {
@@ -394,6 +404,7 @@ async function ask(
     recent: input.recent,
     observation,
     withheld: input.withheld,
+    said: input.said,
   };
   const { system, user } = prompts(parts);
   const request: ChatRequest = {
@@ -425,6 +436,7 @@ export class Director {
   readonly #persona: Persona;
   readonly #view: View;
   readonly #actuators: ActuatorRegistry;
+  readonly #narration = new Narration();
   #voices: ContextKey[] = [];
   #session: Session | null = null;
   #generation = 0;
@@ -1082,6 +1094,7 @@ export class Director {
       return;
     }
     this.#remember(text);
+    const about = this.#aboutEvent(kind, dataObj, text, important);
 
     switch (kind) {
       case "death": {
@@ -1098,22 +1111,43 @@ export class Director {
             cur.goal = null;
           }
         }
-        this.#commentEvent(text, true);
+        this.#commentEvent(text, about);
         break;
       }
       case "advancement":
         this.#nudge({ valence: 0.15, arousal: 0.1, energy: 0.0, reason: "game: advancement" });
-        this.#commentEvent(text, true);
+        this.#commentEvent(text, about);
         break;
       case "chat":
         // Player chat is its own conversation when `game.chat` handles this game: she answers
         // there, so the director only notes it (as untrusted data for its next decision).
-        if (important && !this.#chatHandled(dataObj)) this.#commentEvent(text, true);
+        // Otherwise a person is talking to her: an answer, not narration.
+        if (important && !this.#chatHandled(dataObj)) this.#commentEvent(text, null);
         break;
       default:
-        if (important) this.#commentEvent(text, true);
+        if (important) this.#commentEvent(text, about);
     }
     if (this.#cfg.trigger_events.includes(kind)) this.#trigger(text, important);
+  }
+
+  /** What a line about this event is about; `null`: urgent, nothing limits it. */
+  #aboutEvent(
+    kind: string,
+    data: JsonObject | null,
+    text: string,
+    important: boolean,
+  ): About | null {
+    const cfg = this.#cfg;
+    if (matchesEvent(cfg.urgent_events, kind, data)) return null;
+    const key = eventKey(kind, data);
+    if (kind !== "chat" && isNoted(kind, important)) this.#narration.note(key, text);
+    const hazard = matchesEvent(cfg.hazard_events, kind, data);
+    return {
+      key,
+      repeat_after_ms: hazard
+        ? this.#secs(cfg.hazard_repeat_secs)
+        : this.#secs(cfg.narration_repeat_mins * 60),
+    };
   }
 
   /** A player's chat line that `game.chat` turns into a conversation. */
@@ -1160,7 +1194,7 @@ export class Director {
     this.#cancelGoalTask(s);
     s.goal = newGoal(q.text, { type: "queue", item: q.item, requester: q.requester }, this.#now());
     this.#remember(line);
-    this.#comment(`${line}。回應一下,然後開始做。`, true);
+    this.#comment(`${line}。回應一下,然後開始做。`, true, null, REQUESTED_TTL_MS);
     this.#trigger(line, true);
   }
 
@@ -1226,7 +1260,15 @@ export class Director {
       }
     }
     this.#remember(line);
-    if (hint) this.#comment(hint.text, hint.urgent);
+    if (hint) {
+      if (goalRequested(goal.source)) {
+        // Someone asked: this is a result she owes them, not narration.
+        this.#comment(hint.text, hint.urgent, null, REQUESTED_TTL_MS);
+      } else {
+        const about = this.#narrated(goalKey(goal.text, goal.action));
+        this.#narrate(goal.text, hint.text, hint.urgent, about);
+      }
+    }
     const next = this.#session?.backlog.shift();
     if (next) this.#beginQueued(next);
     else this.#trigger(line, false);
@@ -1247,17 +1289,29 @@ export class Director {
 
   // ----- commentary and mood -----
 
+  /** A line of narration; `line`: what it says, without the instructions around it in `hint`. */
+  #narrate(line: string, hint: string, urgent: boolean, about: About): void {
+    if (this.#comment(hint, urgent, about)) this.#narration.said(about.key, line);
+  }
+
+  /** `key` as narration of something that happens once. */
+  #narrated(key: string): About {
+    return { key, repeat_after_ms: this.#secs(this.#cfg.narration_repeat_mins * 60) };
+  }
+
   /**
-   * Requests a commentary line; rate-limited unless urgent (urgent ones have their own, shorter
-   * limit). Returns whether it was sent.
+   * Requests a line. With `about` it is narration: rate-limited (`urgent`: only by the shorter
+   * limit), and the Arbiter stops repeats and talking to nobody. Without it she has to say it
+   * (`mustTtlMs`: how long it may wait): no rate limit, and it never merges with another line.
+   * Returns whether it was sent.
    */
-  #comment(hint: string, urgent: boolean): boolean {
+  #comment(hint: string, urgent: boolean, about: About | null, mustTtlMs = URGENT_TTL_MS): boolean {
     const cfg = this.#cfg;
     const s = this.#session;
     if (!s) return false;
     const gap = this.#secs(urgent ? cfg.urgent_commentary_min_secs : cfg.commentary_min_secs);
     const now = this.#now();
-    if (s.lastComment !== null && now - s.lastComment < gap) {
+    if (about !== null && s.lastComment !== null && now - s.lastComment < gap) {
       log.debug({ hint, urgent }, "commentary rate-limited");
       return false;
     }
@@ -1276,17 +1330,19 @@ export class Director {
     const text = urgent
       ? `(你正在直播玩 ${s.gameName})${hint}`
       : `(你正在直播玩 ${s.gameName})實況:${hint}`;
-    // Commentary is an impulse of source `game` (never her own topic); a newer line replaces
+    // Commentary is an impulse of source `game` (never her own topic); newer narration replaces
     // one still waiting for a free moment.
+    const narrationTtl = urgent ? cfg.urgent_commentary_min_secs : cfg.commentary_min_secs;
     const impulse = newImpulse(
       {
         source: "game",
         context: s.context,
-        ttlMs: this.#secs(urgent ? cfg.urgent_commentary_min_secs : cfg.commentary_min_secs),
+        ttlMs: about === null ? mustTtlMs : this.#secs(narrationTtl),
         why: `${s.gameName} 實況`,
         hint: text,
         reason: INITIATIVE_REASON,
-        coalesce_key: `game:${contextKeyString(s.context)}`,
+        coalesce_key: about === null ? null : `game:${contextKeyString(s.context)}`,
+        attention: about,
       },
       now,
     );
@@ -1294,8 +1350,10 @@ export class Director {
     return true;
   }
 
-  #commentEvent(text: string, urgent: boolean): void {
-    this.#comment(`剛剛${text}!馬上用一兩句話反應。`, urgent);
+  #commentEvent(text: string, about: About | null): void {
+    const hint = `剛剛${text}!馬上用一兩句話反應。`;
+    if (about === null) this.#comment(hint, true, null);
+    else this.#narrate(text, hint, true, about);
   }
 
   #nudge(m: MoodNudge): void {
@@ -1347,6 +1405,7 @@ export class Director {
       backlog: s.backlog.map((q) => `${q.text}(${q.requester})`),
       recent: [...s.recent],
       withheld: guardNote(s.guard, now),
+      said: this.#narration.lines(),
     };
     return (signal) => decide(input, signal);
   }
@@ -1431,7 +1490,10 @@ export class Director {
         this.#nudge(m);
       }
     }
-    if (decision.commentary !== null) this.#comment(decision.commentary, false);
+    if (decision.commentary !== null) {
+      const line = decision.commentary;
+      this.#narrate(line, line, false, this.#narrated(this.#narration.keyOf(line)));
+    }
     const cur = this.#session;
     if (!cur) return null;
     let verdict: Verdict | null = null;

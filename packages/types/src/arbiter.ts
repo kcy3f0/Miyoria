@@ -62,6 +62,18 @@ export function isSelfInitiated(source: ImpulseSource): boolean {
 /** `speak`: open a turn (talk); `act`: run a capability (through the gate / ActivityManager). */
 export type ImpulseKind = "speak" | "act";
 
+/**
+ * What a line nobody asked for is about, so the Arbiter can stop her saying it twice (a stop-gap
+ * for v3 §6 `attention_key` / `revision`). The key names the thing, not the words, so a rewording
+ * has the same key. The source decides what a new revision is: `repeat_after_ms` after it was
+ * said, a new occurrence counts as one.
+ */
+export interface ImpulseAttention {
+  /** Stable content key, e.g. `game:craft:stone_pickaxe`. */
+  key: string;
+  repeat_after_ms: number;
+}
+
 /** Who / where an impulse is aimed at. */
 export interface ImpulseTarget {
   /** Where she would speak or act (`null`: wherever fits, e.g. a DM is resolved from `person`). */
@@ -97,6 +109,11 @@ export interface Impulse {
   /** The Goal it executes, if any. */
   goal: string | null;
   created_at: Timestamp;
+  /**
+   * Set on narration only. A line someone waits for, or that cannot wait (a death, a result),
+   * has none, and nothing limits it as narration.
+   */
+  attention?: ImpulseAttention | null;
 }
 
 /** True once `impulse` is past `expires_at` (`now`: epoch ms). */
@@ -135,8 +152,10 @@ export type ArbiterReason =
   | "ceiling"
   /** Something is already happening there (a turn, her speech, someone talking). */
   | "busy"
-  /** Her recent starts went unanswered (backoff). */
+  /** Her recent starts went unanswered (backoff, or `max_unanswered`: until someone speaks). */
   | "unanswered"
+  /** She already said this and nothing new happened (`Impulse.attention`). */
+  | "repeat"
   /** A more urgent impulse. */
   | "superseded"
   | "expired"
@@ -208,6 +227,8 @@ export interface LedgerLimits {
   paused: boolean;
   /** Capabilities on hold and why (`game.start`: "Minecraft 沒開"), with when it may work. */
   blocked: { capability: string; reason: string; until: Timestamp | null }[];
+  /** `max_unanswered` reached here: she starts nothing until a person speaks. */
+  waiting_for_response?: boolean;
 }
 
 /** What `Arbiter.ledger` returns. */

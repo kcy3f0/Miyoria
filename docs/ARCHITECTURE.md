@@ -233,6 +233,7 @@ interface Stimulus {
 - **預算**:每個頻道每天有主動發話額度,依頻道設定與最近的反應調整(她主動講話都沒人理,就降低頻率)。
 - 主動發話也走 Attention → Generation → Scheduler 同一條路,只是 `priority` 較低,也可以被取代。
 - **Arbiter**(`arbiter` 模組,`ArbiterKey`,docs/design/v2-architecture.md §3.3)是她「現在要不要說話 / 做事」的唯一關卡:她的意圖(`plan`)、唱歌報幕(`song`)、遊戲實況(`game`)、追問與動作結果(`followup`)、notice、打招呼(`world`)都是 Impulse,規則只有 `[modules.arbiter]` 一份(暫停、預算、同意、聊天等級、安靜時段;她自己開話題的每日次數、間隔與沒人接的退避),並寫進她的帳本(prompt 的 `self.ledger`)。只有 `plan` / `agenda` 算她主動開的話題。接受的 Impulse 由 agent 的 `ImpulseHostKey` 開回合;地方忙的時候 Arbiter 稍後再試。沒有 Arbiter 時 agent 照舊處理 `agent.initiative`。「冷場」只有一個訊號:world 的 `channel_quiet`(文字與語音),它喚醒心智迴圈。
+- **不重複、不對空氣講話**(V3 階段 0 的止血,在 V3 主線完成前的 V2 做法):遊戲實況的 Impulse 帶 `attention`(內容鍵和多久後算新的一次,`packages/game/src/narration.ts`)。同一把鍵說出去後,`repeat_after_ms` 內 Arbiter 回 `rejected` / `repeat`;沒有真的說出去(沉默、取消、失敗、等到過期)不算說過。導演的自由實況也歸到它講的那件事上,換句話說還是同一把鍵。遊戲狀態照常留在她的 context,只是不會因此開口。她自己開口(`plan` / `agenda`)、遊戲實況和記憶追問算「她自己開口」,同一個地方連續 `max_unanswered` 次沒有人說話就回 `rejected` / `unanswered`,任何人說話就恢復;定義都在 `packages/arbiter/src/unanswered.ts`。她自己的動作照做,只是開場白先不說。回話、指令、面板、報幕、notice、答應的結果(`action_result`)、打招呼、緊急遊戲事件和有人要求的目標不帶鍵,兩條規則都不管。
 - **她的意圖**(`IntentSinkKey`,agent 提供):`chat.start` / `chat.dm` 過閘門後由 coordinator 開一個她自己發起的回合;其他能力先以 `self` 名義執行,成功後在她所在的地方開口(`voice.join` 等她真的進了語音頻道)。意圖不打斷進行中的回合、等待中的訊息或排隊的語音,過期就丟。
 
 ### 4.4 生成與工具

@@ -194,6 +194,12 @@ dirs = ["extensions"]
 # failure_guard_secs = 45
 # task_budget_secs = 240     # 一個目標(任務)的預算;遊戲沒建議時用這個,不超過 max_goal_secs
 # directed_games = ["minecraft"]   # 導演只玩有目標的遊戲(Threads 已關閉,不再由導演驅動)
+# narration_repeat_mins = 45 # 同一件事(game:craft:stone_pickaxe)說過之後多久內不再要求開口;
+#                            # 她還是知道這件事,只是不會因此開口。過了才算新的一次
+# hazard_repeat_secs = 120   # hazard_events 的同一件事:隔一陣子再遇到就算新的
+# hazard_events = ["damage", "hostile_near", "reflex"]
+# urgent_events = ["death", "low_health", "reflex:lava", "reflex:drowning", "reflex:suffocation", "reflex:flee"]
+#                            # 這些一定會反應:不去重、不算沒人回應(kind 或 kind:主題)
 
 # 唱歌(點歌):歌曲 worker(workers/sing,見 workers/README.md 第 9 節)用她的聲音翻唱。
 # 有人點歌她自己決定要不要唱、什麼時候唱;/queue song request 是強制(好了、她有空就唱)。
@@ -472,6 +478,9 @@ max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不
 # reply_window_text_secs = 600   # 她說完後這段時間內有人叫她 / 回她,才算有人接
 # reply_window_voice_secs = 300
 # stale_topic_mins = 45          # 沒人接的話題列給她看多久(這段時間內不再提)
+# max_unanswered = 3             # 同一個地方她自己開口幾次都沒有人說話,就先安靜,任何人說話(打字或語音,
+#                                # 不必叫她)就恢復。遊戲實況和記憶追問也算;回話、報幕、notice、答應的結果、
+#                                # 緊急事件和有人要求的目標不受影響,她自己的動作也照做。0 = 不限
 # after_speech_text_secs = 5     # 打招呼和她自己開話題,至少等她講完這麼久
 # after_speech_voice_secs = 20
 # game_hold_mins = 60            # 遊戲被關掉後,她這麼久內不能自己重開(有人明確叫她開可以;0 = 不鎖)

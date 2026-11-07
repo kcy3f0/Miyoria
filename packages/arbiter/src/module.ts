@@ -37,6 +37,7 @@ import { ArbiterCore } from "./arbiter.js";
 import { type ArbiterConfig, ArbiterConfigSchema, INITIATIVE_KEYS } from "./config.js";
 import { LedgerSnapshotSchema } from "./ledger.js";
 import { ProducerSnapshotSchema, Producers } from "./producers.js";
+import { humanResponse } from "./unanswered.js";
 
 const log = getLogger("arbiter");
 
@@ -242,6 +243,8 @@ class Runner {
     const now = this.clock.now();
     const social = this.ctx.services.get(SocialSignalsKey) ?? null;
     for (const impulse of this.producers.observe(now, event, social)) this.#submit(impulse);
+    const response = humanResponse(event, (account) => this.producers.isSelf(account));
+    if (response) this.core.heard(response.context, response.account);
     switch (event.type) {
       case "platform_message_created": {
         const m = event.data;
@@ -254,6 +257,11 @@ class Runner {
       }
       case "agent_turn_completed":
         this.core.turnCompleted(event.data.turn, event.data.context, event.data.text);
+        break;
+      case "voice_joined":
+      case "voice_left":
+        // Not a response: a new stay in voice is a new audience, nobody there ignored her yet.
+        this.core.heard(event.data.context, null);
         break;
       case "custom": {
         const outcome = v2Payload(event, TURN_OUTCOME_TOPIC);

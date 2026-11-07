@@ -9,7 +9,13 @@
 //   says whether the context can take the turn right now; every rule is the Arbiter's.
 
 import type { Priority } from "./action.js";
-import type { ArbiterReason, Impulse, ImpulseKind, ImpulseSource } from "./arbiter.js";
+import type {
+  ArbiterReason,
+  Impulse,
+  ImpulseAttention,
+  ImpulseKind,
+  ImpulseSource,
+} from "./arbiter.js";
 import { isSelfInitiated } from "./arbiter.js";
 import type { Handle } from "./handle.js";
 import { newId, type TurnId } from "./ids.js";
@@ -45,6 +51,8 @@ export interface ImpulseInput {
    * Speak impulses: the initiative reason the turn shows (`args.reason`; default: the source).
    */
   reason?: string;
+  /** Narration: what the line is about (`Impulse.attention`). */
+  attention?: ImpulseAttention | null;
 }
 
 /** The default priority of a source. */
@@ -91,6 +99,7 @@ export function newImpulse(input: ImpulseInput, now: number): Impulse {
     coalesce_key: input.coalesce_key ?? null,
     goal: input.goal ?? null,
     created_at: toTimestamp(now),
+    attention: input.attention ?? null,
   };
 }
 

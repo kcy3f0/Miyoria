@@ -508,7 +508,9 @@ export class Agent {
         const mode = this.handle.channelMode(context);
         if (mode === "off" || mode === "mention-only") return `mode ${mode}`;
       }
-      const next = arbiter.ledger(context).limits.next_initiative_at;
+      const limits = arbiter.ledger(context).limits;
+      if (limits.waiting_for_response) return "the arbiter: nobody answered her here yet";
+      const next = limits.next_initiative_at;
       const left = next === null ? 0 : Date.parse(next) - this.ctx.clock.now();
       if (left <= 0) return null;
       return `the arbiter: next in ${Math.max(Math.ceil(left / MINUTE_MS), 1)} min`;
@@ -524,6 +526,12 @@ export class Agent {
     const ago = Math.max(Math.round((gap - left) / MINUTE_MS), 0);
     const next = Math.max(Math.ceil(left / MINUTE_MS), 1);
     return `level ${mode}: she started talking here ${ago} min ago; next in ${next} min`;
+  }
+
+  /** Her lines went unanswered in `context`: she starts nothing there until someone speaks. */
+  waitingForResponse(context: ContextKey): boolean {
+    const arbiter = this.ctx.services.get(ArbiterKey);
+    return arbiter?.ledger(context).limits.waiting_for_response ?? false;
   }
 
   /** She starts a conversation herself in `context` now (for the level's gap). */

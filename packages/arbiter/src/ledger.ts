@@ -79,6 +79,8 @@ interface PlaceState {
   misses: number;
   /** When `misses` last changed (decay counts from here). */
   missesAt: number;
+  /** Turns she started here since a person last spoke here (`max_unanswered`). */
+  unanswered: number;
   touched: number;
 }
 
@@ -133,10 +135,12 @@ export const LedgerSnapshotSchema = z.object({
         context: ContextKeySchema.nullable(),
         misses: z.number(),
         misses_at: z.number(),
+        unanswered: z.number().default(0),
       }),
     )
     .default([]),
   streak: z.number().default(0),
+  said: z.array(z.object({ key: z.string(), until: z.number() })).default([]),
   topics: z
     .array(
       z.object({
@@ -161,6 +165,8 @@ export class Ledger {
   #topics: Topic[] = [];
   /** Her own starts in a row, anywhere, that nobody picked up. */
   #streak = 0;
+  /** What she said lately (`Impulse.attention`): key → when it may ask to be said again. */
+  readonly #said = new Map<string, number>();
   #dirty = false;
 
   constructor(config: ArbiterConfig) {
@@ -237,7 +243,14 @@ export class Ledger {
   #place(place: Place, now: number): PlaceState {
     let p = this.#places.get(place.key);
     if (!p) {
-      p = { kind: place.kind, context: place.context, misses: 0, missesAt: now, touched: now };
+      p = {
+        kind: place.kind,
+        context: place.context,
+        misses: 0,
+        missesAt: now,
+        unanswered: 0,
+        touched: now,
+      };
       this.#places.set(place.key, p);
       if (this.#places.size > MAX_PLACES) {
         const oldest = [...this.#places.entries()].sort((a, b) => a[1].touched - b[1].touched);
@@ -316,6 +329,46 @@ export class Ledger {
     return (
       this.baseGapMs(place.kind) * 2 ** Math.min(this.misses(place.key, now), this.#maxMisses())
     );
+  }
+
+  // ---- talking to nobody ----------------------------------------------------------------------
+
+  /** Turns she started at `place` since a person last spoke there. */
+  turnsUnanswered(place: string): number {
+    return this.#places.get(place)?.unanswered ?? 0;
+  }
+
+  /** A turn she started went out at `place`. */
+  startedTalking(place: Place, now: number): void {
+    this.#place(place, now).unanswered += 1;
+    this.#dirty = true;
+  }
+
+  /** A person spoke at `place` (see `humanResponse`), or a new stay in voice began. */
+  heard(place: string): void {
+    const p = this.#places.get(place);
+    if (!p || p.unanswered === 0) return;
+    p.unanswered = 0;
+    this.#dirty = true;
+  }
+
+  // ---- what she already said ------------------------------------------------------------------
+
+  /** Until when `key` may not ask to be said again (`null`: it may). */
+  saidUntil(key: string, now: number): number | null {
+    const until = this.#said.get(key);
+    return until !== undefined && until > now ? until : null;
+  }
+
+  markSaid(key: string, until: number, now: number): void {
+    for (const [k, at] of this.#said) if (at <= now) this.#said.delete(k);
+    this.#said.set(key, until);
+    this.#dirty = true;
+  }
+
+  /** The line did not go out: it was never said. */
+  forgetSaid(key: string): void {
+    if (this.#said.delete(key)) this.#dirty = true;
   }
 
   // ---- raised topics --------------------------------------------------------------------------
@@ -469,15 +522,19 @@ export class Ledger {
     return {
       starts: this.#starts.map((s) => ({ ...s })),
       places: [...this.#places.entries()]
-        .filter(([, p]) => p.misses > 0)
+        .filter(([, p]) => p.misses > 0 || p.unanswered > 0)
         .map(([key, p]) => ({
           key,
           kind: p.kind,
           context: p.context,
           misses: p.misses,
           misses_at: p.missesAt,
+          unanswered: p.unanswered,
         })),
       streak: this.#streak,
+      said: [...this.#said.entries()]
+        .filter(([, until]) => until > now)
+        .map(([key, until]) => ({ key, until })),
       topics: this.#topics
         .filter((t) => t.spokeAt !== null && t.status !== "waiting")
         .map((t) => ({
@@ -499,10 +556,12 @@ export class Ledger {
         context: p.context,
         misses: p.misses,
         missesAt: p.misses_at,
+        unanswered: p.unanswered,
         touched: now,
       });
     }
     this.#streak = snapshot.streak;
+    for (const s of snapshot.said) if (s.until > now) this.#said.set(s.key, s.until);
     this.#topics = snapshot.topics.map((t) => ({
       entry: "",
       place: t.place,

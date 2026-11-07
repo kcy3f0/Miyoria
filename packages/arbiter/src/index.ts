@@ -30,3 +30,4 @@ export {
   nextDayStart,
   quietEndsAt,
 } from "./time.js";
+export { type HumanResponse, humanResponse, startsTalk } from "./unanswered.js";
