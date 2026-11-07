@@ -128,6 +128,29 @@ describe("broadcast", () => {
     expect((await w.service.request(w.transition(LIVE))).status).toBe("already");
   });
 
+  it("OBS starts while Go Live is starting: the node goes live on OBS's video", async () => {
+    const w = new FakeWorld();
+    w.liveNeedsObs = true;
+    const r = await w.service.request(w.transition(LIVE));
+    await settle(w, r.status === "started" ? r.task : null);
+    expect(w.published(ACTIVITY_FAILED_TOPIC)).toHaveLength(0);
+    expect(w.service.snapshot().broadcast).toMatchObject({ type: "live", golive: true, obs: true });
+    expect(w.calls.map((c) => c.capability)).toEqual(["stream.start", "stage.stream"]);
+  });
+
+  it("a Go Live that never comes up stops OBS and Go Live again", async () => {
+    const w = new FakeWorld({ config: { golive_timeout_ms: 60 } });
+    w.goliveHangs = true;
+    const r = await w.service.request(w.transition(LIVE));
+    await settle(w, r.status === "started" ? r.task : null);
+    expect(w.published(ACTIVITY_FAILED_TOPIC)[0]?.detail).toContain("還沒開始");
+    expect(
+      w.calls.map((c) => `${c.capability}${c.args.action ? `:${String(c.args.action)}` : ""}`),
+    ).toEqual(["stream.start", "stage.stream:start", "stage.stream:stop", "stream.stop"]);
+    await until(() => w.golive.size === 0);
+    expect(w.service.snapshot().broadcast.type).toBe("off");
+  });
+
   it("a failed Go Live reaches the requester as a notice", async () => {
     const w = new FakeWorld();
     w.goliveFails = "ffmpeg exited";

@@ -57,6 +57,10 @@ export class FakeWorld implements ActivityPort {
   goliveFails: string | null = null;
   /** OBS does not start streaming. */
   obsStuck = false;
+  /** Go Live waits for OBS's video before it is `live`, like the node's ffmpeg listener. */
+  liveNeedsObs = false;
+  /** Go Live stays `starting`, whatever OBS does. */
+  goliveHangs = false;
   /** The director publishes `game.director.session` when a game starts. */
   sessionEvent = true;
   /** Capabilities that are not registered. */
@@ -175,6 +179,7 @@ export class FakeWorld implements ActivityPort {
         );
         this.#later(() => {
           if (this.golive.get(guild) !== "starting") return;
+          if (this.liveNeedsObs || this.goliveHangs) return;
           const failed = this.goliveFails;
           if (failed !== null) {
             this.golive.delete(guild);
@@ -208,6 +213,15 @@ export class FakeWorld implements ActivityPort {
         if (args.action === "start" && !this.obsStuck) this.obsStreaming = true;
         if (args.action === "stop") this.obsStreaming = false;
         this.#stageStatus();
+        if (this.liveNeedsObs && this.obsStreaming) {
+          for (const [g, state] of this.golive) {
+            if (state !== "starting") continue;
+            this.golive.set(g, "live");
+            this.emit(
+              customEvent("voice.golive", { guild: g, state: "live", error: null, reason: null }),
+            );
+          }
+        }
         return {
           text: `OBS stream ${String(args.action)}`,
           data: { streaming: this.obsStreaming },

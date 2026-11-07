@@ -16,7 +16,7 @@
 //   through the gate.
 
 import type { ActionResult, ActivityRouter, RoutedCall } from "@miyoria/actions";
-import { errorMessage, getLogger, type ServiceLookup, sleep } from "@miyoria/kernel";
+import { errorMessage, getLogger, type ServiceLookup } from "@miyoria/kernel";
 import {
   ACTIVITY_CHANGED_TOPIC,
   ACTIVITY_DONE_TOPIC,
@@ -880,20 +880,18 @@ export class ActivityService implements ActivityManager, ActivityRouter {
       ...(request.source !== null ? { source: request.source } : {}),
     };
     await this.#step(entry, "stream.start", args, true, signal);
+    const ended = (): "failed" | "stopped" | null => {
+      const last = this.facts.goliveLast.get(guild);
+      if (last === undefined || last === before) return null;
+      return last.state === "failed" || last.state === "stopped" ? last.state : null;
+    };
+    // The node goes live on the source's first frames, so OBS starts while Go Live is `starting`:
+    // waiting for `live` first would wait for itself.
+    const note = await this.#startObs(entry, guild, ended, signal);
     let outcome: "live" | "failed" | "stopped" | null = null;
     const up = await this.#until(
       () => {
-        if (this.facts.golive.get(guild)?.state === "live") outcome = "live";
-        else {
-          const last = this.facts.goliveLast.get(guild);
-          if (
-            last !== undefined &&
-            last !== before &&
-            (last.state === "failed" || last.state === "stopped")
-          ) {
-            outcome = last.state;
-          }
-        }
+        outcome = this.facts.golive.get(guild)?.state === "live" ? "live" : ended();
         return outcome !== null;
       },
       this.#config.golive_timeout_ms,
@@ -902,7 +900,7 @@ export class ActivityService implements ActivityManager, ActivityRouter {
     if (this.#presencePhase?.task === entry.record.id) this.#presencePhase = null;
     if (!up || outcome !== "live") {
       const last = this.facts.goliveLast.get(guild);
-      if (!up) await this.#rollbackGolive(entry, guild);
+      await this.#rollbackGolive(entry, guild);
       throw up
         ? new StepError(
             "internal",
@@ -915,6 +913,16 @@ export class ActivityService implements ActivityManager, ActivityRouter {
     }
     this.#goliveSeen = true;
     this.#changed();
+    return note;
+  }
+
+  /** OBS's half of a broadcast; returns a note for the task, stops short when Go Live `ended`. */
+  async #startObs(
+    entry: Entry,
+    guild: string,
+    ended: () => string | null,
+    signal: AbortSignal,
+  ): Promise<string> {
     if (!this.#config.obs || !this.#port.has("stage.stream")) return "";
     if (!this.facts.stage.connected) return "沒有連上直播機,只有 Go Live";
     if (!this.facts.stage.obs) {
@@ -922,9 +930,10 @@ export class ActivityService implements ActivityManager, ActivityRouter {
       throw new StepError("precondition", "OBS 沒開");
     }
     if (this.facts.stage.streaming) return "";
-    await sleep(this.#config.obs_start_delay_ms, signal);
+    const failed = () => ended() !== null;
+    await this.#until(failed, this.#config.obs_start_delay_ms, signal);
     let lastError: unknown = null;
-    for (let attempt = 1; attempt <= this.#config.obs_attempts; attempt++) {
+    for (let attempt = 1; attempt <= this.#config.obs_attempts && !failed(); attempt++) {
       try {
         const result = await this.#step(entry, "stage.stream", { action: "start" }, false, signal);
         const data = result.data;
@@ -949,9 +958,10 @@ export class ActivityService implements ActivityManager, ActivityRouter {
         "OBS did not start streaming for Go Live",
       );
       if (attempt < this.#config.obs_attempts) {
-        await sleep(Math.max(this.#config.obs_start_delay_ms, 1_000), signal);
+        await this.#until(failed, Math.max(this.#config.obs_start_delay_ms, 1_000), signal);
       }
     }
+    if (failed()) return "";
     await this.#rollbackGolive(entry, guild);
     throw new StepError(
       lastError === null ? "precondition" : failureCode(lastError),
@@ -960,11 +970,20 @@ export class ActivityService implements ActivityManager, ActivityRouter {
     );
   }
 
-  /** Stops a half-started Go Live again (best effort). */
+  /** Stops a half-started broadcast again, OBS first (best effort). */
   async #rollbackGolive(entry: Entry, guild: string): Promise<void> {
+    const signal = new AbortController().signal;
+    if (this.facts.stage.streaming && this.#port.has("stage.stream")) {
+      try {
+        await this.#step(entry, "stage.stream", { action: "stop" }, false, signal);
+        this.facts.stage = { ...this.facts.stage, streaming: false };
+      } catch (error) {
+        log.warn({ err: errorMessage(error) }, "cannot stop OBS after the failed Go Live");
+      }
+    }
     if (!this.facts.golive.has(guild)) return;
     try {
-      await this.#step(entry, "stream.stop", { guild }, false, new AbortController().signal);
+      await this.#step(entry, "stream.stop", { guild }, false, signal);
     } catch (error) {
       log.warn({ guild, err: errorMessage(error) }, "cannot stop the half-started Go Live");
     }
