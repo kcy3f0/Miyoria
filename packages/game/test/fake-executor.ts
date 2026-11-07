@@ -18,6 +18,7 @@ import {
   type TaskGoalSpec,
   type TaskId,
   type TaskSpec,
+  type TaskSteer,
   taskTopic,
   toTimestamp,
 } from "@miyoria/types";
@@ -53,6 +54,9 @@ export class FakeExecutor implements RegisteredTaskExecutor {
   readonly starts: TaskSpec[] = [];
   readonly cancels: TaskId[] = [];
   readonly running = new Set<TaskId>();
+  /** Steers accepted (the executor has none unless a test sets `steer`). */
+  readonly steers: TaskSteer[] = [];
+  steer?: (steer: TaskSteer) => Promise<void>;
   /** A start throws this (refused), else it is accepted. */
   refuse: (spec: TaskSpec) => Error | null = () => null;
   /** How a task ends right after it started; `null` keeps it running. */

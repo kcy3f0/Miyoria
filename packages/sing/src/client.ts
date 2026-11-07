@@ -45,11 +45,11 @@ export const WorkerJobSchema = z.object({
   song: SongMetaSchema.nullable().catch(null),
   /**
    * The job has the GPU to itself (the TTS / ASR workers offloaded): `waiting` for our go,
-   * `offloading`, `active`, `reloading`, `done`; `null` when it does not need it (older workers:
-   * always `null`).
+   * `offloading`, `active`, `reloading`, `done`; `shared`: it runs next to them, speech goes on;
+   * `null` when it does not need it (older workers: always `null`).
    */
   exclusive: z
-    .enum(["waiting", "offloading", "active", "reloading", "done"])
+    .enum(["waiting", "offloading", "active", "reloading", "done", "shared"])
     .nullable()
     .catch(null),
 });

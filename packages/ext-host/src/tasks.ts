@@ -11,6 +11,12 @@
 //   says so: `budget_s` plus `task_grace_ms` without one → `failed` / `timeout` (and a
 //   `task.cancel`); the process ends → `failed` / `crashed` (it died) or `disconnected` (the
 //   host stopped it). Events of tasks that already ended are dropped (stale work is harmless).
+// - `steer` exists only when the extension declared it (`ExecutorDecl.steer`), so an extension
+//   without it looks exactly like an executor with no `steer` and the core answers
+//   `unsupported` (cancel, then start). It is an RPC call (`task.steer`) that returns once the
+//   extension accepted the patch; the outcome is a `steered` event. A `steered` answering a steer
+//   the proxy sent is always passed on, even when its task has already ended (that is `too_late`)
+//   or was never known (`rejected`): the one case where an event of an ended task is not stale.
 // - Every event is published on the bus as `<owner>.task.<type>` (payload: the `TaskEvent`).
 
 import { errorMessage, getLogger } from "@miyoria/kernel";
@@ -30,6 +36,7 @@ import {
   type TaskFailureCode,
   type TaskId,
   type TaskSpec,
+  type TaskSteer,
   toTimestamp,
 } from "@miyoria/types";
 import { CLOSED, type Peer, RpcError, TIMEOUT } from "./rpc.js";
@@ -68,6 +75,9 @@ export function callFailureCode(error: unknown): TaskFailureCode {
 
 /** Ended task ids remembered (late events and duplicate starts are dropped). */
 const MAX_ENDED = 512;
+
+/** Steers sent and not answered yet remembered. */
+const MAX_STEERS = 256;
 
 interface Tracked {
   /** Watchdog of a task started through the proxy (none for ones the extension started). */
@@ -132,6 +142,8 @@ export interface ProxyExecutorOptions {
   /** Publishes one event on the bus (`<owner>.task.<type>`). */
   publish: (event: TaskEvent) => void;
   now?: () => number;
+  /** The extension implements `task.steer` (`ExecutorDecl.steer`); off for older extensions. */
+  steer?: boolean;
 }
 
 /** `TaskExecutor` of one extension process. */
@@ -143,13 +155,18 @@ export class ProxyExecutor implements RegisteredTaskExecutor {
   readonly #running = new Map<TaskId, Tracked>();
   readonly #ended = new Set<TaskId>();
   readonly #streams = new Streams();
+  /** Steers sent whose `steered` has not come yet: steer id → task. */
+  readonly #steers = new Map<string, TaskId>();
   #closed = false;
+  /** Present only when the extension can steer (see the file header). */
+  readonly steer?: (steer: TaskSteer) => Promise<void>;
 
   constructor(peer: Peer, info: TaskExecutorInfo, opts: ProxyExecutorOptions) {
     this.#peer = peer;
     this.info = info;
     this.#opts = opts;
     this.#now = opts.now ?? Date.now;
+    if (opts.steer === true) this.steer = (steer) => this.#steer(steer);
   }
 
   /** Tasks it believes are running (tests, status). */
@@ -229,6 +246,28 @@ export class ProxyExecutor implements RegisteredTaskExecutor {
     return this.#streams.stream();
   }
 
+  async #steer(steer: TaskSteer): Promise<void> {
+    if (this.#closed) throw new TaskCallError("disconnected", "the extension is not running");
+    // Registered first: the extension may answer with `steered` before the call returns.
+    this.#steers.set(steer.id, steer.task);
+    if (this.#steers.size > MAX_STEERS) {
+      const oldest = this.#steers.keys().next().value;
+      if (oldest !== undefined) this.#steers.delete(oldest);
+    }
+    try {
+      await this.#peer.request(
+        "task.steer",
+        { steer: steer as unknown as JsonValue },
+        this.#opts.callTimeoutMs,
+      );
+    } catch (error) {
+      this.#steers.delete(steer.id);
+      throw new TaskCallError(callFailureCode(error), `steer refused: ${errorMessage(error)}`, {
+        cause: error,
+      });
+    }
+  }
+
   /** A `task.event` notification from the extension. */
   onEvent(raw: JsonValue): void {
     if (this.#closed) return;
@@ -239,11 +278,16 @@ export class ProxyExecutor implements RegisteredTaskExecutor {
       log.warn({ owner: this.info.owner }, "malformed task event dropped");
       return;
     }
+    if (event.type === "steered" && this.#steers.delete(event.steer)) {
+      this.#emit(event); // the answer to a steer we sent, whatever became of its task
+      return;
+    }
     if (this.#ended.has(event.task)) return; // a stale task's late word
     if (!this.#running.has(event.task)) {
       if (event.type !== "started") return; // never started (or started elsewhere and lost)
       this.#running.set(event.task, { timer: null }); // the extension's own task
     }
+    if (event.type === "steered") return; // nobody asked: not ours to report
     if (isTerminalTaskEvent(event)) this.#finish(event.task);
     this.#emit(event);
   }

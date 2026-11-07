@@ -126,6 +126,9 @@ export type Event =
         state: PlaybackState;
         text: string;
         emotion?: string | null;
+        heard_ms?: number | null;
+        total_ms?: number | null;
+        blocked?: string | null;
       };
     }
   | {
@@ -297,6 +300,8 @@ export interface ExecutorDecl {
   name: string;
   goals: { name: string; description: string; parameters: JsonSchema | null; budget_s: number | null }[];
   guide: string | null;
+  /** The executor implements `steer` (the host answers a steer without it as unsupported). */
+  steer?: boolean;
 }
 
 /** `initialize` result (extension → host). */

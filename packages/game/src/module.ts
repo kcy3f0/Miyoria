@@ -6,6 +6,7 @@ import {
   type AccountRef,
   ActivityManagerKey,
   type ContextKey,
+  GameResumeKey,
   isLive,
   type PromptContributor,
   type PromptContributors,
@@ -218,6 +219,7 @@ export class GameModule implements Module {
     prompts?.register(new GamePrompt(view, cfg.prompt_summary_chars));
     ctx.provide(GameHandleKey, new GameHandle(view));
     ctx.provide(GameControlKey, control);
+    ctx.provide(GameResumeKey, director);
 
     const events = ctx.subscribe([
       "game.*",

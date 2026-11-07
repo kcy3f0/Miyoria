@@ -5,9 +5,12 @@
 //   it is ready and she is free).
 // * `sing.play` (tool `sing_start`): sing a ready song now, after what she is saying.
 // * `sing.stop` (tool `sing_stop`): stop the song (skip), or with `all` also drop the rest.
+// * `sing.steer` (no tool): change a song that has not started (its place in the list, its key).
+//   Only the ActivityManager's steer calls it, for the main line (docs/design/v3-architecture.md
+//   §10.6); it answers with the outcome as its data.
 
 import { type Capability, defineCapability } from "@miyoria/actions";
-import { type Principal, safeName } from "@miyoria/types";
+import { type JsonObject, type Principal, safeName } from "@miyoria/types";
 import { z } from "zod";
 import type { SingPermissions } from "./config.js";
 import { songLabel } from "./setlist.js";
@@ -23,9 +26,19 @@ const RequestArgs = z.object({
 });
 const PlayArgs = z.object({ song: z.number().int().positive().nullish() });
 const StopArgs = z.object({ all: z.boolean().nullish() });
+const SteerArgs = z.object({
+  steer: z.object({
+    id: z.string().min(1).max(64),
+    task: z.string().min(1).max(64),
+    patch: z.record(z.string(), z.unknown()),
+    why: z.string().max(400),
+    cause: z.string().max(64),
+  }),
+});
 type RequestArgs = z.output<typeof RequestArgs>;
 type PlayArgs = z.output<typeof PlayArgs>;
 type StopArgs = z.output<typeof StopArgs>;
+type SteerArgs = z.output<typeof SteerArgs>;
 
 /** Commands and the panel force a song: it is sung as soon as it is ready. */
 function forced(p: Principal): boolean {
@@ -133,5 +146,24 @@ export function singCapabilities(singer: Singer, perms: SingPermissions): Capabi
     },
   });
 
-  return [request, play, stop] as Capability[];
+  const steer = defineCapability<SteerArgs>({
+    name: "sing.steer",
+    summary: "改一首還沒開唱的歌(順序、key)",
+    risk: "low",
+    args: SteerArgs,
+    permission: null,
+    async execute(args) {
+      const s = args.steer;
+      const answer = await singer.steer({
+        id: s.id,
+        task: s.task,
+        patch: s.patch as JsonObject,
+        why: s.why,
+        cause: s.cause,
+      });
+      return { text: answer.detail, data: { outcome: answer.outcome, detail: answer.detail } };
+    },
+  });
+
+  return [request, play, stop, steer] as Capability[];
 }

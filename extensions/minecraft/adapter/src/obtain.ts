@@ -3,6 +3,11 @@
 // step, wait for the event that ends it, plan again. A failed step is tried once more after
 // re-planning; the second failure ends the plan with the reason. A reflex that interrupts a step
 // (lava, a fight...) is waited out and the step planned again, without counting as a failure.
+//
+// Steer (v3 §10.6): the top of each round, before it looks at the inventory and plans, is the
+// safe point between two steps. A queued change of target (`item`, `count`) is read there and
+// nowhere else, never in the middle of a mining or crafting job, and the next plan starts from
+// whatever is already in her inventory, which is the progress that is kept.
 
 import type { GameEvent, TaskFailureCode } from "@miyoria/sdk";
 import { errorText, failureCode } from "./actions.js";
@@ -17,6 +22,7 @@ import {
   describeStep,
   itemName,
   members,
+  knows,
   normalizeItem,
   plan,
   planksOf,
@@ -28,6 +34,42 @@ export interface RunnerHost {
   request(type: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
   observe(): Promise<Snapshot>;
   emit(event: GameEvent): void;
+  /** A queued steer was applied at a step boundary, or the plan ended before it could be. */
+  steered?(steer: string, outcome: "applied" | "too_late", detail: string): void;
+}
+
+/** What a steer of an `obtain` plan may change. */
+export interface PlanPatch {
+  item?: string;
+  count?: number;
+}
+
+/**
+ * The patch of a steer, checked: only `item` (something the planner knows how to get) and
+ * `count` (1 to 64) can change in a running plan. The string is the reason it was refused.
+ */
+export function parsePlanPatch(patch: Record<string, unknown>): PlanPatch | string {
+  const out: PlanPatch = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === "item") {
+      const item = normalizeItem(typeof value === "string" ? value : "");
+      if (!/^#?[a-z0-9_]+$/.test(item)) return "item 要是物品 id";
+      if (!knows(item)) return `不知道怎麼取得${itemName(item)}(只會砍樹、挖礦、合成和用熔爐燒的東西)`;
+      out.item = item;
+    } else if (key === "count") {
+      if (typeof value !== "number" || !Number.isFinite(value)) return "count 要是數字";
+      out.count = Math.min(64, Math.max(1, Math.round(value)));
+    } else {
+      return `取得物品只能改 item 和 count,不能改 ${key}`;
+    }
+  }
+  return out.item === undefined && out.count === undefined ? "調整是空的" : out;
+}
+
+/** A change of target waiting for the next step boundary. */
+interface QueuedSteer {
+  id: string;
+  patch: PlanPatch;
 }
 
 export interface RunnerOptions {
@@ -92,19 +134,25 @@ function mostOf(inv: Inventory, group: string): string | undefined {
 }
 
 export class ObtainRunner {
-  readonly item: string;
-  readonly count: number;
+  #item: string;
+  #count: number;
   readonly #host: RunnerHost;
   readonly #o: Required<RunnerOptions>;
   #cancelled = false;
+  /** Changes of target waiting for the next step boundary, oldest first. */
+  #steers: QueuedSteer[] = [];
+  /** `run` has ended: a steer now comes too late. */
+  #over = false;
+  /** Failed steps by name (a step is tried once more after re-planning). */
+  readonly #failures = new Map<string, number>();
   #waiters = new Set<Waiter>();
   #plan: Step[] = [];
   #done = 0;
 
   constructor(host: RunnerHost, target: string, count: number, opts: RunnerOptions = {}) {
     this.#host = host;
-    this.item = normalizeItem(target);
-    this.count = count;
+    this.#item = normalizeItem(target);
+    this.#count = count;
     this.#o = {
       mineTimeoutMs: opts.mineTimeoutMs ?? 240_000,
       jobTimeoutMs: opts.jobTimeoutMs ?? 45_000,
@@ -114,6 +162,42 @@ export class ObtainRunner {
       reflexWaitMs: opts.reflexWaitMs ?? 60_000,
       maxSteps: opts.maxSteps ?? 40,
     };
+  }
+
+  get item(): string {
+    return this.#item;
+  }
+
+  get count(): number {
+    return this.#count;
+  }
+
+  /**
+   * Queues a change of target (`patch` from `parsePlanPatch`) for the next step boundary.
+   * `too_late`: the plan already ended. Nothing runs here: the plan reads it between steps.
+   */
+  steer(id: string, patch: PlanPatch): "queued" | "too_late" {
+    if (this.#over || this.#cancelled) return "too_late";
+    this.#steers.push({ id, patch });
+    return "queued";
+  }
+
+  /** Reads the queued changes: the one place a running plan's target changes. */
+  #applySteers(): void {
+    const queued = this.#steers.splice(0);
+    for (const { id, patch } of queued) {
+      if (patch.item !== undefined) this.#item = patch.item;
+      if (patch.count !== undefined) this.#count = patch.count;
+      // The new target may need steps the old one did not, and a failed step was another plan's.
+      this.#failures.clear();
+      const want = this.#want();
+      this.#event("plan_steered", `改成取得${want}`);
+      this.#host.steered?.(id, "applied", `目標改成${want},已有的東西照算`);
+    }
+  }
+
+  #want(): string {
+    return `${itemName(this.#item)}${this.#count > 1 ? `×${this.#count}` : ""}`;
   }
 
   /** Progress for `observe`. */
@@ -174,15 +258,29 @@ export class ObtainRunner {
   }
 
   #event(type: string, text: string, data: Record<string, unknown> = {}, important = false): void {
-    this.#host.emit({ type, data: { target: this.item, count: this.count, ...data, text }, important });
+    this.#host.emit({ type, data: { target: this.#item, count: this.#count, ...data, text }, important });
   }
 
   async run(): Promise<RunnerResult> {
-    const want = `${itemName(this.item)}${this.count > 1 ? `×${this.count}` : ""}`;
-    const failures = new Map<string, number>();
+    try {
+      return await this.#run();
+    } finally {
+      this.#over = true;
+      // A change that never reached a step boundary is too late: the plan is over.
+      for (const { id } of this.#steers.splice(0)) {
+        this.#host.steered?.(id, "too_late", "取得結束了,調整沒有機會生效");
+      }
+    }
+  }
+
+  async #run(): Promise<RunnerResult> {
+    const failures = this.#failures;
     try {
       for (let i = 0; i < this.#o.maxSteps; i++) {
         if (this.#cancelled) return { ok: false, message: "被叫停了", cancelled: true };
+        // The safe point: between two steps, nothing is running.
+        this.#applySteers();
+        const want = this.#want();
         const snap = await this.#host.observe();
         const inv = snap.inventory ?? {};
         if (countOf(inv, this.item) >= this.count) {
@@ -210,7 +308,7 @@ export class ObtainRunner {
           if (n >= 2) return { ok: false, message: `取得${want}失敗,卡在「${key}」:${outcome.fail}`, code: outcome.code };
         }
       }
-      return { ok: false, message: `取得${want}的步驟太多了,停下來`, code: "internal" };
+      return { ok: false, message: `取得${this.#want()}的步驟太多了,停下來`, code: "internal" };
     } catch (error) {
       if (error instanceof PlanError) return { ok: false, message: error.message, code: "precondition" };
       if (error instanceof BridgeError) {

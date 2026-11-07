@@ -92,6 +92,8 @@ export const ExecutorDeclSchema = z.object({
     .max(64)
     .default([]),
   guide: z.string().max(8000).nullable().default(null),
+  /** The executor implements `task.steer`. Absent (an older extension) means it does not. */
+  steer: z.boolean().default(false),
 });
 
 export type ExecutorDecl = z.output<typeof ExecutorDeclSchema>;

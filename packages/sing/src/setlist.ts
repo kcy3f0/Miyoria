@@ -216,6 +216,30 @@ export class SetList {
     return entry;
   }
 
+  /**
+   * Moves `e` so it stands `position`th (1 is next, clamped) among the songs still to sing
+   * (preparing or ready, the playing one not counted); returns where it ended up.
+   */
+  move(e: SongEntry, position: number): number {
+    const others = this.#entries.filter(
+      (x) => x !== e && (x.state === "preparing" || x.state === "ready"),
+    );
+    const at = Math.min(Math.max(Math.trunc(position), 1), others.length + 1);
+    const from = this.#entries.indexOf(e);
+    if (from < 0) return at;
+    this.#entries.splice(from, 1);
+    const after = others[at - 1];
+    // Before the song it now stands in front of, else behind the last one waiting.
+    const to =
+      after !== undefined
+        ? this.#entries.indexOf(after)
+        : others.length > 0
+          ? this.#entries.indexOf(others[others.length - 1] as SongEntry) + 1
+          : this.#entries.length;
+    this.#entries.splice(to, 0, e);
+    return at;
+  }
+
   /** Moves `e` to a final state and trims the history. */
   finish(e: SongEntry, state: "done" | "failed" | "cancelled", error: string | null = null): void {
     e.state = state;

@@ -9,7 +9,16 @@
 // A line without a key is one the Arbiter must not limit as narration: urgent events and results
 // someone asked for. Those never come through here.
 
-import type { Impulse, JsonObject } from "@miyoria/types";
+import {
+  gameEventKey,
+  gameEventSubject,
+  gameGoalKey,
+  gameRemarkKey,
+  type Impulse,
+  type JsonObject,
+  NOTED_GAME_EVENTS,
+  similarLines,
+} from "@miyoria/types";
 import type { ActionCall } from "./decision.js";
 
 /** What a line of narration is about (`Impulse.attention`). */
@@ -19,73 +28,16 @@ export type About = NonNullable<Impulse["attention"]>;
 const MAX_TOPICS = 64;
 /** Her recent lines shown to the decision model. */
 const MAX_LINES = 6;
-/** Letters of a free line in its own key. */
-const KEY_LETTERS = 24;
-/** Events that are worth a line although nothing marks them important. */
-const NOTED = new Set(["craft_finished", "smelt_finished", "night_started"]);
-/** Goals that end in having an item: the same thing as the event of making it. */
-const ITEM_ACTIONS = new Set(["craft", "obtain", "get"]);
 
-/** Letters and digits only, lower case (CJK kept). */
-function letters(text: string): string {
-  return [...text.toLowerCase()].filter((c) => /[\p{L}\p{N}]/u.test(c)).join("");
-}
+/** Whether two short lines are about the same thing (`similarLines`). */
+export const similar = similarLines;
 
-function bigrams(text: string): Set<string> {
-  const chars = [...letters(text)];
-  const out = new Set<string>();
-  for (let i = 0; i + 1 < chars.length; i++) out.add(`${chars[i]}${chars[i + 1]}`);
-  return out;
-}
+/** The key of a game event (`gameEventKey`, shared with the V3 fact layer). */
+export const eventKey = gameEventKey;
 
-/**
- * Whether two short lines are about the same thing: at least 3 shared character bigrams covering
- * at least 40% of the shorter one (the rule of `mind/selfstart.ts`, which game cannot import).
- */
-export function similar(a: string, b: string): boolean {
-  const x = bigrams(a);
-  const y = bigrams(b);
-  if (x.size === 0 || y.size === 0) return false;
-  let shared = 0;
-  for (const g of x) if (y.has(g)) shared++;
-  return shared >= 3 && shared / Math.min(x.size, y.size) >= 0.4;
-}
-
-/** What an event is about (`stone_pickaxe`, `zombie`, `lava`), `""` when it does not say. */
-function subject(data: JsonObject | null): string {
-  if (data === null) return "";
-  for (const field of ["item", "title", "attacker", "last_attacker", "kind", "source"]) {
-    const value = data[field];
-    if (typeof value === "string" && value !== "") return value;
-  }
-  const types = data.new_types;
-  if (Array.isArray(types)) {
-    return types
-      .filter((t) => typeof t === "string")
-      .sort()
-      .join("+");
-  }
-  const items = data.items;
-  if (typeof items === "object" && items !== null && !Array.isArray(items)) {
-    return Object.keys(items).sort().join("+");
-  }
-  return "";
-}
-
-/** The key of a game event: `game:craft:stone_pickaxe`, `game:damage:zombie`, `game:night_started`. */
-export function eventKey(kind: string, data: JsonObject | null): string {
-  const what = subject(data);
-  const name = kind.replace(/_finished$/, "");
-  return what === "" ? `game:${name}` : `game:${name}:${what}`;
-}
-
-/** The key of a goal she reached (one that ends in having an item: the key of making it). */
+/** The key of a goal she reached (`gameGoalKey`, shared with the V3 fact layer). */
 export function goalKey(text: string, action: ActionCall | null): string {
-  const item = action?.args.item;
-  if (action && ITEM_ACTIONS.has(action.name) && typeof item === "string" && item !== "") {
-    return `game:craft:${item}`;
-  }
-  return `game:goal:${[...letters(text)].slice(0, KEY_LETTERS).join("")}`;
+  return gameGoalKey(text, action);
 }
 
 /** Whether `kind` (or `kind:subject`, like `reflex:lava`) is in `events`. */
@@ -94,12 +46,12 @@ export function matchesEvent(
   kind: string,
   data: JsonObject | null,
 ): boolean {
-  return events.includes(kind) || events.includes(`${kind}:${subject(data)}`);
+  return events.includes(kind) || events.includes(`${kind}:${gameEventSubject(data)}`);
 }
 
 /** Whether an event is worth remembering as something she may talk about. */
 export function isNoted(kind: string, important: boolean): boolean {
-  return important || NOTED.has(kind);
+  return important || NOTED_GAME_EVENTS.includes(kind);
 }
 
 interface Topic {
@@ -125,7 +77,7 @@ export class Narration {
   /** The key of a free line: of the newest topic it resembles, else its own. */
   keyOf(text: string): string {
     for (const t of [...this.#topics].reverse()) if (similar(text, t.text)) return t.key;
-    return `game:remark:${[...letters(text)].slice(0, KEY_LETTERS).join("")}`;
+    return gameRemarkKey(text);
   }
 
   /** She was told to say `text` (about `key`). */

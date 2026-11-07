@@ -530,6 +530,7 @@ class Session implements RpcHandler {
       },
       {
         callTimeoutMs: this.host.call_timeout_ms,
+        steer: decl.steer,
         graceMs: this.host.task_grace_ms,
         publish: (event) => {
           this.ctx.publish(

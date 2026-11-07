@@ -29,7 +29,9 @@ import { z } from "zod";
 import {
   GameChatKey,
   GameControlKey,
+  GameHandleKey,
   GameModule,
+  GOAL_TOPIC,
   SESSION_TOPIC,
   safeActCall,
 } from "../src/index.js";
@@ -236,6 +238,45 @@ describe("去玩 Minecraft", () => {
     expect(await f.sup.services.require(GameControlKey).stop()).toContain("已停止");
     await settle();
     expect(f.sessions().at(-1)).toMatchObject({ state: "stopped", game: "minecraft" });
+    await f.stop();
+  });
+
+  it("a steered event is not the end of the goal's task", async () => {
+    const f = await Flow.create();
+    await f.startTool({ goal: "去挖鐵礦" });
+    await vi.advanceTimersByTimeAsync(100);
+    const task = f.exec.last();
+    expect(f.sup.services.require(GameHandleKey).status()?.last_action).toContain("開始了");
+    expect(f.exec.running.has(task.id)).toBe(true);
+    const ends = () =>
+      f.events.filter((e) => e.type === "custom" && e.data.topic === GOAL_TOPIC).length;
+    const before = ends();
+    f.exec.emit({
+      type: "steered",
+      task: task.id,
+      steer: "01S1",
+      outcome: "applied",
+      detail: "目標改成石鎬",
+      at: new Date().toISOString(),
+    });
+    await settle();
+    f.exec.emit({
+      type: "steered",
+      task: task.id,
+      steer: "01S2",
+      outcome: "too_late",
+      detail: "來不及",
+      at: new Date().toISOString(),
+    });
+    await settle();
+    // The task still runs, nothing was cancelled and the goal did not end or fail.
+    expect(f.exec.running.has(task.id)).toBe(true);
+    expect(f.exec.cancels).toEqual([]);
+    expect(ends()).toBe(before);
+    const status = f.sup.services.require(GameHandleKey).status();
+    expect(status?.goal?.text).toBe("去挖鐵礦");
+    expect(status?.last_action).not.toContain("失敗");
+    expect(status?.last_action).not.toContain("undefined");
     await f.stop();
   });
 

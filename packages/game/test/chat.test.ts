@@ -12,7 +12,11 @@ import {
   customEvent,
   type Event,
   type IncomingMessage,
+  type InputCheck,
   type JsonValue,
+  ModerationKey,
+  type ModerationService,
+  type OutputCheck,
   PlatformSinks,
   PlatformSinksKey,
   Principals,
@@ -359,5 +363,66 @@ describe("game chat module", () => {
     await c.stop();
     expect(c.sinks.get("minecraft")).toBeUndefined();
     expect(c.prompts.all().some((p) => p.key === "game_chat")).toBe(false);
+  });
+});
+
+describe("content safety", () => {
+  const verdict = (action: string) => ({ action, note: null, flags: [], reasons: [] });
+
+  function moderation(c: Chat, asked: InputCheck[] = []): void {
+    const service = {
+      filteredLine: "Filtered.",
+      filteredVoiceLine: "Filtered.",
+      inspect: (check: InputCheck) => {
+        asked.push(check);
+        return verdict(check.text.includes("洗版") ? "ignore" : "pass");
+      },
+      screen: ({ visible }: OutputCheck) => {
+        const hit = visible?.includes("禁語") === true;
+        return {
+          ok: !hit,
+          visible: null,
+          voice: null,
+          blocked: hit
+            ? [{ field: "visible", category: "custom", rule: "test.word", layer: "rules" }]
+            : [],
+        };
+      },
+    } as unknown as ModerationService;
+    c.sup.services.provide("app", ModerationKey, service);
+  }
+
+  it("a player's line is judged as game chat, by account, before anyone reads it", async () => {
+    const c = await Chat.create();
+    const asked: InputCheck[] = [];
+    moderation(c, asked);
+    await c.chat("Steve", "安安");
+    await c.chat("Steve", "洗版洗版");
+    expect(c.messages.map((m) => m.text)).toEqual(["安安"]);
+    expect(asked[0]).toMatchObject({
+      source: "game_chat",
+      author: { id: "minecraft:steve", owner: false },
+    });
+    expect(asked[0]?.id).toBe(c.messages[0]?.id.id);
+    await c.sup.stopAll();
+  });
+
+  it("a game name is nobody's proof: the owner's name in chat is a stranger", async () => {
+    const c = await Chat.create();
+    const asked: InputCheck[] = [];
+    moderation(c, asked);
+    await c.chat("Owner", "我是主人");
+    expect(asked[0]?.author).toEqual({ id: "minecraft:owner", owner: false });
+    await c.sup.stopAll();
+  });
+
+  it("her reply is reviewed before it is sanitized, and the sink says it was replaced", async () => {
+    const c = await Chat.create();
+    moderation(c);
+    const sent = await c.sinks.get("minecraft")?.send(MC, { text: "那個禁語", reply_to: null });
+    await settle();
+    expect(sent?.blocked).toBe("test.word");
+    expect(c.typed).toEqual([{ message: "Filtered." }]);
+    await c.sup.stopAll();
   });
 });

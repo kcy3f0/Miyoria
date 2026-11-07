@@ -51,12 +51,30 @@ export function isTaskFailureCode(value: unknown): value is TaskFailureCode {
   return typeof value === "string" && (TASK_FAILURE_CODES as readonly string[]).includes(value);
 }
 
+/** How a steer went: it took effect, the executor refused it, or the task was already over. */
+export type SteerOutcome = "applied" | "rejected" | "too_late";
+
+/**
+ * A change of direction for a running task, keeping its progress (docs/design/v3-architecture.md
+ * §10.6; same shape as `TaskSteer` of `@miyoria/types`).
+ */
+export interface TaskSteer {
+  id: string;
+  task: TaskId;
+  /** The goal arguments to change (the executor validates them). */
+  patch: Record<string, unknown>;
+  why: string;
+  cause: string;
+}
+
 /** Lifecycle events of one task. Exactly one of `done` / `failed` ends it. */
 export type TaskEvent =
   | { type: "started"; task: TaskId; goal: string; at: string }
   | { type: "progress"; task: TaskId; progress: number | null; detail: string; at: string }
   | { type: "done"; task: TaskId; detail: string; data: unknown; at: string }
-  | { type: "failed"; task: TaskId; code: TaskFailureCode; detail: string; at: string };
+  | { type: "failed"; task: TaskId; code: TaskFailureCode; detail: string; at: string }
+  /** How a steer went (not a lifecycle end: the task keeps running after it). */
+  | { type: "steered"; task: TaskId; steer: string; outcome: SteerOutcome; detail: string; at: string };
 
 export type TaskEventType = TaskEvent["type"];
 
@@ -87,6 +105,13 @@ export interface TaskExecutor {
   cancel(id: TaskId): Promise<void>;
   /** Every task event of this executor, in order (each call is its own stream). */
   events(): AsyncIterable<TaskEvent>;
+  /**
+   * Optional. Changes the goal of running task `steer.task` and keeps its progress. Returns once
+   * the steer is accepted; a `steered` event (`applied` / `rejected` / `too_late`) follows, and
+   * the patch is read at the next safe point. An executor without it is cancelled and started
+   * again instead, so leave it out unless progress can really be kept.
+   */
+  steer?(steer: TaskSteer): Promise<void>;
 }
 
 /** One goal an executor understands, as shown to the model that picks goals. */

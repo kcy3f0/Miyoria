@@ -4,7 +4,7 @@
 import type { Readable, Writable } from "node:stream";
 import { type GameAdapter, type RegisteredAdapter, registerGameAdapter } from "./game.js";
 import { RpcError, RpcPeer } from "./rpc.js";
-import { type TaskExecutor, type TaskExecutorInfoInput, TaskFailure } from "./task.js";
+import { type TaskExecutor, type TaskExecutorInfoInput, TaskFailure, type TaskSteer } from "./task.js";
 import { topicMatches } from "./topics.js";
 import {
   type ArgKind,
@@ -309,6 +309,22 @@ export class ExtensionRuntime {
         await this.#taskExecutor().cancel(p.task);
         return {};
       }
+      case "task.steer": {
+        const executor = this.#taskExecutor();
+        const steer = (params as { steer?: unknown } | null)?.steer as Record<string, unknown> | undefined;
+        if (typeof steer !== "object" || steer === null || typeof steer.id !== "string" || typeof steer.task !== "string") {
+          throw new RpcError(ErrorCode.InvalidParams, "task.steer needs `steer` with `id` and `task`");
+        }
+        if (typeof executor.steer !== "function") {
+          throw new RpcError(ErrorCode.MethodNotFound, "this task executor cannot be steered");
+        }
+        try {
+          await executor.steer(steer as unknown as TaskSteer);
+        } catch (error) {
+          throw taskError(error);
+        }
+        return {};
+      }
       case "task.observe":
         try {
           return await this.#taskExecutor().observe(signal);
@@ -528,6 +544,8 @@ export class ExtensionRuntime {
             })),
             guide: info.guide?.trim() ? info.guide.trim() : null,
           };
+          // Only said when true: the declaration of an executor without it stays as it was.
+          if (typeof executor.steer === "function") decl.steer = true;
           const previous = rt.#executor;
           rt.#executor = executor;
           try {

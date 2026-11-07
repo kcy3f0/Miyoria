@@ -34,6 +34,12 @@ export const FACT_TOPICS = [
   "agent.turn.completed",
 ] as const;
 
+/**
+ * Where executors publish their task events (`game.<id>.task.*`, `ext.<id>.task.*`): the manager
+ * follows them to know which tasks are live and how a steer went.
+ */
+export const TASK_EVENT_TOPICS = ["game.*", "ext.*"] as const;
+
 export type GoLiveFact = "starting" | "live" | "stopped" | "failed";
 
 export interface GoLiveState {

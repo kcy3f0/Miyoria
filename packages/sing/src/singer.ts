@@ -43,8 +43,12 @@ import {
   type SongPrepare,
   SPEECH_PAUSE_TOPIC,
   type SpeechPause,
+  type SteerableTask,
+  type SteerOutcome,
   safeName,
   sameAccount,
+  type TaskId,
+  type TaskSteer,
   type TurnId,
   timestampMs,
   toTimestamp,
@@ -57,6 +61,7 @@ import { type SingWorker, SingWorkerError, type SongQuery, type WorkerJob } from
 import type { SingConfig } from "./config.js";
 import { singSong, sleep } from "./player.js";
 import { type NewSong, SetList, type SongEntry, type SongNo, songLabel } from "./setlist.js";
+import { parseSongPatch, songNo } from "./steer.js";
 
 const log = getLogger("sing");
 
@@ -318,8 +323,25 @@ export class Singer implements VoiceFloor, SpeechPause {
     const now = this.ctx.clock.now();
     const where = this.voiceContext(entry.context?.scope ?? null) ?? this.voiceContext();
     const recent = now - this.#lastNotice < this.cfg.prepare_notice_gap_secs * 1000;
-    if (where === null || recent || this.#closed) {
+    if (where === null || this.#closed) {
       this.#go(entry.no, job);
+      return;
+    }
+    if (recent) {
+      // Nothing to announce, but what she is saying right now gets to end (§13.6: on 11-07 the
+      // offload cut a sentence of hers in two).
+      if ((this.#speaking.get(where.scope ?? "") ?? 0) === 0) {
+        this.#go(entry.no, job);
+        return;
+      }
+      this.#preparing = {
+        no: entry.no,
+        job,
+        guild: where.scope,
+        asked_at: now,
+        spoke: true,
+        quiet_since: null,
+      };
       return;
     }
     this.#lastNotice = now;
@@ -642,6 +664,96 @@ export class Singer implements VoiceFloor, SpeechPause {
       }
     }
     return { stopped: current?.entry ?? null, dropped };
+  }
+
+  // ----- steer: changing a song that has not started (v3 §10.6) -----
+
+  /** `SteerRoute.live`: the song as a task while it is open (preparing or ready). */
+  steerable(task: TaskId): SteerableTask | "over" | null {
+    const no = songNo(task);
+    const entry = no === null ? null : this.list.get(no);
+    if (entry === null) return null;
+    if (entry.state === "preparing" || entry.state === "ready") {
+      return { goal: "sing", args: { song: entry.no, key: entry.key } };
+    }
+    return "over";
+  }
+
+  /**
+   * Changes a song that has not started: where it stands in the list and/or its key. Between
+   * songs only: one that is playing (or over) is too late. Answers at once with the outcome.
+   */
+  async steer(steer: TaskSteer): Promise<{ outcome: SteerOutcome; detail: string }> {
+    const no = songNo(steer.task);
+    const entry = no === null ? null : this.list.get(no);
+    if (entry === null) return { outcome: "rejected", detail: "歌單上沒有這首歌" };
+    const late = {
+      outcome: "too_late" as const,
+      detail: `#${entry.no} 已經${entry.state === "playing" ? "在唱" : "結束"}了,歌只能在歌與歌之間改`,
+    };
+    if (entry.state !== "preparing" && entry.state !== "ready") return late;
+    const patch = parseSongPatch(steer.patch);
+    if (typeof patch === "string") return { outcome: "rejected", detail: patch };
+    const notes: string[] = [];
+    if (patch.key !== undefined && patch.key !== entry.key) {
+      const refused = await this.#rekey(entry, patch.key);
+      if (refused !== null) return refused;
+      notes.push(`key 改成 ${patch.key >= 0 ? "+" : ""}${patch.key},重新轉換`);
+    } else if (patch.key !== undefined) {
+      notes.push(`key 本來就是 ${patch.key}`);
+    }
+    if (patch.position !== undefined) {
+      notes.push(`排到第 ${this.list.move(entry, patch.position)} 首`);
+    }
+    this.#publishPrepare();
+    return { outcome: "applied", detail: `${songLabel(entry)}:${notes.join(",")}` };
+  }
+
+  /**
+   * A new worker job for `entry` in `key`, the old one dropped. The key is baked into a worker
+   * job when it starts (see steer.ts), so there is no changing it while a conversion runs; the
+   * stems the worker already made are reused. The song keeps its place and what it was until the
+   * new job is accepted, so a refusal loses nothing. `null`: done.
+   */
+  async #rekey(
+    entry: SongEntry,
+    key: number,
+  ): Promise<{ outcome: "rejected" | "too_late"; detail: string } | null> {
+    const same = this.list.findOpen(entry.query, key);
+    if (same !== null && same !== entry) {
+      return { outcome: "rejected", detail: `#${same.no} 已經是同一首歌(key ${key})` };
+    }
+    let job: WorkerJob;
+    try {
+      job = await this.worker.submit(this.#query(entry.query, key));
+    } catch (error) {
+      return { outcome: "rejected", detail: `問不到歌曲工作站:${errorMessage(error)}` };
+    }
+    // She started singing it (or it was dropped) while the worker took the job.
+    if (entry.state !== "preparing" && entry.state !== "ready") {
+      void this.worker.cancel(job.id).catch(() => undefined);
+      return { outcome: "too_late", detail: `#${entry.no} 已經開始了,key 來不及改` };
+    }
+    const old = entry.job;
+    if (entry.state === "preparing" && old !== null) {
+      void this.worker.cancel(old).catch(() => undefined);
+      this.#told.delete(old);
+    }
+    entry.key = key;
+    entry.state = "preparing";
+    entry.stage = "queued";
+    entry.progress = 0;
+    entry.error = null;
+    entry.song = null;
+    entry.ready_at = null;
+    entry.reminders = 0;
+    entry.last_reminder_ms = null;
+    entry.job = job.id;
+    this.#gpu.delete(entry.no);
+    if (this.#preparing?.no === entry.no) this.#preparing = null;
+    this.#apply(entry, job);
+    this.#updatePause();
+    return null;
   }
 
   // ----- her speech, so a song starts after she finished talking -----

@@ -19,6 +19,7 @@ import {
   contextKeyEquals,
   contextKeyString,
   customEvent,
+  type DirectorThoughtBody,
   type Envelope,
   gameTaskOwner,
   type JsonObject,
@@ -26,9 +27,11 @@ import {
   newId,
   newImpulse,
   Principals,
+  ProposalBoardKey,
   parseTaskEvent,
   parseTaskTopic,
   type RegisteredTaskExecutor,
+  type RestoredGame,
   type StructuredState,
   serviceKey,
   type TaskEvent,
@@ -81,6 +84,9 @@ import {
 
 const log = getLogger("game");
 
+/** Who started a session picked up after a restart (nobody asked in this run). */
+const RESUMED_BY: AccountRef = { platform: "core", id: "resume" };
+
 /** Topic of the director's decision traces (for the panel / overlay). */
 export const DECISION_TOPIC = "game.director.decision";
 /** Initiative reason of commentary requests. */
@@ -120,6 +126,8 @@ export interface GoalEnd {
   task: TaskId | null;
   detail: string;
   at: Timestamp;
+  /** What it was about (`goalKey`). */
+  attention_key: string;
 }
 
 /** Whether in-game chat of a game is its own conversation (then the director only notes it). */
@@ -723,6 +731,29 @@ export class Director {
     }
   }
 
+  /**
+   * Picks up the session the last run left open (`GameResume`). Only when the game is really
+   * there: unlike `preflight` this never launches anything, and `waiting` means it cannot be
+   * reached (yet). The session is the one it was, without a goal: the decision loop finds one.
+   */
+  async resume(restored: RestoredGame, signal?: AbortSignal): Promise<"resumed" | "waiting"> {
+    if (this.#session) return "resumed";
+    const executor = this.#executor(restored.game);
+    if (!executor || restored.context === null) return "waiting";
+    try {
+      const obs = await observeWithin(executor, this.#secs(this.#cfg.tool_timeout_secs), signal);
+      if (obs.state.connected === false) return "waiting";
+    } catch (error) {
+      log.debug({ game: restored.game, err: errorMessage(error) }, "game not reachable yet");
+      return "waiting";
+    }
+    if (this.#session) return "resumed";
+    const context = restored.context;
+    log.info({ game: restored.game }, "picking up the game session of the last run");
+    this.start(restored.game, "here", context, RESUMED_BY);
+    return "resumed";
+  }
+
   /** Starts a session. Throws `GameError` (user-facing message) when it cannot. */
   start(game: string, placement: Placement, here: ContextKey, invoker: AccountRef): string {
     try {
@@ -1006,6 +1037,11 @@ export class Director {
     const track = s.tasks.get(e.task);
     if (!track) return;
     if (e.type === "started") return;
+    if (e.type === "steered") {
+      // Someone (the main line) changed the task's goal and it kept running: not an end.
+      if (e.outcome === "applied" && e.detail !== "") this.#remember(e.detail);
+      return;
+    }
     if (e.type === "progress") {
       if (s.goal?.task === e.task && e.detail !== "") this.#remember(e.detail);
       return;
@@ -1245,6 +1281,7 @@ export class Director {
       task,
       detail: outcome.type === "reached" ? outcome.detail : outcome.why,
       at: toTimestamp(this.#now()),
+      attention_key: goalKey(goal.text, goal.action),
     };
     this.#ctx.publish(customEvent(GOAL_TOPIC, end as unknown as JsonValue));
     if (goal.source.type === "queue") {
@@ -1330,6 +1367,27 @@ export class Director {
     const text = urgent
       ? `(你正在直播玩 ${s.gameName})${hint}`
       : `(你正在直播玩 ${s.gameName})實況:${hint}`;
+    // V3: game events are Observations already and what the director would add is a proposal
+    // (docs/design/v3-architecture.md §4). Only what cannot wait still claims the mic here.
+    const board = this.#ctx.services.get(ProposalBoardKey);
+    if (board !== undefined && about !== null) {
+      void board
+        .propose({
+          what: text,
+          why: `${s.gameName} 實況`,
+          expires: toTimestamp(now + this.#secs(cfg.commentary_min_secs)),
+          source: "game.director",
+          context: s.context,
+          about: null,
+          person: null,
+          goal: null,
+          attention: about,
+        })
+        .catch((error: unknown) => {
+          log.debug({ error: errorMessage(error) }, "could not propose a line");
+        });
+      return true;
+    }
     // Commentary is an impulse of source `game` (never her own topic); newer narration replaces
     // one still waiting for a free moment.
     const narrationTtl = urgent ? cfg.urgent_commentary_min_secs : cfg.commentary_min_secs;
@@ -1522,17 +1580,16 @@ export class Director {
         }
       }
     }
-    this.#ctx.publish(
-      customEvent(DECISION_TOPIC, {
-        game: cur.game,
-        trigger: trigger.text,
-        goal: decision.goal,
-        action: decision.action ? decision.action.display() : null,
-        verdict: verdict ? verdictDebug(verdict) : null,
-        commentary: decision.commentary,
-        busy: cur.busy,
-      }),
-    );
+    const trace: DirectorThoughtBody = {
+      game: cur.game,
+      trigger: trigger.text,
+      goal: decision.goal,
+      action: decision.action ? decision.action.display() : null,
+      verdict: verdict ? verdictDebug(verdict) : null,
+      commentary: decision.commentary,
+      busy: cur.busy,
+    };
+    this.#ctx.publish(customEvent(DECISION_TOPIC, trace as unknown as JsonValue));
     if (!decision.action || !verdict) return null;
     if (verdict.type === "keep") {
       log.debug({ action: decision.action.display(), why: verdict.why }, "kept the current goal");

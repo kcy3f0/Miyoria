@@ -10,6 +10,9 @@ import {
   type ContextKey,
   Principals,
   type Subject,
+  type TaskSpec,
+  TaskSteerKey,
+  type TaskSteerService,
 } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import { gameCapabilities } from "../src/actions.js";
@@ -72,6 +75,110 @@ function setup(nodes: string[]) {
   };
   return { calls, tools, registry, ctx, services };
 }
+
+describe("game.act steer", () => {
+  function steering() {
+    const s = setup([]);
+    const exec = new FakeExecutor(() => undefined);
+    new FakeExecutors(exec).provide(s.services);
+    const tracked: { owner: string; spec: TaskSpec }[] = [];
+    s.services.provide("activity", TaskSteerKey, {
+      track: (owner, spec) => tracked.push({ owner, spec }),
+      steer: async () => {
+        throw new Error("not used");
+      },
+      registerRoute: () => () => undefined,
+    } satisfies TaskSteerService);
+    const act = (args: Record<string, unknown>) =>
+      s.registry.invoke({
+        principal: Principals.self(CTX),
+        capability: "game.act",
+        args: { game: "minecraft", ...args } as never,
+        why: null,
+        turn: null,
+      });
+    return { exec, tracked, act };
+  }
+
+  it("a start nobody waits for is tracked with its budget, so a later steer keeps it", async () => {
+    const { exec, tracked, act } = steering();
+    await act({
+      call: { action: "obtain", args: { item: "iron_pickaxe" } },
+      task: { id: "01T1", budget_s: 42 },
+      wait: false,
+    });
+    expect(tracked).toEqual([
+      {
+        owner: "game.minecraft",
+        spec: { id: "01T1", goal: "obtain", args: { item: "iron_pickaxe" }, budget_s: 42 },
+      },
+    ]);
+    expect(exec.starts).toHaveLength(1);
+  });
+
+  it("hands the patch to the executor and starts nothing", async () => {
+    const { exec, tracked, act } = steering();
+    exec.steer = async (steer) => {
+      exec.steers.push(steer);
+    };
+    await act({
+      call: { action: "obtain", args: { item: "iron_pickaxe" } },
+      task: { id: "01T1", budget_s: 42 },
+      wait: false,
+    });
+    const out = await act({
+      call: { action: "obtain", args: { item: "stone_pickaxe" } },
+      steer: {
+        id: "01S1",
+        task: "01T1",
+        patch: { item: "stone_pickaxe" },
+        why: "先做石鎬",
+        cause: "01C1",
+      },
+    });
+    expect(out).toMatchObject({
+      status: "done",
+      result: { data: { task: "01T1", steer: "01S1" } },
+    });
+    expect(exec.steers).toEqual([
+      {
+        id: "01S1",
+        task: "01T1",
+        patch: { item: "stone_pickaxe" },
+        why: "先做石鎬",
+        cause: "01C1",
+      },
+    ]);
+    // Not a second task, and the budget the manager tracked is the first one's.
+    expect(exec.starts).toHaveLength(1);
+    expect(tracked).toHaveLength(1);
+    expect(tracked[0]?.spec.budget_s).toBe(42);
+  });
+
+  it("an executor without steer is refused as invalid, nothing is started", async () => {
+    const { exec, act } = steering();
+    const out = await act({
+      call: { action: "obtain", args: {} },
+      steer: { id: "01S1", task: "01T1", patch: {}, why: "x", cause: "" },
+    });
+    expect(out.status).toBe("failed");
+    expect(out.status === "failed" && (out.cause as { code?: string }).code).toBe("invalid");
+    expect(exec.starts).toHaveLength(0);
+  });
+
+  it("a steer for a goal the executor does not offer never reaches it", async () => {
+    const { exec, act } = steering();
+    exec.steer = async (steer) => {
+      exec.steers.push(steer);
+    };
+    const out = await act({
+      call: { action: "fly", args: {} },
+      steer: { id: "01S1", task: "01T1", patch: {}, why: "x", cause: "" },
+    });
+    expect(out.status).toBe("failed");
+    expect(exec.steers).toHaveLength(0);
+  });
+});
 
 describe("game capabilities", () => {
   it("tools start, stop and steer the game through the gate", async () => {

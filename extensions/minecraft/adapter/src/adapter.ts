@@ -18,6 +18,13 @@
 //
 // Tasks that use her body supersede each other (a new one ends the old with `superseded`);
 // `chat` runs alongside. A cancelled or timed-out task stops the mod's work (`stop`).
+//
+// Steer (v3 §10.6): the executor can change the target of a running `obtain` plan (`item`,
+// `count`) without losing what it already got. The step boundary is the adapter's, not the mod's:
+// the mod only runs one job at a time (a Baritone job, one craft, one smelt) and reports when it
+// ends; `ObtainRunner` is what chains the jobs, and it reads a queued change between two of them
+// (obtain.ts). Every other goal is one mod job without a step boundary the adapter can see, so a
+// steer of it is refused (cancel and start again).
 
 import {
   type ActionResult,
@@ -30,7 +37,6 @@ import {
   TaskFailure,
   type TaskFailureCode,
   type TaskResult,
-  TaskRunner,
   type TaskSpec,
 } from "@miyoria/sdk";
 import { ACTIONS, ActionError, HIDDEN_ACTIONS, describeAction, errorText, failureCode, toRequests } from "./actions.js";
@@ -38,8 +44,9 @@ import { BridgeError, type BridgeClient, type BridgeEvent } from "./bridge.js";
 import { type EventOptions, mapEvent } from "./events.js";
 import { GUIDE } from "./guide.js";
 import { LaunchError, type Launcher } from "./launcher.js";
-import { ObtainRunner, type RunnerOptions, STEP_EVENTS, worldOf } from "./obtain.js";
+import { ObtainRunner, parsePlanPatch, type RunnerOptions, STEP_EVENTS, worldOf } from "./obtain.js";
 import { PlanError, countOf, describeStep, itemName, knows, normalizeItem, plan } from "./planner.js";
+import { type SteerRequest, SteerableTasks } from "./steer.js";
 import { type Snapshot, compactState, summarize } from "./summary.js";
 
 export const GAME_ID = "minecraft";
@@ -159,8 +166,9 @@ export class MinecraftAdapter implements GameAdapter {
   readonly #bridge: BridgeClient;
   readonly #opts: AdapterOptions;
   readonly #queue = new EventQueue();
-  /** The running `obtain` plan. */
+  /** The running `obtain` plan, and the task it runs for. */
   #runner: ObtainRunner | null = null;
+  #planTask: string | null = null;
   /** Actions waiting for an interrupting reflex to end. */
   readonly #reflexWaiters = new Set<() => void>();
   /** Running jobs waiting for the event that ends them. */
@@ -168,16 +176,19 @@ export class MinecraftAdapter implements GameAdapter {
   /** Wakes `launch` when the mod connects. */
   readonly #connectWaiters = new Set<() => void>();
   /** The task executor (the core's only way to drive the game). */
-  readonly tasks: TaskRunner;
+  readonly tasks: SteerableTasks;
 
   constructor(bridge: BridgeClient, opts: AdapterOptions = {}) {
     this.#bridge = bridge;
     this.#opts = opts;
-    this.tasks = new TaskRunner({
-      observe: (signal) => this.observe(signal),
-      run: (spec, task) => this.#run(spec, task),
-      resource: (spec) => (spec.goal === "chat" ? null : spec.goal === "launch" || spec.goal === "quit" ? "session" : "body"),
-    });
+    this.tasks = new SteerableTasks(
+      {
+        observe: (signal) => this.observe(signal),
+        run: (spec, task) => this.#run(spec, task),
+        resource: (spec) => (spec.goal === "chat" ? null : spec.goal === "launch" || spec.goal === "quit" ? "session" : "body"),
+      },
+      (steer) => this.#steer(steer),
+    );
     bridge.onEvent((raw) => this.#onEvent(raw));
     bridge.onStatus((hello) => {
       this.#cancelPlan();
@@ -553,6 +564,26 @@ export class MinecraftAdapter implements GameAdapter {
     }
   }
 
+  /**
+   * A steer of running task `steer.task`. Only an `obtain` plan has a step boundary here: the
+   * change is queued in its runner, which reads it between two steps and reports `applied` (or
+   * `too_late` if the plan ends first). Returns the outcome to report now, or `null` (queued).
+   */
+  #steer(steer: SteerRequest): { outcome: "rejected" | "too_late"; detail: string } | null {
+    const runner = this.#runner;
+    if (runner === null || this.#planTask !== steer.task) {
+      return {
+        outcome: "rejected",
+        detail: "這個任務是一個 mod 工作(走路、挖礦、合成或熔爐),中間沒有可以安全切換的步驟;要改就取消再重開",
+      };
+    }
+    const patch = parsePlanPatch(steer.patch);
+    if (typeof patch === "string") return { outcome: "rejected", detail: patch };
+    return runner.steer(steer.id, patch) === "too_late"
+      ? { outcome: "too_late", detail: "取得已經結束了,來不及調整" }
+      : null;
+  }
+
   async #runPlan(item: string, count: number, task: TaskContext): Promise<TaskResult> {
     if (!knows(item)) {
       throw new TaskFailure(
@@ -584,12 +615,14 @@ export class MinecraftAdapter implements GameAdapter {
         observe: async () => (await this.#bridge.request("observe")) as Snapshot,
         // Its steps are the task's progress.
         emit: (e) => task.progress(String((e.data as { text?: unknown } | undefined)?.text ?? e.type)),
+        steered: (id, outcome, detail) => this.tasks.reportSteer(task.spec.id, id, outcome, detail),
       },
       item,
       count,
       this.#opts.runner,
     );
     this.#runner = runner;
+    this.#planTask = task.spec.id;
     const onAbort = () => this.#cancelPlan();
     task.signal.addEventListener("abort", onAbort, { once: true });
     this.#stopOnAbort(task);
@@ -598,10 +631,14 @@ export class MinecraftAdapter implements GameAdapter {
       const result = await runner.run();
       if (result.cancelled) throw task.signal.reason ?? new TaskFailure("cancelled", result.message);
       if (!result.ok) throw new TaskFailure(result.code ?? "internal", result.message);
-      return { detail: result.message, data: { target: item, count } };
+      // A steer may have changed what she was getting.
+      return { detail: result.message, data: { target: runner.item, count: runner.count } };
     } finally {
       task.signal.removeEventListener("abort", onAbort);
-      if (this.#runner === runner) this.#runner = null;
+      if (this.#runner === runner) {
+        this.#runner = null;
+        this.#planTask = null;
+      }
     }
   }
 

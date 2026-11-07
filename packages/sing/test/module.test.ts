@@ -675,6 +675,42 @@ describe("sing module", () => {
     expect(h.initiatives().filter((i) => i.reason === "song_prepare")).toHaveLength(1);
   });
 
+  it("no second notice, but what she is saying right now gets to end first", async () => {
+    h = await Harness.create();
+    await h.join();
+    await h.command("queue song request", { song: "Song A" });
+    h.worker.exclusive("j1", "waiting");
+    await settle(200);
+    await h.publish(playback("started"));
+    await settle(1600);
+    await h.publish(playback("finished"));
+    await settle(1600 + 800);
+    expect(h.worker.gone).toEqual(["j1"]);
+    h.worker.finish("j1", "Song A");
+    await settle(1600);
+
+    await h.publish(playback("started")); // She is in the middle of a sentence.
+    await h.command("queue song request", { song: "Song B" });
+    h.worker.exclusive("j2", "waiting");
+    await settle(1600);
+    expect(h.worker.gone).toEqual(["j1"]);
+    await h.publish(playback("finished"));
+    await settle(1600 + 800);
+    expect(h.worker.gone).toEqual(["j1", "j2"]);
+    expect(h.initiatives().filter((i) => i.reason === "song_prepare")).toHaveLength(1);
+  });
+
+  it("a job that shares the GPU pauses nothing and announces nothing", async () => {
+    h = await Harness.create();
+    await h.join();
+    await h.command("queue song request", { song: "Song A" });
+    h.worker.exclusive("j1", "shared");
+    await settle(1600);
+    expect(h.sup.services.require(SpeechPauseKey).paused()).toBeNull();
+    expect(h.worker.gone).toEqual([]);
+    expect(h.initiatives().filter((i) => i.reason === "song_prepare")).toHaveLength(0);
+  });
+
   it("publishes the song being prepared, its stage and progress, when they change", async () => {
     h = await Harness.create();
     await h.join();
@@ -783,6 +819,87 @@ describe("sing module", () => {
     expect(await h.command("queue song stop")).toContain("取消了歌單上的 1 首");
     expect(h.worker.cancelled).toEqual(["j2"]);
     expect(h.singer.list.open()).toHaveLength(0);
+  });
+
+  describe("steer", () => {
+    const steer = (task: string, patch: Record<string, JsonValue>, id = "st1") =>
+      h.singer.steer({ id, task, patch, why: "test", cause: "c1" });
+
+    async function two(): Promise<void> {
+      h = await Harness.create();
+      await h.join();
+      await h.invoke(Principals.user(AMY, TEXT), "sing.request", { query: "First", by: "Amy" });
+      await h.invoke(Principals.user(AMY, TEXT), "sing.request", { query: "Second", by: "Amy" });
+    }
+
+    it("a song that has not started is a task, a finished or unknown one is not", async () => {
+      await two();
+      expect(h.singer.steerable("song:1")).toMatchObject({ goal: "sing" });
+      expect(h.singer.steerable("song:9")).toBeNull();
+      expect(h.singer.steerable("elsewhere")).toBeNull();
+    });
+
+    it("moves a song to the front of the list", async () => {
+      await two();
+      const answer = await steer("song:2", { next: true });
+      expect(answer.outcome).toBe("applied");
+      expect(h.singer.list.open().map((e) => e.no)).toEqual([2, 1]);
+      expect(await steer("song:2", { position: 2 }, "st2")).toMatchObject({ outcome: "applied" });
+      expect(h.singer.list.open().map((e) => e.no)).toEqual([1, 2]);
+    });
+
+    it("a key change asks the worker for a new job, drops the old one and starts over", async () => {
+      await two();
+      h.worker.progress("j1", 0.5, "convert");
+      await settle(150);
+      const answer = await steer("song:1", { key: 3 });
+      expect(answer.outcome).toBe("applied");
+      expect(h.worker.submitted.map((q) => q.key)).toEqual([0, 0, 3]);
+      expect(h.worker.cancelled).toEqual(["j1"]);
+      const entry = h.singer.list.get(1);
+      expect(entry).toMatchObject({ key: 3, state: "preparing", job: "j3", progress: 0 });
+    });
+
+    it("keeps the song as it was when the worker refuses the new job", async () => {
+      await two();
+      h.worker.submit = async () => {
+        throw new SingWorkerError("down");
+      };
+      const answer = await steer("song:1", { key: 3 });
+      expect(answer.outcome).toBe("rejected");
+      expect(h.singer.list.get(1)).toMatchObject({ key: 0, state: "preparing", job: "j1" });
+      expect(h.worker.cancelled).toEqual([]);
+    });
+
+    it("refuses a patch it cannot do", async () => {
+      await two();
+      for (const patch of [
+        {},
+        { key: 9 },
+        { key: 1.5 },
+        { position: 0 },
+        { title: "x" },
+        { next: true, position: 2 },
+      ]) {
+        expect((await steer("song:1", patch as Record<string, JsonValue>)).outcome).toBe(
+          "rejected",
+        );
+      }
+      expect((await steer("song:7", { next: true })).outcome).toBe("rejected");
+    });
+
+    it("is too late for a song that is playing", async () => {
+      h = await Harness.create();
+      await h.join();
+      h.worker.cacheHit = true;
+      h.worker.cacheSeconds = 30;
+      await h.command("queue song request", { song: "Long", key: 2 });
+      await settle(6000 + 400);
+      expect(h.singer.playing()?.no).toBe(1);
+      expect(h.singer.steerable("song:1")).toBe("over");
+      expect(await steer("song:1", { key: 4 })).toMatchObject({ outcome: "too_late" });
+      expect(h.worker.submitted).toHaveLength(1);
+    });
   });
 
   it("limits songs per person and refuses an empty list start", async () => {

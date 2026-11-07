@@ -25,6 +25,7 @@ export {
   type SessionFact,
   STAGE_STATUS_TOPIC,
   type StageFact,
+  TASK_EVENT_TOPICS,
 } from "./facts.js";
 export { ActivityService, type ActivityServiceOptions, resourcesOf } from "./manager.js";
 export { ActivityModule } from "./module.js";
@@ -36,6 +37,7 @@ export {
   type StepCall,
   StepError,
 } from "./port.js";
+export { GAME_ACT_CAPABILITY, SteerDesk, type SteerDeskOptions } from "./steer.js";
 export {
   answerText,
   CODE_TEXT,

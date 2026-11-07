@@ -19,6 +19,11 @@
 // accepted (its end arrives as `game.<id>.task.done|failed`); other callers (game chat, the
 // launch) wait for the end. Either way the outcome carries a failure code (`GameTaskError`),
 // never a "失敗" prefix to look for. There are no raw adapter tools any more.
+//
+// `game.act` with `steer` is the gate's half of changing a running task's goal (v3 §10.6): the
+// ActivityManager sends it (only for the main line, after its own checks) and it hands the patch
+// to the executor's `steer`, which answers with a `steered` event once it applied it at a safe
+// point. Nothing is started and the task's budget is not touched.
 
 import {
   type ActuatorRegistry,
@@ -35,9 +40,13 @@ import {
   type JsonObject,
   type JsonValue,
   MAX_TASK_BUDGET_S,
+  ModerationKey,
+  type ModerationService,
   newId,
   type Principal,
+  safeOutgoing,
   type TaskSpec,
+  TaskSteerKey,
 } from "@miyoria/types";
 import { z } from "zod";
 import { GAME_CHAT_MAX, sanitizeGameChat } from "./chat-text.js";
@@ -80,6 +89,19 @@ const ActArgs = z.object({
    * events). Default: wait for the end and answer with it.
    */
   wait: z.boolean().nullish(),
+  /**
+   * Change the goal of the running task `steer.task` instead of starting one (`call` is the
+   * goal as it is after the patch, for the gate's sake). Sent by the ActivityManager.
+   */
+  steer: z
+    .object({
+      id: z.string().min(1).max(64),
+      task: z.string().min(1).max(64),
+      patch: z.record(z.string(), z.unknown()),
+      why: z.string().max(400),
+      cause: z.string().max(64),
+    })
+    .nullish(),
 });
 type StartArgs = z.output<typeof StartArgs>;
 type GoalArgs = z.output<typeof GoalArgs>;
@@ -91,14 +113,18 @@ function byOf(principal: Principal, by: string | null | undefined): string {
 }
 
 /**
- * The act call with its chat line made safe: one short line that never starts with a command
- * character. Other actions are passed on as they are.
+ * The act call with its chat line made safe: past the output review, one short line that never
+ * starts with a command character. Other actions are passed on as they are.
  */
-export function safeActCall(call: Record<string, unknown>): Record<string, unknown> {
+export function safeActCall(
+  call: Record<string, unknown>,
+  moderation?: ModerationService,
+): Record<string, unknown> {
   if (call.action !== "chat") return call;
   const args = isJsonObject(call.args as JsonValue) ? (call.args as Record<string, unknown>) : {};
   const raw = typeof args.message === "string" ? args.message : "";
-  const message = sanitizeGameChat(raw, GAME_CHAT_MAX);
+  const safe = safeOutgoing(moderation, { path: "game_chat", text: raw });
+  const message = sanitizeGameChat(safe.text, GAME_CHAT_MAX);
   if (message === "") throw new CapabilityError("nothing left to say in game chat after filtering");
   return { ...call, args: { ...args, message } };
 }
@@ -154,6 +180,25 @@ async function goLive(
     case "failed":
       return `開台失敗:${outcome.error}`;
   }
+}
+
+/** Rejects with `signal`'s reason once it aborts. */
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
 }
 
 function errorText(error: unknown): string {
@@ -289,12 +334,29 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
           `${args.game} 的遊戲 adapter 沒有在執行(沒有任務執行器)`,
         );
       }
-      const call = safeActCall(args.call);
+      const call = safeActCall(args.call, ctx.services.get(ModerationKey));
       const goal = typeof call.action === "string" ? call.action : "";
       if (!offersGoal(executor.info, goal)) {
         throw new GameTaskError("invalid", `沒有「${goal}」這個動作`);
       }
       const goalArgs = isJsonObject(call.args as JsonValue) ? (call.args as JsonObject) : {};
+      if (args.steer) {
+        if (typeof executor.steer !== "function") {
+          throw new GameTaskError("invalid", `${executor.info.name} 的執行器不支援中途改方向`);
+        }
+        const { id, task, why, cause } = args.steer;
+        const patch = args.steer.patch as JsonObject;
+        const deadline = AbortSignal.timeout(Math.max(o.toolTimeoutMs, 1));
+        const both = AbortSignal.any([ctx.signal, deadline]);
+        try {
+          await abortable(executor.steer({ id, task, patch, why, cause }), both);
+        } catch (error) {
+          const code = deadline.aborted && !ctx.signal.aborted ? "timeout" : codeOf(error);
+          throw new GameTaskError(code, `沒辦法調整 ${goal}:${errorText(error)}`, { cause: error });
+        }
+        const sent: JsonObject = { task, steer: id };
+        return { text: `調整送出了(${id}),等執行器回報`, data: sent };
+      }
       const spec: TaskSpec = {
         id: args.task?.id ?? newId(),
         goal,
@@ -312,6 +374,8 @@ export function gameCapabilities(o: GameCapabilityOptions): Capability[] {
           const code = deadline.aborted && !ctx.signal.aborted ? "timeout" : codeOf(error);
           throw new GameTaskError(code, `沒辦法開始 ${goal}:${errorText(error)}`, { cause: error });
         }
+        // The ActivityManager keeps the spec, so a later steer knows the budget and the start.
+        ctx.services.get(TaskSteerKey)?.track(executor.info.owner, spec);
         return { text: `開始了(task ${spec.id})`, data: { task: spec.id } };
       }
       const end = await runTask(executor, spec, ctx.signal);

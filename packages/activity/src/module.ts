@@ -4,9 +4,9 @@
 
 import { ActuatorRegistryKey } from "@miyoria/actions";
 import { defineManifest, type Module, type ModuleContext } from "@miyoria/kernel";
-import { ActivityManagerKey } from "@miyoria/types";
+import { ActivityManagerKey, ActivityRecoveryKey, TaskSteerKey } from "@miyoria/types";
 import { ActivityConfigSchema } from "./config.js";
-import { FACT_TOPICS } from "./facts.js";
+import { FACT_TOPICS, TASK_EVENT_TOPICS } from "./facts.js";
 import { ActivityService } from "./manager.js";
 import { GatePort } from "./port.js";
 
@@ -19,7 +19,7 @@ export class ActivityModule implements Module {
   static readonly ID = "activity";
   readonly manifest = defineManifest(ActivityModule.ID, "Activity", {
     description: "What she is doing: voice presence, the broadcast and her activity, one owner",
-    optional: ["actions"],
+    optional: ["actions", "facts"],
     configSchema: ActivityConfigSchema,
   });
   #service: ActivityService | null = null;
@@ -35,15 +35,18 @@ export class ActivityModule implements Module {
       services: ctx.services,
     });
     // Subscribe before anyone can route a request here, so no confirmation is missed.
-    const events = ctx.subscribe([...FACT_TOPICS]);
+    const events = ctx.subscribe([...FACT_TOPICS, ...TASK_EVENT_TOPICS]);
     ctx.spawn("facts", async () => {
       for await (const env of events) service.observe(env);
     });
     ctx.provide(ActivityManagerKey, service);
+    ctx.provide(TaskSteerKey, service);
     const registry = ctx.services.get(ActuatorRegistryKey);
     if (registry) this.#unroute = registry.setActivityRouter(service);
     else ctx.log.warn("no actuator registry: activity capabilities are not routed here");
     this.#service = service;
+    const left = ctx.services.get(ActivityRecoveryKey)?.game() ?? null;
+    if (left !== null) service.restore(left);
     ctx.log.info("activity manager running");
   }
 

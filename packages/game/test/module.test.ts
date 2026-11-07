@@ -23,12 +23,16 @@ import {
   ARBITER_IMPULSE_TOPIC,
   type ContextKey,
   type Event,
+  GameResumeKey,
   type Impulse,
   impulseReason,
   type JsonValue,
+  type NewProposal,
   PromptContributors,
   PromptContributorsKey,
   type PromptRequest,
+  ProposalBoardKey,
+  type RestoredGame,
   v2Payload,
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -281,6 +285,69 @@ afterEach(() => {
 
 // ----- tests -----
 
+describe("picking a session back up after a restart", () => {
+  const left = (context: ContextKey | null = voiceCtx()): RestoredGame => ({
+    game: "minecraft",
+    name: "Minecraft",
+    context,
+    since: "2026-11-07T10:00:00.000Z",
+  });
+
+  async function rig() {
+    const h = await Harness.create(new MockProvider("mock").reply(decision("閒晃", null)));
+    return { h, resume: h.sup.services.require(GameResumeKey) };
+  }
+
+  it("resumes when the game is there, and says so on the bus", async () => {
+    const { h, resume } = await rig();
+    const sessions = h.sup.bus.subscribe(SESSION_TOPIC);
+    expect(await resume.resume(left())).toBe("resumed");
+    expect(h.status()).toMatchObject({ game: "minecraft", game_name: "Minecraft" });
+    expect(h.status()?.context).toEqual(voiceCtx());
+    expect(sessions.tryRecv()?.event).toMatchObject({
+      data: { payload: { state: "started", game: "minecraft" } },
+    });
+    await h.stop();
+  });
+
+  it("never launches a game that is closed", async () => {
+    const { h, resume } = await rig();
+    h.exec.state = { connected: false, launch: { available: true } };
+    expect(await resume.resume(left())).toBe("waiting");
+    expect(h.status()).toBeNull();
+    expect(h.actNames()).toEqual([]);
+    await h.stop();
+  });
+
+  it("waits for an adapter that is not there yet", async () => {
+    const { h, resume } = await rig();
+    expect(await resume.resume({ ...left(), game: "terraria" })).toBe("waiting");
+    await h.stop();
+  });
+
+  it("does not guess where a session without a place goes", async () => {
+    const { h, resume } = await rig();
+    expect(await resume.resume(left(null))).toBe("waiting");
+    await h.stop();
+  });
+
+  it("leaves a session that already runs alone", async () => {
+    const { h, resume } = await rig();
+    await h.start();
+    const context = h.status()?.context;
+    expect(await resume.resume(left())).toBe("resumed");
+    expect(h.status()?.context).toEqual(context);
+    await h.stop();
+  });
+
+  it("can be stopped like any session", async () => {
+    const { h, resume } = await rig();
+    await resume.resume(left());
+    expect(await h.command("game stop")).toContain("她已停止玩");
+    await h.stop();
+  });
+});
+
 describe("game director", () => {
   it("decide_loop_keeps_the_goal_while_the_bot_works", async () => {
     const llm = new MockProvider("mock")
@@ -490,6 +557,25 @@ describe("game director", () => {
     await h.publish({ type: "voice_joined", data: { context: voiceCtx(), participants: [] } });
     await secs(20);
     expect(h.hintContexts.take().at(-1)).toEqual(voiceCtx());
+    await h.stop();
+  });
+
+  it("under_v3_a_free_line_is_a_proposal_not_an_impulse", async () => {
+    const llm = new MockProvider("mock").reply(decision("閒晃", null, "看看四周"));
+    const h = await Harness.create(llm, { decide_secs: 5 });
+    const proposed: NewProposal[] = [];
+    h.sup.services.provide("app", ProposalBoardKey, {
+      propose: async (p) => {
+        proposed.push(p);
+        return { id: "x", state: "open", detail: "", turn: null };
+      },
+      open: () => [],
+    });
+    await h.command("game start");
+    await h.publish({ type: "voice_joined", data: { context: voiceCtx(), participants: [] } });
+    await secs(20);
+    expect(h.hintContexts.take()).toEqual([]);
+    expect(proposed.at(-1)).toMatchObject({ source: "game.director", context: voiceCtx() });
     await h.stop();
   });
 

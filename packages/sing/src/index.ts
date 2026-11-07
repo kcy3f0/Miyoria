@@ -45,3 +45,4 @@ export {
   skipVotesNeeded,
   workerQuery,
 } from "./singer.js";
+export { KEY_RANGE, parseSongPatch, type SongPatch, songNo, songTask } from "./steer.js";

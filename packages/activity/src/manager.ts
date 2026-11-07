@@ -16,16 +16,18 @@
 //   through the gate.
 
 import type { ActionResult, ActivityRouter, RoutedCall } from "@miyoria/actions";
-import { errorMessage, getLogger, type ServiceLookup } from "@miyoria/kernel";
+import { errorMessage, getLogger, type ServiceLookup, sleep } from "@miyoria/kernel";
 import {
   ACTIVITY_CHANGED_TOPIC,
   ACTIVITY_DONE_TOPIC,
   ACTIVITY_FAILED_TOPIC,
+  ACTIVITY_RESTORE_TOPIC,
   ACTIVITY_STARTED_TOPIC,
   type ActivityFailure,
   type ActivityManager,
   type ActivityRequest,
   type ActivityResource,
+  type ActivityRestore,
   type ActivitySnapshot,
   type ActivityTask,
   type ActivityTransition,
@@ -33,8 +35,10 @@ import {
   ArbiterKey,
   type Clock,
   type ContextKey,
+  customEvent,
   type Envelope,
   type Event,
+  GameResumeKey,
   type HerActivity,
   type HerBroadcast,
   type HerPresence,
@@ -45,12 +49,21 @@ import {
   newId,
   type Principal,
   Principals,
+  parseTaskEvent,
+  parseTaskTopic,
   principalActor,
+  type RestoredGame,
   type SceneOverride,
   SceneRuleKey,
+  type SteerReceipt,
+  type SteerRequest,
+  type SteerRoute,
   systemClock,
+  type TaskEvent,
   type TaskFailureCode,
   type TaskId,
+  type TaskSpec,
+  type TaskSteerService,
   type Timestamp,
   type TransitionResult,
   toTimestamp,
@@ -60,6 +73,7 @@ import {
 import { type ActivityConfig, defaultActivityConfig } from "./config.js";
 import { Facts, startedSession } from "./facts.js";
 import { type ActivityPort, failureCode, type PrimaryStep, StepError } from "./port.js";
+import { SteerDesk } from "./steer.js";
 import { answerText, doneText, endedText, failedText, what } from "./texts.js";
 
 const log = getLogger("activity");
@@ -126,6 +140,14 @@ interface HeldFailure {
   until: number;
 }
 
+/** A game the last run left open, not seen again yet. */
+interface Restoring {
+  game: RestoredGame;
+  /** Past this it counts as closed. */
+  until: number;
+  controller: AbortController;
+}
+
 interface Waiter {
   check: () => boolean;
   resolve: () => void;
@@ -179,13 +201,15 @@ function impliedPrincipal(p: Principal): Principal {
   return p.kind === "command" || p.kind === "panel" ? p : Principals.director(p.context);
 }
 
-export class ActivityService implements ActivityManager, ActivityRouter {
+export class ActivityService implements ActivityManager, ActivityRouter, TaskSteerService {
   readonly #port: ActivityPort;
   readonly #config: ActivityConfig;
   readonly #clock: Clock;
   readonly #publish: (event: Event) => void;
   readonly #services: ServiceLookup | null;
   readonly facts = new Facts();
+  /** Changing a running executor task's goal (v3 §10.6). */
+  readonly #steering: SteerDesk;
 
   /** Queued and running tasks, in submission order. */
   #pending: Entry[] = [];
@@ -198,6 +222,7 @@ export class ActivityService implements ActivityManager, ActivityRouter {
   #broadcastPhase: BroadcastPhase | null = null;
   #activityPhase: ActivityPhase | null = null;
   #failure: HeldFailure | null = null;
+  #restoring: Restoring | null = null;
   #failureTimer: ReturnType<typeof setTimeout> | null = null;
   #chatting = false;
   #override: SceneOverride | null = null;
@@ -220,6 +245,15 @@ export class ActivityService implements ActivityManager, ActivityRouter {
     this.#clock = options.clock ?? systemClock;
     this.#publish = options.publish ?? (() => {});
     this.#services = options.services ?? null;
+    this.#steering = new SteerDesk({
+      port: this.#port,
+      services: this.#services,
+      publish: this.#publish,
+      now: () => this.#now(),
+      timeoutMs: this.#config.steer_timeout_ms,
+      managerTask: (id) =>
+        this.#pending.concat(this.#history).find((e) => e.record.id === id)?.record.request ?? null,
+    });
     this.#snapshot = { ...this.#derive(), version: 0 };
   }
 
@@ -288,6 +322,10 @@ export class ActivityService implements ActivityManager, ActivityRouter {
         result: { status: "refused", resource, code: refused.code, detail: refused.detail },
         entry: null,
       };
+    }
+    // "Stop playing" also means: do not pick the old session up.
+    if (request.type === "stop" && (request.activity ?? "game") === "game") {
+      this.#endRestore("dropped");
     }
     const plan = this.#plan(request);
     if (plan.type === "already") {
@@ -433,6 +471,9 @@ export class ActivityService implements ActivityManager, ActivityRouter {
           return fresh();
         }
         if (request.activity === "game" && this.facts.session?.game === request.target) {
+          return already(null);
+        }
+        if (request.activity === "game" && this.#restoring?.game.game === request.target) {
           return already(null);
         }
         if (request.activity === "chatting" && this.#chatting) return already(null);
@@ -1141,11 +1182,116 @@ export class ActivityService implements ActivityManager, ActivityRouter {
 
   // ---- the bus ----------------------------------------------------------------------------
 
-  /** Feeds one bus event (the module subscribes to `FACT_TOPICS`). */
+  /** Feeds one bus event (the module subscribes to `FACT_TOPICS` and the task events). */
   observe(env: Envelope): void {
-    if (this.#closed || !this.facts.apply(env)) return;
+    if (this.#closed) return;
+    if (env.event.type === "custom") {
+      const task = parseTaskTopic(env.event.data.topic);
+      if (task !== null) {
+        const event = parseTaskEvent(env.event.data.payload);
+        if (event !== null) this.#steering.observeTask(task.owner, event);
+        return;
+      }
+    }
+    if (!this.facts.apply(env)) return;
+    const session = this.facts.session;
+    if (session !== null && this.#restoring !== null) {
+      this.#endRestore(session.game === this.#restoring.game.game ? "resumed" : "dropped");
+    }
     this.#reconcile();
     this.#wake();
+    this.#changed();
+  }
+
+  // ---- steer ------------------------------------------------------------------------------
+
+  /**
+   * Changes the goal of a running executor task and keeps its progress (v3 §10.6; see
+   * `steer.ts`). Only the main line may call it.
+   */
+  steer(request: SteerRequest): Promise<SteerReceipt> {
+    return this.#steering.steer(request);
+  }
+
+  /** The spec of a task an executor accepted, so a steer keeps its budget and start. */
+  track(owner: string, spec: TaskSpec, at?: Timestamp): void {
+    this.#steering.track(owner, spec, at);
+  }
+
+  /** Makes the tasks of `owner` steerable through `route` (singing). */
+  registerRoute(owner: string, route: SteerRoute): () => void {
+    return this.#steering.registerRoute(owner, route);
+  }
+
+  /** A task event of an executor (tests; the module feeds the bus through `observe`). */
+  observeTask(owner: string, event: TaskEvent): void {
+    this.#steering.observeTask(owner, event);
+  }
+
+  // ---- after a restart --------------------------------------------------------------------
+
+  /**
+   * The last run left this game open (v3 §5: a restart must not show it as idle). It shows as
+   * `starting`, not `running`, until the game module reached the game and has its session back:
+   * nothing has been seen of it in this run yet. If that does not happen within
+   * `restore_grace_ms`, it was closed meanwhile and she is idle after all.
+   */
+  restore(game: RestoredGame): void {
+    if (this.#closed || this.#restoring !== null || this.facts.session !== null) return;
+    const restoring: Restoring = {
+      game,
+      until: this.#now() + this.#config.restore_grace_ms,
+      controller: new AbortController(),
+    };
+    this.#restoring = restoring;
+    this.#changed();
+    void this.#resume(restoring);
+  }
+
+  async #resume(restoring: Restoring): Promise<void> {
+    const { game, controller } = restoring;
+    while (this.#restoring === restoring) {
+      if (await this.#reached(restoring)) {
+        // The session event follows; until it does this says the same, so nothing flickers.
+        if (this.#restoring === restoring) {
+          this.facts.session ??= { game: game.game, name: game.name, context: game.context };
+          this.#endRestore("resumed");
+        }
+        return;
+      }
+      if (this.#restoring !== restoring) return;
+      if (this.#now() >= restoring.until) {
+        log.info({ game: game.game }, "the game of the last run did not come back");
+        this.#endRestore("gone");
+        return;
+      }
+      try {
+        await sleep(this.#config.restore_poll_ms, controller.signal);
+      } catch {
+        return;
+      }
+    }
+  }
+
+  async #reached(restoring: Restoring): Promise<boolean> {
+    const resume = this.#services?.get(GameResumeKey);
+    if (!resume) return false;
+    try {
+      const status = await resume.resume(restoring.game, restoring.controller.signal);
+      return status === "resumed";
+    } catch (error) {
+      log.debug({ err: errorMessage(error) }, "cannot resume the game of the last run");
+      return false;
+    }
+  }
+
+  #endRestore(outcome: ActivityRestore["outcome"]): void {
+    const restoring = this.#restoring;
+    if (restoring === null) return;
+    this.#restoring = null;
+    restoring.controller.abort();
+    const payload: ActivityRestore = { game: restoring.game.game, outcome };
+    this.#publish(customEvent(ACTIVITY_RESTORE_TOPIC, { ...payload }));
     this.#changed();
   }
 
@@ -1459,6 +1605,12 @@ export class ActivityService implements ActivityManager, ActivityRouter {
         since,
       };
     }
+    const restoring = this.#restoring;
+    if (restoring !== null) {
+      const target = restoring.game.game;
+      const since = this.#stable("activity", `restoring:${target}`);
+      return { type: "game", target, phase: "starting", task: null, failure: null, since };
+    }
     if (this.#chatting) {
       const since = this.#stable("activity", "chatting");
       return { type: "chatting", target: null, phase: "running", task: null, failure: null, since };
@@ -1547,6 +1699,8 @@ export class ActivityService implements ActivityManager, ActivityRouter {
   /** Cancels everything (module stop). */
   close(): void {
     this.#closed = true;
+    this.#restoring?.controller.abort();
+    this.#restoring = null;
     for (const e of [...this.#pending]) e.controller.abort(new StepError("cancelled", "正在關閉"));
     if (this.#failureTimer !== null) clearTimeout(this.#failureTimer);
     if (this.#overrideTimer !== null) clearTimeout(this.#overrideTimer);

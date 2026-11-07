@@ -26,6 +26,12 @@ export const ActivityConfigSchema = z.object({
   failed_hold_ms: z.number().int().nonnegative().default(120_000),
   /** How long a notice stays worth telling her. */
   notice_ttl_ms: z.number().int().positive().default(600_000),
+  /** How long a game the last run left open may take to be reachable again before it counts as closed. */
+  restore_grace_ms: z.number().int().positive().default(180_000),
+  /** How often such a game is looked for. */
+  restore_poll_ms: z.number().int().positive().default(5_000),
+  /** How long an executor may take to accept a steer (a change of a running task's goal). */
+  steer_timeout_ms: z.number().int().positive().default(10_000),
   /** Ended tasks remembered (`tasks()`, `task(id)`). */
   task_history: z.number().int().positive().default(50),
 });

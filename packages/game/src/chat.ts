@@ -27,12 +27,13 @@ import {
   contextKeyString,
   customEvent,
   type Envelope,
-  filterOutgoing,
+  inspectInput,
   inVoice,
   isJsonObject,
   isLive,
   type JsonValue,
-  type MessageRef,
+  ModerationKey,
+  MouthKey,
   neutralize,
   newId,
   type OutgoingMessage,
@@ -45,7 +46,10 @@ import {
   PromptContributorsKey,
   type PromptRequest,
   type PromptSection,
+  type SafeLine,
+  type SentMessage,
   safeName,
+  safeOutgoing,
   toTimestamp,
   VoiceSinkKey,
 } from "@miyoria/types";
@@ -246,10 +250,20 @@ export class GameChat implements ChatHandled {
       this.#ctx.spawn("link", (signal) => this.#link(game, context, account, name, code, signal));
       return;
     }
+    // Judged here, where it is still known to be game chat: what reads it later gets this verdict.
+    const id = newId();
+    const verdict = inspectInput(this.#ctx.services, {
+      id,
+      text,
+      source: "game_chat",
+      author: account,
+      context,
+    });
+    if (verdict?.action === "ignore") return;
     this.#ctx.publish({
       type: "platform_message_created",
       data: {
-        id: { context, id: newId() },
+        id: { context, id },
         author: { account, display_name: name, is_bot: false },
         text,
         mentions_self: this.#mentionsHer(text),
@@ -299,10 +313,16 @@ export class GameChat implements ChatHandled {
     this.#ctx.publish(customEvent(LINK_TOPIC, { game, account: account.id, outcome }));
     const reply = LINK_REPLY[outcome] ?? LINK_REPLY.unavailable ?? "";
     try {
-      await this.#type(game, context, `${name} ${reply}`, signal);
+      await this.#type(game, context, this.#safe(context, `${name} ${reply}`).text, signal);
     } catch (error) {
       this.#ctx.log.debug({ err: errorMessage(error) }, "cannot answer the link command in game");
     }
+  }
+
+  /** What goes out in `context`: the output review before anything else. */
+  #safe(context: ContextKey, text: string): SafeLine {
+    const moderation = this.#ctx.services.get(ModerationKey);
+    return safeOutgoing(moderation, { path: "game_chat", text, context });
   }
 
   /** Types one sanitized line in game chat through the gate (`game.act`, principal `self`). */
@@ -330,29 +350,39 @@ export class GameChat implements ChatHandled {
     if (outcome.status === "failed") throw new Error(outcome.error);
   }
 
-  /** Delivers one reply of hers in `context` (the platform sink's `send`). */
-  async deliver(context: ContextKey, text: string, signal?: AbortSignal): Promise<void> {
+  /**
+   * Delivers one reply of hers in `context` (the platform sink's `send`). Returns the rule that
+   * replaced it, if one did.
+   */
+  async deliver(context: ContextKey, text: string, signal?: AbortSignal): Promise<string | null> {
     const delivery = this.delivery(context);
+    const { text: safe, blocked } = this.#safe(context, text);
     let typed: unknown = null;
     if (delivery.chat) {
       try {
-        await this.#type(context.platform, context, text, signal);
+        await this.#type(context.platform, context, safe, signal);
       } catch (error) {
         typed = error;
       }
     }
     if (delivery.voice) {
       const voice = this.#ctx.services.get(VoiceSinkKey);
-      const spoken = filterOutgoing(text);
-      if (voice && spoken !== "") {
+      // V3: the words are the main line's, and so is the mouth they go out through.
+      const mouth = this.#ctx.services.get(MouthKey);
+      if (mouth && safe !== "") {
+        await mouth.say({ context: delivery.voice, text: safe, source: "game.chat", blocked });
+        return blocked;
+      }
+      if (voice && safe !== "") {
         // Speaking lasts as long as the playback; subtitles follow `voice.playback`.
-        void voice.speak(delivery.voice, spoken, null, null).catch((error: unknown) => {
+        void voice.speak(delivery.voice, safe, null, null).catch((error: unknown) => {
           this.#ctx.log.warn({ err: errorMessage(error) }, "speaking a game chat reply failed");
         });
-        return;
+        return blocked;
       }
     }
     if (typed !== null) throw typed;
+    return blocked;
   }
 }
 
@@ -367,9 +397,9 @@ class GameChatSink implements PlatformSink {
     context: ContextKey,
     message: OutgoingMessage,
     signal?: AbortSignal,
-  ): Promise<MessageRef> {
-    await this.chat.deliver(context, message.text, signal);
-    return { context, id: newId() };
+  ): Promise<SentMessage> {
+    const blocked = await this.chat.deliver(context, message.text, signal);
+    return { context, id: newId(), ...(blocked === null ? {} : { blocked }) };
   }
 
   async react(): Promise<void> {}
