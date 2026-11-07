@@ -5,6 +5,7 @@
 
 import { MockProvider } from "@miyoria/llm";
 import type { MemoryScope } from "@miyoria/store";
+import { newId } from "@miyoria/types";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   expired,
@@ -16,6 +17,7 @@ import {
   RepeatDamper,
   recency,
   recencyTau,
+  tokenString,
   visibleScopes,
   wordingTtlHours,
 } from "../src/index.js";
@@ -176,14 +178,15 @@ describe("expiring state notes", () => {
   });
 
   it.each(BACKENDS)(
-    "consolidation stores the expiry and recall stops after it (%s)",
+    "present-tense notes never enter memory; a note about tonight is kept and then expires (%s)",
     async (backend) => {
       const json = `{
       "episode": null,
       "facts": [{"subject_name": "Owen", "statement": "Owen 喜歡拉麵", "importance": 0.8, "confidence": 0.9, "global": false}],
       "self_notes": [
         {"note": "答應 Owen 玩 Minecraft 並開直播,已經開台", "importance": 0.8},
-        {"note": "Owen 現在在打 osu", "importance": 0.8, "valid_hours": 2}
+        {"note": "Owen 現在在打 osu", "importance": 0.8, "valid_hours": 2},
+        {"note": "Owen 今晚要考期末考", "importance": 0.8}
       ],
       "followups": []
     }`;
@@ -195,32 +198,32 @@ describe("expiring state notes", () => {
         ctx,
         acct("2"),
         "Owen",
-        "拉麵最好吃,等一下一起打 Minecraft",
+        "拉麵最好吃,等一下一起打 Minecraft 開直播,我今晚要考期末考,現在在打 osu",
         t0(-5 * MINUTE),
         false,
       );
-      await e.engine.consolidate(ctx, t0());
+      const report = await e.engine.consolidate(ctx, t0());
+      expect(report.refusedState, JSON.stringify(report)).toBe(2);
+      expect(report.inserted).toBe(2);
 
       const all = await e.all();
-      const stream = all.find((r) => r.content.includes("開台"));
-      const osu = all.find((r) => r.content.includes("osu"));
+      expect(all.some((r) => r.content.includes("開台"))).toBe(false);
+      expect(all.some((r) => r.content.includes("osu"))).toBe(false);
+      const exam = all.find((r) => r.content.includes("期末考"));
       const ramen = all.find((r) => r.content.includes("拉麵"));
-      expect(Date.parse(stream?.due ?? "")).toBe(Date.parse(t0()) + 12 * HOUR);
-      expect(Date.parse(osu?.due ?? "")).toBe(Date.parse(t0()) + 2 * HOUR);
+      expect(Date.parse(exam?.due ?? "")).toBe(Date.parse(t0()) + 24 * HOUR);
       expect(ramen?.due).toBeNull();
 
       const scopes = visibleScopes(ctx, [acct("2")], [owen]);
-      const query = "Owen 直播 Minecraft osu 拉麵";
+      const query = "Owen 直播 Minecraft osu 拉麵 期末考";
       const soon = await e.engine.recall(scopes, [owen], query, PROMPT_KINDS, 8, t0(HOUR));
-      expect(soon.map((r) => r.record.content).join("|")).toContain("開台");
-      const later = await e.engine.recall(scopes, [owen], query, PROMPT_KINDS, 8, t0(3 * HOUR));
+      const soonText = soon.map((r) => r.record.content).join("|");
+      expect(soonText).toContain("期末考");
+      expect(soonText).toContain("拉麵");
+      const later = await e.engine.recall(scopes, [owen], query, PROMPT_KINDS, 8, t0(25 * HOUR));
       const laterText = later.map((r) => r.record.content).join("|");
-      expect(laterText).toContain("開台");
-      expect(laterText).not.toContain("osu");
-      const tomorrow = await e.engine.recall(scopes, [owen], query, PROMPT_KINDS, 8, t0(13 * HOUR));
-      const tomorrowText = tomorrow.map((r) => r.record.content).join("|");
-      expect(tomorrowText).not.toContain("開台");
-      expect(tomorrowText).toContain("拉麵");
+      expect(laterText).not.toContain("期末考");
+      expect(laterText).toContain("拉麵");
     },
   );
 
@@ -228,23 +231,35 @@ describe("expiring state notes", () => {
     "maintenance expires notes written before lifetimes existed (%s)",
     async (backend) => {
       const e = await env(backend);
-      const old = await e.add(
-        "self_note",
-        G1,
-        [],
-        "答應玩 Minecraft 並開直播,已經開台",
-        0.9,
-        t0(-3 * DAY),
-      );
-      const recentNote = await e.add("self_note", G1, [], "我正在下載 Bad Apple", 0.9, t0(-HOUR));
-      const lasting = await e.add(
-        "self_note",
-        G1,
-        [],
-        "我答應下次一起去吃拉麵",
-        0.9,
-        t0(-30 * DAY),
-      );
+      // Written by an older build, which kept present-tense states in memory.
+      const legacy = async (content: string, at: string) => {
+        const id = newId();
+        await e.store.memories.upsert({
+          id,
+          profile: profile(),
+          kind: "self_note",
+          scope: G1,
+          subjects: [],
+          content,
+          tokens: tokenString(content),
+          embedding: null,
+          importance: 0.9,
+          confidence: 0.8,
+          created_at: at,
+          updated_at: at,
+          last_accessed: null,
+          access_count: 0,
+          source_context: null,
+          source: null,
+          due: null,
+          done: false,
+          superseded_by: null,
+        });
+        return id;
+      };
+      const old = await legacy("答應玩 Minecraft 並開直播,已經開台", t0(-3 * DAY));
+      const recentNote = await legacy("我正在下載 Bad Apple", t0(-HOUR));
+      const lasting = await legacy("我答應下次一起去吃拉麵", t0(-30 * DAY));
       const report = await e.engine.maintain(t0());
       // Three days past its lifetime: still kept a while (a week), but already hidden.
       expect(report.expired).toBe(0);
@@ -278,6 +293,7 @@ describe.each(BACKENDS)("followups (%s store)", (backend) => {
           importance: 0.5,
           confidence: 1,
           source_context: null,
+          origin: "experienced",
           due: dueAt,
         },
         t0(-DAY),
@@ -311,6 +327,7 @@ describe.each(BACKENDS)("followups (%s store)", (backend) => {
         importance: 0.5,
         confidence: 1,
         source_context: null,
+        origin: "experienced",
         due: t0(-10 * DAY),
       },
       t0(-11 * DAY),
@@ -383,6 +400,7 @@ describe("no per-call codes in memories", () => {
           importance: 0.5,
           confidence: 0.8,
           source_context: null,
+          origin: "experienced",
           due: null,
         },
         t0(),

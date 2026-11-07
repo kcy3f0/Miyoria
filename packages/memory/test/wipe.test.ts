@@ -210,6 +210,7 @@ describe("memory wipe", () => {
       "reflect",
       "conversation",
       "mood",
+      "facts",
     ]);
     expect(wipeModules("memories")).toEqual(["memory", "arbiter", "knowledge"]);
   });

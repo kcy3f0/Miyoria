@@ -60,3 +60,24 @@ export function expired(
     record.kind !== "followup" && record.due !== null && timestampMs(record.due) <= timestampMs(now)
   );
 }
+
+/**
+ * Wordings of what is happening right now (V3 §11: the state machine answers those, long-term
+ * memory never holds them). Narrower than `NOW_STATE`: 「目前」 and 「現在」 also open lasting
+ * facts (「我現在住在台北」), so they only give a note an expiry, they do not keep it out.
+ */
+const PRESENT_STATE =
+  /已經(?:開台|開直播|上線|在)|已開台|開台中|直播中|正在|此刻|剛剛|剛才|還在(?:下載|開|玩|看|聽|唱|打|跑)|進行中|currently|right now|is live|streaming now/i;
+
+/** True when `text` says what is happening right now. */
+export function isPresentState(text: string): boolean {
+  return PRESENT_STATE.test(text);
+}
+
+/**
+ * True when the summarizer said a statement stays true only for a moment (at most
+ * `state_note_hours`): a state in progress, whatever its wording.
+ */
+export function isStateLifetime(validHours: number | null, config: MemoryConfig): boolean {
+  return validHours !== null && validHours > 0 && validHours <= config.state_note_hours;
+}

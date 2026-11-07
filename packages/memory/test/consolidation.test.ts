@@ -12,6 +12,7 @@ import {
 } from "@miyoria/types";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  fadedConfidence,
   MemoryContributor,
   memoryConfig,
   memoryFilter,
@@ -147,9 +148,11 @@ describe.each(BACKENDS)("consolidation (%s store)", (backend) => {
     const user2 = llm.requests()[1]?.messages[1]?.content ?? "";
     expect(user2).toContain("期末考");
     expect(user2).not.toContain("不吃辣");
-    // Same JSON again: everything is reinforced, nothing duplicated.
+    // Same JSON again: what the new lines still back is reinforced, nothing is duplicated, and
+    // the facts and notes none of the new lines say are refused as unevidenced.
     expect(third.inserted, JSON.stringify(third)).toBe(0);
-    expect(third.reinforced).toBe(6);
+    expect(third.reinforced).toBe(2);
+    expect(third.refusedEvidence).toBe(4);
     expect(await e.all()).toHaveLength(records.length);
   });
 
@@ -190,6 +193,7 @@ describe.each(BACKENDS)("consolidation (%s store)", (backend) => {
     const amy = await e.person(amyAcct, "Amy");
     const dm = dmCtx("d-owen");
     await e.log(dm, owenAcct, "Owen", "跟你說個秘密,我暗戀 Amy", t0(-5 * MINUTE), false);
+    await e.log(dm, owenAcct, "Owen", "我的本名是劉歐文", t0(-4 * MINUTE), false);
     const report = await e.engine.consolidate(dm, t0());
     expect(report.inserted).toBe(5);
     const dmScope: MemoryScope = { type: "dm", account: owenAcct };
@@ -309,6 +313,8 @@ describe.each(BACKENDS)("consolidation (%s store)", (backend) => {
         importance: 0.7,
         confidence: 0.6,
         source_context: null,
+        origin: "told",
+        source_events: ["01TESTEVIDENCE0000000000"],
         due: null,
       },
       t0(DAY),
@@ -329,6 +335,8 @@ describe.each(BACKENDS)("consolidation (%s store)", (backend) => {
         importance: 0.5,
         confidence: 0.8,
         source_context: null,
+        origin: "told",
+        source_events: ["01TESTEVIDENCE0000000000"],
         due: null,
       },
       t0(2 * DAY),
@@ -349,7 +357,7 @@ describe.each(BACKENDS)("consolidation (%s store)", (backend) => {
     expect(await e.all()).toHaveLength(4);
   });
 
-  it("maintenance_prunes_and_decays", async () => {
+  it("maintenance_prunes_and_forgets_what_faded", async () => {
     const e = await env(backend);
     const owen = await e.person(acct("2"), "Owen");
     const now = t0();
@@ -371,22 +379,25 @@ describe.each(BACKENDS)("consolidation (%s store)", (backend) => {
 
     const report = await e.engine.maintain(now);
     expect(report.pruned).toBe(1);
-    expect(report.decayed).toBe(1);
+    expect(report.decayed, "still fading, not rewritten").toBe(1);
     expect(report.forgotten).toBe(1);
     expect(await e.rec(trivial)).toBeNull();
     expect(await e.rec(important)).not.toBeNull();
     expect(await e.rec(faint.id)).toBeNull();
-    const decayed = await e.rec(stale);
-    const c = decayed?.confidence ?? 0;
-    expect(c < 0.8 && c > 0.7, String(c)).toBe(true);
-    expect(Math.abs(((await e.rec(fresh))?.confidence ?? 0) - 0.8)).toBeLessThan(1e-6);
+
+    // Decay happens on read: the stored value is what was last written ...
+    expect((await e.rec(stale))?.confidence).toBeCloseTo(0.8, 6);
+    // ... and the confidence she trusts it with fades 2% a day after 30 idle days.
+    const config = memoryConfig();
+    const kept = (await e.rec(stale)) as MemoryRecord;
+    expect(fadedConfidence(config, kept, now)).toBeCloseTo(0.8 * 0.98 ** 30, 4);
+    expect(fadedConfidence(config, kept, t0(10 * DAY))).toBeCloseTo(0.8 * 0.98 ** 40, 4);
+    expect(fadedConfidence(config, (await e.rec(fresh)) as MemoryRecord, now)).toBeCloseTo(0.8, 6);
     expect(await e.engine.lastMaintenanceRun()).toBe(now);
 
-    // Ten days later the decay compounds over the elapsed days.
-    await e.engine.maintain(t0(10 * DAY));
-    const later = await e.rec(stale);
-    const expected = c * 0.98 ** 10;
-    expect(Math.abs((later?.confidence ?? 0) - expected)).toBeLessThan(1e-3);
+    // Past the point where it fades below the threshold, maintenance deletes it.
+    await e.engine.maintain(t0(120 * DAY));
+    expect(await e.rec(stale)).toBeNull();
     const listed = await e.store.memories.list(profile(), memoryFilter(10, { kind: "episode" }));
     expect(listed).toHaveLength(1);
   });

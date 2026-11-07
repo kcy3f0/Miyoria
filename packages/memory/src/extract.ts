@@ -23,6 +23,8 @@ export interface ExFact {
   global: boolean;
   /** Hours the statement stays true (a state in progress); `null` = lasting. */
   valid_hours: number | null;
+  /** Transcript lines (1-based) the summarizer says it comes from; empty when it named none. */
+  lines: number[];
 }
 
 export interface ExNote {
@@ -30,6 +32,8 @@ export interface ExNote {
   importance: number;
   /** Hours the note stays true (a state in progress); `null` = lasting. */
   valid_hours: number | null;
+  /** Transcript lines (1-based) the summarizer says it comes from; empty when it named none. */
+  lines: number[];
 }
 
 export interface ExFollowup {
@@ -59,12 +63,13 @@ export function systemPrompt(selfLabel: string): string {
 
 用你自己的角度寫(第一人稱「我」),提到別人時一定寫出他們的名字,讓每一條日後單獨看也看得懂。
 只記對話裡真的出現的資訊,不要猜測或補充;寒暄、玩笑、沒內容的閒聊不用記。
+逐字稿每一行前面有編號 [n]。每條事實和筆記都要寫出它根據哪幾行(lines);找不到根據的就不要寫。
 
 只輸出一個 JSON 物件,格式如下:
 {
   "episode": {"summary": "一兩句話描述這段對話發生了什麼(我的角度)", "importance": 0.0到1.0, "emotion": "我當時的心情,一個詞"} 或 null,
-  "facts": [{"subject_name": "這件事是關於誰(用逐字稿裡的名字),關於我自己就寫 \\"self\\"", "statement": "例如:Owen 喜歡吃拉麵", "importance": 0.0到1.0, "confidence": 0.0到1.0, "global": true 或 false, "valid_hours": null 或 幾小時內仍然成立}],
-  "self_notes": [{"note": "我說過的承諾、表達過的意見、我自己的經歷,例如:我答應 Owen 下次陪他打 Minecraft", "importance": 0.0到1.0, "valid_hours": null 或 幾小時內仍然成立}],
+  "facts": [{"subject_name": "這件事是關於誰(用逐字稿裡的名字),關於我自己就寫 \\"self\\"", "statement": "例如:Owen 喜歡吃拉麵", "importance": 0.0到1.0, "confidence": 0.0到1.0, "global": true 或 false, "valid_hours": null 或 幾小時內仍然成立, "lines": [它根據的行號]}],
+  "self_notes": [{"note": "我說過的承諾、表達過的意見、我自己的經歷,例如:我答應 Owen 下次陪他打 Minecraft", "importance": 0.0到1.0, "valid_hours": null 或 幾小時內仍然成立, "lines": [它根據的行號]}],
   "followups": [{"subject_name": "要追問誰", "about": "之後想問或提起的事,例如:問 Owen 明天的考試考得怎樣", "due_in_hours": 幾小時後適合提起}]
 }
 
@@ -100,10 +105,10 @@ export function transcript(
   const last = lines[lines.length - 1];
   if (first && last) out += `時間:${local(first.ts, offset)} 到 ${local(last.ts, offset)}\n`;
   out += "\n逐字稿:\n";
-  for (const entry of lines) {
+  lines.forEach((entry, i) => {
     const name = entry.is_self ? selfLabel : entry.author_name;
-    out += `${name}: ${entry.text.replaceAll("\n", " ")}\n`;
-  }
+    out += `[${i + 1}] ${name}: ${entry.text.replaceAll("\n", " ")}\n`;
+  });
   return out;
 }
 
@@ -153,13 +158,16 @@ export function parseExtraction(text: string): Extraction {
       confidence: unit(item.confidence) ?? 0.7,
       global: boolean(item.global),
       valid_hours: hours(item.valid_hours),
+      lines: lineNumbers(item.lines),
     });
   }
 
   for (const item of array(value, "self_notes")) {
     let note: ExNote | null = null;
     if (typeof item === "string") {
-      if (item.trim() !== "") note = { note: item.trim(), importance: 0.4, valid_hours: null };
+      if (item.trim() !== "") {
+        note = { note: item.trim(), importance: 0.4, valid_hours: null, lines: [] };
+      }
     } else if (isJsonObject(item)) {
       const n = strField(item, ["note", "content", "statement"]);
       if (n !== null) {
@@ -167,6 +175,7 @@ export function parseExtraction(text: string): Extraction {
           note: n,
           importance: unit(item.importance) ?? 0.4,
           valid_hours: hours(item.valid_hours),
+          lines: lineNumbers(item.lines),
         };
       }
     }
@@ -255,6 +264,17 @@ function number(value: JsonValue | undefined): number | null {
     if (FLOAT.test(s)) n = Number(s);
   }
   return n !== null && Number.isFinite(n) ? n : null;
+}
+
+/** Line numbers (positive integers, once each) the summarizer cited; anything else is dropped. */
+function lineNumbers(value: JsonValue | undefined): number[] {
+  if (!Array.isArray(value)) return [];
+  const out = new Set<number>();
+  for (const v of value) {
+    const n = number(v);
+    if (n !== null && Number.isInteger(n) && n >= 1) out.add(n);
+  }
+  return [...out];
 }
 
 /** A lifetime in hours (positive), else `null`. */

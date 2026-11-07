@@ -75,6 +75,51 @@ export const ForgettingConfigSchema = z.object({
 export type ForgettingConfig = z.output<typeof ForgettingConfigSchema>;
 
 /**
+ * The pinned layer: what is in every prompt without being looked up. Each section is cut to its
+ * own cap, and `max_chars` caps the whole; a source that is too long is truncated, never
+ * allowed to push the others out.
+ */
+export const PinnedConfigSchema = z.object({
+  /** Characters over every pinned line. */
+  max_chars: uint().default(1200),
+  /**
+   * Characters of the persona section; 0 leaves it out (the default). Only the main line reads the
+   * pinned layer, and its prompt already holds the whole persona, so a pinned copy only took up to
+   * 500 of the `max_chars` from the rules, the open commitments and the people.
+   */
+  persona_chars: uint().default(0),
+  /** Characters of the rules section. */
+  rules_chars: uint().default(400),
+  /** Open commitments listed (the soonest first). */
+  max_commitments: uint().default(4),
+  /** Characters of one commitment line. */
+  commitment_chars: uint().default(80),
+  /** People with a line (the ones listed first in the request). */
+  max_people: uint().default(6),
+  /** Characters of one person's line. */
+  person_chars: uint().default(120),
+  /** Facts joined into one person's line, the most reliable first. */
+  person_facts: uint().default(3),
+  /** Seconds a person's line is reused before it is composed again (writes and forgets reset it). */
+  cache_secs: uint().default(30),
+});
+export type PinnedConfig = z.output<typeof PinnedConfigSchema>;
+
+/**
+ * Evidence for person facts: a fact is stored only when a line that was really said backs it.
+ * The check is lexical (no model): the fact has to share words with the line.
+ */
+export const EvidenceConfigSchema = z.object({
+  /** Share of the fact's content words one supporting line must contain (0..1). */
+  min_overlap: z.number().min(0).max(1).default(0.25),
+  /** Evidence ids kept on one memory. */
+  max_events: uint().default(24),
+  /** Seconds either side of a chat line's time within which its EventLog event is looked for. */
+  match_window_secs: uint().default(10),
+});
+export type EvidenceConfig = z.output<typeof EvidenceConfigSchema>;
+
+/**
  * `[modules.memory]`.
  *
  * ```toml
@@ -152,6 +197,13 @@ export const MemoryConfigSchema = z.object({
   min_importance: z.number().default(0.1),
   dedupe: DedupeConfigSchema.prefault({}),
   forgetting: ForgettingConfigSchema.prefault({}),
+  pinned: PinnedConfigSchema.prefault({}),
+  evidence: EvidenceConfigSchema.prefault({}),
+  /**
+   * Weight (0..1) of a memory of unknown provenance (written before origins were recorded)
+   * against one with evidence. They stay usable, just never as sure as a memory with a source.
+   */
+  unknown_origin_factor: z.number().min(0).max(1).default(0.8),
 });
 export type MemoryConfig = z.output<typeof MemoryConfigSchema>;
 

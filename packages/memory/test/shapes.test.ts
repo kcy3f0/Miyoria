@@ -49,6 +49,20 @@ describe("shapes", () => {
         decay_per_day: 0.98,
         forget_below_confidence: 0.1,
       },
+      // V3 §11
+      pinned: {
+        max_chars: 1200,
+        persona_chars: 0,
+        rules_chars: 400,
+        max_commitments: 4,
+        commitment_chars: 80,
+        max_people: 6,
+        person_chars: 120,
+        person_facts: 3,
+        cache_secs: 30,
+      },
+      evidence: { min_overlap: 0.25, max_events: 24, match_window_secs: 10 },
+      unknown_origin_factor: 0.8,
     });
     // Nested sections keep their other defaults.
     expect(memoryConfig({ weights: { vector: 1 } }).weights.text).toBe(0.25);
@@ -103,6 +117,7 @@ describe("shapes", () => {
           confidence: 1,
           source_context: null,
           source: null,
+          origin: "experienced",
           due: null,
         },
         t0(),
