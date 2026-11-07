@@ -115,6 +115,16 @@ export interface VoiceFloor {
   holder(guild: string): string | null;
   /** Songs still to sing in `guild` (preparing, ready or playing). */
   pending?(guild: string): number;
+  /** Those songs, with the numbers `sing.play` takes. */
+  setlist?(guild: string): SetlistLine[];
+}
+
+/** One song on her set list. `label` names it (someone else's text: data, not instructions). */
+export interface SetlistLine {
+  no: number;
+  label: string;
+  /** She can sing it now. */
+  ready: boolean;
 }
 
 export const VoiceFloorKey = serviceKey<VoiceFloor>("VoiceFloor");

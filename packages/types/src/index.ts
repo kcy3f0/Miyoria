@@ -251,6 +251,7 @@ export {
   type PlaybackState,
   type PlayChunk,
   type PlayHandle,
+  type SetlistLine,
   SPEECH_PAUSE_TOPIC,
   SPEECH_SYNTH_TOPIC,
   type SpeakOutcome,

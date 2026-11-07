@@ -36,6 +36,7 @@ import {
   MindKey,
   newImpulse,
   type PlaybackState,
+  type SetlistLine,
   SONG_PREPARE_TOPIC,
   SONG_TOPIC,
   type SongCue,
@@ -203,6 +204,14 @@ export class Singer implements VoiceFloor, SpeechPause {
   /** `VoiceFloor`: songs still to sing in `guild` (a song asked for outside a server counts too). */
   pending(guild: string): number {
     return this.list.open().filter((e) => e.context === null || e.context.scope === guild).length;
+  }
+
+  /** `VoiceFloor`: the songs of `pending`, by the numbers she sings them with. */
+  setlist(guild: string): SetlistLine[] {
+    return this.list
+      .open()
+      .filter((e) => e.state !== "playing" && (e.context === null || e.context.scope === guild))
+      .map((e) => ({ no: e.no, label: songLabel(e), ready: e.state === "ready" }));
   }
 
   /** The song started is waiting for her to finish talking. */

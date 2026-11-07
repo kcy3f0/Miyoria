@@ -39,6 +39,8 @@ describe("capabilityInfo", () => {
           properties: {
             game: { type: "string", description: "遊戲 id" },
             where: { type: "string", enum: ["auto", "voice", "here", "stream"] },
+            song: { type: "integer", description: "歌單編號(可省略)" },
+            stream: { type: "boolean" },
           },
         },
         async execute() {
@@ -46,11 +48,31 @@ describe("capabilityInfo", () => {
         },
       }),
     );
-    expect(capabilityInfo(registry)[0]?.params).toEqual(["game", "where=auto|voice|here|stream"]);
+    expect(capabilityInfo(registry)[0]?.params).toEqual([
+      "game",
+      "where=auto|voice|here|stream",
+      "song(整數:歌單編號(可省略))",
+      "stream(true/false)",
+    ]);
   });
 });
 
 describe("singing", () => {
+  it("lists the songs by the numbers she sings them with", () => {
+    const s = new ServiceRegistry();
+    s.provide("test", VoiceFloorKey, {
+      holder: () => null,
+      pending: () => 2,
+      setlist: () => [
+        { no: 251, label: "「櫻ノ詩」", ready: true },
+        { no: 252, label: "「體操」", ready: false },
+      ],
+    });
+    const { note } = singing(s, "g1");
+    expect(note).toContain("#251 「櫻ノ詩」:好了,可以唱");
+    expect(note).toContain("#252 「體操」:還在準備");
+  });
+
   it("tells her a song is playing and how many are left", () => {
     const { note, deaf } = singing(services({ playing: true, pending: 3 }, false), "g1");
     expect(note).toContain("你正在唱歌:語音裡安靜是大家在聽");

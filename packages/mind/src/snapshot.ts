@@ -193,6 +193,9 @@ export function singing(
     if (now) lines.push("你正在唱歌:語音裡安靜是大家在聽,不是沒人。");
     const left = (floor.pending?.(guild) ?? 0) - (now ? 1 : 0);
     if (left > 0) lines.push(`歌單還有 ${left} 首在準備或等著唱,還沒唱完。`);
+    for (const song of floor.setlist?.(guild) ?? []) {
+      lines.push(`#${song.no} ${song.label}:${song.ready ? "好了,可以唱" : "還在準備"}`);
+    }
   }
   if (deaf) {
     lines.push(
@@ -444,10 +447,24 @@ export async function gather(input: GatherInput): Promise<Gathered> {
   };
 }
 
-/** One argument for the Plan prompt: `where=auto|voice`, or the bare name when any value goes. */
+const TYPE_NAMES: Readonly<Record<string, string>> = {
+  integer: "整數",
+  number: "數字",
+  boolean: "true/false",
+};
+
+/**
+ * One argument for the Plan prompt: `where=auto|voice`, `song(整數:歌單編號)`, or the bare name
+ * for free text.
+ */
 function paramHint(name: string, schema: unknown): string {
-  const values = (schema as { enum?: unknown } | null)?.enum;
-  return Array.isArray(values) && values.length > 0 ? `${name}=${values.join("|")}` : name;
+  const s = (schema ?? {}) as { enum?: unknown; type?: unknown; description?: unknown };
+  if (Array.isArray(s.enum) && s.enum.length > 0) return `${name}=${s.enum.join("|")}`;
+  const kind = typeof s.type === "string" ? TYPE_NAMES[s.type] : undefined;
+  if (kind === undefined) return name;
+  return typeof s.description === "string"
+    ? `${name}(${kind}:${s.description})`
+    : `${name}(${kind})`;
 }
 
 /** The capabilities she may start, besides `chat.start` / `chat.dm` (described separately). */
