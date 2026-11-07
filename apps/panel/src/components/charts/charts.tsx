@@ -141,8 +141,8 @@ function DataTableSr({ caption, head, rows }: { caption: string; head: string[];
         </tr>
       </thead>
       <tbody>
-        {rows.map((r) => (
-          <tr key={r[0]}>
+        {rows.map((r, row) => (
+          <tr key={`${row}:${r[0]}`}>
             {r.map((c, i) => (
               <td key={i}>{c}</td>
             ))}
@@ -272,7 +272,7 @@ export function TimeChart({
   };
 
   const rows = sampleIndexes(times.length, 24).map((i) => [
-    clockFmt.format(times[i] ?? 0),
+    tipLabel(times[i] ?? 0, t1 - t0),
     ...series.map((s) => {
       const v = s.values[i];
       return v === null || v === undefined ? "—" : format(v);

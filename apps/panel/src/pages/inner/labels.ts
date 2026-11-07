@@ -153,10 +153,12 @@ export const AFFECT_DRIVE_ORDER: string[] = [...DRIVE_ORDER, "esteem", "hunger",
 /** What the bias table calls the things she may want to do (`AffectBiases.wants`). */
 export const WANT_LABEL: Record<string, string> = {
   chat_with: "找人聊天",
+  find_person: "去找某個人",
   play: "玩遊戲",
   stream: "開台",
   rest: "休息",
   sing: "唱歌",
+  explore: "找點新鮮事",
   goal: "做目標裡的事",
 };
 

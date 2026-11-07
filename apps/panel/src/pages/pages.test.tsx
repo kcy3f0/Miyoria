@@ -481,9 +481,41 @@ describe("Live", () => {
     const user = userEvent.setup();
     renderRoute("/live");
     await user.click(await screen.findByRole("button", { name: "緊急停止" }));
-    expect(await screen.findByText("已緊急停止:她不會再自己行動")).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "恢復自主" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "自主行動已暫停" })).toBeInTheDocument();
+    expect(await screen.findByText("已緊急停止:她閉嘴了,直播、語音和遊戲都關了")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "解除停止" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "已緊急停止" })).toBeInTheDocument();
+  });
+
+  it("names the steps that did not work", async () => {
+    const steps = [
+      { step: "pause", ok: true, detail: "只有指令和面板能讓她行動" },
+      { step: "stream", ok: false, detail: "逾時,沒有確認到結果" },
+      { step: "game", ok: true, detail: "遊戲已停止" },
+    ];
+    const emergency = { paused: true, by: "panel:api", at: "2026-11-07T12:00:00.000Z", steps };
+    let paused = false;
+    const view = () => ({
+      paused,
+      running: true,
+      accepting: !paused,
+      stats: null,
+      pending_approvals: 0,
+      emergency: paused ? emergency : null,
+    });
+    mockFetch((method, url) => {
+      if (url.pathname === "/api/mind") return { body: view() };
+      if (method === "POST" && url.pathname === "/api/mind/pause") {
+        paused = true;
+        return { body: view() };
+      }
+      return undefined;
+    });
+    const user = userEvent.setup();
+    renderRoute("/live");
+    await user.click(await screen.findByRole("button", { name: "緊急停止" }));
+    expect(
+      await screen.findByText("已緊急停止,但這些沒有成功:直播(逾時,沒有確認到結果)"),
+    ).toBeInTheDocument();
   });
 });
 

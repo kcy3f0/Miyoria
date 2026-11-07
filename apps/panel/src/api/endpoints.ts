@@ -13,7 +13,14 @@ import type {
   DataCategoryId,
   DataInventory,
   DataWipeResult,
+  AddDirectiveRequest,
+  CauseChain,
+  Delivery,
+  DirectiveChange,
+  DirectivesView,
   ExtensionInfo,
+  FactEventsQuery,
+  LogEvent,
   McpServerInfo,
   MemoryItem,
   MemoryQuery,
@@ -270,6 +277,21 @@ export function createApi(client: ApiClient) {
         ...o,
         query: { limit: q.limit, outcome: q.outcome, context: q.context ? JSON.stringify(q.context) : undefined },
       }),
+
+    factEvents: (q: FactEventsQuery, o?: Opts) =>
+      client.get<LogEvent[]>("/api/facts/events", {
+        ...o,
+        query: { kind: q.kind?.join(","), source: q.source?.join(","), turn: q.turn, since: q.since, until: q.until, before: q.before, order: q.order, limit: q.limit },
+      }),
+    factDeliveries: (limit: number, o?: Opts) => client.get<Delivery[]>("/api/facts/deliveries", { ...o, query: { limit } }),
+
+    directives: (history: boolean, o?: Opts) =>
+      client.get<DirectivesView>("/api/directives", { ...o, query: { history: history ? "1" : undefined } }),
+    addDirective: (req: AddDirectiveRequest) => client.post<DirectiveChange>("/api/directives", req),
+    removeDirective: (id: string) => client.delete<DirectiveChange>(`/api/directives/${seg(id)}`),
+    factChain: (id: string, o?: Opts) => client.get<CauseChain>(`/api/facts/events/${seg(id)}/chain`, o),
+    factEffects: (id: string, limit: number, o?: Opts) =>
+      client.get<LogEvent[]>(`/api/facts/events/${seg(id)}/effects`, { ...o, query: { limit } }),
 
     telemetry: (minutes: number, o?: Opts) =>
       client.get<TelemetryView>("/api/telemetry", { ...o, query: { minutes } }),

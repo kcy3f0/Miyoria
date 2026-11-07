@@ -115,12 +115,34 @@ export function PromptView({ prompt }: { prompt: SavedPrompt }) {
   );
 }
 
+/** The prompt of one turn; an older Core, a turn too old to keep or an unsaved prompt say so. */
+export function PromptSection({ turn }: { turn: string }) {
+  const prompt = usePrompt(turn);
+  return (
+    <section className="grid gap-3" aria-label="這回合的提示詞">
+      <h3 className="text-sm font-medium">提示詞</h3>
+      {prompt.isPending ? (
+        <SkeletonRows count={3} />
+      ) : prompt.isError ? (
+        isApiError(prompt.error) && prompt.error.kind === "not_found" ? (
+          <EmptyLine>這回合的提示詞沒有留下(太舊,或沒有存)</EmptyLine>
+        ) : isApiError(prompt.error) && prompt.error.kind === "not_provided" ? (
+          <EmptyLine>這個 Core 還沒有提供提示詞</EmptyLine>
+        ) : (
+          <ErrorLine error={prompt.error} onRetry={() => void prompt.refetch()} />
+        )
+      ) : (
+        <PromptView prompt={prompt.data} />
+      )}
+    </section>
+  );
+}
+
 /**
  * One turn: how it ended and the prompt it was given, next to each other. Either half may be
  * missing (an older Core, a turn too old to keep, a prompt that was not saved).
  */
 export function TurnDetail({ turn }: { turn: string }) {
-  const prompt = usePrompt(turn);
   const outcomes = useTurnOutcomes({ limit: 500 });
   const record = outcomes.data?.find((r) => r.turn === turn) ?? null;
   return (
@@ -135,22 +157,7 @@ export function TurnDetail({ turn }: { turn: string }) {
           <p className="text-sm text-muted-foreground">沒有這回合的結果紀錄</p>
         )}
       </section>
-      <section className="grid gap-3" aria-label="這回合的提示詞">
-        <h3 className="text-sm font-medium">提示詞</h3>
-        {prompt.isPending ? (
-          <SkeletonRows count={3} />
-        ) : prompt.isError ? (
-          isApiError(prompt.error) && prompt.error.kind === "not_found" ? (
-            <EmptyLine>這回合的提示詞沒有留下(太舊,或沒有存)</EmptyLine>
-          ) : isApiError(prompt.error) && prompt.error.kind === "not_provided" ? (
-            <EmptyLine>這個 Core 還沒有提供提示詞</EmptyLine>
-          ) : (
-            <ErrorLine error={prompt.error} onRetry={() => void prompt.refetch()} />
-          )
-        ) : (
-          <PromptView prompt={prompt.data} />
-        )}
-      </section>
+      <PromptSection turn={turn} />
     </div>
   );
 }

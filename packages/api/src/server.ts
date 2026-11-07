@@ -10,7 +10,9 @@ import { channelRoutes } from "./channels.js";
 import { controlRoutes } from "./control.js";
 import { coreRoutes } from "./core.js";
 import { dataRoutes } from "./data.js";
+import { directiveRoutes } from "./directives.js";
 import { ApiError, NO_SUCH_ENDPOINT } from "./errors.js";
+import { factRoutes } from "./facts.js";
 import { innerRoutes } from "./inner.js";
 import { learningRoutes } from "./learning.js";
 import { llmCallRoutes } from "./llmcalls.js";
@@ -107,10 +109,12 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...roleRoutes(state),
     ...opsRoutes(state),
     ...innerRoutes(state),
+    ...factRoutes(state),
     ...channelRoutes(state),
     ...dataRoutes(state),
     ...sandboxRoutes(state),
     ...mindRoutes(state),
+    ...directiveRoutes(state),
     ...planRoutes(state),
     ...bodyRoutes(state),
     ...affectRoutes(state),

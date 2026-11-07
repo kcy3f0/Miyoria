@@ -10,11 +10,13 @@ import { AccessPage } from "@/pages/access/AccessPage";
 import { ActivityPage } from "@/pages/activity/ActivityPage";
 import { CharacterPage } from "@/pages/character/CharacterPage";
 import { DataPage } from "@/pages/data/DataPage";
+import { EvalPage } from "@/pages/eval/EvalPage";
 import { InnerPage } from "@/pages/inner/InnerPage";
 import { LivePage } from "@/pages/live/LivePage";
 import { LlmPage } from "@/pages/llm/LlmPage";
 import { NotFoundPage } from "@/pages/NotFound";
 import { OverviewPage } from "@/pages/overview/OverviewPage";
+import { RulesPage } from "@/pages/rules/RulesPage";
 import { SettingsPage } from "@/pages/settings/SettingsPage";
 import { SystemPage } from "@/pages/system/SystemPage";
 import {
@@ -128,6 +130,8 @@ const routeTree = rootRoute.addChildren([
   innerRoute,
   llmRoute,
   systemRoute,
+  createRoute({ getParentRoute: () => rootRoute, path: "/rules", component: RulesPage }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/eval", component: EvalPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/access", component: AccessPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/data", component: DataPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage }),

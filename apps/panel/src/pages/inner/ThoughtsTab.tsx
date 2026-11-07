@@ -41,7 +41,7 @@ function When({ at }: { at: string | null }) {
 }
 
 function stateOf(m: MindView): { tone: Tone; label: string } {
-  if (m.paused) return { tone: "warning", label: "已暫停" };
+  if (m.paused) return { tone: "warning", label: "已緊急停止" };
   if (!m.running) return { tone: "neutral", label: "心智迴圈未啟動" };
   if (m.stats?.idle_reason === "budget exhausted") return { tone: "danger", label: "額度用完" };
   if (!m.accepting) return { tone: "neutral", label: "休息中" };
@@ -74,7 +74,7 @@ function AutonomyCard() {
         {m && (
           <CardAction>
             <Label htmlFor={`${id}-pause`} className="font-normal text-muted-foreground">
-              暫停
+              緊急停止
             </Label>
             <Switch
               id={`${id}-pause`}
@@ -83,7 +83,7 @@ function AutonomyCard() {
               title={!canWrite ? READ_ONLY_HINT : undefined}
               onCheckedChange={(p) =>
                 pause.mutate(p, {
-                  onSuccess: () => notify.ok(p ? "已暫停她的自主行動" : "已恢復她的自主行動"),
+                  onSuccess: () => notify.ok(p ? "已緊急停止" : "已解除緊急停止"),
                   onError: (e) => notify.error(e),
                 })
               }

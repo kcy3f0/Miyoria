@@ -8,13 +8,14 @@ import { EventsTab } from "./EventsTab";
 import { LedgerTab } from "./LedgerTab";
 import { PromptsTab } from "./PromptsTab";
 import { TranscriptTab } from "./TranscriptTab";
+import { TurnsTab } from "./TurnsTab";
 
 const route = getRouteApi("/activity");
 
 export function ActivityPage() {
   const search = route.useSearch();
   // A turn link (`?turn=`) opens the prompt viewer.
-  const tab = search.tab ?? (search.turn ? "prompts" : "events");
+  const tab = search.tab ?? (search.turn ? "prompts" : "turns");
   const navigate = useNavigate();
   return (
     <Tabs value={tab} onValueChange={(t) => void navigate({ to: "/activity", search: { tab: t as ActivityTab }, replace: true })}>
@@ -27,6 +28,9 @@ export function ActivityPage() {
       </TabsList>
       <Page>
         <PageHeader title="動態" />
+        <TabsContent value="turns">
+          <TurnsTab />
+        </TabsContent>
         <TabsContent value="events">
           <EventsTab />
         </TabsContent>

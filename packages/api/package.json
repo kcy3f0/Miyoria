@@ -44,6 +44,8 @@
   },
   "devDependencies": {
     "@miyoria/arbiter": "workspace:*",
+    "@miyoria/directive": "workspace:*",
+    "@miyoria/facts": "workspace:*",
     "@miyoria/learning": "workspace:*",
     "@miyoria/mind": "workspace:*",
     "@miyoria/profile": "workspace:*",

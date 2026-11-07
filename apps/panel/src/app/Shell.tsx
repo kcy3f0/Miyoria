@@ -166,7 +166,7 @@ function PausedPill() {
       className="flex h-6 shrink-0 items-center gap-2 rounded-md border border-primary/50 bg-black/40 px-2 text-xs font-medium text-primary outline-none [text-shadow:none] hover:bg-black/60 focus-visible:ring-2 focus-visible:ring-ring"
     >
       <Dot tone="warning" />
-      自主行動已暫停
+      已緊急停止
     </Link>
   );
 }

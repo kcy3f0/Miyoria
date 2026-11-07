@@ -6,6 +6,7 @@ import { describeError } from "@/api/http";
 
 export const notify = {
   ok: (message: string) => toast.success(message),
+  warn: (message: string) => toast.warning(message, { duration: 8_000 }),
   error: (error: unknown, what?: string) =>
     toast.error(what ? `${what}:${describeError(error)}` : describeError(error), {
       duration: 8_000,

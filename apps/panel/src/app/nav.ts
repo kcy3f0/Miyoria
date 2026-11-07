@@ -8,7 +8,9 @@ import {
   type LucideIcon,
   Server,
   Settings,
+  Shield,
   ShieldCheck,
+  Target,
   UserRound,
 } from "lucide-react";
 
@@ -18,7 +20,9 @@ export type NavPath =
   | "/live"
   | "/character"
   | "/inner"
+  | "/rules"
   | "/llm"
+  | "/eval"
   | "/system"
   | "/access"
   | "/data"
@@ -33,6 +37,7 @@ export interface NavItem {
 }
 
 export const ACTIVITY_TABS = [
+  { tab: "turns", label: "回合" },
   { tab: "events", label: "事件" },
   { tab: "decisions", label: "決策" },
   { tab: "transcript", label: "轉錄" },
@@ -91,6 +96,7 @@ export const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     items: [
       { to: "/inner", label: "內心", icon: HeartPulse, tabs: [...INNER_TABS] },
       { to: "/character", label: "角色", icon: UserRound, tabs: [...CHARACTER_TABS] },
+      { to: "/rules", label: "規則", icon: Shield },
     ],
   },
   {
@@ -98,6 +104,7 @@ export const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     items: [
       { to: "/llm", label: "LLM", icon: Cpu, tabs: [...LLM_TABS] },
       { to: "/system", label: "系統", icon: Server, tabs: [...SYSTEM_TABS] },
+      { to: "/eval", label: "評測", icon: Target },
     ],
   },
   {

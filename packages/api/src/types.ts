@@ -21,6 +21,7 @@ import type {
   ChannelActivity,
   ContextKey,
   ConversationState,
+  EmergencyReport,
   FeedbackTally,
   Feeling,
   Goal,
@@ -531,7 +532,7 @@ export interface ChannelLevelsView {
 
 /** `GET /api/mind` (and the answer of `POST /api/mind/pause|resume`). */
 export interface MindView {
-  /** Her autonomy is paused (only commands and the panel act; her mind does not think). */
+  /** The emergency stop is on: she does not reply or speak, only commands and the panel act. */
   paused: boolean;
   /** The `mind` module is running. */
   running: boolean;
@@ -540,6 +541,8 @@ export interface MindView {
   stats: MindStats | null;
   /** High-risk actions waiting for an owner. */
   pending_approvals: number;
+  /** The last press of the emergency stop, step by step; `null`: none since the core started. */
+  emergency: EmergencyReport | null;
 }
 
 export type { PendingApproval, Thought };

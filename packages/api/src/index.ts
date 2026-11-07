@@ -43,6 +43,8 @@
 // * `GET /api/mind`, `GET /api/mind/thoughts?limit=50`, `GET /api/mind/approvals`,
 //   `POST /api/mind/approvals/{id}/approve|deny`, `POST /api/mind/pause|resume` (changes need
 //   `owner.autonomy.approve`)
+// * `GET /api/directives?history=1`, `POST /api/directives`, `DELETE /api/directives/{id}` (the
+//   rules; what a request may change follows its account, see `directives.ts`)
 
 // * `GET /api/activity` (presence, broadcast, activity, scene), `GET /api/activity/tasks?limit=20`
 // * `GET /api/arbiter/ledger?context=&limit=`, `GET /api/arbiter/decisions?limit=&context=&verdict=`

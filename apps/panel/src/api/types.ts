@@ -655,8 +655,43 @@ export interface VoiceSession {
     asr: LatencyStats;
     llm_first_token: LatencyStats;
     tts_first_audio: LatencyStats;
+    /** Speech end to first audio. Absent on a Core older than the six-segment measurement. */
+    e2e?: VoiceE2eLatency;
   };
   last_turn: TurnId | null;
+}
+
+/** p50 / p90 of one end-to-end series; `null` percentiles without samples. */
+export interface E2eStats {
+  p50_ms: number | null;
+  p90_ms: number | null;
+  samples: number;
+}
+
+/** The six segments of `speech_end → first_audio_played`, in the order a listener hears them. */
+export type E2eSegmentName = "endpoint" | "asr" | "llm_first" | "tts_queue" | "tts_first" | "playback";
+
+/** Replies to human speech over the recent window; incomplete ones are only counted, by reason. */
+export interface VoiceE2eLatency {
+  total: E2eStats;
+  segments: Record<E2eSegmentName, E2eStats>;
+  complete: number;
+  incomplete: number;
+  incomplete_by_reason: Record<string, number>;
+}
+
+/** The payload of a `voice.latency` bus event with `stage: "e2e"`: one reply, measured. */
+export interface E2eRecord {
+  context: ContextKey;
+  turn: TurnId | null;
+  utterance: string;
+  complete: boolean;
+  reason: string | null;
+  total_ms: number | null;
+  segments: Record<E2eSegmentName, number | null>;
+  unattributed_ms: number | null;
+  prefetched: boolean;
+  provider: string | null;
 }
 
 /** `GET /api/voice`. */
@@ -861,6 +896,8 @@ export type DataCategoryId =
   | "people"
   | "channels"
   | "voice_consent"
+  | "event_log"
+  | "directives"
   | "privacy"
   | "queue"
   | "roles"
@@ -930,6 +967,20 @@ export interface MindStats {
   idle_reason: string | null;
 }
 
+/** One step of the emergency stop, in the order they ran. */
+export interface EmergencyStep {
+  step: "pause" | "silence" | "song" | "stream" | "voice" | "game" | "resume";
+  ok: boolean;
+  detail: string;
+}
+
+export interface EmergencyReport {
+  paused: boolean;
+  by: string;
+  at: Timestamp;
+  steps: EmergencyStep[];
+}
+
 /** `GET /api/mind`, `POST /api/mind/pause|resume`. */
 export interface MindView {
   paused: boolean;
@@ -937,6 +988,8 @@ export interface MindView {
   accepting: boolean;
   stats: MindStats | null;
   pending_approvals: number;
+  /** The last press of the emergency stop; `null`: none since the core started. */
+  emergency?: EmergencyReport | null;
 }
 
 export type ThoughtTriggerKind = "heartbeat" | "salient" | "suggestion" | "turn" | "voice_quiet" | "manual";
@@ -1729,4 +1782,169 @@ export interface TurnOutcomeRecord {
   reasoning: ReasoningLevel | null;
   latency_ms: number | null;
   at: Timestamp;
+}
+
+// ---------------------------------------------------------------------------
+// The fact layer (`GET /api/facts/*`; `packages/types` log-event.ts)
+
+export type LogEventKind =
+  | "observation"
+  | "thought"
+  | "decision"
+  | "utterance"
+  | "delivered"
+  | "action"
+  | "result"
+  | "steer"
+  | "directive"
+  | "proposal";
+
+/** One line of the EventLog. */
+export interface LogEvent {
+  id: Ulid;
+  at: Timestamp;
+  kind: LogEventKind;
+  /** What wrote it: `voice.asr`, `game.minecraft`, `plan`, ... */
+  source: string;
+  /** The event that caused this one. */
+  cause: Ulid | null;
+  context: ContextKey | null;
+  person: string | null;
+  body: unknown;
+}
+
+/** `body` of a `steer` line: the request (`phase: "request"`) or how it went (`"outcome"`). */
+export type SteerBody = SteerRequestBody | SteerOutcomeBody;
+
+export interface SteerRequestBody {
+  phase: "request";
+  /** The executor's topic prefix. */
+  owner: string;
+  task: Ulid;
+  /** The goal arguments to change. */
+  patch: Record<string, unknown>;
+  /** Why she steers, in her words. */
+  why: string;
+  /** The kind of principal that asked (`self`: the main line). */
+  by: string;
+}
+
+export type SteerOutcome = "applied" | "rejected" | "too_late";
+
+export interface SteerOutcomeBody {
+  phase: "outcome";
+  task: Ulid;
+  steer: Ulid;
+  outcome: SteerOutcome;
+  detail: string;
+}
+
+/** `body` of a `thought` line from the mind (source `mind`). */
+export interface MindThoughtBody {
+  thought: string;
+  changes: string[];
+  intents: ThoughtIntent[];
+  error: string | null;
+}
+
+/** `body` of a `thought` line from the game director (source `game.director`). */
+export interface DirectorThoughtBody {
+  game: string;
+  trigger: string[];
+  goal: string | null;
+  action: string | null;
+  verdict: string | null;
+  commentary: string | null;
+  busy: boolean | null;
+}
+
+export type ThoughtBody = MindThoughtBody | DirectorThoughtBody;
+
+/** `GET /api/facts/events` query. */
+export interface FactEventsQuery {
+  kind?: LogEventKind[];
+  /** Comma list on the wire. */
+  source?: string[];
+  /** One turn's lines and what they caused (a Core before this ignores it). */
+  turn?: string;
+  since?: Timestamp;
+  until?: Timestamp;
+  /** Events older than this id (paging newest first). */
+  before?: Ulid;
+  order?: "asc" | "desc";
+  limit?: number;
+}
+
+/** `GET /api/facts/events/:id/chain`: the causes, oldest first, the event asked for last. */
+export interface CauseChain {
+  events: LogEvent[];
+  /** False when an ancestor is gone or the walk hit its limit. */
+  complete: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// the owner's rules (`GET /api/directives`; `packages/types` directive.ts)
+
+export type DirectiveEffect = "deny" | "require_approval" | "prefer" | "avoid";
+
+export type DirectiveAuthority = "owner" | "moderator" | "system" | "viewer";
+
+export interface DirectiveScope {
+  /** A capability or tool name, or a pattern (`game.*`, `*`). */
+  capability?: string;
+  /** A word of what is being done: the game (`minecraft`), a goal, a target. */
+  activity?: string;
+  context?: ContextKey;
+  person?: Handle;
+}
+
+/** A stored rule and how it ended, if someone ended it. */
+export interface DirectiveRecord {
+  id: string;
+  issuer: AccountRef;
+  authority: DirectiveAuthority;
+  scope: DirectiveScope;
+  effect: DirectiveEffect;
+  text: string;
+  /** `until_revoked` never expires. */
+  expires: Timestamp | "until_revoked";
+  /** An EventLog id, `msg:<id>`, `command:<path>` or `panel:<actor>`. */
+  source_event: string;
+  created_at: Timestamp;
+  revoked_at: Timestamp | null;
+  revoked_by: string | null;
+}
+
+/** `GET /api/directives`: `healthy` is false while the store cannot be read (everything fails closed). */
+export interface DirectivesView {
+  healthy: boolean;
+  directives: DirectiveRecord[];
+}
+
+/** `POST /api/directives`. `minutes` left out: until revoked (a moderator has to say). */
+export interface AddDirectiveRequest {
+  text: string;
+  effect: DirectiveEffect;
+  scope?: { capability?: string; activity?: string };
+  minutes?: number | null;
+}
+
+/** The answer of a change: a `question` means nothing happened and the Core needs more. */
+export type DirectiveChange =
+  | { status: "added"; directive: DirectiveRecord; note: string | null }
+  | { status: "removed"; directive: DirectiveRecord }
+  | { status: "question"; question: string };
+
+/** One delivered line (`GET /api/facts/deliveries`), newest first; `answered_by` is who answered in the window. */
+export interface Delivery {
+  attention_key: string;
+  revision: number;
+  channel: "voice" | "text";
+  context: ContextKey;
+  said: string;
+  delivered_at: Timestamp;
+  audience: Handle[];
+  answered_by: Handle[];
+  /** Its `utterance` event. */
+  line: Ulid;
 }

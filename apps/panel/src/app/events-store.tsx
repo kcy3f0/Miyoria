@@ -1,6 +1,7 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useSyncExternalStore } from "react";
 import { type StreamStatus, streamEvents } from "../api/sse";
+import { asE2eRecord } from "../lib/e2e";
 import type { Envelope } from "../api/types";
 import { useConnection } from "./connection";
 import { queryKeys } from "./queries";
@@ -45,6 +46,12 @@ export function applyCustomEvent(queryClient: QueryClient, env: Envelope): void 
     case "agent.prompt":
       stale(queryKeys.prompts);
       break;
+    case "voice.latency": {
+      // The Core keeps no per-reply history: the panel keeps what it saw, for the turn view.
+      const record = asE2eRecord(payload);
+      if (record?.turn) queryClient.setQueryData(queryKeys.turnE2e(record.turn), record);
+      break;
+    }
   }
 }
 

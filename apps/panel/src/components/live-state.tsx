@@ -3,7 +3,7 @@
 import { Link } from "@tanstack/react-router";
 import { OctagonPause, Play } from "lucide-react";
 import type { ReactNode } from "react";
-import type { MindView } from "@/api/types";
+import type { EmergencyReport, EmergencyStep, MindView } from "@/api/types";
 import { useMind, useMindMutations, useQueue, useSongs, useStage, useVoice, useWorld } from "@/app/queries";
 import { Dot, type Tone } from "@/components/status";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,7 @@ import { notify } from "@/lib/notify";
 export const HER_NAME = "DeepSeek-chan";
 
 export function mindState(m: MindView): { tone: Tone; label: string } {
-  if (m.paused) return { tone: "warning", label: "已暫停" };
+  if (m.paused) return { tone: "warning", label: "已緊急停止" };
   if (!m.running) return { tone: "neutral", label: "心智迴圈未啟動" };
   if (m.stats?.idle_reason === "budget exhausted") return { tone: "danger", label: "額度用完" };
   if (!m.accepting) return { tone: "neutral", label: "休息中" };
@@ -28,7 +28,7 @@ export function useHerNow(): { tone: Tone; label: string; detail?: string } {
   const stage = useStage();
   const her = world.data?.her;
   const state = mind.data ? mindState(mind.data) : null;
-  if (mind.data?.paused) return state ?? { tone: "warning", label: "已暫停" };
+  if (mind.data?.paused) return state ?? { tone: "warning", label: "已緊急停止" };
   if (her?.singing) return { tone: "brand", label: "唱歌中", detail: her.singing };
   if (her?.game) return { tone: "brand", label: "遊戲中", detail: her.game };
   if (stage.data?.speaking) return { tone: "brand", label: "說話中" };
@@ -36,18 +36,58 @@ export function useHerNow(): { tone: Tone; label: string; detail?: string } {
   return state ?? { tone: "neutral", label: "—" };
 }
 
+const STEP_LABELS: Record<EmergencyStep["step"], string> = {
+  pause: "暫停",
+  silence: "閉嘴",
+  song: "唱歌",
+  stream: "直播",
+  voice: "語音",
+  game: "遊戲",
+  resume: "解除",
+};
+
+/** How a press went, for the toast: only what did not work is named. */
+function reportEmergency(view: MindView): void {
+  const failed = view.emergency?.steps.filter((s) => !s.ok) ?? [];
+  if (failed.length > 0) {
+    const steps = failed.map((s) => `${STEP_LABELS[s.step]}(${s.detail})`).join("、");
+    notify.warn(`${view.paused ? "已緊急停止" : "解除時"},但這些沒有成功:${steps}`);
+  } else if (view.paused) {
+    notify.ok("已緊急停止:她閉嘴了,直播、語音和遊戲都關了");
+  } else {
+    notify.ok("已解除緊急停止");
+  }
+}
+
+/** Each step of the last press and how it went. */
+function EmergencySteps({ report }: { report: EmergencyReport }) {
+  return (
+    <ul className="mt-1 space-y-0.5">
+      {report.steps.map((s) => (
+        <li key={s.step} className="flex items-baseline gap-1.5">
+          <Dot tone={s.ok ? "success" : "danger"} className="size-1.5 [&>span]:size-1.5" />
+          <span className="shrink-0 font-medium">{STEP_LABELS[s.step]}</span>
+          <span className="min-w-0 text-foreground/80">{s.detail}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /**
- * Stops everything she does on her own (the gate's pause: only commands and the panel act), or
- * lets her go again. One click either way; the Core needs `owner.autonomy.approve`.
+ * The one button of §16: she shuts up, the stream ends, she leaves voice and the game stops; or the
+ * stop is lifted. One click either way; the Core needs `owner.autonomy.approve`. The Core answers
+ * step by step, so what did not work is shown and not just "done".
  */
 export function EmergencyStop({ className }: { className?: string }) {
   const mind = useMind();
   const { pause } = useMindMutations();
   const paused = mind.data?.paused ?? false;
+  const report = mind.data?.emergency ?? null;
   const toggle = () =>
     pause.mutate(!paused, {
-      onSuccess: (v) => notify.ok(v.paused ? "已緊急停止:她不會再自己行動" : "已恢復她的自主行動"),
-      onError: (e) => notify.error(e, paused ? "恢復失敗" : "緊急停止失敗"),
+      onSuccess: reportEmergency,
+      onError: (e) => notify.error(e, paused ? "解除失敗" : "緊急停止失敗"),
     });
   if (mind.isError) return null;
   return (
@@ -62,10 +102,15 @@ export function EmergencyStop({ className }: { className?: string }) {
           className={className}
         >
           {paused ? <Play /> : <OctagonPause />}
-          {paused ? "恢復自主" : "緊急停止"}
+          {paused ? "解除停止" : "緊急停止"}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{paused ? "讓她重新自己決定要做什麼" : "暫停她所有自主行動;指令和面板仍可操作"}</TooltipContent>
+      <TooltipContent>
+        {paused
+          ? "解除後她會再開口,語音、直播和遊戲不會自動回來"
+          : "她立刻閉嘴、不再回話,直播、語音和遊戲都關掉;指令和面板仍可操作"}
+        {paused && report !== null && <EmergencySteps report={report} />}
+      </TooltipContent>
     </Tooltip>
   );
 }

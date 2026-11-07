@@ -264,8 +264,14 @@ describe("data routes", () => {
     r = await h.call("POST", "/api/data/wipe", { categories: ["messages"], confirm: ` ${P} ` });
     expect(r.status).toBe(200);
     const result = r.body as DataWipeResult;
-    expect(result.deleted).toEqual(["conversation", "messages"]);
-    expect(result.counts).toEqual({ message_log: 1, memory_watermarks: 1, conversation_states: 0 });
+    expect(result.deleted).toEqual(["conversation", "messages", "event_log"]);
+    expect(result.counts).toEqual({
+      message_log: 1,
+      memory_watermarks: 1,
+      conversation_states: 0,
+      log_events: 0,
+      log_event_rollups: 0,
+    });
     expect((await h.store.settings.list(P, WATERMARK_PREFIX)).size).toBe(0);
     expect(countOf(await inventoryOf(h), "memories")).toBe(1);
     const audit = await h.store.audit.recent(10, "api");

@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import type { CostReport, ModuleInfo, ModuleStateKind } from "@/api/types";
 import { useCost, useExtensions, useMcpServers, useModules, useSelf } from "@/app/queries";
 import { ChartBlock, type Part, SegmentBar } from "@/components/charts/charts";
+import { ConsciousnessBlock } from "@/components/consciousness";
 import { NowStrip, useHerNow } from "@/components/live-state";
 import { Page, PageHeader } from "@/components/page";
 import { Dot, STATE_LABEL, type Tone } from "@/components/status";
@@ -23,6 +24,7 @@ import { Skeleton } from "@/components/ui/misc";
 import { fmtUsd } from "@/lib/format";
 import { SayCard } from "@/pages/live/SayCard";
 import { VoiceCard } from "@/pages/live/VoiceCard";
+import { RulesRail } from "@/pages/rules/RulesRail";
 
 interface Issue {
   key: string;
@@ -194,6 +196,7 @@ export function OverviewPage() {
         rail={
           <>
             <Attention />
+            <RulesRail />
             <VoiceCard />
             <SayCard />
             <SpendBlock />
@@ -202,6 +205,7 @@ export function OverviewPage() {
         }
       >
         <PageHeader title="總覽" />
+        <ConsciousnessBlock />
         <div className="-mb-5 flex min-h-[26px] items-center justify-between gap-3">
           <h2 className="text-[15px] font-semibold tracking-[-0.01em]">趨勢</h2>
           <RangeToggle range={range} onChange={setRange} />

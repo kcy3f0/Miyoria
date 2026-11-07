@@ -1,11 +1,12 @@
 import { LogIn, LogOut, MicOff, MonitorUp, VolumeX } from "lucide-react";
 import { useState } from "react";
-import type { LatencyStats, VoiceChannelState, VoiceSession } from "@/api/types";
+import type { VoiceChannelState, VoiceSession } from "@/api/types";
 import { useLiveControls, useVoice, useWorld } from "@/app/queries";
 import { useCanWrite } from "@/app/session";
 import { ConfirmDialog } from "@/components/confirm";
 import { QueryView, SkeletonRows } from "@/components/query-state";
 import { Dot } from "@/components/status";
+import { VoiceLatency } from "@/components/voice-latency";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,30 +14,6 @@ import { Switch } from "@/components/ui/switch";
 import { accountString, contextShort } from "@/lib/format";
 import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";
-
-const ms = (s: LatencyStats) => (s.p50_ms === null ? "—" : `${Math.round(s.p50_ms)}`);
-
-function Latency({ s }: { s: VoiceSession }) {
-  return (
-    <dl className="grid grid-cols-3 gap-x-4 gap-y-3 py-2" aria-label="延遲中位數(毫秒)">
-      {(
-        [
-          ["ASR", s.latency.asr],
-          ["LLM 首字", s.latency.llm_first_token],
-          ["TTS 首音", s.latency.tts_first_audio],
-        ] as const
-      ).map(([label, stats]) => (
-        <div key={label}>
-          <dt className="text-xs text-muted-foreground">{label}</dt>
-          <dd className="text-sm font-medium tabular-nums" title={stats.p95_ms !== null ? `最慢 5%:${Math.round(stats.p95_ms)} ms` : undefined}>
-            {ms(stats)}
-            {stats.p50_ms !== null && <span className="ml-0.5 text-xs font-normal text-muted-foreground">ms</span>}
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
 
 function Session({ s }: { s: VoiceSession }) {
   const speaking = new Set(s.speaking.map(accountString));
@@ -153,7 +130,7 @@ export function VoiceCard() {
               </div>
               {d.sessions.map((s) => (
                 <div key={`${s.context.scope}:${s.context.channel}`}>
-                  <Latency s={s} />
+                  <VoiceLatency e2e={s.latency.e2e} />
                   <Session s={s} />
                 </div>
               ))}
