@@ -7,9 +7,10 @@
 // started a game is fine when one of those backs it.
 //
 // Only the claim itself is still spotted in her text (`CLAIMS`): that is the one thing no
-// structured signal carries, and without it she could tell someone "我游過去了" when nothing
-// happened (the model does that). It is a safety net, not the protocol: it never decides what
-// happened, and a claim backed by a task, a notice or the current state is never questioned.
+// structured signal carries, and without it she could tell someone "我游過去了" or "我重新進一
+// 次" when nothing happens (the model does that). It is a safety net, not the protocol: it never
+// decides what happened, and a claim backed by a task, a notice or the current state is never
+// questioned.
 
 import type { ActivityManager, ActivityRequestType, Notice, TurnId } from "@miyoria/types";
 import type { ToolScope } from "./tool-scope.js";
@@ -23,38 +24,67 @@ export interface Claim {
   holds(scope: ToolScope): boolean;
 }
 
+/** Not when she refuses it ("別再進語音了"). */
+const NOT_REFUSED = "(?<!不要再|別再|不再|不要|別|不|沒)";
+/** How she promises to do something right now ("我重新進一次"). */
+const PROMISE = "(?:我|馬上|這就|現在就|重新|再試一次|再)(?:去|來|就|先)?";
+
+/** Saying she did it (`done`), or that she is about to (`act`, after a `PROMISE`). */
+function said(done: string, act: string): RegExp {
+  return new RegExp(`${NOT_REFUSED}(?:${done}|${PROMISE}(?:${act}))`);
+}
+
 export const CLAIMS: readonly Claim[] = [
   {
     tool: "voice_join",
     request: "ensure_voice",
-    said: /游過去|游去了|進語音了|進去語音|加入語音了|過去語音/,
+    said: said(
+      "游過去|游去了|進語音了|進去語音|加入語音了|過去語音|我(?:人)?(?:就|已經|現在)?在語音",
+      "進語音|上語音|回語音|加入語音|進一次",
+    ),
     holds: (s) => s.inVoice,
   },
   {
     tool: "voice_leave",
     request: "leave_voice",
-    said: /離開語音了|退出語音了|游走了|先下語音/,
+    said: said("離開語音了|退出語音了|游走了|先下語音", "離開語音|下語音|退出語音"),
     holds: (s) => !s.inVoice,
   },
   {
     tool: "stream_start",
     request: "ensure_live",
-    said: /開台了|開播了|開始直播了/,
+    said: said("開台了|開播了|開始直播了", "開台|開播"),
     holds: (s) => s.live,
   },
   {
     tool: "stream_stop",
     request: "stop_live",
-    said: /關台了|下播了|結束直播了/,
+    said: said("關台了|下播了|結束直播了", "關台|下播"),
     holds: (s) => !s.live,
+  },
+  {
+    tool: "game_stop",
+    request: "stop",
+    said: said("不玩了|先不玩|收掉|關掉遊戲|關遊戲了", "關遊戲|關麥塊|收麥塊"),
+    holds: (s) => s.game === null,
   },
   {
     tool: "game_start",
     request: "start",
-    said: /開遊戲了|開始玩了|開好遊戲/,
+    said: said("開遊戲了|開始玩了|開好遊戲", "開遊戲|開麥塊|開 ?Minecraft"),
     holds: (s) => s.game !== null,
   },
 ];
+
+const GAME_ASKED = new RegExp(
+  `${NOT_REFUSED}(?:開|玩|打開|啟動)(?:一下|個)? ?(?:minecraft|麥塊|mc|遊戲)`,
+  "i",
+);
+
+/** Whether a message asks her to start a game ("開麥塊"), not to stop ("不要再玩 Minecraft"). */
+export function asksForGame(text: string): boolean {
+  return GAME_ASKED.test(text);
+}
 
 /** What backs her claims in one turn. */
 export interface Backing {

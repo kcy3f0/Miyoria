@@ -21,6 +21,8 @@ export interface ToolScope {
   inVoice: boolean;
   /** She is live (or going live). */
   live: boolean;
+  /** Her game was closed and nobody here asked her to start one (`ArbiterKey.held`). */
+  gameHeld?: boolean;
 }
 
 /** The scope from the ActivityManager snapshot. */
@@ -52,6 +54,7 @@ export function scopeOfHer(her: HerStatus): ToolScope {
  */
 const NEEDS: Readonly<Record<string, (scope: ToolScope) => boolean>> = {
   game_goal: (s) => s.game !== null,
+  game_start: (s) => s.gameHeld !== true,
   game_stop: (s) => s.game !== null,
   sing_stop: (s) => s.singing,
   stream_stop: (s) => s.live,

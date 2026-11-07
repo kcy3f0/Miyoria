@@ -16,7 +16,7 @@ import {
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { acceptedRequests, CLAIMS, unbackedClaim } from "../src/claims.js";
+import { acceptedRequests, asksForGame, CLAIMS, unbackedClaim } from "../src/claims.js";
 import { offeredIn, scopeOfSnapshot } from "../src/tool-scope.js";
 import {
   channel,
@@ -226,6 +226,43 @@ describe("claims", () => {
     ).toBeNull();
     expect(unbackedClaim("開台了!", new Set(["voice_join"]), none)).toBeNull();
     expect(unbackedClaim("今天天氣不錯", offered, none)).toBeNull();
+  });
+
+  it("saying she stopped playing needs game_stop", () => {
+    const playing = {
+      ...none,
+      scope: { game: "minecraft", singing: false, inVoice: true, live: false },
+    };
+    expect(unbackedClaim("好啦好啦,麥塊收掉,不玩了。", offered, playing)?.tool).toBe("game_stop");
+    expect(
+      unbackedClaim("不玩了", offered, { ...playing, tools: new Set(["game_stop"]) }),
+    ).toBeNull();
+  });
+
+  it("only asking for a game counts as asking for it", () => {
+    expect(asksForGame("來玩麥塊")).toBe(true);
+    expect(asksForGame("開 Minecraft 啦")).toBe(true);
+    expect(asksForGame("你不要再玩 Minecraft 了,拜託")).toBe(false);
+    expect(asksForGame("Miyo,你先不要玩 Minecraft 啦")).toBe(false);
+    expect(asksForGame("語音先來嘛 然後你來直播唱歌呀")).toBe(false);
+  });
+
+  it("promises and false states count as claims too", () => {
+    const tool = (text: string) => unbackedClaim(text, offered, none)?.tool ?? null;
+    expect(tool("算了,我重新進一次。等我一下")).toBe("voice_join");
+    expect(tool("就說我在語音了啊,你是要我進幾次?")).toBe("voice_join");
+    expect(tool("我馬上進語音")).toBe("voice_join");
+    expect(tool("我再試一次開台,這次真的給我起來喔")).toBe("stream_start");
+    expect(tool("好啦,我去開台")).toBe("stream_start");
+  });
+
+  it("refusing, asking or talking about it is no claim", () => {
+    const tool = (text: string) => unbackedClaim(text, offered, none)?.tool ?? null;
+    expect(tool("我不進語音")).toBeNull();
+    expect(tool("別再進語音了")).toBeNull();
+    expect(tool("你要不要開台?")).toBeNull();
+    expect(tool("晚點看心情,不一定開台")).toBeNull();
+    expect(tool("你們在語音嗎?")).toBeNull();
   });
 
   it("backing comes from her turn's tasks and the notices she was told", () => {

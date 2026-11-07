@@ -87,7 +87,13 @@ import {
   type TalkLevel,
   type VoiceAttention,
 } from "./attention.js";
-import { acceptedRequests, type Backing, claimReminder, unbackedClaim } from "./claims.js";
+import {
+  acceptedRequests,
+  asksForGame,
+  type Backing,
+  claimReminder,
+  unbackedClaim,
+} from "./claims.js";
 import { budgetBlocks, budgetSelf, contributedData, savedPrompt } from "./compiler.js";
 import type { AttentionConfig, ChannelMode } from "./config.js";
 import { AMBIENT_MODES, typingRefreshMs } from "./config.js";
@@ -1660,9 +1666,16 @@ class Turn {
   #toolScope(): ToolScope | null {
     const services = this.agent.ctx.services;
     const activity = services.get(ActivityManagerKey);
-    if (activity) return scopeOfSnapshot(activity.snapshot());
+    const gameHeld = this.#gameHeld();
+    if (activity) return { ...scopeOfSnapshot(activity.snapshot()), gameHeld };
     const her = services.get(WorldStateKey)?.snapshot().her;
-    return her ? scopeOfHer(her) : null;
+    return her ? { ...scopeOfHer(her), gameHeld } : null;
+  }
+
+  /** Her game was closed and the messages she answers do not ask her to start one. */
+  #gameHeld(): boolean {
+    const held = this.agent.ctx.services.get(ArbiterKey)?.held?.("game.start") ?? null;
+    return held !== null && !this.#focused.some((m) => asksForGame(m.text));
   }
 
   /** The tools offered in this context now (`react` makes no sense in voice). */
