@@ -146,22 +146,22 @@ export function TokenGate({
         ? "登入已過期或權限已變更,請重新登入。"
         : null;
   return (
-    <div className="flex min-h-svh items-center justify-center bg-background px-4 py-12">
+    <div className="flex min-h-svh items-center justify-center px-4 py-12">
       <div className="grid w-full max-w-sm gap-6">
         <div className="flex items-center gap-3">
-          <Logo className="size-7 text-brand" />
-          <h1 className="text-xl font-semibold tracking-tight">Miyoria</h1>
+          <Logo className="size-5 text-primary" />
+          <h1 className="text-[15px] font-semibold">Miyoria</h1>
         </div>
         {notice && (
           <div
             role="alert"
-            className="flex gap-2.5 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-sm"
+            className="glass-well flex gap-2.5 rounded-md border border-primary/50 px-3 py-2.5 text-sm"
           >
-            <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-[oklch(0.74_0.16_25)]" />
+            <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" />
             <span>{notice}</span>
           </div>
         )}
-        <div className="grid gap-5 rounded-xl border bg-card p-6">
+        <div className="glass-float grid gap-5 rounded-lg p-6">
           {showDiscord && (
             <>
               <Button asChild>

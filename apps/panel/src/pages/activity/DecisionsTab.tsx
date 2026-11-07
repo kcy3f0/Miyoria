@@ -172,19 +172,19 @@ export function DecisionsTab() {
         </Select>
       </Toolbar>
       {data && data.length > 1 && <DecisionChart records={data} />}
-      <Card className="overflow-hidden">
+      <Card>
         <QueryView query={decisions} isEmpty={(d) => d.length === 0} empty="還沒有決策紀錄">
           {() =>
             visible.length === 0 ? (
               <EmptyLine>沒有符合的決策</EmptyLine>
             ) : (
-              <ul className="divide-y" aria-label="決策列表">
+              <ul className="divide-y divide-line-soft" aria-label="決策列表">
                 {visible.map((d) => (
                   <li key={d.id}>
                     <button
                       type="button"
                       onClick={() => setSelected(d)}
-                      className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm outline-none hover:bg-muted/40 focus-visible:bg-muted/60"
+                      className="flex w-full items-center gap-3 py-(--row-y) text-left text-sm outline-none hover:bg-hover focus-visible:bg-hover"
                     >
                       <Badge variant={d.trace.respond ? "brand" : "outline"} className="w-10">
                         {d.trace.respond ? "回應" : "略過"}

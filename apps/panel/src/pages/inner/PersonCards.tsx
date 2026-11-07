@@ -45,13 +45,13 @@ export function PersonCards() {
   if (cards.isPending || cards.isError) return null;
   const list = cards.data;
   return (
-    <Card className="overflow-hidden">
+    <Card>
       <CardHeader>
         <CardTitle>人物卡</CardTitle>
         <span className="text-sm text-muted-foreground tabular-nums">{list.length}</span>
       </CardHeader>
       {list.length === 0 ? (
-        <p className="px-4 py-8 text-center text-sm text-muted-foreground">還沒有任何人物卡</p>
+        <p className="py-3 text-[13px] text-muted-foreground">還沒有任何人物卡</p>
       ) : (
         <Table aria-label="人物卡">
           <TableHeader>
@@ -75,7 +75,7 @@ export function PersonCards() {
                       <Link
                         to="/character"
                         search={{ tab: "people", person: c.person }}
-                        className="w-fit rounded-sm font-medium outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
+                        className="w-fit rounded-sm font-medium outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         {c.call_name ?? c.handle}
                       </Link>

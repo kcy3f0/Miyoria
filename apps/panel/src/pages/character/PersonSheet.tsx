@@ -99,7 +99,7 @@ export function RelationshipEditor({ detail }: { detail: PersonDetail }) {
         <Textarea id={`${id}-notes`} rows={4} value={shown.notes} onChange={(e) => change("notes", e.target.value)} />
       </Field>
       <div className="flex items-center gap-2">
-        <Button writes type="submit" size="sm" busy={update.isPending} disabled={edits === null}>
+        <Button writes type="submit" size="sm" variant="secondary" busy={update.isPending} disabled={edits === null}>
           <Save />
           儲存
         </Button>
@@ -155,7 +155,7 @@ function PersonBody({ detail }: { detail: PersonDetail }) {
             writes
             size="sm"
             variant="outline"
-            className={detail.blocked ? undefined : "text-[oklch(0.74_0.16_25)] hover:text-[oklch(0.78_0.16_25)]"}
+            className={detail.blocked ? undefined : "text-primary hover:text-primary"}
             busy={update.isPending && update.variables?.blocked !== undefined}
             onClick={() => (detail.blocked ? setBlocked(false) : setConfirmBlock(true))}
           >
@@ -176,7 +176,7 @@ function PersonBody({ detail }: { detail: PersonDetail }) {
                 <dd className="text-right font-mono text-xs tabular-nums">{Math.round(r.affinity)}</dd>
                 <dt className="text-muted-foreground">信任</dt>
                 <dd>
-                  <Meter value={r.trust / 100} tone="success" label="信任" />
+                  <Meter value={r.trust / 100} tone="brand" label="信任" />
                 </dd>
                 <dd className="text-right font-mono text-xs tabular-nums">{Math.round(r.trust)}</dd>
                 <dt className="text-muted-foreground">熟悉</dt>
@@ -218,7 +218,7 @@ function PersonBody({ detail }: { detail: PersonDetail }) {
         </Section>
 
         <Section title="帳號">
-          <ul className="divide-y rounded-md border">
+          <ul className="divide-y divide-line-soft rounded-md border">
             {detail.person.accounts.map((a) => (
               <li key={accountString(a.account)} className="flex items-center gap-3 px-3 py-2.5 text-sm">
                 <span className="min-w-0 flex-1">
@@ -236,7 +236,7 @@ function PersonBody({ detail }: { detail: PersonDetail }) {
 
         {detail.history.length > 0 && (
           <Section title="最近的變化">
-            <ul className="divide-y rounded-md border">
+            <ul className="divide-y divide-line-soft rounded-md border">
               {[...detail.history]
                 .reverse()
                 .slice(0, 20)
@@ -267,7 +267,6 @@ function PersonBody({ detail }: { detail: PersonDetail }) {
         open={confirmBlock}
         title={`封鎖 ${detail.person.display_name}?`}
         confirmLabel="封鎖"
-        destructive
         busy={update.isPending}
         onClose={() => setConfirmBlock(false)}
         onConfirm={() => setBlocked(true)}

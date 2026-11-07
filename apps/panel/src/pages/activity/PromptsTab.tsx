@@ -62,7 +62,7 @@ function Row({ prompt, outcome, onOpen }: { prompt: PromptSummary; outcome: Turn
       <button
         type="button"
         onClick={onOpen}
-        className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm outline-none hover:bg-muted/40 focus-visible:bg-muted/60"
+        className="flex w-full items-center gap-3 py-(--row-y) text-left text-sm outline-none hover:bg-hover focus-visible:bg-hover"
       >
         {outcome ? (
           <span className="w-24 shrink-0">
@@ -125,13 +125,13 @@ export function PromptsTab() {
         </Select>
         <span className="ml-auto text-[13px] text-muted-foreground">每個回合只留一份壓縮過的提示詞</span>
       </Toolbar>
-      <Card className="overflow-hidden">
+      <Card>
         <QueryView query={prompts} isEmpty={(d) => d.length === 0} empty="還沒有留下的提示詞">
           {() =>
             visible.length === 0 ? (
               <EmptyLine>沒有符合的回合</EmptyLine>
             ) : (
-              <ul className="divide-y" aria-label="提示詞列表">
+              <ul className="divide-y divide-line-soft" aria-label="提示詞列表">
                 {visible.map((p) => (
                   <Row key={p.turn} prompt={p} outcome={byTurn.get(p.turn)} onOpen={() => open(p.turn)} />
                 ))}

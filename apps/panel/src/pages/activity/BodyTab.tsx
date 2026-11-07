@@ -30,7 +30,7 @@ function Since({ at }: { at: string }) {
 
 function Cell({ label, tone, pulse, children, sub }: { label: string; tone: Tone; pulse?: boolean; children: ReactNode; sub?: ReactNode }) {
   return (
-    <div className="flex min-w-0 flex-col gap-2 bg-card px-4 py-3.5">
+    <div className="flex min-w-0 flex-col gap-2">
       <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd className="grid min-w-0 gap-1">
         <span>
@@ -55,7 +55,7 @@ export function BodyState({ snapshot }: { snapshot: ActivitySnapshot }) {
   return (
     <dl
       aria-label="她現在的狀態"
-      className="grid grid-cols-1 gap-px overflow-hidden rounded-lg border bg-border sm:grid-cols-2 xl:grid-cols-4"
+      className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2 xl:grid-cols-4"
     >
       <Cell
         label="語音"
@@ -66,7 +66,7 @@ export function BodyState({ snapshot }: { snapshot: ActivitySnapshot }) {
       </Cell>
       <Cell
         label="直播"
-        tone={live ? "danger" : busy ? "warning" : "neutral"}
+        tone={live ? "brand" : busy ? "warning" : "neutral"}
         pulse={live}
         sub={
           busy
@@ -105,7 +105,7 @@ function TaskWhat({ task }: { task: ActivityTask }) {
     <span className="grid gap-0.5">
       <span>{requestLabel(task.request)}</span>
       {task.failure ? (
-        <span className="text-[13px] text-destructive">
+        <span className="text-[13px] text-primary">
           {FAILURE_LABEL[task.failure.code] ?? task.failure.code}:{task.failure.detail}
         </span>
       ) : (
@@ -117,12 +117,12 @@ function TaskWhat({ task }: { task: ActivityTask }) {
 
 export function TasksCard({ tasks }: { tasks: ActivityTask[] }) {
   return (
-    <Card className="overflow-hidden">
+    <Card>
       <CardHeader>
         <CardTitle>最近的任務</CardTitle>
       </CardHeader>
       {tasks.length === 0 ? (
-        <EmptyLine className="py-8">還沒有任何任務</EmptyLine>
+        <EmptyLine>還沒有任何任務</EmptyLine>
       ) : (
         <Table aria-label="活動任務">
           <TableHeader>
@@ -176,7 +176,7 @@ export function BodyTab() {
   const activity = useActivity();
   const tasks = useActivityTasks();
   return (
-    <div className="grid gap-6">
+    <div className="grid gap-(--stage-gap)">
       <QueryView query={activity}>{(s) => <BodyState snapshot={s} />}</QueryView>
       {tasks.isError && activity.isError ? null : (
         <QueryView query={tasks}>{(list) => <TasksCard tasks={list} />}</QueryView>

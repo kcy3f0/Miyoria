@@ -14,7 +14,7 @@ const signed = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(2)}`;
 
 function Row({ label, value, children }: { label: string; value: string; children: ReactNode }) {
   return (
-    <div className="grid grid-cols-[6.5rem_minmax(0,1fr)_3.5rem] items-center gap-3 px-4 py-2.5">
+    <div className="grid grid-cols-[6.5rem_minmax(0,1fr)_3.5rem] items-center gap-3 py-(--row-y)">
       <dt className="text-[13px] text-muted-foreground">{label}</dt>
       <dd className="contents">
         <span className="min-w-0">{children}</span>
@@ -36,10 +36,10 @@ function MoodCard({ affect }: { affect: AffectSnapshot }) {
           </Badge>
         )}
       </CardHeader>
-      <p className="px-4 pb-3 text-base font-medium" aria-label="心情一句話">
+      <p className="pb-2 text-base font-medium" aria-label="心情一句話">
         {affect.mood_line || "—"}
       </p>
-      <dl className="divide-y border-t" aria-label="心情數值">
+      <dl className="divide-y divide-line-soft" aria-label="心情數值">
         <Row label="心情" value={n2(mood.valence)}>
           <Bipolar value={mood.valence * 100} label={`心情 ${n2(mood.valence)}`} />
         </Row>
@@ -47,7 +47,7 @@ function MoodCard({ affect }: { affect: AffectSnapshot }) {
           <Meter value={mood.arousal} label={`興奮 ${n2(mood.arousal)}`} />
         </Row>
         <Row label="精神" value={n2(mood.energy)}>
-          <Meter value={mood.energy} tone="success" label={`精神 ${n2(mood.energy)}`} />
+          <Meter value={mood.energy} tone="brand" label={`精神 ${n2(mood.energy)}`} />
         </Row>
         <Row label="無聊" value={n2(affect.boredom)}>
           <Meter value={affect.boredom} label={`無聊 ${n2(affect.boredom)}`} />
@@ -59,12 +59,12 @@ function MoodCard({ affect }: { affect: AffectSnapshot }) {
 
 function EmotionsCard({ affect }: { affect: AffectSnapshot }) {
   return (
-    <Card className="overflow-hidden">
+    <Card>
       <CardHeader>
         <CardTitle>最強的情緒</CardTitle>
       </CardHeader>
       {affect.top.length === 0 ? (
-        <EmptyLine className="py-8">現在沒有明顯的情緒</EmptyLine>
+        <EmptyLine>現在沒有明顯的情緒</EmptyLine>
       ) : (
         <Table aria-label="情緒">
           <TableHeader>
@@ -106,7 +106,7 @@ function DrivesCard({ affect }: { affect: AffectSnapshot }) {
       <CardHeader>
         <CardTitle>驅力</CardTitle>
       </CardHeader>
-      <dl className="divide-y" aria-label="驅力">
+      <dl className="divide-y divide-line-soft" aria-label="驅力">
         {AFFECT_DRIVE_ORDER.map((d) => {
           const v = affect.drives[d as keyof AffectSnapshot["drives"]];
           if (v === undefined) return null;
@@ -125,12 +125,11 @@ function DrivesCard({ affect }: { affect: AffectSnapshot }) {
 export function BiasCard({ biases }: { biases: AffectBiases }) {
   const wants = [...biases.wants].sort((a, b) => b.weight - a.weight);
   return (
-    <Card className="overflow-hidden">
+    <Card>
       <CardHeader>
         <CardTitle>情緒 → 行為</CardTitle>
-        <span className="text-[13px] text-muted-foreground">只是傾向,最後怎麼做由她的計畫決定</span>
       </CardHeader>
-      <dl className="divide-y border-b" aria-label="行為偏移">
+      <dl className="divide-y divide-line-soft border-b border-line-soft" aria-label="行為偏移">
         <Row label="多話程度" value={signed(biases.talkativeness)}>
           <Bipolar value={biases.talkativeness * 100} label={`多話程度偏移 ${signed(biases.talkativeness)}`} />
         </Row>
@@ -139,7 +138,7 @@ export function BiasCard({ biases }: { biases: AffectBiases }) {
         </Row>
       </dl>
       {wants.length === 0 ? (
-        <EmptyLine className="py-8">現在沒有特別想做的事</EmptyLine>
+        <EmptyLine>現在沒有特別想做的事</EmptyLine>
       ) : (
         <Table aria-label="她想做的事">
           <TableHeader>
@@ -185,8 +184,8 @@ export function AffectTab() {
   return (
     <QueryView query={affect} skeleton={<Loading />}>
       {(a) => (
-        <div className="grid gap-6">
-          <div className="grid items-start gap-6 lg:grid-cols-2">
+        <div className="grid gap-(--stage-gap)">
+          <div className="grid items-start gap-(--stage-gap) lg:grid-cols-2">
             <MoodCard affect={a} />
             <DrivesCard affect={a} />
           </div>

@@ -6,6 +6,7 @@ import type { AuthMethods, SessionInfo } from "@/api/types";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { TokenGate } from "@/pages/login/TokenGate";
+import { Backdrop } from "./Backdrop";
 import { ConnectionProvider, useConnection } from "./connection";
 import { EventStreamProvider } from "./events-store";
 import { createQueryClient } from "./queries";
@@ -89,7 +90,7 @@ function Authenticated({ router }: { router: AppRouter }) {
   );
 
   if (auth.status === "checking") {
-    return <div className="min-h-svh bg-background" aria-busy="true" aria-label="確認登入狀態中" />;
+    return <div className="min-h-svh" aria-busy="true" aria-label="確認登入狀態中" />;
   }
 
   if (auth.status === "signed_out" || !sessionValue) {
@@ -123,6 +124,7 @@ export function App({ router }: { router?: AppRouter }) {
   return (
     <ConnectionProvider>
       <TooltipProvider>
+        <Backdrop />
         <Authenticated router={r} />
         <Toaster />
       </TooltipProvider>

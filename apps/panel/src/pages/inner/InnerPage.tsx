@@ -28,7 +28,7 @@ function HerBadges() {
   return (
     <>
       {live && (
-        <StatusBadge tone="danger" pulse>
+        <StatusBadge tone="brand" pulse>
           直播中
         </StatusBadge>
       )}
@@ -58,16 +58,16 @@ export function InnerPage() {
   const self = useSelf();
   const world = useWorld();
   return (
-    <Page>
-      <PageHeader title="內心" actions={<HerBadges />} />
-      <Tabs value={tab} onValueChange={(t) => void navigate({ to: "/inner", search: { tab: t as InnerTab }, replace: true })}>
-        <TabsList>
-          {INNER_TABS.map((t) => (
-            <TabsTrigger key={t.tab} value={t.tab}>
-              {t.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+    <Tabs value={tab} onValueChange={(t) => void navigate({ to: "/inner", search: { tab: t as InnerTab }, replace: true })}>
+      <TabsList>
+        {INNER_TABS.map((t) => (
+          <TabsTrigger key={t.tab} value={t.tab}>
+            {t.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      <Page>
+        <PageHeader title="內心" actions={<HerBadges />} />
         <TabsContent value="state">
           <QueryView query={self} skeleton={<Loading />}>
             {(s) => <StateTab self={s} />}
@@ -101,7 +101,7 @@ export function InnerPage() {
             {(w) => <WorldTab world={w} />}
           </QueryView>
         </TabsContent>
-      </Tabs>
-    </Page>
+      </Page>
+    </Tabs>
   );
 }

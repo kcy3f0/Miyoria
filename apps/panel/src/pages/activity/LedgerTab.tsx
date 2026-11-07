@@ -33,7 +33,7 @@ function When({ at }: { at: string }) {
 
 function Stat({ label, children, sub }: { label: string; children: React.ReactNode; sub?: React.ReactNode }) {
   return (
-    <div className="flex min-w-0 flex-col gap-1 bg-card px-4 py-3">
+    <div className="flex min-w-0 flex-col gap-1">
       <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-sm font-medium">{children}</dd>
       {sub && <dd className="min-w-0 truncate text-[13px] text-muted-foreground">{sub}</dd>}
@@ -45,12 +45,12 @@ function Stat({ label, children, sub }: { label: string; children: React.ReactNo
 export function LimitsCard({ limits }: { limits: LedgerLimits }) {
   const q = limits.quiet_hours;
   return (
-    <Card className="overflow-hidden">
+    <Card>
       <CardHeader>
         <CardTitle>她現在的限制</CardTitle>
         {limits.paused && <StatusBadge tone="danger">自主已暫停</StatusBadge>}
       </CardHeader>
-      <dl aria-label="限制" className="grid grid-cols-2 gap-px border-y bg-border lg:grid-cols-4">
+      <dl aria-label="限制" className="grid grid-cols-2 gap-x-8 gap-y-3 lg:grid-cols-4">
         <Stat
           label="今天主動開的次數"
           sub={limits.initiative_cap === null ? "沒有上限" : `上限 ${limits.initiative_cap} 次`}
@@ -69,7 +69,7 @@ export function LimitsCard({ limits }: { limits: LedgerLimits }) {
         </Stat>
       </dl>
       {limits.blocked.length === 0 ? (
-        <EmptyLine className="py-6">沒有被擋住的能力</EmptyLine>
+        <EmptyLine>沒有被擋住的能力</EmptyLine>
       ) : (
         <Table aria-label="被擋住的能力">
           <TableHeader>
@@ -99,14 +99,14 @@ const TOPIC_LABEL: Record<RaisedTopic["status"], string> = { waiting: "等回應
 function UnansweredCard({ topics }: { topics: RaisedTopic[] }) {
   if (topics.length === 0) return null;
   return (
-    <Card className="overflow-hidden">
+    <Card>
       <CardHeader>
         <CardTitle>沒人接的話題</CardTitle>
         <span className="text-sm text-muted-foreground tabular-nums">{topics.length}</span>
       </CardHeader>
-      <ul className="divide-y" aria-label="沒人接的話題">
+      <ul className="divide-y divide-line-soft" aria-label="沒人接的話題">
         {topics.map((t, i) => (
-          <li key={i} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+          <li key={i} className="flex items-center gap-3 py-(--row-y) text-sm">
             <span className="min-w-0 flex-1 truncate">{t.text}</span>
             {t.context && <span className="hidden text-[13px] text-muted-foreground sm:block">{contextShort(t.context)}</span>}
             <Badge variant="outline">{TOPIC_LABEL[t.status]}</Badge>
@@ -122,12 +122,12 @@ function UnansweredCard({ topics }: { topics: RaisedTopic[] }) {
 
 function Entries({ entries }: { entries: LedgerEntry[] }) {
   return (
-    <Card className="overflow-hidden">
+    <Card>
       <CardHeader>
         <CardTitle>她做過和試過的事</CardTitle>
       </CardHeader>
       {entries.length === 0 ? (
-        <EmptyLine className="py-8">帳本是空的</EmptyLine>
+        <EmptyLine>帳本是空的</EmptyLine>
       ) : (
         <Table aria-label="帳本">
           <TableHeader>
@@ -185,7 +185,7 @@ function Entries({ entries }: { entries: LedgerEntry[] }) {
 }
 
 function DecisionRows({ decisions }: { decisions: ArbiterDecisionView[] }) {
-  if (decisions.length === 0) return <EmptyLine className="py-8">沒有符合的裁決</EmptyLine>;
+  if (decisions.length === 0) return <EmptyLine>沒有符合的裁決</EmptyLine>;
   return (
     <Table aria-label="裁決">
       <TableHeader>
@@ -248,10 +248,9 @@ function DecisionsCard() {
           </SelectContent>
         </Select>
       </Toolbar>
-      <Card className="overflow-hidden">
+      <Card>
         <QueryView query={decisions}>{(d) => <DecisionRows decisions={d.decisions} />}</QueryView>
       </Card>
-      <p className="text-[13px] text-muted-foreground">只算 API 啟動之後看到的裁決。</p>
     </div>
   );
 }
@@ -260,7 +259,7 @@ function DecisionsCard() {
 export function LedgerTab() {
   const ledger = useLedger();
   return (
-    <div className="grid gap-6">
+    <div className="grid gap-(--stage-gap)">
       <QueryView query={ledger}>
         {(view) => (
           <>

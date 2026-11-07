@@ -17,16 +17,16 @@ export function ActivityPage() {
   const tab = search.tab ?? (search.turn ? "prompts" : "events");
   const navigate = useNavigate();
   return (
-    <Page>
-      <PageHeader title="動態" />
-      <Tabs value={tab} onValueChange={(t) => void navigate({ to: "/activity", search: { tab: t as ActivityTab }, replace: true })}>
-        <TabsList>
-          {ACTIVITY_TABS.map((t) => (
-            <TabsTrigger key={t.tab} value={t.tab}>
-              {t.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+    <Tabs value={tab} onValueChange={(t) => void navigate({ to: "/activity", search: { tab: t as ActivityTab }, replace: true })}>
+      <TabsList>
+        {ACTIVITY_TABS.map((t) => (
+          <TabsTrigger key={t.tab} value={t.tab}>
+            {t.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      <Page>
+        <PageHeader title="動態" />
         <TabsContent value="events">
           <EventsTab />
         </TabsContent>
@@ -45,7 +45,7 @@ export function ActivityPage() {
         <TabsContent value="prompts">
           <PromptsTab />
         </TabsContent>
-      </Tabs>
-    </Page>
+      </Page>
+    </Tabs>
   );
 }

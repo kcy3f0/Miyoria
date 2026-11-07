@@ -107,7 +107,7 @@ function Tooltip({ x, width, title, rows }: { x: number; width: number; title: s
   return (
     <div
       role="presentation"
-      className="pointer-events-none absolute top-1 z-10 min-w-36 rounded-md border bg-popover/95 px-2.5 py-2 text-xs shadow-lg shadow-black/40 backdrop-blur-sm"
+      className="glass-float pointer-events-none absolute top-1 z-10 min-w-36 rounded-md px-2.5 py-2 text-xs"
       style={right ? { right: width - x + 12 } : { left: x + 12 }}
     >
       <p className="mb-1.5 font-mono text-[11px] text-muted-foreground tabular-nums">{title}</p>
@@ -292,7 +292,7 @@ export function TimeChart({
             tabIndex={compact ? -1 : 0}
             onKeyDown={onKey}
             onBlur={() => hover.set(null)}
-            className="block overflow-visible rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            className="block overflow-visible rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <title id={titleId}>{label}</title>
             {yTicks.map((v) => (
@@ -353,7 +353,7 @@ export function TimeChart({
                   const v = s.values[hi];
                   if (v === null || v === undefined) return null;
                   return (
-                    <circle key={s.key} cx={hx} cy={y(v)} r={compact ? 3 : 4} fill={s.color} stroke="var(--card)" strokeWidth={2} />
+                    <circle key={s.key} cx={hx} cy={y(v)} r={compact ? 3 : 4} fill={s.color} stroke="var(--chart-surface)" strokeWidth={2} />
                   );
                 })}
               </g>
@@ -469,7 +469,7 @@ export function ColumnChart({
             onKeyDown={onKey}
             onBlur={() => setHi(null)}
             onPointerLeave={() => setHi(null)}
-            className="block overflow-visible rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            className="block overflow-visible rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <title id={titleId}>{label}</title>
             {yTicks.map((v) => (
@@ -550,7 +550,7 @@ export interface Facet {
 export function Facets({ times, facets, height = 56, className }: { times: number[]; facets: Facet[]; height?: number; className?: string }) {
   return (
     <HoverGroup>
-      <div className={cn("grid grid-cols-2 gap-px overflow-hidden bg-border sm:grid-cols-3 xl:grid-cols-5", className)}>
+      <div className={cn("grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 xl:grid-cols-5", className)}>
         {facets.map((f) => (
           <FacetCell key={f.key} times={times} facet={f} height={height} />
         ))}
@@ -565,7 +565,7 @@ function FacetCell({ times, facet, height }: { times: number[]; facet: Facet; he
   const i = t === null ? times.length - 1 : nearest(times, t);
   const v = i >= 0 ? (facet.values[i] ?? null) : null;
   return (
-    <div className="flex min-w-0 flex-col gap-2 bg-card px-4 pt-3 pb-3">
+    <div className="flex min-w-0 flex-col gap-2">
       <div className="flex items-baseline justify-between gap-2">
         <span className="truncate text-[13px] text-muted-foreground">{facet.label}</span>
         <span className="text-sm font-medium tabular-nums">{v === null ? "—" : fmt(v)}</span>
@@ -573,7 +573,7 @@ function FacetCell({ times, facet, height }: { times: number[]; facet: Facet; he
       <TimeChart
         compact
         times={times}
-        series={[{ key: facet.key, label: facet.label, color: facet.color ?? "var(--chart-1)", values: facet.values }]}
+        series={[{ key: facet.key, label: facet.label, color: facet.color ?? "var(--chart-line)", values: facet.values }]}
         domain={facet.domain}
         zero={facet.zero}
         label={`${facet.label}走勢`}
@@ -599,14 +599,14 @@ export function SegmentBar({ parts, label, format = (v) => String(v), className 
   const shown = parts.filter((p) => p.value > 0);
   return (
     <figure className={cn("grid gap-2.5", className)} aria-label={label}>
-      <div className="flex h-2 w-full gap-0.5 overflow-hidden rounded-full bg-muted" role="img" aria-label={`${label}:${parts.map((p) => `${p.label} ${format(p.value)}`).join(",")}`}>
+      <div className="flex h-2 w-full gap-0.5 overflow-hidden rounded-[2px]" role="img" aria-label={`${label}:${parts.map((p) => `${p.label} ${format(p.value)}`).join(",")}`}>
         {total > 0 &&
           shown.map((p) => (
-            <span key={p.key} title={`${p.label} ${format(p.value)}`} className="h-full first:rounded-l-full last:rounded-r-full" style={{ width: `${(p.value / total) * 100}%`, background: p.color }} />
+            <span key={p.key} title={`${p.label} ${format(p.value)}`} className="h-full rounded-[2px]" style={{ width: `${(p.value / total) * 100}%`, background: p.color }} />
           ))}
       </div>
       <figcaption>
-        <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <ul className="flex flex-wrap gap-x-3.5 gap-y-1 text-xs text-muted-foreground">
           {parts.map((p) => (
             <li key={p.key} className="flex items-center gap-1.5">
               <span aria-hidden className="size-2 rounded-[2px]" style={{ background: p.color }} />
@@ -625,7 +625,7 @@ export function BarList({
   items,
   label,
   format = (v) => String(v),
-  color = "var(--chart-1)",
+  color = "var(--chart-line)",
   className,
 }: {
   items: { key: string; label: ReactNode; value: number; detail?: string }[];
@@ -642,8 +642,8 @@ export function BarList({
           <span className="truncate text-muted-foreground" title={typeof i.label === "string" ? i.label : undefined}>
             {i.label}
           </span>
-          <span className="h-2 rounded-full bg-muted">
-            <span className="block h-full rounded-full" style={{ width: `${max > 0 && i.value > 0 ? Math.max(2, (i.value / max) * 100) : 0}%`, background: color }} />
+          <span className="h-1.5 rounded-[2px] bg-muted">
+            <span className="block h-full rounded-[2px]" style={{ width: `${max > 0 && i.value > 0 ? Math.max(2, (i.value / max) * 100) : 0}%`, background: color }} />
           </span>
           <span className="text-right font-mono text-[13px] tabular-nums" title={i.detail}>
             {format(i.value)}
@@ -673,7 +673,7 @@ export function ChartBlock({
   className?: string;
 }) {
   return (
-    <section className={cn("flex min-w-0 flex-col gap-4 rounded-lg border bg-card p-4 sm:p-5", className)}>
+    <section className={cn("flex min-w-0 flex-col gap-3", className)}>
       <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
         <div className="grid min-w-0 gap-1">
           <h2 className="text-[13px] font-medium text-muted-foreground">
@@ -681,7 +681,7 @@ export function ChartBlock({
             {value === undefined && aside && <span className="ml-2 font-normal text-muted-foreground/80">{aside}</span>}
           </h2>
           {value !== undefined && (
-            <p className="flex items-baseline gap-1.5 text-2xl font-semibold tracking-tight">
+            <p className="flex flex-wrap items-baseline gap-x-1.5 text-2xl font-semibold tracking-[-0.02em]">
               {value}
               {unit && <span className="text-sm font-normal text-muted-foreground">{unit}</span>}
               {aside && <span className="ml-1 text-[13px] font-normal text-muted-foreground">{aside}</span>}
@@ -698,7 +698,7 @@ export function ChartBlock({
 /** Use for a chart's empty state, at the chart's height. */
 export function ChartEmpty({ height = 180, children }: { height?: number; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-center rounded-md bg-muted/40 text-sm text-muted-foreground" style={{ height }}>
+    <div className="flex items-center justify-center rounded-md bg-well text-[13px] text-muted-foreground" style={{ height }}>
       {children}
     </div>
   );

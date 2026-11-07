@@ -76,22 +76,50 @@ export type SystemTab = (typeof SYSTEM_TABS)[number]["tab"];
 export type InnerTab = (typeof INNER_TABS)[number]["tab"];
 export type LlmTab = (typeof LLM_TABS)[number]["tab"];
 
-export const NAV: NavItem[] = [
-  { to: "/", label: "總覽", icon: Gauge },
-  { to: "/activity", label: "動態", icon: Activity, tabs: [...ACTIVITY_TABS] },
-  { to: "/live", label: "直播", icon: Clapperboard },
-  { to: "/character", label: "角色", icon: UserRound, tabs: [...CHARACTER_TABS] },
-  { to: "/inner", label: "內心", icon: HeartPulse, tabs: [...INNER_TABS] },
-  { to: "/llm", label: "LLM", icon: Cpu, tabs: [...LLM_TABS] },
-  { to: "/system", label: "系統", icon: Server, tabs: [...SYSTEM_TABS] },
-  { to: "/access", label: "權限", icon: ShieldCheck },
-  { to: "/data", label: "資料", icon: Database },
-  { to: "/settings", label: "設定", icon: Settings },
+/** The sidebar: pages in the groups the header names as `分類 / 頁面`. */
+export const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
+  {
+    label: "現場",
+    items: [
+      { to: "/", label: "總覽", icon: Gauge },
+      { to: "/live", label: "直播", icon: Clapperboard },
+      { to: "/activity", label: "動態", icon: Activity, tabs: [...ACTIVITY_TABS] },
+    ],
+  },
+  {
+    label: "她",
+    items: [
+      { to: "/inner", label: "內心", icon: HeartPulse, tabs: [...INNER_TABS] },
+      { to: "/character", label: "角色", icon: UserRound, tabs: [...CHARACTER_TABS] },
+    ],
+  },
+  {
+    label: "運作",
+    items: [
+      { to: "/llm", label: "LLM", icon: Cpu, tabs: [...LLM_TABS] },
+      { to: "/system", label: "系統", icon: Server, tabs: [...SYSTEM_TABS] },
+    ],
+  },
+  {
+    label: "管理",
+    items: [
+      { to: "/access", label: "權限", icon: ShieldCheck },
+      { to: "/data", label: "資料", icon: Database },
+      { to: "/settings", label: "設定", icon: Settings },
+    ],
+  },
 ];
 
+export const NAV: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
+
+export const isActive = (to: NavPath, path: string) => (to === "/" ? path === "/" : path === to || path.startsWith(`${to}/`));
+
 export function titleFor(path: string): string {
-  const item = NAV.find((i) => (i.to === "/" ? path === "/" : path === i.to || path.startsWith(`${i.to}/`)));
-  return item?.label ?? "Miyoria";
+  return NAV.find((i) => isActive(i.to, path))?.label ?? "Miyoria";
+}
+
+export function groupFor(path: string): string | null {
+  return NAV_GROUPS.find((g) => g.items.some((i) => isActive(i.to, path)))?.label ?? null;
 }
 
 /** Narrows a search param to one of `values`, else `undefined`. */

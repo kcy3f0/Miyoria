@@ -39,15 +39,15 @@ function DayPlanCard() {
       <CardHeader>
         <CardTitle>今天的計畫</CardTitle>
       </CardHeader>
-      <QueryView query={plan} isEmpty={(p) => !p.day_plan} empty={<EmptyLine className="py-8">今天還沒寫計畫</EmptyLine>}>
-        {(p) => <p className="px-4 pb-4 text-sm leading-relaxed whitespace-pre-wrap">{p.day_plan}</p>}
+      <QueryView query={plan} isEmpty={(p) => !p.day_plan} empty={<EmptyLine>今天還沒寫計畫</EmptyLine>}>
+        {(p) => <p className="pb-2 text-sm leading-relaxed whitespace-pre-wrap">{p.day_plan}</p>}
       </QueryView>
     </Card>
   );
 }
 
 function GoalRows({ goals }: { goals: Goal[] }) {
-  if (goals.length === 0) return <EmptyLine className="py-8">沒有目標</EmptyLine>;
+  if (goals.length === 0) return <EmptyLine>沒有目標</EmptyLine>;
   return (
     <Table aria-label="目標">
       <TableHeader>
@@ -107,9 +107,9 @@ export function GoalsTab() {
   const [closed, setClosed] = useState(false);
   const goals = useGoals(closed);
   return (
-    <div className="grid gap-6">
+    <div className="grid gap-(--stage-gap)">
       <DayPlanCard />
-      <Card className="overflow-hidden">
+      <Card>
         <CardHeader>
           <CardTitle>目標</CardTitle>
           <div className="flex items-center gap-2">
@@ -120,14 +120,7 @@ export function GoalsTab() {
           </div>
         </CardHeader>
         <QueryView query={goals}>
-          {(v) => (
-            <>
-              <GoalRows goals={v.goals} />
-              {closed && !v.closed_included && (
-                <p className="border-t px-4 py-2.5 text-[13px] text-muted-foreground">這個版本的目標清單沒有留已結束的目標</p>
-              )}
-            </>
-          )}
+          {(v) => <GoalRows goals={v.goals} />}
         </QueryView>
       </Card>
     </div>

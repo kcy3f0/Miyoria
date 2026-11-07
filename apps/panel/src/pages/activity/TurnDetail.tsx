@@ -141,9 +141,9 @@ export function TurnDetail({ turn }: { turn: string }) {
           <SkeletonRows count={3} />
         ) : prompt.isError ? (
           isApiError(prompt.error) && prompt.error.kind === "not_found" ? (
-            <EmptyLine className="py-6">這回合的提示詞沒有留下(太舊,或沒有存)</EmptyLine>
+            <EmptyLine>這回合的提示詞沒有留下(太舊,或沒有存)</EmptyLine>
           ) : isApiError(prompt.error) && prompt.error.kind === "not_provided" ? (
-            <EmptyLine className="py-6">這個 Core 還沒有提供提示詞</EmptyLine>
+            <EmptyLine>這個 Core 還沒有提供提示詞</EmptyLine>
           ) : (
             <ErrorLine error={prompt.error} onRetry={() => void prompt.refetch()} />
           )
