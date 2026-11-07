@@ -8,6 +8,8 @@
 // * One `PersonCard` per person: her feeling, attachment and emotions toward them, plus the
 //   social numbers. Reflect (or the panel) moves a bond only in small steps, within a daily cap.
 // * The weighted behaviour biases her feelings imply are part of the snapshot.
+// * This is where her mood is served from (`MoodSignalsKey`, `mood.changed`): the `mood` module
+//   has nothing left to do while this runs (packages/social/src/mood.ts).
 
 import {
   AFFECT_BOND_TOPIC,
@@ -29,7 +31,9 @@ import {
   type Handle,
   isEphemeralHandle,
   type JsonValue,
+  MOOD_CHANGED_TOPIC,
   type Mood,
+  type MoodSignals,
   moodLine,
   type PersonCard,
   type PersonEmotionName,
@@ -55,6 +59,8 @@ import type { SelfService } from "./state.js";
 
 /** At most this many appraisals count per call (the Appraise call outputs at most 3). */
 export const MAX_APPRAISALS = 3;
+/** At most this many promises count per call. */
+export const MAX_PROMISES = 2;
 const MAX_CAUSE = 80;
 const DAY_MS = 86_400_000;
 const MAX_UNKNOWN_HANDLE = 64;
@@ -88,8 +94,9 @@ function cleanCause(text: string): string {
 
 const normalize = (text: string) => text.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
 
-export class AffectService implements AffectState {
+export class AffectService implements AffectState, MoodSignals {
   #published: AffectSnapshot | null = null;
+  #publishedMood: Mood | null = null;
 
   constructor(private readonly d: AffectDeps) {}
 
@@ -113,8 +120,14 @@ export class AffectService implements AffectState {
       .filter((r) => r.intensity >= cfg.emotions.notice)
       .slice(0, Math.max(cfg.emotions.prompt_max, 1));
     const mood = this.#mood(now);
+    const cards = this.cards();
     const levels: Partial<Record<EmotionName, number>> = {};
-    for (const r of felt) levels[r.name] = r.intensity;
+    const causes: Partial<Record<EmotionName, Handle>> = {};
+    for (const r of felt) {
+      levels[r.name] = r.intensity;
+      const cause = r.person === null ? undefined : cards.find((c) => c.person === r.person);
+      if (cause) causes[r.name] = cause.handle;
+    }
     const drives = e.drives();
     return {
       at: toTimestamp(now),
@@ -126,10 +139,11 @@ export class AffectService implements AffectState {
       shown: self.shown(),
       biases: computeBiases({
         emotions: levels,
+        causes,
         drives,
         boredom: e.boredom(),
         valence: mood.valence,
-        cards: this.cards(),
+        cards,
       }),
     };
   }
@@ -165,6 +179,7 @@ export class AffectService implements AffectState {
    */
   publishIfChanged(): boolean {
     const snap = this.snapshot();
+    this.#publishMood(snap.mood);
     const last = this.#published;
     if (last && !this.#moved(last, snap)) return false;
     this.#published = snap;
@@ -172,15 +187,26 @@ export class AffectService implements AffectState {
     return true;
   }
 
+  /** `mood.changed`, for whoever follows the mood alone. The first reading is not a change. */
+  #publishMood(mood: Mood): void {
+    const last = this.#publishedMood;
+    if (last !== null && !this.#moodMoved(last, mood)) return;
+    this.#publishedMood = mood;
+    if (last !== null) this.d.publish?.(MOOD_CHANGED_TOPIC, { ...mood, reason: "affect" });
+  }
+
+  #moodMoved(a: Mood, b: Mood): boolean {
+    const t = this.#config.mood.publish_threshold;
+    return (
+      Math.abs(a.valence - b.valence) >= t ||
+      Math.abs(a.arousal - b.arousal) >= t ||
+      Math.abs(a.energy - b.energy) >= t
+    );
+  }
+
   #moved(a: AffectSnapshot, b: AffectSnapshot): boolean {
     const t = this.#config.mood.publish_threshold;
-    if (
-      Math.abs(a.mood.valence - b.mood.valence) >= t ||
-      Math.abs(a.mood.arousal - b.mood.arousal) >= t ||
-      Math.abs(a.mood.energy - b.mood.energy) >= t
-    ) {
-      return true;
-    }
+    if (this.#moodMoved(a.mood, b.mood)) return true;
     const names = (s: AffectSnapshot) => s.top.map((r) => r.name).join(",");
     if (names(a) !== names(b)) return true;
     if (a.top.some((r, i) => Math.abs(r.intensity - (b.top[i]?.intensity ?? 0)) >= 2 * t)) {
@@ -208,6 +234,11 @@ export class AffectService implements AffectState {
     for (const ev of input.events.slice(0, MAX_APPRAISALS)) {
       const applied = this.appraiseFor(this.#resolve(ev.toward), ev);
       if (applied) out.push(applied);
+    }
+    for (const promise of (input.promises ?? []).slice(0, MAX_PROMISES)) {
+      const person = this.#resolve(promise.toward);
+      if (person === null) continue;
+      this.applySocial(promise.kept ? "promise_kept" : "promise_broken", person, 1, promise.cause);
     }
     return out;
   }

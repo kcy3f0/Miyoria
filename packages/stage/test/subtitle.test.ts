@@ -3,7 +3,7 @@
 
 import { type ContextKey, customEvent, type Event } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
-import { type CoreMessage, Forwarder, SUBTITLE_TOPIC } from "../src/index.js";
+import { type CoreMessage, Forwarder, parseCoreMessage, SUBTITLE_TOPIC } from "../src/index.js";
 
 const VOICE: ContextKey = { platform: "discord", scope: "g1", channel: "v1", kind: "voice" };
 const TURN = "01JTURN0000000000000000000";
@@ -66,5 +66,83 @@ describe("voice-first subtitles", () => {
       [],
     );
     expect(f.onEvent(customEvent(SUBTITLE_TOPIC, "junk"))).toEqual([]);
+  });
+});
+
+describe("her resting face", () => {
+  const affect = (tag: string | null, intensity = 0.6): Event =>
+    customEvent("affect.changed", {
+      shown: tag === null ? null : { from: "sorrow", tag, style: "", masked: false },
+      top: tag === null ? [] : [{ name: "sorrow", intensity }],
+    });
+  const emotions = (out: CoreMessage[]) => out.filter((m) => m.type === "emotion");
+
+  it("follows what she shows, also while she says nothing", () => {
+    const f = new Forwarder(false);
+    expect(f.onEvent(affect("sad"))).toEqual([
+      { type: "emotion", name: "sad", intensity: 0.6, resting: true },
+    ]);
+    expect(f.onEvent(affect(null))).toEqual([
+      { type: "emotion", name: "neutral", intensity: 0, resting: true },
+    ]);
+  });
+
+  it("only when it changed", () => {
+    const f = new Forwarder(false);
+    expect(f.onEvent(affect(null))).toEqual([]);
+    f.onEvent(affect("sad", 0.6));
+    expect(f.onEvent(affect("sad", 0.65))).toEqual([]);
+    expect(f.onEvent(affect("sad", 0.8))).toHaveLength(1);
+    expect(f.onEvent(affect("annoyed", 0.8))).toHaveLength(1);
+  });
+
+  it("a node that connects gets it", () => {
+    const f = new Forwarder(false);
+    expect(f.resumeResting()).toBeNull();
+    f.onEvent(affect("sad"));
+    expect(f.resumeResting()).toEqual({
+      type: "emotion",
+      name: "sad",
+      intensity: 0.6,
+      resting: true,
+    });
+  });
+
+  it("a line said in it without a marker shows it as strongly as she feels it", () => {
+    const f = new Forwarder(false);
+    f.onEvent(affect("sad", 0.5));
+    const line = (emotion: string): Event =>
+      ({
+        type: "voice_playback",
+        data: { context: VOICE, turn: TURN, state: "started", text: "嗯", emotion },
+      }) as Event;
+    expect(emotions(f.onEvent(line("sad")))).toEqual([
+      { type: "emotion", name: "sad", intensity: 0.5 },
+    ]);
+    // Another tag than what she shows: the marker's own strength, as before.
+    expect(emotions(f.onEvent(line("happy")))).toEqual([
+      { type: "emotion", name: "happy", intensity: 1 },
+    ]);
+  });
+
+  it("a payload that is not a snapshot is her plain rest", () => {
+    const f = new Forwarder(false);
+    expect(f.onEvent(customEvent("affect.changed", "no"))).toEqual([]);
+  });
+
+  it("the protocol carries it, and an older message still reads", () => {
+    expect(parseCoreMessage({ type: "emotion", name: "sad", intensity: 1, resting: true })).toEqual(
+      {
+        type: "emotion",
+        name: "sad",
+        intensity: 1,
+        resting: true,
+      },
+    );
+    expect(parseCoreMessage({ type: "emotion", name: "sad", intensity: 1 })).toEqual({
+      type: "emotion",
+      name: "sad",
+      intensity: 1,
+    });
   });
 });

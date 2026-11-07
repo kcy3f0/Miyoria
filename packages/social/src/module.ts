@@ -24,6 +24,7 @@ import {
   EMOTION_LABELS,
   isJsonObject,
   type JsonValue,
+  MindKey,
   type PersonId,
   type ProfileId,
   type SelfState,
@@ -143,8 +144,10 @@ export class SocialModule implements Module {
       ctx.clock,
     );
     social.setAuthorizer(ctx.services.get(AuthorizerKey) ?? null);
-    // With her emotions (the `self` module), the appraisal also reads how she feels.
+    // Appraise (the `mind` module) is the one reader of what a conversation meant to her. Only
+    // without it, and with her emotions (the `self` module), this pass reads how she feels too.
     social.setConcerns(() => {
+      if (ctx.services.get(MindKey)) return null;
       const self = ctx.services.get(SelfStateKey);
       return self ? concerns(social, self) : null;
     });

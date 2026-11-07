@@ -174,7 +174,11 @@ const StageMessageSchema = z.discriminatedUnion("type", [
 /** Text frames sent by Core. */
 export type CoreMessage =
   | { type: "welcome"; session: string }
-  | { type: "emotion"; name: string; intensity: number }
+  /**
+   * `resting`: not a moment of a line but how she looks while nothing else is shown, until the
+   * next `resting` one (`neutral`: nothing stands out). An older node shows it for a moment.
+   */
+  | { type: "emotion"; name: string; intensity: number; resting?: boolean }
   | { type: "subtitle"; turn: string; text: string; final: boolean }
   | { type: "speaking"; state: SpeakingState }
   /**
@@ -210,7 +214,16 @@ export type CoreMessage =
 
 const CoreMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("welcome"), session: z.string() }),
-  z.object({ type: z.literal("emotion"), name: z.string(), intensity: z.number() }),
+  z.object({
+    type: z.literal("emotion"),
+    name: z.string(),
+    intensity: z.number(),
+    // Added after v1 shipped; older Cores leave it out (older nodes ignore it).
+    resting: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? undefined),
+  }),
   z.object({ type: z.literal("subtitle"), turn: z.string(), text: z.string(), final: z.boolean() }),
   z.object({ type: z.literal("speaking"), state: SpeakingStateSchema }),
   z.object({

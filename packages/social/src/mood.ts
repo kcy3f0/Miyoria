@@ -1,15 +1,15 @@
-// Module `mood`: her global mood.
+// Module `mood`: her global mood when the Affect module (`self`) does not run.
 //
-// With the `self` module (the affect service, `AffectStateKey`) the mood is not stored here: it
-// is derived from her drives, her emotions and the time of day (`deriveMood` of `@miyoria/types`)
-// and this module only serves it (`MoodSignalsKey`) and publishes `mood.changed`. Nothing nudges
-// it any more, and her own `<emo:…>` tags (`agent.emotion`) are expression only: they never feed
-// back (that loop is what pinned arousal at 1).
+// With the `self` module her mood is its own: derived from her drives, her emotions and the time
+// of day (`deriveMood` of `@miyoria/types`), served as `MoodSignalsKey` and published as
+// `mood.changed` by the affect service. `self` starts first and this module then stays idle: it
+// is what is left of the older mood, for `[modules.self] enabled = false`.
 //
-// Without the `self` module the old behaviour stays: valence / arousal / energy drift with an
-// exponential decay toward a target (the profile baseline shaped by her daily rhythm), nudged
-// by `social.relationship` (praise, insults, ...) and `mood.nudge` with `{"valence": ..,
-// "arousal": .., "energy": .., "reason": ..}` (all optional; for games and extensions).
+// Without it, valence / arousal / energy drift with an exponential decay toward a target (the
+// profile baseline shaped by her daily rhythm), nudged by `social.relationship` (praise, insults,
+// ...) and `mood.nudge` with `{"valence": .., "arousal": .., "energy": .., "reason": ..}` (all
+// optional; for games and extensions). Her own `<emo:…>` tags (`agent.emotion`) are expression
+// only: they never feed back (that loop is what pinned arousal at 1).
 //
 // Publishes `mood.changed` when the mood moved noticeably.
 
@@ -31,6 +31,7 @@ import {
   type Event,
   isJsonObject,
   type JsonValue,
+  MOOD_CHANGED_TOPIC,
   type Mood,
   type MoodSignals,
   MoodSignalsKey,
@@ -49,7 +50,7 @@ export { nightShape };
 /** Settings key of the persisted mood. */
 export const SETTINGS_KEY = "mood:last";
 /** Bus topic published when the mood moved. */
-export const TOPIC_CHANGED = "mood.changed";
+export const TOPIC_CHANGED = MOOD_CHANGED_TOPIC;
 
 /** `[modules.mood]` config section. */
 export const MoodConfigSchema = z.object({
@@ -370,13 +371,15 @@ interface Running {
 }
 
 /**
- * Module `mood`. Requires nothing; uses `SettingsStoreKey`, `PromptContributorsKey` and
- * `SelfStateKey` (her emotions move the target) when present.
+ * Module `mood`. Requires nothing; stays idle when the Affect module runs (it starts after it).
+ * Otherwise uses `SettingsStoreKey`, `PromptContributorsKey` and `SelfStateKey` (her emotions move
+ * the target, should `self` start later) when present.
  */
 export class MoodModule implements Module {
   static readonly ID = "mood";
   readonly manifest = defineManifest(MoodModule.ID, "Mood", {
-    description: "Her mood: decays to the persona baseline, nudged by events",
+    description: "Her mood when the Affect module is off: decays to the persona baseline",
+    optional: ["self"],
     configSchema: MoodConfigSchema,
   });
   readonly #profile: ProfileId;
@@ -398,6 +401,10 @@ export class MoodModule implements Module {
   }
 
   async start(ctx: ModuleContext): Promise<void> {
+    if (ctx.services.get(AffectStateKey)) {
+      ctx.log.debug("the Affect module owns her mood: nothing to do here");
+      return;
+    }
     const config = ctx.config(MoodConfigSchema);
     const now = ctx.clock.now();
     // The `self` module may start later or restart: looked up on every use.

@@ -4,7 +4,12 @@
 // `<emo:…>` names (the standard set: neutral happy smug annoyed angry embarrassed sad surprised
 // thinking), so it drives Live2D.
 
-import type { EmotionName, EmotionReading, ShownEmotion } from "@miyoria/types";
+import {
+  EMOTION_OUTPUTS,
+  type EmotionName,
+  type EmotionReading,
+  type ShownEmotion,
+} from "@miyoria/types";
 import type { DisplayRules } from "./emotions.js";
 
 interface Show {
@@ -21,22 +26,22 @@ interface Rule extends Show {
   leak?: Show;
 }
 
-/** Shown as felt. */
-const OPEN: Readonly<Record<EmotionName, Show>> = {
-  joy: { tag: "happy", style: "開心" },
-  anger: { tag: "angry", style: "生氣" },
-  sorrow: { tag: "sad", style: "難過" },
-  fear: { tag: "surprised", style: "害怕" },
-  surprise: { tag: "surprised", style: "驚訝" },
-  disgust: { tag: "annoyed", style: "嫌惡" },
-  shy: { tag: "embarrassed", style: "害羞" },
-  pride: { tag: "smug", style: "得意" },
-  jealousy: { tag: "annoyed", style: "吃醋" },
-  lonely: { tag: "sad", style: "寂寞" },
-  missing: { tag: "sad", style: "想念" },
-  gratitude: { tag: "happy", style: "感激" },
-  guilt: { tag: "embarrassed", style: "愧疚" },
-  frustration: { tag: "angry", style: "不甘心" },
+/** Shown as felt: in words here, the tag is `EMOTION_OUTPUTS`. */
+const OPEN_STYLE: Readonly<Record<EmotionName, string>> = {
+  joy: "開心",
+  anger: "生氣",
+  sorrow: "難過",
+  fear: "害怕",
+  surprise: "驚訝",
+  disgust: "嫌惡",
+  shy: "害羞",
+  pride: "得意",
+  jealousy: "吃醋",
+  lonely: "寂寞",
+  missing: "想念",
+  gratitude: "感激",
+  guilt: "愧疚",
+  frustration: "不甘心",
 };
 
 const TSUNDERE: Readonly<Record<EmotionName, Rule>> = {
@@ -116,7 +121,7 @@ export function shownEmotion(
 ): ShownEmotion | null {
   const top = felt.find((e) => e.intensity >= notice);
   if (!top) return null;
-  const open = OPEN[top.name];
+  const open: Show = { tag: EMOTION_OUTPUTS[top.name].tag, style: OPEN_STYLE[top.name] };
   if (rules === "open") return { from: top.name, ...open, masked: false };
   const rule = TSUNDERE[top.name];
   let shown: Show = { tag: rule.tag, style: rule.style };

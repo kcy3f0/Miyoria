@@ -29,6 +29,7 @@ import {
   isJsonObject,
   type JsonValue,
   type Mood,
+  MoodSignalsKey,
   type ProfileId,
   SALIENT_TOPIC,
   SelfStateKey,
@@ -150,17 +151,18 @@ interface Running {
 }
 
 /**
- * Module `self`: her emotions, drives, boredom, self-set policy, agenda and feelings about
- * people. Provides `SelfStateKey` and the `self` and `emotion` prompt sections. Uses
- * `SettingsStoreKey` to persist, `MoodSignalsKey` (rest follows tiredness; the mood is part of
- * snapshots), `WorldStateKey` (playing / live / who is in her voice channel) and
- * `SocialSignalsKey` (who someone is, how much she likes them) when present.
+ * Module `self`, her Affect module (docs/design/v3-architecture.md §12): her emotions, drives,
+ * boredom, the mood derived from them, self-set policy, agenda and feelings about people. Provides
+ * `AffectStateKey`, `SelfStateKey`, `MoodSignalsKey` and the `self` and `emotion` prompt sections.
+ * Uses `SettingsStoreKey` to persist, `WorldStateKey` (playing / live / who is in her voice
+ * channel) and `SocialSignalsKey` (who someone is, how much she likes them) when present. It
+ * starts before the `mood` module, which then stays idle.
  */
 export class SelfModule implements Module {
   static readonly ID = "self";
   readonly manifest = defineManifest(SelfModule.ID, "Self", {
     description: "Her inner state: drives, boredom, her own policy, agenda and feelings",
-    optional: ["mood", "world"],
+    optional: ["world"],
     configSchema: SelfConfigSchema,
   });
   readonly #profile: ProfileId;
@@ -328,6 +330,7 @@ export class SelfModule implements Module {
     });
     ctx.provide(SelfStateKey, service);
     ctx.provide(AffectStateKey, affect);
+    ctx.provide(MoodSignalsKey, affect);
     this.#running = { save: () => saves.run(save) };
 
     const selfIds = new Set<string>();

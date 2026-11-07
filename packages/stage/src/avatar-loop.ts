@@ -72,6 +72,7 @@ export class AvatarLoop {
   #cues: Cue[] = [];
   #speaking = false;
   #intensity = 1;
+  #resting: { name: string; strength: number } | null = null;
   #known: Set<string> | null = null;
   #levelObserver: ((sample: LevelSample | null) => void) | null = null;
 
@@ -137,6 +138,27 @@ export class AvatarLoop {
     this.#intensity = strength;
     this.#poser.set(this.#emotion.current(), strength, now);
     this.#send(this.#gestures.onEmotion(name, strength, now));
+  }
+
+  /**
+   * How she looks while no emotion marker is shown: a pose only, weaker than the marker's, with no
+   * accent and no gesture. `neutral` (or a name the avatar does not know) is her plain rest.
+   */
+  resting(name: string, intensity: number): void {
+    const face = name.trim().toLowerCase();
+    const level = Math.min(Math.max(Number.isFinite(intensity) ? intensity : 0, 0), 1);
+    const strength = level * this.#config.emotion.resting_strength;
+    this.#resting = this.#config.avatar.knownEmotions().has(face) ? { name: face, strength } : null;
+    if (this.#emotion.current() !== null) return;
+    const target = this.#poseTarget();
+    this.#poser.set(target.name, target.strength, this.#clock.now());
+  }
+
+  /** What the pose should be now: the marker's emotion, else her resting face. */
+  #poseTarget(): { name: string | null; strength: number } {
+    const name = this.#emotion.current();
+    if (name !== null) return { name, strength: this.#intensity };
+    return this.#resting ?? { name: null, strength: this.#intensity };
   }
 
   /** She started / stopped speaking a sentence (applied `latency_ms` later). */
@@ -229,9 +251,8 @@ export class AvatarLoop {
     for (const cue of this.#cues.filter((q) => q.at <= now)) cue.run(now);
     this.#cues = this.#cues.filter((q) => q.at > now);
     this.#send(this.#emotion.tick(now));
-    if (this.#poser.current() !== this.#emotion.current()) {
-      this.#poser.set(this.#emotion.current(), this.#intensity, now);
-    }
+    const target = this.#poseTarget();
+    if (this.#poser.current() !== target.name) this.#poser.set(target.name, target.strength, now);
     this.#send(this.#gestures.tick(now));
 
     const mouth = this.#mouthFrame(dt, now);

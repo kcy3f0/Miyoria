@@ -2,8 +2,9 @@
 // come from the dynamics in `emotions.ts`). Cheap triggers with explicit meaning: praise, a
 // song finished or cut off, someone she cares about coming back or being warm with others
 // while ignoring her, a death in a game, being talked over. What an interaction *meant* is read
-// by the batched pass of the social module (`social.appraisal`) and later by Appraise; both
-// arrive here as appraisals (an emotion, a strength, who it is about), never as levels.
+// by Appraise (packages/mind/src/appraise.ts), once. Only without the `mind` module the batched
+// pass of the social module reads it instead (`social.appraisal`, see `#appraisal`); either way
+// it arrives as appraisals (an emotion, a strength, who it is about), never as levels.
 //
 // Every rule appraises against what she cares about: how much she cares about the person
 // (affinity, attachment), whether they are her crush, what she wants right now (drives).
@@ -290,7 +291,8 @@ export class EmotionRules {
   }
 
   /**
-   * `social.appraisal`: the `fast` model's reading of a conversation. It arrives as appraisals
+   * `social.appraisal`: the `fast` model's reading of a conversation, which only happens when the
+   * `mind` module does not run (it would be a second Appraise otherwise). It arrives as appraisals
    * (an emotion and how strongly, never a level) and is read like any other.
    */
   #appraisal(payload: JsonValue, now: number): boolean {

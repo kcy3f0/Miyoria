@@ -1,6 +1,7 @@
 // Turns bus events into Core → Stage messages.
 
 import {
+  AFFECT_CHANGED_TOPIC,
   type Event,
   isJsonObject,
   type JsonValue,
@@ -14,6 +15,8 @@ import type { CoreMessage } from "../protocol.js";
 
 /** Topic of the agent's emotion markers. */
 export const EMOTION_TOPIC = "agent.emotion";
+/** How much a feeling must change before her resting face follows it. */
+const RESTING_STEP = 0.1;
 /**
  * Topic of the written sentence of a line she spoke first (`voice_first`, e.g. the Japanese
  * voice line and its Chinese subtitle): `{turn, context, spoken, text}`.
@@ -79,6 +82,10 @@ const clampIntensity = (i: unknown): number =>
  * older voice modules (no `emotion` field) show the turn's latest marker instead. Emotions of
  * other turns are sent at once.
  *
+ * What she shows of how she feels (`affect.changed`) is her resting face, sent as `resting` when
+ * it changes, also while she says nothing: what she feels reaches her face without a tag. A line
+ * spoken in it without a marker of its own shows it as strongly as she feels it.
+ *
  * Songs (`SONG_TOPIC`) with a video also send `song_video` `play` when they start and `stop`
  * when they end; a node that connects mid-song gets the `play` again (`resumeSongVideo`).
  */
@@ -89,6 +96,7 @@ export class Forwarder {
   readonly #singScene: () => string | null;
   readonly #now: () => number;
   #video: SongVideo | null = null;
+  #resting: PendingEmotion | null = null;
 
   constructor(textTurns: boolean, options: ForwarderOptions = {}) {
     this.#textTurns = textTurns;
@@ -102,6 +110,30 @@ export class Forwarder {
     if (v === null) return null;
     const offset = (v.msg.offset_ms ?? 0) + Math.max(this.#now() - v.sentAt, 0);
     return { ...v.msg, offset_ms: Math.round(offset) };
+  }
+
+  /** Her resting face, for a node that just connected. */
+  resumeResting(): CoreMessage | null {
+    return this.#resting === null ? null : { type: "emotion", ...this.#resting, resting: true };
+  }
+
+  #onAffect(payload: JsonValue): CoreMessage[] {
+    const p = isJsonObject(payload) ? payload : {};
+    const shown = isJsonObject(p.shown) ? p.shown : null;
+    const tag = typeof shown?.tag === "string" ? shown.tag.trim().toLowerCase() : "";
+    const felt = (Array.isArray(p.top) ? p.top : []).find(
+      (e) => isJsonObject(e) && e.name === shown?.from,
+    );
+    const next: PendingEmotion =
+      tag === ""
+        ? { name: "neutral", intensity: 0 }
+        : { name: tag, intensity: isJsonObject(felt) ? clampIntensity(felt.intensity) : 1 };
+    const last = this.#resting ?? { name: "neutral", intensity: 0 };
+    const same =
+      last.name === next.name && Math.abs(last.intensity - next.intensity) < RESTING_STEP;
+    if (same) return [];
+    this.#resting = next;
+    return [{ type: "emotion", ...next, resting: true }];
   }
 
   #entry(turn: TurnId): TurnSubtitle {
@@ -156,7 +188,8 @@ export class Forwarder {
     }
     const name = emotion?.trim().toLowerCase() ?? "";
     if (name === "") return [];
-    return [{ type: "emotion", name, intensity: pending?.byName.get(name) ?? 1 }];
+    const resting = this.#resting?.name === name ? this.#resting.intensity : 1;
+    return [{ type: "emotion", name, intensity: pending?.byName.get(name) ?? resting }];
   }
 
   onEvent(event: Event): CoreMessage[] {
@@ -165,6 +198,7 @@ export class Forwarder {
         if (event.data.topic === SONG_TOPIC) return this.#onSong(event.data.payload);
         if (event.data.topic === SPEECH_PAUSE_TOPIC) return pauseNotice(event.data.payload);
         if (event.data.topic === SUBTITLE_TOPIC) return this.#onWritten(event.data.payload);
+        if (event.data.topic === AFFECT_CHANGED_TOPIC) return this.#onAffect(event.data.payload);
         return event.data.topic === EMOTION_TOPIC ? this.#onEmotion(event.data.payload) : [];
       case "voice_playback": {
         const { turn, state, text, emotion } = event.data;

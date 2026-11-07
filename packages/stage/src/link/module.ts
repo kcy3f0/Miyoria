@@ -16,6 +16,7 @@ import { SettingsStoreKey } from "@miyoria/store";
 import {
   ACTIVITY_CHANGED_TOPIC,
   ActivityManagerKey,
+  AFFECT_CHANGED_TOPIC,
   contextKeyString,
   type Envelope,
   isJsonObject,
@@ -223,6 +224,8 @@ export class StageLinkModule implements Module {
       if (status && !nodeUp) {
         const resume = forwarder.resumeSongVideo();
         if (resume) link.send(resume);
+        const resting = forwarder.resumeResting();
+        if (resting) link.send(resting);
         const current = activity.resume(ctx.clock.now());
         if (current) link.send(current);
       }
@@ -235,6 +238,7 @@ export class StageLinkModule implements Module {
 
     const events = ctx.subscribe([
       EMOTION_TOPIC,
+      AFFECT_CHANGED_TOPIC,
       SUBTITLE_TOPIC,
       SONG_TOPIC,
       SPEECH_PAUSE_TOPIC,

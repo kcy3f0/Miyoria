@@ -12,14 +12,21 @@
 // she feels is a pure function of her display rules and who is there (`display.ts`).
 //
 // Provides `AffectStateKey` (the one service for all of that, with the canonical prompt text
-// of mood and people) beside `SelfStateKey` (policy, agenda and the older reads), and the
-// `self` and `emotion` prompt sections (kept for older consumers).
+// of mood and people) beside `SelfStateKey` (policy, agenda and the older reads) and
+// `MoodSignalsKey`, and the `self` and `emotion` prompt sections (kept for older consumers). What
+// each emotion goes on to do is the table `EMOTION_OUTPUTS` of `@miyoria/types`.
 //
 // Persisted in the `SettingsStore` of the active profile: `self:state` (drives, emotions,
 // agenda, hearts) and one `self:feeling:<person id>` per person, which is the person's card
 // (the feeling text keeps its old shape; the rest of the card lives under `card`).
 
-export { type AffectDeps, AffectService, type AppliedEffect, MAX_APPRAISALS } from "./affect.js";
+export {
+  type AffectDeps,
+  AffectService,
+  type AppliedEffect,
+  MAX_APPRAISALS,
+  MAX_PROMISES,
+} from "./affect.js";
 export { type BiasInputs, computeBiases, describeBiases, MAX_BIAS, MIN_WANT } from "./biases.js";
 export {
   type BondConfig,

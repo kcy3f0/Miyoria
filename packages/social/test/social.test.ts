@@ -27,10 +27,15 @@ import {
 } from "@miyoria/store";
 import {
   type Event,
+  type Mind,
+  MindKey,
   MoodSignalsKey,
   newId,
   PromptContributors,
   PromptContributorsKey,
+  type SelfState,
+  SelfStateKey,
+  SOCIAL_APPRAISAL_TOPIC,
   SocialSignalsKey,
 } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
@@ -681,6 +686,64 @@ async function eventually(what: string, f: () => boolean): Promise<void> {
 }
 
 describe("modules", () => {
+  /** The module with her feelings around and a line due for its pass. */
+  async function reading(mind: boolean) {
+    const bus = new EventBus();
+    const services = new ServiceRegistry();
+    const store = new FakeStore();
+    services.provide("kernel", PeopleStoreKey, store);
+    services.provide("kernel", RelationshipStoreKey, store);
+    services.provide("kernel", IdentityStoreKey, store);
+    services.provide("kernel", SelfStateKey, {
+      crush: () => null,
+      emotions: () => [],
+      drives: () => ({ esteem: 0, attention: 0, social: 0, longing: 0, hunger: 0 }),
+    } as unknown as SelfState);
+    if (mind) services.provide("kernel", MindKey, {} as Mind);
+    const mock = new MockProvider("mock").reply(
+      '{"people":[{"person_name":"Amy","toward_her":0,"events":[],"romance":0.8}],"her":{"joy":0.9}}',
+    );
+    const sup = new Supervisor({ bus, services });
+    await sup.register(new LlmStub(mock), null, true);
+    await sup.register(
+      new SocialModule(profile(), "DeepSeek-chan", ["DS醬"]),
+      { appraisal_every_lines: 1 },
+      true,
+    );
+    await sup.startAll();
+    const appraisals = bus.subscribe([SOCIAL_APPRAISAL_TOPIC]);
+    bus.publish("platform.test", {
+      type: "platform_message_created",
+      data: {
+        id: { context: channel(), id: "m1" },
+        author: { account: acc("discord:2"), display_name: "Amy", is_bot: false },
+        text: "DS醬今天好可愛",
+        mentions_self: false,
+        reply_to_self: false,
+        attachments: [],
+        ts: new Date().toISOString(),
+      },
+    });
+    await eventually("the pass", () => mock.requests().length > 0);
+    const asked = JSON.stringify(mock.requests()[0]?.messages);
+    const published = await withTimeout(appraisals.recv(), 200);
+    await sup.stopAll();
+    return { asked, published };
+  }
+
+  it("her feelings are Appraise's to read: with the mind running, this pass leaves them", async () => {
+    const { asked, published } = await reading(true);
+    expect(asked).not.toContain("romance");
+    expect(asked).not.toContain("她在乎的事");
+    expect(published).toBeUndefined();
+  });
+
+  it("without the mind, this pass is what reads them", async () => {
+    const { asked, published } = await reading(false);
+    expect(asked).toContain("romance");
+    expect(published).toBeTruthy();
+  });
+
   it("modules_wire_services_and_events", async () => {
     const bus = new EventBus();
     const services = new ServiceRegistry();

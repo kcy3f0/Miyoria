@@ -1,6 +1,13 @@
-import { Supervisor } from "@miyoria/kernel";
+import { defineManifest, type Module, type ModuleContext, Supervisor } from "@miyoria/kernel";
 import { MemorySettingsStore, SettingsStoreKey } from "@miyoria/store";
-import { customEvent, type Event, type Mood, MoodSignalsKey } from "@miyoria/types";
+import {
+  type AffectState,
+  AffectStateKey,
+  customEvent,
+  type Event,
+  type Mood,
+  MoodSignalsKey,
+} from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import {
   eventNudge,
@@ -146,5 +153,38 @@ describe("mood", () => {
     await sup.stopAll();
     const saved = (await settings.get("p", SETTINGS_KEY)) as Record<string, number>;
     expect((saved.valence ?? 0) < -0.4).toBe(true);
+  });
+});
+
+describe("the mood module beside the Affect module", () => {
+  class Affect implements Module {
+    readonly manifest = defineManifest("self", "stands in for the Affect module");
+    async start(ctx: ModuleContext): Promise<void> {
+      ctx.provide(AffectStateKey, {} as AffectState);
+      ctx.provide(MoodSignalsKey, { mood: () => ({ valence: 0.5, arousal: 0.5, energy: 0.5 }) });
+    }
+  }
+
+  it("starts after it and has nothing left to do: one owner, nothing stored", async () => {
+    const sup = new Supervisor();
+    const store = new MemorySettingsStore();
+    sup.services.provide("app", SettingsStoreKey, store);
+    // In the order of the catalog: the mood module comes first.
+    await sup.register(new MoodModule("p", baseline()), null, true);
+    await sup.register(new Affect(), null, true);
+    await sup.startAll();
+    expect(sup.services.ownerOf(MoodSignalsKey)).toBe("self");
+    expect(sup.services.has(MoodStateKey)).toBe(false);
+    expect(sup.list().find((m) => m.id === "mood")?.state).toBe("running");
+    await sup.stopAll();
+    expect(await store.get("p", SETTINGS_KEY)).toBeNull();
+  });
+
+  it("without it, the older mood runs as before", async () => {
+    const sup = new Supervisor();
+    await sup.register(new MoodModule("p", baseline()), null, true);
+    await sup.startAll();
+    expect(sup.services.ownerOf(MoodSignalsKey)).toBe("mood");
+    await sup.stopAll();
   });
 });

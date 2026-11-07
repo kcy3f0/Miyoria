@@ -320,7 +320,8 @@ class Stage {
     switch (msg.type) {
       case "emotion":
         this.#overlay.emotion(msg.name, msg.intensity);
-        this.#avatar?.emotion(msg.name, msg.intensity);
+        if (msg.resting) this.#avatar?.resting(msg.name, msg.intensity);
+        else this.#avatar?.emotion(msg.name, msg.intensity);
         return;
       case "subtitle": {
         this.#overlay.subtitle(msg.turn, msg.text, msg.final);
