@@ -9,7 +9,7 @@ import {
   type Module,
   type ModuleContext,
 } from "@miyoria/kernel";
-import { LlmRouterKey } from "@miyoria/llm";
+import { contextSession, LlmRouterKey } from "@miyoria/llm";
 import { SpeechServiceKey } from "@miyoria/speech";
 import { SettingsStoreKey } from "@miyoria/store";
 import {
@@ -148,6 +148,7 @@ export class VoiceModule implements Module {
       config,
       barge,
       translator,
+      session: (context) => contextSession(this.#profileId, context),
       echo,
       prefetch,
     });

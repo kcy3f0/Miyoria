@@ -36,6 +36,8 @@ export interface SpeakerDeps {
   barge: BargeIn;
   /** Set when she speaks in another language than she writes (`tts_translate`). */
   translator: SpeechTranslator | null;
+  /** The LLM session of a conversation, which its translations share. */
+  session(context: ContextKey): string;
   /** Remembers what she says, so her own voice coming back is not taken for somebody. */
   echo: SelfEchoGuard;
   /** Lines synthesized ahead of their turn; `null` when `tts_prefetch` is 0. */
@@ -74,10 +76,10 @@ export class Speaker implements VoiceSink {
    * Synthesizes `text`: translation, TTS, and a buffer that fills in the background. Resolves
    * once the first audio is there, so the line can start playing while the rest still arrives.
    */
-  #producer(text: string, emotion: string | null): Producer {
+  #producer(context: ContextKey, text: string, emotion: string | null): Producer {
     return async (signal) => {
-      const { speech, profile, config, translator } = this.#d;
-      const said = translator ? await translator.translate(text, signal) : text;
+      const { speech, profile, config, translator, session } = this.#d;
+      const said = translator ? await translator.translate(text, signal, session(context)) : text;
       const request = {
         text: said,
         language: translator?.language ?? config.tts_language,
@@ -154,6 +156,7 @@ export class Speaker implements VoiceSink {
     }
     if (line === null) {
       const production = await this.#producer(
+        context,
         text,
         emotion,
       )(signal ?? new AbortController().signal);
@@ -207,8 +210,9 @@ export class Speaker implements VoiceSink {
     const text = stripTags(rawText);
     if (text === "") return;
     const said = spoken === undefined ? "" : stripTags(spoken);
-    if (said !== "") this.#d.translator?.provide(text, said);
-    else this.#d.translator?.prepare(text);
+    const session = this.#d.session(context);
+    if (said !== "") this.#d.translator?.provide(text, said, session);
+    else this.#d.translator?.prepare(text, session);
     this.#prefetch(context, text, this.#prefetchEmotion(context.scope ?? "", emotion));
   }
 
@@ -222,7 +226,7 @@ export class Speaker implements VoiceSink {
     if (prefetch.has(key)) return;
     prefetch.start(key, guild, async (signal) => {
       try {
-        return await this.#producer(text, emotion)(signal);
+        return await this.#producer(context, text, emotion)(signal);
       } catch (error) {
         if (!signal.aborted) ctx.log.debug({ err: errorMessage(error) }, "TTS prefetch failed");
         throw error;
