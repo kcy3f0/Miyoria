@@ -1,9 +1,11 @@
 // What her mind is told about singing and about hearing the voice channel.
 
+import { ActuatorRegistry, defineCapability } from "@miyoria/actions";
 import { ServiceRegistry } from "@miyoria/kernel";
 import { SpeechPauseKey, type VoiceChannelState, VoiceFloorKey } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
-import { singing, voiceTalk } from "../src/snapshot.js";
+import { z } from "zod";
+import { capabilityInfo, singing, voiceTalk } from "../src/snapshot.js";
 
 function services(song: { playing: boolean; pending: number } | null, paused: boolean) {
   const s = new ServiceRegistry();
@@ -16,6 +18,37 @@ function services(song: { playing: boolean; pending: number } | null, paused: bo
   s.provide("test", SpeechPauseKey, { paused: () => (paused ? "song" : null) });
   return s;
 }
+
+describe("capabilityInfo", () => {
+  it("shows the values an argument accepts, so Plan does not guess them", () => {
+    const registry = new ActuatorRegistry({
+      services: new ServiceRegistry(),
+      builtins: false,
+      publish: () => {},
+    });
+    registry.register(
+      defineCapability({
+        name: "game.start",
+        summary: "開始玩遊戲",
+        risk: "medium",
+        args: z.looseObject({}),
+        permission: null,
+        tool: {
+          name: "game_start",
+          description: "開始玩遊戲",
+          properties: {
+            game: { type: "string", description: "遊戲 id" },
+            where: { type: "string", enum: ["auto", "voice", "here", "stream"] },
+          },
+        },
+        async execute() {
+          return "ok";
+        },
+      }),
+    );
+    expect(capabilityInfo(registry)[0]?.params).toEqual(["game", "where=auto|voice|here|stream"]);
+  });
+});
 
 describe("singing", () => {
   it("tells her a song is playing and how many are left", () => {

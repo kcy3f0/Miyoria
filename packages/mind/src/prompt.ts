@@ -66,7 +66,7 @@ export interface CapabilityInfo {
   name: string;
   summary: string;
   risk: string;
-  /** Argument names the capability takes. */
+  /** Arguments the capability takes: `name`, or `name=a|b` when only those values are valid. */
   params: string[];
 }
 
@@ -230,6 +230,7 @@ function rules(input: PlanInput): string {
   }
   lines.push(
     "- voice.join 的 place 填要進的語音頻道;其他動作的 place 是在哪裡做。",
+    "- args 寫成「名稱=a|b」的,值只能是其中之一,不能自己寫別的。",
     "",
     "# 限制(系統會照這些擋下你的行動,計畫時就先考慮)",
     ...renderLimits(input.limits, input.now, input.utcOffsetMinutes),

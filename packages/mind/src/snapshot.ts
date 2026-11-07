@@ -444,6 +444,12 @@ export async function gather(input: GatherInput): Promise<Gathered> {
   };
 }
 
+/** One argument for the Plan prompt: `where=auto|voice`, or the bare name when any value goes. */
+function paramHint(name: string, schema: unknown): string {
+  const values = (schema as { enum?: unknown } | null)?.enum;
+  return Array.isArray(values) && values.length > 0 ? `${name}=${values.join("|")}` : name;
+}
+
 /** The capabilities she may start, besides `chat.start` / `chat.dm` (described separately). */
 export function capabilityInfo(registry: ActuatorRegistry | undefined): CapabilityInfo[] {
   if (!registry) return [];
@@ -458,7 +464,7 @@ export function capabilityInfo(registry: ActuatorRegistry | undefined): Capabili
           name: c.name,
           summary: c.summary,
           risk: c.risk,
-          params: Object.keys(c.tool?.properties ?? {}),
+          params: Object.entries(c.tool?.properties ?? {}).map(([k, v]) => paramHint(k, v)),
         },
       ];
     });
