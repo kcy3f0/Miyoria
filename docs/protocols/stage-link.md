@@ -23,7 +23,7 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 
 | type | 欄位 | 說明 |
 |---|---|---|
-| `emotion` | `name`, `intensity`(0..1) | 情緒標記(來自 `agent.emotion`)。`name` 是小寫,`intensity` 沒給時是 `1.0` |
+| `emotion` | `name`, `intensity`(0..1), `resting?` | 情緒標記(來自 `agent.emotion`)。`name` 是小寫,`intensity` 沒給時是 `1.0`。`resting: true` 不是某句話的標記,而是她現在表現出來的情緒(`affect.changed`):沒有標記時臉就停在這裡,直到下一個 `resting`(`neutral` 是沒有特別的情緒) |
 | `subtitle` | `turn`, `text`, `final`(bool) | 字幕。同一個 `turn` 的新字幕取代舊的(`text` 是到目前為止的全文)。沒有 turn 的語音用 `""` |
 | `speaking` | `state`(`started` / `stopped`) | 她開始 / 停止說話(來自 `voice.playback`) |
 | `scene` | `name`, `transition?`, `transition_ms?`, `id?` | 切 OBS 場景。有 `transition` 時只用在這一次切換:設成**目標場景**的轉場覆寫(`SetSceneSceneTransitionOverride`,`transition_ms` 是長度,50..20000),不改 OBS 全域的「目前的轉場」;切換一次一個,兩次切換的轉場不會互相套用。OBS 沒有這個轉場時記警告、照樣用目前的轉場切換 |
@@ -234,6 +234,7 @@ Stage 以外掛身分連 VTS Public API(`ws://127.0.0.1:8001`,`[stage.vts] url`)
   - `expression`:重點貼圖。`.exp3.json` → `ExpressionActivationRequest`;其他 → hotkey 名稱(`HotkeyTriggerRequest`,名稱會先對照成 hotkey ID)。強度低於 `accent_min` 時不開。同一時間只維持一個主情緒;維持 `emotion_hold_ms`(預設 4 秒),她說話時不會結束,說完至少再留 `after_speech_ms`(預設 1.5 秒),然後回到 `neutral`。`neutral` 是表情檔時沒有重點貼圖時就開著它;是 hotkey 時(例如 VTS 的「Remove all expressions」)回到休息狀態時觸發它。沒有貼圖也沒有姿勢的情緒視為 `neutral`。舊寫法 `[emotion] happy = "x.exp3.json"` 仍然可以用。
   - `params`:VTS 輸入參數的姿勢(眉毛、眼睛開合、`MiyoriaEyeSmile`、瞇眼、嘴角、鼓臉…)。`neutral` 的 params 是休息值;情緒在 `[stage.emotion] ease_in_ms`(250)內漸入,維持期間往 `sustain`(0.65)衰減(`decay_ms` 3000),結束後 `ease_out_ms`(700)漸出;換情緒時交叉淡入淡出。整個姿勢乘上 `intensity`。`FaceAngle*`、`EyeLeft*`、`EyeRight*`、`MiyoriaBody*` 是加在程序動作上的偏移(歪頭、低頭、看旁邊)。
   - `blink`:眨眼頻率倍數。`gesture` / `gesture_chance`:見下面手勢。
+  - 休息時的臉(`resting`):只有 `params` 的姿勢,強度是感受強度 × `[stage.emotion] resting_strength`(0.6),不開重點貼圖、不觸發手勢。Core 在情緒換了或強度變動 0.1 以上時才送,Stage 重新連上時會補送一次。
   - Core 端:語音回合的情緒在**用那個情緒說的那句話開始播放時**才送(`voice.playback` `started` 帶 `emotion`;LLM 的標記通常比聲音早一句以上),`intensity` 來自 `<emo:happy 0.5>` 這種標記(沒寫就是 1)。文字回合照舊立刻送。Stage 端再把情緒和 `speaking` 延後 `latency_ms`,跟嘴型一起對上觀眾聽到的時間。
 - **手勢**(`[gesture.<名稱>]`):`open` / `close` 是 hotkey 名稱或 `.exp3.json`(表情檔:開了之後關掉,不用寫 `close`),`group` 同一組同時只有一個(例如兩隻手),`hold_ms` 停留時間範圍,`cooldown_ms` 同一個手勢再觸發的最短間隔。情緒依 `gesture_chance ×(0.4 + 0.6 × 強度)× [stage.gesture] chance_scale` 從自己的 `gesture` 清單隨機挑一個(優先挑上次沒用過的);任兩個手勢開始至少隔 `[stage.gesture] min_gap_ms`(8 秒)。`[idle] gesture` 在她安靜 `after_ms` 之後每 `every_ms` 偶爾來一次;情緒手勢可以接手同一組的待機手勢(先關,`switch_ms` 後再開)。VTS 重新連上時會先把進行中的手勢關掉。
 - **眨眼**(`[stage.blink]`):`EyeOpenLeft/Right` = 姿勢的值 × 眨眼曲線。間隔是 `min_ms`(2 s)+ 指數分布(平均 `mean_ms` 3.8 s),超過 `max_ms`(6 s)重抽;閉眼 `close_ms` 120 ms、全閉 `closed_ms` 30 ms、睜開 `open_ms` 180 ms;`double_chance` 15% 接第二下(最多兩下);每句話開始有 `speech_chance` 35% 會眨一下;頻率乘上情緒的 `blink`。

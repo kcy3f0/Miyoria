@@ -1,6 +1,6 @@
 # V3 架構設計
 
-> 狀態:**草案,等 owner 拍板 §19 的決定**(2026-11-07)。依據:[v3-research.md](v3-research.md)(各家 AI VTuber、開源專案、語音、agent harness、Discord 的調查)、2026-11-07 第一次在真實環境跑 V2 的紀錄。前一版見 [v2-architecture.md](v2-architecture.md)。
+> 狀態:**階段 0 到 7 的程式已完成,尚未在真實環境驗收**(2026-11-07)。依據:[v3-research.md](v3-research.md)(各家 AI VTuber、開源專案、語音、agent harness、Discord 的調查)、2026-11-07 第一次在真實環境跑 V2 的紀錄。前一版見 [v2-architecture.md](v2-architecture.md)。
 
 ## 0. 一句話結論
 
@@ -104,7 +104,7 @@ V3 只做一件大事:**一條主線**。只有一個前景決策者能讓她開
 | `actions` gate | 加 **Directive 檢查** | deny-first,在 gate 之前 |
 | `self` / `mood` / `social` | **Affect** | 收斂;情緒要有消費者(§12) |
 | `conversation` / `knowledge` / `memory` | **Memory** | 三層(§11) |
-| `voice-node`(self 帳號) | **Voice adapter** | 依 §14 的決定換成 bot 帳號 |
+| `voice-node`(self 帳號) | **Voice node** | 維持 self 帳號,見 §14.1 |
 
 要刪掉的:`agent.initiative` 事件、`mind/selfstart`、`mind/ledger`、`#legacyInitiative`、attention 的灰色區 LLM 判斷、`game.chat` 直接 `voice.speak`、`self` 的舊 agenda、`packages/initiative` 殘留。
 
@@ -250,7 +250,7 @@ interface Delivery {
 interface Directive {
   id: string;
   issuer: AccountRef;
-  authority: "owner" | "moderator" | "system";
+  authority: "owner" | "moderator" | "system" | "viewer";
   scope: { capability?: string; activity?: string; context?: ContextKey; person?: Handle };
   effect: "deny" | "require_approval" | "prefer" | "avoid";
   text: string;                 // 「不要玩 Minecraft」
@@ -262,7 +262,7 @@ interface Directive {
 
 **三層強制**,任何一層都不靠模型自律:
 
-1. **注入**:每回合放進 system 的固定區,不靠檢索。
+1. **注入**:每回合放進 system 的固定區,不靠檢索。觀眾的 `prefer` 不進這一區,放在她的一般資料裡,並標明不是規則。
 2. **工具移除**:被禁的工具不出現在工具清單。
 3. **Gate deny-first**:動作路徑在 gate 之前再查一次,fail closed。背景提案碰到規則直接丟棄,並寫回日誌。
 
@@ -271,6 +271,8 @@ interface Directive {
 - owner 可以建立、解除任何規則。
 - moderator 可以建立有時效的規則。
 - 觀眾的要求只是 `prefer`,有短時效,而且**不能解除 owner 的 deny**。目前「任何人開口都能繞過」的問題就此解決。
+- 權限只看帳號,不看訊息內容,她自己也沒有權限。同一回合裡有好幾個人時,取其中最低的。
+- `deny` 對所有人有效,owner 自己的指令和面板也一樣:規則是用解除來結束的,不是繞過去。停止類動作(`*.stop`、`*.leave`)例外,除非規則明指那個動作。
 
 **產生方式**:owner 說「不要玩 Minecraft」時,主線用 `directive_add` 工具寫入;語意不確定就問一句,或由面板和 `/miyo` 手動建立。對應的目標與提案自動作廢。解除要明確:owner 說「可以玩了」或在面板解除。
 
@@ -415,6 +417,10 @@ V2 的混合式情緒保留,但**情緒要有消費者才有價值**,否則只�
 
 三層(需求、情緒、關係)和遞減、互斥機制不動。`mood` 和 `self` 收斂成 Affect 一個模組,Appraise 只留一處。
 
+情緒怎麼接到輸出是一張表:`EMOTION_OUTPUTS`(`packages/types/src/affect-outputs.ts`),`packages/core/test/emotions.test.ts` 會檢查每個情緒真的走到一個輸出。情緒只改她怎麼說和想做什麼,不改規則:Directive、Floor 的打斷等級和 claim gate 都不讀情緒(`packages/core/test/emotion-guardrails.test.ts`)。多話程度只是 `base_lines` 的權重,有硬上下限(`[modules.arbiter.floor]` 的 `min_feeling_multiplier`、`max_feeling_multiplier`),不動已講句數,也繞不過 `max_unanswered`。
+
+現況:`self` 模組就是 Affect 模組,心情由它提供(`MoodSignalsKey`、`mood.changed`)。`mood` 模組還在,只在 `[modules.self] enabled = false` 時運作。Appraise 在 `packages/mind/src/appraise.ts`;`social` 的批次評估只在 `mind` 沒跑時才讀她的感受。
+
 ## 13. 語音
 
 ### 13.1 先量再動
@@ -474,18 +480,9 @@ sing worker 在她講話時暫停 chunk,這是 Windows 上唯一可用的優先�
 
 ### 14.1 帳號與直播
 
-**建議:語音移到 bot 帳號,退掉 self 帳號。** 詳見 §19 第 1 項。
+**決定(2026-11-07):維持現狀,語音和 Go Live 都留在 self 帳號。** Owner 了解 Discord 禁止 self-bot、處分可能及於 bot 和 developer 帳號,自行承擔這個風險。語音不移到 bot,V3 不做 bot 語音、不退役 self 帳號。
 
-| 方案 | 合規 | 她能自己開台 | 代價 |
-|---|---|---|---|
-| **A** bot 講話收音,owner 用官方 client Go Live | 是 | 否,每次手動 | 一次點擊 |
-| **B** bot 講話收音,畫面上 YouTube / Twitch | 是 | **可以** | 觀眾要離開 Discord;要守該平台規則 |
-| **C′** 語音移 bot,self 只留 Go Live | **否** | 是 | 暴露面縮小,仍違規 |
-| **C** 現狀 | **否** | 是 | 風險可能及於 bot 和 developer 帳號 |
-
-不管選哪個,**語音都先移到 bot**,這是風險降最多的一步。第一步是 spike:bot 帳號在真實伺服器、DAVE 下、每人一條音訊串流。discord.js 文件說收音未文件化,這點要先驗。架構上用 `VoiceAdapter` 介面隔開,Go Live 視為隨時會消失的可選層。
-
-Bot tag 把「她是 AI」變成明確標示。粉絲研究顯示知道她是 AI 並不減少喜愛。
+她因此可以自己開 Go Live,§19 第 2 項的自主開台維持現有做法。
 
 ### 14.2 指令
 
@@ -719,7 +716,7 @@ V2 的教訓是單元測試全過,上線全是問題。
 
 | # | 決定 | 選項 | 建議 |
 |---|---|---|---|
-| **1** | **Self 帳號** | A / B / C′ / 維持 C | **語音移 bot,退掉 self,走 A + B 備案**。`docs/DECISIONS.md` 第 9 條與 R2 要改寫 |
+| **1** | **Self 帳號** | **已決定**(2026-11-07) | 維持 self 帳號,owner 自負風險,見 §14.1 |
 | **2** | **她能否自主開台** | 手動點擊 / 只在外部平台 / 違規自動化 | 定義改成「自主開外部平台直播」,Discord Go Live 手動 |
 | **3** | **誰在現場負責** | 全 AI / live 時有人值班 | 公開場合有人,等 output moderation 完成再談全 AI |
 | 4 | 主動程度與 item 13 | 維持很主動 / 事件驅動 / 語音文字分開 | 文字事件驅動 + allowlist;語音以真人在場為條件 |
@@ -735,14 +732,16 @@ V2 的教訓是單元測試全過,上線全是問題。
 
 順序依「最小的改動解決最痛的問題」排。每階段都有真實環境驗收。
 
+Owner 決定全部做完再一起實測,所以下表的驗收都還沒做。`[core] pipeline = "v2"` 可以退回 V2 流程。還沒做的只有要實際執行的項目:四項 GPU 檢查、ICL 試聽、Smart Turn 校準,以及 §17.1 公開頁面。
+
 | 階段 | 內容 | 驗收(真實環境一場) |
 |---|---|---|
-| **0. 止血與量測**(數天) | 遊戲實況去重與 `max_unanswered`;`speech_end → audio` 六段指標;四項 GPU 檢查;bot 語音 spike;ICL 試聽;把今天的事故做成 fixture | 石鎬類重複 < 5%;拿到真實延遲分解;spike 有結論 |
+| **0. 止血與量測**(數天) | 遊戲實況去重與 `max_unanswered`;`speech_end → audio` 六段指標;四項 GPU 檢查;ICL 試聽;把今天的事故做成 fixture | 石鎬類重複 < 5%;拿到真實延遲分解 |
 | **1. 事實層** | EventLog、Observation、Working Context、DeliveryLedger;活動狀態持久化 | 重啟不丟狀態;任一句話查得到完整因果鏈 |
 | **2. 一條主線** | Main Loop;Floor 取代 Arbiter 的生產者;背景改寫 Proposal;移除所有其他開口路徑;Steer 介面與 Minecraft 實作 | 只有主線會開口(程式檢查);「說了沒做」為 0;重複率 < 3%;任務中途改目標不丟進度,生效前她不說改好了 |
 | **3. 規則與安全** | Directive、三層強制、權限分級;Output moderation;緊急停止;Steer 納入規則檢查 | 服從測試 pass^3 全過;對抗輸入 fixture 全過;用 steer 繞規則的 fixture 全被擋 |
 | **4. 語音** | Silero + Smart Turn;TTS 爭用修正;ICL 與情緒音庫;ASR 決策;做歌不聾啞 | 遊戲中 p50 ≤ 2.5 s;接話率 > 60% |
-| **5. Discord** | 語音移 bot;指令收斂成 4 個;面板化;頻道分級;同意與隱私 | 新成員不看文件能點歌、改隱私;self 帳號退役(依 §19) |
+| **5. Discord** | 指令收斂成 4 個;面板化;頻道分級;同意與隱私 | 新成員不看文件能點歌、改隱私 |
 | **6. 面板與維運** | 玻璃視覺、意識軸、規則頁、評測頁;`miyoria up`、`doctor --deep`、`update` | 全新機器一個指令跑起來;今天的 6 類坑都能抓到 |
 | **7. 記憶與個性** | 三層記憶、證據欄位、情緒接輸出、人設迭代 | 記憶可查可刪;人工抽樣評「像同一個人」 |
 
@@ -757,7 +756,7 @@ V2 的教訓是單元測試全過,上線全是問題。
 | 主線成為瓶頸或單點故障 | 反射層不經過主線;主線失敗時有固定的短回應 |
 | 一次呼叫產生結構化輸出會拖慢首句 | 串流解析,`say` 先出;action 在串流內即時擷取。階段 2 先量 |
 | Floor 太保守,她變啞巴 | 最低活動量一起驗收;MaiBot 的熱門群組鎖死是前例 |
-| Bot 收音不穩定 | Spike 先驗;`VoiceAdapter` 留後路 |
+| Self 帳號被 Discord 處分 | Owner 已接受風險;帳號失效時語音和 Go Live 會一起停,文字 bot 不受語音模組影響 |
 | Steer 和任務結束同時發生 | 明確回 `too_late`,回到 context 由她處理;fault injection 要測這個競態 |
 | ICL 或 Smart Turn 效果不如預期 | 都是可逆的小實驗,階段 0 就試 |
 | 改動太大,V2 剛穩定又動 | 每階段可獨立上線;EventLog 先與 V2 並存,再逐步切換 |

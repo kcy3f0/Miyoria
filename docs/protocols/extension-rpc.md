@@ -315,7 +315,10 @@ SDK 的 `ctx.game.registerAdapter(adapter)` 負責這些對應;`describe().id` �
 - **`task.start`**(Host → Ext,request):`{"task":{"id","goal","args","budget_s"}}` → `{}`。只表示**接受了**;結果以事件回報。連接受都不行(spec 不合法)才回錯誤,`error.data.code` 是失敗碼。呼叫端放棄等待(`$/cancelRequest`)時也會取消這個任務。
 - **`task.cancel`**(Host → Ext,request):`{"task":"<id>"}` → `{}`;之後該任務會以 `failed` / `cancelled` 結束。不認得或已結束的 id 忽略。
 - **`task.observe`**(Host → Ext,request):`{}` → `StructuredState` `{"at","state":{…},"task":<執行中的 id 或 null>,"summary"}`(結構化狀態,不是要再解析的文字)。
-- **`task.event`**(Ext → Host,notification):`{"event": TaskEvent}`,`TaskEvent` 是 `{"type":"started","task","goal","at"}`、`{"type":"progress","task","progress":0..1|null,"detail","at"}`、`{"type":"done","task","detail","data","at"}` 或 `{"type":"failed","task","code","detail","at"}`。宿主檢查後發佈到匯流排 `<owner>.task.<type>`(例如 `game.minecraft.task.done`,payload 就是這個事件)。
+- **`task.steer`**(Host → Ext,request,選用):`{"steer":{"id","task","patch":{…},"why","cause"}}` → `{}`。中途改方向、保留進度(`docs/design/v3-architecture.md` §10.6)。和 `task.start` 一樣只表示**受理**;結果以 `steered` 事件回報,patch 在下一個安全點才讀。只有註冊時宣告了 `"steer":true` 的擴充才會收到;SDK 在執行器有 `steer` 方法時自動宣告。受理不了才回錯誤(`error.data.code`)。
+- **`task.event`**(Ext → Host,notification):`{"event": TaskEvent}`,`TaskEvent` 是 `{"type":"started","task","goal","at"}`、`{"type":"progress","task","progress":0..1|null,"detail","at"}`、`{"type":"done","task","detail","data","at"}`、`{"type":"failed","task","code","detail","at"}`,或 `{"type":"steered","task","steer","outcome":"applied"|"rejected"|"too_late","detail","at"}`(不是結束,任務繼續跑)。宿主檢查後發佈到匯流排 `<owner>.task.<type>`(例如 `game.minecraft.task.done`,payload 就是這個事件)。
+
+**Steer 的相容性**:註冊內容多一個選用欄位 `steer`(boolean,缺少就是 `false`),SDK 只在執行器有 `steer` 時才送,沒有 steer 的擴充送出的內容和以前完全一樣。宿主只在宣告了 `steer` 時才給 `ProxyExecutor` 一個 `steer` 方法;沒宣告的(包含舊版擴充)看起來就和沒有 `steer` 的執行器一樣,核心回 `unsupported`(`fallback: cancel_then_start`),主線改走取消再開始。舊宿主收到多出來的欄位會忽略,舊擴充不會收到 `task.steer`。回應 steer 的 `steered` 事件即使任務已經結束(`too_late`)或宿主不認得它(`rejected`)也會送到匯流排,這是「已結束任務的事件一律丟掉」的唯一例外;沒有人問過的 `steered` 一律丟掉。
 
 失敗碼(`TASK_FAILURE_CODES`):`timeout`、`cancelled`、`superseded`、`busy`、`invalid`、`not_found`、`unreachable`、`precondition`、`disconnected`、`crashed`、`died`、`denied`、`internal`。
 
@@ -328,7 +331,7 @@ SDK:`TaskRunner`(`@miyoria/sdk`)把一個 `TaskWorker { observe, run(spec, task)
 | 方向 | 方法 | 設定(`[modules.extensions]`) | 預設 |
 |---|---|---|---|
 | Host → Ext | `initialize` | `init_timeout_ms` | 10000 |
-| Host → Ext | `tools.call`、`commands.invoke`、`task.start` / `task.cancel` / `task.observe` | `call_timeout_ms` | 30000 |
+| Host → Ext | `tools.call`、`commands.invoke`、`task.start` / `task.cancel` / `task.observe` / `task.steer` | `call_timeout_ms` | 30000 |
 | 宿主 | 接受後沒有回報結束的任務 | `budget_s` + `task_grace_ms` | + 5000 |
 | Host → Ext | `prompt.contribute` | `prompt_timeout_ms` | 3000 |
 | 停止 | `shutdown` 後等待結束 | `shutdown_grace_ms` | 2000 |

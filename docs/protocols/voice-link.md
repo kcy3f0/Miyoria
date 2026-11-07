@@ -104,6 +104,10 @@ OBS 端:RTMP 設定→串流→自訂,伺服器 `rtmp://127.0.0.1:1935/live`、�
 
 **和語音(收音 + TTS)同時進行**:`GOLIVE_VOICE_MODE=hybrid`(預設)時,語音連線維持不動(`selfDeaf: false`,照常收音、播放),Go Live 是 Discord 另開的第二條 WebRTC 連線(`STREAM_CREATE`),只借用語音 session id,所以兩者互不干擾。這靠的是動到 `@dank074/discord-video-stream` Streamer 的一個私有欄位(`_voiceConnection`),屬於實驗性質,還沒對真的 Discord 驗證(Phase 0 spike 的 `GOLIVE_VOICE=hybrid` 同一做法)。如果實測發現不行,改 `GOLIVE_VOICE_MODE=exclusive`:推流前 node 離開語音(送 `left`,`reason: "golive"`)、由套件自己的連線進頻道(固定自我拒聽,聽不到人、不能播 TTS);Go Live 結束後自動重新加入原頻道(送 `joined` + `voice_state`),Core 的 `leave` 會取消這個重新加入。
 
+## 她聽起來講了多少
+
+Core 的 `voice_playback` 事件在 `finished` / `interrupted` 時帶 `heard_ms`(node 回報 `started` 到結束的時間,扣掉 `play_pause` 暫停的部分)和 `total_ms`(這句音訊的總長;被打斷時還沒合成完就是 `null`)。她的歷史用 `heard_ms / total_ms` 算聽到了幾成,沒有 `total_ms` 才用 `ms_per_char` 估。`speak` 被 abort signal 取消(Floor 切掉這句、排程逾時、緊急停止)也一樣:送 `play_stop`、發 `interrupted`。
+
 ## 嘴型音量(不在這個協定裡)
 
 voice node 另外把**實際送去 Discord 的 PCM**(重新取樣成 48 kHz 之後、跟播放對時;帶嘴型音軌的播放改用那條音軌,一樣套用淡出)每 10 ms 算一次 RMS,推給 Stage 的 `STAGE_LEVELS_URL`(預設不啟用,例如 `ws://127.0.0.1:7883/levels`):`{"t":<播放開始起算的 ms>,"rms":0..1}`。`t` 是該 10 ms 視窗的起點、跟音訊自己的時間軸走(補靜音時照樣前進),每段播放從 0 開始;播放結束或被打斷送一筆 `rms: 0`。`rms` 是相對滿刻度的真正 RMS(一般說話約 0.05~0.2),`STAGE_LEVELS_GAIN` 可放大。Stage 沒開時安靜地重連,不影響語音。
@@ -131,12 +135,27 @@ voice node 另外把**實際送去 Discord 的 PCM**(重新取樣成 48 kHz 之�
   ```
 - 回應:`200`,`Content-Type: audio/L16; rate=24000; channels=1`,body 是**串流**的原始 PCM s16le(chunked transfer)。標頭 `X-Sample-Rate` 一定要有。Worker 應該在產生第一段音訊後就開始送。
 - `voice` 是 worker 端註冊好的聲音名稱(例如由參考音檔建立的 clone prompt)。
+- `emotion` 是這句話要用的情緒音庫片段(`TTS_VOICE_BANK=1` 時才有作用)。台詞沒有自己的 `<emo:…>` 時用她現在表現出來的情緒;Core 依 `EMOTION_OUTPUTS` 的 `voice`(`packages/types/src/affect-outputs.ts`)和 `voice.toml` 的 `[design.bank.*]` 挑第一個有的片段。Worker 沒有那個片段時退回 `neutral`,再退回一般參考音。`instruct` 還是看原本的情緒標籤。
+
+## TTS 的排隊
+
+`POST /tts` 可以帶 `priority`:`now`(省略時的值,她接下來要講的)排在 `ahead`(先合成的後面幾句)前面。回應多兩個標頭:`X-Tts-Queue-Ms`(等 GPU 鎖的毫秒數,Core 算進 `tts_queue`)、`X-Tts-Reference`(用了哪個參考音,`ref`、`ref.ja`、`bank/ja/happy`)。`emotion` 在 `TTS_VOICE_BANK=1` 時用來選參考音,其他時候仍然只是資訊。
+
+`GET /busy`(TTS、ASR)→ `{"busy": n}`:正在處理的請求數,歌曲 worker 共用顯示卡時用它讓路。
+
+## 判斷講完(`workers/turn`,預設 `127.0.0.1:8006`)
+
+- `POST /turn`:本體是 PCM s16le 單聲道 16 kHz,這個回合到現在為止的聲音(只看最後 8 秒),標頭 `X-Sample-Rate: 16000` → `{"complete": bool, "probability": 0..1, "inference_ms": …}`。模型沒載入回 `503 {"error": …}`。
+- `WS /vad`:一條連線對一條音訊串流。每則二進位訊息 512 個樣本(32 ms),每則回一個文字訊息,內容是語音機率(`"0.923"`)。模型沒載入時關閉連線(1011)。
+- `GET /health` → `{"status":"ok","smart_turn":bool,"silero":bool,"threshold":…,"errors":{…}}`。模型缺了 worker 照常跑。
+
+Core 的 `voice_utterance` 這時多一個 `turn: {ended_by, probability}`:`ended_by` 是 `turn`(模型判定講完)、`timeout`(等到 `turn_max_silence_ms`)或 `silence` / `length` / `close`。
 
 ## 讓出顯示卡:`POST /offload`、`POST /reload`(TTS、ASR)
 
 歌曲 worker 轉換時要整張顯示卡(12 GB 的卡上跟 TTS / ASR 一起跑會慢 10 倍以上),所以 `tts/` 和 `asr/` worker 可以暫時放掉模型:
 
-- `POST /offload`(JSON 可省略):`{"reason"?: "sing", "max_s"?: 900}` → `{"state":"offloaded","offload_ms":…,"vram_before_mb":…,"vram_after_mb":…}`。整個模型(TTS 還有 CUDA graphs 和聲音的 prompt)丟掉、`torch.cuda.empty_cache()`。正在合成的那一句會先做完。CUDA graphs 綁在當初的記憶體位址上,不能搬到 CPU 再搬回來,所以是刪掉、之後重建。
+- `POST /offload`(JSON 可省略):`{"reason"?: "sing", "max_s"?: 900, "drain_s"?: 15}`(`drain_s` 只有 TTS)→ `{"state":"offloaded","offload_ms":…,"drained":bool,"vram_before_mb":…,"vram_after_mb":…}`。新的請求馬上回 503;TTS 正在合成的整段話最多等 `drain_s`(`TTS_OFFLOAD_DRAIN_S`)做完,超過才在下一個 chunk 中斷(`drained: false`)。然後整個模型(TTS 還有 CUDA graphs 和聲音的 prompt)丟掉、`torch.cuda.empty_cache()`。CUDA graphs 綁在當初的記憶體位址上,不能搬到 CPU 再搬回來,所以是刪掉、之後重建。
 - 放掉期間 `POST /tts`、`GET /voices`、`POST /asr` 都回 **`503 {"error":"offloaded"}`**(不會自動重新載入:那樣就不算讓出了);`GET /health` 仍是 `status: "ok"`,多 `offloaded: true`、`reason`、`since`、`reload_at`。
 - `POST /reload` → `{"state":"ready","reload_ms":…}`:跟啟動一樣重建(TTS:權重、CUDA graphs、聲音 priming;ASR:模型 + 暖機)。重複呼叫回 `already: true`。
 - 保險:放掉超過 `max_s`(`TTS_OFFLOAD_MAX_S` / `ASR_OFFLOAD_MAX_S`,預設 900 秒,0 = 不會)沒人叫 reload 就自己載回來(歌曲 worker 當掉也不會讓她永遠沒聲音)。
