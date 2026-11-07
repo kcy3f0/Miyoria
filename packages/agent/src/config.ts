@@ -173,6 +173,12 @@ export const VoiceConfigSchema = z.object({
    * instead of being read out.
    */
   text_aside: z.boolean().default(true),
+  /**
+   * While she is in a voice channel, what she has to say on her own in that server (task
+   * results, game lines, what she says after doing something) is said there instead of being
+   * posted to a text channel. Replies to people stay where they were asked.
+   */
+  keep_in_voice: z.boolean().default(true),
 });
 export type VoiceConfig = z.output<typeof VoiceConfigSchema>;
 

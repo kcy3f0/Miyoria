@@ -102,6 +102,13 @@ export function initiativeSource(reason: string): ImpulseSource {
   return "world";
 }
 
+/** Whether an `agent.initiative` is about her own doings, not a reaction to someone there. */
+function aboutHerself(reason: string): boolean {
+  if (reason === "action_result") return true;
+  const source = initiativeSource(reason);
+  return source === "game" || source === "notice" || source === "song";
+}
+
 /** How long a converted `agent.initiative` stays worth saying while the place is busy. */
 const INITIATIVE_TTL_MS = 2 * MINUTE_MS;
 /** Results someone waits for stay longer (the old follow-up retry window). */
@@ -412,6 +419,18 @@ export class Agent {
     return { ...msg, id: { ...msg.id, context: room } };
   }
 
+  /**
+   * Where she says something of her own that was meant for `context`: the voice channel she is
+   * in on that server, when there is one (`voice.keep_in_voice`), else `context`.
+   */
+  ownLinesContext(context: ContextKey): ContextKey {
+    if (!this.config.voice.keep_in_voice) return context;
+    if ((context.kind !== "channel" && context.kind !== "thread") || context.scope === null) {
+      return context;
+    }
+    return this.handle.voiceContext(context.platform, context.scope) ?? context;
+  }
+
   #onVoiceMembers(context: ContextKey, members: readonly VoiceParticipant[]): void {
     this.handle.setVoiceRoom(context, true);
     for (const m of members) {
@@ -610,13 +629,14 @@ export class Agent {
    */
   #onNotice(notice: Notice): void {
     if (Date.parse(notice.expires_at) <= this.ctx.clock.now()) return;
-    const id = notice.context === null ? "" : contextId(notice.context);
+    const context = notice.context === null ? null : this.ownLinesContext(notice.context);
+    const id = context === null ? "" : contextId(context);
     const list = this.#notices.get(id) ?? [];
-    list.push(notice);
+    list.push({ ...notice, context });
     while (list.length > MAX_NOTICES) list.shift();
     this.#notices.set(id, list);
-    if (notice.context !== null) {
-      this.#onInitiative(notice.context, { reason: "notice", hint: "", about: [] });
+    if (context !== null) {
+      this.#onInitiative(context, { reason: "notice", hint: "", about: [] });
     }
   }
 
@@ -774,7 +794,8 @@ export class Agent {
    * Opens a turn of hers for an impulse the Arbiter accepted (not one of her own intents):
    * resolves once the context's coordinator started it or found the place busy.
    */
-  openInitiative(context: ContextKey, initiative: Initiative): Promise<ImpulseRun> {
+  openInitiative(target: ContextKey, initiative: Initiative): Promise<ImpulseRun> {
+    const context = aboutHerself(initiative.reason) ? this.ownLinesContext(target) : target;
     if (context.kind === "voice" && !this.inVoice(context)) {
       return Promise.resolve({ status: "refused", reason: "denied", detail: "不在那個語音頻道" });
     }

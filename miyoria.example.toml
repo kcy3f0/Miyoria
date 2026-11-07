@@ -299,6 +299,7 @@ default_mode = "normal"    # off | mention-only | normal | always(語音沒有�
 debounce_ms = 700          # 對方講完後等多久(看他是不是還要繼續講)
 text_chat = true           # 她在語音頻道裡時,那個頻道文字區打的字她也用說的回
 text_aside = true          # 用說的回時,網址和程式碼改貼到語音頻道的文字區
+keep_in_voice = true       # 她在語音時,自己的事(做事的結果、遊戲實況)用說的,不發到文字頻道;回別人的話還是留在原處
 direct_debounce_ms = 400   # 有人叫她(名字、她剛講完就問她)時只等這麼久
 # voice_first = true       # 雙語語音:先寫 <voice> 那句,寫完馬上送 TTS,中文字幕後補(false = 等中文寫完一起送)
 

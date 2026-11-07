@@ -5,7 +5,10 @@ import { CommandRegistryKey } from "@miyoria/commands";
 import { MockProvider } from "@miyoria/llm";
 import {
   type ContextKey,
+  customEvent,
   type Event,
+  type JsonValue,
+  NOTICE_TOPIC,
   type PlaybackState,
   type TurnId,
   toTimestamp,
@@ -105,6 +108,57 @@ function completedTexts(h: Harness): string[] {
     .drain()
     .flatMap((e) => (e.event.type === "agent_turn_completed" ? [e.event.data.text] : []));
 }
+
+function notice(context: ContextKey): Event {
+  const now = Date.now();
+  return customEvent(NOTICE_TOPIC, {
+    id: "n1",
+    at: toTimestamp(now),
+    source: "activity",
+    task: "t1",
+    turn: null,
+    context,
+    ok: false,
+    code: "timeout",
+    text: "開台失敗",
+    expires_at: toTimestamp(now + 600_000),
+  } as unknown as JsonValue);
+}
+
+describe("keep_in_voice", () => {
+  const general: ContextKey = { platform: "test", scope: "guild", channel: "g", kind: "channel" };
+
+  it("a task result for a text channel is said in the voice channel she is in", async () => {
+    const mock = new MockProvider("chat").reply("<emo:annoyed>開台失敗了。");
+    const h = await Harness.create("always", voiceConfig("always"), mock);
+    h.publish(joined());
+    await wait(50);
+    h.publish(notice(general));
+    await wait(300);
+    expect(texts(h)).toEqual(["開台失敗了。"]);
+    expect(h.sink.texts()).toEqual([]);
+  });
+
+  it("stays in the text channel when she is not in voice, or when it is turned off", async () => {
+    const mock = new MockProvider("chat").reply("開台失敗了。").reply("開台失敗了。");
+    const away = await Harness.create("always", voiceConfig("always"), mock);
+    away.publish(notice(general));
+    await wait(300);
+    expect(away.sink.texts()).toEqual(["開台失敗了。"]);
+
+    const off = await Harness.create(
+      "always",
+      { attention: { llm_check: false }, voice: { default_mode: "always", keep_in_voice: false } },
+      mock,
+    );
+    off.publish(joined());
+    await wait(50);
+    off.publish(notice(general));
+    await wait(300);
+    expect(off.sink.texts()).toEqual(["開台失敗了。"]);
+    expect(texts(off)).toEqual([]);
+  });
+});
 
 describe("voice", () => {
   it("utterances_are_debounced_and_merged", async () => {

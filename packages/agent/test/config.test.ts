@@ -152,6 +152,7 @@ describe("config", () => {
         voice_first: true,
         text_chat: true,
         text_aside: true,
+        keep_in_voice: true,
       },
       history: { backfill: 20, reply_chain: 3, timeout_ms: 3000 },
       vision: {
