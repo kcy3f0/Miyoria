@@ -6,10 +6,12 @@ import {
   type ContextKey,
   contextKeyString,
   customEvent,
+  type MessageRef,
   type PlaybackState,
   SPEECH_SYNTH_TOPIC,
   type SpeakOutcome,
   SpeechPauseKey,
+  TurnFocusViewKey,
   type TurnId,
   VOICE_BARGE_IN_TOPIC,
   VoiceFloorKey,
@@ -17,6 +19,7 @@ import {
 } from "@miyoria/types";
 import type { BargeIn } from "./barge.js";
 import type { VoiceConfig, VoiceProfile } from "./config.js";
+import type { E2eLatency, E2eMeasure } from "./e2e.js";
 import type { SelfEchoGuard } from "./echo.js";
 import { VoiceLinkError } from "./link/conn.js";
 import type { VoiceLink } from "./link/link.js";
@@ -42,6 +45,8 @@ export interface SpeakerDeps {
   echo: SelfEchoGuard;
   /** Lines synthesized ahead of their turn; `null` when `tts_prefetch` is 0. */
   prefetch: LinePrefetch | null;
+  /** End-to-end latency of replies to human speech (`speech_end → first audio played`). */
+  e2e: E2eLatency;
 }
 
 /** While a song or the GPU loan holds the floor, how often it is looked at again. */
@@ -87,6 +92,7 @@ export class Speaker implements VoiceSink {
         instruct: profile.instructFor(emotion),
         voice: profile.voice,
       };
+      const requestAt = this.#d.ctx.clock.now();
       const [provider, stream] = await speech.synthesize(request, signal);
       const it = stream[Symbol.asyncIterator]();
       let first: AudioChunk;
@@ -103,6 +109,7 @@ export class Speaker implements VoiceSink {
         Promise.resolve(it.return?.()).catch(() => undefined);
         throw error;
       }
+      const timing = { requestAt, firstAudioAt: this.#d.ctx.clock.now() };
       const stop = deferred<void>();
       const audio = new BufferedAudio(() => stop.resolve());
       signal.addEventListener("abort", () => stop.resolve(), { once: true });
@@ -122,7 +129,7 @@ export class Speaker implements VoiceSink {
           Promise.resolve(it.return?.()).catch(() => undefined);
         }
       })();
-      return { line: { provider, said, sampleRate: first.sampleRate, audio }, done };
+      return { line: { provider, said, sampleRate: first.sampleRate, audio, timing }, done };
     };
   }
 
@@ -137,6 +144,7 @@ export class Speaker implements VoiceSink {
     emotion: string | null,
     turn: TurnId | null,
     signal: AbortSignal | undefined,
+    measure: E2eMeasure | null,
   ): Promise<{ playback: Playback; said: string }> {
     const { ctx, link, prefetch } = this.#d;
     const t0 = ctx.clock.now();
@@ -162,6 +170,7 @@ export class Speaker implements VoiceSink {
       )(signal ?? new AbortController().signal);
       line = production.line;
     }
+    measure?.tts(line.timing ?? null, prefetched, line.provider);
     const firstAudioMs = Math.max(0, ctx.clock.now() - t0);
     ctx.publish(
       {
@@ -183,11 +192,39 @@ export class Speaker implements VoiceSink {
     );
     try {
       const playback = await link.play(guild, line.sampleRate, line.audio);
+      // The node says when the audio is audible: record it without waiting for it here.
+      if (measure !== null) this.#watchPlayback(playback, guild, turn, measure);
       return { playback, said: line.said };
     } catch (error) {
+      measure?.fail(signal?.aborted ? "cancelled" : "playback_failed");
       void line.audio[Symbol.asyncIterator]().return?.();
       throw error;
     }
+  }
+
+  /** What the turn in flight answers, from the agent's focus view (memory only). */
+  #focusOf(context: ContextKey, turn: TurnId | null): readonly MessageRef[] {
+    const view = this.#d.ctx.services.get(TurnFocusViewKey);
+    if (!view) return [];
+    if (turn === null) return view.current(context)?.focus ?? [];
+    return view.all().find((f) => f.turn === turn)?.focus ?? [];
+  }
+
+  /** Ends `measure` with the node's first report on `playback`, whenever it comes. */
+  #watchPlayback(
+    playback: Playback,
+    guild: string,
+    turn: TurnId | null,
+    measure: E2eMeasure,
+  ): void {
+    void playback.state$
+      .waitFor((s) => s !== null)
+      .then((state) => {
+        if (state === "started" || state === "finished") measure.played();
+        else if (state === "interrupted") {
+          measure.fail(this.#d.barge.isStopped(guild, turn) ? "barge_in" : "interrupted");
+        } else measure.fail("playback_failed");
+      });
   }
 
   /** Whether `emotion` is the one a prepared line should be synthesized with. */
@@ -209,6 +246,8 @@ export class Speaker implements VoiceSink {
   prepare(context: ContextKey, rawText: string, spoken?: string, emotion?: string | null): void {
     const text = stripTags(rawText);
     if (text === "") return;
+    // The first text of a reply is here: the clock for `llm_first` stops.
+    this.#d.e2e.textReady(this.#focusOf(context, null));
     const said = spoken === undefined ? "" : stripTags(spoken);
     const session = this.#d.session(context);
     if (said !== "") this.#d.translator?.provide(text, said, session);
@@ -295,16 +334,50 @@ export class Speaker implements VoiceSink {
     }
     const text = stripTags(rawText);
     if (text === "") return "completed";
+    // Only the first line of a reply that answers somebody's speech is measured.
+    const measure = this.#d.e2e.begin(context, turn, this.#focusOf(context, turn));
+    try {
+      return await this.#speak(context, guild, text, emotion, turn, signal, measure);
+    } finally {
+      // Whatever ended the call early (an error, a cancel) ends the measurement too.
+      measure?.fail("cancelled");
+    }
+  }
+
+  async #speak(
+    context: ContextKey,
+    guild: string,
+    text: string,
+    emotion: string | null,
+    turn: TurnId | null,
+    signal: AbortSignal | undefined,
+    measure: E2eMeasure | null,
+  ): Promise<SpeakOutcome> {
     const { barge, echo } = this.#d;
     // Somebody stopped this turn's speech: the rest of its lines are not said.
-    if (barge.isStopped(guild, turn)) return "interrupted";
-    if (!(await this.#waitForFloor(context, guild, turn, signal))) return "interrupted";
+    if (barge.isStopped(guild, turn)) {
+      measure?.fail("barge_in");
+      return "interrupted";
+    }
+    if (!(await this.#waitForFloor(context, guild, turn, signal))) {
+      measure?.fail(barge.isStopped(guild, turn) ? "barge_in" : "floor");
+      return "interrupted";
+    }
     this.#lastEmotion.set(guild, emotion);
     let playback: Playback;
     let said: string;
     try {
-      ({ playback, said } = await this.#start(context, guild, text, emotion, turn, signal));
+      ({ playback, said } = await this.#start(
+        context,
+        guild,
+        text,
+        emotion,
+        turn,
+        signal,
+        measure,
+      ));
     } catch (error) {
+      measure?.fail(signal?.aborted ? "cancelled" : "tts_failed");
       const err = errorMessage(error);
       if (isOffloaded(err)) this.#d.ctx.log.debug({ err }, "cannot start speech: TTS is offloaded");
       else this.#d.ctx.log.warn({ err }, "cannot start speech");
@@ -327,6 +400,10 @@ export class Speaker implements VoiceSink {
       playback.stop(0);
     }
     this.#playbackEvent(context, turn, state, text, emotion);
+    // A no-op when the node reported the audio first.
+    if (state === "interrupted") {
+      measure?.fail(barge.isStopped(guild, turn) ? "barge_in" : "interrupted");
+    } else if (state === "failed") measure?.fail("playback_failed");
     switch (state) {
       case "finished":
         return "completed";

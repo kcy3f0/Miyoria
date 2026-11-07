@@ -193,6 +193,7 @@ describe("segment", () => {
     expect(u.speechMs).toBeLessThanOrEqual(1500);
     expect(u.voicedMs).toBeGreaterThanOrEqual(900);
     expect(u.trailingSilenceMs).toBeGreaterThanOrEqual(600);
+    expect(u.endedBy).toBe("silence");
     // Pre-roll + speech + tail.
     expect(msOf(u)).toBeGreaterThanOrEqual(1300);
     expect(msOf(u)).toBeLessThanOrEqual(1800);
@@ -245,6 +246,7 @@ describe("segment", () => {
     const out = feed(s, voice(5000, 0.3));
     expect(out.length).toBeGreaterThanOrEqual(2);
     for (const u of out) expect(msOf(u)).toBeLessThanOrEqual(2000);
+    expect(out[0]?.endedBy).toBe("length");
   });
 
   it("stream_close_flushes", () => {
@@ -253,6 +255,7 @@ describe("segment", () => {
     expect(s.isActive()).toBe(true);
     const u = s.finish();
     expect(u?.speechMs).toBeGreaterThanOrEqual(850);
+    expect(u?.endedBy).toBe("close");
     expect(s.isActive()).toBe(false);
     // Too short to keep.
     feed(s, voice(150, 0.3));

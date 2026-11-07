@@ -7,6 +7,7 @@
 // rest of its guild's (barge-in, a song taking the floor).
 
 import type { AudioChunk } from "@miyoria/speech";
+import type { TtsTiming } from "./e2e.js";
 import { Semaphore } from "./util.js";
 
 /** Audio that is produced in the background and read from the start by one consumer. */
@@ -93,6 +94,8 @@ export interface PreparedLine {
   said: string;
   sampleRate: number;
   audio: BufferedAudio;
+  /** When the TTS request went out and its first audio came (latency metric). */
+  timing?: TtsTiming;
 }
 
 /**

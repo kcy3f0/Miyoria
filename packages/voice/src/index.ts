@@ -8,8 +8,9 @@
 //   playback, with barge-in). It registers `join`, `leave` and `voice consent <on|off>`.
 //
 // Latency measurements are published as `custom` events on `voice.latency` with `stage` =
-// `asr` (`asr_ms`, `transcribe_ms`) or `tts` (`first_audio_ms`); the agent adds `llm`
-// (`first_token_ms`).
+// `asr` (`asr_ms`, `transcribe_ms`), `tts` (`first_audio_ms`) or `e2e` (`speech_end →
+// first_audio_played`, split into `endpoint`, `asr`, `llm_first`, `tts_queue`, `tts_first` and
+// `playback`); the agent adds `llm` (`first_token_ms`).
 
 export {
   type BargeDecision,
@@ -42,6 +43,15 @@ export {
   consentKey,
   defaultAllowed,
 } from "./consent.js";
+export {
+  E2E_SEGMENTS,
+  E2eLatency,
+  type E2eMeasure,
+  type E2eReason,
+  type E2eRecord,
+  type E2eSegment,
+  e2eJson,
+} from "./e2e.js";
 export { containment, looksLikeHintEcho, matchCore, SelfEchoGuard } from "./echo.js";
 export { type GoLiveState, type GoLiveStatus, VoiceLinkError } from "./link/conn.js";
 export {

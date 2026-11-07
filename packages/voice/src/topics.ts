@@ -1,6 +1,7 @@
 /**
  * Topic of latency measurements (`custom` events), with `stage` = `asr` (`asr_ms`,
- * `transcribe_ms`) or `tts` (`first_audio_ms`).
+ * `transcribe_ms`), `tts` (`first_audio_ms`) or `e2e` (`E2eRecord`: `speech_end →
+ * first_audio_played` and its six `segments`, one per reply that answers human speech).
  */
 export const LATENCY_TOPIC = "voice.latency";
 

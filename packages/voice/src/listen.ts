@@ -14,6 +14,7 @@ import {
 import type { BargeIn, BargeWho, SpeakerRole } from "./barge.js";
 import { segmenterConfig, type VoiceConfig } from "./config.js";
 import type { Consent } from "./consent.js";
+import type { E2eLatency } from "./e2e.js";
 import { looksLikeHintEcho, matchCore, type SelfEchoGuard } from "./echo.js";
 import type { AudioEvent, StreamInfo, VoiceLink } from "./link/link.js";
 import { Segmenter, type Utterance } from "./segment.js";
@@ -48,6 +49,8 @@ export interface ListenerDeps {
   echo: SelfEchoGuard;
   /** Words that call her (config `names` plus the profile's), lower-case not required. */
   names: readonly string[];
+  /** Starts the end-to-end latency measurement of each accepted utterance. */
+  e2e: E2eLatency;
 }
 
 export class Listener {
@@ -252,7 +255,7 @@ export class Listener {
     endedAt: number,
     signal: AbortSignal,
   ): Promise<void> {
-    const { ctx, speech, config, link, asrSlots, barge, echo } = this.#d;
+    const { ctx, speech, config, link, asrSlots, barge, echo, e2e } = this.#d;
     const release = await asrSlots.acquire(signal);
     const guild = info.context.scope ?? "";
     // Barge-in waits for this transcript; whatever happens, it must not wait forever.
@@ -309,6 +312,15 @@ export class Listener {
       // Stops her (or lets her go on) before the utterance travels on to the agent.
       settled = true;
       barge.verdict(guild, { ...who, text, named, echo: false });
+      const id = newId();
+      // The person stopped talking at `endedAt`; a length-capped utterance never did.
+      e2e.heard({
+        context: info.context,
+        utterance: id,
+        speechEndAt: utterance.endedBy === "length" ? null : endedAt,
+        sentAt: t0,
+        transcriptAt: now,
+      });
       const displayName =
         link.participants(guild).find((p) => sameAccount(p.account, info.speaker))?.display_name ||
         info.displayName;
@@ -316,7 +328,7 @@ export class Listener {
       ctx.publish({
         type: "voice_utterance",
         data: {
-          id: newId(),
+          id,
           context: info.context,
           speaker: { account: info.speaker, display_name: displayName, is_bot: false },
           text,

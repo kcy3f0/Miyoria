@@ -259,6 +259,48 @@ describe("monitor", () => {
     expect(m.voiceContext()).toBeNull();
   });
 
+  it("reads p50 and p90 per end-to-end segment, counting incomplete replies apart", () => {
+    const m = new Monitor();
+    const context: ContextKey = { platform: "discord", scope: "g", channel: "vc", kind: "voice" };
+    m.handle(newEnvelope("voice", { type: "voice_joined", data: { context, participants: [] } }));
+    const e2e = (payload: Record<string, unknown>) =>
+      m.handle(
+        newEnvelope("voice", {
+          type: "custom",
+          data: {
+            topic: "voice.latency",
+            payload: { stage: "e2e", context: { ...context }, ...payload } as never,
+          },
+        }),
+      );
+    for (let i = 1; i <= 10; i++) {
+      e2e({
+        complete: true,
+        reason: null,
+        total_ms: i * 600,
+        segments: {
+          endpoint: i * 100,
+          asr: i * 100,
+          llm_first: i * 100,
+          tts_queue: i * 100,
+          tts_first: i * 100,
+          playback: i * 100,
+        },
+      });
+    }
+    // A barged-in reply and a TTS failure only count; their partial segments feed nothing.
+    e2e({ complete: false, reason: "barge_in", total_ms: null, segments: { endpoint: 9_999 } });
+    e2e({ complete: false, reason: "tts_failed", total_ms: null, segments: { endpoint: 9_999 } });
+    e2e({ complete: false, reason: "tts_failed", total_ms: null, segments: { endpoint: 9_999 } });
+    const l = m.voice(Date.now()).sessions[0]?.latency.e2e;
+    expect(l?.complete).toBe(10);
+    expect(l?.incomplete).toBe(3);
+    expect(l?.incomplete_by_reason).toEqual({ barge_in: 1, tts_failed: 2 });
+    expect(l?.total).toEqual({ p50_ms: 3_000, p90_ms: 5_400, samples: 10 });
+    expect(l?.segments.endpoint).toEqual({ p50_ms: 500, p90_ms: 900, samples: 10 });
+    expect(l?.segments.playback.samples).toBe(10);
+  });
+
   it("drops latency samples outside the 15 minute window", () => {
     const m = new Monitor();
     const context: ContextKey = { platform: "discord", scope: "g", channel: "vc", kind: "voice" };

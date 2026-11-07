@@ -47,6 +47,11 @@ export interface Utterance {
    * kept in `samples`).
    */
   trailingSilenceMs: number;
+  /**
+   * Why it ended: the end silence (`silence`: the speaker stopped), the length cap (`length`: the
+   * speaker may still be talking) or the stream closing (`close`).
+   */
+  endedBy: "silence" | "length" | "close";
 }
 
 /** A growable `Int16Array`. */
@@ -149,7 +154,7 @@ export class Segmenter<V extends Vad = Vad> {
     const partial = this.#partial;
     this.#partial = new Int16Array(0);
     if (this.#active && partial.length > 0) this.#buf.push(partial);
-    const out = this.#active ? this.#emit() : null;
+    const out = this.#active ? this.#emit("close") : null;
     this.#reset();
     this.#preRoll = [];
     return out;
@@ -179,8 +184,9 @@ export class Segmenter<V extends Vad = Vad> {
       this.#silenceMs += this.#frameMs;
     }
     const lenMs = this.#ms(this.#buf.length);
-    if (this.#silenceMs >= this.#config.endSilenceMs || lenMs >= this.#config.maxUtteranceMs) {
-      const out = this.#emit();
+    const silent = this.#silenceMs >= this.#config.endSilenceMs;
+    if (silent || lenMs >= this.#config.maxUtteranceMs) {
+      const out = this.#emit(silent ? "silence" : "length");
       this.#reset();
       return out;
     }
@@ -217,7 +223,7 @@ export class Segmenter<V extends Vad = Vad> {
     this.#silenceMs = 0;
   }
 
-  #emit(): Utterance | null {
+  #emit(endedBy: Utterance["endedBy"]): Utterance | null {
     const speechMs = this.#ms(this.#speechEnd);
     const trailing = this.#ms(Math.max(0, this.#buf.length - this.#speechEnd));
     if (speechMs < this.#config.minUtteranceMs || this.#voicedMs < this.#config.minVoicedMs) {
@@ -230,6 +236,7 @@ export class Segmenter<V extends Vad = Vad> {
       speechMs,
       voicedMs: this.#voicedMs,
       trailingSilenceMs: trailing,
+      endedBy,
     };
   }
 

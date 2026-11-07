@@ -26,12 +26,14 @@ import { BargeIn } from "./barge.js";
 import { registerCommands, unregisterCommands } from "./commands.js";
 import { VoiceConfigSchema, VoiceProfile } from "./config.js";
 import { Consent } from "./consent.js";
+import { E2eLatency, e2eJson } from "./e2e.js";
 import { SelfEchoGuard } from "./echo.js";
 import { type VoiceLink, VoiceLinkKey } from "./link/link.js";
 import { VoiceLinkModule } from "./link/module.js";
 import { Listener } from "./listen.js";
 import { LinePrefetch } from "./prefetch.js";
 import { Speaker } from "./sink.js";
+import { LATENCY_TOPIC } from "./topics.js";
 import { SpeechTranslator } from "./translate.js";
 import { Semaphore } from "./util.js";
 
@@ -57,6 +59,7 @@ export class VoiceModule implements Module {
   readonly #voice: JsonObject | null;
   readonly #names: readonly string[];
   #barge: BargeIn | null = null;
+  #e2e: E2eLatency | null = null;
   #link: VoiceLink | null = null;
   #commands: CommandMount | null = null;
   #capabilities: (() => void)[] = [];
@@ -125,6 +128,26 @@ export class VoiceModule implements Module {
           })
         : null;
 
+    const e2e = new E2eLatency({
+      now: () => ctx.clock.now(),
+      emit: (record) => {
+        ctx.log.info(
+          {
+            turn: record.turn,
+            complete: record.complete,
+            reason: record.reason,
+            total_ms: record.total_ms,
+            ...record.segments,
+          },
+          "voice e2e latency",
+        );
+        ctx.publish(customEvent(LATENCY_TOPIC, { stage: "e2e", ...e2eJson(record) }), {
+          turn: record.turn,
+        });
+      },
+    });
+    this.#e2e = e2e;
+
     if (!speech.hasTts()) ctx.log.warn("no TTS provider configured: she cannot speak");
     let translator: SpeechTranslator | null = null;
     if (config.tts_translate !== null) {
@@ -151,6 +174,7 @@ export class VoiceModule implements Module {
       session: (context) => contextSession(this.#profileId, context),
       echo,
       prefetch,
+      e2e,
     });
     ctx.provide(VoiceSinkKey, speaker);
 
@@ -165,6 +189,7 @@ export class VoiceModule implements Module {
         asrSlots: new Semaphore(Math.max(1, config.asr_concurrency)),
         echo,
         names: [...config.names, ...this.#names],
+        e2e,
       });
       const audio = link.subscribeAudio(ctx.signal);
       ctx.spawn("listen", (signal) => listener.run(audio, signal));
@@ -196,6 +221,8 @@ export class VoiceModule implements Module {
   async stop(): Promise<void> {
     this.#barge?.close();
     this.#barge = null;
+    this.#e2e?.clear();
+    this.#e2e = null;
     this.#commands?.detach();
     this.#commands = null;
     for (const unregister of this.#capabilities) unregister();

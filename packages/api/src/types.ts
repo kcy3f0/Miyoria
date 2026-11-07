@@ -426,10 +426,40 @@ export interface LatencyStats {
   samples: number;
 }
 
+/** p50 / p90 of one end-to-end latency series; `null` percentiles without samples. */
+export interface E2eStats {
+  p50_ms: number | null;
+  p90_ms: number | null;
+  samples: number;
+}
+
+/** The six segments of `speech_end → first_audio_played`, in the order a listener hears them. */
+export type E2eSegmentName =
+  | "endpoint"
+  | "asr"
+  | "llm_first"
+  | "tts_queue"
+  | "tts_first"
+  | "playback";
+
+/**
+ * End-to-end voice latency over the recent window: replies to human speech only. `total` and the
+ * segments count complete measurements (a segment that was not measured is left out of its own
+ * stats); incomplete ones (cancelled, barged in on, failed) are only counted, by reason.
+ */
+export interface VoiceE2eLatency {
+  total: E2eStats;
+  segments: Record<E2eSegmentName, E2eStats>;
+  complete: number;
+  incomplete: number;
+  incomplete_by_reason: Record<string, number>;
+}
+
 export interface VoiceLatency {
   asr: LatencyStats;
   llm_first_token: LatencyStats;
   tts_first_audio: LatencyStats;
+  e2e: VoiceE2eLatency;
 }
 
 /** One voice channel she is in. */

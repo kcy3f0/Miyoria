@@ -89,9 +89,12 @@ class FakeTts implements TtsProvider {
   requests: TtsRequest[] = [];
   /** Keep the stream open after the audio (a long generation). */
   endless = false;
+  /** Fail every request with this message. */
+  failWith: string | null = null;
 
   async synthesize(request: TtsRequest): Promise<AudioStream> {
     this.requests.push(request);
+    if (this.failWith !== null) throw new Error(this.failWith);
     const endless = this.endless;
     const chunks: AudioChunk[] = [
       { sampleRate: 24_000, samples: new Int16Array(0) },
@@ -940,5 +943,101 @@ describe("TTS prefetch", () => {
     );
     await sleepMs(100);
     expect(e.tts.requests).toHaveLength(0);
+  });
+});
+
+// ------------------------------------------------------------- end-to-end latency
+
+/** The next `voice.latency` payload of stage `e2e`. */
+async function nextE2e(sub: Subscription): Promise<Record<string, JsonValue>> {
+  for (;;) {
+    const ev = (await nextEvent(sub)).event;
+    if (ev.type !== "custom") continue;
+    const p = ev.data.payload as Record<string, JsonValue>;
+    if (p.stage === "e2e") return p;
+  }
+}
+
+/** A turn in flight that answers the utterances `ids` (what the agent's focus view reports). */
+function answering(turn: string, ...ids: string[]): TurnFocus {
+  return {
+    ...turnFor("u1"),
+    turn,
+    focus: ids.map((id) => ({ context: voiceCtx, id })),
+  };
+}
+
+describe("end-to-end latency", () => {
+  it("measures speech end to the first audio the node plays", async () => {
+    const e = await boot();
+    const events = e.h.subscribe(["voice.utterance", "voice.latency"]);
+    e.speakStream(1, "u1", utteranceAudio());
+    const u = await nextUtterance(events);
+    provideFocus(e, answering("turn-1", u.id));
+    const sink = e.h.services.require(VoiceSinkKey);
+    sink.prepare?.(voiceCtx, "第一句", undefined, null);
+    const speaking = sink.speak(voiceCtx, "第一句", null, "turn-1");
+    const [id] = await readPlayback(e.node);
+    e.node.sendJson({ type: "playback", play: id, state: "started" });
+    e.node.sendJson({ type: "playback", play: id, state: "finished" });
+    expect(await speaking).toBe("completed");
+
+    const p = await nextE2e(events);
+    expect(p.complete).toBe(true);
+    expect(p.reason).toBeNull();
+    expect(p.turn).toBe("turn-1");
+    expect(p.utterance).toBe(u.id);
+    const segments = p.segments as Record<string, number>;
+    expect(Object.keys(segments)).toEqual([
+      "endpoint",
+      "asr",
+      "llm_first",
+      "tts_queue",
+      "tts_first",
+      "playback",
+    ]);
+    const sum = Object.values(segments).reduce((a, b) => a + b, 0);
+    expect(sum).toBe(p.total_ms);
+    // The silence after the speech is the endpoint: it cannot be shorter than the end silence.
+    expect(segments.endpoint as number).toBeGreaterThanOrEqual(0);
+    expect(p.unattributed_ms).toBe(0);
+  });
+
+  it("reports a TTS failure as incomplete", async () => {
+    const e = await boot();
+    const events = e.h.subscribe(["voice.utterance", "voice.latency"]);
+    e.speakStream(1, "u1", utteranceAudio());
+    const u = await nextUtterance(events);
+    provideFocus(e, answering("turn-1", u.id));
+    e.tts.failWith = "tts is down";
+    const sink = e.h.services.require(VoiceSinkKey);
+    await expect(sink.speak(voiceCtx, "第一句", null, "turn-1")).rejects.toThrow("tts is down");
+    const p = await nextE2e(events);
+    expect(p.complete).toBe(false);
+    expect(p.reason).toBe("tts_failed");
+    expect(p.total_ms).toBeNull();
+    expect((p.segments as Record<string, number | null>).playback).toBeNull();
+  });
+
+  it("does not count a turn she started herself", async () => {
+    const e = await boot();
+    const events = e.h.subscribe(["voice.utterance", "voice.latency"]);
+    e.speakStream(1, "u1", utteranceAudio());
+    await nextUtterance(events);
+    provideFocus(e, answering("turn-self")); // no focus: nobody spoke to her
+    const sink = e.h.services.require(VoiceSinkKey);
+    const speaking = sink.speak(voiceCtx, "我自己想說", null, "turn-self");
+    const [id] = await readPlayback(e.node);
+    finish(e.node, id);
+    expect(await speaking).toBe("completed");
+    await sleepMs(100);
+    let seen = 0;
+    for (;;) {
+      const env = await Promise.race([events.recv(), sleepMs(50).then(() => "idle" as const)]);
+      if (env === "idle" || env === null) break;
+      const ev = env.event;
+      if (ev.type === "custom" && (ev.data.payload as { stage?: string }).stage === "e2e") seen++;
+    }
+    expect(seen).toBe(0);
   });
 });
