@@ -101,8 +101,11 @@ export {
   type WirePlaybackState,
 } from "./protocol.js";
 export { DEFAULT_SEGMENTER, Segmenter, type SegmenterConfig, type Utterance } from "./segment.js";
+export { SileroVad, sileroVad } from "./silero.js";
 export {
+  applyAliases,
   cleanTranscript,
+  compileAliases,
   echoesHint,
   isHallucination,
   isPunctuationOnly,
@@ -110,6 +113,7 @@ export {
   toTraditional,
 } from "./text.js";
 export { LATENCY_TOPIC, VOICE_BARGE_IN_TOPIC } from "./topics.js";
+export { HttpTurnJudge, type TurnAnswer, TurnGate, type TurnJudge } from "./turn.js";
 export { BoundedQueue, Semaphore, Watch } from "./util.js";
 export {
   createVad,

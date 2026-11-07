@@ -1,7 +1,7 @@
 // Voice activity detection.
 //
-// `EnergyVad` is a small energy + zero-crossing detector with an adaptive noise floor. The `Vad`
-// interface leaves room for a model-based detector (e.g. Silero via ONNX Runtime) later.
+// `EnergyVad` is a small energy + zero-crossing detector with an adaptive noise floor. Model-based
+// detectors plug in through `registerVadEngine` (silero.ts: Silero in the end-of-turn worker).
 
 /** Classifies fixed-size frames of 16-bit mono PCM as speech or not. */
 export interface Vad {
@@ -9,6 +9,8 @@ export interface Vad {
   readonly frameLen: number;
   /** Whether `frame` (exactly `frameLen` samples) contains speech. */
   isSpeech(frame: Int16Array): boolean;
+  /** Lets go of what it holds; the stream it listened to is over. */
+  close?(): void;
 }
 
 /** Tuning of `EnergyVad`. */
@@ -122,6 +124,8 @@ export interface VadSettings {
   sileroModel: string | null;
   /** Speech probability above which a Silero frame is speech. */
   sileroThreshold: number;
+  /** The worker that runs the model (`http://127.0.0.1:8006`). */
+  url?: string;
 }
 
 /** Builds a detector for one stream. */
@@ -130,9 +134,9 @@ export type VadFactory = (settings: VadSettings) => Vad;
 const engines = new Map<string, VadFactory>();
 
 /**
- * Plugs in a detector engine. Silero (ONNX Runtime) is not bundled; a deployment that has it
- * registers `silero` here (before the voice module starts) and sets `vad_engine = "silero"`.
- * The factory returns a `Vad` whose `frameLen` is what the model takes (512 samples at 16 kHz).
+ * Plugs in a detector engine. The voice module registers `silero` when `vad_engine = "silero"`.
+ * The factory returns a `Vad` whose `frameLen` is what the model takes (512 samples at 16 kHz);
+ * throwing means this stream uses the energy detector.
  */
 export function registerVadEngine(name: string, factory: VadFactory): void {
   engines.set(name, factory);

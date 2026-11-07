@@ -1,4 +1,9 @@
-"""The GPU to the song worker alone while it separates and converts.
+"""The GPU to the song worker alone while it separates and converts, as the last resort.
+
+With SING_GPU_SHARE=1 the job first looks at the card: with enough free VRAM (no game running, the
+ASR off the GPU) nothing is offloaded, she stays in the channel and hears everything, and the job
+only gives way while she speaks (yielding.py). ``exclusive`` then says ``shared``. What follows is
+what happens when the card is too full, or sharing is off.
 
 On a 12 GB card the conversion next to the TTS (~4.7 GB) and ASR (~2 GB) workers spills into
 shared memory and runs 10x slower or more. With ``SING_OFFLOAD_URLS`` set, the job asks those
@@ -12,6 +17,7 @@ A job submitted with ``exclusive_ack`` first waits (``exclusive: "waiting"``) un
 SING_EXCLUSIVE_WAIT_S passed.
 
     state:  None → waiting → offloading → active → reloading → done
+            None → shared                       (nothing was offloaded)
 """
 
 from __future__ import annotations
@@ -56,6 +62,11 @@ class Exclusive:
         self._lock = threading.Lock()
         self._reload: threading.Thread | None = None
 
+    def share(self, free_mb: int | None) -> None:
+        """The job runs next to the workers: nothing to offload, nothing to wait for."""
+        self.state = "shared"
+        self.timings["free_vram_mb"] = float(free_mb or 0)
+
     def begin(self, cancelled: Callable[[], bool], ack: threading.Event | None) -> None:
         """Waits for Core's go (when ``ack`` is given), then offloads every worker. Raises
         nothing but what ``cancelled`` makes it: a worker that cannot offload is skipped."""
@@ -91,7 +102,7 @@ class Exclusive:
     def end(self) -> None:
         """Starts loading the offloaded workers again (idempotent)."""
         with self._lock:
-            if self._reload is not None or self.state in (None, "done"):
+            if self._reload is not None or self.state in (None, "done", "shared"):
                 return
             self.state = "reloading"
             self._reload = threading.Thread(target=self._reload_all, name="sing-reload", daemon=True)

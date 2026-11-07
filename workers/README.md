@@ -4,21 +4,23 @@
 
 | 目錄 | 服務 | 預設埠 | 說明 |
 |---|---|---|---|
-| `asr/` | `POST /asr`、`GET /health` | 8001 | `ASR_BACKEND=sensevoice`(sherpa-onnx,CPU,附情緒 / 事件標記)或 `qwen3`(Qwen3-ASR,GPU) |
-| `tts/` | `POST /tts`、`GET /health`、`GET /voices`、`POST /voices/reload` | 8002 | Qwen3-TTS,聲音由 `VOICES_DIR` 註冊;後端 `faster-qwen3-tts`(真串流,推薦)或官方 `qwen-tts`(句子級,備案) |
+| `asr/` | `POST /asr`、`GET /health`、`GET /busy` | 8001 | `ASR_BACKEND=sensevoice`(sherpa-onnx,CPU,附情緒 / 事件標記)或 `qwen3`(Qwen3-ASR,GPU) |
+| `tts/` | `POST /tts`、`GET /health`、`GET /busy`、`GET /voices`、`POST /voices/reload` | 8002 | Qwen3-TTS,聲音由 `VOICES_DIR` 註冊;後端 `faster-qwen3-tts`(真串流,推薦)或官方 `qwen-tts`(句子級,備案) |
 | `sing/` | `POST /jobs`、`GET /jobs/{id}`、`GET /songs`、`GET /songs/{id}/files/{name}`、`GET /library`、`GET /health` | 8005 | 點歌翻唱:yt-dlp / 本機歌庫 → Demucs 人聲分離 → Seed-VC 歌聲轉換(她的聲音)→ 混音 + lrclib 歌詞;見第 9 節 |
+| `turn/` | `POST /turn`、`WS /vad`、`GET /health` | 8006 | 判斷講完:Smart Turn v3 + Silero VAD,CPU、不需要 PyTorch;見第 10 節 |
 | `fake/` | 兩個端點都有 | 8000 | 不需要 GPU 的假 worker(固定文字 / 正弦波「聲音」),用來做端對端測試 |
 | `tests/` | pytest | | 契約測試(預設打 fake,也可以打真的 worker) |
 
 ```
 workers/
-├── asr/   server.py  tags.py  requirements*.txt  Dockerfile
+├── asr/   server.py  tags.py  compare_names.py  requirements*.txt  Dockerfile
 ├── tts/   server.py  text_split.py  design_voice.py  requirements.txt  requirements-faster.txt  Dockerfile
-├── sing/  server.py  engine.py  seedvc_runtime.py  songs.py  lyrics.py  requirements.txt
+├── sing/  server.py  engine.py  exclusive.py  yielding.py  seedvc_runtime.py  songs.py  lyrics.py  requirements.txt
+├── turn/  server.py  models.py  features.py  calibrate.py  requirements.txt
 ├── fake/  fake_server.py  requirements.txt
 ├── tests/ conftest.py  test_contract.py  test_text_split.py  test_asr_tags.py  test_tts_backends.py  test_sing.py
 ├── voices/   # 你的聲音:<name>/ref.wav + ref.txt(不進 git)
-├── models/   # SenseVoice 模型目錄、seed-vc/ 原始碼與權重(不進 git)
+├── models/   # SenseVoice 模型目錄、seed-vc/ 原始碼與權重、smart-turn/、silero-vad/(不進 git)
 └── docker-compose.yml
 ```
 
@@ -44,7 +46,7 @@ python -m venv .venv
 
 ```bash
 cd workers
-.venv/Scripts/python -m pytest                     # 37 個測試,打 in-process 的 fake
+.venv/Scripts/python -m pytest                     # 全部打 in-process 的 fake 和替身模型,不需要 GPU
 
 # 用同一份契約測試檢查「真的」worker:
 WORKER_ASR_URL=http://127.0.0.1:8001 WORKER_TTS_URL=http://127.0.0.1:8002 \
@@ -203,6 +205,10 @@ $env:VOICES_DIR = "..\voices"; $env:TTS_DEFAULT_VOICE = "deepseek-chan"
 | `TTS_WARMUP_PREFILL` | `100` | 捕捉 CUDA graph 時假設的 prompt 長度(套件 README 的範例值) |
 | `TTS_MODEL` | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | 想省 VRAM 用 `…-0.6B-Base` |
 | `TTS_ATTN` | `auto` | 有 `flash_attn` 就用,否則 `sdpa`(Windows 上就是 SDPA,不用裝 flash-attn) |
+| `TTS_CLONE_MODE` | `auto` | `auto` = 有 `ref.txt` 用 ICL,否則 x-vector(今天的行為);`icl` = 也讀 `ref.<語言>.txt`;`xvec` = 一律 x-vector。見下面「ICL 與情緒音庫」 |
+| `TTS_VOICE_BANK` | `0` | `1` = 依語言和情緒選參考音 |
+| `TTS_POOL_SIZE` | `4` | 合成用的執行緒。要比同時預先合成的句數多,馬上要講的句子才不會排在等 GPU 鎖的句子後面 |
+| `TTS_OFFLOAD_DRAIN_S` | `15` | `/offload` 等正在合成的句子講完的上限;`0` = 下一個 chunk 就停(舊行為) |
 
 **運作方式**
 
@@ -261,6 +267,34 @@ faster-qwen3-tts 裝不起來、或不想用社群套件時,`tts/requirements.tx
 4. 啟動時會掃描安裝的 `qwen-tts` 有沒有 `stream` 相關方法,記錄在 log 和 `/health` 的 `stream_probe`,**但不會自動使用**(沒驗證過就不敢用)。
 5. 第一句失敗會回正常的 4xx/5xx JSON;串流中途失敗會中斷 chunked 連線。
 6. 所有 GPU 呼叫用同一把鎖序列化(以句為單位);client 斷線後最多浪費一句已經在跑的合成。
+
+### 排隊:`priority` 與 `X-Tts-Queue-Ms`
+
+一次只有一句在 GPU 上。Core 的 `/tts` 帶 `priority`:`now`(她接下來要講的)排在 `ahead`(先合成起來的後面幾句)前面,同一級先來先做;舊的 client 不帶,等於 `now`。回應標頭 `X-Tts-Queue-Ms` 是等 GPU 鎖的時間,`X-Tts-First-Audio-Ms` 是排隊加合成。Core 把排隊算進六段指標的 `tts_queue`、`tts_first` 只剩合成,所以 `voice.latency` 看得出是排隊還是 GPU 慢(§13.1 第 4 項)。
+
+### ICL 與情緒音庫
+
+**x-vector 和 ICL**:x-vector 只取音色;ICL 把參考音的 codec 接在句子前面,聲線更穩,但參考音和句子語言不同時,發音和音色會在兩種語言之間亂跳。`voices/deepseek-chan/` 只有 `ref.ja.txt` 沒有 `ref.txt`,所以她現在是 x-vector。
+
+`TTS_CLONE_MODE=icl` 會讀 `ref.<語言>.txt`,但**只有句子是那個語言才用 ICL**:日文的句子走 ICL,翻譯失敗退回中文的句子自動走 x-vector,不會再亂跳。切換不需要新模型,開關只差一個環境變數,要試聽才能決定,所以預設不開。
+
+**情緒音庫**:`voices/<聲音>/bank/<語言>/<情緒>.wav` + 同名 `.txt`(`ja/happy.wav`、`ja/happy.txt`)。`TTS_VOICE_BANK=1` 時,worker 依請求的 `language` 和 `emotion` 選參考音,順序是:這個情緒 → 這個語言的 `neutral` → `ref.<語言>.txt` → `ref.wav`。回應標頭 `X-Tts-Reference` 和 `GET /voices` 的 `references` 會告訴你實際用了哪一段。
+
+音庫用 VoiceDesign 離線產生(跑之前先停 TTS worker;台詞和語氣在 `profiles/deepseek-chan/voice.toml` 的 `[design.bank.<語言>]` 和 `[emotion.instruct]`):
+
+```bash
+cd workers/tts          # 用 .venv-tts 或 .venv-tts-faster
+../.venv-tts/bin/python design_voice.py bank deepseek-chan --n 3
+#   → workers/voices/deepseek-chan-candidates/bank/ja/happy/cand_00_seed1000.wav … + .txt
+#   同一個編號的候選在每種情緒都用同一個 seed,音色比較一致
+../.venv-tts/bin/python design_voice.py bank-pick deepseek-chan ja happy 1
+#   → workers/voices/deepseek-chan/bank/ja/happy.wav + happy.txt
+curl -X POST http://127.0.0.1:8002/voices/reload
+```
+
+- **效果要試聽**,沒有公開比較。ICL 的音色來自片段本身,所以挑片段時先聽音色和 `ref.wav` 差多少,差太多她會像換了一個人。
+- 失敗不會讓她失聲:片段建不起來就略過,合成時在第一段音訊之前失敗就改用下一個參考音,同一片段到 `/voices/reload` 之前不再用。已經送出音訊之後才失敗的句子照舊中斷,不會重講一次。
+- 每段片段啟動時都要暖一次,`/reload`(做歌完)也是:14 段大約多幾秒,實際數字看 log 的 `reference(s) cached + primed`。
 
 ### `instruct` / `emotion`
 
@@ -391,6 +425,8 @@ curl -sS -X POST http://127.0.0.1:8001/asr -F "audio=@out.wav" -F "language=zh"
 | TTS 回 503 `no voices registered` | `VOICES_DIR/<name>/ref.wav` 不存在或目錄名稱錯;改完用 `POST /voices/reload` |
 | TTS 回 404 `unknown voice` | `voice` 要等於 `VOICES_DIR` 底下的資料夾名稱(`*-candidates` 資料夾不會被註冊) |
 | OOM | 換 `TTS_MODEL=…-0.6B-Base`、ASR 換 SenseVoice;或先關掉遊戲量 baseline;不要同時跑 `design_voice.py` |
+| 埠 8006(或其他 worker 埠)綁不起來,`Errno 13` / `WSAEACCES`,但沒有人在聽 | Hyper-V / WinNAT 保留了那段埠:`netsh interface ipv4 show excludedportrange protocol=tcp`。換 `PORT`(同時改 `turn_url`),或用系統管理員重啟 winnat |
+| `/health` 的 `smart_turn` 或 `silero` 是 `false` | `errors` 會寫原因,多半是模型路徑。worker 照常跑,Core 會退回舊行為 |
 | 聲音在句子之間有小爆音或停頓 | 兩個後端都是逐句生成,句子之間各自有開頭 / 結尾;qwen-tts 後端尤其明顯,這是它句子級串流的已知限制:模型每次輸出各自帶開頭 / 結尾;停頓太明顯就調大 `TTS_MIN_SENTENCE_CHARS` 讓句子長一點 |
 
 ---
@@ -470,4 +506,117 @@ curl -s http://127.0.0.1:8005/jobs/<id>          # state / stage / progress;done
 
 Go Live 直播要讓觀眾聽到歌,voice node 的 `GOLIVE_AUDIO` 要開(`true`);語音頻道裡的人不受影響。
 
+**做歌不聾啞(`SING_GPU_SHARE=1`)**:獨佔顯示卡是最後手段。開了這個開關,工作開始前先看整張卡的剩餘 VRAM(`torch.cuda.mem_get_info`):
+
+- 剩 `SING_SHARE_MIN_FREE_MB`(預設 4096,轉換峰值 3.2 GB 加餘裕)以上:什麼都不卸載,她照常聽和講,工作的 `exclusive` 是 `shared`,Core 不會暫停語音,也不會說「我去準備一下歌」。
+- 不夠(在玩遊戲、ASR 還在 GPU 上):走下面的獨佔流程。`SING_SHARE_WAIT_S` 大於 0 時會先等這麼久看有沒有空間(例如遊戲關掉),等不到才獨佔。
+- 跑到一半爆 VRAM:放掉模型,改走獨佔流程重做這次轉換。
+
+共用時工作會讓路給她的聲音:Windows 上沒有跨 process 的 GPU 優先權,唯一有效的是不送工作。一條背景執行緒每 `SING_YIELD_POLL_MS` 問一次 `SING_YIELD_URLS`(沒設就用 `SING_OFFLOAD_URLS`)的 `GET /busy`,TTS 或 ASR 有工作時,轉換在下一個 diffusion step、分離在下一個 segment 之前停下來,閒下來 `SING_YIELD_HOLD_MS` 後繼續。問不到的 worker 當作閒著;一首歌最多讓 `SING_YIELD_MAX_S` 秒,所以聊得再熱鬧歌還是做得完。工作結果的 `yielded` 有 `yielded_s` 和 `pauses`。
+
+要讓 §13.6 的「聊天中做歌」成立,ASR 要先離開 GPU(第 7 節),`SING_OFFLOAD_URLS` 也可以拿掉 ASR 的網址:這時最後手段只會讓她暫時不能講,聽還是聽得到(`asr_while_paused`)。
+
+| 環境變數 | 預設 | 說明 |
+|---|---|---|
+| `SING_GPU_SHARE` | 0 | 1 = 卡上放得下就不卸載 |
+| `SING_SHARE_MIN_FREE_MB` | 4096 | 共用需要的剩餘 VRAM |
+| `SING_SHARE_WAIT_S` | 0 | 放不下時先等這麼久 |
+| `SING_YIELD_URLS` | `SING_OFFLOAD_URLS` | 共用時要讓路的 worker |
+| `SING_YIELD_POLL_MS` / `SING_YIELD_HOLD_MS` / `SING_YIELD_MAX_S` | 100 / 300 / 120 | 問的頻率 / 閒下來後再等多久 / 一首歌最多讓多久 |
+
 **做歌時獨佔顯示卡**:12 GB 的卡上 TTS + ASR 開著時轉換會慢 10 倍以上。TTS / ASR worker 有 `POST /offload`(丟掉模型、清 CUDA cache,之後 `/tts`、`/asr` 回 `503 {"error":"offloaded"}`)和 `POST /reload`(跟啟動一樣重建;放掉超過 `TTS_OFFLOAD_MAX_S` / `ASR_OFFLOAD_MAX_S` 900 秒會自己載回來),見 [voice-link.md](../docs/protocols/voice-link.md)「讓出顯示卡」。歌曲 worker 設 `SING_OFFLOAD_URLS=http://127.0.0.1:8002,http://127.0.0.1:8003` 後,分離 / 轉換前叫它們放掉、轉換完叫它們載回來(失敗、取消也會);Core 會讓她先說一句「我去準備一下歌喔」。重建成本約等於啟動時間(這台:TTS 引擎 12.9 秒、ASR 14.9 秒)。
+
+她會先講完:Core 等她講完才叫 worker 開始(剛說過不用再說時也一樣);TTS worker 的 `/offload` 再等正在合成的句子做完(`TTS_OFFLOAD_DRAIN_S`,預設 15 秒,新請求這時已經回 503),不會像 11-07 那樣把一句話切掉。
+
+---
+
+## 10. 判斷講完:`turn/`(Smart Turn v3 + Silero VAD)
+
+Discord 在人不講話時不送封包,voice node 又在 400 ms 沒封包(`SILENCE_MS`)後關掉串流,所以今天的斷句其實是「停 0.5 秒就算講完」:想事情停一下就被切,講完了也要等滿。Smart Turn 看聲音本身判斷這句話講完了沒:
+
+- 安靜 `turn_stop_ms`(200)→ 問模型(`POST /turn`,CPU,數十毫秒)。
+- 模型說講完 → 馬上送 ASR,LLM 接著跑;Core 的 debounce 也縮短到 `turn_debounce_ms`。
+- 模型說沒講完 → 繼續等,對方回來就接在同一句(就算 voice node 已經關掉串流、換了一條新的)。安靜到 `turn_max_silence_ms`(1500)就當講完。
+- 她的回覆在對方回合確認之後才開始合成(`turn_confirm_ms`):LLM 可以先跑,GPU 不花在可能丟掉的工作上。對方又開口,這段時間就會延長;最多等 `turn_gate_max_ms`。
+- 模型沒裝、worker 沒開、`turn_timeout_ms` 內沒答 → 這句退回 `end_silence_ms`,30 秒內不再問。
+
+Silero 是另一個獨立開關(`vad_engine = "silero"`):每 32 ms 一幀送到 worker 的 `/vad`,比能量判斷準,尤其是背景有聲音的時候。連不上或沒回應就用能量偵測器,它一直在旁邊跑。
+
+**安裝(原生 Windows,PowerShell)**
+
+```powershell
+cd workers
+python -m venv .venv-turn
+.venv-turn\Scripts\pip install -r turn\requirements.txt
+
+# 模型(BSD-2-Clause 8.7 MB、MIT 約 2 MB)
+New-Item -ItemType Directory -Force models\smart-turn, models\silero-vad
+curl.exe -L -o models\smart-turn\smart-turn-v3.2-cpu.onnx "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx?download=true"
+curl.exe -L -o models\silero-vad\silero_vad.onnx "https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx"
+
+cd turn
+..\.venv-turn\Scripts\python server.py      # http://127.0.0.1:8006
+curl.exe -s http://127.0.0.1:8006/health      # smart_turn 和 silero 都要是 true
+```
+
+(Git Bash:`.venv-turn/Scripts/pip …`、`curl -L -o models/smart-turn/… "…"`。用 `miyoria up` 的話在 `[stack.workers]` 加 `turn = { venv = "workers/.venv-turn", port = 8006 }`。)
+
+**接上 Miyoria**
+
+```toml
+[modules.voice]
+turn_engine = "smart-turn"
+vad_engine = "silero"
+```
+
+**校準**:作者自測中文 88.57%,測試集可能沒有台灣華語,而且閾值要看她可以接受多少次插話。`[modules.voice] clip_dir = "data/voice-clips"`(成員的聲音會落地,要先取得同意)跑一場,再:
+
+```powershell
+cd workers\turn
+..\.venv-turn\Scripts\python calibrate.py ..\..\data\voice-clips\turn --complete ended --incomplete resumed
+# 印出每個閾值抓到多少講完的、切掉多少沒講完的,以及建議的 TURN_THRESHOLD
+```
+
+`ended` / `resumed` 是 Core 依對方有沒有接下去分的,先聽過再用。不存聲音也看得到:`voice.latency` 事件的 `stage: "turn"` 有每次判斷,`turn_resumed` 是判定講完後對方又開口(切到人了),`stage: "e2e"` 的 `turn_end` 是這句怎麼結束的。
+
+| 環境變數 | 預設 | 說明 |
+|---|---|---|
+| `TURN_SMART_MODEL` | `../models/smart-turn/smart-turn-v3.2-cpu.onnx` | Smart Turn |
+| `TURN_SILERO_MODEL` | `../models/silero-vad/silero_vad.onnx` | Silero VAD |
+| `TURN_THRESHOLD` | 0.5 | 機率多少算講完 |
+| `TURN_THREADS` / `TURN_POOL_SIZE` | 2 / 2 | ONNX Runtime 執行緒 / 同時處理幾個請求 |
+| `HOST` / `PORT` | `127.0.0.1` / `8006` | 只聽本機 |
+
+**還沒用真的模型跑過**:`tests/test_turn_worker.py` 用假的 `onnxruntime` 驗證輸入輸出的格式。特徵抽取對照過 transformers 的 `WhisperFeatureExtractor`(誤差約 1e-5);模型實際判斷得好不好,要等這一場實測。
+
+---
+
+## 11. ASR 決策(§13.5):SenseVoice 能不能接手
+
+目標是 ASR 離開 GPU,但前提是**聽得到她的名字**。11-02 就是因為 SenseVoice 聽不到「Miyo」才換掉,所以要用真實片段比,不是用猜的:
+
+1. `clip_dir` 跑一場,`data/voice-clips/utterances/` 會有 `.wav` + `.txt`(`.txt` 是當時 ASR 的結果,**要手動改成正確內容**,這是比較的基準)。
+2. 兩個 ASR worker 同時開著(Qwen3-ASR 在 8003、SenseVoice 在 8001):
+
+```powershell
+cd workers\asr
+python compare_names.py ..\..\data\voice-clips\utterances --a http://127.0.0.1:8003 --b http://127.0.0.1:8001 --names "Miyo,Miyoria,米優" --aliases ..\..\miyoria.toml
+```
+
+3. 工具印出兩邊的名字召回率、加上 `asr_aliases` 之後的召回率、每段的時間,和聽錯的句子。把聽錯的寫進 `[modules.voice] asr_aliases`,再跑一次。B 加上對照表後的召回率不低於 A,就可以切。
+
+切換(或只當做歌時的備援):
+
+```toml
+[speech.asr.cpu]
+kind = "http-worker"
+url = "http://127.0.0.1:8001"
+
+[speech]
+asr_chain = ["cpu"]            # 直接切;想留著 Qwen3-ASR 當主力就是 ["local", "cpu"]
+
+[modules.voice]
+asr_while_paused = true        # ["local", "cpu"] 時:做歌卸載 GPU 的 ASR,還聽得到
+```
+
+切過去之後 `SING_OFFLOAD_URLS` 拿掉 ASR 的網址。雲端 ASR 不在這裡:它會把成員的語音送給第三方,是 owner 的隱私決定。

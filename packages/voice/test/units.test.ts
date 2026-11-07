@@ -2,7 +2,7 @@
 // `consent.rs`, `barge.rs` and `config.rs`.
 
 import { MemorySettingsStore, type SettingsStore } from "@miyoria/store";
-import type { AccountRef, JsonObject } from "@miyoria/types";
+import { type AccountRef, EMOTION_NAMES, EMOTION_OUTPUTS, type JsonObject } from "@miyoria/types";
 import { parse as parseToml } from "smol-toml";
 import { describe, expect, it } from "vitest";
 import {
@@ -454,5 +454,58 @@ describe("config", () => {
     const d = VoiceConfigSchema.parse({ consent: "opt-in", barge_in: "ignore" });
     expect(d.consent).toBe("opt-in");
     expect(d.barge_in).toBe("ignore");
+  });
+});
+
+describe("the TTS reference of a line", () => {
+  const bank = (clips: string[]) =>
+    VoiceProfile.parse("p", {
+      design: {
+        instruct: "ignored here",
+        bank: {
+          Japanese: Object.fromEntries(clips.map((c) => [c, "line"])),
+          Chinese: { Neutral: "line" },
+        },
+      },
+    });
+
+  it("reads the clips her bank was designed with", () => {
+    expect([...bank(["happy", "sad"]).clips].sort()).toEqual(["happy", "neutral", "sad"]);
+    expect([...VoiceProfile.parse("p", null).clips]).toEqual([]);
+  });
+
+  it("the clip that matches, for a tag or an emotion's own name", () => {
+    const p = bank(["happy", "angry"]);
+    expect(p.referenceFor("happy")).toBe("happy");
+    expect(p.referenceFor(" Happy ")).toBe("happy");
+    expect(p.referenceFor("joy")).toBe("happy");
+    expect(p.referenceFor("frustration")).toBe("angry");
+  });
+
+  it("the next clip that fits, when the bank has no such clip", () => {
+    expect(bank(["embarrassed"]).referenceFor("surprised")).toBe("embarrassed");
+    expect(bank(["surprised", "embarrassed"]).referenceFor("surprised")).toBe("surprised");
+    expect(bank(["embarrassed"]).referenceFor("fear")).toBe("embarrassed");
+  });
+
+  it("past that it is the worker's: it falls back to neutral, then the plain reference", () => {
+    expect(bank(["happy"]).referenceFor("angry")).toBe("angry");
+    expect(bank(["happy"]).referenceFor("thinking")).toBe("thinking");
+  });
+
+  it("a profile that lists no bank, or a line with no tone, asks for nothing in particular", () => {
+    const plain = VoiceProfile.parse("p", null);
+    expect(plain.referenceFor("surprised")).toBe("surprised");
+    expect(plain.referenceFor(null)).toBeNull();
+    expect(plain.referenceFor("  ")).toBeNull();
+  });
+
+  it("every emotion of the table finds a clip in her real bank", () => {
+    const p = VoiceProfile.parse("deepseek-chan", deepseekVoice());
+    expect(p.clips.size).toBeGreaterThan(1);
+    for (const name of EMOTION_NAMES) {
+      const clip = p.referenceFor(EMOTION_OUTPUTS[name].tag) as string;
+      expect(p.clips.has(clip), `${name} → ${clip}`).toBe(true);
+    }
   });
 });

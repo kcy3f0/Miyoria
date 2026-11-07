@@ -55,6 +55,10 @@ class SeedVcSinger:
             model[k].to(self.device)
         model.cfm.estimator.setup_caches(max_batch_size=1, max_seq_length=8192)
         self.model = model
+        # Runs before every diffusion step: the place to give way to her voice (see yielding.py).
+        # A chunk is seconds of GPU time, a step a fraction of a second.
+        self.step_gate: Callable[[], None] | None = None
+        model.cfm.estimator.register_forward_pre_hook(self._before_step)
         spect = config["preprocess_params"]["spect_params"]
         self.sr = int(config["preprocess_params"]["sr"])  # 44100
         self.hop = int(spect["hop_length"])  # 512
@@ -86,6 +90,10 @@ class SeedVcSinger:
 
         rmvpe = hf_hub_download("lj1995/VoiceConversionWebUI", "rmvpe.pt", cache_dir=cache)
         self.rmvpe = RMVPE(rmvpe, is_half=False, device=self.device)
+
+    def _before_step(self, _module: object, _args: object) -> None:
+        if self.step_gate is not None:
+            self.step_gate()
 
     # ── features ─────────────────────────────────────────────────────────
 

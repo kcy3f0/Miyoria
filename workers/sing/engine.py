@@ -248,6 +248,7 @@ class RealBackend:
         self.model_name = f"seed-vc-f0-44k+{self.separator}"
         self._vc: Any = None
         self._demucs: Any = None
+        self.gate: Callable[[], None] | None = None  # sharing the GPU: runs before every step
         self._ref: Any = None
         self._ref_f0: float | None = None
         self.transposer = "rubberband" if ffmpeg_has_filter("rubberband") else "librosa"
@@ -428,6 +429,7 @@ class RealBackend:
             self._demucs = get_model(self.separator)
             self._demucs.eval()
         model = self._demucs
+        self._gate_separator(model)
         x, sr = read_audio(source_wav)
         if sr != model.samplerate:
             raise JobError(f"source is {sr} Hz, the separator wants {model.samplerate}")
@@ -445,6 +447,28 @@ class RealBackend:
         inst = out.sum(0) - vocals
         write_wav(vocals_out, vocals.T.numpy(), sr)
         write_wav(inst_out, inst.T.numpy(), sr)
+
+    def _gate_separator(self, model: Any) -> None:
+        """Before every segment the separator looks at `self.gate` (a bag of models has several)."""
+        if getattr(model, "_miyoria_gated", False):
+            return
+
+        def before(_module: Any, _args: Any) -> None:
+            if self.gate is not None:
+                self.gate()
+
+        for m in getattr(model, "models", [model]):
+            m.register_forward_pre_hook(before)
+        model._miyoria_gated = True
+
+    def free_vram_mb(self) -> int | None:
+        """What the card has free for everybody, `None` when that cannot be told."""
+        import torch
+
+        if not str(self.device).startswith("cuda") or not torch.cuda.is_available():
+            return None
+        free, _total = torch.cuda.mem_get_info()
+        return round(free / 2**20)
 
     # ── conversion (Seed-VC singing model) ───────────────────────────────
 
@@ -484,6 +508,7 @@ class RealBackend:
                 cancelled: Callable[[], bool]) -> None:
         try:
             vc = self._load_vc()
+            vc.step_gate = self.gate
             x, sr = read_audio(vocals_wav)
             ref, rsr = self.reference()
             y = vc.convert(x.mean(axis=1), sr, ref, rsr, shift, self.steps, self.cfg_rate,

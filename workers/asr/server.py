@@ -2,6 +2,7 @@
 
     POST /asr     multipart: audio (WAV, any rate/channels), language?, prompt?   -> JSON
     GET  /health  -> {"status":"ok","model":...,"device":...,"offloaded":bool}
+    GET  /busy    -> {"busy": n} clips being transcribed (the song worker yields to them)
     POST /offload JSON {reason?, max_s?} -> drops the model and empties the CUDA cache (the song
                   worker borrows the GPU); /asr answers 503 {"error": "offloaded"} until /reload,
                   which also happens by itself after ``max_s`` (ASR_OFFLOAD_MAX_S)
@@ -225,6 +226,7 @@ class State:
     offloaded: dict[str, Any] | None = None  # {since, reason, reload_at}
     auto_reload: asyncio.Task | None = None
     info: dict[str, Any] = {}  # name / model / device of the backend, kept while offloaded
+    busy = 0  # /asr requests under way (only touched on the event loop)
 
 
 state = State()
@@ -310,6 +312,7 @@ async def asr(
         out, infer_ms = _locked_transcribe(x, language, prompt)
         return out, duration_ms, infer_ms
 
+    state.busy += 1
     try:
         out, duration_ms, infer_ms = await asyncio.get_running_loop().run_in_executor(state.pool, work)
     except BadRequest as e:
@@ -319,6 +322,8 @@ async def asr(
     except Exception as e:
         log.exception("inference failed")
         return _error(500, f"inference failed: {type(e).__name__}: {e}")
+    finally:
+        state.busy -= 1
 
     body: dict[str, Any] = {"text": out["text"], "duration_ms": duration_ms}
     if out.get("language"):
@@ -332,6 +337,11 @@ async def asr(
         body["audio_events"] = []
     log.info("asr %dms audio -> %.0fms: %r", duration_ms, infer_ms, out["text"][:60])
     return JSONResponse(body, headers={"X-Inference-Ms": f"{infer_ms:.0f}"})
+
+
+@app.get("/busy")
+async def busy() -> dict[str, int]:
+    return {"busy": state.busy}
 
 
 @app.get("/health")

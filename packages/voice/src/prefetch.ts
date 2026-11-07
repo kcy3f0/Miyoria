@@ -18,6 +18,8 @@ export class BufferedAudio implements AsyncIterable<AudioChunk> {
   #error: unknown = null;
   #failed = false;
   #abandoned = false;
+  /** Everything arrived before anyone gave up on it. */
+  #whole = false;
   readonly #onAbandon: () => void;
 
   /** `onAbandon` runs when the consumer stops reading before the end. */
@@ -35,9 +37,18 @@ export class BufferedAudio implements AsyncIterable<AudioChunk> {
     this.#wake();
   }
 
-  end(): void {
+  /** No more audio is coming. `whole`: because all of it came, not because it was stopped. */
+  end(whole = true): void {
+    this.#whole = whole && !this.#ended && !this.#abandoned;
     this.#ended = true;
     this.#wake();
+  }
+
+  /** How long the whole line is, in ms; `null`: it was not all there when it ended. */
+  get totalMs(): number | null {
+    if (!this.#whole) return null;
+    const ms = this.#chunks.reduce((sum, c) => sum + (c.samples.length / c.sampleRate) * 1000, 0);
+    return Math.round(ms);
   }
 
   fail(error: unknown): void {
@@ -92,6 +103,8 @@ export interface PreparedLine {
   provider: string;
   /** What was sent to TTS. */
   said: string;
+  /** It is the filtered line: moderation stopped the text or its translation (the rule). */
+  blocked?: string | null;
   sampleRate: number;
   audio: BufferedAudio;
   /** When the TTS request went out and its first audio came (latency metric). */

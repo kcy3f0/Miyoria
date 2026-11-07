@@ -1,12 +1,23 @@
 // Speaking: `VoiceSink` → TTS → voice node playback.
 
 import { errorMessage, type ModuleContext, sleep } from "@miyoria/kernel";
-import { type AudioChunk, isOffloaded, SpeechError, type SpeechService } from "@miyoria/speech";
 import {
+  type AudioChunk,
+  isOffloaded,
+  SpeechError,
+  type SpeechService,
+  type TtsPriority,
+} from "@miyoria/speech";
+import {
+  ActuatorExecutorKey,
+  AffectStateKey,
   type ContextKey,
   contextKeyString,
   customEvent,
+  type EventData,
   type MessageRef,
+  ModerationKey,
+  type OutputPath,
   type PlaybackState,
   SPEECH_SYNTH_TOPIC,
   type SpeakOutcome,
@@ -28,6 +39,7 @@ import { BufferedAudio, type LinePrefetch, type PreparedLine, type Producer } fr
 import { stripTags } from "./text.js";
 import { LATENCY_TOPIC } from "./topics.js";
 import type { SpeechTranslator } from "./translate.js";
+import type { TurnGate } from "./turn.js";
 import { aborted, deferred } from "./util.js";
 
 export interface SpeakerDeps {
@@ -47,10 +59,22 @@ export interface SpeakerDeps {
   prefetch: LinePrefetch | null;
   /** End-to-end latency of replies to human speech (`speech_end → first audio played`). */
   e2e: E2eLatency;
+  /** Lines wait here until the people they answer are done; `null` without a turn model. */
+  gate: TurnGate | null;
 }
 
 /** While a song or the GPU loan holds the floor, how often it is looked at again. */
 const FLOOR_POLL_MS = 250;
+
+/** What the output review made of a text on its way to TTS. */
+interface Reviewed {
+  text: string;
+  /** The rule that replaced it. */
+  blocked: string | null;
+}
+
+/** What a playback event says beyond its state. */
+type PlaybackFacts = Pick<EventData<"voice_playback">, "heard_ms" | "total_ms" | "blocked">;
 
 /** The `VoiceSink` provided by the `voice` module. */
 export class Speaker implements VoiceSink {
@@ -58,6 +82,10 @@ export class Speaker implements VoiceSink {
   readonly speaksIn: string | null;
   /** The emotion of the last line spoken per guild: the likely one of the next line. */
   readonly #lastEmotion = new Map<string, string | null>();
+  /** Lines playing per guild: while one does, a line synthesized now is one for later. */
+  readonly #playing = new Map<string, number>();
+  /** Every playback of hers going on, for the emergency stop. */
+  readonly #live = new Set<Playback>();
 
   constructor(deps: SpeakerDeps) {
     this.#d = deps;
@@ -70,27 +98,66 @@ export class Speaker implements VoiceSink {
     state: PlaybackState,
     text: string,
     emotion: string | null,
+    facts: PlaybackFacts = {},
   ) {
     this.#d.ctx.publish(
-      { type: "voice_playback", data: { context, turn, state, text, emotion } },
+      { type: "voice_playback", data: { context, turn, state, text, emotion, ...facts } },
       { turn },
     );
+  }
+
+  /** The emergency stop is on. */
+  get #muted(): boolean {
+    return this.#d.ctx.services.get(ActuatorExecutorKey)?.paused === true;
+  }
+
+  /** The output review of text about to be said: this sink is the last stop before a voice. */
+  #review(context: ContextKey, turn: TurnId | null, text: string, path: OutputPath): Reviewed {
+    const moderation = this.#d.ctx.services.get(ModerationKey);
+    const verdict = moderation?.screen({ path, voice: text, context, turn });
+    if (verdict === undefined || verdict.ok) return { text, blocked: null };
+    return { text: verdict.voice ?? text, blocked: verdict.blocked[0]?.rule ?? null };
+  }
+
+  /** Whether `text` is what moderation puts in place of a line (a turn replaced it already). */
+  #filtered(text: string): boolean {
+    const moderation = this.#d.ctx.services.get(ModerationKey);
+    return text === moderation?.filteredLine || text === moderation?.filteredVoiceLine;
   }
 
   /**
    * Synthesizes `text`: translation, TTS, and a buffer that fills in the background. Resolves
    * once the first audio is there, so the line can start playing while the rest still arrives.
    */
-  #producer(context: ContextKey, text: string, emotion: string | null): Producer {
+  #producer(
+    context: ContextKey,
+    text: string,
+    emotion: string | null,
+    priority: TtsPriority,
+    turn: TurnId | null,
+  ): Producer {
     return async (signal) => {
       const { speech, profile, config, translator, session } = this.#d;
-      const said = translator ? await translator.translate(text, signal, session(context)) : text;
+      const written = this.#review(context, turn, text, "tts");
+      // What was blocked is not translated, and a translation can say what its source did not.
+      const { text: said, blocked } =
+        translator === null || written.blocked !== null
+          ? written
+          : this.#review(
+              context,
+              turn,
+              await translator.translate(written.text, signal, session(context)),
+              "translation",
+            );
+      // The translation and the LLM could run ahead; the GPU waits for the turn to be confirmed.
+      await this.#turnConfirmed(context, signal);
       const request = {
         text: said,
         language: translator?.language ?? config.tts_language,
-        emotion,
+        emotion: profile.referenceFor(emotion),
         instruct: profile.instructFor(emotion),
         voice: profile.voice,
+        priority,
       };
       const requestAt = this.#d.ctx.clock.now();
       const [provider, stream] = await speech.synthesize(request, signal);
@@ -109,28 +176,45 @@ export class Speaker implements VoiceSink {
         Promise.resolve(it.return?.()).catch(() => undefined);
         throw error;
       }
-      const timing = { requestAt, firstAudioAt: this.#d.ctx.clock.now() };
+      const timing = {
+        requestAt,
+        firstAudioAt: this.#d.ctx.clock.now(),
+        ...(stream.queueMs === undefined ? {} : { queueMs: stream.queueMs }),
+      };
       const stop = deferred<void>();
       const audio = new BufferedAudio(() => stop.resolve());
       signal.addEventListener("abort", () => stop.resolve(), { once: true });
       audio.push(first);
       const done = (async () => {
         try {
+          let whole = false;
           for (;;) {
             const r = await Promise.race([it.next(), stop.promise.then(() => null)]);
             if (r === null) break;
-            if (r.done) break;
+            if (r.done) {
+              whole = true;
+              break;
+            }
             audio.push(r.value);
           }
-          audio.end();
+          audio.end(whole);
         } catch (error) {
           audio.fail(error);
         } finally {
           Promise.resolve(it.return?.()).catch(() => undefined);
         }
       })();
-      return { line: { provider, said, sampleRate: first.sampleRate, audio, timing }, done };
+      const line = { provider, said, blocked, sampleRate: first.sampleRate, audio, timing };
+      return { line, done };
     };
+  }
+
+  /** Waits until the people the turn in flight answers are done talking. */
+  async #turnConfirmed(context: ContextKey, signal: AbortSignal): Promise<void> {
+    const { gate, config, ctx } = this.#d;
+    if (gate === null || context.scope === null) return;
+    const accounts = ctx.services.get(TurnFocusViewKey)?.current(context)?.addressed_accounts ?? [];
+    await gate.wait(context.scope, accounts, config.turn_gate_max_ms, signal);
   }
 
   #key(context: ContextKey, text: string, emotion: string | null): string {
@@ -145,7 +229,7 @@ export class Speaker implements VoiceSink {
     turn: TurnId | null,
     signal: AbortSignal | undefined,
     measure: E2eMeasure | null,
-  ): Promise<{ playback: Playback; said: string }> {
+  ): Promise<{ playback: Playback; line: PreparedLine }> {
     const { ctx, link, prefetch } = this.#d;
     const t0 = ctx.clock.now();
     // The overlay says she is getting her line ready until it plays (or fails).
@@ -167,6 +251,8 @@ export class Speaker implements VoiceSink {
         context,
         text,
         emotion,
+        "now",
+        turn,
       )(signal ?? new AbortController().signal);
       line = production.line;
     }
@@ -194,7 +280,7 @@ export class Speaker implements VoiceSink {
       const playback = await link.play(guild, line.sampleRate, line.audio);
       // The node says when the audio is audible: record it without waiting for it here.
       if (measure !== null) this.#watchPlayback(playback, guild, turn, measure);
-      return { playback, said: line.said };
+      return { playback, line };
     } catch (error) {
       measure?.fail(signal?.aborted ? "cancelled" : "playback_failed");
       void line.audio[Symbol.asyncIterator]().return?.();
@@ -227,9 +313,14 @@ export class Speaker implements VoiceSink {
       });
   }
 
+  /** A line without an `<emo:…>` of its own is said the way she shows she feels now. */
+  #tone(emotion: string | null): string | null {
+    return emotion ?? this.#d.ctx.services.get(AffectStateKey)?.snapshot().shown?.tag ?? null;
+  }
+
   /** Whether `emotion` is the one a prepared line should be synthesized with. */
   #prefetchEmotion(guild: string, emotion: string | null | undefined): string | null | undefined {
-    if (emotion !== undefined) return emotion;
+    if (emotion !== undefined) return this.#tone(emotion);
     // The reply's emotion carries on from line to line until it changes.
     return this.#lastEmotion.get(guild);
   }
@@ -237,6 +328,12 @@ export class Speaker implements VoiceSink {
   /** Drops every line prefetched for `guild` (somebody stopped her, a song took the floor). */
   cancelPrefetch(guild: string): void {
     this.#d.prefetch?.cancelGroup(guild);
+  }
+
+  /** `VoiceSink.silence`: lines that came here without the scheduler stop too. */
+  silence(): void {
+    for (const playback of this.#live) playback.stop(0);
+    this.#d.prefetch?.clear();
   }
 
   /**
@@ -259,13 +356,15 @@ export class Speaker implements VoiceSink {
     const { prefetch, speech, link, ctx } = this.#d;
     const guild = context.scope;
     if (prefetch === null || guild === null || emotion === undefined) return;
-    if (!speech.hasTts() || !link.isConnected()) return;
+    if (this.#muted || !speech.hasTts() || !link.isConnected()) return;
     if (this.#held(guild) !== null) return;
     const key = this.#key(context, text, emotion);
     if (prefetch.has(key)) return;
+    // The first line of a reply is the one she is waiting for; the others have time.
+    const ahead = prefetch.size > 0 || (this.#playing.get(guild) ?? 0) > 0;
     prefetch.start(key, guild, async (signal) => {
       try {
-        return await this.#producer(context, text, emotion)(signal);
+        return await this.#producer(context, text, emotion, ahead ? "ahead" : "now", null)(signal);
       } catch (error) {
         if (!signal.aborted) ctx.log.debug({ err: errorMessage(error) }, "TTS prefetch failed");
         throw error;
@@ -332,12 +431,24 @@ export class Speaker implements VoiceSink {
     if (guild === null) {
       throw new VoiceLinkError(`voice context \`${contextKeyString(context)}\` has no guild`);
     }
-    const text = stripTags(rawText);
-    if (text === "") return "completed";
+    const stripped = stripTags(rawText);
+    if (stripped === "") return "completed";
+    if (this.#muted) return "interrupted";
+    // Subtitles and her history follow what is said here: a blocked line is gone from them too.
+    const { text, blocked } = this.#review(context, turn, stripped, "tts");
     // Only the first line of a reply that answers somebody's speech is measured.
     const measure = this.#d.e2e.begin(context, turn, this.#focusOf(context, turn));
     try {
-      return await this.#speak(context, guild, text, emotion, turn, signal, measure);
+      return await this.#speak(
+        context,
+        guild,
+        text,
+        blocked,
+        this.#tone(emotion),
+        turn,
+        signal,
+        measure,
+      );
     } finally {
       // Whatever ended the call early (an error, a cancel) ends the measurement too.
       measure?.fail("cancelled");
@@ -348,6 +459,7 @@ export class Speaker implements VoiceSink {
     context: ContextKey,
     guild: string,
     text: string,
+    screened: string | null,
     emotion: string | null,
     turn: TurnId | null,
     signal: AbortSignal | undefined,
@@ -365,9 +477,9 @@ export class Speaker implements VoiceSink {
     }
     this.#lastEmotion.set(guild, emotion);
     let playback: Playback;
-    let said: string;
+    let line: PreparedLine;
     try {
-      ({ playback, said } = await this.#start(
+      ({ playback, line } = await this.#start(
         context,
         guild,
         text,
@@ -384,22 +496,34 @@ export class Speaker implements VoiceSink {
       this.#playbackEvent(context, turn, "failed", text, emotion);
       throw error;
     }
-    this.#playbackEvent(context, turn, "started", text, emotion);
-    echo.started(guild, [text, said]);
+    const blocked = screened ?? line.blocked ?? (this.#filtered(text) ? text : null);
+    const facts = blocked === null ? {} : { blocked };
+    this.#playbackEvent(context, turn, "started", text, emotion, facts);
+    echo.started(guild, [text, line.said]);
+    this.#playing.set(guild, (this.#playing.get(guild) ?? 0) + 1);
+    this.#live.add(playback);
     const token = barge.register(guild, playback, { context, turn });
     let state: PlaybackState;
     try {
-      // Cancelling `speak` (e.g. the scheduler timed it out) stops the playback.
+      // The stop may have come while the line was still being synthesized.
+      if (this.#muted) playback.stop(0);
+      // Cancelling `speak` (the Floor cutting the line short, the scheduler timing it out, the
+      // emergency stop) stops the playback. The line ends like any line cut off: with what of it
+      // was heard, for her history and the ledger.
       const cancelled = signal ? aborted(signal).then(() => null) : new Promise<null>(() => {});
-      const done = await Promise.race([playback.wait(), cancelled]);
-      if (done === null) throw signal?.reason ?? new VoiceLinkError("speech cancelled");
-      state = done;
+      state = (await Promise.race([playback.wait(), cancelled])) ?? "interrupted";
     } finally {
       barge.unregister(guild, token);
       echo.ended(guild);
+      this.#playing.set(guild, Math.max(0, (this.#playing.get(guild) ?? 0) - 1));
+      this.#live.delete(playback);
       playback.stop(0);
     }
-    this.#playbackEvent(context, turn, state, text, emotion);
+    this.#playbackEvent(context, turn, state, text, emotion, {
+      ...facts,
+      heard_ms: playback.heardMs(),
+      total_ms: line.audio.totalMs,
+    });
     // A no-op when the node reported the audio first.
     if (state === "interrupted") {
       measure?.fail(barge.isStopped(guild, turn) ? "barge_in" : "interrupted");

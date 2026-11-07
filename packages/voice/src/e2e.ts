@@ -2,7 +2,11 @@
 // answer reaching Discord, split into six consecutive segments.
 //
 //   speech_end ─ endpoint ─ sent to ASR ─ asr ─ transcript ─ llm_first ─ first text ─ tts_queue ─
-//   TTS request ─ tts_first ─ first audio ─ playback ─ audible
+//   TTS starts ─ tts_first ─ first audio ─ playback ─ audible
+//
+// `tts_queue` ends when the worker starts synthesizing, so it holds the wait for the turn to be
+// confirmed, for a TTS slot and for the worker's GPU lock; `tts_first` is synthesis alone. That
+// split is what tells contention from a slow model (docs/design/v3-architecture.md §13.1).
 //
 // The listener registers a measurement per transcribed utterance (`heard`). The speaker marks
 // the first text of the reply (`textReady`), then binds the utterance to the turn that speaks
@@ -67,6 +71,16 @@ export interface E2eRecord {
   /** The first line came from a TTS prefetch. */
   prefetched: boolean;
   provider: string | null;
+  /** How the turn was judged over, when a model judges it. */
+  turn_end?: TurnEnd;
+}
+
+/** How a turn ended, with a model judging it. */
+export interface TurnEnd {
+  /** `turn`: the model said so; `timeout`: the longest silence; else the silence or length cap. */
+  ended_by: string;
+  /** The model's last answer; `null` when it did not give one. */
+  probability: number | null;
 }
 
 /** TTS timestamps of one line (clock ms). */
@@ -75,6 +89,8 @@ export interface TtsTiming {
   requestAt: number;
   /** The first non-empty audio chunk arrived. */
   firstAudioAt: number;
+  /** What the worker reports having waited for its GPU lock. */
+  queueMs?: number;
 }
 
 /** What the listener knows once a transcript is accepted. */
@@ -88,6 +104,8 @@ export interface Heard {
   sentAt: number;
   /** The transcript came back. */
   transcriptAt: number;
+  /** How the turn was judged over, when a model judges it. */
+  turn?: TurnEnd;
 }
 
 export interface E2eOptions {
@@ -182,7 +200,7 @@ export class E2eLatency {
       null,
       null,
     ];
-    return new E2eMeasure(this.#o, context, turn, id, chain);
+    return new E2eMeasure(this.#o, context, turn, id, chain, pending.heard.turn);
   }
 
   /** Forgets everything (module stop). */
@@ -221,7 +239,7 @@ export class E2eLatency {
       null,
       null,
     ];
-    this.#o.emit(record(p.heard.context, null, id, chain, "expired", false, null));
+    this.#o.emit(record(p.heard.context, null, id, chain, "expired", false, null, p.heard.turn));
   }
 }
 
@@ -232,6 +250,7 @@ export class E2eMeasure {
   readonly #turn: TurnId;
   readonly #utterance: string;
   readonly #chain: Chain;
+  readonly #turnEnd: TurnEnd | undefined;
   #prefetched = false;
   #provider: string | null = null;
   #done = false;
@@ -243,12 +262,14 @@ export class E2eMeasure {
     turn: TurnId,
     utterance: string,
     chain: Chain,
+    turnEnd?: TurnEnd,
   ) {
     this.#o = options;
     this.#context = context;
     this.#turn = turn;
     this.#utterance = utterance;
     this.#chain = chain;
+    this.#turnEnd = turnEnd;
   }
 
   /** The line's first audio is there. `timing` is `null` when the producer did not report it. */
@@ -256,7 +277,7 @@ export class E2eMeasure {
     if (this.#done) return;
     this.#prefetched = prefetched;
     this.#provider = provider;
-    this.#chain[T.ttsRequest] = timing?.requestAt ?? null;
+    this.#chain[T.ttsRequest] = timing ? timing.requestAt + (timing.queueMs ?? 0) : null;
     this.#chain[T.ttsFirst] = timing?.firstAudioAt ?? null;
   }
 
@@ -283,6 +304,7 @@ export class E2eMeasure {
         reason,
         this.#prefetched,
         this.#provider,
+        this.#turnEnd,
       ),
     );
   }
@@ -301,6 +323,7 @@ export function record(
   reason: E2eReason | null,
   prefetched: boolean,
   provider: string | null,
+  turnEnd?: TurnEnd,
 ): E2eRecord {
   const t: Chain = [...chain];
   let floor = -Infinity;
@@ -336,6 +359,7 @@ export function record(
     unattributed_ms: complete && total !== null ? total - known : null,
     prefetched,
     provider,
+    ...(turnEnd ? { turn_end: turnEnd } : {}),
   };
 }
 
@@ -352,5 +376,6 @@ export function e2eJson(r: E2eRecord): JsonObject {
     unattributed_ms: r.unattributed_ms,
     prefetched: r.prefetched,
     provider: r.provider,
+    ...(r.turn_end ? { turn_end: { ...r.turn_end } } : {}),
   };
 }

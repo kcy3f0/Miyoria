@@ -37,3 +37,4 @@ workers/.venv-*/
 
 # Claude Code 子代理的暫存 worktree
 /.claude/worktrees/
+workers/pytest-of-*/

@@ -23,6 +23,7 @@ import {
 } from "@miyoria/types";
 import { voiceCapabilities } from "./actions.js";
 import { BargeIn } from "./barge.js";
+import { ClipRecorder } from "./clips.js";
 import { registerCommands, unregisterCommands } from "./commands.js";
 import { VoiceConfigSchema, VoiceProfile } from "./config.js";
 import { Consent } from "./consent.js";
@@ -32,10 +33,13 @@ import { type VoiceLink, VoiceLinkKey } from "./link/link.js";
 import { VoiceLinkModule } from "./link/module.js";
 import { Listener } from "./listen.js";
 import { LinePrefetch } from "./prefetch.js";
+import { sileroVad } from "./silero.js";
 import { Speaker } from "./sink.js";
 import { LATENCY_TOPIC } from "./topics.js";
 import { SpeechTranslator } from "./translate.js";
+import { HttpTurnJudge, TurnGate } from "./turn.js";
 import { Semaphore } from "./util.js";
+import { registerVadEngine } from "./vad.js";
 
 /**
  * Module `voice`: listens in voice channels (VAD → ASR → `voice_utterance`) and speaks
@@ -85,6 +89,9 @@ export class VoiceModule implements Module {
     }
     const consent = new Consent(config.consent, store, ctx.clock);
     let speaker: Speaker | null = null;
+    if (config.vad_engine === "silero") registerVadEngine("silero", sileroVad);
+    const smartTurn = config.turn_engine === "smart-turn";
+    const gate = smartTurn ? new TurnGate(() => ctx.clock.now()) : null;
     const barge = new BargeIn(
       config.barge_in,
       config.barge_in_ms,
@@ -94,7 +101,7 @@ export class VoiceModule implements Module {
         duckGain: config.barge_in_duck_gain,
         focusStopMs: config.barge_in_focus_stop_ms,
         // The utterance of somebody who just stopped talking arrives after the end silence.
-        settleMs: config.end_silence_ms + 500,
+        settleMs: Math.max(config.end_silence_ms, smartTurn ? config.turn_max_silence_ms : 0) + 500,
         publish: (record) => {
           ctx.publish(
             customEvent(VOICE_BARGE_IN_TOPIC, {
@@ -175,6 +182,7 @@ export class VoiceModule implements Module {
       echo,
       prefetch,
       e2e,
+      gate,
     });
     ctx.provide(VoiceSinkKey, speaker);
 
@@ -190,6 +198,19 @@ export class VoiceModule implements Module {
         echo,
         names: [...config.names, ...this.#names],
         e2e,
+        turn: smartTurn
+          ? new HttpTurnJudge({
+              url: config.turn_url,
+              timeoutMs: config.turn_timeout_ms,
+              now: () => ctx.clock.now(),
+              warn: (message) => ctx.log.warn(message),
+            })
+          : null,
+        gate,
+        clips:
+          config.clip_dir === null
+            ? null
+            : new ClipRecorder(config.clip_dir, (message) => ctx.log.warn(message)),
       });
       const audio = link.subscribeAudio(ctx.signal);
       ctx.spawn("listen", (signal) => listener.run(audio, signal));
@@ -213,7 +234,13 @@ export class VoiceModule implements Module {
     this.#commands = commands;
     commands.attach(ctx);
     ctx.log.info(
-      { voice: profile.voice, consent: config.consent, speaks: translator?.language ?? null },
+      {
+        voice: profile.voice,
+        consent: config.consent,
+        speaks: translator?.language ?? null,
+        turn: config.turn_engine,
+        vad: config.vad_engine,
+      },
       "voice module running",
     );
   }

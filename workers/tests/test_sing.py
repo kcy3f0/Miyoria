@@ -507,3 +507,139 @@ def test_auto_key_moves_the_whole_song(sing, monkeypatch):
     done = wait(sing, sing.post("/jobs", json={"query": "very high song", "key": 2}).json()["job"]["id"])
     p = done["song"]["pitch"]
     assert p["auto_key"] == 0 and p["song_key"] == 2
+
+
+# ── sharing the GPU: she stays in the channel ────────────────────────────────
+
+
+@pytest.fixture
+def share(offload, monkeypatch):
+    """SING_GPU_SHARE with a mock card and mock workers answering /busy."""
+    server = sys.modules["sing_server"]
+    polled: list[str] = []
+    busy = {"n": 0}
+
+    def get(url, timeout):
+        polled.append(url)
+        return {"busy": busy["n"]}
+
+    monkeypatch.setattr(server.state, "busy_get", get, raising=False)
+    monkeypatch.setenv("SING_GPU_SHARE", "1")
+    monkeypatch.setenv("SING_MOCK_FREE_MB", "6000")
+    monkeypatch.setenv("SING_YIELD_POLL_MS", "5")
+    monkeypatch.setenv("SING_YIELD_HOLD_MS", "100")
+    return offload[0], polled, busy
+
+
+def test_with_room_on_the_card_nothing_is_offloaded(sing, share):
+    calls, polled, _ = share
+    done = wait(sing, sing.post("/jobs", json={"query": "shared song", "exclusive_ack": True}).json()["job"]["id"])
+    assert done["state"] == "done", done
+    assert calls == []  # she keeps her voice and her ears
+    assert done["exclusive"] == "shared"
+
+
+def test_without_room_the_offload_is_the_last_resort(sing, share, monkeypatch):
+    calls, _, _ = share
+    monkeypatch.setenv("SING_MOCK_FREE_MB", "2000")
+    done = wait(sing, sing.post("/jobs", json={"query": "no room song"}).json()["job"]["id"])
+    assert done["state"] == "done", done
+    assert [c[0] for c in calls] == ["http://tts/offload", "http://asr/offload", "http://tts/reload",
+                                     "http://asr/reload"]
+    assert done["exclusive"] == "done"
+
+
+def test_an_unknown_card_is_not_shared(sing, share, monkeypatch):
+    calls, _, _ = share
+    monkeypatch.delenv("SING_MOCK_FREE_MB")
+    done = wait(sing, sing.post("/jobs", json={"query": "unknown card song"}).json()["job"]["id"])
+    assert done["exclusive"] == "done" and len(calls) == 4
+
+
+def test_sharing_is_off_by_default(sing, offload, monkeypatch):
+    calls, _ = offload
+    monkeypatch.setenv("SING_MOCK_FREE_MB", "9000")
+    done = wait(sing, sing.post("/jobs", json={"query": "default song"}).json()["job"]["id"])
+    assert done["exclusive"] == "done" and len(calls) == 4
+
+
+def test_a_job_waits_for_room_when_told_to(sing, share, monkeypatch):
+    server = sys.modules["sing_server"]
+    calls, _, _ = share
+    monkeypatch.setenv("SING_SHARE_WAIT_S", "5")
+    readings = iter([1000, 6000])
+    monkeypatch.setattr(server.state.backend, "free_vram_mb", lambda: next(readings, 6000))
+    done = wait(sing, sing.post("/jobs", json={"query": "patient song"}).json()["job"]["id"])
+    assert done["exclusive"] == "shared" and calls == []
+
+
+def test_the_conversion_gives_way_while_she_speaks(sing, share):
+    server = sys.modules["sing_server"]
+    _, polled, busy = share
+    busy["n"] = 1
+    job = sing.post("/jobs", json={"query": "yielding song"}).json()["job"]["id"]
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        j = sing.get(f"/jobs/{job}").json()["job"]
+        if j["stage"] == "convert" and (j["yielded"] or {}).get("pauses", 0) > 0:
+            break
+        time.sleep(0.01)
+    time.sleep(0.05)
+    held = sing.get(f"/jobs/{job}").json()["job"]
+    assert held["state"] == "running" and held["stage"] == "convert"  # it is waiting for her
+    busy["n"] = 0
+    done = wait(sing, job)
+    assert done["state"] == "done", done
+    assert done["yielded"]["yielded_s"] > 0 and polled
+    assert server.state.backend.gate is None
+
+
+def test_a_cancel_reaches_a_job_that_is_giving_way(sing, share):
+    _, _, busy = share
+    busy["n"] = 1
+    job = sing.post("/jobs", json={"query": "cancelled while yielding"}).json()["job"]["id"]
+    deadline = time.time() + 10
+    while time.time() < deadline and (sing.get(f"/jobs/{job}").json()["job"]["yielded"] or {}).get("pauses", 0) == 0:
+        time.sleep(0.01)
+    sing.delete(f"/jobs/{job}")
+    done = wait(sing, job)
+    busy["n"] = 0
+    assert done["state"] == "cancelled"
+
+
+def test_running_out_of_vram_while_sharing_takes_the_gpu_after_all(sing, share, monkeypatch):
+    calls, _, _ = share
+    monkeypatch.setenv("SING_MOCK_CONVERT_OOM", "1")
+    done = wait(sing, sing.post("/jobs", json={"query": "oom song"}).json()["job"]["id"])
+    assert done["state"] == "done", done
+    assert [c[0] for c in calls][:2] == ["http://tts/offload", "http://asr/offload"]
+    assert done["exclusive"] == "done"
+
+
+def test_yielding_never_stops_a_song_for_good():
+    from yielding import SpeechYield
+
+    y = SpeechYield(["http://tts"], lambda url, timeout: {"busy": 1}, poll_s=0.005, hold_s=0.05, max_s=0.05).start()
+    time.sleep(0.03)
+    t0 = time.monotonic()
+    y.wait()
+    assert time.monotonic() - t0 < 1 and y.yielded_s >= 0.04
+    t0 = time.monotonic()
+    y.wait()  # the allowance is used up
+    assert time.monotonic() - t0 < 0.02
+    y.stop()
+
+
+def test_a_worker_that_does_not_answer_counts_as_idle():
+    from yielding import SpeechYield
+
+    def down(url, timeout):
+        raise RuntimeError("connection refused")
+
+    y = SpeechYield(["http://tts"], down, poll_s=0.005).start()
+    time.sleep(0.03)
+    assert y.busy() is False
+    t0 = time.monotonic()
+    y.wait()
+    assert time.monotonic() - t0 < 0.05
+    y.stop()

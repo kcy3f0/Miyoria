@@ -38,6 +38,8 @@ Pipeline per job (one job at a time; models load per stage and are freed after i
 GPU: with SING_OFFLOAD_URLS (the TTS / ASR workers) the job has the GPU to itself from the first
 GPU stage (separate, else convert) to the end of the conversion: stage ``exclusive`` and the job's
 ``exclusive`` field (waiting · offloading · active · reloading · done) tell Core; see exclusive.py.
+With SING_GPU_SHARE=1 that is the last resort: when the card has SING_SHARE_MIN_FREE_MB free the
+job runs next to them (``exclusive: shared``) and pauses while they work; see yielding.py.
 
 A finished song is cached under SING_DATA_DIR/<song id>; asking again (same query, link or file
 and the same pitch settings) answers at once with ``cached: true``.
@@ -73,6 +75,13 @@ Environment
     SING_OFFLOAD_URLS      workers to offload while converting, comma separated (default none),
                            e.g. http://127.0.0.1:8002,http://127.0.0.1:8003
     SING_EXCLUSIVE_WAIT_S  wait this long for Core's go (exclusive_ack) (default 30)
+    SING_GPU_SHARE         1 = no offload while the card has room  (default 0)
+    SING_SHARE_MIN_FREE_MB free VRAM a job needs to share the card (default 4096; peak 3.2 GB)
+    SING_SHARE_WAIT_S      card too full: wait this long for room before offloading (default 0)
+    SING_YIELD_URLS        workers to give way to while sharing, comma separated (default SING_OFFLOAD_URLS)
+    SING_YIELD_POLL_MS     how often they are asked                (default 100)
+    SING_YIELD_HOLD_MS     stay out of the way this long after they are idle (default 300)
+    SING_YIELD_MAX_S       give up at most this much per song      (default 120)
     SING_RESOLVE_TIMEOUT_S give up finding a song after this long (default 60)
     SING_YTDLP_CACHE       yt-dlp's cache folder                  (default <data dir>/_ytdlp-cache)
     SING_RELOAD_TIMEOUT_S  longest wait for a worker to reload    (default 300)
@@ -108,8 +117,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from engine import Cancelled, JobError, allowed_url, env_float, env_int  # noqa: E402
+from engine import Cancelled, JobError, allowed_url, env_float, env_int, is_oom  # noqa: E402
 from exclusive import Exclusive, http_post, parse_urls  # noqa: E402
+from yielding import SpeechYield, http_get  # noqa: E402
 from songs import (  # noqa: E402
     PLAY_RATE,
     SONG_FILES,
@@ -165,6 +175,7 @@ class MockBackend:
         self.store = store
         self.seconds = env_float("SING_MOCK_SECONDS", 3.0)
         self.delay = env_int("SING_MOCK_STAGE_MS", 0) / 1000
+        self.gate: Callable[[], None] | None = None
 
     def _wait(self) -> None:
         if self.delay:
@@ -203,6 +214,10 @@ class MockBackend:
         link_or_copy(v, sdir / f"video{v.suffix.lower()}")
         return {"source": "library", "bytes": v.stat().st_size}
 
+    def free_vram_mb(self) -> int | None:
+        raw = os.environ.get("SING_MOCK_FREE_MB")
+        return int(raw) if raw else None
+
     def fetch_library(self, src: Source, sdir: Path) -> None:
         self.fetch(src, sdir / "source.wav", lambda _: None)
 
@@ -224,7 +239,11 @@ class MockBackend:
                 cancelled: Callable[[], bool]) -> None:
         if os.environ.get("SING_MOCK_CONVERT_FAIL") == "1":
             raise JobError("mock conversion failed")
+        if os.environ.get("SING_MOCK_CONVERT_OOM") == "1" and self.gate is not None:
+            raise RuntimeError("CUDA out of memory (mock)")
         for i in range(4):
+            if self.gate is not None:
+                self.gate()
             if cancelled():
                 raise Cancelled()
             self._wait()
@@ -272,6 +291,14 @@ class _RealAdapter:
         self.name = b.name
         self.device = b.device
         self.model_name = b.model_name
+
+    @property
+    def gate(self) -> Callable[[], None] | None:
+        return self.b.gate
+
+    @gate.setter
+    def gate(self, value: Callable[[], None] | None) -> None:
+        self.b.gate = value
 
     def __getattr__(self, item: str) -> Any:
         return getattr(self.b, item)
@@ -336,6 +363,7 @@ class Job:
     video: "VideoFetch | None" = None
     exclusive: Exclusive | None = None
     go: threading.Event = field(default_factory=threading.Event)
+    yielding: SpeechYield | None = None  # sharing the GPU: gives way to her voice
 
     def public(self, store: Store, position: int | None) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -356,6 +384,7 @@ class Job:
             "video": self.video.public() if self.video else None,
             "exclusive": self.exclusive.state if self.exclusive else None,
             "exclusive_info": self.exclusive.public() if self.exclusive else None,
+            "yielded": self.yielding.public() if self.yielding else None,
         }
         if self.state == "done" and self.song_id:
             d["song"] = store.meta(self.song_id)
@@ -373,6 +402,7 @@ class State:
     thread: threading.Thread | None = None
     stopping: threading.Event
     offload_post = staticmethod(http_post)  # replaced in tests
+    busy_get = staticmethod(http_get)  # replaced in tests
 
 
 state = State()
@@ -617,20 +647,73 @@ def _attach_video(job: Job, src: Source, sdir: Path, out: Path, timings: dict[st
     return {"has_video": True, "video": {**info, "file": v.name}, "video_error": None}
 
 
-def _take_gpu(job: Job) -> None:
-    """Before the first GPU stage: the offload workers drop their models (once per job)."""
+def _free_vram_mb() -> int | None:
+    try:
+        return state.backend.free_vram_mb()
+    except Exception as e:  # noqa: BLE001 - not knowing means not sharing
+        log.warning("cannot read the free VRAM: %s", e)
+        return None
+
+
+def _room_to_share(job: Job) -> tuple[bool, int | None]:
+    """Whether the card has room for the job next to the workers, after SING_SHARE_WAIT_S at most
+    (a game holds the card: the song can wait for it to end instead of taking her voice away)."""
+    need = env_int("SING_SHARE_MIN_FREE_MB", 4096)
+    deadline = time.monotonic() + env_float("SING_SHARE_WAIT_S", 0.0)
+    while True:
+        free = _free_vram_mb()
+        if free is not None and free >= need:
+            return True, free
+        if time.monotonic() >= deadline:
+            return False, free
+        if job.cancel.wait(min(2.0, max(0.01, deadline - time.monotonic()))):
+            raise Cancelled()
+
+
+def _share_gpu(job: Job, free: int | None) -> None:
+    job.exclusive = Exclusive([], state.offload_post)
+    job.exclusive.share(free)
+    urls = parse_urls(os.environ.get("SING_YIELD_URLS") or os.environ.get("SING_OFFLOAD_URLS"))
+    job.yielding = SpeechYield(urls, state.busy_get, poll_s=env_int("SING_YIELD_POLL_MS", 100) / 1000,
+                               hold_s=env_int("SING_YIELD_HOLD_MS", 300) / 1000,
+                               max_s=env_float("SING_YIELD_MAX_S", 120.0)).start()
+    gate = job.yielding
+    state.backend.gate = lambda: gate.wait(job.cancel.is_set)
+    log.info("sharing the GPU with her voice (%s MB free); yielding to %s", free, urls or "nobody")
+
+
+def _stop_yielding(job: Job) -> None:
+    if job.yielding is not None:
+        job.yielding.stop()
+    state.backend.gate = None
+
+
+def _take_gpu(job: Job, share: bool = True) -> None:
+    """Before the first GPU stage (once per job): share the card when it has room, else the
+    offload workers drop their models."""
+    if job.exclusive is not None:
+        return
+    stage = job.stage
     urls = parse_urls(os.environ.get("SING_OFFLOAD_URLS"))
-    if not urls or job.exclusive is not None:
+    if share and os.environ.get("SING_GPU_SHARE", "0") == "1":
+        _set(job, "exclusive")
+        room, free = _room_to_share(job)
+        job.stage = stage
+        if room:
+            _share_gpu(job, free)
+            return
+        log.info("the card has %s MB free, too little to share it", free)
+    if not urls:
         return
     job.exclusive = Exclusive(urls, state.offload_post, ack_wait_s=env_float("SING_EXCLUSIVE_WAIT_S", 30.0),
                               reload_timeout_s=env_float("SING_RELOAD_TIMEOUT_S", 300.0))
-    stage = job.stage
     _set(job, "exclusive")
     job.exclusive.begin(job.cancel.is_set, job.go if job.request.exclusive_ack else None)
     job.stage = stage
 
 
 def _give_gpu_back(job: Job) -> None:
+    _stop_yielding(job)
     if job.exclusive is not None:
         job.exclusive.end()
 
@@ -708,6 +791,17 @@ def _run_job(job: Job) -> None:
     def convert() -> dict[str, Any]:
         _take_gpu(job)
         try:
+            try:
+                return convert_on_gpu()
+            except Exception as e:
+                if job.exclusive is None or job.exclusive.state != "shared" or not is_oom(e):
+                    raise
+            # Something else filled the card meanwhile: the last resort after all.
+            log.warning("out of VRAM while sharing the GPU; taking it for this song")
+            _stop_yielding(job)
+            b.unload()
+            job.exclusive = None
+            _take_gpu(job, share=False)
             return convert_on_gpu()
         finally:
             _give_gpu_back(job)
