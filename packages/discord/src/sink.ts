@@ -5,13 +5,15 @@ import {
   type AccountRef,
   type ContextKey,
   contextKeyString,
-  filterOutgoing,
   type MessageRef,
+  type ModerationService,
   type OutgoingMessage,
   type PlatformId,
   type PlatformSink,
+  type SentMessage,
+  safeOutgoing,
 } from "@miyoria/types";
-import { Routes } from "discord.js";
+import { MessageFlags, Routes } from "discord.js";
 import { PLATFORM, snowflake } from "./mapping.js";
 import { renderReply } from "./render.js";
 import { MAX_MESSAGE_LEN, splitMessage } from "./split.js";
@@ -61,12 +63,22 @@ async function inContext<T>(what: string, work: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * An outgoing message the sender marks as unprompted (nobody addressed her). Such messages are
+ * posted without a notification (`SUPPRESS_NOTIFICATIONS`), so she never pings people by
+ * starting a conversation. The flag is optional so existing senders keep working.
+ */
+export type DiscordOutgoing = OutgoingMessage & { proactive?: boolean };
+
 export class DiscordSink implements PlatformSink, ReplySink {
   readonly platform: PlatformId = PLATFORM;
   readonly #rest: RestLike;
+  readonly #moderation: () => ModerationService | undefined;
 
-  constructor(rest: RestLike) {
+  /** `moderation`: looked up per message, it may come and go. */
+  constructor(rest: RestLike, moderation: () => ModerationService | undefined = () => undefined) {
     this.#rest = rest;
+    this.#moderation = moderation;
   }
 
   /**
@@ -77,10 +89,12 @@ export class DiscordSink implements PlatformSink, ReplySink {
     context: ContextKey,
     message: OutgoingMessage,
     signal?: AbortSignal,
-  ): Promise<MessageRef> {
+  ): Promise<SentMessage> {
     const channel = channelOf(context);
-    // Last line of defence: no role / everyone / here mentions, no secrets.
-    const chunks = splitMessage(filterOutgoing(message.text), MAX_MESSAGE_LEN);
+    // Last line of defence: nothing moderation stops, no role / everyone / here mentions, no
+    // secrets, whoever got this far.
+    const safe = safeOutgoing(this.#moderation(), { path: "reply", text: message.text, context });
+    const chunks = splitMessage(safe.text, MAX_MESSAGE_LEN);
     if (chunks.length === 0) throw new DiscordSendError("cannot send an empty message");
     let reference: Record<string, unknown> | null = null;
     if (message.reply_to) {
@@ -90,6 +104,7 @@ export class DiscordSink implements PlatformSink, ReplySink {
         fail_if_not_exists: false,
       };
     }
+    const quiet = (message as DiscordOutgoing).proactive === true;
     let first: string | null = null;
     for (const chunk of chunks) {
       const body: Record<string, unknown> = {
@@ -97,6 +112,7 @@ export class DiscordSink implements PlatformSink, ReplySink {
         // Users may be pinged by name; never roles, @everyone or @here. Replying must not ping
         // the replied-to author.
         allowed_mentions: { parse: ["users"], roles: [], replied_user: false },
+        ...(quiet ? { flags: MessageFlags.SuppressNotifications } : {}),
       };
       if (reference) {
         body.message_reference = reference;
@@ -107,7 +123,8 @@ export class DiscordSink implements PlatformSink, ReplySink {
       );
       first ??= messageId(sent);
     }
-    return { context, id: first as string };
+    const id = first as string;
+    return safe.blocked === null ? { context, id } : { context, id, blocked: safe.blocked };
   }
 
   async react(message: MessageRef, emoji: string, signal?: AbortSignal): Promise<void> {
@@ -127,7 +144,8 @@ export class DiscordSink implements PlatformSink, ReplySink {
   /** The voice channel's status line: filtered like `send`, at most 500 characters. */
   async setVoiceStatus(context: ContextKey, status: string, signal?: AbortSignal): Promise<void> {
     const channel = channelOf(context);
-    const text = [...filterOutgoing(status).trim()].slice(0, MAX_VOICE_STATUS).join("");
+    const safe = safeOutgoing(this.#moderation(), { path: "aside", text: status, context });
+    const text = [...safe.text.trim()].slice(0, MAX_VOICE_STATUS).join("");
     await inContext(`setting the voice status of ${contextKeyString(context)}`, async () => {
       await this.#rest.put(`/channels/${channel}/voice-status`, {
         body: { status: text },

@@ -53,6 +53,9 @@ export const AuthorizerPreloadKey = serviceKey<AuthorizerPreload>("AuthorizerPre
 /** The command registry service, provided by the `commands` module. */
 export const CommandRegistryKey = serviceKey<CommandRegistry>("CommandRegistry");
 
+/** Prefix of a panel's route owner (command keys never contain `/`). */
+const PANEL_OWNER = "/";
+
 /** Deepest supported command path (Discord: group / subcommand group / subcommand). */
 export const MAX_PATH_DEPTH = 3;
 const MAX_NAME_LEN = 32;
@@ -92,6 +95,11 @@ export interface ComponentOutcome {
 export interface DispatchIo {
   /** Sends an extra message (see `Invocation.followUp`). */
   followUp?: FollowUp;
+  /**
+   * `false`: leave no audit entry, whatever the outcome. For a read the platform runs by itself
+   * (a panel's status lines are drawn on every refresh); what a person did is audited as usual.
+   */
+  audit?: boolean;
 }
 
 // ---- system text --------------------------------------------------------------------------
@@ -181,6 +189,13 @@ export interface CommandRegistryOptions {
   services?: ServiceLookup;
   /** Time source for audit entries. */
   clock?: Clock;
+  /**
+   * What a slash platform shows (`slashSpecs`): every registered command (`"all"`, the default,
+   * for plain registries) or only the panel commands (`"panels"`, what the `commands` module
+   * uses). The commands behind the panels stay registered and dispatchable: panels run them,
+   * and text platforms (chat `!cmd`, CLI) still list them.
+   */
+  surface?: "all" | "panels";
 }
 
 /**
@@ -193,6 +208,8 @@ export class CommandRegistry {
   #services: ServiceLookup | null;
   readonly #clock: Clock;
   readonly #entries = new Map<string, Entry>();
+  readonly #panels = new Map<string, Entry>();
+  readonly #surface: "all" | "panels";
   readonly #groups = new Map<string, GroupInfo>();
   readonly #routes = new Map<string, { owner: string; route: AnyComponentRoute }>();
   readonly #subscriptions = new Set<VersionSubscription>();
@@ -202,6 +219,7 @@ export class CommandRegistry {
     this.#perms = perms;
     this.#services = options.services ?? null;
     this.#clock = options.clock ?? systemClock;
+    this.#surface = options.surface ?? "all";
     for (const [path, init] of Object.entries(COMMAND_GROUPS)) {
       this.#groups.set(path, groupInfo(init));
     }
@@ -239,6 +257,43 @@ export class CommandRegistry {
         );
       }
     }
+    this.#store(this.#entries, key, key, spec, handler, options);
+  }
+
+  /**
+   * Registers a panel command: a top-level command (one word) whose reply is a panel of
+   * controls that run other registered commands. Panels live beside the command tree, so
+   * `/me` can be a panel while `me profile` stays a command, and they are what a slash platform
+   * shows when the registry's surface is `"panels"` (see `slashSpecs`).
+   */
+  registerPanel(spec: CommandSpec, handler: CommandHandler, options: RegisterOptions = {}): void {
+    validateSpec(spec);
+    if (spec.path.length !== 1) {
+      throw new CommandError(`panel \`${commandName(spec)}\` must be a top-level command`);
+    }
+    const key = spec.path.join(" ");
+    this.#store(this.#panels, key, `${PANEL_OWNER}${key}`, spec, handler, options);
+  }
+
+  /** Removes a panel command (and its component routes). */
+  unregisterPanel(path: string): boolean {
+    const key = splitPath(path).join(" ");
+    const removed = this.#panels.delete(key);
+    if (removed) {
+      this.#dropRoutes(`${PANEL_OWNER}${key}`);
+      this.#bump();
+    }
+    return removed;
+  }
+
+  #store(
+    into: Map<string, Entry>,
+    key: string,
+    owner: string,
+    spec: CommandSpec,
+    handler: CommandHandler,
+    options: RegisterOptions,
+  ): void {
     const routes = [...(options.components ?? [])];
     const seen = new Set<string>();
     for (const route of routes) {
@@ -250,7 +305,7 @@ export class CommandRegistry {
       }
       seen.add(route.route);
       const taken = this.#routes.get(route.route);
-      if (taken && taken.owner !== key) {
+      if (taken && taken.owner !== owner) {
         throw new CommandError(
           `component route \`${route.route}\` of \`${commandName(spec)}\` is already used by \`${taken.owner}\``,
         );
@@ -271,9 +326,9 @@ export class CommandRegistry {
       if (arg.autocomplete && !autocomplete.has(arg.name)) delete arg.autocomplete;
     }
 
-    this.#dropRoutes(key);
-    for (const route of routes) this.#routes.set(route.route, { owner: key, route });
-    this.#entries.set(key, { spec: stored, handler, routes, autocomplete });
+    this.#dropRoutes(owner);
+    for (const route of routes) this.#routes.set(route.route, { owner, route });
+    into.set(key, { spec: stored, handler, routes, autocomplete });
     this.#bump();
   }
 
@@ -330,9 +385,30 @@ export class CommandRegistry {
       .map((spec) => structuredClone(spec));
   }
 
+  /** The commands a slash platform registers (see `CommandRegistryOptions.surface`). */
+  slashSpecs(): CommandSpec[] {
+    if (this.#surface === "all") return this.specs();
+    return [...this.#panels.values()]
+      .map((e) => e.spec)
+      .sort((a, b) => comparePaths(a.path, b.path))
+      .map((spec) => structuredClone(spec));
+  }
+
+  /** A command or panel by path. */
   get(path: readonly string[]): CommandSpec | undefined {
-    const entry = this.#entries.get(path.join(" "));
+    const entry = this.#find(path.join(" "));
     return entry ? structuredClone(entry.spec) : undefined;
+  }
+
+  /** Panels first: a panel and a command never share a path, but a panel is what users see. */
+  #find(key: string): Entry | undefined {
+    return this.#panels.get(key) ?? this.#entries.get(key);
+  }
+
+  #owned(owner: string): Entry | undefined {
+    return owner.startsWith(PANEL_OWNER)
+      ? this.#panels.get(owner.slice(PANEL_OWNER.length))
+      : this.#entries.get(owner);
   }
 
   /** Every registered component route name, sorted. */
@@ -378,10 +454,11 @@ export class CommandRegistry {
    */
   async dispatch(data: InvocationData, io: DispatchIo = {}): Promise<CommandReply> {
     const invocation = Invocation.from(data);
-    const entry = this.#entries.get(invocation.path.join(" "));
+    const entry = this.#find(invocation.path.join(" "));
     if (!entry) return notice("warn", TEXT.unknownCommand(invocation.path.join(" ")));
     const { spec, handler } = entry;
-    const audit = isAdminNode(spec.permission) ? this.#service(AuditLogKey) : undefined;
+    const audit =
+      io.audit !== false && isAdminNode(spec.permission) ? this.#service(AuditLogKey) : undefined;
     if (!(await this.#allows(invocation, spec.permission))) {
       if (audit) await this.#appendAudit(audit, invocation, false, "denied");
       return denied(spec.permission);
@@ -425,7 +502,7 @@ export class CommandRegistry {
     });
     if (!found) return refuse(notice("warn", TEXT.staleControl));
     const { name, params, owner, route } = found;
-    const entry = this.#entries.get(owner);
+    const entry = this.#owned(owner);
     if (!entry) return refuse(notice("warn", TEXT.staleControl));
     const inv = new ComponentInvocation(data, entry.spec.path, name, params);
     const nodes = [entry.spec.permission, ...(route.permission ? [route.permission] : [])];
@@ -480,7 +557,7 @@ export class CommandRegistry {
    */
   async autocomplete(data: InvocationData, name: string, value: string): Promise<Choice[]> {
     const invocation = Invocation.from(data);
-    const entry = this.#entries.get(invocation.path.join(" "));
+    const entry = this.#find(invocation.path.join(" "));
     const handler = entry?.autocomplete.get(name);
     if (!entry || !handler) return [];
     if (!(await this.#allows(invocation, entry.spec.permission))) return [];

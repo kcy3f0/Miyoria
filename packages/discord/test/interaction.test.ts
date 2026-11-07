@@ -13,6 +13,7 @@ import {
   notice,
   PanelSessions,
   Permissions,
+  registerPanels,
 } from "@miyoria/commands";
 import { ApplicationCommandOptionType, ComponentType, MessageFlags } from "discord.js";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -578,5 +579,73 @@ describe("handleAutocomplete", () => {
     // Someone without the node gets nothing.
     await handleAutocomplete(env(registry), { ...i, user: { id: "7", username: "b" } }, "channel");
     expect(answered[1]).toEqual([]);
+  });
+});
+
+describe("panels through the interaction layer", () => {
+  function panelEnv() {
+    const registry = new CommandRegistry(Permissions.fromStrings(["discord:1"]), {
+      surface: "panels",
+    });
+    const calls: string[] = [];
+    registry.register(
+      commandSpec("voice consent", "c", {
+        args: [argSpec("state", "s", ArgKind.choice(["on", "off"]), { required: false })],
+        permission: "voice.consent",
+        ephemeral: true,
+      }),
+      (inv) => {
+        calls.push(`consent ${inv.str("state")}`);
+        return notice("success", "已更新");
+      },
+    );
+    registry.register(commandSpec("me privacy", "p", { permission: "me.privacy" }), () =>
+      notice("info", "設定"),
+    );
+    registerPanels(registry);
+    const sessions = new PanelSessions();
+    return { registry, sessions, calls };
+  }
+
+  const flagsOf = (s: Sent | undefined) => (s?.options?.flags ?? 0) as number;
+
+  test("a_panel_opens_ephemeral_with_controls_and_a_session", async () => {
+    const { registry, sessions } = panelEnv();
+    const { i, sent } = command({ commandName: "me" });
+    await handleCommandInteraction({ registry, sessions }, i, "channel");
+    expect(sent.map((s) => s.call)).toEqual(["reply"]);
+    expect(flagsOf(sent[0]) & MessageFlags.Ephemeral).toBeTruthy();
+    expect(flagsOf(sent[0]) & MessageFlags.IsComponentsV2).toBeTruthy();
+    expect(sessions.size).toBe(1);
+    const json = JSON.stringify(sent[0]?.options);
+    expect(json).toContain("mi:me:do:home:consent-on:-");
+    // No embed, only Components V2.
+    expect(sent[0]?.options).not.toHaveProperty("embeds");
+    sessions.closeAll();
+  });
+
+  test("a_button_updates_the_panel_in_place_and_runs_the_command", async () => {
+    const { registry, sessions, calls } = panelEnv();
+    const opened = command({ commandName: "me" });
+    await handleCommandInteraction({ registry, sessions }, opened.i, "channel");
+    // The panel message is the one the platform tracked.
+    const panelId = "m1";
+    const { i, sent } = component("mi:me:do:home:consent-on:-", {
+      message: { id: panelId, flags: { has: (f: number) => f === MessageFlags.Ephemeral } },
+    });
+    await handleComponentInteraction({ registry, sessions }, i, "channel");
+    expect(calls).toEqual(["consent on"]);
+    expect(sent.map((s) => s.call)).toEqual(["update"]);
+    expect(JSON.stringify(sent[0]?.options)).toContain("已更新");
+    sessions.closeAll();
+  });
+
+  test("a_stale_or_foreign_panel_runs_nothing", async () => {
+    const { registry, sessions, calls } = panelEnv();
+    const { i, sent } = component("mi:me:do:home:consent-on:-");
+    await handleComponentInteraction({ registry, sessions }, i, "channel");
+    expect(calls).toEqual([]);
+    expect(sent.map((s) => s.call)).toEqual(["reply"]);
+    expect(flagsOf(sent[0]) & MessageFlags.Ephemeral).toBeTruthy();
   });
 });

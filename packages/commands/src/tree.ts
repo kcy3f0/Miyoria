@@ -1,6 +1,10 @@
 // The command tree's groups (command → group → subcommand), declared in one place so every
 // module that adds a subcommand shares the same descriptions and platform gates.
 //
+// Discord shows only the four panel commands (`/miyo`, `/song`, `/me`, `/admin`, see
+// `panels/`). The commands below are what the panels run; they stay registered for text
+// platforms and the CLI. Gates of the four panels are the entries named like them.
+//
 //   /voice    join · leave · mode · consent · golive start|stop|status
 //   /stream   start · stop · status · scene
 //   /me       profile · call · link · privacy · memory show|export|forget
@@ -16,6 +20,8 @@ import type { GroupInfo } from "./spec.js";
 type GroupInit = Partial<Omit<GroupInfo, "description">> & { description: string };
 
 export const COMMAND_GROUPS: Readonly<Record<string, GroupInit>> = {
+  miyo: { description: "她的控制面板：語音、直播、遊戲、聊天等級與緊急停止", guild_only: true },
+  song: { description: "點歌與歌單", guild_only: true },
   voice: { description: "語音：讓她加入或離開語音頻道、設定語音模式與 Go Live", guild_only: true },
   "voice golive": { description: "Discord Go Live 推流" },
   stream: { description: "直播：透過直播機控制 OBS", guild_only: true },
@@ -27,11 +33,9 @@ export const COMMAND_GROUPS: Readonly<Record<string, GroupInit>> = {
   "queue song": { description: "點歌：她用自己的聲音唱" },
   game: { description: "遊戲：讓她開始或停止玩遊戲", guild_only: true },
   channel: { description: "頻道設定：她在這個頻道的聊天模式與主動程度", guild_only: true },
-  admin: {
-    description: "管理：模組、權限、她認識的人與記憶",
-    guild_only: true,
-    member_permission: "manage_guild",
-  },
+  // No Manage Server gate: what a member may do is decided by permission nodes, so a
+  // moderator with `admin.person.*` still finds `/admin`.
+  admin: { description: "管理：模組、角色權限、她認識的人與資料", guild_only: true },
   "admin module": { description: "管理模組" },
   "admin role": { description: "管理角色與身分組對應" },
   "admin perm": { description: "覆寫角色的權限節點" },
@@ -43,6 +47,8 @@ export const COMMAND_GROUPS: Readonly<Record<string, GroupInit>> = {
 
 /** Display order of the top-level commands (e.g. in `/help`). */
 export const CATEGORY_ORDER: readonly string[] = [
+  "miyo",
+  "song",
   "voice",
   "stream",
   "me",

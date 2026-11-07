@@ -33,7 +33,7 @@ export {
   type SessionInfo,
   validateRoute,
 } from "./components.js";
-export { type ReplySink, ReplySinkKey } from "./direct.js";
+export { type ReplySink, ReplySinkKey, type UserResolver, UserResolverKey } from "./direct.js";
 export { HELP_NODE, registerHelp } from "./help.js";
 export {
   type CommandsConfig,
@@ -49,11 +49,35 @@ export {
   type BuiltinRole,
   builtinRole,
   builtinRoleGrants,
+  DIRECTIVE_MODERATE,
   granted,
   isAdminNode,
   matches,
   SANDBOX_CODE_RUN,
 } from "./nodes.js";
+export {
+  type FieldAsk,
+  mappedPaths,
+  type PanelAction,
+  type PanelDef,
+  type PanelPage,
+  type PanelStart,
+  pathKey,
+  registerPanelCommand,
+  runCommand,
+  type StatusLine,
+} from "./panel.js";
+export {
+  CHANNEL_TIERS,
+  type ChannelTier,
+  PANEL_COMMANDS,
+  type PanelsOptions,
+  panelCommandPaths,
+  panelDefs,
+  registerPanels,
+  tierOf,
+  unregisterPanels,
+} from "./panels.js";
 export { Permissions, parseAccount, ROLE_RANK, type Role } from "./perms.js";
 export {
   type AuthorizerPreload,

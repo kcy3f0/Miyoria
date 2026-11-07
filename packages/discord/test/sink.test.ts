@@ -1,4 +1,4 @@
-import type { ContextKey } from "@miyoria/types";
+import type { ContextKey, ModerationService } from "@miyoria/types";
 import { describe, expect, test } from "vitest";
 import { DiscordSink, type RestLike, type RestRequest } from "../src/sink.js";
 
@@ -45,6 +45,16 @@ describe("DiscordSink", () => {
       allowed_mentions: { parse: ["users"], roles: [], replied_user: false },
       message_reference: { message_id: "999", channel_id: "200", fail_if_not_exists: false },
     });
+  });
+
+  test("unprompted_messages_are_sent_without_a_notification", async () => {
+    const rest = new FakeRest();
+    const sink = new DiscordSink(rest);
+    await sink.send(channel, { text: "在嗎", reply_to: null, proactive: true } as never);
+    await sink.send(channel, { text: "好", reply_to: null });
+    const [quiet, normal] = rest.calls.map((c) => c.options?.body as Record<string, unknown>);
+    expect(quiet?.flags).toBe(1 << 12); // SUPPRESS_NOTIFICATIONS
+    expect(normal).not.toHaveProperty("flags");
   });
 
   test("never_mentions_roles_everyone_or_here_and_masks_secrets", async () => {
@@ -207,5 +217,54 @@ describe("DiscordSink.describe", () => {
     expect(await new DiscordSink(new FakeRest()).describe(voice)).toBeNull();
     expect(await new DiscordSink(rest(names)).describe({ ...voice, platform: "cli" })).toBeNull();
     expect(await new DiscordSink(rest(names)).describe({ ...voice, channel: "x" })).toBeNull();
+  });
+});
+
+describe("the last line of defence", () => {
+  const moderation = (rule: string | null) =>
+    ({
+      filteredLine: "Filtered.",
+      filteredVoiceLine: "Filtered.",
+      screen: () => ({
+        ok: rule === null,
+        visible: null,
+        voice: null,
+        blocked:
+          rule === null ? [] : [{ field: "visible", category: "custom", rule, layer: "rules" }],
+      }),
+    }) as unknown as ModerationService;
+
+  test("a message moderation stops is the filtered line, and the answer says so", async () => {
+    const rest = new FakeRest();
+    const sink = new DiscordSink(rest, () => moderation("test.word"));
+    const sent = await sink.send(channel, { text: "什麼都好", reply_to: null });
+    expect(rest.calls[0]?.options?.body).toMatchObject({ content: "Filtered." });
+    expect(sent.blocked).toBe("test.word");
+  });
+
+  test("a leaked secret is not masked into a sentence: the review sees it first", async () => {
+    const rest = new FakeRest();
+    const seen: unknown[] = [];
+    const service = moderation(null);
+    service.screen = (check) => {
+      seen.push(check.visible);
+      return { ok: true, visible: null, voice: null, blocked: [] };
+    };
+    const secret = `sk-${"aB3dE6gH9jK2mN5pQ8".repeat(2)}`;
+    await new DiscordSink(rest, () => service).send(channel, { text: secret, reply_to: null });
+    expect(seen).toEqual([secret]);
+  });
+
+  test("the voice status too", async () => {
+    const rest = new FakeRest();
+    const sink = new DiscordSink(rest, () => moderation("test.word"));
+    await sink.setVoiceStatus({ ...channel, kind: "voice" }, "什麼都好");
+    expect(rest.calls[0]?.options?.body).toEqual({ status: "Filtered." });
+  });
+
+  test("without the service nothing changes", async () => {
+    const rest = new FakeRest();
+    const sent = await new DiscordSink(rest).send(channel, { text: "hi", reply_to: null });
+    expect(sent.blocked).toBeUndefined();
   });
 });

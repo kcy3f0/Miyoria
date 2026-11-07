@@ -21,6 +21,7 @@ import {
   intParam,
 } from "./components.js";
 import { registerHelp } from "./help.js";
+import { registerPanels } from "./panels.js";
 import { Permissions, parseAccount } from "./perms.js";
 import { CommandRegistry, CommandRegistryKey } from "./registry.js";
 import {
@@ -51,6 +52,15 @@ export const CommandsConfigSchema = z.object({
    * `[modules.auth] owners` is still read for compatibility.
    */
   owners: z.array(z.string()).default([]),
+  /**
+   * Link to the privacy policy, shown on `/me` (privacy and memory pages). Without one the
+   * panel says that none has been provided. Must be an `https://` URL.
+   */
+  privacy_policy_url: z
+    .string()
+    .refine((url) => /^https:\/\/\S+$/u.test(url), "must be an https:// URL")
+    .nullable()
+    .default(null),
 });
 
 export type CommandsConfig = z.output<typeof CommandsConfigSchema>;
@@ -62,7 +72,8 @@ export interface CommandsModuleOptions {
 
 /**
  * Module `commands`: provides the `CommandRegistry` service and registers the built-in
- * commands (`help`, `admin module ...`).
+ * commands (`help`, `admin module ...`) and the four panel commands Discord shows (`/miyo`,
+ * `/song`, `/me`, `/admin`; see `panels.ts`).
  *
  * The registry outlives restarts of this module, so commands other modules registered once at
  * their start stay registered. It also provides its `Permissions` as a fallback `Authorizer`
@@ -92,13 +103,15 @@ export class CommandsModule implements Module {
       registry = new CommandRegistry(new Permissions(owners), {
         services: ctx.services,
         clock: ctx.clock,
+        // Slash platforms show the panels; the commands behind them stay for text platforms.
+        surface: "panels",
       });
       this.#registry = registry;
     } else {
       registry.permissions().setOwners(owners);
       registry.withServices(ctx.services);
     }
-    registerBuiltins(registry, ctx);
+    registerBuiltins(registry, ctx, { policyUrl: config.privacy_policy_url });
     ctx.provide(CommandRegistryKey, registry);
     const perms = registry.permissions();
     provideFallback(ctx, perms);
@@ -157,7 +170,7 @@ const R = {
 const NO_PAGE = "-";
 
 /**
- * Registers `help` and `admin module list | enable | disable | restart`.
+ * Registers `help`, `admin module list | enable | disable | restart` and the panels.
  *
  * The admin commands look up the `SupervisorKey` service when they run, so the app may provide
  * it after this module started.
@@ -165,8 +178,10 @@ const NO_PAGE = "-";
 export function registerBuiltins(
   registry: CommandRegistry,
   ctx: { readonly services: ServiceLookup },
+  options: { policyUrl?: string | null } = {},
 ): void {
   registerHelp(registry);
+  registerPanels(registry, { services: ctx.services, policyUrl: options.policyUrl ?? null });
   const sup = () => ctx.services.get(SupervisorKey);
   const suggest = (inv: Invocation, value: string) => moduleChoices(sup(), inv, value);
 
