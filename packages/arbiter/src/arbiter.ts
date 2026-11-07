@@ -513,7 +513,8 @@ export class ArbiterCore implements Arbiter {
       const label = facts.mode === "off" ? "關閉" : "只回提及";
       return no("ceiling", `這個頻道的等級是「${label}」,不能自己開口`);
     }
-    if (!facts.present) return no("denied", "你不在那個語音頻道");
+    // Only speaking needs her there: `voice.join` is how she gets in.
+    if (!facts.present && impulse.kind === "speak") return no("denied", "你不在那個語音頻道");
     const self = isSelfInitiated(source);
     if (self) {
       const rules = this.#timeRules(

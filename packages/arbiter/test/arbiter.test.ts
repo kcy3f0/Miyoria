@@ -120,6 +120,18 @@ describe("floors", () => {
     ).toBe("denied");
   });
 
+  it("does not need her in a voice channel to go there", async () => {
+    const r = rig();
+    r.host.set(voiceCtx("v"), { present: false });
+    const join = impulse(r.clock, {
+      source: "plan",
+      kind: "act",
+      capability: "voice.join",
+      context: voiceCtx("v"),
+    });
+    expect((await r.arbiter.submit(join)).reason).not.toBe("denied");
+  });
+
   it("daily, per-place and per-person caps", async () => {
     const r = rig({
       min_gap_secs: 0,
