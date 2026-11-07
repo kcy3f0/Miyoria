@@ -193,6 +193,10 @@ export interface Setup {
   provide?: (services: Supervisor["services"]) => void;
   /** More modules to run next to the agent (e.g. the arbiter), with their config. */
   modules?: [Module, JsonValue][];
+  /** Modules the agent needs up before it starts (the fact layer). */
+  before?: [Module, JsonValue][];
+  /** The next model in the `chat` chain, for when the first one fails. */
+  second?: ChatProvider;
 }
 
 export function profile(mode: string): Profile {
@@ -255,6 +259,10 @@ export class Harness {
 
     const providers = new Map<string, ChatProvider>([["chat", chat]]);
     const purposes = new Map<string, ModelRef[]>([["chat", [parseModelRef("chat:m")]]]);
+    if (setup.second) {
+      providers.set("second", setup.second);
+      purposes.get("chat")?.push(parseModelRef("second:m"));
+    }
     if (fast) {
       providers.set("fast", fast);
       purposes.set("fast", [parseModelRef("fast:m")]);
@@ -270,6 +278,7 @@ export class Harness {
       null,
       true,
     );
+    for (const [module, cfg] of setup.before ?? []) await sup.register(module, cfg, true);
     const roll = setup.roll ?? 0;
     const agent = new AgentModule(profile(mode)).withRandom({ nextF32: () => roll }).withImageFetch(
       setup.fetchImage ??

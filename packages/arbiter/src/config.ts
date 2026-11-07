@@ -10,6 +10,49 @@ const count = () => z.number().int().nonnegative();
 const hour = () => z.number().int().min(0).max(23);
 
 /**
+ * `[modules.arbiter.floor]` (docs/design/v3-architecture.md §7.2), read under `pipeline = "v3"`:
+ *
+ * ```toml
+ * [modules.arbiter.floor.budget]
+ * window_mins = 10
+ * base_lines = 6
+ * ```
+ *
+ * `max_unanswered` stays where it was, in `[modules.arbiter]`.
+ */
+export const FloorConfigSchema = z.object({
+  budget: z
+    .object({
+      /** The sliding window her own lines are counted in. */
+      window_mins: z.number().positive().default(10),
+      /** Lines of her own per window. Only what was delivered counts. */
+      base_lines: z.number().nonnegative().default(6),
+      /** Every line of a person in the window adds this much. */
+      per_human_line: z.number().nonnegative().default(1),
+      /** Each line nobody answered multiplies the wait before the next one by this. */
+      unanswered_backoff: z.number().min(1).default(2),
+      /** The wait after the first line nobody answered. */
+      backoff_base_secs: count().default(60),
+      /** More lines while she performs: announcing songs, playing a game live. */
+      performing_bonus: z.number().nonnegative().default(8),
+    })
+    .prefault({}),
+  /** Her own talkativeness and feelings scale `base_lines` at most this far: the owner's cap. */
+  max_talk_multiplier: z.number().positive().default(1.5),
+  /** One unit of what her feelings lean (`AffectBiases.talkativeness`) moves the budget this much. */
+  feeling_weight: z.number().nonnegative().default(1.25),
+  /** However she feels, it takes at most this share of `base_lines` away. Never all of it. */
+  min_feeling_multiplier: z.number().min(0.1).max(1).default(0.5),
+  /** However she feels, it adds at most this much. */
+  max_feeling_multiplier: z.number().min(1).default(1.25),
+  /** In a text channel, someone who wrote this recently still counts as there. */
+  text_presence_mins: z.number().positive().default(30),
+  /** A line that never reports back loses the mic after this long. */
+  max_hold_secs: z.number().int().positive().default(120),
+});
+export type FloorConfig = z.output<typeof FloorConfigSchema>;
+
+/**
  * ```toml
  * [modules.arbiter]
  * max_per_day = 12
@@ -112,6 +155,9 @@ export const ArbiterConfigSchema = z.object({
   impulse_ttl_secs: count().default(120),
   /** How often followups are polled, unanswered topics settled and the state saved. */
   tick_secs: z.number().int().positive().default(30),
+
+  // --- pipeline = "v3" ---
+  floor: FloorConfigSchema.prefault({}),
 });
 export type ArbiterConfig = z.output<typeof ArbiterConfigSchema>;
 

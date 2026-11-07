@@ -14,9 +14,14 @@ import { openStore, type Store, StoreKey } from "@miyoria/store";
 import { ToolRegistryKey } from "@miyoria/tools";
 import {
   type ContextKey,
+  DirectivesKey,
   type Envelope,
   HandleDirectoryKey,
+  PipelineKey,
   PlatformSinksKey,
+  Principals,
+  pipelineOf,
+  SYSTEM_SHUTDOWN_TOPIC,
   TURN_OUTCOME_TOPIC,
   type TurnOutcomeRecord,
   toTimestamp,
@@ -38,6 +43,7 @@ import {
   DEFAULT_DATABASE_URL,
   databaseUrl,
   logLevel,
+  pipeline,
   resolveDatabaseUrl,
 } from "../src/settings.js";
 
@@ -89,7 +95,111 @@ afterEach(async () => {
   core = undefined;
 });
 
+describe("pipeline", () => {
+  const toml = (value: string) => Config.fromToml(`[core]\n${value}`);
+
+  it("defaults to v3: a config that says nothing runs the main line", () => {
+    expect(pipeline(toml(""))).toBe("v3");
+  });
+
+  it("one setting rolls back", () => {
+    expect(pipeline(toml('pipeline = "v2"'))).toBe("v2");
+    expect(pipeline(toml('pipeline = "v3"'))).toBe("v3");
+  });
+
+  it("a typo stops the boot: she must not come up as something nobody chose", () => {
+    expect(() => pipeline(toml('pipeline = "v4"'))).toThrow(/core\.pipeline/);
+  });
+
+  it("every module sees it from the start", async () => {
+    core = await buildCoreWith(catalog(), config(), {
+      cliChatName: "Owen",
+      cli: { input: new PassThrough(), output: new PassThrough() },
+    });
+    expect(core.supervisor.services.get(PipelineKey)).toEqual({ pipeline: "v3" });
+    expect(pipelineOf(core.supervisor.services)).toBe("v3");
+  });
+});
+
+describe("going down", () => {
+  it("says so on the bus before any module stops", async () => {
+    const seen: string[] = [];
+    class Listening extends Fake {
+      override async start(ctx: ModuleContext): Promise<void> {
+        const sub = ctx.subscribe(SYSTEM_SHUTDOWN_TOPIC);
+        ctx.spawn("listen", async () => {
+          for await (const _ of sub) seen.push("shutdown");
+        });
+      }
+      async stop(): Promise<void> {
+        await Promise.resolve();
+        seen.push("module stopped");
+      }
+    }
+    const built = await buildCoreWith(
+      { ...catalog(), coreModules: async () => [new Listening("listening")] },
+      config(),
+      { discord: false, api: false },
+    );
+    await built.start();
+    await built.stop();
+    expect(seen).toEqual(["shutdown", "module stopped"]);
+  });
+});
+
+describe("the rules", () => {
+  const stopGames = {
+    by: { type: "console", actor: "api" },
+    text: "不要玩遊戲",
+    effect: "deny",
+    scope: { activity: "game" },
+    minutes: null,
+    source_event: "panel:api",
+  } as const;
+  const asked = {
+    capability: "game.start",
+    principal: Principals.self(null),
+  };
+
+  it("are provided before any module runs, and stay with the module off", async () => {
+    const store = await openStore("memory://");
+    core = await buildCoreWith(catalog(), config("[modules.directive]\nenabled = false\n"), {
+      store,
+    });
+    const rules = core.services.get(DirectivesKey);
+    expect(rules?.healthy).toBe(true);
+    expect((await rules?.add(stopGames))?.status).toBe("added");
+    expect(await rules?.check(asked)).toMatchObject({ outcome: "deny" });
+  });
+
+  it("what the store holds is in force from the first moment of a boot", async () => {
+    const store = await openStore("memory://");
+    await store.directives.insert("deepseek-chan", {
+      id: "r1",
+      issuer: { platform: "discord", id: "1" },
+      authority: "owner",
+      scope: stopGames.scope,
+      effect: "deny",
+      text: stopGames.text,
+      expires: "until_revoked",
+      source_event: "msg:m1",
+      created_at: toTimestamp(Date.now()),
+    });
+    core = await buildCoreWith(catalog(), config(), { store });
+    const rules = core.services.get(DirectivesKey);
+    expect(rules?.inject(null).join("")).toContain("不要玩遊戲");
+    expect(await rules?.check(asked)).toMatchObject({ outcome: "deny", directive: "r1" });
+  });
+});
+
 describe("buildCore", () => {
+  it("moderation is up before anything that can say a word", async () => {
+    const order = MODULE_IDS.indexOf("moderation");
+    expect(order).toBe(MODULE_IDS.indexOf("facts") + 1);
+    expect(order).toBeLessThan(MODULE_IDS.indexOf("agent"));
+    expect(order).toBeLessThan(MODULE_IDS.indexOf("voice"));
+  });
+
   it("registers_services_and_modules_in_legacy_order", async () => {
     const seen: { deps?: ModuleDeps } = {};
     const register = vi.spyOn(Supervisor.prototype, "register");

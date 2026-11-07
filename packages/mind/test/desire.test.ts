@@ -148,3 +148,112 @@ describe("the desire list", () => {
     expect(rankDesires(inputs({ affect: null }))).toEqual([]);
   });
 });
+
+describe("wishes from her emotions", () => {
+  const wants = (...w: AffectSnapshot["biases"]["wants"]) =>
+    affect({ biases: { talkativeness: 0, initiative: 0, wants: w } });
+
+  it("say which feeling it is", () => {
+    const [top] = rankDesires(
+      inputs(
+        {
+          affect: wants({
+            want: "chat_with",
+            weight: 0.7,
+            person: "Owen",
+            why: "難過,想有人陪",
+            from: "sorrow",
+          }),
+          cards: [card("Owen", 0.8)],
+        },
+        { Owen: "online" },
+      ),
+    );
+    expect(top).toMatchObject({ want: "chat_with", person: "Owen" });
+    expect(top?.why).toContain("哀");
+    expect(top?.why).not.toContain("寂寞");
+  });
+
+  it("an emotion's wish for something new is listed in words", () => {
+    const [top] = rankDesires(
+      inputs({
+        affect: wants({
+          want: "explore",
+          weight: 0.5,
+          person: null,
+          why: "想換件事做",
+          from: "disgust",
+        }),
+      }),
+    );
+    expect(top).toMatchObject({ want: "explore", label: "找點新鮮事", why: "想換件事做" });
+  });
+
+  it("missing someone without a card's feeling still counts", () => {
+    const [top] = rankDesires(
+      inputs(
+        {
+          affect: wants({
+            want: "find_person",
+            weight: 0.8,
+            person: "Owen",
+            why: "想念對方",
+            from: "missing",
+          }),
+          cards: [card("Owen", 0.8)],
+        },
+        { Owen: "online" },
+      ),
+    );
+    expect(top?.why).toContain("想念 0.7");
+  });
+
+  it("resentment takes her away from someone, not from what she decided", () => {
+    const chat = {
+      want: "chat_with",
+      weight: 0.8,
+      person: "Owen",
+      why: "寂寞,想找人聊天",
+      from: "lonely" as const,
+    };
+    const fine = inputs({ affect: wants(chat), cards: [card("Owen", 0.9)] }, { Owen: "online" });
+    const cross = inputs(
+      {
+        affect: wants(chat),
+        cards: [{ ...card("Owen", 0.9), emotions: { resentment: 1 } }],
+      },
+      { Owen: "online" },
+    );
+    const weight = (i: DesireInputs) => rankDesires(i)[0]?.weight ?? 0;
+    expect(weight(cross)).toBeLessThan(weight(fine) * 0.5);
+
+    const goal = {
+      id: "G1",
+      what: "問 Owen 那件事",
+      person: "Owen",
+      why: "",
+      trigger: { kind: "whenever" },
+    } as unknown as Goal;
+    const kept = rankDesires({ ...cross, affect: affect(), goals: [goal] });
+    expect(kept.find((d) => d.goal === "G1")?.weight).toBe(0.35);
+  });
+
+  it("no feeling lists someone blocked as who to go to", () => {
+    const desires = rankDesires(
+      inputs(
+        {
+          affect: wants({
+            want: "chat_with",
+            weight: 0.9,
+            person: null,
+            why: "寂寞,想找人聊天",
+            from: "lonely",
+          }),
+          cards: [{ ...card("Troll", 0.9), blocked: true }],
+        },
+        { Troll: "voice" },
+      ),
+    );
+    expect(desires.every((d) => d.person !== "Troll")).toBe(true);
+  });
+});

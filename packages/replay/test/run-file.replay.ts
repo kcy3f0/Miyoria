@@ -13,6 +13,7 @@ it("replays the log", async () => {
   const seed = Number(process.env.MIYORIA_REPLAY_SEED ?? "1");
   try {
     const run = await replay(parseReplayLog(readFileSync(file, "utf8")), {
+      pipeline: process.env.MIYORIA_PIPELINE === "v2" ? "v2" : "v3",
       seed: Number.isFinite(seed) ? seed : 1,
       clock: {
         setNow: (ms) => {

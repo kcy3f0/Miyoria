@@ -1,7 +1,10 @@
+import { EventLogService } from "@miyoria/facts";
 import { Supervisor } from "@miyoria/kernel";
 import { MemorySettingsStore, SettingsStoreKey } from "@miyoria/store";
 import {
   type AccountRef,
+  type AffectState,
+  AffectStateKey,
   ARBITER_DECISION_TOPIC,
   ARBITER_IMPULSE_TOPIC,
   type ArbiterDecision,
@@ -9,12 +12,19 @@ import {
   type Attitude,
   type ContextKey,
   type Event,
+  EventLogKey,
+  FloorKey,
   type Followup,
   type FollowupSource,
   FollowupSourceKey,
   ImpulseHostKey,
   type JsonValue,
+  type NewProposal,
   newImpulse,
+  PipelineKey,
+  ProposalBoardKey,
+  type SelfState,
+  SelfStateKey,
   type SocialSignals,
   SocialSignalsKey,
   toTimestamp,
@@ -211,5 +221,144 @@ describe("ArbiterModule", () => {
     expect(limits?.initiative_cap).toBe(7);
     expect(limits?.quiet_hours?.start_hour).toBe(2);
     await h.sup.stopAll();
+  });
+});
+
+describe("the Floor's module (pipeline v3)", () => {
+  async function floorRig(config: JsonValue = null) {
+    const sup = new Supervisor();
+    const log = new EventLogService({ profile: "p", store: null });
+    const proposals: NewProposal[] = [];
+    const social = new FakeSocial();
+    social.set("a", "朋友", 60);
+    const followups = new FakeFollowups();
+    const host = new FakeHost();
+    sup.services.provide("app", PipelineKey, { pipeline: "v3" as const });
+    sup.services.provide("app", EventLogKey, log);
+    sup.services.provide("app", SocialSignalsKey, social);
+    sup.services.provide("app", FollowupSourceKey, followups);
+    sup.services.provide("app", ImpulseHostKey, host);
+    sup.services.provide("app", ProposalBoardKey, {
+      propose: async (p) => {
+        proposals.push(p);
+        return { id: "x", state: "open", detail: "", turn: null };
+      },
+      open: () => [],
+    });
+    await sup.register(new ArbiterModule("p"), config, true);
+    await sup.startAll();
+    return { sup, log, proposals, followups, host, social };
+  }
+
+  it("provides the Floor; V2 does not", async () => {
+    const r = await floorRig();
+    expect(r.sup.services.get(FloorKey)).toBeDefined();
+    await r.sup.stopAll();
+    const v2 = new Supervisor();
+    await v2.register(new ArbiterModule("p"), null, true);
+    await v2.startAll();
+    expect(v2.services.get(FloorKey)).toBeUndefined();
+    await v2.stopAll();
+  });
+
+  it("her feelings reach the budget as a weight, her own setting stays apart", async () => {
+    const r = await floorRig();
+    const snapshot = { biases: { talkativeness: 0 } };
+    const talk = { level: 0.5 };
+    r.sup.services.provide("app", AffectStateKey, {
+      snapshot: () => snapshot,
+    } as unknown as AffectState);
+    r.sup.services.provide("app", SelfStateKey, {
+      talkativeness: () => ({ level: talk.level, scope: "x" }),
+    } as unknown as SelfState);
+    const floor = r.sup.services.require(FloorKey);
+    const allowed = () => floor.budget(voiceCtx("v")).allowed;
+    expect(allowed()).toBe(6);
+    snapshot.biases.talkativeness = 0.4;
+    expect(allowed()).toBe(7);
+    snapshot.biases.talkativeness = -0.4;
+    expect(allowed()).toBe(3);
+    // She set herself to quiet: a bad mood halves that, and no less than a line.
+    talk.level = 0.1;
+    expect(allowed()).toBe(1);
+    await r.sup.stopAll();
+  });
+
+  it("a greeting is an Observation: it reaches her through the Floor, not as an impulse", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const r = await floorRig();
+    r.sup.bus.publish("t", {
+      type: "platform_ready",
+      data: { platform: "test", self_account: acct("me") },
+    });
+    r.sup.bus.publish("t", message(textCtx("c1"), "a", T0));
+    await vi.advanceTimersByTimeAsync(10);
+    const seen = r.log.recent(50).filter((e) => e.source === "world.greeting");
+    expect(seen).toHaveLength(1);
+    expect(r.host.opened.map((i) => i.claim)).toEqual(["notable"]);
+    await r.sup.stopAll();
+  });
+
+  it("a due followup is a Proposal", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const r = await floorRig({ tick_secs: 1 });
+    r.followups.due_.push({
+      id: "f1",
+      person: null,
+      context: textCtx("c1"),
+      about: "問他報告",
+      due_at: toTimestamp(T0),
+    } as unknown as Followup);
+    r.sup.bus.publish("t", message(textCtx("c1"), "b", T0));
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(r.proposals.map((p) => [p.source, p.what])).toEqual([["memory", "問他報告"]]);
+    expect(r.followups.done).toEqual(["f1"]);
+    expect(r.host.opened).toEqual([]);
+    await r.sup.stopAll();
+  });
+
+  it("a notable game observation asks for the mic; an ambient one does not", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const r = await floorRig();
+    const observation = (salience: "ambient" | "notable", key: string) => ({
+      source: "game.minecraft",
+      silent: salience === "ambient",
+      salience,
+      attention_key: key,
+      revision: 1,
+      summary: key,
+      addressed_to_her: false,
+      from: null,
+      context: voiceCtx("v1"),
+    });
+    r.log.observe(observation("ambient", "game:tick"));
+    r.log.observe(observation("notable", "game:craft:stone_pickaxe"));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(r.host.opened.map((i) => i.attention?.key)).toEqual(["game:craft:stone_pickaxe"]);
+    await r.sup.stopAll();
+  });
+
+  it("an act impulse has nothing to run it: only a turn acts", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const r = await floorRig();
+    const decision = await r.sup.services.require(ArbiterKey).submit(
+      newImpulse(
+        {
+          source: "game",
+          kind: "act",
+          context: textCtx("c1"),
+          capability: "game.act",
+          ttlMs: MIN,
+          why: "",
+        },
+        T0,
+      ),
+    );
+    expect(decision.verdict).toBe("rejected");
+    await r.sup.stopAll();
   });
 });

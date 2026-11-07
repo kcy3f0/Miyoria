@@ -1,5 +1,6 @@
 import type { ContextKey } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
+import { MainLineConfigSchema } from "../src/config.js";
 import {
   AgentConfigSchema,
   activenessFor,
@@ -101,6 +102,7 @@ describe("config", () => {
       typing_extend_ms: 2500,
       max_debounce_ms: 4000,
       history_after_fold: 25,
+      mainline: MainLineConfigSchema.parse({}),
       history_limit: 50,
       prompt_history: 30,
       max_prompt_chars: 16_000,
@@ -142,6 +144,7 @@ describe("config", () => {
       voice: {
         debounce_ms: 700,
         direct_debounce_ms: 400,
+        turn_debounce_ms: 100,
         max_debounce_ms: 2500,
         default_mode: "normal",
         max_share_of_recent: 0.2,

@@ -36,8 +36,10 @@ export async function gather(
   request: PromptRequest,
   timeoutMs: number,
   signal: AbortSignal,
+  /** Contributors not to ask: the main line reads what they would say from elsewhere. */
+  skip: readonly string[] = [],
 ): Promise<Gathered> {
-  const contributors = registry.all();
+  const contributors = registry.all().filter((c) => !skip.includes(c.key));
   const out = new Gathered();
   if (contributors.length === 0) return out;
   const results = await Promise.all(contributors.map((c) => ask(c, request, timeoutMs, signal)));

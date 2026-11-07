@@ -14,6 +14,8 @@ import {
   type Event,
   GoalAgendaKey,
   type JsonValue,
+  type NewProposal,
+  ProposalBoardKey,
   toTimestamp,
   WorldStateKey,
 } from "@miyoria/types";
@@ -21,7 +23,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { GoalBook, Journal, MindLoop, mindConfig, ruleDigest } from "../src/index.js";
 import { callKind, card, FakeAffect, FakeArbiter, ScriptedProvider, texts } from "./fakes.js";
-import { FakeWorld, OWEN, rig, stopRigs, wait } from "./helpers.js";
+import { FakeWorld, OWEN, rig, salient, stopRigs, wait } from "./helpers.js";
 
 afterEach(async () => {
   await stopRigs();
@@ -322,5 +324,53 @@ describe("a synthetic day", () => {
     expect(owen.some((i) => i.source === "agenda")).toBe(true);
     // Far fewer calls than a 3-minute heartbeat (480 a day).
     expect(provider.requests().length).toBeLessThan(20);
+  });
+});
+
+describe("her Plan under the main line (pipeline v3)", () => {
+  it("decides what she wants and writes it down; it runs nothing, and opens no turn", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse("2026-11-02T12:30:00.000Z"));
+    const proposals: NewProposal[] = [];
+    const arbiter = new FakeArbiter();
+    const provider = new ScriptedProvider(() =>
+      JSON.stringify({
+        thought: "好想進語音。",
+        impulses: [
+          {
+            kind: "act",
+            capability: "voice.join",
+            person: null,
+            place: null,
+            args: { channel: "v1", guild: "g1" },
+            why: "想找大家",
+            hint: "我來了",
+          },
+        ],
+      }),
+    );
+    const r = await rig(provider, {
+      arbiter,
+      extra: (sup) => {
+        sup.services.provide("app", ProposalBoardKey, {
+          propose: async (p) => {
+            proposals.push(p);
+            return { id: p.id ?? "", state: "taken", detail: "", turn: "t1" };
+          },
+          open: () => [],
+        });
+      },
+    });
+    r.publish(salient("想做點事"));
+    await wait(10_000);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({
+      capability: "voice.join",
+      why: "想找大家",
+      what: "我來了",
+      source: "plan",
+    });
+    expect(arbiter.impulses).toEqual([]);
+    expect(r.intents.intents).toEqual([]);
   });
 });

@@ -125,6 +125,52 @@ function notice(context: ContextKey): Event {
   } as unknown as JsonValue);
 }
 
+describe("the debounce after a turn a model judged over", () => {
+  function judged(who: string, text: string): Event {
+    const event = utterance(who, text);
+    if (event.type === "voice_utterance") {
+      event.data.turn = { ended_by: "turn", probability: 0.9 };
+    }
+    return event;
+  }
+
+  it("starts her turn at once instead of waiting to see if they go on", async () => {
+    const mock = new MockProvider("chat").reply("好啊。");
+    const h = await Harness.create("always", voiceConfig("always"), mock);
+    h.publish(joined());
+    await wait(50);
+    h.publish(judged("Owen", "你覺得這個怎麼樣"));
+    await wait(200);
+    expect(mock.requests()).toHaveLength(1);
+  });
+
+  it("a turn nobody judged waits the whole debounce", async () => {
+    const mock = new MockProvider("chat").reply("好啊。");
+    const h = await Harness.create("always", voiceConfig("always"), mock);
+    h.publish(joined());
+    await wait(50);
+    h.publish(utterance("Owen", "你覺得這個怎麼樣"));
+    await wait(200);
+    expect(mock.requests()).toHaveLength(0);
+    await wait(700);
+    expect(mock.requests()).toHaveLength(1);
+  });
+
+  it("the speaker who still talks keeps the turn open, for the short wait at a time", async () => {
+    const mock = new MockProvider("chat").reply("好啊。");
+    const h = await Harness.create("always", voiceConfig("always"), mock);
+    h.publish(joined());
+    await wait(50);
+    h.publish(speaking("Owen", true));
+    h.publish(judged("Owen", "你覺得這個怎麼樣"));
+    await wait(300);
+    expect(mock.requests()).toHaveLength(0);
+    h.publish(speaking("Owen", false));
+    await wait(150);
+    expect(mock.requests()).toHaveLength(1);
+  });
+});
+
 describe("keep_in_voice", () => {
   const general: ContextKey = { platform: "test", scope: "guild", channel: "g", kind: "channel" };
 

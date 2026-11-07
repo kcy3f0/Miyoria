@@ -3,6 +3,11 @@ import { MemorySettingsStore } from "@miyoria/store";
 import {
   AffectStateKey,
   customEvent,
+  DIRECTIVE_CHANGED_TOPIC,
+  type Directive,
+  type DirectiveGoal,
+  type Directives,
+  DirectivesKey,
   type Event,
   GoalAgendaKey,
   type JsonValue,
@@ -13,7 +18,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GOAL_PREFIX, type MindLoop, THOUGHT_PREFIX } from "../src/index.js";
 import { callKind, ScriptedProvider, texts } from "./fakes.js";
-import { OWEN, rig, salient, stopRigs, TEXT, VOICE, wait } from "./helpers.js";
+import { OWEN, type Rig, rig, salient, stopRigs, TEXT, VOICE, wait } from "./helpers.js";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -357,5 +362,57 @@ describe("mind module: Appraise", () => {
     await wait(5 * MIN);
     expect(provider.requests().filter((q) => callKind(q) === "appraise")).toHaveLength(0);
     void VOICE;
+  });
+});
+
+describe("a rule on her goals (§9)", () => {
+  const goals = (r: Rig) => r.sup.services.require(GoalAgendaKey);
+  const later = {
+    trigger: { kind: "whenever" },
+    expires: toTimestamp(Date.now() + 86_400_000),
+    source: "plan",
+  } as const;
+
+  async function ruled(forbids: (goal: DirectiveGoal) => Directive | null) {
+    return rig(new MockProvider("p").reply("{}"), {
+      extra: (sup) =>
+        sup.services.provide("app", DirectivesKey, { forbids } as unknown as Directives),
+    });
+  }
+
+  const added = (effect: string, text = "不要玩 Minecraft") =>
+    customEvent(DIRECTIVE_CHANGED_TOPIC, {
+      op: "add",
+      text,
+      directive: { effect, text },
+      by: "discord:1",
+    });
+
+  it("a deny drops what it forbids and nothing else, with why", async () => {
+    const r = await ruled((goal) =>
+      goal.what.includes("Minecraft") ? ({ text: "不要玩 Minecraft" } as Directive) : null,
+    );
+    const book = goals(r);
+    const mc = book.add({ what: "玩 Minecraft", why: "想玩", ...later });
+    book.add({ what: "找 Owen 聊天", why: "想他", ...later });
+    r.publish(added("deny"));
+    await wait(10);
+    expect(book.goals().map((g) => g.what)).toEqual(["找 Owen 聊天"]);
+    expect(book.goal(mc.id)).toMatchObject({
+      status: "dropped",
+      close_reason: "規則:不要玩 Minecraft",
+    });
+  });
+
+  it("anything but a new deny leaves her goals alone", async () => {
+    const r = await ruled(() => ({ text: "x" }) as Directive);
+    const book = goals(r);
+    book.add({ what: "玩 Minecraft", why: "想玩", ...later });
+    r.publish(added("avoid"));
+    r.publish(
+      customEvent(DIRECTIVE_CHANGED_TOPIC, { op: "remove", text: "", directive: null, by: "x" }),
+    );
+    await wait(10);
+    expect(book.goals()).toHaveLength(1);
   });
 });

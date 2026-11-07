@@ -6,9 +6,18 @@ export {
   type ArbiterConfig,
   ArbiterConfigSchema,
   arbiterConfig,
+  type FloorConfig,
+  FloorConfigSchema,
   INITIATIVE_KEYS,
   isContextDisabled,
 } from "./config.js";
+export {
+  FLOOR_SOURCE,
+  FloorCore,
+  type FloorEnv,
+  type FloorRefusal,
+  type FloorTurnBody,
+} from "./floor.js";
 export {
   type IgnoredTopic,
   Ledger,

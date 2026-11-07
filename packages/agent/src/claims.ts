@@ -20,6 +20,10 @@ export interface Claim {
   tool: string;
   request: ActivityRequestType;
   said: RegExp;
+  /** Saying it is done (or that she is in that state). */
+  finished: RegExp;
+  /** Saying she is about to do it. */
+  promised: RegExp;
   /** Her state already is what she says (nothing to do, nothing false). */
   holds(scope: ToolScope): boolean;
 }
@@ -30,15 +34,19 @@ const NOT_REFUSED = "(?<!不要再|別再|不再|不要|別|不|沒)";
 const PROMISE = "(?:我|馬上|這就|現在就|重新|再試一次|再)(?:去|來|就|先)?";
 
 /** Saying she did it (`done`), or that she is about to (`act`, after a `PROMISE`). */
-function said(done: string, act: string): RegExp {
-  return new RegExp(`${NOT_REFUSED}(?:${done}|${PROMISE}(?:${act}))`);
+function said(done: string, act: string): Pick<Claim, "said" | "finished" | "promised"> {
+  return {
+    said: new RegExp(`${NOT_REFUSED}(?:${done}|${PROMISE}(?:${act}))`),
+    finished: new RegExp(`${NOT_REFUSED}(?:${done})`),
+    promised: new RegExp(`${NOT_REFUSED}${PROMISE}(?:${act})`),
+  };
 }
 
 export const CLAIMS: readonly Claim[] = [
   {
     tool: "voice_join",
     request: "ensure_voice",
-    said: said(
+    ...said(
       "游過去|游去了|進語音了|進去語音|加入語音了|過去語音|我(?:人)?(?:就|已經|現在)?在語音",
       "進語音|上語音|回語音|加入語音|進一次",
     ),
@@ -47,31 +55,31 @@ export const CLAIMS: readonly Claim[] = [
   {
     tool: "voice_leave",
     request: "leave_voice",
-    said: said("離開語音了|退出語音了|游走了|先下語音", "離開語音|下語音|退出語音"),
+    ...said("離開語音了|退出語音了|游走了|先下語音", "離開語音|下語音|退出語音"),
     holds: (s) => !s.inVoice,
   },
   {
     tool: "stream_start",
     request: "ensure_live",
-    said: said("開台了|開播了|開始直播了", "開台|開播"),
+    ...said("開台了|開播了|開始直播了", "開台|開播"),
     holds: (s) => s.live,
   },
   {
     tool: "stream_stop",
     request: "stop_live",
-    said: said("關台了|下播了|結束直播了", "關台|下播"),
+    ...said("關台了|下播了|結束直播了", "關台|下播"),
     holds: (s) => !s.live,
   },
   {
     tool: "game_stop",
     request: "stop",
-    said: said("不玩了|先不玩|收掉|關掉遊戲|關遊戲了", "關遊戲|關麥塊|收麥塊"),
+    ...said("不玩了|先不玩|收掉|關掉遊戲|關遊戲了", "關遊戲|關麥塊|收麥塊"),
     holds: (s) => s.game === null,
   },
   {
     tool: "game_start",
     request: "start",
-    said: said("開遊戲了|開始玩了|開好遊戲", "開遊戲|開麥塊|開 ?Minecraft"),
+    ...said("開遊戲了|開始玩了|開好遊戲", "開遊戲|開麥塊|開 ?Minecraft"),
     holds: (s) => s.game !== null,
   },
 ];

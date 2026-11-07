@@ -4,6 +4,7 @@
 // file stays testable with fake modules and an in-memory store.
 
 import { ActionsModule, ActuatorRegistry, ActuatorRegistryKey } from "@miyoria/actions";
+import { DirectiveModule, DirectiveService } from "@miyoria/directive";
 import {
   type Config,
   EventBus,
@@ -36,9 +37,12 @@ import {
 import { ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
 import {
   ActuatorExecutorKey,
+  customEvent,
+  DirectivesKey,
   HandleDirectoryKey,
   type JsonValue,
   KERNEL_MODULE,
+  PipelineKey,
   PlatformHistories,
   PlatformHistoriesKey,
   PlatformSinks,
@@ -47,16 +51,18 @@ import {
   ProfileIdKey,
   PromptContributors,
   PromptContributorsKey,
+  SYSTEM_SHUTDOWN_TOPIC,
 } from "@miyoria/types";
 import { CliPlatform, type CliPlatformOptions } from "./cli-platform.js";
 import { moduleEnabled, NEEDS_TOKEN } from "./module-ids.js";
 import { RecorderModule } from "./recorder.js";
-import { databaseUrl, loadProfile, resolveDatabaseUrl } from "./settings.js";
+import { databaseUrl, loadProfile, pipeline, resolveDatabaseUrl } from "./settings.js";
 
 const log = getLogger("core.boot");
 
 /** Source of the gate's `gate.decision` events. */
 const ACTIONS_MODULE = ActionsModule.ID;
+const DIRECTIVE_MODULE = DirectiveModule.ID;
 
 /** What the module factories get. */
 export interface ModuleDeps {
@@ -162,6 +168,8 @@ export class Core {
 
   /** Stops every module and closes the store. */
   async stop(): Promise<void> {
+    // What modules say from here on is the core going down, not something that happened.
+    this.bus.publish(KERNEL_MODULE, customEvent(SYSTEM_SHUTDOWN_TOPIC, {}));
     await this.supervisor.stopAll();
     this.#persist.abort();
     await this.#persistTask;
@@ -193,6 +201,7 @@ export async function buildCoreWith(
   }
 
   const k = KERNEL_MODULE;
+  services.provide(k, PipelineKey, { pipeline: pipeline(config) });
   services.provide(k, PlatformSinksKey, new PlatformSinks());
   services.provide(k, PlatformHistoriesKey, new PlatformHistories());
   services.provide(k, SupervisorKey, supervisor);
@@ -246,6 +255,16 @@ export async function buildCoreWith(
   } catch (error) {
     log.warn({ err: errorMessage(error) }, "cannot repair per-call codes in stored text");
   }
+
+  // The rules hold from before the first module starts, and with the `directive` module off.
+  const directives = new DirectiveService({
+    services,
+    store: store.directives,
+    profile: profileId,
+    publish: (event) => bus.publish(DIRECTIVE_MODULE, event),
+  });
+  await directives.refresh();
+  services.provide(k, DirectivesKey, directives);
 
   const deps: ModuleDeps = { config, profile, profileId, store, baseDir };
   catalog.provideServices?.(services, deps);

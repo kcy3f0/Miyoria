@@ -16,6 +16,7 @@ import {
   AFFECT_CHANGED_TOPIC,
   type Clock,
   customEvent,
+  DIRECTIVE_CHANGED_TOPIC,
   dataBlock,
   GOAL_TOPIC,
   GoalAgendaKey,
@@ -64,6 +65,7 @@ export const MIND_TOPICS = [
   ACTIVITY_DONE_TOPIC,
   ACTIVITY_FAILED_TOPIC,
   AFFECT_CHANGED_TOPIC,
+  DIRECTIVE_CHANGED_TOPIC,
 ];
 
 /**

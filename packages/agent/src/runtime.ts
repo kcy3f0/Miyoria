@@ -7,8 +7,12 @@
 import { errorMessage, type Logger, type ModuleContext, type Subscription } from "@miyoria/kernel";
 import type { ToolRegistry } from "@miyoria/tools";
 import {
+  ACTION_SETTLED_TOPIC,
+  ACTIVITY_DONE_TOPIC,
+  ACTIVITY_FAILED_TOPIC,
   type AccountRef,
   type ActionId,
+  ActuatorExecutorKey,
   ARBITER_IMPULSE_TOPIC,
   ArbiterKey,
   type Attitude,
@@ -16,14 +20,22 @@ import {
   type ConversationFacts,
   customEvent,
   type Envelope,
+  type EventData,
+  type FloorClaimKind,
   type Handle,
   HandleDirectoryKey,
+  holdsBack,
   type Impulse,
+  type ImpulseAttention,
   type ImpulseRun,
   type ImpulseSource,
   type IncomingMessage,
+  type InputVerdict,
   type Intent,
+  type InterruptLevel,
   impulseReason,
+  incomingText,
+  inspectInput,
   isJsonObject,
   type JsonValue,
   type Mood,
@@ -34,6 +46,7 @@ import {
   newImpulse,
   type PlatformId,
   type PlaybackState,
+  pipelineOf,
   type SavedPrompt,
   SelfStateKey,
   type SocialSignals,
@@ -58,6 +71,7 @@ import { TurnFocusBoard } from "./focus.js";
 import type { AgentHandle } from "./handle.js";
 import { startBackfill } from "./history.js";
 import { type Ceiling, ceilingFor, UNCAPPED_INITIATIVES } from "./levels.js";
+import { type Chain, heardPart, heardShare, MainLine } from "./mainline/main.js";
 import { agentTurns } from "./metrics.js";
 import type { PersonaHandle } from "./persona.js";
 import { Session } from "./session.js";
@@ -87,6 +101,11 @@ export interface Initiative {
   reason: string;
   hint: string;
   about: AccountRef[];
+  /** Main line: what the claim is about, its row of §7.1 and what it continues. */
+  attention?: ImpulseAttention | null;
+  claim?: FloorClaimKind;
+  chain?: Chain | null;
+  proposal?: { id: string; tool: string | null } | null;
 }
 
 /**
@@ -128,6 +147,10 @@ export interface IntentTurn {
    * itself, so checking again would see that start).
    */
   gated?: boolean;
+  /** Main line: the tool that would carry the proposal out. */
+  tool?: string | null;
+  /** Main line: she may act on it but not talk (nobody is there, or her budget is spent). */
+  muted?: boolean;
 }
 
 export type Input =
@@ -144,7 +167,11 @@ export type Input =
    */
   | { type: "initiative"; initiative: Initiative; reply?: (run: ImpulseRun) => void }
   /** Start a turn she decided on (principal `self`, with tools) once the context is free. */
-  | { type: "intent"; intent: IntentTurn };
+  | { type: "intent"; intent: IntentTurn }
+  /** Main line: a claim cuts into her speech here, this hard (§7.3). */
+  | { type: "yield"; level: InterruptLevel }
+  /** The emergency stop: the turn in flight and everything waiting here ends. */
+  | { type: "halt" };
 
 /** Unbounded queue from the event loop to one coordinator (Rust `mpsc` channel). */
 export class Inbox {
@@ -230,6 +257,8 @@ export class Agent {
   readonly #barges = new Map<TurnId, Handle | null>();
   /** Written sentences of lines she spoke first, by turn: spoken line → subtitle. */
   readonly #subtitles = new Map<TurnId, Map<string, string>>();
+  /** `pipeline = "v3"`: the one foreground decider. `null`: the V2 paths. */
+  readonly mainline: MainLine | null;
 
   constructor(
     readonly ctx: ModuleContext,
@@ -249,14 +278,34 @@ export class Agent {
       (focus) => ctx.publish(v2Event(TURN_FOCUS_TOPIC, focus), { turn: focus.turn }),
     );
     this.prompts = new SavedPrompts(config.prompt.saved);
+    this.mainline = pipelineOf(ctx.services) === "v3" ? new MainLine(this) : null;
   }
 
   get log(): Logger {
     return this.ctx.log;
   }
 
-  static topics(): string[] {
+  /** The emergency stop is on: she remembers what she hears and answers nothing. */
+  get muted(): boolean {
+    return this.ctx.services.get(ActuatorExecutorKey)?.paused === true;
+  }
+
+  /** `TurnSilencer`. */
+  silence(why: string): void {
+    const floor = this.mainline?.floor();
+    for (const handle of this.#contexts.values()) {
+      handle.inbox.push({ type: "halt" });
+      floor?.releaseContext(handle.session.context, why);
+    }
+    this.#arrivals.clear();
+    this.mainline?.silence();
+  }
+
+  static topics(mainline = false): string[] {
     return [
+      ...(mainline
+        ? [ACTION_SETTLED_TOPIC, ACTIVITY_DONE_TOPIC, ACTIVITY_FAILED_TOPIC, "game.*", "sing.*"]
+        : []),
       "platform.ready",
       "platform.message.created",
       "platform.typing",
@@ -290,6 +339,7 @@ export class Agent {
         break;
       }
       case "platform_message_created":
+        this.mainline?.noteCause(event.data.id.id, env.id);
         this.#onMessage(event.data);
         break;
       case "platform_typing":
@@ -308,6 +358,8 @@ export class Agent {
         if (!this.#isVoice(context)) break;
         this.log.debug({ context: contextId(context), reason }, "left voice, session dropped");
         this.handle.setVoiceRoom(context, false);
+        this.mainline?.lines.dropContext(context, "she left the voice channel");
+        this.mainline?.floor()?.releaseContext(context, "she left the voice channel");
         // Closing the inbox stops the coordinator (and its turn).
         const id = contextId(context);
         this.#contexts.get(id)?.inbox.close();
@@ -325,13 +377,12 @@ export class Agent {
         break;
       }
       case "voice_utterance":
+        this.mainline?.noteCause(event.data.id, env.id);
         if (this.#isVoice(event.data.context)) this.#onUtterance(event.data);
         break;
-      case "voice_playback": {
-        const { context, turn, state, text } = event.data;
-        if (this.#isVoice(context)) this.#onPlayback(context, turn, state, text);
+      case "voice_playback":
+        if (this.#isVoice(event.data.context)) this.#onPlayback(event.data);
         break;
-      }
       case "action_completed": {
         const { action, ok } = event.data;
         const session = this.#pendingActions.get(action);
@@ -350,6 +401,7 @@ export class Agent {
         break;
       }
       case "custom":
+        if (this.mainline?.custom(event.data.topic, event.data.payload)) break;
         if (event.data.topic === BUDGET_TOPIC) this.#onBudget(event.data.payload);
         else if (event.data.topic === BARGE_IN_TOPIC) this.#onBargeIn(event.data.payload);
         else if (event.data.topic === ARBITER_IMPULSE_TOPIC) {
@@ -397,11 +449,36 @@ export class Agent {
     }
     const isSelf = this.isSelf(msg.author.account);
     const ignored = isSelf || (msg.author.is_bot && !this.config.respond_to_bots);
+    const verdict = isSelf ? null : this.#inspect(msg, "chat");
+    if (verdict?.action === "ignore") return;
     const cold = this.#existing(msg.id.context) === undefined;
     const handle = this.#context(msg.id.context);
     if (cold) startBackfill(this, handle.session, msg);
     handle.session.recordMessage(msg, isSelf);
-    if (!ignored) handle.inbox.push({ type: "message", message: msg });
+    this.#take(handle, msg, verdict, ignored);
+  }
+
+  /** What the input defence says of `msg` (the same verdict wherever it is asked). */
+  #inspect(msg: IncomingMessage, source: "chat" | "voice"): InputVerdict | null {
+    return inspectInput(this.ctx.services, {
+      id: msg.id.id,
+      text: incomingText(msg),
+      source,
+      author: msg.author.account,
+      context: msg.id.context,
+    });
+  }
+
+  /** A recorded message: flagged as the verdict says, and whether it may start a turn. */
+  #take(
+    handle: ContextHandle,
+    msg: IncomingMessage,
+    verdict: InputVerdict | null,
+    ignored: boolean,
+  ): void {
+    if (verdict?.note) handle.session.flag(msg.id.id, verdict.note);
+    if (ignored || holdsBack(verdict) || this.muted) return;
+    handle.inbox.push({ type: "message", message: msg });
   }
 
   /**
@@ -452,7 +529,11 @@ export class Agent {
    * is free. Returns why it cannot, or `null` when delivered.
    */
   deliverIntent(context: ContextKey, input: IntentTurn): string | null {
-    const why = input.gated ? null : this.#intentBlocked(context);
+    const why = this.muted
+      ? "the emergency stop"
+      : input.gated
+        ? null
+        : this.#intentBlocked(context);
     if (why !== null) {
       this.intentSkipped(context, input, why);
       return why;
@@ -643,6 +724,8 @@ export class Agent {
     list.push({ ...notice, context });
     while (list.length > MAX_NOTICES) list.shift();
     this.#notices.set(id, list);
+    // What the hands follow they report themselves, with the line that may be waiting for it.
+    if (this.mainline?.hands.follows(notice.task)) return;
     if (context !== null) {
       this.#onInitiative(context, { reason: "notice", hint: "", about: [] });
     }
@@ -714,32 +797,52 @@ export class Agent {
     this.handle.setVoiceRoom(utterance.context, true);
     const msg = utteranceMessage(utterance);
     const ignored = msg.author.is_bot && !this.config.respond_to_bots;
+    const verdict = this.#inspect(msg, "voice");
+    if (verdict?.action === "ignore") return;
     const handle = this.#context(utterance.context);
     handle.session.recordUtterance(msg);
-    if (!ignored) handle.inbox.push({ type: "message", message: msg });
+    this.#take(handle, msg, verdict, ignored);
   }
 
   /** Her own speech enters history once it starts playing. */
-  #onPlayback(context: ContextKey, turn: TurnId | null, state: PlaybackState, text: string): void {
+  #onPlayback(playback: EventData<"voice_playback">): void {
+    const { context, turn, state, text, blocked = null } = playback;
+    const heardMs = this.mainline?.lines.playback(context, turn, state, text, blocked) ?? 0;
     const h = this.#existing(context);
     if (!h) return;
     const name = this.persona.displayName();
     const me = this.selfAccount(context.platform);
     const now = this.ctx.clock.now();
+    const written = this.#written(turn, text);
     switch (state) {
       case "started":
-        h.session.recordSpeech(name, me, this.#written(turn, text), turn, now);
+        h.session.recordSpeech(name, me, written, turn, now);
         break;
       case "interrupted":
-        h.session.recordInterruption(name, me, this.#written(turn, text), turn, now);
+        h.session.recordInterruption(name, me, written, turn, now);
+        // History keeps what was really heard (§7.3), not what she meant to say.
+        if (this.mainline)
+          h.session.keepHeard(turn, written, this.#heard(written, playback, heardMs));
         break;
       case "finished":
         h.session.noteSelfSpoke(now);
         break;
       case "failed":
+        if (this.mainline) h.session.keepHeard(turn, written, "");
         break;
     }
     if (turn !== null) h.inbox.push({ type: "playback", turn, state });
+  }
+
+  /**
+   * What was heard of a line cut off: voice's measure of the audio, or how long ago it started
+   * at the rate speech usually goes, from a publisher that does not say.
+   */
+  #heard(written: string, playback: EventData<"voice_playback">, sinceStart: number): string {
+    const text = written.trim();
+    const { heard_ms: ms = null, total_ms: total = null } = playback;
+    if (ms !== null && total !== null) return heardShare(text, ms, total);
+    return heardPart(text, ms ?? sinceStart, this.config.mainline.ms_per_char);
   }
 
   /**
@@ -747,6 +850,10 @@ export class Agent {
    * for the Arbiter (the one gate); without it the old checks apply here.
    */
   #onInitiative(context: ContextKey, initiative: Initiative): void {
+    if (this.muted) {
+      this.initiativeSkipped(context, initiative.reason, "the emergency stop");
+      return;
+    }
     const arbiter = this.ctx.services.get(ArbiterKey);
     if (arbiter) {
       const source = initiativeSource(initiative.reason);
@@ -773,9 +880,34 @@ export class Agent {
     this.#legacyInitiative(context, initiative);
   }
 
+  /** The people who hear a line in `context` now. */
+  audience(context: ContextKey): Handle[] {
+    const members = this.#existing(context)?.session.voiceMembers() ?? [];
+    return members.map((m) => this.handleOf(m.account, m.display_name));
+  }
+
+  /** A line that needed no turn was written in `context`. */
+  noteOwnText(context: ContextKey, text: string, action: ActionId): void {
+    const h = this.#existing(context);
+    if (!h) return;
+    const me = this.selfAccount(context.platform);
+    h.session.recordOwn(this.persona.displayName(), me, text, action, this.ctx.clock.now());
+    this.trackAction(action, h.session);
+  }
+
+  /** A claim of `kind` is coming in `context`: what speaks there gives way as far as it must. */
+  yieldTo(context: ContextKey, kind: FloorClaimKind): void {
+    const floor = this.mainline?.floor();
+    const holder = floor?.holder(context) ?? null;
+    if (!floor || holder === null) return;
+    const level = floor.interruptLevel(kind, holder.kind);
+    if (level === "queue") return;
+    this.#existing(context)?.inbox.push({ type: "yield", level });
+  }
+
   /** An `arbiter.impulse` while no Arbiter runs: a speak impulse is an initiative as before. */
   #onImpulseEvent(impulse: Impulse): void {
-    if (this.ctx.services.get(ArbiterKey)) return;
+    if (this.ctx.services.get(ArbiterKey) || this.mainline) return;
     const context = impulse.target?.context ?? null;
     if (impulse.kind !== "speak" || context === null) return;
     if (Date.parse(impulse.expires_at) <= this.ctx.clock.now()) return;
@@ -795,6 +927,10 @@ export class Agent {
       start_gap_ms: mode === null ? 0 : (ceilingFor(mode, context)?.startGapMs ?? 0),
       present: context.kind !== "voice" || this.inVoice(context),
       last_spoke_at: this.#existing(context)?.session.lastSelfAt() ?? null,
+      humans:
+        context.kind === "voice" && this.inVoice(context)
+          ? (this.#existing(context)?.session.voiceMembers().length ?? 0)
+          : null,
     };
   }
 
@@ -803,6 +939,9 @@ export class Agent {
    * resolves once the context's coordinator started it or found the place busy.
    */
   openInitiative(target: ContextKey, initiative: Initiative): Promise<ImpulseRun> {
+    if (this.muted) {
+      return Promise.resolve({ status: "refused", reason: "denied", detail: "緊急停止中" });
+    }
     const context = aboutHerself(initiative.reason) ? this.ownLinesContext(target) : target;
     if (context.kind === "voice" && !this.inVoice(context)) {
       return Promise.resolve({ status: "refused", reason: "denied", detail: "不在那個語音頻道" });
@@ -825,6 +964,11 @@ export class Agent {
   }
 
   #legacyInitiative(context: ContextKey, initiative: Initiative): void {
+    // Without the Floor nothing unasked gets the mic: the main line has no rules of its own.
+    if (this.mainline) {
+      this.initiativeSkipped(context, initiative.reason, "no floor");
+      return;
+    }
     const mode = this.handle.channelMode(context);
     if (mode === "off" || mode === "mention-only") {
       this.initiativeSkipped(context, initiative.reason, `mode ${mode}`);
@@ -979,5 +1123,6 @@ function utteranceMessage(u: VoiceUtterance): IncomingMessage {
     reply_to_self: false,
     attachments: [],
     ts: u.ended_at,
+    ...(u.turn?.ended_by === "turn" ? { turn_complete: true } : {}),
   };
 }

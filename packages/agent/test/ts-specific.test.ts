@@ -134,7 +134,7 @@ describe("ts port", () => {
       name: "Agent",
       description: "Attention, conversation and reply generation",
       requires: ["llm", "scheduler"],
-      optional: ["commands"],
+      optional: ["commands", "facts"],
     });
     expect(json.config_schema).not.toBeNull();
   });

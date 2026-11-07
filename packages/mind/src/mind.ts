@@ -46,15 +46,21 @@ import {
   contextKeyString,
   customEvent,
   type Desire,
+  DIRECTIVE_CHANGED_TOPIC,
+  type DirectiveChangedBody,
+  DirectivesKey,
   type Envelope,
   type Event,
   type Goal,
   type Handle,
   HandleDirectoryKey,
+  holdsBack,
   type Impulse,
   type Intent,
   type IntentOutcome,
   IntentSinkKey,
+  incomingText,
+  inspectInput,
   isJsonObject,
   isValidHandle,
   type JsonValue,
@@ -68,6 +74,8 @@ import {
   type PlanWake,
   Principals,
   type ProfileId,
+  type ProposalBoard,
+  ProposalBoardKey,
   type RaisedTopic,
   ReflectionKey,
   repairHandleText,
@@ -560,9 +568,18 @@ export class MindLoop implements Mind {
       case "platform_message_created": {
         const m = event.data;
         if (m.author.is_bot || this.#selfIds.has(m.author.account.id)) return;
+        const verdict = inspectInput(this.#d.services, {
+          id: m.id.id,
+          text: incomingText(m),
+          source: "chat",
+          author: m.author.account,
+          context: m.id.context,
+        });
+        if (verdict?.action === "ignore") return;
         const handle = this.#handleOfAccount(m.author.account, m.author.display_name);
         if (handle !== null) this.#presence.seen(handle, now);
-        if (m.mentions_self || m.reply_to_self || m.id.context.kind === "dm") {
+        const called = m.mentions_self || m.reply_to_self || m.id.context.kind === "dm";
+        if (called && !holdsBack(verdict)) {
           this.#hear(handle ?? m.author.display_name, m.text, now);
         }
         this.#segments.line(m.id.context, {
@@ -581,9 +598,17 @@ export class MindLoop implements Mind {
       case "voice_utterance": {
         const u = event.data;
         if (u.speaker.is_bot || this.#selfIds.has(u.speaker.account.id)) return;
+        const verdict = inspectInput(this.#d.services, {
+          id: u.id,
+          text: u.text.trim(),
+          source: "voice",
+          author: u.speaker.account,
+          context: u.context,
+        });
+        if (verdict?.action === "ignore") return;
         const handle = this.#handleOfAccount(u.speaker.account, u.speaker.display_name);
         if (handle !== null) this.#presence.seen(handle, now);
-        this.#hear(handle ?? u.speaker.display_name, u.text, now);
+        if (!holdsBack(verdict)) this.#hear(handle ?? u.speaker.display_name, u.text, now);
         this.#segments.line(u.context, {
           at: now,
           who: handle ?? u.speaker.display_name,
@@ -636,8 +661,22 @@ export class MindLoop implements Mind {
     }
   }
 
+  /** §9: what a new rule forbids is off her agenda at once, not when she next looks at it. */
+  #ruleChanged(payload: JsonValue): void {
+    const { op, directive } = payload as unknown as DirectiveChangedBody;
+    const rules = this.#d.services.get(DirectivesKey);
+    if (op !== "add" || directive?.effect !== "deny" || !rules) return;
+    for (const goal of this.#d.goals.goals()) {
+      const rule = rules.forbids(goal);
+      if (rule !== null) this.#d.goals.setStatus(goal.id, "dropped", `規則:${rule.text}`);
+    }
+  }
+
   #custom(topic: string, payload: JsonValue, now: number): void {
     switch (topic) {
+      case DIRECTIVE_CHANGED_TOPIC:
+        this.#ruleChanged(payload);
+        return;
       case SALIENT_TOPIC: {
         const salient = parseSalient(payload);
         if (!salient) return;
@@ -1041,7 +1080,13 @@ export class MindLoop implements Mind {
     const quiet =
       this.#d.services.get(ArbiterKey)?.ledger(null).limits.quiet_hours?.active ?? false;
     const ms = heartbeatMs(
-      { urge, emptyStreak: this.#emptyStreak, quiet, budget: this.#budget() },
+      {
+        urge,
+        emptyStreak: this.#emptyStreak,
+        quiet,
+        budget: this.#budget(),
+        initiative: affect?.biases.initiative ?? 0,
+      },
       this.#d.config,
     );
     this.#nextHeartbeat = ms === null ? null : now + ms;
@@ -1783,8 +1828,11 @@ export class MindLoop implements Mind {
     for (const [p] of planned) {
       if (p === null || signal?.aborted) continue;
       const arbiter = this.#d.services.get(ArbiterKey);
+      const board = this.#d.services.get(ProposalBoardKey);
       let outcome: IntentOutcome;
-      if (arbiter) {
+      if (board) {
+        outcome = await this.#propose(board, p, signal);
+      } else if (arbiter) {
         try {
           outcome = outcomeOf(await arbiter.submit(p.impulse, signal));
         } catch (error) {
@@ -1833,6 +1881,41 @@ export class MindLoop implements Mind {
           applyTurnEvent(record, e, toTimestamp(this.#now()));
         }
       });
+    }
+  }
+
+  /**
+   * V3 (docs/design/v3-architecture.md §10.5): she still decides what she wants, here. Whether and
+   * how it happens is the main line's: this writes a `Proposal`, and that is all it can do.
+   */
+  async #propose(
+    board: ProposalBoard,
+    planned: Planned,
+    signal: AbortSignal | undefined,
+  ): Promise<IntentOutcome> {
+    const { impulse, intent } = planned;
+    try {
+      const outcome = await board.propose(
+        {
+          id: impulse.id,
+          what: impulse.hint ?? impulse.why,
+          why: impulse.why,
+          capability: intent.capability,
+          args: intent.args,
+          expires: intent.expires_at,
+          source: impulse.source,
+          context: intent.context,
+          about: intent.about,
+          person: impulse.target.person,
+          goal: impulse.goal,
+        },
+        signal,
+      );
+      const status =
+        outcome.state === "taken" ? "started" : outcome.state === "open" ? "pending" : "dropped";
+      return { status, detail: outcome.detail, turn: outcome.turn };
+    } catch (error) {
+      return { status: "failed", detail: errorMessage(error), turn: null };
     }
   }
 

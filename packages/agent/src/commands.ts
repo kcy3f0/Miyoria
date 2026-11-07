@@ -308,7 +308,11 @@ function register(registry: CommandRegistry, handle: AgentHandle, persona: Perso
     const guild = inv.context.scope;
     const ctx = guild === null ? null : handle.voiceContext(inv.context.platform, guild);
     if (ctx === null) {
-      return notice("warn", "她目前不在這個伺服器的語音頻道中。", "請先使用 /voice join。");
+      return notice(
+        "warn",
+        "她目前不在這個伺服器的語音頻道中。",
+        "請先用 /miyo 的「加入我的語音頻道」。",
+      );
     }
     return { s: voiceMode, ctx };
   };

@@ -3,7 +3,16 @@ import { defineManifest, errorMessage, type Module, type ModuleContext } from "@
 import type { Profile } from "@miyoria/profile";
 import { SettingsStoreKey } from "@miyoria/store";
 import { ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
-import { ImpulseHostKey, IntentSinkKey, SelfStateKey, TurnFocusViewKey } from "@miyoria/types";
+import {
+  ImpulseHostKey,
+  IntentSinkKey,
+  MouthKey,
+  ProposalBoardKey,
+  pipelineOf,
+  SelfStateKey,
+  TurnFocusViewKey,
+  TurnSilencerKey,
+} from "@miyoria/types";
 
 import { activenessCapability, chatCapabilities } from "./actions.js";
 import { type RandomSource, SeededRandom } from "./attention.js";
@@ -46,6 +55,8 @@ const SETTINGS_LOAD_TIMEOUT_MS = 5_000;
  * the actuator registry. Provides `IntentSinkKey`: her mind loop's intents become turns she
  * starts herself (principal `self`, with tools). Provides `ImpulseHostKey`: the Arbiter's
  * accepted impulses open her turns here (and her intents go through the Arbiter while it runs).
+ * Under `pipeline = "v3"` her turns are turns of the main line (mainline/main.ts), which also
+ * provides `MouthKey` and `ProposalBoardKey`.
  * Provides `TurnFocusViewKey` (whom each turn in
  * flight answers, for voice barge-in) and `SavedPromptsKey` (compressed prompts of recent turns,
  * also published as `agent.prompt`); every turn ends with an `agent.turn.outcome`.
@@ -63,7 +74,8 @@ export class AgentModule implements Module {
   readonly manifest = defineManifest(AgentModule.ID, "Agent", {
     description: "Attention, conversation and reply generation",
     requires: ["llm", "scheduler"],
-    optional: ["commands"],
+    // `facts`: the main line follows the log from the start.
+    optional: ["commands", "facts"],
     configSchema: AgentConfigSchema,
   });
 
@@ -79,6 +91,7 @@ export class AgentModule implements Module {
   readonly #voiceRooms: VoiceRooms = new Map();
   readonly #commands = new AgentCommands();
   #unregister: (() => void)[] = [];
+  #agent: Agent | null = null;
 
   constructor(profile: Profile) {
     this.#persona = new PersonaHandle(profile);
@@ -162,7 +175,7 @@ export class AgentModule implements Module {
       ),
     );
 
-    const events = ctx.subscribe(Agent.topics());
+    const events = ctx.subscribe(Agent.topics(pipelineOf(ctx.services) === "v3"));
     ctx.provide(PersonaHandleKey, this.#persona);
     ctx.provide(AgentHandleKey, handle);
     if (own) ctx.provide(ToolRegistryKey, tools);
@@ -186,13 +199,22 @@ export class AgentModule implements Module {
     }
     ctx.provide(IntentSinkKey, intents);
     ctx.provide(ImpulseHostKey, intents);
+    ctx.provide(TurnSilencerKey, agent);
     ctx.provide(TurnFocusViewKey, agent.focusBoard);
     ctx.provide(SavedPromptsKey, agent.prompts);
+    this.#agent = agent;
+    if (agent.mainline !== null) {
+      ctx.provide(MouthKey, agent.mainline);
+      ctx.provide(ProposalBoardKey, agent.mainline.proposals);
+      await agent.mainline.start();
+    }
     ctx.spawn("events", () => agent.run(events));
   }
 
   async stop(): Promise<void> {
     this.#commands.uninstall();
+    this.#agent?.mainline?.stop();
+    this.#agent = null;
     this.#tools.unregister(ReactTool.NAME);
     for (const unregister of this.#unregister.splice(0)) unregister();
   }

@@ -8,6 +8,7 @@ import { ActionsModule, ActuatorRegistry, ActuatorRegistryKey } from "@miyoria/a
 import { ActivityModule } from "@miyoria/activity";
 import { AgentModule } from "@miyoria/agent";
 import { ArbiterModule } from "@miyoria/arbiter";
+import { FactsModule } from "@miyoria/facts";
 import {
   defineManifest,
   type Module,
@@ -30,6 +31,10 @@ import {
   type Envelope,
   isJsonObject,
   type JsonValue,
+  type Mouth,
+  MouthKey,
+  type Pipeline,
+  PipelineKey,
   PromptContributors,
   PromptContributorsKey,
   sameAccount,
@@ -50,6 +55,8 @@ export interface ReplayRunOptions {
   clock: ReplayClock;
   /** Seed of her attention's dice (default 1). */
   seed?: number;
+  /** Which brain runs (default `v2`, what the scenarios were recorded against). */
+  pipeline?: Pipeline;
 }
 
 /** Everything a replay produced, for the report. */
@@ -65,6 +72,8 @@ export interface ReplayRun {
   events: Envelope[];
   sink: ReplaySink;
   llm: ScriptedLlm;
+  /** `v3`: the mouth, to ask whose lines the sink saw. */
+  mouth: Mouth | null;
   /** The ActivityManager at the end. */
   activity: { snapshot: ActivitySnapshot; tasks: ActivityTask[] } | null;
   /** Fake time replayed (ms). */
@@ -160,6 +169,8 @@ export async function replay(log: ReplayLog, options: ReplayRunOptions): Promise
   };
 
   const services = sup.services;
+  const pipeline = options.pipeline ?? "v2";
+  services.provide("app", PipelineKey, { pipeline });
   services.provide("app", SettingsStoreKey, new MemorySettingsStore());
   const tools = new ToolRegistry();
   services.provide("app", ToolRegistryKey, tools);
@@ -185,6 +196,8 @@ export async function replay(log: ReplayLog, options: ReplayRunOptions): Promise
   await sup.register(new Stub("scheduler", (ctx) => ctx.provide(ActionSinkKey, sink)), null, true);
   const agent = new AgentModule(profile).withRandom(seeded(options.seed ?? 1));
   const modules: Module[] = [
+    // First, as in the core: the main line and the Floor read the log.
+    ...(pipeline === "v3" ? [new FactsModule(null, PROFILE_ID, { names: profile.names() })] : []),
     agent,
     new ActionsModule(profile.displayName),
     new ActivityModule(),
@@ -199,6 +212,7 @@ export async function replay(log: ReplayLog, options: ReplayRunOptions): Promise
   for (const m of modules) await sup.register(m, config(m.manifest.id), true);
   await sup.startAll();
   drain();
+  const mouth = services.get(MouthKey) ?? null;
 
   const advance = async (ms: number) => {
     let left = ms;
@@ -240,6 +254,7 @@ export async function replay(log: ReplayLog, options: ReplayRunOptions): Promise
       events,
       sink,
       llm,
+      mouth,
       activity,
       durationMs: now() - start,
     };

@@ -22,6 +22,17 @@ describe("Plan heartbeat", () => {
     expect(urgeOf(0, { rest: 1 })).toBe(0);
   });
 
+  it("leans with how she feels, inside the same limits", () => {
+    expect(mins({ initiative: 0.4 })).toBeLessThan(mins({}));
+    expect(mins({ initiative: -0.4 })).toBeGreaterThan(mins({}));
+    expect(mins({ initiative: 0 })).toBe(mins({}));
+    expect(mins({ initiative: Number.NaN })).toBe(mins({}));
+    // However she feels, she keeps thinking, and no faster than the floor.
+    expect(mins({ urge: 1, initiative: 1 })).toBe(config.min_heartbeat_mins);
+    expect(mins({ emptyStreak: 8, initiative: -1 })).toBeLessThanOrEqual(config.max_heartbeat_mins);
+    expect(heartbeatMs({ ...idle, initiative: -100 }, config)).not.toBeNull();
+  });
+
   it("gets sparser after empty runs, bounded by max_heartbeat_mins", () => {
     const series = [0, 1, 2, 3, 4, 8].map((n) => mins({ emptyStreak: n }));
     for (let i = 1; i < series.length; i++) {

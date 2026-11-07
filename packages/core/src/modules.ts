@@ -1,8 +1,9 @@
 // The one place that imports the module packages. Names mirror the legacy Rust constructors
 // (camelCased); if a package exported something else, fix it here and nowhere else.
 //
-// Boot order (legacy `boot.rs`): llm, speech, voice.link, voice, scheduler, agent, commands,
-// auth, actions, social, mood, world, self, memory, arbiter, mind, knowledge, conversation,
+// Boot order (legacy `boot.rs`, after `facts`, which every other module outlives, and `moderation`,
+// which is there before anything can say a word): llm, speech, voice.link, voice, scheduler, agent, commands,
+// auth, actions, directive, activity, social, mood, world, self, memory, arbiter, mind, knowledge, conversation,
 // reflect, queue, game, game.chat, sing, mcp,
 // stage.link, sandbox (opt-in), recorder, Discord bot, Admin API, terminal chat, then the
 // extension host and one `ext.<id>` per extension.
@@ -16,8 +17,10 @@ import { ApiModule, avatarEmotions } from "@miyoria/api";
 import { ArbiterModule } from "@miyoria/arbiter";
 import { AuthConfigSchema, AuthModule } from "@miyoria/auth";
 import { CommandsModule } from "@miyoria/commands";
+import { DirectiveModule } from "@miyoria/directive";
 import { DiscordBotModule } from "@miyoria/discord";
 import * as extHost from "@miyoria/ext-host";
+import { FactsModule } from "@miyoria/facts";
 import { GameChatModule, GameHandleKey, GameModule } from "@miyoria/game";
 import type { Config, Module } from "@miyoria/kernel";
 import {
@@ -37,6 +40,7 @@ import {
 import { McpModule } from "@miyoria/mcp";
 import { EmbeddingConfigSchema, MemoryModule } from "@miyoria/memory";
 import { MindModule } from "@miyoria/mind";
+import { ModerationModule } from "@miyoria/moderation";
 import type { Profile } from "@miyoria/profile";
 import { QueueModule } from "@miyoria/queue";
 import { SandboxModule } from "@miyoria/sandbox";
@@ -114,8 +118,17 @@ export function authOwners(config: Config): string[] {
   return parsed.success ? parsed.data.owners : [];
 }
 
-async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps): Promise<Module[]> {
+async function coreModules({
+  config,
+  profile,
+  profileId,
+  store,
+  baseDir,
+}: ModuleDeps): Promise<Module[]> {
   return [
+    // First, so it stops last: it logs what the others say on their way down.
+    new FactsModule(store, profileId, { names: profile.names() }),
+    new ModerationModule(),
     llmModule(config, profile),
     SpeechModule.withDefaultFactories(config.get("speech", SpeechConfigSchema)),
     new VoiceLinkModule(),
@@ -125,6 +138,7 @@ async function coreModules({ config, profile, profileId, baseDir }: ModuleDeps):
     new CommandsModule({ owners: authOwners(config) }),
     new AuthModule(),
     new ActionsModule(profile.displayName),
+    new DirectiveModule(),
     new ActivityModule(),
     SocialModule.fromProfile(profile),
     new MoodModule(profileId, profile.manifest.mood),

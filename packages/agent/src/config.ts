@@ -132,6 +132,8 @@ export const VoiceConfigSchema = z.object({
   debounce_ms: z.number().int().nonnegative().default(700),
   /** The same when the utterance calls her (her name, a question right after she spoke). */
   direct_debounce_ms: z.number().int().nonnegative().default(400),
+  /** The same when a model judged the speaker done (`turn_engine = "smart-turn"`). */
+  turn_debounce_ms: z.number().int().nonnegative().default(100),
   /**
    * Upper bound on the debounce of one turn. While someone is speaking the debounce is
    * extended up to this.
@@ -256,6 +258,43 @@ export const PromptConfigSchema = z.object({
 });
 export type PromptConfig = z.output<typeof PromptConfigSchema>;
 
+/**
+ * `[modules.agent.mainline]`: the main line of `pipeline = "v3"` (docs/design/v3-architecture.md
+ * §10). The prompt budgets are what brings it from about 7000 tokens to `prompt_tokens`.
+ */
+export const MainLineConfigSchema = z.object({
+  /** The prompt's target; the oldest history gives way when it does not fit. */
+  prompt_tokens: z.number().int().positive().default(4000),
+  /** Her own state in the tail of the prompt. */
+  self_chars: z.number().int().nonnegative().default(400),
+  /** What contributors add to the data part, together. */
+  data_chars: z.number().int().nonnegative().default(500),
+  /** History lines shown at most, and their characters. */
+  history_lines: z.number().int().nonnegative().default(14),
+  history_chars: z.number().int().nonnegative().default(1000),
+  /** One history entry. */
+  entry_chars: z.number().int().nonnegative().default(300),
+  /** Example dialogues in the data part (0: none). */
+  examples_chars: z.number().int().nonnegative().default(0),
+  /** Lines of "最近講過" in the tail. */
+  recent_lines: z.number().int().nonnegative().default(4),
+  /** Untrusted working-context entries in the data part. */
+  context_entries: z.number().int().nonnegative().default(4),
+  /** Proposals shown at most. */
+  proposals: z.number().int().nonnegative().default(3),
+  /** No first token for this long and the call counts as failed: the fixed line goes out. */
+  first_token_timeout_ms: z.number().int().positive().default(15_000),
+  /** At most one fixed line per context this often. */
+  fallback_gap_ms: z.number().int().nonnegative().default(20_000),
+  /** A commitment without a date is due this long after she made it. */
+  commitment_due_secs: z.number().int().positive().default(120),
+  /** How often overdue commitments are looked for. */
+  commitment_sweep_ms: z.number().int().positive().default(5_000),
+  /** How long one spoken character takes, for what she keeps of a sentence cut off. */
+  ms_per_char: z.number().positive().default(180),
+});
+export type MainLineConfig = z.output<typeof MainLineConfigSchema>;
+
 /** `[modules.agent]` config section. */
 export const AgentConfigSchema = z.object({
   /** Quiet time after the last message before a turn starts. */
@@ -312,6 +351,8 @@ export const AgentConfigSchema = z.object({
   reply_reference: z.boolean().default(true),
   /** The typing indicator is resubmitted this often while generating. */
   typing_refresh_ms: z.number().int().nonnegative().default(8000),
+  /** The main line of `pipeline = "v3"`. */
+  mainline: MainLineConfigSchema.prefault({}),
   /** Offer registered tools to the model. */
   tools_enabled: z.boolean().default(true),
   /** Rounds of tool calls per turn before she must answer. */

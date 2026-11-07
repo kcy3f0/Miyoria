@@ -104,6 +104,7 @@ function run(events: Envelope[], inputs: ReplayEntry[]): ReplayRun {
     events,
     sink: new ReplaySink({ publish: () => undefined } as unknown as EventBus, () => 0),
     llm: new ScriptedLlm(),
+    mouth: null,
     activity: null,
     durationMs: 1000,
   };

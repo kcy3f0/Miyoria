@@ -18,8 +18,9 @@
 // cancelled here (restarted, superseded, shut down, an intent that expired or was replaced) are
 // published by the coordinator, the others by the turn.
 //
-// In voice channels the debounce is shorter (shorter still when someone calls her), but it is
-// extended (up to `voice.max_debounce_ms`) while someone is speaking.
+// In voice channels the debounce is shorter (shorter still when someone calls her, and when a
+// model judged the speaker done there is little left to wait for), but it is extended (up to
+// `voice.max_debounce_ms`) while someone is speaking.
 //
 // An initiative request starts a turn without input, but only when the context is quiet: no
 // turn in flight, no debounce pending, no speech of hers still queued. While the Arbiter runs
@@ -31,6 +32,10 @@
 // flight, waiting messages or her queued speech (nor, in voice, someone still talking) and
 // starts once the context is free, unless it expired meanwhile. A newer intent replaces a
 // waiting one.
+//
+// Under `pipeline = "v3"` someone calling her while she speaks on her own, or something urgent,
+// cuts in as far as the Floor's interrupt level says (§7.3): `wrap_up` finishes the sentence that
+// is playing and drops the rest, `cut_short` and `interrupt` stop that sentence too.
 
 import { errorMessage } from "@miyoria/kernel";
 import {
@@ -38,6 +43,7 @@ import {
   type ContextKey,
   type ImpulseRun,
   type IncomingMessage,
+  type InterruptLevel,
   inputDisposition,
   newId,
   type PlaybackState,
@@ -67,6 +73,8 @@ export interface TurnFlags {
   queued: boolean;
   /** Voice: her speech was interrupted; submit no further sentences. */
   interrupted: boolean;
+  /** Voice: she gave way to a claim on the Floor; submit no further sentences. */
+  yielded?: boolean;
 }
 
 interface Running {
@@ -100,6 +108,8 @@ type Wake =
 interface Window {
   opened: number;
   deadline: number;
+  /** How long the window stays open past a sign of life. */
+  wait: number;
 }
 
 export class Coordinator {
@@ -193,11 +203,18 @@ export class Coordinator {
                   restarts = r.selfStarted ? 0 : r.plan.focus.restarts + 1;
                 }
               }
+              // Someone calling her cuts into what she says on her own.
+              if (kind !== null) {
+                await this.#giveWay(kind === "reply" ? "reply" : "addressed", running, unplayed);
+              }
               // Her speech that is written but not played yet is played as is (§3.9).
               pending.push(msg);
-              const wait = voice && kind !== null ? cfg.voice.direct_debounce_ms : debounce;
+              let wait = voice && kind !== null ? cfg.voice.direct_debounce_ms : debounce;
+              if (voice && msg.turn_complete === true) {
+                wait = Math.min(wait, cfg.voice.turn_debounce_ms);
+              }
               const opened: number = window?.opened ?? now;
-              window = { opened, deadline: Math.min(now + wait, opened + maxDebounce) };
+              window = { opened, deadline: Math.min(now + wait, opened + maxDebounce), wait };
               break;
             }
             case "typing":
@@ -213,7 +230,7 @@ export class Coordinator {
               // said time to arrive.
               if (window) {
                 window.deadline = Math.min(
-                  Math.max(window.deadline, now + debounce),
+                  Math.max(window.deadline, now + window.wait),
                   window.opened + maxDebounce,
                 );
               }
@@ -234,6 +251,26 @@ export class Coordinator {
               if (started) running = started;
               break;
             }
+            case "yield": {
+              const holder = this.#agent.mainline?.floor()?.holder(this.#key)?.turn ?? null;
+              if (holder !== null) await this.#apply(input.level, holder, running);
+              break;
+            }
+            case "halt": {
+              if (running && !running.done) await this.#abort(running, "shutdown", null);
+              running = null;
+              if (unplayed) await this.#cancel(unplayed.turn);
+              unplayed = null;
+              if (waiting) {
+                this.#agent.intentSkipped(this.#key, waiting, "the emergency stop");
+                this.#cancelled(waiting.turn, "initiative", "shutdown");
+              }
+              waiting = null;
+              pending = [];
+              window = null;
+              restarts = 0;
+              break;
+            }
             case "intent":
               if (waiting) {
                 this.#agent.intentSkipped(this.#key, waiting, "replaced by a newer intent");
@@ -248,7 +285,7 @@ export class Coordinator {
           if (window) {
             const cap = window.opened + maxDebounce;
             if (voice && now < cap && this.#session.someoneSpeaking()) {
-              window.deadline = Math.min(now + debounce, cap);
+              window.deadline = Math.min(now + window.wait, cap);
               break;
             }
           }
@@ -292,6 +329,36 @@ export class Coordinator {
           running = this.#intent(w, signal);
         }
       }
+    }
+  }
+
+  /** V3: a claim of `kind` arrives while she may be speaking here. */
+  async #giveWay(
+    kind: "addressed" | "reply",
+    running: Running | null,
+    unplayed: Unplayed | null,
+  ): Promise<void> {
+    const floor = this.#agent.mainline?.floor();
+    const holder = floor?.holder(this.#key) ?? null;
+    if (!floor || holder === null) return;
+    // Her own turn still generating is `inputDisposition`'s: it restarts.
+    if (running !== null && running.turn === holder.turn && !running.flags.queued) return;
+    const turn = unplayed?.turn === holder.turn ? unplayed.turn : holder.turn;
+    await this.#apply(floor.interruptLevel(kind, holder.kind), turn, running);
+  }
+
+  /** §7.3 on `turn`. */
+  async #apply(level: InterruptLevel, turn: TurnId, running: Running | null): Promise<void> {
+    if (level === "queue") return;
+    if (running?.turn === turn) running.flags.yielded = true;
+    this.#agent.log.debug({ turn, level }, "she gives way");
+    await this.#cancel(turn);
+    if (level === "wrap_up") return;
+    const sink = this.#agent.ctx.services.get(ActionSinkKey);
+    try {
+      await sink?.interruptTurn?.(turn);
+    } catch (error) {
+      this.#agent.log.debug({ turn, error: errorMessage(error) }, "could not stop her speech");
     }
   }
 
@@ -545,12 +612,14 @@ export class Coordinator {
   /** Drops the queued actions of `turn`. */
   async #cancel(turn: TurnId): Promise<void> {
     const sink = this.#agent.ctx.services.get(ActionSinkKey);
-    if (!sink) return;
-    try {
-      await sink.cancelTurn(turn);
-    } catch (error) {
-      this.#agent.log.debug({ turn, error: errorMessage(error) }, "could not cancel turn");
+    if (sink) {
+      try {
+        await sink.cancelTurn(turn);
+      } catch (error) {
+        this.#agent.log.debug({ turn, error: errorMessage(error) }, "could not cancel turn");
+      }
     }
+    this.#agent.mainline?.lines.cancelUnstarted(turn, "the turn was cancelled");
   }
 
   /** The outcome of a turn that never ran or was stopped here. */

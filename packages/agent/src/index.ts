@@ -80,6 +80,7 @@ export {
   deprecatedAgentKeys,
   type HistoryConfig,
   HistoryConfigSchema,
+  MainLineConfigSchema,
   maxDebounceMs,
   modeFor,
   ParseError,
@@ -131,6 +132,19 @@ export {
   modeLabel,
   UNCAPPED_INITIATIVES,
 } from "./levels.js";
+export { ACTING_ALONE, MainLine, MainTurn } from "./mainline/main.js";
+export { COMMIT_SPEC, STEER_SPEC, slimTool } from "./mainline/output.js";
+export {
+  contextData,
+  estimateTokens,
+  fitHistory,
+  mainMessages,
+  mainRules,
+  pinnedSection,
+  promptTokens,
+  proposalData,
+  tailSection,
+} from "./mainline/prompt.js";
 export { linkMentions, type MentionTarget } from "./mentions.js";
 export { AgentModule } from "./module.js";
 export { PersonaHandle, PersonaHandleKey } from "./persona.js";

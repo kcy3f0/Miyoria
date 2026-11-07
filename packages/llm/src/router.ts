@@ -91,6 +91,8 @@ interface Call {
   /** Its entry in the call log. */
   record: LlmCallRecord;
   tag: LlmCallTag | undefined;
+  /** Not the model the purpose normally gets: see `RoutedStream.fallback`. */
+  fallback: boolean;
 }
 
 /**
@@ -110,6 +112,15 @@ export class RoutedStream implements AsyncIterable<StreamEvent> {
   /** `provider:model` that is answering. */
   get model(): string {
     return this.#call.key;
+  }
+
+  /**
+   * A fallback model is answering: one earlier in the chain failed, or the budget replaced the
+   * chain (`[llm.budget.fallback]`). What it writes passed none of the checks the first choice
+   * was tried against, so the output review treats it as its own path.
+   */
+  get fallback(): boolean {
+    return this.#call.fallback;
   }
 
   /**
@@ -314,6 +325,9 @@ export class LlmRouter {
       return fail(error);
     }
     const chain = this.#chainForState(purpose, state);
+    const budgetChain =
+      state !== "ok" &&
+      (this.#cost.fallbackChain(this.#effectivePurpose(purpose))?.length ?? 0) > 0;
     if (chain.length === 0) {
       return fail(
         new LlmError(`no model configured for purpose \`${purpose}\` (and no \`chat\` fallback)`),
@@ -378,7 +392,16 @@ export class LlmRouter {
       }
       // The answering model is not a fallback.
       record.pricing = this.#cost.priceFor(key);
-      const call: Call = { key, purpose, requestedAt, sentAt, firstTokenAt: null, record, tag };
+      const call: Call = {
+        key,
+        purpose,
+        requestedAt,
+        sentAt,
+        firstTokenAt: null,
+        record,
+        tag,
+        fallback: budgetChain || record.fallbacks.length > 0,
+      };
       this.#metrics.calls.inc({ model: key, purpose });
       if (!first.done) this.#observe(call, first.value);
       return new RoutedStream(call, this.#track(call, first, iterator, signal));

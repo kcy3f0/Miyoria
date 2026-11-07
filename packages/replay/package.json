@@ -26,6 +26,7 @@
     "@miyoria/activity": "workspace:*",
     "@miyoria/agent": "workspace:*",
     "@miyoria/arbiter": "workspace:*",
+    "@miyoria/facts": "workspace:*",
     "@miyoria/kernel": "workspace:*",
     "@miyoria/llm": "workspace:*",
     "@miyoria/mind": "workspace:*",

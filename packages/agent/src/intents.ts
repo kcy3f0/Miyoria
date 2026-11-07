@@ -13,6 +13,11 @@
 // unanswered backoff, the channel level) and, once it accepts, hands it back here
 // (`ImpulseHost.open`) to run as above. Impulses that are not hers (songs, game commentary,
 // followups, notices, greetings) open an initiative turn in their context.
+//
+// Under `pipeline = "v3"` nothing here acts. An accepted claim opens a turn of the main line, and
+// an accepted proposal with a capability is one too: the turn sees what she wanted and decides,
+// and only its hands call the capability. Only `chat.*`, which runs no action of its own, still
+// goes through the gate here: consent is the gate's.
 
 import type { ActuatorRegistry } from "@miyoria/actions";
 import { errorMessage } from "@miyoria/kernel";
@@ -23,6 +28,7 @@ import {
   CHAT_START,
   type ContextKey,
   type ConversationFacts,
+  claimOf,
   type Impulse,
   type ImpulseHost,
   type ImpulseRun,
@@ -41,6 +47,7 @@ import {
   toTimestamp,
 } from "@miyoria/types";
 import { modeLabel } from "./levels.js";
+import { ACTING_ALONE } from "./mainline/main.js";
 import type { Agent, IntentTurn } from "./runtime.js";
 
 /** An intent handed to the Arbiter, waiting to be run (and what running it gave). */
@@ -103,9 +110,14 @@ export class AgentIntents implements IntentSink, ImpulseHost {
 
   async open(impulse: Impulse, signal?: AbortSignal): Promise<ImpulseRun> {
     const talkOnly = impulse.capability === CHAT_START || impulse.capability === CHAT_DM;
+    const main = this.agent.mainline;
+    if (main !== null && impulse.target.context !== null) {
+      this.agent.yieldTo(impulse.target.context, claimOf(impulse));
+    }
     if (isSelfInitiated(impulse.source) || talkOnly || impulse.kind === "act") {
       const slot = this.#submitted.get(impulse.id);
       const intent = slot?.intent ?? intentOfImpulse(impulse, this.agent.ctx.clock.now());
+      if (main !== null && !talkOnly) return this.#propose(intent);
       const outcome = await this.#run(intent, signal, true);
       if (slot) slot.outcome = outcome;
       return runOf(outcome);
@@ -118,7 +130,57 @@ export class AgentIntents implements IntentSink, ImpulseHost {
       reason: impulseReason(impulse),
       hint: impulse.hint ?? "",
       about: [...impulse.about],
+      ...(main === null
+        ? {}
+        : {
+            attention: impulse.attention ?? null,
+            claim: claimOf(impulse),
+            chain: main.takeChain(impulse.id),
+            proposal:
+              main.proposals.get(impulse.id) === null ? null : { id: impulse.id, tool: null },
+          }),
     });
+  }
+
+  /**
+   * V3: what her Plan wants done goes to a turn of the main line, which may do it. She can want
+   * something with nobody around (join a channel, start a game): that turn acts without talking.
+   */
+  #propose(intent: Intent): ImpulseRun {
+    const agent = this.agent;
+    const capability = this.registry().get(intent.capability);
+    const tool = capability?.tool?.name ?? intent.capability.replaceAll(".", "_");
+    const context = intent.context === null ? null : agent.ownLinesContext(intent.context);
+    const place = context !== null && (context.kind !== "voice" || agent.inVoice(context));
+    const where = place ? context : ACTING_ALONE;
+    const refused = agent.mainline?.floor()?.refuses("wish", where, intent.why) ?? null;
+    const input: IntentTurn = {
+      intent,
+      turn: newId(),
+      done: null,
+      summary: capability?.summary ?? null,
+      gated: true,
+      tool,
+      muted: !place || refused !== null,
+    };
+    const why = agent.deliverIntent(where, input);
+    if (why !== null) return { status: "refused", reason: "denied", detail: why };
+    // What she wanted to say once she is in there waits for her to arrive.
+    const opening = intent.opening?.trim() ?? "";
+    if (intent.capability === "voice.join" && opening !== "") {
+      const room = joinedContext(intent, intent.args);
+      if (room !== null) {
+        const talk: Intent = { ...intent, id: newId(), capability: CHAT_START };
+        agent.deliverOnArrival(room, {
+          ...input,
+          intent: talk,
+          turn: newId(),
+          tool: null,
+          muted: false,
+        });
+      }
+    }
+    return { status: "started", turn: input.turn, task: null, detail: "交給主線決定" };
   }
 
   // ---- running an intent ----------------------------------------------------------------------

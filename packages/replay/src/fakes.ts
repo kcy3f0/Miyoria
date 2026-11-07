@@ -3,7 +3,17 @@
 
 import { type EventBus, sleep } from "@miyoria/kernel";
 import type { ChatProvider, ChatRequest, ChatStream } from "@miyoria/llm";
-import type { Action, ActionSink, ContextKey, PlaybackState, TurnId } from "@miyoria/types";
+import {
+  ACTION_SETTLED_TOPIC,
+  type Action,
+  type ActionSettled,
+  type ActionSink,
+  type ContextKey,
+  customEvent,
+  type JsonValue,
+  type PlaybackState,
+  type TurnId,
+} from "@miyoria/types";
 import type { ScriptedLlmConfig } from "./log.js";
 
 const DEFAULT_REPLY = "嗯嗯,我在聽!";
@@ -115,6 +125,22 @@ export class ReplaySink implements ActionSink {
           type: "action_completed",
           data: { action: action.id, turn: action.turn, ok: true, error: null, message },
         }),
+      );
+      const settled: ActionSettled = {
+        action: action.id,
+        turn: action.turn,
+        type: "send_message",
+        context: payload.context,
+        text: payload.message.text,
+        ok: true,
+        error: null,
+        message,
+      };
+      queueMicrotask(() =>
+        this.bus.publish(
+          "scheduler",
+          customEvent(ACTION_SETTLED_TOPIC, settled as unknown as JsonValue),
+        ),
       );
       return;
     }

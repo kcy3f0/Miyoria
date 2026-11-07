@@ -3,7 +3,16 @@
 // is online, each with the numbers behind it ("找 Owen 聊天(想念 0.6 × 在意 0.8,他在線)").
 // She picks from it or proposes something else. Pure.
 
-import type { AffectSnapshot, Desire, Goal, Handle, PersonCard } from "@miyoria/types";
+import {
+  type AffectSnapshot,
+  type Desire,
+  EMOTION_LABELS,
+  type Goal,
+  type Handle,
+  PERSON_EMOTION_NAMES,
+  PERSON_EMOTION_OUTPUTS,
+  type PersonCard,
+} from "@miyoria/types";
 
 /** Desires listed at most. */
 export const MAX_DESIRES = 6;
@@ -55,8 +64,19 @@ function reachFor(where: Whereabouts, caps: ReadonlySet<string>, inVoice: boolea
 /** The ranked desires, strongest first. */
 export function rankDesires(i: DesireInputs): Desire[] {
   const out = new Map<string, Desire>();
+  /** What her feelings toward someone leave of a wish about them (`distance` of the table). */
+  const left = (person: Handle | null): number => {
+    const felt = person === null ? undefined : i.cards.find((c) => c.handle === person)?.emotions;
+    let share = 1;
+    for (const name of PERSON_EMOTION_NAMES) {
+      share *= 1 - PERSON_EMOTION_OUTPUTS[name].distance * clamp01(felt?.[name] ?? 0);
+    }
+    return share;
+  };
   const add = (d: Desire) => {
-    const weight = round2(clamp01(d.weight));
+    // Her own goals stay what she decided: a feeling only leans the wishes it caused.
+    const share = d.goal === null ? left(d.person) : 1;
+    const weight = round2(clamp01(d.weight) * share);
     if (weight < MIN_DESIRE) return;
     const key = `${d.want}|${d.person ?? ""}|${d.goal ?? ""}`;
     const prev = out.get(key);
@@ -83,7 +103,7 @@ export function rankDesires(i: DesireInputs): Desire[] {
             want: "chat_with",
             label: "找人聊天",
             weight: w.weight * 0.6,
-            why: `${w.why}(寂寞 ${n1(lonely)}),但在意的人都不在線`,
+            why: `${w.why}(${w.from ? EMOTION_LABELS[w.from] : "寂寞"} ${n1(Math.max(lonely, w.weight))}),但在意的人都不在線`,
             person: null,
             capability: has("chat.start"),
             goal: null,
@@ -92,8 +112,11 @@ export function rankDesires(i: DesireInputs): Desire[] {
         }
         const where = i.where(target.handle);
         const missing = target.emotions.missing ?? 0;
-        const feeling = w.want === "find_person" ? missing : Math.max(lonely, w.weight);
-        const label = w.want === "find_person" ? "想念" : "寂寞";
+        const feeling =
+          w.want === "find_person"
+            ? Math.max(missing, w.weight - 0.15)
+            : Math.max(lonely, w.weight);
+        const label = w.want === "find_person" ? "想念" : w.from ? EMOTION_LABELS[w.from] : "寂寞";
         add({
           want: w.want,
           label: `找 ${target.handle} 聊天`,
@@ -135,6 +158,17 @@ export function rankDesires(i: DesireInputs): Desire[] {
           why: `${w.why}(想休息 ${n1(a?.drives.rest ?? 0)})`,
           person: null,
           capability: i.inVoice ? has("voice.leave") : null,
+          goal: null,
+        });
+        break;
+      case "explore":
+        add({
+          want: "explore",
+          label: "找點新鮮事",
+          weight: w.weight,
+          why: w.why,
+          person: null,
+          capability: null,
           goal: null,
         });
         break;

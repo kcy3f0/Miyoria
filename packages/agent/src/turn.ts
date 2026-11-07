@@ -1,7 +1,7 @@
 // One turn: attention decision, prompt assembly (compiler.ts: her own state in the trusted
 // system part, everything derived from other people in the user-role data message), generation
 // (with the tool loop; tool calls run for the speaker as principal `user`) and output, filtered
-// by `filterOutgoing`. The reasoning level comes from `[llm.reasoning]` per reasoning purpose
+// by `safeOutgoing` (moderation, then `filterOutgoing`). The reasoning level comes from `[llm.reasoning]` per reasoning purpose
 // (`chat_text`, `chat_voice`, `chat_intent`; off by default for replies). Text replies go out
 // line by line as they are written; voice replies are spoken sentence by sentence while the
 // model is still generating (links and code blocks go to the voice channel's text chat instead
@@ -19,6 +19,11 @@
 // skips attention and offers tools, which run as principal `self` (tools that need a person's
 // permission node are refused); her plan goes into the data message. While the LLM budget is exhausted nothing is generated: a turn she would
 // have answered gets a canned line at most once per context per `budget_notice_interval_ms`.
+//
+// Under `pipeline = "v3"` (`Agent.mainline`) a turn is a turn of the main line: it holds the Floor,
+// makes one call for what she says and does (`TurnOutput`, no tool loop: the hands report back in a
+// turn of their own), every line goes through the gate and the ledger (mainline/), and a call that
+// fails ends in a fixed line instead of silence. `#speakMain` is that path; the rest is shared.
 
 import { errorMessage, sleep } from "@miyoria/kernel";
 import {
@@ -49,13 +54,18 @@ import {
   type ContextKey,
   ConversationStatesKey,
   contextKeyString as contextKeyDisplay,
-  filterOutgoing,
+  DirectivesKey,
+  dataBlock,
+  type FloorClaimKind,
   GoalAgendaKey,
   type IncomingMessage,
+  inspectInput,
   type JsonValue,
   type LaneKey,
   LessonsKey,
+  MemoryRetrievalKey,
   MindKey,
+  ModerationKey,
   type Notice,
   newAction,
   type Participant,
@@ -66,9 +76,11 @@ import {
   PromptContributorsKey,
   type PromptRequest,
   type ReasoningLevel,
+  type SafeLine,
   type SavedPrompt,
   SelfStateKey,
   type SocialSignals,
+  safeOutgoing,
   sameAccount,
   type TurnId,
   type TurnOutcome,
@@ -78,6 +90,7 @@ import {
   toTimestamp,
   VoiceSinkKey,
   voiceLane,
+  WorkingContextKey,
   WorldStateKey,
 } from "@miyoria/types";
 import {
@@ -104,6 +117,29 @@ import { type FocusSelection, focusVerb, type TurnFocusInit } from "./focus.js";
 import { voiceScope } from "./handle.js";
 import { awaitBackfill, replyParents } from "./history.js";
 import { ceilingFor, levelHint } from "./levels.js";
+import type { HeldLine } from "./mainline/gate.js";
+import type { Run } from "./mainline/hands.js";
+import {
+  ACTING_ALONE,
+  FALLBACK_LINES,
+  FALLBACK_RESULT_LINE,
+  FALLBACK_URGENT_LINE,
+  type MainClaim,
+  MainTurn,
+  sentences,
+} from "./mainline/main.js";
+import { COMMIT_SPEC, STEER_SPEC, slimTool, turnOutput } from "./mainline/output.js";
+import {
+  contextData,
+  contextState,
+  fitHistory,
+  mainMessages,
+  mainRules,
+  pinnedSection,
+  proposalData,
+  resultData,
+  tailSection,
+} from "./mainline/prompt.js";
 import { linkMentions, type MentionTarget } from "./mentions.js";
 import { agentTurns } from "./metrics.js";
 import {
@@ -113,6 +149,8 @@ import {
   cleanReply,
   dataMessage,
   EXAMPLES_TITLE,
+  FLAGGED_TITLE,
+  flaggedBody,
   INITIATIVE_TITLE,
   INTENT_TITLE,
   type IntentData,
@@ -123,8 +161,8 @@ import {
   splitMessage,
   transcriptLine,
   VOICE_PRESENT_TITLE,
+  whenAndWhere,
 } from "./prompt.js";
-
 import type { Agent, Initiative, IntentTurn } from "./runtime.js";
 import { type PresentPerson, peopleBody, selfBlocks } from "./self-block.js";
 import { type HistoryEntry, messageText, type Session } from "./session.js";
@@ -148,8 +186,12 @@ const CHECK_HISTORY = 12;
 const CONTRIBUTOR_HISTORY = 6;
 /** People in the prompt request and the people block (text contexts). */
 const MAX_PEOPLE = 10;
+/** The contributor key of the `memory` module. */
+const MEMORY_CONTRIBUTOR = "memory";
 /** No budget: the agent's own data blocks are only limited by their own budgets. */
 const UNLIMITED = Number.MAX_SAFE_INTEGER;
+/** History lines looked through for suspicious messages. */
+const FLAGGED_HISTORY = 12;
 
 export class TurnError extends Error {
   override readonly name = "TurnError";
@@ -184,13 +226,18 @@ export async function runTurn(
   let text: string;
   let outcome: TurnOutcome;
   try {
-    text = await t.respond();
-    outcome = t.outcome(text);
-  } catch (error) {
-    if (signal.aborted) return;
-    agent.log.warn({ turn, context: contextId(key), error: errorMessage(error) }, "turn failed");
-    text = "";
-    outcome = { type: "error", error: errorMessage(error) };
+    try {
+      text = await t.respond();
+      outcome = t.outcome(text);
+    } catch (error) {
+      if (signal.aborted) return;
+      agent.log.warn({ turn, context: contextId(key), error: errorMessage(error) }, "turn failed");
+      text = await t.fallback();
+      outcome = { type: "error", error: errorMessage(error) };
+    }
+  } finally {
+    // Every way out of a turn: the Floor frees the mic once its lines settled too.
+    t.ended();
   }
   if (signal.aborted) return;
   agent.ctx.publish({ type: "agent_turn_completed", data: { turn, context: key, text } }, { turn });
@@ -235,6 +282,9 @@ interface CheckReply {
 /** Written sentences a bilingual reply may hold before their `<voice>` line is given up on. */
 const MAX_UNVOICED = 2;
 
+/** One line through the output review: `aloud` when the written text is what TTS gets. */
+type Safe = (text: string, spoken: string | null, aloud: boolean) => SafeLine;
+
 /**
  * Streams a voice reply: every completed sentence is submitted as a `speak` action right away,
  * so the first one plays while the rest is generated.
@@ -259,9 +309,9 @@ class Speech {
   /**
    * ... or, when the line came first, the line and the written text after it are collected
    * here until the next line (or a pause, an emotion change, the end). `sent`: the line was
-   * spoken already (`voiceFirst`); the written text only becomes its subtitle.
+   * spoken already (`voiceFirst`), as this; the written text only becomes its subtitle.
    */
-  #pair: { spoken: string; text: string; sent: boolean } | null = null;
+  #pair: { spoken: string; text: string; sent: string | null } | null = null;
   /**
    * How this reply pairs lines and sentences, from whichever came first: `line` (as asked:
    * `<voice>…</voice>written`, lines may go out early) or `written` (`written<voice>…</voice>`).
@@ -290,11 +340,20 @@ class Speech {
     readonly onOutput: (() => void) | null = null,
     /** A line spoken first got its written sentence (the subtitle and history text). */
     readonly onSubtitle: ((spoken: string, written: string) => void) | null = null,
+    /** The main line's gate: `false`, and the sentence does not go out now. */
+    readonly screen: ((line: HeldLine) => boolean) | null = null,
+    /** Every sentence passes here before anything is done with it. */
+    readonly safe: Safe = (text, spoken) => safeOutgoing(null, { path: "reply", text, spoken }),
   ) {}
 
-  /** Her speech was interrupted: nothing more is said. */
+  /** Her speech was interrupted, or she gave way: nothing more is said. */
   stopped(): boolean {
-    return this.flags.interrupted;
+    return this.flags.interrupted || this.flags.yielded === true;
+  }
+
+  /** Says a sentence the gate held. */
+  async release(line: HeldLine): Promise<void> {
+    await this.#say(line.text, line.spoken ?? undefined, line.emotion, true, line.blocked);
   }
 
   async text(text: string): Promise<void> {
@@ -350,7 +409,7 @@ class Speech {
     }
     if (line.trim() === "") return;
     this.#order ??= "line";
-    const sent = this.voiceFirst && this.#order === "line" && (await this.#sayLine(line));
+    const sent = this.voiceFirst && this.#order === "line" ? await this.#sayLine(line) : null;
     this.#pair = { spoken: line, text: "", sent };
   }
 
@@ -358,11 +417,11 @@ class Speech {
     const pair = this.#pair;
     if (pair === null) return;
     this.#pair = null;
-    if (pair.sent) {
-      const written = filterOutgoing(cleanReply(pair.text, this.names)).trim();
+    if (pair.sent !== null) {
+      const written = this.safe(cleanReply(pair.text, this.names), null, false).text.trim();
       if (written === "") return;
       this.spoken += written;
-      this.onSubtitle?.(filterOutgoing(cleanReply(pair.spoken, this.names)).trim(), written);
+      this.onSubtitle?.(pair.sent, written);
       return;
     }
     // A line nobody wrote down: subtitles and her history only ever carry the written text, so
@@ -412,24 +471,24 @@ class Speech {
   /**
    * Speaks a `<voice>` line before its written sentence exists: the line itself is the text
    * of the action (handed to the sink as its own spoken words, so nothing is translated).
+   * Returns what was said (`null`: nothing).
    */
-  async #sayLine(line: string): Promise<boolean> {
-    if (this.stopped()) return false;
-    const said = filterOutgoing(cleanReply(line, this.names))
-      .replace(/[ \t]{2,}/g, " ")
-      .trim();
-    if (!isSpeakable(said)) return false;
+  async #sayLine(line: string): Promise<string | null> {
+    if (this.stopped()) return null;
+    const safe = this.safe(cleanReply(line, this.names), null, true);
+    const said = safe.text.replace(/[ \t]{2,}/g, " ").trim();
+    if (!isSpeakable(said)) return null;
     this.prepare?.(said, said, this.#emotion);
-    await this.#submit(said);
-    return true;
+    await this.#submit(said, safe.blocked);
+    return said;
   }
 
-  async #submit(text: string): Promise<void> {
+  async #submit(text: string, blocked: string | null): Promise<void> {
     const action = newAction(
       this.lane,
       this.priority,
       { type: "speak", context: this.context, text, emotion: this.#emotion },
-      { ttl: this.ttlMs, turn: this.turn },
+      { ttl: this.ttlMs, turn: this.turn, blocked },
     );
     try {
       await guard(this.sink.submit(action), this.signal);
@@ -441,18 +500,34 @@ class Speech {
     this.onOutput?.();
   }
 
-  async #say(sentence: string, spoken?: string, emotion = this.#emotion): Promise<void> {
+  async #say(
+    sentence: string,
+    spoken?: string,
+    emotion = this.#emotion,
+    screened = false,
+    held: string | null | undefined = null,
+  ): Promise<void> {
     if (this.stopped()) return;
+    const voiced = spoken === undefined ? "" : cleanReply(spoken, this.names).trim();
+    const safe = this.safe(
+      cleanReply(sentence, this.names),
+      voiced === "" ? null : voiced,
+      voiced === "",
+    );
+    const blocked = safe.blocked ?? held ?? null;
     // Links taken out may leave double spaces behind.
-    const text = filterOutgoing(cleanReply(sentence, this.names)).replace(/[ \t]{2,}/g, " ");
+    const text = safe.text.replace(/[ \t]{2,}/g, " ");
     if (!isSpeakable(text)) return;
-    const said = spoken === undefined ? "" : filterOutgoing(cleanReply(spoken, this.names)).trim();
+    // The filtered line is said as it is: there is nothing to translate.
+    const said = (safe.spoken ?? (safe.blocked === null ? "" : text)).trim();
+    const line = { text, spoken: said === "" ? null : said, emotion, blocked };
+    if (!screened && this.screen !== null && !this.screen(line)) return;
     this.prepare?.(text, said === "" ? undefined : said, emotion);
     const action = newAction(
       this.lane,
       this.priority,
       { type: "speak", context: this.context, text, emotion },
-      { ttl: this.ttlMs, turn: this.turn },
+      { ttl: this.ttlMs, turn: this.turn, blocked },
     );
     try {
       await guard(this.sink.submit(action), this.signal);
@@ -609,6 +684,10 @@ class Turn {
   #notices: readonly Notice[] = [];
   /** Tools of this turn that answered without an error. */
   readonly #succeeded = new Set<string>();
+  /** `pipeline = "v3"`: this turn of the main line. */
+  readonly #main: MainTurn | null;
+  /** The router says a fallback model is answering: its words are reviewed as such. */
+  #fallback = false;
 
   constructor(
     readonly agent: Agent,
@@ -626,6 +705,87 @@ class Turn {
   ) {
     this.voice = key.kind === "voice";
     this.social = agent.social();
+    const main = agent.mainline;
+    this.#main = main === null ? null : new MainTurn(main, agent, turn, key, this.#claim());
+  }
+
+  /** What the Floor knows this turn as. */
+  #claim(): MainClaim {
+    const i = this.initiative;
+    const first = this.#focused[0];
+    const reason = this.plan.focus.reason;
+    let kind: FloorClaimKind;
+    if (this.intent !== null) kind = "wish";
+    else if (i?.claim !== undefined) kind = i.claim;
+    else if (reason === "addressed") kind = "addressed";
+    else if (reason === "reply_to_her") kind = "reply";
+    else if (reason === "ambient") kind = "ambient";
+    else if (reason === "notice") kind = "result";
+    else kind = "notable";
+    const spoken = first === undefined ? false : this.session.entry(first.id.id)?.spoken === true;
+    const answers =
+      first === undefined
+        ? null
+        : {
+            key: spoken
+              ? `voice:utterance:${first.id.id}`
+              : `msg:${first.id.context.platform}:${first.id.id}`,
+            repeat_after_ms: 0,
+            revision: 1,
+          };
+    const proposal =
+      this.intent !== null
+        ? { id: this.intent.intent.id, tool: this.intent.tool ?? null }
+        : (i?.proposal ?? null);
+    return {
+      kind,
+      attention: i?.attention ?? answers,
+      cause: this.agent.mainline?.causeOf(first?.id.id) ?? null,
+      muted: this.intent?.muted === true,
+      proposal,
+      chain: i?.chain ?? null,
+    };
+  }
+
+  /** Generation is over, however it went. */
+  ended(): void {
+    this.#main?.ended();
+  }
+
+  /**
+   * The call failed: someone waiting still gets a fixed line (§21), and nothing that was already
+   * said is repeated. What she says on her own just does not happen.
+   */
+  async fallback(): Promise<string> {
+    const main = this.#main;
+    if (main === null || !main.owed || this.#parts > 0 || main.claim.muted) return "";
+    if (!main.main.takeFallback(this.key)) return "";
+    const lines =
+      main.claim.kind === "result"
+        ? [FALLBACK_RESULT_LINE]
+        : main.claim.kind === "urgent"
+          ? [FALLBACK_URGENT_LINE]
+          : FALLBACK_LINES;
+    const line =
+      lines[Math.floor(this.agent.random.nextF32() * lines.length)] ?? FALLBACK_RESULT_LINE;
+    try {
+      return await this.#canned(line, main.claim.kind === "addressed", null);
+    } catch (error) {
+      this.agent.log.warn({ turn: this.turn, error: errorMessage(error) }, "no fixed line either");
+      return "";
+    }
+  }
+
+  /** One line of this turn through the output review. */
+  #safe(text: string, spoken: string | null = null, aloud = false): SafeLine {
+    return safeOutgoing(this.agent.ctx.services.get(ModerationKey), {
+      path: this.#fallback ? "fallback" : "reply",
+      text,
+      spoken,
+      aloud,
+      context: this.key,
+      turn: this.turn,
+    });
   }
 
   /** The messages the reply answers (all inputs when nothing was selected). */
@@ -693,7 +853,8 @@ class Turn {
     if (i === null) return null;
     return {
       capability: i.intent.capability,
-      summary: i.summary,
+      // The main line has to do it itself, so it needs to know with what.
+      summary: typeof i.tool === "string" ? `${i.summary ?? ""}(工具 ${i.tool})` : i.summary,
       done: i.done,
       why: i.intent.why,
       opening: i.intent.opening,
@@ -723,6 +884,14 @@ class Turn {
     const { respond, direct, score, reasons } = decision;
     if (!respond) {
       this.#publishDecision(false, score, reasons);
+      this.#main?.silent(reasons.at(-1) ?? "");
+      return "";
+    }
+    const refused = this.#main?.take() ?? null;
+    if (refused !== null) {
+      reasons.push(`floor: ${refused}`);
+      this.#publishDecision(false, score, reasons);
+      this.#main?.silent(refused);
       return "";
     }
     if (budget === "exhausted") {
@@ -810,7 +979,19 @@ class Turn {
    */
   #requester(): IncomingMessage | undefined {
     const pool = this.#focused;
-    return pool.findLast((m) => m.mentions_self || m.reply_to_self) ?? pool.at(-1);
+    return (
+      pool.findLast((m) => m.mentions_self || m.reply_to_self) ??
+      pool.at(-1) ??
+      (this.#main?.claim.chain?.requester as IncomingMessage | undefined)
+    );
+  }
+
+  /** Who a tool of the main line acts for: the speakers, or who the turn it follows answered. */
+  #askers(): AccountRef[] {
+    const authors = this.#authors();
+    if (authors.length > 0) return authors;
+    const requester = this.#main?.claim.chain?.requester as IncomingMessage | undefined;
+    return requester === undefined ? [] : [requester.author.account];
   }
 
   /**
@@ -863,6 +1044,8 @@ class Turn {
       attentionCfg = cfg.attention;
       maxShare = cfg.attention.max_share_of_recent ?? profileShare;
     }
+    // §2: asking a model whether to speak is close to a coin toss; the Floor decides by rules.
+    if (this.#main !== null) attentionCfg = { ...attentionCfg, llm_check: false };
     const voice: VoiceAttention | null = this.voice
       ? {
           someoneSpeaking: this.session.someoneSpeaking(),
@@ -1016,6 +1199,7 @@ class Turn {
     const services = this.agent.ctx.services;
     const about = this.#about();
     const present = this.#present(about);
+    if (this.#main !== null) await this.#mainMemory(extras, present, about);
     const self = services.get(SelfStateKey) ?? null;
     const affect = services.get(AffectStateKey) ?? null;
     // Her secret crush (the `self` module's; with person cards, W4's affect owns it).
@@ -1038,7 +1222,8 @@ class Turn {
       notices: this.#takeNotices(),
       crushHere,
     });
-    const selfBudget = budgetSelf(own, cfg.prompt.self_chars);
+    const selfChars = this.#main === null ? cfg.prompt.self_chars : cfg.mainline.self_chars;
+    const selfBudget = budgetSelf(own, selfChars);
     extras.self = selfBudget.notes;
     extras.compiled.push(...selfBudget.compiled);
 
@@ -1057,6 +1242,10 @@ class Turn {
     }
     const intent = this.#intentData();
     if (intent !== null) blocks.push(ownBlock("mind", INTENT_TITLE, intentBody(intent), 2));
+    const flagged = flaggedBody(
+      this.session.recent(FLAGGED_HISTORY).filter((e) => !this.#hidden(e)),
+    );
+    if (flagged !== "") blocks.push(ownBlock("flagged", FLAGGED_TITLE, flagged, 3));
     const mine = budgetBlocks(blocks, {
       total: UNLIMITED,
       budgets: cfg.prompt.budgets,
@@ -1068,13 +1257,16 @@ class Turn {
     const registry = services.get(PromptContributorsKey);
     if (!registry || registry.all().length === 0) return extras;
     const request = this.#promptRequest(about);
-    const gathered = await gather(registry, request, cfg.contributor_timeout_ms, this.signal);
+    // The main line reads memory through its layers (`#mainMemory`), not the V2 contributor.
+    const skip =
+      this.#main !== null && services.has(MemoryRetrievalKey) ? [MEMORY_CONTRIBUTOR] : [];
+    const gathered = await gather(registry, request, cfg.contributor_timeout_ms, this.signal, skip);
     extras.reasons = gathered.reasons();
     const { data, superseded } = contributedData(gathered.sections);
     if (superseded.length > 0)
       extras.reasons.push(`rendered by the agent: ${superseded.join(", ")}`);
     const contributed = budgetBlocks(data, {
-      total: cfg.max_context_chars,
+      total: this.#main === null ? cfg.max_context_chars : cfg.mainline.data_chars,
       budgets: cfg.prompt.budgets,
       defaultBudget: cfg.prompt.default_budget,
     });
@@ -1168,6 +1360,8 @@ class Turn {
     extras: Extras,
     images: readonly ContentPart[],
   ): Promise<string> {
+    if (this.#main !== null)
+      return await this.#speakMain(this.#main, direct, names, extras, images);
     const cfg = this.agent.config;
     const services = this.agent.ctx.services;
     const router = services.require(LlmRouterKey);
@@ -1246,6 +1440,8 @@ class Turn {
         cfg.voice.voice_first,
         () => this.#output(),
         (spoken, written) => this.agent.noteSubtitle(this.key, this.turn, spoken, written),
+        null,
+        (text, spoken, aloud) => this.#safe(text, spoken, aloud),
       );
       await this.#produce(router, messages, priority, speech);
       this.#save();
@@ -1265,8 +1461,11 @@ class Turn {
     // in silence.
     const early: string[] = [];
     const send = async (raw: string) => {
-      const text = this.#linkMentions(filterOutgoing(cleanReply(raw, names)));
-      if (text !== "") early.push(await this.#sendText(sink, text, direct, priority));
+      const safe = this.#safe(cleanReply(raw, names));
+      const text = this.#linkMentions(safe.text);
+      if (text !== "") {
+        early.push(await this.#sendText(sink, text, direct, priority, safe.blocked));
+      }
     };
     const offered = new Set(this.#toolSpecs().map((t) => t.name));
     const segments = new TextSegments(
@@ -1289,6 +1488,364 @@ class Turn {
     }
     await send(segments.rest(expression));
     return early.join("\n");
+  }
+
+  // ---- the main line ---------------------------------------------------------------------------
+
+  /** The scheduler as this turn uses it. */
+  #out(sink: ActionSink): ActionSink {
+    const main = this.#main;
+    if (main === null) return sink;
+    return main.mouth(sink, () =>
+      this.voice ? this.agent.audience(this.key) : this.plan.focus.addressed_by,
+    );
+  }
+
+  /**
+   * The memory layers of §11. Pinned sections that come from people go in as data, retrieved
+   * memories too, with what she was told marked as such. Neither runs a model; a slow or broken
+   * store costs the memories, never the turn.
+   */
+  async #mainMemory(
+    extras: Extras,
+    present: readonly PresentPerson[],
+    about: AccountRef[],
+  ): Promise<void> {
+    const services = this.agent.ctx.services;
+    const limit = this.agent.config.contributor_timeout_ms;
+    const now = toTimestamp(this.#now);
+    const where = {
+      context: this.key,
+      present: present.flatMap((p) => (p.person === null ? [] : [p.person])),
+      accounts: present.map((p) => p.account),
+      now,
+    };
+    const pinned = this.#main?.main.pinned() ?? null;
+    if (pinned !== null) {
+      try {
+        const read = await timeout(limit, this.signal, () => pinned.pinned(where));
+        for (const section of read.sections) {
+          if (section.key === "commitments" || section.key === "people") {
+            const body = section.lines.join("\n");
+            extras.own.push(dataBlock(`pinned.${section.key}`, section.title, body));
+          }
+        }
+      } catch (error) {
+        if (this.signal.aborted) throw error;
+        extras.reasons.push(`pinned memory skipped: ${errorMessage(error)}`);
+      }
+    }
+    const retrieval = services.get(MemoryRetrievalKey);
+    const text = this.#promptRequest(about).query;
+    if (retrieval && text.trim() !== "") {
+      try {
+        const memories = await timeout(limit, this.signal, (signal) =>
+          retrieval.retrieve({ ...where, text }, signal),
+        );
+        const body = retrieval.format(memories, now);
+        if (body.trim() !== "") {
+          const room = Math.floor(this.agent.config.mainline.data_chars / 2);
+          extras.own.push(dataBlock("memory", "你記得的事", truncate(body, room)));
+        }
+      } catch (error) {
+        if (this.signal.aborted) throw error;
+        extras.reasons.push(`memories skipped: ${errorMessage(error)}`);
+      }
+    }
+  }
+
+  /** The tools on offer: what she can do, how to promise and how to change a running task. */
+  #mainTools(main: MainTurn): ToolSpec[] {
+    const cfg = this.agent.config;
+    const depth = main.claim.chain?.depth ?? 0;
+    if (!cfg.tools_enabled || depth > cfg.max_tool_steps) return [];
+    const steerable = main.main.tasks().length > 0;
+    const allowed = this.agent.ctx.services.get(DirectivesKey);
+    const specs = allowed?.filterTools(this.#toolSpecs(), this.key) ?? this.#toolSpecs();
+    return [...specs.map(slimTool), COMMIT_SPEC, ...(steerable ? [STEER_SPEC] : [])];
+  }
+
+  /** The prompt of §10.4. */
+  #mainPrompt(
+    main: MainTurn,
+    extras: Extras,
+    images: readonly ContentPart[],
+    tools: readonly ToolSpec[],
+    speaksIn: string | null,
+  ): ChatMessage[] {
+    const cfg = this.agent.config;
+    const m = cfg.mainline;
+    const line = main.main;
+    const services = this.agent.ctx.services;
+    const now = this.#now;
+    const offset = -new Date(now).getTimezoneOffset();
+    const core = this.agent.persona.corePrompt();
+    const rules = mainRules(this.voice, speaksIn);
+    const buckets = services.get(WorkingContextKey)?.buckets(this.key) ?? [];
+    main.shown(line.commitments.overdue(this.key));
+    const own = this.intent?.intent.id ?? main.claim.proposal?.id ?? null;
+    const examples = m.examples_chars > 0 ? this.#examples() : null;
+    const wishes = services.get(DirectivesKey)?.wishes(this.key) ?? [];
+    const data = [
+      ...extras.own,
+      ...extras.sections,
+      contextData(buckets, m.context_entries),
+      proposalData(
+        line.proposals.open(this.key).filter((p) => p.id !== own),
+        m.proposals,
+      ),
+      resultData(line.hands.takeResults(this.key)),
+      wishes.length === 0 ? null : dataBlock("viewers", "觀眾的要求", wishes.join("\n")),
+      examples === null ? null : truncate(examples, m.examples_chars),
+    ].filter((d): d is string => d !== null);
+    const tail = tailSection({
+      head: whenAndWhere(this.key, new Date(now), offset),
+      kind: main.claim.kind,
+      muted: main.claim.muted,
+      notes: extras.self,
+      state: contextState(buckets),
+      tasks: line.tasks().map((t) => `${t.task}(${t.owner}):${t.text}`),
+      recent: main.main.recent(this.key, m.recent_lines),
+      actions: [...line.hands.recent(ACTING_ALONE, 2), ...line.hands.recent(this.key, 3)],
+      speaksIn: this.voice ? speaksIn : null,
+    });
+    const selection = this.plan.selection;
+    const verbs = selection === null ? new Map<string, string>() : focusVerbs(selection);
+    const folded = services.get(ConversationStatesKey)?.get(this.key) ?? null;
+    const history = markCurrent(
+      afterFold(
+        this.session.recent(m.history_lines).filter((e) => !this.#hidden(e)),
+        folded?.folded_up_to ?? null,
+        Math.min(cfg.history_after_fold, m.history_lines),
+      ),
+      selection?.focus ?? [],
+      verbs,
+    );
+    const build = (kept: readonly HistoryEntry[]) =>
+      mainMessages({
+        fixed: core === "" ? rules : `${core}\n\n${rules}`,
+        pinned: pinnedSection(
+          line.ownerRules(this.key),
+          line.commitments.open(this.key),
+          now,
+          offset,
+        ),
+        data,
+        history: kept,
+        tail,
+        transcript: {
+          maxChars: m.history_chars,
+          maxEntryChars: m.entry_chars,
+          gapMs: cfg.time_gap_ms,
+        },
+        images,
+      });
+    return fitHistory(build, history, tools, m.prompt_tokens);
+  }
+
+  /** The turn of `#generate` under the main line. */
+  async #speakMain(
+    main: MainTurn,
+    direct: boolean,
+    names: readonly string[],
+    extras: Extras,
+    images: readonly ContentPart[],
+  ): Promise<string> {
+    const cfg = this.agent.config;
+    const services = this.agent.ctx.services;
+    const router = services.require(LlmRouterKey);
+    const sink = this.#out(services.require(ActionSinkKey));
+    const voiceSink = this.voice ? services.get(VoiceSinkKey) : undefined;
+    const tools = this.#mainTools(main);
+    const messages = this.#mainPrompt(main, extras, images, tools, voiceSink?.speaksIn ?? null);
+    this.#saved = savedPrompt({
+      turn: this.turn,
+      context: this.key,
+      at: toTimestamp(this.#now),
+      reasoning: "off",
+      blocks: extras.compiled,
+      messages,
+      maxChars: cfg.prompt.saved_message_chars,
+    });
+    const priority = this.#priority(direct);
+    if (this.voice) {
+      const [platform, scope] = voiceScope(this.key);
+      const speech = new Speech(
+        sink,
+        this.flags,
+        names,
+        this.key,
+        this.turn,
+        voiceLane(platform, scope),
+        priority,
+        cfg.voice.speak_ttl_ms,
+        this.signal,
+        voiceSink?.prepare
+          ? (text, spoken, emotion) => voiceSink.prepare?.(this.key, text, spoken, emotion)
+          : null,
+        Boolean(voiceSink?.speaksIn),
+        // A `<voice>` line first would be out before the gate can read the sentence it stands for.
+        false,
+        () => this.#output(),
+        (spoken, written) => this.agent.noteSubtitle(this.key, this.turn, spoken, written),
+        (line) => main.screen(line),
+        (text, spoken, aloud) => this.#safe(text, spoken, aloud),
+      );
+      await this.#mainCall(main, router, messages, tools, priority, speech, null, null);
+      this.#save();
+      await this.#postAside(sink, speech.aside, priority);
+      return speech.spoken;
+    }
+    const lane = textLane(this.key);
+    const typing = new AbortController();
+    const stopTyping = () => typing.abort();
+    this.signal.addEventListener("abort", stopTyping, { once: true });
+    const typingLoop = main.claim.muted
+      ? Promise.resolve()
+      : this.#keepTyping(sink, lane, priority, typing.signal);
+    const early: string[] = [];
+    const send = async (raw: string) => {
+      if (main.claim.muted) return;
+      const safe = this.#safe(cleanReply(raw, names));
+      const text = this.#linkMentions(safe.text);
+      if (text === "") return;
+      main.sent(text);
+      early.push(await this.#sendText(sink, text, direct, priority, safe.blocked));
+    };
+    const segments = new TextSegments(send, (text) => main.holdsText(text));
+    try {
+      await this.#mainCall(main, router, messages, tools, priority, null, segments, send);
+      this.#save();
+    } finally {
+      typing.abort();
+      this.signal.removeEventListener("abort", stopTyping);
+      await typingLoop;
+    }
+    return early.join("\n");
+  }
+
+  /** Streams one response. A model that does not start in time counts as failed. */
+  async #mainStream(
+    main: MainTurn,
+    router: LlmRouter,
+    request: ChatRequest,
+    speech: Speech | null,
+    segments: TextSegments | null,
+  ): Promise<Step> {
+    const controller = new AbortController();
+    const onAbort = () => controller.abort(this.signal.reason);
+    if (this.signal.aborted) onAbort();
+    this.signal.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(
+      () => controller.abort(new TimeoutError()),
+      main.config.first_token_timeout_ms,
+    );
+    try {
+      return await this.#streamStep(router, request, speech, segments, controller.signal, () =>
+        clearTimeout(timer),
+      );
+    } finally {
+      clearTimeout(timer);
+      this.signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /**
+   * One call of the main line: what she says goes out while it is written, then her words are
+   * compared with her actions. Only a claim with nothing behind it costs a second call (claims.ts:
+   * the last resort, as §10.1 has it).
+   */
+  async #mainCall(
+    main: MainTurn,
+    router: LlmRouter,
+    initial: ChatMessage[],
+    tools: ToolSpec[],
+    priority: Priority,
+    speech: Speech | null,
+    segments: TextSegments | null,
+    send: ((text: string) => Promise<void>) | null,
+  ): Promise<void> {
+    const cfg = this.agent.config;
+    const messages = [...initial];
+    main.offered(tools.map((t) => t.name));
+    for (;;) {
+      const request: ChatRequest = {
+        messages: [...messages],
+        tools,
+        temperature: cfg.temperature,
+        max_tokens: cfg.max_tokens,
+        reasoning_purpose: this.#reasoningPurpose(),
+        session: this.#llmSession(),
+      };
+      this.#level ??= router.reasoningFor("chat", request);
+      segments?.step();
+      const { expression, raw, calls } = await this.#mainStream(
+        main,
+        router,
+        request,
+        speech,
+        segments,
+      );
+      if (speech?.stopped()) {
+        this.agent.log.debug({ turn: this.turn }, "speech interrupted, generation stopped");
+        return;
+      }
+      if (segments !== null && !expression.isSilent()) {
+        for (const text of sentences(segments.rest(expression))) {
+          main.gate.hold({ text, spoken: null, emotion: null });
+        }
+      }
+      const output = turnOutput(expression, calls, main.said);
+      const outcome = main.finish(output);
+      if (outcome.remind !== null) {
+        messages.push(assistantMessage(raw, []));
+        messages.push(userMessage(claimReminder(outcome.remind.tool)));
+        continue;
+      }
+      for (const line of outcome.release) {
+        if (speech !== null) {
+          main.said.push({ text: line.text, voice: line.spoken, emotion: line.emotion });
+          await speech.release(line);
+        } else await send?.(line.text);
+      }
+      // A model that gave nothing at all is no decision to be quiet.
+      if (main.owed && main.said.length === 0 && !output.silence && output.actions.length === 0) {
+        throw new TurnError("the model returned nothing");
+      }
+      main.conclude(
+        { ...output, say: [...main.said] },
+        (tool, id, args, signal) =>
+          this.#hand({ id, name: tool, arguments: args }, priority, signal),
+        this.#requester(),
+      );
+      return;
+    }
+  }
+
+  /** One action, in the hands: it may outlive this turn. */
+  async #hand(call: ToolCall, priority: Priority, signal: AbortSignal): Promise<Run> {
+    let data: JsonValue = null;
+    const [ok, full] = await this.#tryTool(call, priority, signal, (d) => {
+      data = d;
+    });
+    const text = truncate(full, this.agent.config.max_tool_result_chars);
+    this.agent.ctx.publish(
+      {
+        type: "custom",
+        data: {
+          topic: "agent.tool",
+          payload: {
+            turn: this.turn,
+            context: contextJson(this.key),
+            tool: call.name,
+            ok,
+            result: text,
+          },
+        },
+      },
+      { turn: this.turn },
+    );
+    return { ok, text, data };
   }
 
   /** Keeps the compressed prompt of this turn (sampled, see `[modules.agent.prompt]`). */
@@ -1329,14 +1886,20 @@ class Turn {
   async #postAside(sink: ActionSink, aside: readonly string[], priority: Priority): Promise<void> {
     const cfg = this.agent.config;
     if (!cfg.voice.text_aside || aside.length === 0 || this.flags.interrupted) return;
-    const text = truncate(filterOutgoing(aside.join("\n")), Math.max(cfg.max_message_chars, 1));
-    if (text === "") return;
     const chat: ContextKey = { ...this.key, kind: "channel" };
+    const safe = safeOutgoing(this.agent.ctx.services.get(ModerationKey), {
+      path: "aside",
+      text: aside.join("\n"),
+      context: chat,
+      turn: this.turn,
+    });
+    const text = truncate(safe.text, Math.max(cfg.max_message_chars, 1));
+    if (text === "") return;
     const action = newAction(
       textLane(chat),
       priority,
       { type: "send_message", context: chat, message: { text, reply_to: null } },
-      { ttl: cfg.reply_ttl_ms, turn: this.turn },
+      { ttl: cfg.reply_ttl_ms, turn: this.turn, blocked: safe.blocked },
     );
     try {
       await guard(sink.submit(action), this.signal);
@@ -1352,6 +1915,7 @@ class Turn {
     text: string,
     direct: boolean,
     priority: Priority,
+    blocked: string | null = null,
   ): Promise<string> {
     const cfg = this.agent.config;
     const lane = textLane(this.key);
@@ -1375,7 +1939,7 @@ class Turn {
           context: this.key,
           message: { text: chunk, reply_to: i === 0 ? replyTo : null },
         },
-        { ttl: cfg.reply_ttl_ms, turn: this.turn },
+        { ttl: cfg.reply_ttl_ms, turn: this.turn, blocked },
       );
       const id = action.id;
       this.session.recordOwn(displayName, me, chunk, id, this.#now);
@@ -1395,15 +1959,23 @@ class Turn {
 
   /** Budget exhausted: says (or writes) the constant out-of-energy line. */
   async #sayExhausted(direct: boolean): Promise<string> {
-    const sink = this.agent.ctx.services.require(ActionSinkKey);
+    return await this.#canned(EXHAUSTED_LINE, direct, "tired");
+  }
+
+  /** Says (or writes) a constant line. No model is involved. */
+  async #canned(line: string, direct: boolean, emotion: string | null): Promise<string> {
+    const sink = this.#out(this.agent.ctx.services.require(ActionSinkKey));
     const priority = this.#priority(direct);
-    if (!this.voice) return await this.#sendText(sink, EXHAUSTED_LINE, direct, priority);
+    const safe = this.#safe(line, null, this.voice);
+    if (!this.voice) {
+      return await this.#sendText(sink, safe.text, direct, priority, safe.blocked);
+    }
     const [platform, scope] = voiceScope(this.key);
     const action = newAction(
       voiceLane(platform, scope),
       priority,
-      { type: "speak", context: this.key, text: EXHAUSTED_LINE, emotion: "tired" },
-      { ttl: this.agent.config.voice.speak_ttl_ms, turn: this.turn },
+      { type: "speak", context: this.key, text: safe.text, emotion },
+      { ttl: this.agent.config.voice.speak_ttl_ms, turn: this.turn, blocked: safe.blocked },
     );
     try {
       await guard(sink.submit(action), this.signal);
@@ -1412,7 +1984,7 @@ class Turn {
       throw new TurnError(`submitting speech: ${errorMessage(error)}`, { cause: error });
     }
     this.#output();
-    return EXHAUSTED_LINE;
+    return safe.text;
   }
 
   /** Submits a typing indicator every `typing_refresh_ms` until `signal` aborts. */
@@ -1538,14 +2110,17 @@ class Turn {
     request: ChatRequest,
     speech: Speech | null,
     segments: TextSegments | null = null,
+    signal: AbortSignal = this.signal,
+    onFirst: (() => void) | null = null,
   ): Promise<Step> {
     const offeredTools = (request.tools?.length ?? 0) > 0;
     const stream = await guard(
       withLlmTag({ module: "agent", turn: this.turn, label: "reply" }, () =>
-        router.stream("chat", request, this.signal),
+        router.stream("chat", request, signal),
       ),
-      this.signal,
+      signal,
     );
+    this.#fallback = stream.fallback;
     const iterator = stream[Symbol.asyncIterator]();
     const parser = new ExpressionParser();
     const expression = new Expression();
@@ -1554,7 +2129,8 @@ class Turn {
     let finished = false;
     try {
       for (;;) {
-        const next: IteratorResult<StreamEvent> = await guard(iterator.next(), this.signal);
+        const next: IteratorResult<StreamEvent> = await guard(iterator.next(), signal);
+        onFirst?.();
         if (next.done) {
           finished = true;
           break;
@@ -1715,18 +2291,23 @@ class Turn {
     };
   }
 
-  async #tryTool(call: ToolCall, priority: Priority): Promise<[boolean, string]> {
+  async #tryTool(
+    call: ToolCall,
+    priority: Priority,
+    turnSignal: AbortSignal = this.signal,
+    report: ((data: JsonValue) => void) | null = null,
+  ): Promise<[boolean, string]> {
     const tool = this.#tool(call.name);
     if (!tool) return [false, `error: unknown tool \`${call.name}\``];
     const node = tool.permission ?? null;
-    if (node !== null && this.intent !== null) {
+    const asked = this.#main === null ? this.#authors() : this.#askers();
+    if (node !== null && (this.intent !== null || (this.#main !== null && asked.length === 0))) {
       // Nobody asked: tools that need a person's permission are not hers to use alone.
       return [false, "error: permission denied (needs someone who may use this tool to ask)"];
     }
     if (node !== null) {
       const authorizer = this.agent.ctx.services.get(AuthorizerKey);
-      const allowed =
-        authorizer !== undefined && this.#authors().every((a) => authorizer.allows(a, node));
+      const allowed = authorizer !== undefined && asked.every((a) => authorizer.allows(a, node));
       if (!allowed) {
         return [false, "error: permission denied (the user who asked may not use this tool)"];
       }
@@ -1742,10 +2323,12 @@ class Turn {
       }
     }
     const last = this.#requester();
-    if (!last && this.intent === null) return [false, "error: no triggering message"];
+    if (!last && this.intent === null && this.#main === null) {
+      return [false, "error: no triggering message"];
+    }
     const me = this.agent.selfAccount(this.key.platform);
     try {
-      const out = await timeout(this.agent.config.tool_timeout_ms, this.signal, (signal) => {
+      const out = await timeout(this.agent.config.tool_timeout_ms, turnSignal, (signal) => {
         const ctx: ToolContext = last
           ? {
               turn: this.turn,
@@ -1753,28 +2336,42 @@ class Turn {
               account: last.author.account,
               // The person she is answering asked: a request she may decline (see the gate).
               principal: Principals.user(last.author.account, this.key),
+              // Everyone this turn speaks for: rules are made with the weakest of them.
+              askers: asked,
               message: last.id,
               priority,
               signal,
+              ...(report === null ? {} : { report }),
             }
           : {
               // Her own turn: she acts as herself (her own limits, consent of whom it concerns).
               turn: this.turn,
               context: this.key,
               account: me,
-              principal: Principals.self(this.key, null),
+              principal: Principals.self(this.intent?.intent.context ?? this.key, null),
               message: { context: this.key, id: this.turn },
               priority,
               signal,
+              ...(report === null ? {} : { report }),
             };
         return tool.call(ctx, args);
       });
-      return [true, out];
+      return [true, this.#outside(out)];
     } catch (error) {
-      if (this.signal.aborted) throw error;
+      if (turnSignal.aborted) throw error;
       if (error instanceof TimeoutError) return [false, "error: timed out"];
       return [false, `error: ${errorMessage(error)}`];
     }
+  }
+
+  /** What a tool brought back is outside content: it goes in with a warning when it needs one. */
+  #outside(text: string): string {
+    const verdict = inspectInput(this.agent.ctx.services, {
+      text,
+      source: "tool",
+      context: this.key,
+    });
+    return verdict?.note ? `${verdict.note}\n${text}` : text;
   }
 
   /**

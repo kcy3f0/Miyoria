@@ -219,6 +219,24 @@ function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
+/** The two lines every prompt of hers has: the time and where she is. */
+export function whenAndWhere(ctx: ContextKey, now: Date, utcOffsetMinutes: number): string {
+  const local = new Date(now.getTime() + utcOffsetMinutes * 60_000);
+  const weekday = WEEKDAYS[(local.getUTCDay() + 6) % 7];
+  const time =
+    `${local.getUTCFullYear()}-${pad2(local.getUTCMonth() + 1)}-${pad2(local.getUTCDate())} ` +
+    `${pad2(local.getUTCHours())}:${pad2(local.getUTCMinutes())}(星期${weekday})`;
+  const place =
+    ctx.kind === "dm"
+      ? "私訊"
+      : ctx.kind === "voice"
+        ? `語音頻道 ${ctx.channel}`
+        : ctx.kind === "thread"
+          ? `討論串 ${ctx.channel}`
+          : `頻道 ${ctx.channel}`;
+  return `- 時間:${time}\n- 地點:${ctx.platform} 的${place}`;
+}
+
 /**
  * The per-turn situation message. `now` is shown in the time zone `utcOffsetMinutes` east of
  * UTC (default: the local time zone, like Rust `Local::now()`).
@@ -303,6 +321,23 @@ export const SPOKEN_TAG = "(語音)";
 export const FOCUS_HEAD = "# 要回的訊息(前面的對話、筆記和記憶只是背景)";
 /** At most this many focus messages are repeated (the newest). */
 const MAX_FOCUS = 5;
+/** Title of the data block that holds what the input defence flagged. */
+export const FLAGGED_TITLE = "可疑的訊息";
+/** What stands in the transcript for a flagged message: it is data, not a line of conversation. */
+export const FLAGGED_LINE = `[內容在參考資料「${FLAGGED_TITLE}」]`;
+
+/** What a transcript shows of `entry`. */
+function shownText(entry: HistoryEntry): string {
+  return entry.flagged == null ? entry.text : FLAGGED_LINE;
+}
+
+/** The messages the input defence flagged, each with what it noticed. */
+export function flaggedBody(history: readonly HistoryEntry[]): string {
+  return history
+    .filter((e) => e.flagged != null)
+    .map((e) => `${safeName(e.author)}:${neutralize(e.text)}\n${e.flagged}`)
+    .join("\n");
+}
 
 /**
  * The turn's focus messages (history entries marked `current`), repeated as the last user
@@ -314,7 +349,7 @@ export function focusMessage(history: readonly HistoryEntry[]): string | null {
   if (current.length === 0) return null;
   const lines = current.map((e) => {
     const verb = e.focusVerb ?? "說";
-    const text = cut(neutralize(e.text), DEFAULT_TRANSCRIPT.maxEntryChars);
+    const text = cut(neutralize(shownText(e)), DEFAULT_TRANSCRIPT.maxEntryChars);
     return `${safeName(e.author)}${e.spoken ? SPOKEN_TAG : ""} ${verb}:${text}`;
   });
   return `${FOCUS_HEAD}\n${lines.join("\n")}`;
@@ -515,7 +550,7 @@ function otherLine(entry: HistoryEntry, maxChars: number, parent: HistoryEntry |
   if (entry.isBot) tags += BOT_TAG;
   if (entry.spoken) tags += SPOKEN_TAG;
   if (parent !== null) tags += replyTag(parent.isSelf ? SELF_QUOTE_NAME : safeName(parent.author));
-  return `${safeName(entry.author)}${tags}: ${cut(neutralize(entry.text), maxChars)}`;
+  return `${safeName(entry.author)}${tags}: ${cut(neutralize(shownText(entry)), maxChars)}`;
 }
 
 function asciiEqualIgnoreCase(a: string, b: string): boolean {

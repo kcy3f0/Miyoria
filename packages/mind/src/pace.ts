@@ -5,8 +5,10 @@
 // that changed nothing and did nothing makes the next one 1.5× sparser (up to 4 times); the
 // Arbiter's quiet hours and a degraded LLM budget make it 3× sparser each. Always between
 // `min_heartbeat_mins` (and `min_interval_secs`) and `max_heartbeat_mins`; none while the
-// budget is exhausted. Goal triggers, activity ends and salient changes wake Plan on their own,
-// so the heartbeat is only the fallback for "nothing happened, but maybe I want something".
+// budget is exhausted. Her feelings lean it a little (`AffectBiases.initiative`): sooner in a
+// good mood, later in a bad one, inside the same limits. Goal triggers, activity ends and salient
+// changes wake Plan on their own, so the heartbeat is only the fallback for "nothing happened, but
+// maybe I want something".
 
 import type { Drives } from "@miyoria/types";
 import type { MindConfig } from "./config.js";
@@ -27,7 +29,12 @@ export interface Pace {
   /** Quiet hours apply now (the Arbiter's ledger limits). */
   quiet: boolean;
   budget: BudgetState;
+  /** How much her feelings want her to start things (-1..1, `AffectBiases.initiative`). */
+  initiative?: number;
 }
+
+/** The share of the heartbeat one unit of `initiative` takes away. */
+const INITIATIVE_PACE = 0.5;
 
 const clamp01 = (v: number) => Math.min(Math.max(v, 0), 1);
 const above = (v: number, level: number) => (v > level ? (v - level) / (1 - level) : 0);
@@ -52,6 +59,8 @@ export function heartbeatMs(pace: Pace, config: MindConfig): number | null {
   if (pace.budget === "exhausted") return null;
   let mins = config.heartbeat_mins * (1 - 0.75 * clamp01(pace.urge));
   mins *= 1.5 ** Math.min(Math.max(pace.emptyStreak, 0), MAX_EMPTY_STEPS);
+  const lean = pace.initiative ?? 0;
+  if (Number.isFinite(lean)) mins *= 1 - INITIATIVE_PACE * Math.min(Math.max(lean, -1), 1);
   if (pace.quiet) mins *= 3;
   if (pace.budget === "degraded") mins *= 3;
   const min = Math.max(config.min_heartbeat_mins * MINUTE_MS, config.min_interval_secs * 1000);

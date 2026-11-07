@@ -14,6 +14,65 @@ const T0 = Date.parse("2026-11-02T12:00:00.000Z");
 const TEXT: ContextKey = { platform: "discord", scope: "111", channel: "222", kind: "channel" };
 const OWEN = { platform: "discord", id: "100" };
 
+describe("promises", () => {
+  const reply = (promises: unknown) =>
+    parseAppraiseReply(JSON.stringify({ appraisals: [], feelings: [], promises }));
+
+  it("are read leniently and capped", () => {
+    expect(reply("no").promises).toEqual([]);
+    expect(
+      reply([
+        { person: "Owen", kept: true },
+        { person: "", kept: true },
+        { person: "Amy", kept: "yes" },
+        { person: "Amy", kept: false },
+        { person: "Bob", kept: false },
+      ]).promises,
+    ).toEqual([
+      { person: "Owen", kept: true },
+      { person: "Amy", kept: false },
+    ]);
+    expect(parseAppraiseReply('{"appraisals":[]}').promises).toEqual([]);
+  });
+
+  it("go through the same call as her appraisals, about people she knows", async () => {
+    const affect = new FakeAffect();
+    affect.cardList.push(card("Owen", "p1"));
+    const result = await applyAppraisal(
+      reply([
+        { person: "Owen", kept: false },
+        { person: "Nobody", kept: true },
+      ]),
+      affect,
+      TEXT,
+      T0,
+      () => null,
+    );
+    expect(affect.appraised).toHaveLength(1);
+    expect(affect.appraised[0]?.promises).toEqual([
+      { toward: "Owen", kept: false, cause: "Owen食言了" },
+    ]);
+    expect(result.changes).toEqual(["Owen 食言了"]);
+  });
+
+  it("nothing to say is no call", async () => {
+    const affect = new FakeAffect();
+    await applyAppraisal(reply([]), affect, TEXT, T0, () => null);
+    expect(affect.appraised).toEqual([]);
+  });
+
+  it("the prompt asks for them, as data about people, in the one format", () => {
+    const [system] = appraiseMessages({
+      name: "DS",
+      core: "",
+      time: "12:00",
+      segments: [],
+      cards: new Map(),
+    });
+    expect(JSON.stringify(system)).toContain("promises");
+  });
+});
+
 describe("interaction segments", () => {
   it("are ready once quiet, only when she was involved and long enough", () => {
     const s = new Segments();
