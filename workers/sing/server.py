@@ -73,6 +73,7 @@ Environment
     SING_OFFLOAD_URLS      workers to offload while converting, comma separated (default none),
                            e.g. http://127.0.0.1:8002,http://127.0.0.1:8003
     SING_EXCLUSIVE_WAIT_S  wait this long for Core's go (exclusive_ack) (default 30)
+    SING_RESOLVE_TIMEOUT_S give up finding a song after this long (default 60)
     SING_RELOAD_TIMEOUT_S  longest wait for a worker to reload    (default 300)
     SING_MOCK_SECONDS      mock: song length                      (default 3)
     SING_MOCK_STAGE_MS     mock: delay per stage                  (default 0)
@@ -396,6 +397,33 @@ def _set(job: Job, stage: str, within: float = 0.0) -> None:
     job.stage = stage
 
 
+def _bounded(fn: Callable[[], Any], cancelled: Callable[[], bool], limit_s: float) -> Any:
+    """Runs a step that waits on the network on its own thread, so a lookup that never returns
+    fails this job (or is cancelled) instead of holding the queue: jobs run one at a time, and
+    yt-dlp's socket timeout does not cover every way it can hang. The thread is left behind."""
+    done = threading.Event()
+    out: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            out["value"] = fn()
+        except BaseException as e:  # noqa: BLE001
+            out["error"] = e
+        finally:
+            done.set()
+
+    threading.Thread(target=run, name="sing-bounded", daemon=True).start()
+    deadline = time.monotonic() + limit_s
+    while not done.wait(0.1):
+        if cancelled():
+            raise Cancelled()
+        if time.monotonic() >= deadline:
+            raise JobError(f"finding the song took longer than {limit_s:.0f} s")
+    if "error" in out:
+        raise out["error"]
+    return out["value"]
+
+
 def _source_from_request(job: Job) -> Source:
     req, store, b = job.request, state.store, state.backend
     if req.path:
@@ -633,7 +661,8 @@ def _run_job(job: Job) -> None:
         timings[f"{name}_s"] = round(time.perf_counter() - t0, 2)
         return out
 
-    src: Source = timed("resolve", lambda: _source_from_request(job))
+    limit = env_float("SING_RESOLVE_TIMEOUT_S", 60.0)
+    src: Source = timed("resolve", lambda: _bounded(lambda: _source_from_request(job), check, limit))
     if req.title:
         src.title = req.title.strip()
     if req.artist:

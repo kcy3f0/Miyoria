@@ -12,6 +12,8 @@ import sys
 import time
 from pathlib import Path
 
+import threading
+
 import pytest
 
 SING = Path(__file__).resolve().parent.parent / "sing"
@@ -350,6 +352,39 @@ def test_unknown_things_are_404(sing):
     assert sing.get("/songs/nope").status_code == 404
     assert sing.get("/songs/nope/files/mix.wav").status_code == 404
     assert sing.get("/songs/x/files/secret.txt").status_code == 404
+
+
+def _stuck_lookup():
+    threading.Event().wait(30)
+
+
+def test_a_lookup_that_never_returns_fails_instead_of_holding_the_queue():
+    import server
+    from engine import JobError
+
+    with pytest.raises(JobError, match="took longer"):
+        server._bounded(_stuck_lookup, lambda: False, 0.2)
+
+
+def test_a_stuck_lookup_can_be_cancelled():
+    import server
+    from engine import Cancelled
+
+    with pytest.raises(Cancelled):
+        server._bounded(_stuck_lookup, lambda: True, 30)
+
+
+def test_a_bounded_step_returns_its_value_and_raises_its_error():
+    import server
+    from engine import JobError
+
+    assert server._bounded(lambda: 7, lambda: False, 5) == 7
+
+    def fail():
+        raise JobError("no such song")
+
+    with pytest.raises(JobError, match="no such song"):
+        server._bounded(fail, lambda: False, 5)
 
 
 def test_cancel_a_queued_job(sing):
