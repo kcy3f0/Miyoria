@@ -12,6 +12,8 @@ import {
 import { LlmRouterKey } from "@miyoria/llm";
 import { type SettingsStore, SettingsStoreKey } from "@miyoria/store";
 import {
+  ACTIVITY_DONE_TOPIC,
+  ACTIVITY_FAILED_TOPIC,
   ARBITER_IMPULSE_TOPIC,
   ArbiterKey,
   type Clock,
@@ -50,6 +52,9 @@ const PUMP_MS = 1_000;
 const StateSchema = z.object({
   ledger: LedgerSnapshotSchema.prefault({}),
   producers: ProducerSnapshotSchema.prefault({}),
+  holds: z
+    .array(z.object({ capability: z.string(), reason: z.string(), until: z.number() }))
+    .default([]),
 });
 
 export interface ArbiterModuleOptions {
@@ -137,6 +142,8 @@ export class ArbiterModule implements Module {
       TURN_OUTCOME_TOPIC,
       TURN_FOCUS_TOPIC,
       ARBITER_IMPULSE_TOPIC,
+      ACTIVITY_DONE_TOPIC,
+      ACTIVITY_FAILED_TOPIC,
     ]);
     ctx.spawn("arbiter.events", async () => {
       for await (const env of events) runner.onEvent(env);
@@ -170,6 +177,7 @@ async function restore(
     const state = StateSchema.parse(value);
     core.book.restore(state.ledger, now);
     producers.restore(state.producers);
+    core.restoreHolds(state.holds, now);
     log.info("restored arbiter ledger");
   } catch (error) {
     log.warn({ error: errorMessage(error) }, "could not load arbiter state");
@@ -253,6 +261,14 @@ class Runner {
           this.core.turnOutcome(outcome);
           break;
         }
+        const ended =
+          v2Payload(event, ACTIVITY_DONE_TOPIC) ?? v2Payload(event, ACTIVITY_FAILED_TOPIC);
+        if (ended) {
+          const r = ended.request;
+          const crashed = ended.type === "failed" && ended.code === "crashed";
+          if (r.type === "stop" && r.activity === "game" && !crashed) this.core.gameClosed();
+          break;
+        }
         const focus = v2Payload(event, TURN_FOCUS_TOPIC);
         if (focus) {
           this.core.turnFocus(focus);
@@ -315,10 +331,11 @@ class Runner {
 
   async #persist(): Promise<void> {
     if (!this.store) return;
-    if (!this.core.book.dirty && !this.producers.dirty) return;
+    if (!this.core.book.dirty && !this.producers.dirty && !this.core.holdsDirty) return;
     const value = {
       ledger: this.core.book.snapshot(this.clock.now()),
       producers: this.producers.snapshot(),
+      holds: this.core.holds(),
     };
     try {
       const write = this.store.set(STATE_PROFILE, STATE_KEY, value as unknown as JsonValue);

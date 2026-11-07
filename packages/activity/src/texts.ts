@@ -99,7 +99,7 @@ export function endedText(
 ): string {
   const why =
     code === "disconnected"
-      ? "遊戲斷線了"
+      ? "遊戲被關掉或斷線了(可能是有人關的,不是要你重開)"
       : code === "crashed"
         ? "遊戲的擴充套件當掉了"
         : (reason ?? "遊戲停止了");

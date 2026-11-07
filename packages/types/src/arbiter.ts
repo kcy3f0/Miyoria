@@ -253,6 +253,8 @@ export interface Arbiter {
   record(entry: LedgerRecord): string;
   /** Updates the outcome of an entry (a task finished, someone engaged); `false`: unknown id. */
   resolve(id: string, outcome: LedgerOutcome, detail: string | null): boolean;
+  /** Why she may not do `capability` on her own right now (`null`: she may). */
+  held?(capability: string): string | null;
 }
 
 export const ArbiterKey = serviceKey<Arbiter>("Arbiter");

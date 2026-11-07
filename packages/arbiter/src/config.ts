@@ -62,6 +62,8 @@ export const ArbiterConfigSchema = z.object({
   stale_topic_mins: count().default(45),
   /** A capability that was refused or failed is shown as on hold this long. */
   blocked_mins: count().default(30),
+  /** After her game was closed, how long she may not start one on her own (0: no hold). */
+  game_hold_mins: count().default(60),
 
   // --- everything that is not an answer ---
   /**

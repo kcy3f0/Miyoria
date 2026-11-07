@@ -77,6 +77,13 @@ export interface ArbiterEnv {
   act?(impulse: Impulse, signal?: AbortSignal): Promise<ImpulseRun>;
 }
 
+/** A capability she may not use on her own until `until` (epoch ms). */
+export interface HeldCapability {
+  capability: string;
+  reason: string;
+  until: number;
+}
+
 /** A floor that says no (`defer`: try again at `retryAt`; else rejected). */
 interface Floor {
   reason: ArbiterReason;
@@ -102,6 +109,8 @@ interface Block {
   capability: string;
   reason: string;
   until: number;
+  /** A hold: enforced on what she does on her own, not only shown to her. */
+  hard?: boolean;
 }
 
 /** Sources the owner drives: only expiry applies. */
@@ -146,6 +155,8 @@ export class ArbiterCore implements Arbiter {
   /** Accepted impulses with a turn, by turn. */
   readonly #turns = new Map<TurnId, Tracked>();
   #blocks: Block[] = [];
+  /** A hold changed since `holds()` was read. */
+  holdsDirty = false;
   /** A DM channel's place (`dm:<account>`), learned from her DM turns. */
   readonly #dmPlaces = new Map<string, string>();
   #pumping = false;
@@ -498,6 +509,10 @@ export class ArbiterCore implements Arbiter {
       defer: false,
     });
     if (this.#env.paused?.()) return no("paused", "主人暫停了你的自主行動");
+    if (impulse.kind === "act" && impulse.capability !== null && isSelfInitiated(impulse.source)) {
+      const hold = this.held(impulse.capability);
+      if (hold !== null) return no("denied", hold);
+    }
     const budget = this.#env.budget?.() ?? "ok";
     if (budget === "exhausted") return no("budget", "今天的能量(LLM 預算)用完了");
     if (budget === "degraded" && CHATTER.has(source)) {
@@ -681,8 +696,53 @@ export class ArbiterCore implements Arbiter {
     return placeOf(context, null);
   }
 
+  /** She may not do `capability` on her own for `ms` (someone asking her still can). */
+  hold(capability: string, reason: string, ms: number): void {
+    if (ms <= 0) return;
+    const until = this.#now() + ms;
+    this.#blocks = [
+      ...this.#blocks.filter((b) => b.capability !== capability),
+      { capability, reason, until, hard: true },
+    ];
+    this.holdsDirty = true;
+  }
+
+  /** Why she may not do `capability` on her own now (`null`: she may). */
+  held(capability: string): string | null {
+    const now = this.#now();
+    return (
+      this.#blocks.find((b) => b.hard && b.capability === capability && b.until > now)?.reason ??
+      null
+    );
+  }
+
+  /** The holds to persist. */
+  holds(): HeldCapability[] {
+    this.holdsDirty = false;
+    return this.#blocks
+      .filter((b) => b.hard)
+      .map(({ capability, reason, until }) => ({ capability, reason, until }));
+  }
+
+  restoreHolds(holds: readonly HeldCapability[], now: number): void {
+    for (const h of holds) {
+      if (h.until > now) this.#blocks.push({ ...h, hard: true });
+    }
+  }
+
+  /** Her game ended and she did not end it for a reason of her own: she leaves it closed. */
+  gameClosed(): void {
+    this.hold(
+      "game.start",
+      "遊戲剛被關掉了(多半是有人不想你玩),先不要自己重開,有人明確叫你開才開",
+      this.#cfg.game_hold_mins * MINUTE_MS,
+    );
+  }
+
   #block(capability: string, reason: string): void {
     const until = this.#now() + this.#cfg.blocked_mins * MINUTE_MS;
+    // A hold outlives what a refusal would say.
+    if (this.held(capability) !== null) return;
     this.#blocks = [
       ...this.#blocks.filter((b) => b.capability !== capability),
       { capability, reason, until },

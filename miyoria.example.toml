@@ -474,6 +474,7 @@ max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不
 # stale_topic_mins = 45          # 沒人接的話題列給她看多久(這段時間內不再提)
 # after_speech_text_secs = 5     # 打招呼和她自己開話題,至少等她講完這麼久
 # after_speech_voice_secs = 20
+# game_hold_mins = 60            # 遊戲被關掉後,她這麼久內不能自己重開(有人明確叫她開可以;0 = 不鎖)
 # disabled_contexts = []         # 這些頻道她不主動說話(discord:<guild>:<channel> 或頻道 id)
 # greeting = true                # 朋友當天第一次說話時打招呼
 # voice_join = true              # 好感夠的人進她的語音頻道時打招呼

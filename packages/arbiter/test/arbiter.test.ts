@@ -120,6 +120,20 @@ describe("floors", () => {
     ).toBe("denied");
   });
 
+  it("after her game was closed she cannot start one herself, people still can", async () => {
+    const r = rig();
+    const start = (source: "plan" | "message") =>
+      impulse(r.clock, { source, kind: "act", capability: "game.start", context: HERE });
+    r.arbiter.gameClosed();
+    const own = await r.arbiter.submit(start("plan"));
+    expect(own.reason).toBe("denied");
+    expect(r.arbiter.held("game.start")).toContain("不要自己重開");
+    expect(JSON.stringify(await r.arbiter.submit(start("message")))).not.toContain("不要自己重開");
+    expect(r.arbiter.limits(null).blocked.map((b) => b.capability)).toContain("game.start");
+    r.clock.advance(61 * MIN);
+    expect(r.arbiter.held("game.start")).toBeNull();
+  });
+
   it("does not need her in a voice channel to go there", async () => {
     const r = rig();
     r.host.set(voiceCtx("v"), { present: false });
