@@ -115,6 +115,14 @@ const textOf = (i: PlanInput) => {
 };
 
 describe("the Plan prompt", () => {
+  it("shows what people just said, and that a stop request holds", () => {
+    const heard = ["Owen: 你不要再玩 Minecraft 了"];
+    const [system, data] = planMessages(input({ heard })).map((m) => String(m.content));
+    expect(data).toContain("大家剛對你說的話");
+    expect(data).toContain("你不要再玩 Minecraft 了");
+    expect(system).toContain("叫你停下或別做某件事");
+  });
+
   it("has a short system: her core, the task, the limits, her numbers, a format of empty values", () => {
     const { system } = textOf(input());
     expect(system.startsWith("你是 DeepSeek-chan\n")).toBe(true);

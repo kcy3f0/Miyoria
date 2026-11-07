@@ -138,6 +138,9 @@ const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 /** Pending wakes kept (older ones are merged away). */
 const MAX_PENDING = 12;
+/** Lines people said to her that Plan is shown, and for how long they count. */
+const HEARD_LINES = 12;
+const HEARD_WINDOW_MS = 20 * MINUTE_MS;
 const RECENT_THOUGHTS = 5;
 /** Events of intent turns remembered until the intent's outcome names the turn. */
 const MAX_TURN_EVENTS = 200;
@@ -340,6 +343,8 @@ export class MindLoop implements Mind {
   readonly #calls: CallLog;
   readonly #appraiseCalls: CallLog;
   readonly #segments = new Segments();
+  /** What people said to her lately, oldest first, for Plan. */
+  #heard: { at: number; who: string; text: string }[] = [];
   readonly #watch = new TriggerWatch();
   readonly #presence: PresenceStats;
   #wakes: WakeReason[] = [];
@@ -485,6 +490,18 @@ export class MindLoop implements Mind {
     this.wakeUp({ kind, detail: t.detail, context: t.context });
   }
 
+  #hear(who: string, text: string, now: number): void {
+    if (text.trim() === "") return;
+    this.#heard.push({ at: now, who, text: text.trim() });
+    if (this.#heard.length > HEARD_LINES) this.#heard.shift();
+  }
+
+  #heardLately(now: number): string[] {
+    return this.#heard
+      .filter((h) => now - h.at <= HEARD_WINDOW_MS)
+      .map((h) => `${h.who}: ${h.text.slice(0, 120)}`);
+  }
+
   #handleOfAccount(account: AccountRef, name: string | null): Handle | null {
     const handles = this.#d.services.get(HandleDirectoryKey);
     if (!handles) return name;
@@ -545,6 +562,9 @@ export class MindLoop implements Mind {
         if (m.author.is_bot || this.#selfIds.has(m.author.account.id)) return;
         const handle = this.#handleOfAccount(m.author.account, m.author.display_name);
         if (handle !== null) this.#presence.seen(handle, now);
+        if (m.mentions_self || m.reply_to_self || m.id.context.kind === "dm") {
+          this.#hear(handle ?? m.author.display_name, m.text, now);
+        }
         this.#segments.line(m.id.context, {
           at: now,
           who: handle ?? m.author.display_name,
@@ -563,6 +583,7 @@ export class MindLoop implements Mind {
         if (u.speaker.is_bot || this.#selfIds.has(u.speaker.account.id)) return;
         const handle = this.#handleOfAccount(u.speaker.account, u.speaker.display_name);
         if (handle !== null) this.#presence.seen(handle, now);
+        this.#hear(handle ?? u.speaker.display_name, u.text, now);
         this.#segments.line(u.context, {
           at: now,
           who: handle ?? u.speaker.display_name,
@@ -1391,6 +1412,7 @@ export class MindLoop implements Mind {
         desires,
         suggestions,
         recent: d.journal.recent(RECENT_THOUGHTS),
+        heard: this.#heardLately(started),
         dayPlan: this.#dayPlan?.day === today ? this.#dayPlan.text : null,
         ...(daily
           ? {
