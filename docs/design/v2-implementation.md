@@ -1,6 +1,6 @@
 # v2 實作分工(平行工作的 brief)
 
-> 狀態:**第一波開工用**(2026-11-04)。設計見 [v2-architecture.md](v2-architecture.md)(以下「§」都指那份);kernel / module / service key 模型見 [ARCHITECTURE.md](../ARCHITECTURE.md) §2;程式慣例見 [TS-CONVENTIONS.md](../TS-CONVENTIONS.md);commit 規則見 `AGENTS.md`。共用契約已經放進 `packages/types/src`(下面 §1),各工作流**照契約寫,不要各自再定義一份**。
+> 狀態:**已完成**(2026-11-06;W1–W10 都已合併,各段末尾附實作紀錄)。原本是平行工作的 brief(2026-11-04)。設計見 [v2-architecture.md](v2-architecture.md)(以下「§」都指那份);kernel / module / service key 模型見 [ARCHITECTURE.md](../ARCHITECTURE.md) §2;程式慣例見 [TS-CONVENTIONS.md](../TS-CONVENTIONS.md);commit 規則見 `AGENTS.md`。共用契約已經放進 `packages/types/src`(下面 §1),各工作流**照契約寫,不要各自再定義一份**。
 >
 > 行號是寫這份文件當下(commit `2a86ff0` 之後)的位置;動手前用旁邊寫的識別字 grep 一下確認。
 

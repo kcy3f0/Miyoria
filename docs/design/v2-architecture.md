@@ -1,6 +1,6 @@
 # 架構檢討與 v2 方案(草案)
 
-> 狀態:**方向已確認,細節討論中**(2026-11-04,決定見 §6)。前半是現況 review(程式碼 + 本機資料庫實際紀錄),後半是重整方案與分階段計畫。參考了 [AIRI](https://airi.moeru.ai/docs/en/)、Generative Agents(記憶流 / 反思 / 計畫)、Mindcraft / Voyager(Minecraft 代理)的做法。現有設計見 [autonomy.md](autonomy.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)。
+> 狀態:**階段 0–5 已實作,階段 6 已實作任務契約**(2026-11-06;Minecraft 換方法仍待討論,見 §7)。實作分工、各工作流的實作紀錄與偏差見 [v2-implementation.md](v2-implementation.md)。原本的 review 與方案保留如下。前半是現況 review(程式碼 + 本機資料庫實際紀錄),後半是重整方案與分階段計畫。參考了 [AIRI](https://airi.moeru.ai/docs/en/)、Generative Agents(記憶流 / 反思 / 計畫)、Mindcraft / Voyager(Minecraft 代理)的做法。現有設計見 [autonomy.md](autonomy.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)。
 
 ## 0. 一句話結論
 
@@ -471,3 +471,21 @@ summarizer   = "off"     # 對話整理、記憶整理
 - 階段 0 要整批做,還是先做對話的 1–8 項?(建議先做 1–8,最有感。)
 - 中日雙語語音要保留嗎?保留的話延遲改善有限(要改成先寫日文);關掉最快。
 - v2 期間是否暫停加新功能(唱歌維持現狀只修 bug)?
+
+## 7. 實作狀態(2026-11-06)
+
+| 階段 | 狀態 | 主要位置 |
+|---|---|---|
+| 0. 止血 | 已併入各階段完成(§5 第 1–18 項) | 見各列 |
+| 1. 對話管線 | 完成:回合擁有權、取消規則、選擇性 barge-in 與降音量、回音排除、TTS 預取、先寫 `<voice>`、prompt 編譯器、`[llm.reasoning]`、人設重寫 | `agent`、`voice`、`apps/voice-node`、`llm`、`profiles/` |
+| 2. Arbiter | 完成:Impulse、唯一底線、Ledger;`initiative` 已刪除;attention 只留前置過濾 | `packages/arbiter` |
+| 3. ActivityManager | 完成:三台狀態機、task id、notice、AbortSignal 穿過 RPC、場景 = Activity 的函式 | `packages/activity`、`stage`、`actions`、`ext-host` |
+| 4. 情緒與關係 | 完成:遞減、互斥、激起預算、寂寞來自需求、一人一卡 + migration、`<emo>` 不回寫 | `self`、`social` |
+| 5. 計畫與日程 | 完成:Appraise / Plan / Reflect、Goal agenda、日計畫、想做的事清單、自適應心跳 | `mind`、`learning/src/reflect.ts` |
+| 6. 遊戲 | 任務契約完成(task id + 原因碼、統一逾時、一個 `obtain` 入口);**Minecraft 方法未換** | `sdk`、`ext-host`、`game`、`extensions/minecraft` |
+
+另外:穩定 handle 與已污染資料的修復(`store`、`learning`)、面板 / API 的活動、帳本、情緒、目標、每回合 prompt 檢視(`api`、`apps/panel`),以及回放測試(`packages/replay`,`pnpm replay <file>`;錄製用 `[modules.replay] record = true`)。
+
+**尚未實測**:以上都只用單元測試、模擬與回放 fixture 驗證過,還沒對真的 DeepSeek、Discord、語音節點、OBS / VTS 與 Minecraft 跑。§4 的延遲指標要上線後用 `agent.turn.outcome` 的 `latency_ms` 量。Minecraft mod 的 Gradle 建置在開發環境無法執行,需要在本機 `./gradlew build`。
+
+**還沒決定**(沿用 §6):中日雙語語音要不要保留;Minecraft 的方法(W8 留下的問題見 [v2-implementation.md](v2-implementation.md) W8 段)。§3.9 的 speculative 生成(對方講完就先生成)與 Silero VAD 只留了接口。
