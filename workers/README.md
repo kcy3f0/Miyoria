@@ -460,6 +460,7 @@ curl -s http://127.0.0.1:8005/jobs/<id>          # state / stage / progress;done
 | `SING_OFFLOAD_URLS` | (空) | 做歌時請它們放掉 GPU 的 worker,例如 `http://127.0.0.1:8002,http://127.0.0.1:8003` |
 | `SING_EXCLUSIVE_WAIT_S` / `SING_RELOAD_TIMEOUT_S` | 30 / 300 | 等 Core 說可以開始(她先說一句)/ 等 worker 載回來 |
 | `SING_RESOLVE_TIMEOUT_S` | 60 | 找歌(`resolve`)最多等這麼久;超過這首失敗,後面的歌繼續,不會整條隊伍卡住 |
+| `SING_YTDLP_CACHE` | `<資料夾>/_ytdlp-cache` | yt-dlp 的快取。預設的 `~/.cache/yt-dlp` 寫不進去時,Windows 上找歌會永遠卡住 |
 | `SING_TARGET_LUFS` | -16 | 混音響度 |
 | `SING_MAX_SECONDS` | 480 | 最長的歌 |
 | `SING_URL_HOSTS` | YouTube、SoundCloud、Bilibili、Niconico | 連結允許的網域(逗號分隔,子網域也算) |

@@ -74,6 +74,7 @@ Environment
                            e.g. http://127.0.0.1:8002,http://127.0.0.1:8003
     SING_EXCLUSIVE_WAIT_S  wait this long for Core's go (exclusive_ack) (default 30)
     SING_RESOLVE_TIMEOUT_S give up finding a song after this long (default 60)
+    SING_YTDLP_CACHE       yt-dlp's cache folder                  (default <data dir>/_ytdlp-cache)
     SING_RELOAD_TIMEOUT_S  longest wait for a worker to reload    (default 300)
     SING_MOCK_SECONDS      mock: song length                      (default 3)
     SING_MOCK_STAGE_MS     mock: delay per stage                  (default 0)
@@ -808,6 +809,7 @@ def _prune() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     root = Path(os.environ.get("SING_DATA_DIR", REPO / "data" / "songs"))
+    os.environ.setdefault("SING_YTDLP_CACHE", str(root / "_ytdlp-cache"))
     lib = os.environ.get("SING_LIBRARY_DIR")
     state.store = Store(root, Path(lib) if lib else None)
     state.jobs, state.order = {}, []

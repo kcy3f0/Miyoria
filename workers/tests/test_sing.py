@@ -358,6 +358,15 @@ def _stuck_lookup():
     threading.Event().wait(30)
 
 
+def test_yt_dlp_keeps_its_cache_where_the_worker_says(monkeypatch):
+    from engine import ydl_options
+
+    monkeypatch.setenv("SING_YTDLP_CACHE", "songs/_ytdlp-cache")
+    assert ydl_options()["cachedir"] == "songs/_ytdlp-cache"
+    monkeypatch.delenv("SING_YTDLP_CACHE")
+    assert "cachedir" not in ydl_options()
+
+
 def test_a_lookup_that_never_returns_fails_instead_of_holding_the_queue():
     import server
     from engine import JobError

@@ -79,7 +79,11 @@ def allowed_url(url: str) -> bool:
 
 def ydl_options(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """yt-dlp options for resolving and downloading, ``extra`` on top."""
+    # Its cache lives with the songs (SING_YTDLP_CACHE): when it cannot write to its default
+    # ~/.cache/yt-dlp, Python's tempfile retries forever on Windows and the lookup never returns.
+    cache = os.environ.get("SING_YTDLP_CACHE")
     return {
+        **({"cachedir": cache} if cache else {}),
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
