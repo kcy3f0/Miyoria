@@ -47,7 +47,7 @@ export function scopeOfHer(her: HerStatus): ToolScope {
 
 /**
  * Tools that only make sense in one state, by name: the game's goal and stop while a game runs,
- * stopping a song / the broadcast / leaving voice while that is so. Tools not listed are offered
+ * stopping a song / the broadcast / leaving voice or setting its channel status while that is so. Tools not listed are offered
  * in every state (starting things, memory, code, ...).
  */
 const NEEDS: Readonly<Record<string, (scope: ToolScope) => boolean>> = {
@@ -56,6 +56,7 @@ const NEEDS: Readonly<Record<string, (scope: ToolScope) => boolean>> = {
   sing_stop: (s) => s.singing,
   stream_stop: (s) => s.live,
   voice_leave: (s) => s.inVoice,
+  voice_status: (s) => s.inVoice,
 };
 
 /** A game adapter's raw tool that slipped into the registry (never a capability tool). */

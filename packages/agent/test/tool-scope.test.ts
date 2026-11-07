@@ -123,6 +123,7 @@ const tools = () => ({
   raw: new Probe("game_minecraft_act"),
   join: new Probe("voice_join"),
   leave: new Probe("voice_leave"),
+  status: new Probe("voice_status"),
 });
 
 describe("tool scope", () => {
@@ -178,6 +179,7 @@ describe("tool scope", () => {
       "react",
       "voice_join",
       "voice_leave",
+      "voice_status",
     ]);
   });
 
