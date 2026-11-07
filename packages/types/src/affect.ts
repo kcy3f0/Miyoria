@@ -99,10 +99,19 @@ export interface AffectEvent {
   at: Timestamp;
 }
 
+/** A promise made to her that was kept or broken: it counts toward the person. */
+export interface AppraisedPromise {
+  toward: Handle;
+  kept: boolean;
+  cause: string;
+}
+
 /** A batch of appraisals for the affect module (`AffectState.appraise`). */
 export interface AffectInput {
   source: AffectSource;
   events: AppraisalEvent[];
+  /** Promises she saw kept or broken (at most 2 count). */
+  promises?: AppraisedPromise[];
   context: ContextKey | null;
   at: Timestamp;
 }
@@ -208,7 +217,14 @@ export interface AffectBiases {
   /** Added to her willingness to start things (-1..1). */
   initiative: number;
   /** Per wish (`chat_with`, `play`, `stream`, `rest`, `sing`): weight 0..1 and why. */
-  wants: { want: string; weight: number; person: Handle | null; why: string }[];
+  wants: {
+    want: string;
+    weight: number;
+    person: Handle | null;
+    why: string;
+    /** The emotion behind it, when one is (a drive otherwise). */
+    from?: EmotionName;
+  }[];
 }
 
 export interface AffectSnapshot {
@@ -230,13 +246,18 @@ export interface AffectSnapshot {
 export const AFFECT_EVENT_TOPIC = "affect.event";
 /** Payload: `AffectSnapshot`, published when it changed noticeably. */
 export const AFFECT_CHANGED_TOPIC = "affect.changed";
+/** Payload: `{valence, arousal, energy, reason}`, published when her mood moved. */
+export const MOOD_CHANGED_TOPIC = "mood.changed";
 
 /** Provided by the affect owner (`self`). Reads answer from memory. */
 export interface AffectState {
   snapshot(): AffectSnapshot;
   /** What she feels, strongest first, at or above `min`. */
   emotions(min?: number): EmotionReading[];
-  /** The only write path for emotions: events in, numbers computed here. */
+  /**
+   * The only write path for what an interaction meant: events in, numbers computed here. The one
+   * reader that calls it for a conversation is Appraise (packages/mind/src/appraise.ts).
+   */
   appraise(input: AffectInput): AppliedAppraisal[];
   /** A drive was satisfied (`amount` < 0) or frustrated (> 0) by something she did. */
   satisfy(drive: DriveName, amount: number, reason: string): void;

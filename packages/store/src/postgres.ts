@@ -12,6 +12,8 @@ import {
   type Clock,
   type ContextKey,
   type DecisionTrace,
+  type Directive,
+  type DirectiveRecord,
   type JsonValue,
   type ModuleId,
   newId,
@@ -30,12 +32,14 @@ import {
   embeddingFromF32,
   fromMicros,
   memoryKind,
+  memoryOrigin,
   memoryScopeKey,
   memorySourceJson,
   normalizeTimestamp,
   parseJson,
   queryTokens,
   StoreError,
+  sourceEvents,
   sqlLimit,
   toMicros,
   u32,
@@ -80,6 +84,7 @@ import type {
   AuditLog,
   AuthStore,
   DecisionLog,
+  DirectiveStore,
   IdentityStore,
   MemoryRecordStore,
   MessageLog,
@@ -860,7 +865,8 @@ class PgProfileData implements ProfileDataStore {
 const MEMORY_COLUMNS =
   "id, profile_id, kind, scope::text AS scope, subjects, content, tokens, " +
   "embedding::text AS embedding, importance, confidence, created_at, updated_at, " +
-  "last_accessed, access_count, source_context, source, due, done, superseded_by";
+  "last_accessed, access_count, source_context, source, origin, source_events, due, done, " +
+  "superseded_by";
 
 function memoryFromRow(row: Row): MemoryRecord {
   const embedding = optStr(row, "embedding");
@@ -884,6 +890,8 @@ function memoryFromRow(row: Row): MemoryRecord {
     source_context:
       sourceContext === null ? null : parseJson<ContextKey>(sourceContext, "memory source context"),
     source: source === null ? null : parseJson<MemorySource>(source, "memory source"),
+    origin: memoryOrigin(str(row, "origin")),
+    source_events: sourceEvents(row.source_events),
     due: optTs(row, "due"),
     done: bool(row, "done"),
     superseded_by: optStr(row, "superseded_by"),
@@ -900,9 +908,10 @@ class PgMemories implements MemoryRecordStore {
       await this.db.execute(
         "INSERT INTO memory_records (id, profile_id, kind, scope, scope_key, subjects, " +
           "content, tokens, embedding, importance, confidence, created_at, updated_at, " +
-          "last_accessed, access_count, source_context, due, done, superseded_by, source) " +
+          "last_accessed, access_count, source_context, due, done, superseded_by, source, " +
+          "origin, source_events) " +
           "VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9::vector, $10, $11, $12, $13, " +
-          "$14, $15, $16, $17, $18, $19, $20) " +
+          "$14, $15, $16, $17, $18, $19, $20, $21, $22::jsonb) " +
           "ON CONFLICT (id) DO UPDATE SET profile_id = EXCLUDED.profile_id, " +
           "kind = EXCLUDED.kind, scope = EXCLUDED.scope, scope_key = EXCLUDED.scope_key, " +
           "subjects = EXCLUDED.subjects, content = EXCLUDED.content, " +
@@ -912,7 +921,8 @@ class PgMemories implements MemoryRecordStore {
           "last_accessed = EXCLUDED.last_accessed, access_count = EXCLUDED.access_count, " +
           "source_context = EXCLUDED.source_context, due = EXCLUDED.due, " +
           "done = EXCLUDED.done, superseded_by = EXCLUDED.superseded_by, " +
-          "source = EXCLUDED.source",
+          "source = EXCLUDED.source, origin = EXCLUDED.origin, " +
+          "source_events = EXCLUDED.source_events",
         [
           record.id,
           record.profile,
@@ -934,6 +944,8 @@ class PgMemories implements MemoryRecordStore {
           record.done,
           record.superseded_by,
           memorySourceJson(record.source),
+          memoryOrigin(record.origin ?? "unknown"),
+          JSON.stringify(sourceEvents(record.source_events)),
         ],
       );
     } catch (cause) {
@@ -1398,6 +1410,89 @@ class PgAuth implements AuthStore {
   }
 }
 
+function directiveFromRow(row: Row): DirectiveRecord {
+  return {
+    id: str(row, "id"),
+    issuer: parseJson<AccountRef>(str(row, "issuer"), "directive issuer"),
+    authority: str(row, "authority") as DirectiveRecord["authority"],
+    scope: parseJson<DirectiveRecord["scope"]>(str(row, "scope"), "directive scope"),
+    effect: str(row, "effect") as DirectiveRecord["effect"],
+    text: str(row, "text"),
+    expires: optTs(row, "expires") ?? "until_revoked",
+    source_event: str(row, "source_event"),
+    created_at: ts(row, "created_at"),
+    revoked_at: optTs(row, "revoked_at"),
+    revoked_by: optStr(row, "revoked_by"),
+  };
+}
+
+const DIRECTIVE_COLUMNS =
+  "id, issuer::text AS issuer, authority, scope::text AS scope, effect, text, expires, " +
+  "source_event, created_at, revoked_at, revoked_by";
+
+class PgDirectives implements DirectiveStore {
+  constructor(private readonly db: Pg) {}
+
+  async insert(profile: ProfileId, d: Directive): Promise<void> {
+    try {
+      await this.db.execute(
+        "INSERT INTO directives (id, profile_id, issuer, authority, scope, effect, text, " +
+          "expires, source_event, created_at) " +
+          "VALUES ($1, $2, $3::jsonb, $4, $5::jsonb, $6, $7, $8, $9, $10)",
+        [
+          d.id,
+          profile,
+          JSON.stringify(d.issuer),
+          d.authority,
+          JSON.stringify(d.scope),
+          d.effect,
+          d.text,
+          d.expires === "until_revoked" ? null : tsParam(d.expires),
+          d.source_event,
+          tsParam(d.created_at),
+        ],
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot store the directive", { cause });
+    }
+  }
+
+  async active(profile: ProfileId, now: Timestamp): Promise<DirectiveRecord[]> {
+    const rows = await this.db.query(
+      `SELECT ${DIRECTIVE_COLUMNS} FROM directives WHERE profile_id = $1 ` +
+        "AND revoked_at IS NULL AND (expires IS NULL OR expires > $2) ORDER BY created_at, id",
+      [profile, tsParam(now)],
+    );
+    return rows.map(directiveFromRow);
+  }
+
+  async all(profile: ProfileId, limit: number): Promise<DirectiveRecord[]> {
+    const rows = await this.db.query(
+      `SELECT ${DIRECTIVE_COLUMNS} FROM directives WHERE profile_id = $1 ` +
+        "ORDER BY created_at DESC, id DESC LIMIT $2",
+      [profile, limitParam(limit)],
+    );
+    return rows.map(directiveFromRow);
+  }
+
+  async revoke(profile: ProfileId, id: string, by: string, at: Timestamp): Promise<boolean> {
+    const changed = await this.db.execute(
+      "UPDATE directives SET revoked_at = $4, revoked_by = $3 " +
+        "WHERE id = $2 AND profile_id = $1 AND revoked_at IS NULL",
+      [profile, id, by, tsParam(at)],
+    );
+    return changed > 0;
+  }
+
+  async prune(profile: ProfileId, before: Timestamp): Promise<number> {
+    return this.db.execute(
+      "DELETE FROM directives WHERE profile_id = $1 AND (revoked_at < $2 OR expires < $2)",
+      [profile, tsParam(before)],
+    );
+  }
+}
+
 class PgAudit implements AuditLog {
   constructor(private readonly db: Pg) {}
 
@@ -1460,6 +1555,7 @@ export class PostgresStore implements Store {
   readonly auth: AuthStore;
   readonly audit: AuditLog;
   readonly profileData: ProfileDataStore;
+  readonly directives: DirectiveStore;
   readonly #pool: pg.Pool;
   #closed = false;
 
@@ -1477,6 +1573,7 @@ export class PostgresStore implements Store {
     this.auth = new PgAuth(db);
     this.audit = new PgAudit(db);
     this.profileData = new PgProfileData(db);
+    this.directives = new PgDirectives(db);
   }
 
   /** Connects and runs pending migrations. */

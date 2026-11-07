@@ -23,7 +23,13 @@ import {
   type ContextKey,
   type ContextKind,
   type DecisionTrace,
+  type Directive,
+  type DirectiveRecord,
+  isJsonObject,
   type JsonValue,
+  type LogEvent,
+  type LogEventFilter,
+  type LogEventKind,
   type ModuleId,
   newId,
   type PersonId,
@@ -45,6 +51,7 @@ import {
   fromMicros,
   MAX_DECISIONS,
   memoryKind,
+  memoryOrigin,
   memoryScopeKey,
   memorySourceJson,
   optionalMicros,
@@ -52,6 +59,7 @@ import {
   parseJson,
   queryTokens,
   StoreError,
+  sourceEvents,
   sqlLimit,
   toMicros,
   u32,
@@ -95,6 +103,11 @@ import type {
   AuditLog,
   AuthStore,
   DecisionLog,
+  DirectiveStore,
+  EventCompaction,
+  EventCompactionResult,
+  EventLogStore,
+  EventRollup,
   IdentityStore,
   MemoryRecordStore,
   MessageLog,
@@ -842,6 +855,8 @@ function memoryFromRow(row: Row): MemoryRecord {
     source_context:
       sourceContext === null ? null : parseJson<ContextKey>(sourceContext, "memory source context"),
     source: source === null ? null : parseJson<MemorySource>(source, "memory source"),
+    origin: memoryOrigin(str(row, "origin")),
+    source_events: sourceEvents(json<unknown>(row, "source_events", "memory source events")),
     due: optTs(row, "due"),
     done: bool(row, "done"),
     superseded_by: optStr(row, "superseded_by"),
@@ -878,10 +893,12 @@ class SqliteMemories implements MemoryRecordStore {
       this.db.run(
         "INSERT INTO memory_records (id, profile_id, kind, scope, scope_key, subjects, " +
           "content, tokens, embedding, importance, confidence, created_at, updated_at, " +
-          "last_accessed, access_count, source_context, source, due, done, superseded_by) " +
+          "last_accessed, access_count, source_context, source, origin, source_events, due, done, " +
+          "superseded_by) " +
           "VALUES ($id, $profile, $kind, $scope, $scope_key, $subjects, $content, $tokens, " +
           "$embedding, $importance, $confidence, $created_at, $updated_at, $last_accessed, " +
-          "$access_count, $source_context, $source, $due, $done, $superseded_by) " +
+          "$access_count, $source_context, $source, $origin, $source_events, $due, $done, " +
+          "$superseded_by) " +
           "ON CONFLICT (id) DO UPDATE SET " +
           "profile_id = excluded.profile_id, kind = excluded.kind, scope = excluded.scope, " +
           "scope_key = excluded.scope_key, subjects = excluded.subjects, content = " +
@@ -889,7 +906,8 @@ class SqliteMemories implements MemoryRecordStore {
           "importance = excluded.importance, confidence = excluded.confidence, created_at = " +
           "excluded.created_at, updated_at = excluded.updated_at, last_accessed = " +
           "excluded.last_accessed, access_count = excluded.access_count, source_context = " +
-          "excluded.source_context, source = excluded.source, due = excluded.due, " +
+          "excluded.source_context, source = excluded.source, origin = excluded.origin, " +
+          "source_events = excluded.source_events, due = excluded.due, " +
           "done = excluded.done, superseded_by = excluded.superseded_by",
         {
           id: record.id,
@@ -910,6 +928,8 @@ class SqliteMemories implements MemoryRecordStore {
           source_context:
             record.source_context === null ? null : contextLookupKey(record.source_context),
           source: memorySourceJson(record.source),
+          origin: memoryOrigin(record.origin ?? "unknown"),
+          source_events: JSON.stringify(sourceEvents(record.source_events)),
           due: optionalMicros(record.due),
           done: record.done ? 1 : 0,
           superseded_by: record.superseded_by,
@@ -1370,6 +1390,311 @@ class SqliteAuth implements AuthStore {
   }
 }
 
+// ---- event log ----------------------------------------------------------------------------
+
+const DAY_MICROS = 86_400_000_000;
+
+function logEventFromRow(row: Row): LogEvent {
+  const context = optStr(row, "context");
+  return {
+    id: str(row, "id"),
+    at: ts(row, "at"),
+    kind: str(row, "kind") as LogEventKind,
+    source: str(row, "source"),
+    cause: optStr(row, "cause"),
+    context: context === null ? null : parseJson<ContextKey>(context, "event context"),
+    person: optStr(row, "person"),
+    body: json<JsonValue>(row, "body", "event body"),
+  };
+}
+
+/** The lookup columns of an event: `observation` keeps them in its `Observation`. */
+function eventLookups(event: LogEvent): { key: string | null; salience: string | null } {
+  const body = event.body;
+  if (!isJsonObject(body)) return { key: null, salience: null };
+  const fields = isJsonObject(body.observation) ? body.observation : body;
+  const { attention_key: key, salience } = fields;
+  return {
+    key: typeof key === "string" ? key : null,
+    salience: typeof salience === "string" ? salience : null,
+  };
+}
+
+function directiveFromRow(row: Row): DirectiveRecord {
+  return {
+    id: str(row, "id"),
+    issuer: json<AccountRef>(row, "issuer", "directive issuer"),
+    authority: str(row, "authority") as DirectiveRecord["authority"],
+    scope: json<DirectiveRecord["scope"]>(row, "scope", "directive scope"),
+    effect: str(row, "effect") as DirectiveRecord["effect"],
+    text: str(row, "text"),
+    expires: optTs(row, "expires") ?? "until_revoked",
+    source_event: str(row, "source_event"),
+    created_at: ts(row, "created_at"),
+    revoked_at: optTs(row, "revoked_at"),
+    revoked_by: optStr(row, "revoked_by"),
+  };
+}
+
+class SqliteDirectives implements DirectiveStore {
+  constructor(private readonly db: Db) {}
+
+  async insert(profile: ProfileId, d: Directive): Promise<void> {
+    try {
+      this.db.run(
+        "INSERT INTO directives (id, profile_id, issuer, authority, scope, effect, text, " +
+          "expires, source_event, created_at) VALUES ($id, $profile, $issuer, $authority, " +
+          "$scope, $effect, $text, $expires, $source_event, $created_at)",
+        {
+          id: d.id,
+          profile,
+          issuer: JSON.stringify(d.issuer),
+          authority: d.authority,
+          scope: JSON.stringify(d.scope),
+          effect: d.effect,
+          text: d.text,
+          expires: d.expires === "until_revoked" ? null : toMicros(d.expires),
+          source_event: d.source_event,
+          created_at: toMicros(d.created_at),
+        },
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot store the directive", { cause });
+    }
+  }
+
+  async active(profile: ProfileId, now: Timestamp): Promise<DirectiveRecord[]> {
+    return this.db
+      .all(
+        "SELECT * FROM directives WHERE profile_id = $profile AND revoked_at IS NULL " +
+          "AND (expires IS NULL OR expires > $now) ORDER BY created_at, id",
+        { profile, now: toMicros(now) },
+      )
+      .map(directiveFromRow);
+  }
+
+  async all(profile: ProfileId, limit: number): Promise<DirectiveRecord[]> {
+    return this.db
+      .all(
+        "SELECT * FROM directives WHERE profile_id = $profile " +
+          "ORDER BY created_at DESC, id DESC LIMIT $limit",
+        { profile, limit: limitParam(limit) },
+      )
+      .map(directiveFromRow);
+  }
+
+  async revoke(profile: ProfileId, id: string, by: string, at: Timestamp): Promise<boolean> {
+    const changed = this.db.run(
+      "UPDATE directives SET revoked_at = $at, revoked_by = $by " +
+        "WHERE id = $id AND profile_id = $profile AND revoked_at IS NULL",
+      { id, profile, by, at: toMicros(at) },
+    );
+    return changed > 0;
+  }
+
+  async prune(profile: ProfileId, before: Timestamp): Promise<number> {
+    return this.db.run(
+      "DELETE FROM directives WHERE profile_id = $profile " +
+        "AND (revoked_at < $before OR expires < $before)",
+      { profile, before: toMicros(before) },
+    );
+  }
+}
+
+class SqliteEventLog implements EventLogStore {
+  constructor(private readonly db: Db) {}
+
+  async append(profile: ProfileId, events: readonly LogEvent[]): Promise<void> {
+    if (events.length === 0) return;
+    try {
+      this.db.tx(() => {
+        for (const event of events) {
+          const { key, salience } = eventLookups(event);
+          this.db.run(
+            "INSERT INTO log_events (id, profile_id, at, kind, source, cause, context_key, " +
+              "context, person, attention_key, salience, body) VALUES ($id, $profile, $at, " +
+              "$kind, $source, $cause, $context_key, $context, $person, $key, $salience, $body) " +
+              "ON CONFLICT (id) DO NOTHING",
+            {
+              id: event.id,
+              profile,
+              at: toMicros(event.at),
+              kind: event.kind,
+              source: event.source,
+              cause: event.cause,
+              context_key: event.context === null ? null : contextLookupKey(event.context),
+              context: event.context === null ? null : JSON.stringify(event.context),
+              person: event.person,
+              key,
+              salience,
+              body: JSON.stringify(event.body),
+            },
+          );
+        }
+      });
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot append to the event log", { cause });
+    }
+  }
+
+  async get(profile: ProfileId, id: string): Promise<LogEvent | null> {
+    const row = this.db.get("SELECT * FROM log_events WHERE id = $id AND profile_id = $profile", {
+      id,
+      profile,
+    });
+    return row ? logEventFromRow(row) : null;
+  }
+
+  async query(profile: ProfileId, filter: LogEventFilter): Promise<LogEvent[]> {
+    const where = ["profile_id = $profile"];
+    const params: Params = { profile, limit: limitParam(filter.limit ?? 100) };
+    const add = (clause: string, name: string, value: SQLInputValue) => {
+      where.push(clause);
+      params[name] = value;
+    };
+    if (filter.kinds) {
+      add("kind IN (SELECT value FROM json_each($kinds))", "kinds", JSON.stringify(filter.kinds));
+    }
+    if (filter.sources) {
+      add(
+        "source IN (SELECT value FROM json_each($sources))",
+        "sources",
+        JSON.stringify(filter.sources),
+      );
+    }
+    if (filter.context) add("context_key = $context", "context", contextLookupKey(filter.context));
+    if (filter.person !== undefined) add("person = $person", "person", filter.person);
+    if (filter.attention_key !== undefined) {
+      add("attention_key = $key", "key", filter.attention_key);
+    }
+    if (filter.turn !== undefined) {
+      add(
+        "COALESCE(json_extract(body, '$.turn'), json_extract(body, '$.turn_outcome.turn')) = $turn",
+        "turn",
+        filter.turn,
+      );
+    }
+    if (filter.since !== undefined) add("at >= $since", "since", toMicros(filter.since));
+    if (filter.until !== undefined) add("at < $until", "until", toMicros(filter.until));
+    if (filter.before !== undefined) add("id < $before", "before", filter.before);
+    if (filter.after !== undefined) add("id > $after", "after", filter.after);
+    const order = filter.order === "asc" ? "ASC" : "DESC";
+    const rows = this.db.all(
+      `SELECT * FROM log_events WHERE ${where.join(" AND ")} ORDER BY id ${order} LIMIT $limit`,
+      params,
+    );
+    return rows.map(logEventFromRow);
+  }
+
+  async effectsOf(
+    profile: ProfileId,
+    causes: readonly string[],
+    limit: number,
+  ): Promise<LogEvent[]> {
+    if (causes.length === 0) return [];
+    const rows = this.db.all(
+      "SELECT * FROM log_events WHERE cause IN (SELECT value FROM json_each($causes)) " +
+        "AND profile_id = $profile ORDER BY id ASC LIMIT $limit",
+      { causes: JSON.stringify(causes), profile, limit: limitParam(limit) },
+    );
+    return rows.map(logEventFromRow);
+  }
+
+  /** Rows that may go: `tier` matches and no other row names them as its cause. */
+  #leaves(profile: ProfileId, tier: string, before: Timestamp, limit: number): Row[] {
+    return this.db.all(
+      "SELECT e.seq, e.at, e.kind, e.source FROM log_events e WHERE e.profile_id = $profile " +
+        `AND e.at < $before AND ${tier} AND NOT EXISTS ` +
+        "(SELECT 1 FROM log_events c WHERE c.cause = e.id) ORDER BY e.at LIMIT $limit",
+      { profile, before: toMicros(before), limit },
+    );
+  }
+
+  /** Counts `rows` in the rollups and deletes them. */
+  #remove(profile: ProfileId, rows: readonly Row[]): void {
+    const groups = new Map<string, { day: number; kind: string; source: string; rows: Row[] }>();
+    for (const row of rows) {
+      const day = Math.floor(num(row, "at") / DAY_MICROS) * DAY_MICROS;
+      const key = `${day}|${str(row, "kind")}|${str(row, "source")}`;
+      let group = groups.get(key);
+      if (!group) {
+        group = { day, kind: str(row, "kind"), source: str(row, "source"), rows: [] };
+        groups.set(key, group);
+      }
+      group.rows.push(row);
+    }
+    for (const group of groups.values()) {
+      const times = group.rows.map((r) => num(r, "at"));
+      this.db.run(
+        "INSERT INTO log_event_rollups (profile_id, day, kind, source, count, first_at, last_at) " +
+          "VALUES ($profile, $day, $kind, $source, $count, $first, $last) " +
+          "ON CONFLICT (profile_id, day, kind, source) DO UPDATE SET " +
+          "count = count + excluded.count, first_at = min(first_at, excluded.first_at), " +
+          "last_at = max(last_at, excluded.last_at)",
+        {
+          profile,
+          day: group.day,
+          kind: group.kind,
+          source: group.source,
+          count: group.rows.length,
+          first: Math.min(...times),
+          last: Math.max(...times),
+        },
+      );
+    }
+    this.db.run("DELETE FROM log_events WHERE seq IN (SELECT value FROM json_each($seqs))", {
+      seqs: JSON.stringify(rows.map((r) => num(r, "seq"))),
+    });
+  }
+
+  async compact(profile: ProfileId, policy: EventCompaction): Promise<EventCompactionResult> {
+    const limit = Math.max(1, Math.floor(policy.max_rows));
+    try {
+      return this.db.tx(() => {
+        const ambient = this.#leaves(
+          profile,
+          "e.kind = 'observation' AND e.salience = 'ambient'",
+          policy.fold_before,
+          limit,
+        );
+        if (ambient.length > 0) this.#remove(profile, ambient);
+        const left = limit - ambient.length;
+        const old =
+          policy.expire_before === null || left === 0
+            ? []
+            : this.#leaves(profile, "1 = 1", policy.expire_before, left);
+        if (old.length > 0) this.#remove(profile, old);
+        return {
+          folded: ambient.length,
+          expired: old.length,
+          more: ambient.length + old.length > 0,
+        };
+      });
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot compact the event log", { cause });
+    }
+  }
+
+  async rollups(profile: ProfileId, limit: number): Promise<EventRollup[]> {
+    const rows = this.db.all(
+      "SELECT * FROM log_event_rollups WHERE profile_id = $profile " +
+        "ORDER BY day DESC, kind, source LIMIT $limit",
+      { profile, limit: limitParam(limit) },
+    );
+    return rows.map((r) => ({
+      day: ts(r, "day"),
+      kind: str(r, "kind"),
+      source: str(r, "source"),
+      count: num(r, "count"),
+      first_at: ts(r, "first_at"),
+      last_at: ts(r, "last_at"),
+    }));
+  }
+}
+
 class SqliteAudit implements AuditLog {
   constructor(private readonly db: Db) {}
 
@@ -1431,6 +1756,8 @@ export class SqliteStore implements Store {
   readonly auth: AuthStore;
   readonly audit: AuditLog;
   readonly profileData: ProfileDataStore;
+  readonly events: EventLogStore;
+  readonly directives: DirectiveStore;
   readonly #db: Db;
 
   private constructor(db: Db, maxDecisions: number | null) {
@@ -1447,6 +1774,8 @@ export class SqliteStore implements Store {
     this.auth = new SqliteAuth(db);
     this.audit = new SqliteAudit(db);
     this.profileData = new SqliteProfileData(db);
+    this.events = new SqliteEventLog(db);
+    this.directives = new SqliteDirectives(db);
   }
 
   /**

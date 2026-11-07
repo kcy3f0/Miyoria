@@ -7,6 +7,7 @@ import type {
   DecisionTrace,
   IncomingMessage,
   JsonValue,
+  MemoryOrigin,
   PersonId,
   PlatformId,
   ProfileId,
@@ -158,6 +159,16 @@ export interface MemoryRecord {
    * "X said …", never as fact. `null` for memories she extracted herself (and old records).
    */
   source: MemorySource | null;
+  /**
+   * Whether she lived it or was told it. `unknown` for records written before origins were
+   * recorded (the migration marks them so instead of guessing). Absent reads as `unknown`.
+   */
+  origin?: MemoryOrigin;
+  /**
+   * EventLog ids the memory came from (or `msg:<id>` of a chat line the log has no event for).
+   * Empty for `unknown`. Absent reads as empty.
+   */
+  source_events?: string[];
   /** Followups: earliest time to bring it up. */
   due: Timestamp | null;
   /** Followups: already brought up. */

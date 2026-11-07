@@ -29,6 +29,16 @@ export interface VoiceUtterance {
   ended_at: Timestamp;
   /** Time from end of speech to transcript, in ms. */
   asr_ms: number;
+  /** How the turn was judged over, when a model judges it (`turn_engine = "smart-turn"`). */
+  turn?: VoiceTurnEnd;
+}
+
+/** How a speaker's turn ended. */
+export interface VoiceTurnEnd {
+  /** `turn`: the model says they are done; `timeout`: the longest silence; else silence or cap. */
+  ended_by: string;
+  /** The model's last answer; `null` when it did not give one. */
+  probability: number | null;
 }
 
 /** Her own speech playback. `interrupted`: stopped early, e.g. someone talked over her. */
@@ -60,6 +70,8 @@ export interface VoiceSink {
     turn: TurnId | null,
     signal?: AbortSignal,
   ): Promise<SpeakOutcome>;
+  /** The emergency stop: what plays stops now and nothing prepared stays. Optional. */
+  silence?(): void;
 }
 
 export const VoiceSinkKey = serviceKey<VoiceSink>("VoiceSink");

@@ -1,6 +1,12 @@
 // Helpers shared by the backends: canonical lookup keys, microsecond timestamps, embeddings.
 
-import type { AccountRef, ContextKey, Timestamp } from "@miyoria/types";
+import {
+  type AccountRef,
+  type ContextKey,
+  isMemoryOrigin,
+  type MemoryOrigin,
+  type Timestamp,
+} from "@miyoria/types";
 import type { AuthScope, MemoryKind, MemoryScope, MemorySource } from "./records.js";
 
 /** Every failure of a backend (bad input, constraint violations, broken rows). */
@@ -84,6 +90,16 @@ export function authScopeKey(scope: AuthScope): string {
 export function memoryKind(kind: string): MemoryKind {
   if ((MEMORY_KINDS as readonly string[]).includes(kind)) return kind as MemoryKind;
   throw new StoreError(`unknown value \`${kind}\``);
+}
+
+/** A stored origin; anything else (a newer build's value) reads as `unknown`. */
+export function memoryOrigin(value: string): MemoryOrigin {
+  return isMemoryOrigin(value) ? value : "unknown";
+}
+
+/** The evidence ids of a stored `source_events` array (anything that is not text is dropped). */
+export function sourceEvents(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
 export function parseJson<T>(text: string, what: string): T {

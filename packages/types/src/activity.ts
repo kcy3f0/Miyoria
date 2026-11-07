@@ -318,6 +318,49 @@ export interface ActivityManager {
 
 export const ActivityManagerKey = serviceKey<ActivityManager>("ActivityManager");
 
+// ---- after a restart ------------------------------------------------------------------------
+
+/** A game session the last run left open, as far as the log can tell. */
+export interface RestoredGame {
+  game: string;
+  /** Display name. */
+  name: string;
+  context: ContextKey | null;
+  /** When the session started. */
+  since: Timestamp;
+}
+
+/** Provided by the `facts` module: what the last run left behind (v3 §5). */
+export interface ActivityRecovery {
+  /** The session to pick up, read once when the core starts; `null`: nothing was running. */
+  game(): RestoredGame | null;
+}
+
+export const ActivityRecoveryKey = serviceKey<ActivityRecovery>("ActivityRecovery");
+
+/**
+ * Provided by the `game` module: picks a session back up without starting anything. `waiting`:
+ * the game cannot be reached (yet); `resumed`: a session runs now, whether it is this call's or
+ * not.
+ */
+export interface GameResume {
+  resume(restored: RestoredGame, signal?: AbortSignal): Promise<"resumed" | "waiting">;
+}
+
+export const GameResumeKey = serviceKey<GameResume>("GameResume");
+
+/** Payload: `ActivityRestore`, once a session the last run left open is settled. */
+export const ACTIVITY_RESTORE_TOPIC = "activity.restore";
+
+/**
+ * `resumed`: it was still there and runs again. `gone`: it did not come back in time. `dropped`:
+ * something else was asked for meanwhile.
+ */
+export interface ActivityRestore {
+  game: string;
+  outcome: "resumed" | "gone" | "dropped";
+}
+
 /** She is in a voice channel (not joining or leaving). */
 export function inVoice(snapshot: ActivitySnapshot): ContextKey | null {
   return snapshot.presence.type === "in" ? snapshot.presence.channel : null;

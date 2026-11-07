@@ -368,6 +368,9 @@ importers:
       '@miyoria/arbiter':
         specifier: workspace:*
         version: link:../arbiter
+      '@miyoria/facts':
+        specifier: workspace:*
+        version: link:../facts
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
@@ -441,6 +444,12 @@ importers:
       '@miyoria/arbiter':
         specifier: workspace:*
         version: link:../arbiter
+      '@miyoria/directive':
+        specifier: workspace:*
+        version: link:../directive
+      '@miyoria/facts':
+        specifier: workspace:*
+        version: link:../facts
       '@miyoria/learning':
         specifier: workspace:*
         version: link:../learning
@@ -487,6 +496,9 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
+      '@miyoria/facts':
+        specifier: workspace:*
+        version: link:../facts
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
@@ -649,12 +661,18 @@ importers:
       '@miyoria/commands':
         specifier: workspace:*
         version: link:../commands
+      '@miyoria/directive':
+        specifier: workspace:*
+        version: link:../directive
       '@miyoria/discord':
         specifier: workspace:*
         version: link:../discord
       '@miyoria/ext-host':
         specifier: workspace:*
         version: link:../ext-host
+      '@miyoria/facts':
+        specifier: workspace:*
+        version: link:../facts
       '@miyoria/game':
         specifier: workspace:*
         version: link:../game
@@ -676,6 +694,9 @@ importers:
       '@miyoria/mind':
         specifier: workspace:*
         version: link:../mind
+      '@miyoria/moderation':
+        specifier: workspace:*
+        version: link:../moderation
       '@miyoria/profile':
         specifier: workspace:*
         version: link:../profile
@@ -722,6 +743,46 @@ importers:
         specifier: workspace:*
         version: link:../world
     devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@24.19.2)(jsdom@26.1.0)(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.15))
+
+  packages/directive:
+    dependencies:
+      '@miyoria/actions':
+        specifier: workspace:*
+        version: link:../actions
+      '@miyoria/commands':
+        specifier: workspace:*
+        version: link:../commands
+      '@miyoria/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@miyoria/store':
+        specifier: workspace:*
+        version: link:../store
+      '@miyoria/tools':
+        specifier: workspace:*
+        version: link:../tools
+      '@miyoria/types':
+        specifier: workspace:*
+        version: link:../types
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@miyoria/activity':
+        specifier: workspace:*
+        version: link:../activity
+      '@miyoria/facts':
+        specifier: workspace:*
+        version: link:../facts
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
@@ -790,6 +851,31 @@ importers:
       '@miyoria/sdk':
         specifier: workspace:*
         version: link:../sdk
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@24.19.2)(jsdom@26.1.0)(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.15))
+
+  packages/facts:
+    dependencies:
+      '@miyoria/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@miyoria/store':
+        specifier: workspace:*
+        version: link:../store
+      '@miyoria/types':
+        specifier: workspace:*
+        version: link:../types
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
@@ -1041,6 +1127,28 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12(@types/node@24.19.2)(jsdom@26.1.0)(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.15))
 
+  packages/moderation:
+    dependencies:
+      '@miyoria/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@miyoria/types':
+        specifier: workspace:*
+        version: link:../types
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@24.19.2)(jsdom@26.1.0)(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.15))
+
   packages/profile:
     dependencies:
       '@miyoria/types':
@@ -1105,6 +1213,9 @@ importers:
       '@miyoria/arbiter':
         specifier: workspace:*
         version: link:../arbiter
+      '@miyoria/facts':
+        specifier: workspace:*
+        version: link:../facts
       '@miyoria/kernel':
         specifier: workspace:*
         version: link:../kernel

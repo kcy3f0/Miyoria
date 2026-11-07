@@ -20,6 +20,7 @@ import { isSelfInitiated } from "./arbiter.js";
 import type { Handle } from "./handle.js";
 import { newId, type TurnId } from "./ids.js";
 import type { JsonObject } from "./json.js";
+import type { FloorClaimKind } from "./mainline.js";
 import type { AccountRef, ContextKey } from "./platform.js";
 import { serviceKey } from "./service-key.js";
 import type { TaskId } from "./task.js";
@@ -53,6 +54,8 @@ export interface ImpulseInput {
   reason?: string;
   /** Narration: what the line is about (`Impulse.attention`). */
   attention?: ImpulseAttention | null;
+  /** V3: the row of the claim order (`Impulse.claim`). */
+  claim?: FloorClaimKind;
 }
 
 /** The default priority of a source. */
@@ -100,6 +103,7 @@ export function newImpulse(input: ImpulseInput, now: number): Impulse {
     goal: input.goal ?? null,
     created_at: toTimestamp(now),
     attention: input.attention ?? null,
+    ...(input.claim === undefined ? {} : { claim: input.claim }),
   };
 }
 
@@ -107,6 +111,29 @@ export function newImpulse(input: ImpulseInput, now: number): Impulse {
 export function impulseReason(impulse: Impulse): string {
   const reason = impulse.args.reason;
   return typeof reason === "string" && reason !== "" ? reason : impulse.source;
+}
+
+/** Which row of the claim order (§7.1) an impulse is. */
+export function claimOf(impulse: Impulse): FloorClaimKind {
+  if (impulse.claim !== undefined) return impulse.claim;
+  switch (impulse.source) {
+    case "message":
+    case "command":
+    case "panel":
+      return "addressed";
+    case "notice":
+    case "song":
+      return "result";
+    case "followup":
+      return impulseReason(impulse) === "followup" ? "wish" : "result";
+    case "game":
+      return (impulse.attention ?? null) === null ? "urgent" : "notable";
+    case "world":
+      return "notable";
+    case "plan":
+    case "agenda":
+      return "wish";
+  }
 }
 
 /**
@@ -132,6 +159,8 @@ export interface ConversationFacts {
   present: boolean;
   /** When she last said something there (epoch ms), if she did. */
   last_spoke_at: number | null;
+  /** Voice: the people in the channel besides her (`null`: not a voice channel, or unknown). */
+  humans?: number | null;
 }
 
 /**

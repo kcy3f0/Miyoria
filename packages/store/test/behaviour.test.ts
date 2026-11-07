@@ -147,6 +147,8 @@ function memory(
     access_count: 0,
     source_context: null,
     source: null,
+    origin: "unknown",
+    source_events: [],
     due: null,
     done: false,
     superseded_by: null,
@@ -540,6 +542,8 @@ function behaviour(open: () => Promise<Store>): void {
     r.access_count = 3;
     r.source_context = channel("guild", unique("chan"), "voice");
     r.source = { account: { platform: "discord", id: "1234" }, name: "Owen" };
+    r.origin = "told";
+    r.source_events = [newId(), `msg:${newId()}`];
     r.due = at(t0 + HOUR);
     await memories.upsert(r);
     expect(await memories.get(r.id)).toEqual(r);
@@ -1461,7 +1465,13 @@ function behaviour(open: () => Promise<Store>): void {
 
     // Each category alone, then nothing of it is left and the rest is untouched.
     const counts = await store.profileData.wipe(profile, ["messages"]);
-    expect(counts).toEqual({ message_log: 1, memory_watermarks: 2, conversation_states: 0 });
+    expect(counts).toEqual({
+      message_log: 1,
+      memory_watermarks: 2,
+      conversation_states: 0,
+      log_events: 0,
+      log_event_rollups: 0,
+    });
     expect(await store.messages.recent(profile, ctx, 9)).toEqual([]);
     expect((await store.settings.list(profile, "memory_watermark:")).size).toBe(0);
     expect(await store.memories.list(profile, { ...baseFilter, limit: 9 })).toHaveLength(2);

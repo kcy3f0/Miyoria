@@ -129,6 +129,8 @@ export interface IncomingMessage {
   stickers?: Sticker[];
   embeds?: Embed[];
   forwarded?: ForwardedMessage[];
+  /** Voice: a model judged the speaker done, so there is no need to wait and see if they go on. */
+  turn_complete?: boolean;
 }
 
 /** Image types she can look at. */
@@ -208,9 +210,12 @@ export interface OutgoingMessage {
  * Implemented by platform adapters so the scheduler can execute output actions without knowing
  * which platform (or which account) it talks to.
  */
+/** What `send` answers. `blocked`: the sink replaced the text with the filtered line (the rule). */
+export type SentMessage = MessageRef & { blocked?: string };
+
 export interface PlatformSink {
   readonly platform: PlatformId;
-  send(context: ContextKey, message: OutgoingMessage, signal?: AbortSignal): Promise<MessageRef>;
+  send(context: ContextKey, message: OutgoingMessage, signal?: AbortSignal): Promise<SentMessage>;
   react(message: MessageRef, emoji: string, signal?: AbortSignal): Promise<void>;
   typing(context: ContextKey, signal?: AbortSignal): Promise<void>;
   /**

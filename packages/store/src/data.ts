@@ -32,6 +32,8 @@ export type DataCategoryId =
   | "mood"
   | "messages"
   | "decisions"
+  | "event_log"
+  | "directives"
   | "initiative"
   | "people"
   | "channels"
@@ -118,6 +120,8 @@ const MEMORY_COLUMNS = {
   access_count: "num",
   source_context: "json",
   source: "json",
+  origin: "text",
+  source_events: "json",
   due: "ts",
   done: "bool",
   superseded_by: "text",
@@ -270,8 +274,9 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
       // @miyoria/memory `WATERMARK_PREFIX`: only ever together with the log.
       settings("memory_watermarks", "active", [], ["memory_watermark:"]),
     ],
-    // Her conversation notes are made from the log: they go with it.
-    { requires: ["conversation"], modules: ["memory", "agent"] },
+    // Her conversation notes are made from the log, and the EventLog repeats what people said:
+    // they go with it.
+    { requires: ["conversation", "event_log"], modules: ["memory", "agent"] },
   ),
   category(
     "decisions",
@@ -289,6 +294,53 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
       }),
     ],
     { confirm: "simple" },
+  ),
+  // The owner's rules. Deleting them lifts every rule at once, so the profile id has to be typed.
+  category(
+    "directives",
+    [
+      table("directives", "directives", "profile", "created_at", "created_at, id", {
+        id: "text",
+        issuer: "json",
+        authority: "text",
+        scope: "json",
+        effect: "text",
+        text: "text",
+        expires: "ts",
+        source_event: "text",
+        created_at: "ts",
+        revoked_at: "ts",
+        revoked_by: "text",
+      }),
+    ],
+    { modules: ["directive"] },
+  ),
+  // The V3 EventLog: what she perceived, decided and said, and the counts of what was compacted.
+  category(
+    "event_log",
+    [
+      table("log_events", "log_events", "profile", "at", "seq", {
+        id: "text",
+        at: "ts",
+        kind: "text",
+        source: "text",
+        cause: "text",
+        context: "json",
+        person: "text",
+        attention_key: "text",
+        salience: "text",
+        body: "json",
+      }),
+      table("log_event_rollups", "log_event_rollups", "profile", "last_at", "day, kind, source", {
+        day: "ts",
+        kind: "text",
+        source: "text",
+        count: "num",
+        first_at: "ts",
+        last_at: "ts",
+      }),
+    ],
+    { modules: ["facts"], confirm: "simple" },
   ),
   // @miyoria/arbiter `STATE_KEY` under `STATE_PROFILE` (her ledger: counters, backoff, topics,
   // greetings), and the old @miyoria/initiative state it replaced

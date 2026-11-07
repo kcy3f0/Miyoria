@@ -7,8 +7,9 @@
 // out) must be harmless: its late events are ignored by id.
 //
 // On the bus a task owner `<owner>` (e.g. `game.minecraft`, `activity`) publishes
-// `<owner>.task.started|progress|done|failed` custom events (`taskTopic`) whose payload is the
-// `TaskEvent` (internally tagged by `type`). `@miyoria/sdk` carries its own copy of these shapes
+// `<owner>.task.started|progress|done|failed|steered` custom events (`taskTopic`) whose payload is
+// the `TaskEvent` (internally tagged by `type`). `steered` is not a lifecycle end: it reports how
+// a change of direction (`TaskSteer`, docs/design/v3-architecture.md §10.6) went. `@miyoria/sdk` carries its own copy of these shapes
 // for extensions (it does not depend on this package).
 
 import type { JsonObject, JsonValue } from "./json.js";
@@ -88,7 +89,17 @@ export type TaskEvent =
       data: JsonValue;
       at: Timestamp;
     }
-  | { type: "failed"; task: TaskId; code: TaskFailureCode; detail: string; at: Timestamp };
+  | { type: "failed"; task: TaskId; code: TaskFailureCode; detail: string; at: Timestamp }
+  | {
+      type: "steered";
+      task: TaskId;
+      /** `TaskSteer.id`. */
+      steer: string;
+      outcome: SteerOutcome;
+      /** Short neutral description (why it was refused, what changed). */
+      detail: string;
+      at: Timestamp;
+    };
 
 export type TaskEventType = TaskEvent["type"];
 
@@ -106,9 +117,34 @@ export function taskTopic(owner: string, type: TaskEventType): string {
 
 /** Inverse of `taskTopic`: `{owner, type}` of a task topic, or `null`. */
 export function parseTaskTopic(topic: string): { owner: string; type: TaskEventType } | null {
-  const m = /^(.+)\.task\.(started|progress|done|failed)$/.exec(topic);
+  const m = /^(.+)\.task\.(started|progress|done|failed|steered)$/.exec(topic);
   if (m === null) return null;
   return { owner: m[1] as string, type: m[2] as TaskEventType };
+}
+
+/**
+ * Changing a running task's goal without losing its progress (v3 §10.6). The words are turned
+ * into a structured patch by the main line; the executor only ever sees the patch.
+ */
+export interface TaskSteer {
+  /** A ULID chosen by the caller. Also the id of the log line that records the request. */
+  id: string;
+  task: TaskId;
+  /** The goal arguments to change; the executor validates it against its current goal. */
+  patch: JsonObject;
+  /** Short neutral sentence for the panel and the log. */
+  why: string;
+  /** The EventLog event that triggered the change. */
+  cause: string;
+}
+
+/** How a steer went: it took effect, the executor refused it, or the task was already over. */
+export const STEER_OUTCOMES = ["applied", "rejected", "too_late"] as const;
+
+export type SteerOutcome = (typeof STEER_OUTCOMES)[number];
+
+export function isSteerOutcome(value: unknown): value is SteerOutcome {
+  return typeof value === "string" && (STEER_OUTCOMES as readonly string[]).includes(value);
 }
 
 /** What `observe()` returns: structured state, never a text that has to be parsed again. */
@@ -134,4 +170,11 @@ export interface TaskExecutor {
   cancel(id: TaskId): Promise<void>;
   /** Every task event of this executor, in order; ends when the executor goes away. */
   events(): AsyncIterable<TaskEvent>;
+  /**
+   * Changes the goal of running task `steer.task` and keeps its progress. Optional: without it
+   * the caller cancels and starts again (the progress is lost). Returns once the steer is
+   * accepted; `steered` follows with the outcome, and the patch is read at the next safe point,
+   * never in the middle of an action. Budget and start time stay as they were.
+   */
+  steer?(steer: TaskSteer): Promise<void>;
 }

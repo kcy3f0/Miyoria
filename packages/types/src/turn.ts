@@ -148,7 +148,7 @@ export type TurnCancelCause =
   | "expired"
   /** The floor was held (a song, the GPU lent out) and the line was dropped. */
   | "floor"
-  /** The module stopped. */
+  /** The module stopped, or the emergency stop did. */
   | "shutdown";
 
 export type TurnOutcome =

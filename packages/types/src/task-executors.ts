@@ -10,11 +10,13 @@
 import type { JsonObject, JsonValue } from "./json.js";
 import { serviceKey } from "./service-key.js";
 import {
+  isSteerOutcome,
   isTaskFailureCode,
   type TaskEvent,
   type TaskExecutor,
   type TaskId,
   type TaskSpec,
+  type TaskSteer,
 } from "./task.js";
 
 /** One goal an executor understands (shown to the model that picks goals). */
@@ -81,6 +83,25 @@ export function isTaskSpec(value: unknown): value is TaskSpec {
   );
 }
 
+/** Whether `value` is a well formed `TaskSteer` (ids, an object patch, short texts). */
+export function isTaskSteer(value: unknown): value is TaskSteer {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  const id = (x: unknown, max: number): x is string =>
+    typeof x === "string" && x.length > 0 && x.length <= max;
+  return (
+    id(v.id, 64) &&
+    id(v.task, 64) &&
+    typeof v.patch === "object" &&
+    v.patch !== null &&
+    !Array.isArray(v.patch) &&
+    typeof v.why === "string" &&
+    v.why.length <= 400 &&
+    typeof v.cause === "string" &&
+    v.cause.length <= 64
+  );
+}
+
 /**
  * A `TaskEvent` read from the wire or the bus, or `null` when it is not one. Untrusted input:
  * every field is checked (a bad failure code becomes `null`, not `internal`).
@@ -106,6 +127,13 @@ export function parseTaskEvent(value: unknown): TaskEvent | null {
       return { type: "done", task, detail, data: (v.data ?? null) as JsonValue, at };
     case "failed":
       return isTaskFailureCode(v.code) ? { type: "failed", task, code: v.code, detail, at } : null;
+    case "steered":
+      return typeof v.steer === "string" &&
+        v.steer !== "" &&
+        v.steer.length <= 64 &&
+        isSteerOutcome(v.outcome)
+        ? { type: "steered", task, steer: v.steer, outcome: v.outcome, detail, at }
+        : null;
     default:
       return null;
   }

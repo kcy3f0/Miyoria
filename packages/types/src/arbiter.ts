@@ -15,6 +15,7 @@ import type { Priority } from "./action.js";
 import type { Handle } from "./handle.js";
 import type { TurnId } from "./ids.js";
 import type { JsonObject } from "./json.js";
+import type { FloorClaimKind } from "./mainline.js";
 import type { RaisedTopic } from "./mind.js";
 import type { AccountRef, ContextKey } from "./platform.js";
 import { serviceKey } from "./service-key.js";
@@ -72,6 +73,8 @@ export interface ImpulseAttention {
   /** Stable content key, e.g. `game:craft:stone_pickaxe`. */
   key: string;
   repeat_after_ms: number;
+  /** The revision of the thing (§6), when an observation says it. V2 goes by the time alone. */
+  revision?: number;
 }
 
 /** Who / where an impulse is aimed at. */
@@ -114,6 +117,8 @@ export interface Impulse {
    * has none, and nothing limits it as narration.
    */
   attention?: ImpulseAttention | null;
+  /** V3: which row of the claim order this is (§7.1). Default: from its source. */
+  claim?: FloorClaimKind;
 }
 
 /** True once `impulse` is past `expires_at` (`now`: epoch ms). */
@@ -156,6 +161,8 @@ export type ArbiterReason =
   | "unanswered"
   /** She already said this and nothing new happened (`Impulse.attention`). */
   | "repeat"
+  /** Nobody is there to hear it (it may still work out before it expires). */
+  | "nobody"
   /** A more urgent impulse. */
   | "superseded"
   | "expired"
