@@ -108,6 +108,14 @@ export function speaksRule(language: string): string {
   ].join("");
 }
 
+/**
+ * `speaksRule` once more at the end of the prompt: it sits far above the history, where her
+ * own lines show only their subtitles, and half her replies went without `<voice>`.
+ */
+export function speaksReminder(language: string): string {
+  return `- 這回合是用說的:每一句都先寫 <voice>…</voice>(${language}),再接同一句的中文,一句都不能漏。歷史訊息裡你說過的話只留字幕,那個格式不要照抄。`;
+}
+
 export const INITIATIVE = "現在沒有人在跟你說話,是你自己想主動開啟話題。";
 export const VOICE_INITIATIVE = "大家現在沒有在跟你說話,是你自己想主動用說的開個話題。";
 export const INITIATIVE_HINT = "你想到可以聊的事在參考資料「你想聊的事」裡。";
@@ -155,6 +163,8 @@ export interface Situation {
   initiative: string | null;
   /** She starts this turn herself, on an intent of her mind loop (`IntentData`, data). */
   intent?: boolean;
+  /** The language she is heard in when it differs from the one she writes (`speaksRule`). */
+  speaksIn?: string | null;
   /**
    * Her own state (`# 你自己的狀態`), one entry per block, already rendered (compiler.ts).
    * Nothing derived from others.
@@ -234,6 +244,7 @@ export function situationPrompt(
           : `語音頻道 ${ctx.channel}`;
   const voice = ctx.kind === "voice";
   const template = voice ? VOICE_SITUATION : SITUATION;
+  const speaks = voice && s.speaksIn ? `\n${speaksReminder(s.speaksIn)}` : "";
   const head = template
     .replaceAll("{time}", () => time)
     .replaceAll("{platform}", () => ctx.platform)
@@ -241,7 +252,7 @@ export function situationPrompt(
     .replaceAll("{place}", () => place)
     .replaceAll("{addressing}", () => addressing(s, voice));
   const self = selfSection(s.notes);
-  return self === null ? head : `${head}\n\n${self}`;
+  return self === null ? `${head}${speaks}` : `${head}${speaks}\n\n${self}`;
 }
 
 /** Her intent as the body of the `你的打算` data block. */

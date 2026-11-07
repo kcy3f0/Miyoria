@@ -18,6 +18,7 @@ import {
   rulesPrompt,
   SELF_HEAD,
   situationPrompt,
+  speaksReminder,
   splitMessage,
   VOICE_ADDRESSED,
   VOICE_INITIATIVE,
@@ -28,6 +29,17 @@ const utc = (y: number, mo: number, d: number, h: number, mi: number) =>
   new Date(Date.UTC(y, mo - 1, d, h, mi, 0));
 
 describe("prompt", () => {
+  it("repeats the spoken-language rule last in a bilingual voice turn, not in text", () => {
+    const voice: ContextKey = { platform: "discord", scope: "g", channel: "v", kind: "voice" };
+    const text: ContextKey = { platform: "discord", scope: "g", channel: "c", kind: "channel" };
+    const at = utc(2026, 11, 1, 14, 3);
+    const of = (context: ContextKey, speaksIn: string | null) =>
+      situationPrompt({ context, direct: false, initiative: null, notes: [], speaksIn }, at, 0);
+    expect(of(voice, "Japanese")).toContain(speaksReminder("Japanese"));
+    expect(of(voice, null)).not.toContain("<voice>");
+    expect(of(text, "Japanese")).not.toContain("<voice>");
+  });
+
   it("builds_role_mapped_merged_history", () => {
     const history = [
       entry("Owen", "早安", false),

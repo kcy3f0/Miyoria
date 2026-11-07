@@ -1178,6 +1178,7 @@ class Turn {
         notice: this.initiative?.reason === "notice",
         initiative: this.initiative?.hint ?? null,
         intent: this.intent !== null,
+        speaksIn: voiceSink?.speaksIn ?? null,
         notes: extras.self,
       },
       new Date(this.#now),

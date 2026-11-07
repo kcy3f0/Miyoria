@@ -173,6 +173,7 @@ export {
   SPOKEN_TAG,
   selfSection,
   situationPrompt,
+  speaksReminder,
   speaksRule,
   splitMessage,
   TRANSCRIPT_RULES,
