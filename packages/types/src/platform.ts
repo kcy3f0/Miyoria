@@ -214,6 +214,11 @@ export interface PlatformSink {
   react(message: MessageRef, emoji: string, signal?: AbortSignal): Promise<void>;
   typing(context: ContextKey, signal?: AbortSignal): Promise<void>;
   /**
+   * Sets the status line of the voice channel `context` (`""` clears it). Optional; platforms
+   * without one leave it out.
+   */
+  setVoiceStatus?(context: ContextKey, status: string, signal?: AbortSignal): Promise<void>;
+  /**
    * Human name of a context, e.g. `"Miyoria / 雜談"` (server / channel), for the admin panel.
    * `null` when unknown. Optional.
    */
