@@ -440,8 +440,8 @@
     radial-gradient(
       farthest-corner circle at var(--mx, 50%) var(--my, 50%),
       #000 0%,
-      rgba(0, 0, 0, 0.6) 35%,
-      rgba(0, 0, 0, 0.2) 75%
+      rgba(0, 0, 0, 0.45) 25%,
+      rgba(0, 0, 0, 0.06) 60%
     ),
     linear-gradient(to bottom, #000 0%, #000 55%, transparent 76%),
     var(--art, none),
@@ -461,20 +461,20 @@
 }
 
 .holo-foil {
+  /* Mostly a silvery sheen; the colour is pale and only shows where the light falls. */
   background-image: repeating-linear-gradient(
     115deg,
-    hsl(330 100% 70%) 0%,
-    hsl(45 100% 65%) 3%,
-    hsl(140 90% 62%) 6%,
-    hsl(195 100% 65%) 9%,
-    hsl(265 100% 72%) 12%,
-    hsl(330 100% 70%) 15%
+    hsl(330 70% 82%) 0%,
+    hsl(45 70% 80%) 3%,
+    hsl(150 55% 80%) 6%,
+    hsl(195 70% 82%) 9%,
+    hsl(265 65% 84%) 12%,
+    hsl(330 70% 82%) 15%
   );
   background-size: 300% 300%;
   background-position: calc(var(--px, 50) * 1%) calc(var(--py, 50) * 1%);
-  mix-blend-mode: screen;
-  filter: saturate(1.15);
-  opacity: calc(0.18 + var(--on, 0) * (0.2 + var(--hyp, 0) * 0.3));
+  mix-blend-mode: soft-light;
+  opacity: calc(0.1 + var(--on, 0) * (0.12 + var(--hyp, 0) * 0.22));
 }
 
 /* On her, only a faint sheen of the same rainbow, so she stays as drawn. */
@@ -491,7 +491,7 @@
   background-size: 300% 300%;
   background-position: calc(var(--px, 50) * 1%) calc(var(--py, 50) * 1%);
   mix-blend-mode: soft-light;
-  opacity: calc(var(--on, 0) * (0.12 + var(--hyp, 0) * 0.2));
+  opacity: calc(var(--on, 0) * (0.06 + var(--hyp, 0) * 0.12));
   mask-image:
     var(--art, none),
     linear-gradient(to bottom, #000 0%, #000 60%, transparent 76%);
