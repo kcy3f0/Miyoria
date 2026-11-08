@@ -162,6 +162,7 @@ export {
   EXAMPLES_TITLE,
   FOCUS_HEAD,
   FORMAT_RULES,
+  FRESHNESS_RULE,
   focusMessage,
   GUARD_RULES,
   gapLine,

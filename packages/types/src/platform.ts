@@ -267,6 +267,8 @@ export const PlatformSinksKey = serviceKey<PlatformSinks>("PlatformSinks");
 export interface HistoryQuery {
   /** Only messages before this message id (`null`: the newest). */
   before: string | null;
+  /** Only messages after this message id (the lines that followed it); `before` is then ignored. */
+  after?: string | null;
   limit: number;
 }
 

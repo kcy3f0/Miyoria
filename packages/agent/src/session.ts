@@ -51,6 +51,10 @@ export interface HistoryEntry {
   current?: boolean;
   /** With `current`: how the focus block introduces it (`問你`, `回你`, `接著說`, `說`). */
   focusVerb?: string;
+  /** A quoted parent whose time is not known (`ts` is the reply's), so no "how long ago". */
+  undated?: boolean;
+  /** On a quoted direct parent: the lines around it in its channel, shown with it. */
+  around?: { before: HistoryEntry[]; after: HistoryEntry[] };
 }
 
 /** Someone else seen in a context (Rust `session::Participant`). */
@@ -286,6 +290,20 @@ export class Session {
   /** The last `n` entries, oldest first. */
   recent(n: number): HistoryEntry[] {
     return this.#history.slice(Math.max(this.#history.length - n, 0));
+  }
+
+  /** Up to `before` lines before entry `id` and `after` lines after it (none if unknown). */
+  around(
+    id: string,
+    before: number,
+    after: number,
+  ): { before: HistoryEntry[]; after: HistoryEntry[] } {
+    const i = this.#history.findIndex((e) => e.id === id);
+    if (i < 0) return { before: [], after: [] };
+    return {
+      before: this.#history.slice(Math.max(i - before, 0), i),
+      after: this.#history.slice(i + 1, i + 1 + after),
+    };
   }
 
   /** Epoch ms of her last words, if any. */

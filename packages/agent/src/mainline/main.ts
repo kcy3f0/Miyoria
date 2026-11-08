@@ -24,6 +24,7 @@ import {
   type Commitment,
   type CommitmentDraft,
   type ContextKey,
+  contextKeyEquals,
   contextKeyString,
   type Delivery,
   DeliveryLedgerKey,
@@ -57,6 +58,7 @@ import {
   textLane,
   topicKey,
   toTimestamp,
+  VoiceFloorKey,
   voiceLane,
   WorkingContextKey,
 } from "@miyoria/types";
@@ -100,6 +102,8 @@ const CAUSES_REMEMBERED = 512;
 const RESULT_TTL_MS = 10 * 60_000;
 /** Log history the commitments and proposals are rebuilt from. */
 const REBUILD_MS = 24 * 3_600_000;
+/** What a commitment made of her own line keeps of it. */
+const WHAT_CHARS = 80;
 
 /** Where a turn of hers runs that acts and says nothing: no conversation of anyone's. */
 export const ACTING_ALONE: ContextKey = {
@@ -172,6 +176,8 @@ export class MainLine implements Mouth {
   readonly #chains = new Map<string, Chain>();
   #stopFollowing: (() => void)[] = [];
   #pinned: PinnedMemory | null = null;
+  /** Results of a voice channel a song holds, one per place: told once the song is over. */
+  #afterSong: { context: ContextKey; job: Job }[] = [];
 
   constructor(agent: Agent) {
     this.#agent = agent;
@@ -213,6 +219,7 @@ export class MainLine implements Mouth {
     ctx.spawn("commitments", async (signal) => {
       for await (const _ of interval(this.config.commitment_sweep_ms, signal)) {
         this.commitments.remind();
+        this.#tellAfterSong();
       }
     });
   }
@@ -373,8 +380,30 @@ export class MainLine implements Mouth {
     return message === undefined ? null : (this.#causes.get(message) ?? null);
   }
 
+  /** A song holds the voice channel of `context`: her lines would wait behind it, then drop. */
+  #songHolds(context: ContextKey): boolean {
+    if (context.kind !== "voice" || context.scope === null) return false;
+    const floor = this.#agent.ctx.services.get(VoiceFloorKey);
+    return (floor?.holder(context.scope) ?? null) !== null;
+  }
+
+  /** Results that waited for a song: the song is over. */
+  #tellAfterSong(): void {
+    const waiting = this.#afterSong;
+    this.#afterSong = waiting.filter((w) => this.#songHolds(w.context));
+    for (const w of waiting) if (!this.#songHolds(w.context)) this.#told(w.context, w.job);
+  }
+
   /** A result is in: a turn of hers (the Floor's `result` row) tells it. */
   #told(context: ContextKey, job: Job): void {
+    if (this.#songHolds(context)) {
+      // Nothing cuts a song (§7.3); the result stays unsaid and is told once it ends.
+      this.#afterSong = [
+        ...this.#afterSong.filter((w) => !contextKeyEquals(w.context, context)),
+        { context, job },
+      ];
+      return;
+    }
     const agent = this.#agent;
     const now = agent.ctx.clock.now();
     const impulse = newImpulse(
@@ -549,6 +578,8 @@ export class MainTurn {
   #decision: string | null = null;
   #held = false;
   #reminded = false;
+  /** Tools she wrote as text instead of calling (`toolsWrittenAsText`). */
+  #written = new Set<string>();
   /** Overdue commitments she was shown. */
   #overdue: Commitment[] = [];
 
@@ -645,8 +676,7 @@ export class MainTurn {
     const tools = output.actions.map((a) => a.tool);
     const settled: Settled = this.gate.settle(tools);
     const dropped = settled.dropped.find((c) => this.#offered.has(c.tool)) ?? null;
-    if (dropped !== null && !this.#reminded) {
-      this.#reminded = true;
+    if (dropped !== null && this.takeCorrection()) {
       this.#agent.log.info({ turn: this.turn, tool: dropped.tool }, "she claimed without doing");
       return { release: [], remind: dropped };
     }
@@ -664,11 +694,36 @@ export class MainTurn {
     return !this.claim.muted && !spendsBudget(this.claim.kind);
   }
 
+  /**
+   * One corrective call a turn, for a claim nothing backs or a tool written as text: whether it
+   * is still free (it is taken).
+   */
+  takeCorrection(): boolean {
+    if (this.#reminded) return false;
+    this.#reminded = true;
+    return true;
+  }
+
+  /** Tools she wrote as text in this turn. */
+  wrote(tools: readonly string[]): void {
+    for (const tool of tools) this.#written.add(tool);
+  }
+
   /** Commitments of this output: the written ones, and promises with nothing behind them. */
   #commit(output: TurnOutput): CommitmentDraft[] {
     const drafts = [...output.commitments];
     const scope = this.#main.scope();
     const tools = output.actions.map((a) => a.tool);
+    // A tool written as text is something she said she would do: it must not just evaporate.
+    for (const tool of this.#written) {
+      if (tools.includes(tool) || drafts.some((d) => d.capability === tool)) continue;
+      const said = this.said
+        .map((s) => s.text)
+        .join("")
+        .trim();
+      const what = said === "" ? `用 ${tool}` : [...said].slice(0, WHAT_CHARS).join("");
+      drafts.push({ what, capability: tool, due_secs: null });
+    }
     for (const segment of this.said) {
       for (const claim of promisedClaims(segment.text)) {
         if (tools.includes(claim.tool) || (scope !== null && claim.holds(scope))) continue;
@@ -773,7 +828,7 @@ export class MainTurn {
       tool: action.tool,
       args,
       // A muted turn has nobody waiting: what came of it is in her next prompt, not a turn.
-      report: action.tool !== ReactTool.NAME && !this.claim.muted,
+      report: action.tool === ReactTool.NAME ? "none" : this.claim.muted ? "prompt" : "turn",
       depth: this.claim.chain?.depth ?? 0,
       requester,
       cause: this.#decision,

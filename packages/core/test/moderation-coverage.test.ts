@@ -86,7 +86,10 @@ describe("every line of hers is reviewed", () => {
     }
     // Both text `send` closures, and both `Speech`es get the review.
     expect(turn.match(/const send = async \(raw: string\) => \{/g)).toHaveLength(2);
-    expect(turn.match(/const safe = this\.#safe\(cleanReply\(raw, names\)\);/g)).toHaveLength(2);
+    // Each closure reviews every part it sends (`[回覆 N]` splits one into several).
+    expect(
+      turn.match(/const safe = this\.#safe\(cleanReply\(mark\.text, names\)\);/g),
+    ).toHaveLength(2);
     expect(
       turn.match(/\(text, spoken, aloud\) => this\.#safe\(text, spoken, aloud\)/g),
     ).toHaveLength(2);
@@ -158,6 +161,7 @@ describe("everything people write is judged", () => {
       "packages/arbiter/src/producers.ts",
       "packages/arbiter/src/unanswered.ts",
       "packages/core/src/recorder.ts",
+      "packages/economy/src/earn.ts",
       "packages/learning/src/modules.ts",
       "packages/memory/src/module.ts",
       "packages/replay/src/report.ts",

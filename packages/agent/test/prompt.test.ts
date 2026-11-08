@@ -7,11 +7,13 @@ import {
   buildMessages,
   cleanReply,
   FOCUS_HEAD,
+  FRESHNESS_RULE,
   GUARD_RULES,
   type HistoryEntry,
   INITIATIVE,
   INITIATIVE_HINT,
   INITIATIVE_SILENCE,
+  mainRules,
   markCurrent,
   RULES,
   renderSections,
@@ -79,6 +81,17 @@ describe("prompt", () => {
     expect(rules).toContain(GUARD_RULES);
     for (const rule of ["<silence/>", "<emo:名稱>", "一到三句"]) {
       expect(rules.split(rule).length - 1, rule).toBe(1);
+    }
+  });
+
+  it("every rules block says newer things are looked up, never denied", () => {
+    expect(FRESHNESS_RULE).toContain("web_search");
+    expect(rulesPrompt(false)).toContain(FRESHNESS_RULE);
+    expect(rulesPrompt(true)).toContain(FRESHNESS_RULE);
+    for (const voice of [false, true]) {
+      const text = mainRules(voice, null);
+      expect(text, String(voice)).toContain("web_search");
+      expect(text, String(voice)).toContain("別說不存在");
     }
   });
 

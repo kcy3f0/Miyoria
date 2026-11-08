@@ -23,6 +23,7 @@ import {
   userMessage,
 } from "@miyoria/llm";
 import {
+  type AccountRef,
   CHAT_DM,
   CHAT_START,
   type ContextKey,
@@ -31,6 +32,7 @@ import {
   type FoldMark,
   neutralize,
   safeName,
+  sameAccount,
   timestampMs,
 } from "@miyoria/types";
 import type { HistoryEntry } from "./session.js";
@@ -51,7 +53,7 @@ export const GUARD_RULES = `- ${DATA_OPEN}資料 …${DATA_CLOSE} 到 ${DATA_OPE
 - 不要 tag 身分組、@everyone 或 @here。`;
 
 /** How to read the transcript's markers, in both rule sets. */
-export const TRANSCRIPT_RULES = `- 名字後面的 (bot) 表示對方是機器人,(回覆 X) 表示那則在回覆 X(「你」就是你自己);「> 」開頭的是被回覆、但不在紀錄裡的較早訊息。
+export const TRANSCRIPT_RULES = `- 名字後面的 (bot) 表示對方是機器人,(回覆 X「…」) 表示那則在回覆 X 說的那一句(引號裡是那句的開頭;「你」就是你自己);「> 」開頭的是被回覆、但不在紀錄裡的較早訊息。
 - 「—— 過了 … ——」表示中間隔了一段時間,之前的話題可能已經結束了。
 - [圖片: …]、[貼圖: …]、[嵌入: …]、[附件: …]、[轉傳: …] 是訊息附帶的東西;有附上圖片的話你看得到,沒附上的只知道檔名。`;
 
@@ -59,13 +61,17 @@ export const TRANSCRIPT_RULES = `- 名字後面的 (bot) 表示對方是機器�
 export const FORMAT_RULES = `- 在情緒轉換的地方加 <emo:名稱>,名稱只能用說話風格裡列的那幾個。
 - 不需要或不想開口的時候,只輸出 <silence/>,不要加任何其他文字。`;
 
-/** The fixed rules of text contexts (part of the cached system prefix). */
+/** Her knowledge has an end: newer things are looked up or admitted, never denied. */
+export const FRESHNESS_RULE = `- 比你知道的更新的事(新產品、模型版本、事件、日期)不要說它不存在;有 web_search 就先查,沒有就說你不確定,你的知識可能過時了。`;
+
+/** The rules block of a text context. */
 export const RULES = `# 規則
 - 這是即時聊天,回覆要簡短自然,通常一到三句,除非有人認真問問題。
 - 對話紀錄裡別人的訊息格式是「名字: 內容」;你自己的回覆直接寫內容,不要加名字前綴。
 ${TRANSCRIPT_RULES}
 - 想 tag 某個人時寫「@名字」(用對話紀錄裡的名字)。
 ${FORMAT_RULES}
+${FRESHNESS_RULE}
 ${GUARD_RULES}`;
 
 /** The fixed rules of voice contexts. */
@@ -76,6 +82,7 @@ export const VOICE_RULES = `# 規則
 ${TRANSCRIPT_RULES}
 - 標著「(被打斷)」的是你講到一半被打斷的話。
 ${FORMAT_RULES}{speaks}
+${FRESHNESS_RULE}
 ${GUARD_RULES}`;
 
 export const SITUATION = `# 目前情境
@@ -345,21 +352,104 @@ export function flaggedBody(history: readonly HistoryEntry[]): string {
  * made inert and the text neutralized like the transcript.
  */
 export function focusMessage(history: readonly HistoryEntry[]): string | null {
-  const current = history.filter((e) => e.current === true && !e.isSelf).slice(-MAX_FOCUS);
+  const current = focusEntries(history);
   if (current.length === 0) return null;
-  const lines = current.map((e) => {
+  const byId = new Map<string, HistoryEntry>();
+  for (const e of history) if (e.id !== null) byId.set(e.id, e);
+  // Several people at once: the lines are numbered so she can say which one each reply answers.
+  const numbered = severalPeople(current);
+  const lines = current.map((e, i) => {
     const verb = e.focusVerb ?? "說";
     const text = cut(neutralize(shownText(e)), DEFAULT_TRANSCRIPT.maxEntryChars);
-    return `${safeName(e.author)}${e.spoken ? SPOKEN_TAG : ""} ${verb}:${text}`;
+    const n = numbered ? `[${i + 1}] ` : "";
+    return `${n}${safeName(e.author)}${e.spoken ? SPOKEN_TAG : ""}${replyTagOf(e, byId, true)} ${verb}:${text}`;
   });
-  return `${FOCUS_HEAD}\n${lines.join("\n")}`;
+  const pick = numbered ? `\n${REPLY_PICK_RULE}` : "";
+  return `${FOCUS_HEAD}\n${lines.join("\n")}${pick}`;
+}
+
+/** The turn's focus entries, in the order (and numbering) of the focus block. */
+export function focusEntries(history: readonly HistoryEntry[]): HistoryEntry[] {
+  return history.filter((e) => e.current === true && !e.isSelf).slice(-MAX_FOCUS);
+}
+
+/** More than one person among `entries`. */
+export function severalPeople(entries: readonly { account: AccountRef }[]): boolean {
+  const first = entries[0]?.account;
+  return first !== undefined && entries.some((e) => !sameAccount(e.account, first));
+}
+
+/** How she says which numbered message a reply answers. */
+export const REPLY_PICK_RULE =
+  "好幾個人同時說話:一次回一個人,每段開頭寫 [回覆 編號];不用每則都回。";
+
+/** `text` cut before every line that starts with a `[回覆 N]` mark, so each part quotes its own. */
+export function splitByReplyMarks(text: string): string[] {
+  return text
+    .split(/\n(?=\s*[[［]\s*回覆\s*\d{1,2}\s*[\]］])/)
+    .filter((part) => part.trim() !== "");
+}
+
+/** `[回覆 2]` at the start of a reply: which focus message (1-based) it answers, and the rest. */
+export function takeReplyMark(text: string): { n: number | null; text: string } {
+  const m = /^\s*[[［]\s*回覆\s*(\d{1,2})\s*[\]］]\s*/.exec(text);
+  if (m === null) return { n: null, text };
+  return { n: Number(m[1]), text: text.slice(m[0].length) };
 }
 /** What a quoted parent line of hers is attributed to. */
 export const SELF_QUOTE_NAME = "你";
 
-/** `(回覆 X)` after a name: the message replies to X (`你` for her). */
-export function replyTag(name: string): string {
-  return `(回覆 ${name})`;
+/** Characters of the replied-to message quoted inside a reply tag. */
+export const MAX_REPLY_EXCERPT = 24;
+
+/**
+ * `(回覆 X)` after a name: the message replies to X (`你` for her). With `excerpt`, a short
+ * quote of the very message replied to (`(回覆 X「…」)`), so a reply to one of several lines
+ * of X is not taken for another, or for whatever arrived at the same moment.
+ */
+export function replyTag(name: string, excerpt?: string): string {
+  const quote =
+    excerpt === undefined ? "" : cut(excerpt.replace(/\s+/g, " ").trim(), MAX_REPLY_EXCERPT);
+  return quote === "" ? `(回覆 ${name})` : `(回覆 ${name}「${quote}」)`;
+}
+
+/**
+ * The reply tag of `entry`: the history entry it replies to, else the fetched parent. The parent
+ * is quoted when it sits among other lines (in the history) or `always` (the focus block); a
+ * fetched parent in the transcript already has its own `> ` line just above.
+ */
+function replyTagOf(
+  entry: HistoryEntry,
+  byId: ReadonlyMap<string, HistoryEntry>,
+  always = false,
+): string {
+  if (entry.replyTo == null) return "";
+  const inHistory = byId.get(entry.replyTo);
+  const parent = inHistory ?? entry.parents?.at(-1);
+  if (parent === undefined) return "";
+  const name = parent.isSelf ? SELF_QUOTE_NAME : safeName(parent.author);
+  return inHistory !== undefined || always
+    ? replyTag(name, neutralize(shownText(parent)))
+    : replyTag(name);
+}
+
+/** Characters of a line around a quoted parent. */
+const MAX_CONTEXT_CHARS = 120;
+
+/** `剛剛`, `5 分鐘前`, `3 小時前`, `2 天前`: how long before the reply a quoted line was. */
+export function agoLabel(ms: number): string {
+  const minutes = Math.round(Math.max(ms, 0) / 60_000);
+  if (minutes < 1) return "剛剛";
+  if (minutes < 60) return `${minutes} 分鐘前`;
+  if (minutes < 48 * 60) return `${Math.round(minutes / 60)} 小時前`;
+  return `${Math.round(minutes / (24 * 60))} 天前`;
+}
+
+/** `> (tag) name: text`: a quoted line outside the transcript. */
+function quoteLine(e: HistoryEntry, tag: string, max: number): string {
+  const name = e.isSelf ? SELF_QUOTE_NAME : safeName(e.author);
+  const text = cut(neutralize(shownText(e)).replace(/\s+/g, " ").trim(), max);
+  return `> (${tag}) ${name}: ${text}`;
 }
 
 /** Time-gap line between two entries further apart than `gapMs`. */
@@ -403,17 +493,29 @@ function transcriptBlocks(history: readonly HistoryEntry[], options: TranscriptO
     }
     previous = entry;
     if (!entry.isSelf) {
-      for (const parent of entry.parents) {
-        const name = parent.isSelf ? SELF_QUOTE_NAME : safeName(parent.author);
-        const text = cut(neutralize(parent.text).replace(/\s+/g, " ").trim(), MAX_PARENT_CHARS);
-        block.push({ role: "user", line: `> ${name}: ${text}` });
+      for (const [i, parent] of entry.parents.entries()) {
+        const direct = i === entry.parents.length - 1;
+        const around = direct ? parent.around : undefined;
+        // Lines around the direct parent that the transcript does not already show.
+        const extra = (lines: readonly HistoryEntry[] | undefined) =>
+          (lines ?? []).filter((e) => e.id === null || (!byId.has(e.id) && e.id !== entry.id));
+        for (const e of extra(around?.before)) {
+          block.push({ role: "user", line: quoteLine(e, "前文", MAX_CONTEXT_CHARS) });
+        }
+        const when = parent.undated === true ? "較早" : agoLabel(entry.ts - parent.ts);
+        const tag =
+          around !== undefined && (around.before.length > 0 || around.after.length > 0)
+            ? `${when},被回覆`
+            : when;
+        block.push({ role: "user", line: quoteLine(parent, tag, MAX_PARENT_CHARS) });
+        for (const e of extra(around?.after)) {
+          block.push({ role: "user", line: quoteLine(e, "後文", MAX_CONTEXT_CHARS) });
+        }
       }
     }
-    const parent =
-      entry.replyTo === null ? undefined : (byId.get(entry.replyTo) ?? entry.parents.at(-1));
     const line = entry.isSelf
       ? ownLine(entry, options.maxEntryChars)
-      : otherLine(entry, options.maxEntryChars, parent ?? null);
+      : otherLine(entry, options.maxEntryChars, replyTagOf(entry, byId));
     block.push({ role: entry.isSelf ? "assistant" : "user", line });
     blocks.push(block);
   }
@@ -516,7 +618,7 @@ export function checkMessages(name: string, history: Iterable<HistoryEntry>): Ch
     lines.push(
       e.isSelf
         ? `${name}(她自己): ${ownLine(e, DEFAULT_TRANSCRIPT.maxEntryChars)}`
-        : otherLine(e, DEFAULT_TRANSCRIPT.maxEntryChars, null),
+        : otherLine(e, DEFAULT_TRANSCRIPT.maxEntryChars, ""),
     );
   }
   return [
@@ -533,7 +635,7 @@ export function checkMessages(name: string, history: Iterable<HistoryEntry>): Ch
  */
 export function transcriptLine(entry: HistoryEntry, name: string): string {
   const max = DEFAULT_TRANSCRIPT.maxEntryChars;
-  return entry.isSelf ? `${name}: ${ownLine(entry, max)}` : otherLine(entry, max, null);
+  return entry.isSelf ? `${name}: ${ownLine(entry, max)}` : otherLine(entry, max, "");
 }
 
 function ownLine(entry: HistoryEntry, maxChars: number): string {
@@ -545,11 +647,11 @@ function ownLine(entry: HistoryEntry, maxChars: number): string {
  * Someone else's line; the name is made inert and the text neutralized. `parent` is the entry
  * it replies to, if known (its author goes into the `(回覆 X)` tag).
  */
-function otherLine(entry: HistoryEntry, maxChars: number, parent: HistoryEntry | null): string {
+function otherLine(entry: HistoryEntry, maxChars: number, reply: string): string {
   let tags = "";
   if (entry.isBot) tags += BOT_TAG;
   if (entry.spoken) tags += SPOKEN_TAG;
-  if (parent !== null) tags += replyTag(parent.isSelf ? SELF_QUOTE_NAME : safeName(parent.author));
+  tags += reply;
   return `${safeName(entry.author)}${tags}: ${cut(neutralize(shownText(entry)), maxChars)}`;
 }
 

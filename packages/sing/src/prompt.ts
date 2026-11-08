@@ -32,7 +32,7 @@ export class SingPrompt implements PromptContributor {
         `正在唱:#${playing.no} ${songLabel(playing)}(${who(playing.requester_name)} 點的)。唱完之前你在語音說的話不會播出;要停用 sing_stop。`,
       );
       lines.push(
-        "唱歌時有人再點歌也能用 sing_request 準備,新歌會排在這首後面;只有連結也可以,不需要歌名。",
+        "唱歌時有人再點歌也能用 sing_request 準備,新歌會排在這首後面;只有連結也可以,不需要歌名。文字頻道照常回,收食物、查魚幣、簽到這些工具照常用,不用等唱完。",
       );
     }
     for (const e of ready.slice(0, MAX_LINES)) {

@@ -197,6 +197,10 @@ export const HistoryConfigSchema = z.object({
    * direct parent, when the platform delivered it with the reply).
    */
   reply_chain: z.number().int().nonnegative().default(3),
+  /** Lines before a quoted (out-of-view) reply parent shown with it. */
+  reply_context_before: z.number().int().nonnegative().default(5),
+  /** Lines after a quoted (out-of-view) reply parent shown with it. */
+  reply_context_after: z.number().int().nonnegative().default(3),
   /** A turn waits at most this long (from the start of the fetch) for missing context. */
   timeout_ms: z.number().int().nonnegative().default(3000),
 });

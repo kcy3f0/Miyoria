@@ -35,6 +35,8 @@ const FRESH_MS = 2 * 60_000;
 const MEMORY = 32;
 /** Results a turn is told of. */
 const MAX_RESULTS = 5;
+/** A failure of her own like one she was told of this recently is no new turn. */
+const REPEAT_MS = 5 * 60_000;
 
 export const HANDS_SOURCE = "mainline.hands";
 
@@ -65,13 +67,18 @@ export interface Job {
   /** A steer waits for this (`steered` event) instead of a task end. */
   steer: string | null;
   at: number;
-  /** Whether she needs to hear how it went. */
-  report: boolean;
+  /**
+   * How she hears how it went: `turn`, a result turn (the Floor decides when); `prompt`, nobody
+   * waits (a muted turn), so only a failure, in her next prompt; `none`, not at all.
+   */
+  report: Report;
   /** Result turns this one came from. */
   depth: number;
   /** Runs after the result: who asked, so a follow-up acts for them too. */
   requester: unknown;
 }
+
+export type Report = "turn" | "prompt" | "none";
 
 export interface Run {
   ok: boolean;
@@ -95,6 +102,8 @@ export class Hands {
   readonly #finished = new Map<string, Job[]>();
   /** Results she was not told of yet, by context. */
   readonly #unsaid = new Map<string, Job[]>();
+  /** Failures a result turn was opened for, by context, newest last. */
+  readonly #toldFailures = new Map<string, Job[]>();
   #parked: { context: ContextKey; line: ParkedLine; left: Set<string> }[] = [];
 
   constructor(deps: HandsDeps) {
@@ -109,7 +118,7 @@ export class Hands {
     context: ContextKey;
     tool: string;
     args: JsonValue;
-    report: boolean;
+    report: Report;
     depth: number;
     requester: unknown;
     cause: string | null;
@@ -221,9 +230,33 @@ export class Hands {
     this.#finished.set(key, done);
     if (state === "done") this.#d.finished(job.tool, job.event);
     const released = this.#settleParked(job, state);
-    if (!job.report || released) return;
-    this.#unsaid.set(key, [...(this.#unsaid.get(key) ?? []), job].slice(-MAX_RESULTS));
+    if (released || job.report === "none") return;
+    if (job.report === "prompt") {
+      // Nobody waits for a turn on it; what failed and why is in her next prompt.
+      if (state === "failed") this.#keep(key, job);
+      return;
+    }
+    this.#keep(key, job);
+    if (state === "failed") {
+      // Her own retry failing the same way again: she just explained it, the next turn merges it.
+      if (this.#repeats(key, job)) return;
+      const told = (this.#toldFailures.get(key) ?? []).filter((j) => j.at >= job.at - REPEAT_MS);
+      this.#toldFailures.set(key, [...told, job].slice(-MEMORY));
+    }
     this.#d.told(job.context, job);
+  }
+
+  #keep(key: string, job: Job): void {
+    this.#unsaid.set(key, [...(this.#unsaid.get(key) ?? []), job].slice(-MAX_RESULTS));
+  }
+
+  /** A failure of a turn of her own (nobody asked) that she was told of lately, word for word. */
+  #repeats(key: string, job: Job): boolean {
+    if (job.requester !== undefined && job.requester !== null) return false;
+    const from = job.at - REPEAT_MS;
+    return (this.#toldFailures.get(key) ?? []).some(
+      (j) => j.tool === job.tool && j.detail === job.detail && j.at >= from,
+    );
   }
 
   // ---- what ended -----------------------------------------------------------------------------

@@ -42,12 +42,15 @@ import {
   TaskSteerKey,
   TurnSilencerKey,
   toTimestamp,
+  VoiceFloorKey,
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { MainLineConfigSchema } from "../src/config.js";
 import { STARTED_LINE } from "../src/mainline/gate.js";
+import { Hands, type Job } from "../src/mainline/hands.js";
 import { FALLBACK_LINES, heardPart, sentences } from "../src/mainline/main.js";
+import { resultData } from "../src/mainline/prompt.js";
 import {
   channel,
   done,
@@ -1234,5 +1237,253 @@ describe("helpers", () => {
 
   it("the config has the token target of §10.4", () => {
     expect(MainLineConfigSchema.parse({}).prompt_tokens).toBe(4000);
+  });
+});
+
+describe("a tool written as text (11-08: `<sing_request>` in her reply)", () => {
+  const commitments = (h: Harness) =>
+    log(h).flatMap((e) =>
+      e.source === "mainline.commitment"
+        ? [
+            (e.body as { commitment: { capability: string | null; what: string; status: string } })
+              .commitment,
+          ]
+        : [],
+    );
+
+  it("she is asked once, in the same turn, and the native call is what runs", async () => {
+    const tool = new Probe("sing_request");
+    const llm = new Scripted([
+      reply("好,我幫你點<sing_request>"),
+      reply("", ["sing_request", '{"query":"夜に駆ける"}']),
+      reply("<silence/>"),
+    ]);
+    const h = await rig(llm, { tools: [tool] });
+    h.say(mention(channel("c"), "Alice", "點夜に駆ける"));
+    await wait(3000);
+    expect(tool.calls).toHaveLength(1);
+    expect(String(llm.requests[1]?.messages.at(-1)?.content)).toContain("寫成文字");
+    expect(String(llm.requests[1]?.messages.at(-1)?.content)).toContain("sing_request");
+    expect(h.sink.texts()).toEqual(["好,我幫你點"]);
+    expect(commitments(h)).toEqual([]);
+  });
+
+  it("a tag someone else wrote, or a tool not on offer, never asks for anything", async () => {
+    const tool = new Probe("sing_request");
+    const llm = new Scripted([reply("<sing_request> 是什麼?<sing_start>")]);
+    const h = await rig(llm, { tools: [tool] });
+    h.say(mention(channel("c"), "Alice", "你打 <sing_request> 看看"));
+    await wait(3000);
+    expect(llm.requests).toHaveLength(1);
+    expect(tool.calls).toEqual([]);
+    expect(commitments(h)).toEqual([]);
+  });
+
+  it("not called after all, it is a promise she has to keep or take back", async () => {
+    const tool = new Probe("sing_request");
+    const llm = new Scripted([reply("好,我幫你點<sing_request>"), reply("嗯嗯"), reply("抱歉")]);
+    const h = await rig(llm, { tools: [tool] });
+    h.say(mention(channel("c"), "Alice", "點一首"));
+    await wait(3000);
+    expect(llm.requests).toHaveLength(2);
+    expect(tool.calls).toEqual([]);
+    expect(commitments(h).at(-1)).toMatchObject({
+      capability: "sing_request",
+      status: "open",
+      what: expect.stringContaining("我幫你點"),
+    });
+    for (const a of h.sink.actions) if (a.payload.type === "send_message") settle(h, a);
+    await wait(130_000);
+    const overdue = llm.requests.slice(2).map((r) => JSON.stringify(r.messages));
+    expect(overdue.some((m) => m.includes("逾期") && m.includes("sing_request"))).toBe(true);
+  });
+
+  it("in voice a correction that does not start soon is given up; what she said stands", async () => {
+    const tool = new Probe("sing_start");
+    const llm = new Scripted([reply("好喔,我來唱。<sing_start>"), "hang", reply("<silence/>")]);
+    const h = await rig(llm, { tools: [tool], body: new Body() });
+    joinVoice(h);
+    await wait(10);
+    utter(h, "DeepSeek 唱首歌");
+    await wait(8000);
+    expect(llm.requests).toHaveLength(2);
+    expect(tool.calls).toEqual([]);
+    const said = h.sink.speeches().map(([t]) => t);
+    expect(said).toEqual(["好喔,我來唱。"]);
+    expect(said.some((t) => FALLBACK_LINES.includes(t))).toBe(false);
+    expect(commitments(h).at(-1)).toMatchObject({ capability: "sing_start", status: "open" });
+  });
+
+  it("with no tool step left (max_tool_steps) she is not asked again", async () => {
+    const tool = new Probe("sing_request");
+    const llm = new Scripted([reply("好,我幫你點<sing_request>")]);
+    const h = await rig(llm, { tools: [tool], config: { max_tool_steps: 0 } });
+    h.say(mention(channel("c"), "Alice", "點一首"));
+    await wait(3000);
+    expect(llm.requests).toHaveLength(1);
+    expect(commitments(h).at(-1)).toMatchObject({ capability: "sing_request" });
+  });
+});
+
+describe("what she started and did not get done (§10.1)", () => {
+  it("a failure comes back with its reason for her to explain in her own words", async () => {
+    const tool = new Probe("sing_request");
+    tool.call = async () => {
+      throw new Error("already 2 songs requested by this person");
+    };
+    const llm = new Scripted([
+      reply("好,我幫你點", ["sing_request", '{"query":"x"}']),
+      reply("啊,你已經點兩首了,等唱完再點喔"),
+    ]);
+    const h = await rig(llm, { tools: [tool] });
+    h.say(mention(channel("c"), "Alice", "點 x"));
+    await wait(5000);
+    expect(JSON.stringify(llm.requests[1]?.messages)).toContain(
+      "already 2 songs requested by this person",
+    );
+    expect(h.sink.texts()).toEqual(["好,我幫你點", "啊,你已經點兩首了,等唱完再點喔"]);
+  });
+
+  it("what failed while nobody was there is in her next prompt, with why", async () => {
+    const tool = new Probe("chess_play");
+    tool.call = async () => {
+      throw new Error("stage node did not answer in time");
+    };
+    const llm = new Scripted([reply("", ["chess_play", "{}"]), reply("嗯")]);
+    const actuators = new ActuatorRegistry({
+      services: new ServiceRegistry(),
+      tools: new ToolRegistry(),
+      publish: () => undefined,
+    });
+    actuators.register(
+      defineCapability({
+        name: "chess.play",
+        summary: "下棋",
+        risk: "low",
+        args: z.object({}),
+        permission: null,
+        async execute() {
+          return { text: "開始了", data: null };
+        },
+      }),
+    );
+    const h = await rig(llm, { tools: [tool], actuators });
+    await h.sup.services.require(ProposalBoardKey).propose({
+      what: "想下棋",
+      why: "無聊",
+      capability: "chess.play",
+      args: {},
+      source: "plan",
+      about: null,
+      person: null,
+      goal: null,
+      context: null,
+      expires: toTimestamp(Date.now() + 120_000),
+    });
+    await wait(3000);
+    expect(results(h).at(-1)).toMatchObject({ tool: "chess_play", state: "failed" });
+    // Nobody was there: no turn of its own.
+    expect(llm.requests).toHaveLength(1);
+    h.say(mention(channel("c"), "Alice", "嗨"));
+    await wait(3000);
+    expect(JSON.stringify(llm.requests[1]?.messages)).toContain(
+      "stage node did not answer in time",
+    );
+  });
+
+  it("a song holds the voice channel: the result waits for it, then she hears why", async () => {
+    let song: string | null = "song";
+    const tool = new Probe("sing_request");
+    tool.call = async () => {
+      throw new Error("already 2 songs requested by this person");
+    };
+    const llm = new Scripted([
+      reply("好喔,點了。", ["sing_request", '{"query":"x"}']),
+      reply("剛剛那首沒點成,你已經點兩首了。"),
+    ]);
+    const h = await rig(llm, {
+      tools: [tool],
+      body: new Body(),
+      provide: (services) => {
+        services.provide("app", VoiceFloorKey, { holder: () => song });
+      },
+    });
+    joinVoice(h);
+    await wait(10);
+    utter(h, "DeepSeek 幫我點 x");
+    await wait(2000);
+    // Her line is over (the mic is free): only the song is in the way now.
+    for (const a of h.sink.actions) {
+      if (a.payload.type !== "speak") continue;
+      playback(h, a, "started");
+      playback(h, a, "finished");
+    }
+    await wait(20_000);
+    // No turn while she sings: it would wait behind the song and be dropped.
+    expect(llm.requests).toHaveLength(1);
+    song = null;
+    await wait(12_000);
+    expect(llm.requests).toHaveLength(2);
+    expect(JSON.stringify(llm.requests[1]?.messages)).toContain("already 2 songs");
+  });
+});
+
+describe("the hands merge repeats", () => {
+  const where = channel("c");
+
+  function hands(): { hands: Hands; told: Job[] } {
+    const told: Job[] = [];
+    const h = new Hands({
+      log: () => null,
+      now: () => Date.now(),
+      activity: () => null,
+      told: (_, job) => told.push(job),
+      release: () => undefined,
+      finished: () => undefined,
+    });
+    return { hands: h, told };
+  }
+
+  function fail(h: Hands, requester: unknown, detail = "stage node did not answer in time"): void {
+    const job = h.begin({
+      turn: newId(),
+      context: where,
+      tool: "stream_start",
+      args: {},
+      report: "turn",
+      depth: 0,
+      requester,
+      cause: null,
+    });
+    h.answered(job, { ok: false, text: detail, data: null });
+  }
+
+  it("her own attempt failing the same way again is no new turn, and one line", () => {
+    const { hands: h, told } = hands();
+    fail(h, undefined);
+    vi.advanceTimersByTime(60_000);
+    fail(h, undefined);
+    expect(told).toHaveLength(1);
+    expect(resultData(h.takeResults(where))).toContain(
+      "stream_start 失敗:stage node did not answer in time(2 次)",
+    );
+    // Another reason is news.
+    fail(h, undefined, "OBS 沒開");
+    expect(told).toHaveLength(2);
+  });
+
+  it("someone who asked always hears back", () => {
+    const { hands: h, told } = hands();
+    fail(h, { who: "Alice" });
+    fail(h, { who: "Alice" });
+    expect(told).toHaveLength(2);
+  });
+
+  it("long after, the same failure is news again", () => {
+    const { hands: h, told } = hands();
+    fail(h, undefined);
+    vi.advanceTimersByTime(6 * 60_000);
+    fail(h, undefined);
+    expect(told).toHaveLength(2);
   });
 });

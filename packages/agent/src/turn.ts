@@ -64,6 +64,7 @@ import {
   type LaneKey,
   LessonsKey,
   MemoryRetrievalKey,
+  type MessageRef,
   MindKey,
   ModerationKey,
   type Notice,
@@ -105,6 +106,8 @@ import {
   asksForGame,
   type Backing,
   claimReminder,
+  toolsWrittenAsText,
+  toolTextReminder,
   unbackedClaim,
 } from "./claims.js";
 import { budgetBlocks, budgetSelf, contributedData, savedPrompt } from "./compiler.js";
@@ -115,7 +118,7 @@ import type { TurnFlags } from "./coordinator.js";
 import { Expression, ExpressionParser, type Segment } from "./expression.js";
 import { type FocusSelection, focusVerb, type TurnFocusInit } from "./focus.js";
 import { voiceScope } from "./handle.js";
-import { awaitBackfill, replyParents } from "./history.js";
+import { awaitBackfill, fetchAround, quotedParent, replyParents } from "./history.js";
 import { ceilingFor, levelHint } from "./levels.js";
 import type { HeldLine } from "./mainline/gate.js";
 import type { Run } from "./mainline/hands.js";
@@ -136,6 +139,7 @@ import {
   mainMessages,
   mainRules,
   pinnedSection,
+  promptText,
   proposalData,
   resultData,
   tailSection,
@@ -151,14 +155,18 @@ import {
   EXAMPLES_TITLE,
   FLAGGED_TITLE,
   flaggedBody,
+  focusEntries,
   INITIATIVE_TITLE,
   INTENT_TITLE,
   type IntentData,
   intentBody,
   PRESENT_TITLE,
   rulesPrompt,
+  severalPeople,
   situationPrompt,
+  splitByReplyMarks,
   splitMessage,
+  takeReplyMark,
   transcriptLine,
   VOICE_PRESENT_TITLE,
   whenAndWhere,
@@ -265,6 +273,9 @@ interface Extras {
   /** For the decision trace. */
   reasons: string[];
 }
+
+/** How soon a corrective call in voice must start, or the first answer stands. */
+const VOICE_CORRECTION_MS = 4_000;
 
 /** One model response of the generation loop. */
 interface Step {
@@ -594,6 +605,28 @@ class TextSegments {
 }
 
 /**
+ * `shown` (what the prompt will show) with a parent for every reply whose parent is outside it:
+ * the session keeps more lines than the prompt shows, and `replyParents` skips parents the session
+ * has, so a reply to an older line would otherwise reach her with nothing to say what it answers.
+ */
+export function withOlderParents(
+  shown: readonly HistoryEntry[],
+  lookup: (id: string) => HistoryEntry | undefined,
+  around: (id: string) => { before: HistoryEntry[]; after: HistoryEntry[] } = () => ({
+    before: [],
+    after: [],
+  }),
+): HistoryEntry[] {
+  const ids = new Set(shown.flatMap((e) => (e.id === null ? [] : [e.id])));
+  return shown.map((e) => {
+    if (e.replyTo == null || ids.has(e.replyTo) || (e.parents?.length ?? 0) > 0) return e;
+    const parent = lookup(e.replyTo);
+    if (parent === undefined) return e;
+    return { ...e, parents: [{ ...parent, parents: [], around: around(e.replyTo) }] };
+  });
+}
+
+/**
  * `history` with the messages this turn answers marked `current` (copies; the session is
  * untouched); `verbs` says how the focus block introduces each (`Owen 問你:…`).
  */
@@ -674,8 +707,10 @@ class Turn {
   #firstOutputAt: number | null = null;
   /** The reasoning level of the reply (`null` until generated). */
   #level: ReasoningLevel | null = null;
-  /** A text reply quoted its focus message already. */
-  #quoted = false;
+  /** Messages a text reply of this turn quoted already. */
+  #quotedIds = new Set<string>();
+  /** The focus messages as the prompt numbered them (`[回覆 N]`). */
+  #replyTargets: readonly HistoryEntry[] = [];
   /** The compressed prompt of this turn, saved once the reply is out. */
   #saved: SavedPrompt | null = null;
   /** Prompt tokens of the first model response, as the provider reported them. */
@@ -778,10 +813,11 @@ class Turn {
 
   /** One line of this turn through the output review. */
   #safe(text: string, spoken: string | null = null, aloud = false): SafeLine {
+    // A `[回覆 N]` mark is for the text sink; nothing reads or shows it (text paths take it first).
     return safeOutgoing(this.agent.ctx.services.get(ModerationKey), {
       path: this.#fallback ? "fallback" : "reply",
-      text,
-      spoken,
+      text: takeReplyMark(text).text,
+      spoken: spoken === null ? null : takeReplyMark(spoken).text,
       aloud,
       context: this.key,
       turn: this.turn,
@@ -926,20 +962,53 @@ class Turn {
         if (ref === null) return null;
         const known = this.session.entry(ref.id);
         if (known) return known;
-        try {
-          const chain = await timeout(cfg.history.timeout_ms, this.signal, (signal) =>
+        // What came with the reply goes in first, so a slow or failed fetch never leaves the
+        // reply without the line it answers; a fetched chain replaces it.
+        const quoted = quotedParent(this.agent, input);
+        if (quoted !== null) this.session.setParents(input.id.id, [quoted]);
+        // The parent chain and the lines around the direct parent, both within one timeout.
+        const h = cfg.history;
+        const [chainRead, aroundRead] = await Promise.allSettled([
+          timeout(h.timeout_ms, this.signal, (signal) =>
             replyParents(this.agent, this.session, input, signal),
-          );
-          this.session.setParents(input.id.id, chain);
-          return chain.at(-1) ?? null;
-        } catch (error) {
-          if (this.signal.aborted) throw error;
-          this.agent.log.debug(
-            { turn: this.turn, error: errorMessage(error) },
+          ),
+          timeout(h.timeout_ms, this.signal, (signal) =>
+            fetchAround(
+              this.agent,
+              ref.context,
+              ref.id,
+              h.reply_context_before,
+              h.reply_context_after,
+              signal,
+            ),
+          ),
+        ]);
+        this.signal.throwIfAborted();
+        if (chainRead.status === "rejected") {
+          this.agent.log.warn(
+            { turn: this.turn, error: errorMessage(chainRead.reason), quoted: quoted !== null },
             "could not fetch reply parents",
           );
-          return null;
         }
+        const chain =
+          chainRead.status === "fulfilled" && chainRead.value.length > 0
+            ? chainRead.value
+            : quoted
+              ? [quoted]
+              : [];
+        const direct = chain.at(-1);
+        if (direct !== undefined && aroundRead.status === "fulfilled") {
+          const keep = (e: HistoryEntry) => !this.#hidden(e) && e.id !== input.id.id;
+          chain[chain.length - 1] = {
+            ...direct,
+            around: {
+              before: aroundRead.value.before.filter(keep),
+              after: aroundRead.value.after.filter(keep),
+            },
+          };
+        }
+        if (chain.length > 0) this.session.setParents(input.id.id, chain);
+        return chain.at(-1) ?? null;
       }),
     );
     const parents = found.filter((p): p is HistoryEntry => p !== null);
@@ -971,6 +1040,20 @@ class Turn {
    */
   #hidden(entry: HistoryEntry): boolean {
     return !entry.isSelf && (this.social?.attitude(entry.account)?.blocked ?? false);
+  }
+
+  /** The session lines around `id` (config counts), without hidden ones. */
+  #shownAround(id: string): { before: HistoryEntry[]; after: HistoryEntry[] } {
+    const h = this.agent.config.history;
+    const found = this.session.around(id, h.reply_context_before, h.reply_context_after);
+    const keep = (e: HistoryEntry) => !this.#hidden(e);
+    return { before: found.before.filter(keep), after: found.after.filter(keep) };
+  }
+
+  /** A session line by id, unless hidden from her prompt (`#hidden`). */
+  #shownEntry(id: string): HistoryEntry | undefined {
+    const entry = this.session.entry(id);
+    return entry === undefined || this.#hidden(entry) ? undefined : entry;
   }
 
   /**
@@ -1389,9 +1472,7 @@ class Turn {
     const verbs = selection === null ? new Map<string, string>() : focusVerbs(selection);
     // What her conversation notes already cover is not repeated raw (a few lines always stay).
     const folded = services.get(ConversationStatesKey)?.get(this.key) ?? null;
-    const messages = buildMessages(
-      persona,
-      situation,
+    const marked = withOlderParents(
       markCurrent(
         afterFold(
           this.session.recent(cfg.prompt_history).filter((e) => !this.#hidden(e)),
@@ -1401,6 +1482,14 @@ class Turn {
         focusInputs,
         verbs,
       ),
+      (id) => this.#shownEntry(id),
+      (id) => this.#shownAround(id),
+    );
+    this.#replyTargets = focusEntries(marked);
+    const messages = buildMessages(
+      persona,
+      situation,
+      marked,
       data,
       {
         maxChars: cfg.max_prompt_chars,
@@ -1461,10 +1550,13 @@ class Turn {
     // in silence.
     const early: string[] = [];
     const send = async (raw: string) => {
-      const safe = this.#safe(cleanReply(raw, names));
-      const text = this.#linkMentions(safe.text);
-      if (text !== "") {
-        early.push(await this.#sendText(sink, text, direct, priority, safe.blocked));
+      for (const part of splitByReplyMarks(raw)) {
+        const mark = takeReplyMark(part);
+        const safe = this.#safe(cleanReply(mark.text, names));
+        const text = this.#linkMentions(safe.text);
+        if (text !== "") {
+          early.push(await this.#sendText(sink, text, direct, priority, safe.blocked, mark.n));
+        }
       }
     };
     const offered = new Set(this.#toolSpecs().map((t) => t.name));
@@ -1595,7 +1687,8 @@ class Turn {
         line.proposals.open(this.key).filter((p) => p.id !== own || p.capability !== undefined),
         m.proposals,
       ),
-      resultData(line.hands.takeResults(this.key)),
+      // What she did with nobody there (`ACTING_ALONE`) she hears of wherever she speaks next.
+      resultData([...line.hands.takeResults(ACTING_ALONE), ...line.hands.takeResults(this.key)]),
       wishes.length === 0 ? null : dataBlock("viewers", "觀眾的要求", wishes.join("\n")),
       examples === null ? null : truncate(examples, m.examples_chars),
     ].filter((d): d is string => d !== null);
@@ -1613,15 +1706,20 @@ class Turn {
     const selection = this.plan.selection;
     const verbs = selection === null ? new Map<string, string>() : focusVerbs(selection);
     const folded = services.get(ConversationStatesKey)?.get(this.key) ?? null;
-    const history = markCurrent(
-      afterFold(
-        this.session.recent(m.history_lines).filter((e) => !this.#hidden(e)),
-        folded?.folded_up_to ?? null,
-        Math.min(cfg.history_after_fold, m.history_lines),
+    const history = withOlderParents(
+      markCurrent(
+        afterFold(
+          this.session.recent(m.history_lines).filter((e) => !this.#hidden(e)),
+          folded?.folded_up_to ?? null,
+          Math.min(cfg.history_after_fold, m.history_lines),
+        ),
+        selection?.focus ?? [],
+        verbs,
       ),
-      selection?.focus ?? [],
-      verbs,
+      (id) => this.#shownEntry(id),
+      (id) => this.#shownAround(id),
     );
+    this.#replyTargets = focusEntries(history);
     const build = (kept: readonly HistoryEntry[]) =>
       mainMessages({
         fixed: core === "" ? rules : `${core}\n\n${rules}`,
@@ -1706,12 +1804,15 @@ class Turn {
       : this.#keepTyping(sink, lane, priority, typing.signal);
     const early: string[] = [];
     const send = async (raw: string) => {
-      if (main.claim.muted) return;
-      const safe = this.#safe(cleanReply(raw, names));
-      const text = this.#linkMentions(safe.text);
-      if (text === "") return;
-      main.sent(text);
-      early.push(await this.#sendText(sink, text, direct, priority, safe.blocked));
+      for (const part of splitByReplyMarks(raw)) {
+        if (main.claim.muted) return;
+        const mark = takeReplyMark(part);
+        const safe = this.#safe(cleanReply(mark.text, names));
+        const text = this.#linkMentions(safe.text);
+        if (text === "") continue;
+        main.sent(text);
+        early.push(await this.#sendText(sink, text, direct, priority, safe.blocked, mark.n));
+      }
     };
     const segments = new TextSegments(send, (text) => main.holdsText(text));
     try {
@@ -1732,16 +1833,19 @@ class Turn {
     request: ChatRequest,
     speech: Speech | null,
     segments: TextSegments | null,
+    firstTokenMs: number | null = null,
   ): Promise<Step> {
     const controller = new AbortController();
     const onAbort = () => controller.abort(this.signal.reason);
     if (this.signal.aborted) onAbort();
     this.signal.addEventListener("abort", onAbort, { once: true });
-    const timer = setTimeout(
-      () => controller.abort(new TimeoutError()),
+    const deadline =
       (this.#level ?? "off") === "off"
         ? main.config.first_token_timeout_ms
-        : main.config.reasoning_first_token_timeout_ms,
+        : main.config.reasoning_first_token_timeout_ms;
+    const timer = setTimeout(
+      () => controller.abort(new TimeoutError()),
+      firstTokenMs === null ? deadline : Math.min(firstTokenMs, deadline),
     );
     try {
       return await this.#streamStep(router, request, speech, segments, controller.signal, () =>
@@ -1771,6 +1875,10 @@ class Turn {
     const cfg = this.agent.config;
     const messages = [...initial];
     main.offered(tools.map((t) => t.name));
+    const offered = new Set(tools.map((t) => t.name));
+    let prompt: string | null = null;
+    /** The response a corrective call stands in for: what is left if that call fails. */
+    let before: Step | null = null;
     for (;;) {
       const request: ChatRequest = {
         messages: [...messages],
@@ -1782,21 +1890,53 @@ class Turn {
       };
       this.#level ??= router.reasoningFor("chat", request);
       segments?.step();
-      const { expression, raw, calls } = await this.#mainStream(
-        main,
-        router,
-        request,
-        speech,
-        segments,
-      );
+      let step: Step;
+      let fellBack = false;
+      try {
+        // In voice the person waits in silence: a correction starts soon or not at all.
+        const deadline = before !== null && this.voice ? VOICE_CORRECTION_MS : null;
+        step = await this.#mainStream(main, router, request, speech, segments, deadline);
+      } catch (error) {
+        if (before === null || this.signal.aborted) throw error;
+        this.agent.log.warn(
+          { turn: this.turn, error: errorMessage(error) },
+          "the corrective call failed; the first answer stands",
+        );
+        step = before;
+        fellBack = true;
+      }
+      before = null;
+      const { expression, raw, calls } = step;
       if (speech?.stopped()) {
         this.agent.log.debug({ turn: this.turn }, "speech interrupted, generation stopped");
         return;
       }
-      if (segments !== null && !expression.isSilent()) {
+      if (segments !== null && !expression.isSilent() && !fellBack) {
         for (const text of sentences(segments.rest(expression))) {
           main.gate.hold({ text, spoken: null, emotion: null });
         }
+      }
+      // A tool written as a tag runs nothing (it may be words she was talked into). She is asked
+      // once, in the same turn, to call it or not claim it; the lines she said stand.
+      prompt ??= promptText(initial);
+      const called = calls.map((c) => c.name);
+      const written = fellBack ? [] : toolsWrittenAsText(expression.tools, offered, called, prompt);
+      main.wrote(written);
+      const depth = main.claim.chain?.depth ?? 0;
+      if (
+        written.length > 0 &&
+        calls.length === 0 &&
+        depth < cfg.max_tool_steps &&
+        main.takeCorrection()
+      ) {
+        this.agent.log.info(
+          { turn: this.turn, tools: written },
+          "asking her to call what she wrote",
+        );
+        before = step;
+        messages.push(assistantMessage(raw, []));
+        messages.push(userMessage(toolTextReminder(written)));
+        continue;
       }
       const output = turnOutput(expression, calls, main.said);
       const outcome = main.finish(output);
@@ -1912,6 +2052,24 @@ class Turn {
     }
   }
 
+  /**
+   * Which message a reply quotes. Her `[回覆 N]` names one of the numbered focus messages, each
+   * quoted once. Without it: the first focus message, once a turn, but only when one person is
+   * talking to her; with several, an unmarked reply quotes nobody rather than the wrong person.
+   */
+  #replyTarget(mark: number | null): MessageRef | null {
+    if (mark !== null) {
+      const id = this.#replyTargets[mark - 1]?.id ?? null;
+      if (id === null || this.#quotedIds.has(id)) return null;
+      this.#quotedIds.add(id);
+      return this.#focused.find((m) => m.id.id === id)?.id ?? { context: this.key, id };
+    }
+    if (this.#quotedIds.size > 0 || severalPeople(this.#focused.map((m) => m.author))) return null;
+    const ref = this.#focused[0]?.id ?? null;
+    if (ref !== null) this.#quotedIds.add(ref.id);
+    return ref;
+  }
+
   /** Sends `text` (split into several messages if long) as her reply. */
   async #sendText(
     sink: ActionSink,
@@ -1919,15 +2077,12 @@ class Turn {
     direct: boolean,
     priority: Priority,
     blocked: string | null = null,
+    mark: number | null = null,
   ): Promise<string> {
     const cfg = this.agent.config;
     const lane = textLane(this.key);
-    // A reply to someone who called her quotes the first message she answers (once a turn).
     const replyTo =
-      cfg.reply_reference && direct && this.key.kind !== "dm" && !this.#quoted
-        ? (this.#focused[0]?.id ?? null)
-        : null;
-    if (replyTo !== null) this.#quoted = true;
+      cfg.reply_reference && direct && this.key.kind !== "dm" ? this.#replyTarget(mark) : null;
     const displayName = this.agent.persona.displayName();
     const me = this.agent.selfAccount(this.key.platform);
     this.signal.throwIfAborted();
@@ -2071,14 +2226,19 @@ class Turn {
       if (calls.length === 0 && offered && !reminded && step < cfg.max_tool_steps) {
         const names = new Set(tools.map((t) => t.name));
         const claim = unbackedClaim(expression.text, names, this.#backing());
-        if (claim) {
+        // The same for a tool she wrote as a tag: it runs nothing, she is asked to call it.
+        const written =
+          claim === null
+            ? toolsWrittenAsText(expression.tools, names, [], promptText(initial))
+            : [];
+        if (claim || written.length > 0) {
           reminded = true;
           this.agent.log.info(
-            { turn: this.turn, tool: claim.tool },
+            { turn: this.turn, tool: claim?.tool ?? written.join(",") },
             "she claimed an action without doing it",
           );
           messages.push(assistantMessage(raw, []));
-          messages.push(userMessage(claimReminder(claim.tool)));
+          messages.push(userMessage(claim ? claimReminder(claim.tool) : toolTextReminder(written)));
           continue;
         }
       }

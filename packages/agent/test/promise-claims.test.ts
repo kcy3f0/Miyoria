@@ -58,4 +58,21 @@ describe("a promise with no action behind it", () => {
     // She said so honestly after the reminder; the unkept promise itself was never sent.
     expect(h.sink.texts()).toEqual(["我現在進不去。"]);
   });
+
+  it("a tool written as a tag is the same: she is asked once to call it", async () => {
+    const mock = new MockProvider("chat")
+      .reply("好啊<sing_request>")
+      .events([
+        toolCall(0, "c1", "sing_request", '{"query":"x"}'),
+        { type: "done", finish_reason: "tool_calls", usage: null },
+      ])
+      .reply("點好了,等一下喔。");
+    const sing = new Probe("sing_request");
+    const h = await Harness.build("always", noCheck(), mock, null, { tools: [sing] });
+    h.say(mention(channel("c"), "Alice", "幫我點 x"));
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(sing.calls).toHaveLength(1);
+    expect(String(mock.requests()[1]?.messages.at(-1)?.content)).toContain("寫成文字");
+    expect(h.sink.texts()).toEqual(["點好了,等一下喔。"]);
+  });
 });

@@ -157,7 +157,13 @@ describe("config", () => {
         text_aside: true,
         keep_in_voice: true,
       },
-      history: { backfill: 20, reply_chain: 3, timeout_ms: 3000 },
+      history: {
+        backfill: 20,
+        reply_chain: 3,
+        reply_context_before: 5,
+        reply_context_after: 3,
+        timeout_ms: 3000,
+      },
       vision: {
         enabled: true,
         max_images: 3,

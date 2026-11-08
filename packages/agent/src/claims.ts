@@ -147,3 +147,25 @@ export function unbackedClaim(
 export function claimReminder(tool: string): string {
   return `(系統提醒,不是對方說的話)你剛才說的事要呼叫 ${tool} 才會真的發生,但這一回合還沒呼叫。要做就現在呼叫它;決定不做或做不到,就照實跟對方說。`;
 }
+
+/**
+ * Tools she wrote as a tag (`Expression.tools`) instead of calling: those on offer that no native
+ * call of hers names. A tag that also stands anywhere in her prompt is left alone: she may be
+ * repeating what someone wrote or what she recalls, and that must not become an action.
+ */
+export function toolsWrittenAsText(
+  written: readonly string[],
+  offered: ReadonlySet<string>,
+  called: readonly string[],
+  prompt: string,
+): string[] {
+  const seen = prompt.toLowerCase();
+  return [...new Set(written)].filter(
+    (tool) => offered.has(tool) && !called.includes(tool) && !seen.includes(`<${tool}`),
+  );
+}
+
+export function toolTextReminder(tools: readonly string[]): string {
+  const names = tools.join("、");
+  return `(系統提醒,不是對方說的話)你剛才把 ${names} 寫成文字,這樣不會執行。要做就現在用工具呼叫 ${names},剛才說過的話不用再說;不做就不要說你要做或做了。`;
+}

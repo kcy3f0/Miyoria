@@ -2,7 +2,13 @@
 // signal, idle session retirement, JSON shapes and the manifest.
 
 import { manifestJson } from "@miyoria/kernel";
-import { type ChatProvider, type ChatRequest, type ChatStream, MockProvider } from "@miyoria/llm";
+import {
+  type ChatProvider,
+  type ChatRequest,
+  type ChatStream,
+  contentText,
+  MockProvider,
+} from "@miyoria/llm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentModule } from "../src/index.js";
 import {
@@ -103,6 +109,45 @@ describe("ts port", () => {
       a.payload.type === "send_message" ? [a.payload.message.reply_to] : [],
     );
     expect(sends).toEqual([msg.id, null]);
+  });
+
+  it("with two people at once, [回覆 N] picks who each line quotes; unmarked quotes nobody", async () => {
+    // 2026-11-08 14:07: one turn answered two people and quoted the first while talking to the second.
+    const config = { attention: { llm_check: false }, reply_reference: true };
+    const marked = new MockProvider("chat").reply(
+      "[回覆 2] 那是她的專長沒錯\n[回覆 1] 中文的話我很行",
+    );
+    const h = await Harness.create("mention-only", config, marked);
+    const c = channel("c");
+    const a = mention(c, "Sakana", "中文");
+    const b = mention(c, "Owen", "Claude 專長是寫程式沒錯呀");
+    h.say(a);
+    h.say(b);
+    await wait(3000);
+    const sent = h.sink.actions.flatMap((x) =>
+      x.payload.type === "send_message"
+        ? [[x.payload.message.text, x.payload.message.reply_to]]
+        : [],
+    );
+    expect(sent).toEqual([
+      ["那是她的專長沒錯", b.id],
+      ["中文的話我很行", a.id],
+    ]);
+    // The mark never reaches the channel.
+    expect(sent.some(([text]) => String(text).includes("回覆"))).toBe(false);
+    const prompt = contentText(marked.requests()[0]?.messages.at(-2)?.content ?? "");
+    expect(prompt).toContain("[1] Sakana");
+    expect(prompt).toContain("[2] Owen");
+
+    const plain = new MockProvider("chat").reply("你們兩個都很吵");
+    const h2 = await Harness.create("mention-only", config, plain);
+    h2.say(mention(c, "Sakana", "中文"));
+    h2.say(mention(c, "Owen", "Claude 專長是寫程式沒錯呀"));
+    await wait(3000);
+    const replyTo = h2.sink.actions.flatMap((x) =>
+      x.payload.type === "send_message" ? [x.payload.message.reply_to] : [],
+    );
+    expect(replyTo).toEqual([null]);
   });
 
   it("tool and emotion events carry the legacy JSON payloads", async () => {
