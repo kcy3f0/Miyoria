@@ -57,7 +57,13 @@ import {
   v2Event,
   WorldStateKey,
 } from "@miyoria/types";
-import { type SingWorker, SingWorkerError, type SongQuery, type WorkerJob } from "./client.js";
+import {
+  type GpuContext,
+  type SingWorker,
+  SingWorkerError,
+  type SongQuery,
+  type WorkerJob,
+} from "./client.js";
 import type { SingConfig } from "./config.js";
 import { singSong, sleep } from "./player.js";
 import { type NewSong, SetList, type SongEntry, type SongNo, songLabel } from "./setlist.js";
@@ -872,6 +878,12 @@ export class Singer implements VoiceFloor, SpeechPause {
    * old jobs) is asked for again: a song it finished is in its cache and comes back at once.
    */
   async poll(signal?: AbortSignal): Promise<void> {
+    if (this.list.preparing().length > 0) {
+      // Without this the worker assumes people are listening, which is the careful answer.
+      await this.worker
+        .context(this.#gpuContext(), signal)
+        .catch((e: unknown) => log.debug({ err: errorMessage(e) }, "could not update the worker"));
+    }
     for (const entry of this.list.preparing()) {
       try {
         if (entry.job === null) {
@@ -893,6 +905,25 @@ export class Singer implements VoiceFloor, SpeechPause {
       }
     }
     this.#publishPrepare();
+  }
+
+  /** Who would notice her going quiet, and which songs are needed now. */
+  #gpuContext(): GpuContext {
+    const her = this.ctx.services.get(WorldStateKey)?.snapshot().her;
+    let listeners = 0;
+    for (const voice of this.#voices) {
+      if (voice.scope !== null) listeners += this.#listeners(voice.scope);
+    }
+    const urgent: string[] = [];
+    for (const e of this.list.preparing()) {
+      if (e.forced && e.job !== null) urgent.push(e.job);
+    }
+    return {
+      in_voice: this.#voices.length > 0,
+      listeners,
+      live: Boolean(her?.golive) || her?.streaming === true,
+      urgent,
+    };
   }
 
   /** Publishes the song being prepared (`SONG_PREPARE_TOPIC`) when it changed. */

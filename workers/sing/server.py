@@ -3,6 +3,8 @@
     POST   /jobs                {query | url | path, title?, artist?, pitch?, key?, force?, exclusive_ack?}
                                 -> {"job"}
     POST   /jobs/{id}/exclusive -> {"job"}                 go ahead and take the GPU (see exclusive.py)
+    POST   /gpu/context         {in_voice, listeners, live, urgent: [job id]} who would notice her
+                                going quiet and which songs are needed now (Core, every poll; see gpu.py)
     GET    /jobs                -> {"jobs": [...]}         newest first
     GET    /jobs/{id}           -> {"job"}                 state, stage, progress, song when done
     DELETE /jobs/{id}           -> {"job"}                 cancels a queued or running job
@@ -35,11 +37,12 @@ Pipeline per job (one job at a time; models load per stage and are freed after i
               ready without one (``has_video: false``, ``video_error``). Songs cached before
               videos existed get theirs on the next request.
 
-GPU: with SING_OFFLOAD_URLS (the TTS / ASR workers) the job has the GPU to itself from the first
-GPU stage (separate, else convert) to the end of the conversion: stage ``exclusive`` and the job's
-``exclusive`` field (waiting · offloading · active · reloading · done) tell Core; see exclusive.py.
-With SING_GPU_SHARE=1 that is the last resort: when the card has SING_SHARE_MIN_FREE_MB free the
-job runs next to them (``exclusive: shared``) and pauses while they work; see yielding.py.
+GPU: every GPU stage is placed from the state of the machine, and placed again while it runs (see
+gpu.py, which has the rules; the job's ``gpu`` field and /health say what was decided and why). It
+shares the card with her voice and gives way while she speaks (``exclusive: shared``, yielding.py),
+waits for room (stage ``gpu_wait``), moves to the CPU, or, as the last resort and for a bounded time,
+has the TTS / ASR workers of SING_OFFLOAD_URLS drop their models (exclusive.py: stage ``exclusive``
+and the job's ``exclusive`` field, waiting · offloading · active · reloading · done, tell Core).
 
 A finished song is cached under SING_DATA_DIR/<song id>; asking again (same query, link or file
 and the same pitch settings) answers at once with ``cached: true``.
@@ -72,16 +75,31 @@ Environment
     SING_VIDEO_MAX_HEIGHT  tallest video                          (default 1080)
     SING_VIDEO_MAX_MB      largest video                          (default 300)
     SING_VIDEO_WAIT_S      wait for the video after the audio     (default 120)
-    SING_OFFLOAD_URLS      workers to offload while converting, comma separated (default none),
+    SING_GPU_POLICY        auto | share | offload | wait           (default auto, see gpu.py)
+    SING_GPU_SHARE         the older switch, used when SING_GPU_POLICY is not set: 1 = auto, 0 = offload
+    SING_OFFLOAD_URLS      who can be asked to give up the GPU, comma separated (default none),
                            e.g. http://127.0.0.1:8002,http://127.0.0.1:8003
     SING_EXCLUSIVE_WAIT_S  wait this long for Core's go (exclusive_ack) (default 30)
-    SING_GPU_SHARE         1 = no offload while the card has room  (default 0)
-    SING_SHARE_MIN_FREE_MB free VRAM a job needs to share the card (default 4096; peak 3.2 GB)
-    SING_SHARE_WAIT_S      card too full: wait this long for room before offloading (default 0)
-    SING_YIELD_URLS        workers to give way to while sharing, comma separated (default SING_OFFLOAD_URLS)
-    SING_YIELD_POLL_MS     how often they are asked                (default 100)
+    SING_SHARE_MIN_FREE_MB what a stage is assumed to need until it was measured here (default 4096)
+    SING_GPU_HEADROOM_PCT  share of the card to keep free           (default 12; a spill raises it)
+    SING_SHARE_WAIT_S      wait this long for room before taking speech offline, also with nobody
+                           listening                                (default 0)
+    SING_DEFER_S           people listening: wait this long before a short silence (default 120)
+    SING_WAIT_MAX_S        longest wait for room in all; then windows, or the job fails (default 600)
+    SING_SILENCE_MAX_S     longest she is offline at a time while people listen, reload included (default 90)
+    SING_SILENCE_GAP_S     back this long before the next window    (default 60)
+    SING_OFFLOAD_LEASE_S   a window renews its offload; a worker that died leaves her voice
+                           offline this long at most               (default 60)
+    SING_SPILL_FACTOR      slower than normal by this much is a spill (default 5)
+    SING_SPILL_STEP_S      a spill when the normal step is not known yet (default 2; with little free VRAM)
+    SING_DIFFUSION_STEPS_MIN  steps left when spilling with nothing else to free (default 20)
+    SING_GPU_CHECK_S       how often a running job looks at the card (default 1)
+    SING_CONTEXT_TTL_S     no word from Core for this long: nobody knows who listens (default 20)
+    SING_YIELD_URLS        workers to give way to, comma separated  (default SING_OFFLOAD_URLS)
+    SING_YIELD_POLL_MS     how often they are asked                 (default 100)
     SING_YIELD_HOLD_MS     stay out of the way this long after they are idle (default 300)
-    SING_YIELD_MAX_S       give up at most this much per song      (default 120)
+    SING_YIELD_MAX_S       give way at most this much per song that is needed now (default 120)
+    SING_YIELD_PATIENT_S   the same for a song nobody is waiting for (default 900)
     SING_RESOLVE_TIMEOUT_S give up finding a song after this long (default 60)
     SING_YTDLP_CACHE       yt-dlp's cache folder                  (default <data dir>/_ytdlp-cache)
     SING_RELOAD_TIMEOUT_S  longest wait for a worker to reload    (default 300)
@@ -117,8 +135,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from engine import Cancelled, JobError, allowed_url, env_float, env_int, is_oom  # noqa: E402
+from engine import Cancelled, ConvertWork, JobError, Suspended, allowed_url, env_float, env_int, is_oom  # noqa: E402
 from exclusive import Exclusive, http_post, parse_urls  # noqa: E402
+from gpu import Action, Audience, GpuJob, Limits, Machine, Profile  # noqa: E402
 from yielding import SpeechYield, http_get  # noqa: E402
 from songs import (  # noqa: E402
     PLAY_RATE,
@@ -176,6 +195,9 @@ class MockBackend:
         self.seconds = env_float("SING_MOCK_SECONDS", 3.0)
         self.delay = env_int("SING_MOCK_STAGE_MS", 0) / 1000
         self.gate: Callable[[], None] | None = None
+        self.step_s: Callable[[], float] | None = None  # how long a step takes (tests: a simulated card)
+        self.separate_devices: list[str | None] = []
+        self.trims = 0
 
     def _wait(self) -> None:
         if self.delay:
@@ -218,11 +240,34 @@ class MockBackend:
         raw = os.environ.get("SING_MOCK_FREE_MB")
         return int(raw) if raw else None
 
+    def uses_cuda(self) -> bool:
+        return bool(os.environ.get("SING_MOCK_FREE_MB")) or os.environ.get("SING_MOCK_DEVICE") == "cuda"
+
+    def gpu_name(self) -> str:
+        return "Mock GPU"
+
+    def vram(self, peek: bool = False) -> tuple[int, int] | None:
+        free = self.free_vram_mb()
+        return None if free is None else (free, env_int("SING_MOCK_TOTAL_MB", free))
+
+    def own_vram_mb(self) -> int:
+        return 0
+
+    def trim(self) -> None:
+        self.trims += 1
+
+    def idle(self) -> None:
+        return None
+
     def fetch_library(self, src: Source, sdir: Path) -> None:
         self.fetch(src, sdir / "source.wav", lambda _: None)
 
-    def separate(self, source_wav: Path, vocals_out: Path, inst_out: Path, progress: Callable[[float], None]) -> None:
+    def separate(self, source_wav: Path, vocals_out: Path, inst_out: Path, progress: Callable[[float], None],
+                 device: str | None = None) -> None:
         self._wait()
+        self.separate_devices.append(device)
+        for _ in range(env_int("SING_MOCK_SEGMENTS", 0)):
+            self._step()
         _write_wav(vocals_out, _tone(self.seconds, 16_000, 440), 16_000)
         _write_wav(inst_out, _tone(self.seconds, 16_000, 220, 0.1), 16_000)
 
@@ -235,19 +280,30 @@ class MockBackend:
     def ref_f0(self) -> float | None:
         return 440.0
 
+    def _step(self) -> None:
+        if self.gate is not None:
+            self.gate()
+        if self.step_s is not None:
+            time.sleep(self.step_s())
+
     def convert(self, vocals_wav: Path, out_wav: Path, shift: int, progress: Callable[[float], None],
-                cancelled: Callable[[], bool]) -> None:
+                cancelled: Callable[[], bool], work: ConvertWork | None = None) -> None:
         if os.environ.get("SING_MOCK_CONVERT_FAIL") == "1":
             raise JobError("mock conversion failed")
-        if os.environ.get("SING_MOCK_CONVERT_OOM") == "1" and self.gate is not None:
+        job = state.jobs.get(state.running or "")
+        window = job is not None and job.exclusive is not None and job.exclusive.state == "active"
+        if os.environ.get("SING_MOCK_CONVERT_OOM") == "1" and not window:
             raise RuntimeError("CUDA out of memory (mock)")
-        for i in range(4):
-            if self.gate is not None:
-                self.gate()
+        work = work if work is not None else ConvertWork()
+        steps = env_int("SING_MOCK_STEPS", 4)
+        for i in range(work.done, steps):
+            self._step()
             if cancelled():
                 raise Cancelled()
             self._wait()
-            progress((i + 1) / 4)
+            work.done = i + 1
+            work.chunks.append(work.steps or 30)
+            progress((i + 1) / steps)
         _write_wav(out_wav, _tone(self.seconds, 16_000, 440 * 2 ** (shift / 12)), 16_000)
 
     def mix(self, sdir: Path, converted: Path, key: int, out: Path) -> dict[str, Any]:
@@ -363,7 +419,8 @@ class Job:
     video: "VideoFetch | None" = None
     exclusive: Exclusive | None = None
     go: threading.Event = field(default_factory=threading.Event)
-    yielding: SpeechYield | None = None  # sharing the GPU: gives way to her voice
+    yielding: SpeechYield | None = None  # gives way to her voice
+    gpu: GpuJob | None = None  # where the job runs and why (gpu.py)
 
     def public(self, store: Store, position: int | None) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -385,6 +442,7 @@ class Job:
             "exclusive": self.exclusive.state if self.exclusive else None,
             "exclusive_info": self.exclusive.public() if self.exclusive else None,
             "yielded": self.yielding.public() if self.yielding else None,
+            "gpu": self.gpu.public() if self.gpu else None,
         }
         if self.state == "done" and self.song_id:
             d["song"] = store.meta(self.song_id)
@@ -401,6 +459,7 @@ class State:
     running: str | None = None
     thread: threading.Thread | None = None
     stopping: threading.Event
+    machine: Machine
     offload_post = staticmethod(http_post)  # replaced in tests
     busy_get = staticmethod(http_get)  # replaced in tests
 
@@ -647,73 +706,169 @@ def _attach_video(job: Job, src: Source, sdir: Path, out: Path, timings: dict[st
     return {"has_video": True, "video": {**info, "file": v.name}, "video_error": None}
 
 
-def _free_vram_mb() -> int | None:
+def _offload_urls() -> list[str]:
+    return parse_urls(os.environ.get("SING_OFFLOAD_URLS"))
+
+
+def _urgent(job: Job) -> bool:
+    """Core needs this song now, or one queued behind it (jobs run one at a time)."""
+    urgent = state.machine.audience.urgent
+    if job.id in urgent:
+        return True
+    with state.lock:
+        return any(j in urgent and state.jobs[j].state == "queued" for j in state.order)
+
+
+def _wav_seconds(p: Path) -> float | None:
     try:
-        return state.backend.free_vram_mb()
-    except Exception as e:  # noqa: BLE001 - not knowing means not sharing
-        log.warning("cannot read the free VRAM: %s", e)
+        with wave.open(str(p), "rb") as w:
+            return w.getnframes() / w.getframerate()
+    except (OSError, EOFError, wave.Error):
         return None
 
 
-def _room_to_share(job: Job) -> tuple[bool, int | None]:
-    """Whether the card has room for the job next to the workers, after SING_SHARE_WAIT_S at most
-    (a game holds the card: the song can wait for it to end instead of taking her voice away)."""
-    need = env_int("SING_SHARE_MIN_FREE_MB", 4096)
-    deadline = time.monotonic() + env_float("SING_SHARE_WAIT_S", 0.0)
-    while True:
-        free = _free_vram_mb()
-        if free is not None and free >= need:
-            return True, free
-        if time.monotonic() >= deadline:
-            return False, free
-        if job.cancel.wait(min(2.0, max(0.01, deadline - time.monotonic()))):
-            raise Cancelled()
-
-
-def _share_gpu(job: Job, free: int | None) -> None:
-    job.exclusive = Exclusive([], state.offload_post)
-    job.exclusive.share(free)
+def _start_gpu(job: Job, audio_s: float | None) -> None:
+    job.gpu = GpuJob(state.machine, job.id, _offload_urls(), core_expected=job.request.exclusive_ack,
+                     urgent=lambda: _urgent(job), audio_s=audio_s)
     urls = parse_urls(os.environ.get("SING_YIELD_URLS") or os.environ.get("SING_OFFLOAD_URLS"))
     job.yielding = SpeechYield(urls, state.busy_get, poll_s=env_int("SING_YIELD_POLL_MS", 100) / 1000,
                                hold_s=env_int("SING_YIELD_HOLD_MS", 300) / 1000,
-                               max_s=env_float("SING_YIELD_MAX_S", 120.0)).start()
-    gate = job.yielding
-    state.backend.gate = lambda: gate.wait(job.cancel.is_set)
-    log.info("sharing the GPU with her voice (%s MB free); yielding to %s", free, urls or "nobody")
+                               max_s=job.gpu.yield_allowance()).start()
 
 
-def _stop_yielding(job: Job) -> None:
-    if job.yielding is not None:
-        job.yielding.stop()
-    state.backend.gate = None
+def _stage_uses_gpu(stage: str) -> bool:
+    return stage != "separate" or getattr(state.backend, "separate_device", "cuda") != "cpu"
 
 
-def _take_gpu(job: Job, share: bool = True) -> None:
-    """Before the first GPU stage (once per job): share the card when it has room, else the
-    offload workers drop their models."""
-    if job.exclusive is not None:
-        return
-    stage = job.stage
-    urls = parse_urls(os.environ.get("SING_OFFLOAD_URLS"))
-    if share and os.environ.get("SING_GPU_SHARE", "0") == "1":
-        _set(job, "exclusive")
-        room, free = _room_to_share(job)
+def _open_window(job: Job) -> None:
+    """Her voice goes offline: Core gets to let her say so, then the workers drop their models."""
+    g, stage = job.gpu, job.stage
+    assert g is not None
+    job.go.clear()  # every window waits for its own go
+    job.exclusive = Exclusive(_offload_urls(), state.offload_post, ack_wait_s=env_float("SING_EXCLUSIVE_WAIT_S", 30.0),
+                              reload_timeout_s=env_float("SING_RELOAD_TIMEOUT_S", 300.0), max_s=g.offload_max_s())
+    g.window_opening()
+    job.stage = "exclusive"
+    try:
+        job.exclusive.begin(job.cancel.is_set, job.go if job.request.exclusive_ack else None)
+    finally:
         job.stage = stage
-        if room:
-            _share_gpu(job, free)
-            return
-        log.info("the card has %s MB free, too little to share it", free)
-    if not urls:
+    g.window_opened()
+
+
+def _close_window(job: Job) -> None:
+    """Her voice comes back, and the job waits for that: only then the card shows what is free."""
+    ex, g = job.exclusive, job.gpu
+    if ex is None or g is None or not g.window:
         return
-    job.exclusive = Exclusive(urls, state.offload_post, ack_wait_s=env_float("SING_EXCLUSIVE_WAIT_S", 30.0),
-                              reload_timeout_s=env_float("SING_RELOAD_TIMEOUT_S", 300.0))
-    _set(job, "exclusive")
-    job.exclusive.begin(job.cancel.is_set, job.go if job.request.exclusive_ack else None)
-    job.stage = stage
+    ex.end()
+    ex.join()
+    g.window_closed(ex.timings.get("reload_s"))
+
+
+def _place(job: Job, stage: str) -> str:
+    """``gpu`` or ``cpu``, once the stage may start: holds the job while it has to wait for room. A
+    waiting job holds no VRAM, so it costs her nothing."""
+    g = job.gpu
+    assert g is not None
+    try:
+        while True:
+            if job.cancel.is_set():
+                raise Cancelled()
+            d = g.decide(stage, _stage_uses_gpu(stage))
+            if d.mode == "wait":
+                job.stage = "gpu_wait"
+                job.cancel.wait(g.limits.check_s)
+                continue
+            job.stage = stage
+            if d.mode == "give_up":
+                raise JobError(d.reason)
+            if d.mode == "offload":
+                _open_window(job)
+            elif d.mode == "share" and (job.exclusive is None or job.exclusive.state != "shared"):
+                job.exclusive = Exclusive([], state.offload_post)
+                job.exclusive.share(g.facts.free_mb if g.facts else None)
+            return "cpu" if d.mode == "cpu" else "gpu"
+    finally:
+        job.stage = stage
+        g.wait_over()
+
+
+def _act(job: Job, act: Action, work: ConvertWork | None) -> None:
+    if act.kind == "trim":
+        state.backend.trim()
+    elif act.kind == "reduce":
+        if work is not None and job.gpu is not None:
+            work.steps = job.gpu.reduced_to
+    elif act.kind == "offload":
+        _open_window(job)
+    else:
+        raise Suspended(act.code)
+
+
+def _arm(job: Job, stage: str, work: ConvertWork | None) -> None:
+    """What runs before every diffusion step and separation segment: the time of the last one, her
+    voice, and whether the job should still be running like this."""
+    g, y, b = job.gpu, job.yielding, state.backend
+    assert g is not None and y is not None
+
+    def gate() -> None:
+        if job.cancel.is_set():
+            raise Cancelled()
+        if g.device == "gpu":
+            sync = getattr(b, "sync", None)
+            if sync is not None:
+                sync()
+        g.step()
+        if y.busy():
+            y.max_s = g.yield_allowance()
+            y.wait(job.cancel.is_set)
+        act = g.tick(stage)
+        if act is not None:
+            _act(job, act, work)
+        g.resume()
+
+    b.gate = gate
+
+
+def _gpu_stage(job: Job, stage: str, wav: Path, duration_s: float | None, run: Callable[[str], Any],
+               work: ConvertWork | None = None) -> Any:
+    """Runs a stage where the machine has room for it, again from where it was when it had to let
+    go: ``run`` gets the device. The first one to run starts the job's GPU bookkeeping."""
+    if job.gpu is None:
+        _start_gpu(job, duration_s or _wav_seconds(wav))
+    g = job.gpu
+    assert g is not None
+    resumed = False
+    while True:
+        device = _place(job, stage)
+        _arm(job, stage, work)
+        g.started(stage, device, resumed)
+        try:
+            out = run(device)
+        except Suspended as e:
+            log.info("job %s lets go of the GPU in %s: %s", job.id, stage, e.code)
+            g.stopped()
+        except Exception as e:
+            if device == "cpu" or not is_oom(e):
+                raise
+            log.warning("job %s ran out of VRAM in %s", job.id, stage)
+            g.stopped(oom=True)
+        else:
+            g.finished(stage)
+            return out
+        finally:
+            state.backend.gate = None
+        state.backend.unload()
+        _close_window(job)
+        resumed = True
 
 
 def _give_gpu_back(job: Job) -> None:
-    _stop_yielding(job)
+    """Starts bringing her voice back; ``run_job`` waits for it. The song mixes meanwhile."""
+    if job.yielding is not None:
+        job.yielding.stop()
+    state.backend.gate = None
     if job.exclusive is not None:
         job.exclusive.end()
 
@@ -728,6 +883,8 @@ def run_job(job: Job) -> None:
         _give_gpu_back(job)
         if job.exclusive is not None:
             job.exclusive.join()
+        if job.gpu is not None:
+            job.gpu.window_closed(job.exclusive.timings.get("reload_s") if job.exclusive else None)
 
 
 def _run_job(job: Job) -> None:
@@ -780,46 +937,47 @@ def _run_job(job: Job) -> None:
         elif not (sdir / "source.wav").exists() or req.force:
             timed("download", lambda: b.fetch(src, sdir / "source.wav", lambda f: _set(job, "download", f)))
         if not (src.kind == "library" and src.split):
-            _take_gpu(job)
-            timed("separate", lambda: b.separate(sdir / "source.wav", sdir / "vocals.wav", sdir / "instrumental.wav",
-                                                 lambda f: _set(job, "separate", f)))
+
+            def separate(device: str) -> None:
+                b.separate(sdir / "source.wav", sdir / "vocals.wav", sdir / "instrumental.wav",
+                           lambda f: _set(job, "separate", f), device="cpu" if device == "cpu" else None)
+
+            timed("separate", lambda: _gpu_stage(job, "separate", sdir / "source.wav", src.duration_s, separate))
 
     out = store.song_dir(sid)
     out.mkdir(parents=True, exist_ok=True)
     converted = out / "_converted.wav"
 
+    work = ConvertWork()
+    pitch: dict[str, Any] = {}
+
+    def converted_share(f: float) -> None:
+        _set(job, "convert", f)
+        if job.gpu is not None:
+            job.gpu.converted = f
+
     def convert() -> dict[str, Any]:
-        _take_gpu(job)
         try:
-            try:
-                return convert_on_gpu()
-            except Exception as e:
-                if job.exclusive is None or job.exclusive.state != "shared" or not is_oom(e):
-                    raise
-            # Something else filled the card meanwhile: the last resort after all.
-            log.warning("out of VRAM while sharing the GPU; taking it for this song")
-            _stop_yielding(job)
-            b.unload()
-            job.exclusive = None
-            _take_gpu(job, share=False)
-            return convert_on_gpu()
+            return _gpu_stage(job, "convert", sdir / "vocals.wav", src.duration_s, convert_on_gpu, work)
         finally:
             _give_gpu_back(job)
 
-    def convert_on_gpu() -> dict[str, Any]:
-        if req.pitch is not None:
-            shift, auto_key, info = req.pitch, 0, {"auto": False, "octave_shift": None}
-        else:
-            # An explicit key is the requester's choice: only the octave stays automatic.
-            shift, auto_key, info = _auto_shift(sdir, auto_key=req.key == 0)
-            info["auto"] = True
-        song_key = req.key + auto_key
-        shift += song_key
-        info.update({"vocal_shift": shift, "key": req.key, "auto_key": auto_key, "song_key": song_key,
-                     "f0_clean": os.environ.get("SING_F0_CLEAN", "1") != "0",
-                     "transposer": getattr(b, "transposer", None) if song_key else None})
-        b.convert(sdir / "vocals.wav", converted, shift, lambda f: _set(job, "convert", f), check)
-        return info
+    def convert_on_gpu(_device: str) -> dict[str, Any]:
+        if not pitch:  # a conversion that was suspended keeps its key
+            if req.pitch is not None:
+                shift, auto_key, info = req.pitch, 0, {"auto": False, "octave_shift": None}
+            else:
+                # An explicit key is the requester's choice: only the octave stays automatic.
+                shift, auto_key, info = _auto_shift(sdir, auto_key=req.key == 0)
+                info["auto"] = True
+            song_key = req.key + auto_key
+            shift += song_key
+            info.update({"vocal_shift": shift, "key": req.key, "auto_key": auto_key, "song_key": song_key,
+                         "f0_clean": os.environ.get("SING_F0_CLEAN", "1") != "0",
+                         "transposer": getattr(b, "transposer", None) if song_key else None})
+            pitch.update(info)
+        b.convert(sdir / "vocals.wav", converted, pitch["vocal_shift"], converted_share, check, work)
+        return pitch
 
     pitch_info = timed("convert", convert)
     mixed = timed("mix", lambda: b.mix(sdir, converted, pitch_info["song_key"], out))
@@ -838,6 +996,9 @@ def _run_job(job: Job) -> None:
                        "plain": None if lines else (found.get("plain") or "")[:4000]}
     video = _attach_video(job, src, sdir, out, timings)
     timings["total_s"] = round(time.perf_counter() - t_job, 2)
+    g = job.gpu
+    if g is not None and g.waited_total_s:
+        timings["gpu_wait_s"] = round(g.waited_total_s, 2)
     meta = {
         "id": sid,
         "title": src.title,
@@ -852,7 +1013,8 @@ def _run_job(job: Job) -> None:
         "engine": {"backend": b.name, "model": b.model_name, "device": b.device,
                    "diffusion_steps": env_int("SING_DIFFUSION_STEPS", 30)},
         "timings": timings,
-        "peak_vram_mb": _peak_vram_mb(),
+        "peak_vram_mb": (g.peak_allocated_mb if g is not None else None) or _peak_vram_mb(),
+        "gpu": g.summary() if g is not None else None,
         "created_at": now_iso(),
     }
     store.write_meta(sid, meta)
@@ -881,13 +1043,13 @@ def worker_loop() -> None:
         except Exception as e:  # noqa: BLE001
             log.exception("job %s crashed", job.id)
             job.state, job.error = "failed", f"{type(e).__name__}: {e}"[:500]
-            try:
-                state.backend.unload()
-            except Exception:  # noqa: BLE001
-                pass
         finally:
             job.finished_at = now_iso()
             state.running = None
+            try:
+                state.backend.idle()  # here: a job that failed no longer holds the models through its traceback
+            except Exception:  # noqa: BLE001
+                log.exception("could not let go of the models")
 
 
 def _prune() -> None:
@@ -898,6 +1060,19 @@ def _prune() -> None:
                 break
             state.order.remove(old)
             state.jobs.pop(old, None)
+
+
+def _recover_speech() -> None:
+    """A worker that went away mid-window (restarted, crashed) leaves her voice offline until it
+    reloads by itself: bring it back as soon as this one is up."""
+    for url in _offload_urls():
+        try:
+            health = state.busy_get(f"{url}/health", 2.0)
+            if health.get("offloaded") and health.get("reason") == "sing":
+                log.info("%s is still offloaded for a song; asking it back", url)
+                state.offload_post(f"{url}/reload", {}, env_float("SING_RELOAD_TIMEOUT_S", 300.0))
+        except Exception as e:  # noqa: BLE001 - it comes back by itself anyway
+            log.info("cannot ask %s whether it is back: %s", url, e)
 
 
 @asynccontextmanager
@@ -914,6 +1089,9 @@ async def lifespan(app: FastAPI):
     state.backend = make_backend(state.store)
     log.info("backend %s ready in %.1fs (%s on %s), songs in %s", state.backend.name, time.perf_counter() - t0,
              state.backend.model_name, state.backend.device, root)
+    state.machine = Machine(lambda: state.backend, Profile(root), Audience(),
+                            lambda url, timeout: state.busy_get(url, timeout))
+    threading.Thread(target=_recover_speech, name="sing-recover", daemon=True).start()
     state.thread = threading.Thread(target=worker_loop, name="sing-worker", daemon=True)
     state.thread.start()
     yield
@@ -1031,6 +1209,19 @@ async def get_file(sid: str, name: str):
     return FileResponse(p, media_type=media, headers=headers)
 
 
+class GpuContext(BaseModel):
+    in_voice: bool = False
+    listeners: int = Field(0, ge=0)
+    live: bool = False
+    urgent: list[str] = Field(default_factory=list, max_length=200)
+
+
+@app.post("/gpu/context")
+async def gpu_context(req: GpuContext) -> dict[str, Any]:
+    state.machine.audience.update(req.in_voice, req.listeners, req.live, req.urgent)
+    return {"ok": True}
+
+
 @app.get("/library")
 async def library() -> dict[str, Any]:
     return {"entries": state.store.library_entries()}
@@ -1045,6 +1236,9 @@ async def health() -> dict[str, Any]:
     torch = sys.modules.get("torch")
     if torch is not None and torch.cuda.is_available():
         info["vram_allocated_mb"] = round(torch.cuda.memory_allocated() / 2**20)
+    info["gpu"] = state.machine.public(Limits.from_env())
+    job = state.jobs.get(state.running or "")
+    info["gpu"]["job"] = job.gpu.public() if job is not None and job.gpu is not None else None
     return info
 
 
@@ -1052,6 +1246,7 @@ def main() -> None:
     import uvicorn
 
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # asks /busy several times a second while a job runs
     uvicorn.run(app, host=os.environ.get("HOST", "127.0.0.1"), port=int(os.environ.get("PORT", "8005")), log_level="info")
 
 

@@ -11,9 +11,13 @@
     POST /voices/reload  -> rescan VOICES_DIR (add a voice without restarting)
     POST /offload        JSON {reason?, max_s?, drain_s?} -> frees the GPU: new /tts and /voices calls
                          answer 503 {"error": "offloaded"} at once, utterances being synthesized get
-                         up to ``drain_s`` (TTS_OFFLOAD_DRAIN_S) to finish, then the engine (model,
-                         CUDA graphs, voice prompts) is dropped and the CUDA cache emptied. Reloads by
-                         itself after ``max_s`` (TTS_OFFLOAD_MAX_S) in case whoever asked never comes
+                         up to ``drain_s`` (TTS_OFFLOAD_DRAIN_S) to finish, then the engine process
+                         ends, which gives back everything it had on the card (see
+                         ../engine_process.py). The answer says what the DEVICE gave back
+                         (``released_mb``). ``max_s`` (TTS_OFFLOAD_MAX_S) is a lease: asking again
+                         renews it, and it reloads by itself only when whoever asked stopped renewing
+                         (that is, went away). Stops a reload that is under way instead of waiting
+                         for it. Reloads by itself after the lease in case whoever asked never comes
                          back.
     POST /reload         -> loads the engine again (a full start: weights, CUDA graphs, voice priming)
 
@@ -96,7 +100,10 @@ Environment
     TTS_POOL_SIZE          threads for synthesis calls (default 4; the GPU lock still serialises).
                            More than the prefetched lines, so a line she needs now never waits
                            for a thread behind lines that wait for the lock
-    TTS_OFFLOAD_MAX_S      an offload reloads by itself after this long (default 900; 0 = never)
+    TTS_OFFLOAD_MAX_S      lease of an offload that does not name one: without a renewal it reloads
+                           by itself after this long (default 900; 0 = never)
+    TTS_ENGINE_PROCESS     0 = the model in this process: no child, and an offload that may not really
+                           free the card (default 1)
     TTS_OFFLOAD_DRAIN_S    an offload lets running utterances finish for this long (default 15; 0 = stop
                            them at the next chunk). She finishes her sentence before the GPU goes
     HOST / PORT            bind address                  (default 127.0.0.1 / 8002)
@@ -131,6 +138,20 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from text_split import split_sentences
 
 log = logging.getLogger("miyoria.tts")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    import device_memory
+    from engine_process import EngineGone, EngineProcess, RemoteError
+except ImportError:  # the Docker image holds this folder only: the model stays in this process
+    device_memory = None
+    EngineProcess = None
+
+    class EngineGone(Exception):  # type: ignore[no-redef]
+        pass
+
+    class RemoteError(Exception):  # type: ignore[no-redef]
+        pass
 
 MAX_TEXT_CHARS = int(os.environ.get("TTS_MAX_TEXT_CHARS", "2000"))
 MIN_CHARS = int(os.environ.get("TTS_MIN_SENTENCE_CHARS", "4"))
@@ -360,6 +381,17 @@ class BaseEngine:
             self.closed = True
             self.model = None
             self.voices = {}
+
+    def stream_audio(self, text: str, language: str, voice: str | None, instruct: str,
+                     emotion: str | None) -> Iterator[tuple[Any, int]]:
+        """`stream` for the other end of a pipe: arrays, not CUDA tensors."""
+        extra = {"emotion": emotion} if emotion else {}
+        for wav, sr in self.stream(text, language, voice, instruct, **extra):
+            yield _as_array(wav), int(sr)
+
+    def reload_and_describe(self) -> dict[str, Any]:
+        self.reload_voices()
+        return describe_engine(self)
 
     # -- backend hooks -------------------------------------------------------
 
@@ -795,6 +827,87 @@ def make_engine() -> BaseEngine:
     return FasterEngine() if choice == "faster" else QwenTtsEngine()
 
 
+def _reference_fields(r: Reference) -> dict[str, Any]:
+    return {"key": r.key, "wav": r.wav, "text": r.text, "broken": r.broken}
+
+
+def describe_engine(e: BaseEngine) -> dict[str, Any]:
+    """What the worker needs to know of an engine in another process. Plain data: the classes of this
+    module are not the same classes over there."""
+    attrs = ("model_id", "device", "mode", "clone_mode", "voice_bank", "backend", "sample_rate", "streaming",
+             "chunk_size", "stream_probe")
+    voices = {n: {"ref_wav": v.ref_wav, "ref_text": v.ref_text, "base_instruct": v.base_instruct,
+                  "x_vector_only": v.x_vector_only, "plain": _reference_fields(v.plain) if v.plain else None,
+                  "by_language": {k: _reference_fields(r) for k, r in v.by_language.items()},
+                  "bank": {k: _reference_fields(r) for k, r in v.bank.items()}} for n, v in e.voices.items()}
+    return {**{a: getattr(e, a) for a in attrs}, "voices": voices}
+
+
+class RemoteEngine(BaseEngine):
+    """The engine in its own process (../engine_process.py), as this worker sees it. Everything that
+    only reads voices runs here on a copy, without a trip through the pipe; GPU work goes over."""
+
+    def __init__(self) -> None:  # no super().__init__(): the model lives in the child
+        self.lock = GpuLock()
+        self.closed = False
+        self.stopping = False
+        self.voices = {}
+        self.process = EngineProcess(__file__, "make_engine", "describe_engine")
+
+    def wait_ready(self) -> "RemoteEngine":
+        try:
+            self._take(self.process.wait_ready())
+        except RemoteError as e:
+            raise RuntimeError(f"the engine did not start: {e}") from e
+        return self
+
+    def _take(self, d: dict[str, Any]) -> None:
+        voices = d.pop("voices")
+        for name, value in d.items():
+            setattr(self, name, value)
+
+        def ref(r: dict[str, Any] | None) -> Reference | None:
+            return Reference(**r) if r else None
+
+        self.voices = {n: Voice(n, v["ref_wav"], v["ref_text"], None, v["base_instruct"], v["x_vector_only"],
+                                ref(v["plain"]), {k: Reference(**r) for k, r in v["by_language"].items()},
+                                {k: Reference(**r) for k, r in v["bank"].items()}) for n, v in voices.items()}
+
+    def alive(self) -> bool:
+        return self.process.alive()
+
+    def close(self) -> None:
+        """Ends the process at once, the running sentence included: the caller already let it drain."""
+        self.closed = True
+        self.voices = {}
+        self.process.kill()
+
+    def reload_voices(self) -> None:
+        with self.lock:
+            self._take(self.process.call("reload_and_describe"))
+
+    def stream(self, text: str, language: str, voice: str | None, instruct: str,
+               emotion: str | None = None) -> Iterator[tuple[Any, int]]:
+        try:
+            yield from self.process.stream("stream_audio", text, language, voice, instruct, emotion)
+        except RemoteError as e:
+            if e.status is not None:
+                raise ApiError(e.status, e.message) from e
+            raise RuntimeError(str(e)) from e
+        except EngineGone as e:
+            raise ApiError(503, "offloaded" if self.closed else "the engine process ended; reloading") from e
+
+
+def start_engine() -> BaseEngine:
+    """The engine this worker runs, on a pool thread: a child process unless told otherwise (see
+    engine_process.py for why). `state.loading` lets an offload stop it while it loads."""
+    if EngineProcess is None or os.environ.get("TTS_ENGINE_PROCESS", "1") == "0":
+        return make_engine()
+    eng = RemoteEngine()
+    state.loading = eng
+    return eng.wait_ready()
+
+
 class ChunkPump:
     """Runs the sentences of one request in a pool thread and hands PCM chunks to the event loop
     through an asyncio.Queue. Messages: ("chunk", pcm_bytes) | ("done", None) | ("error", exc).
@@ -885,9 +998,12 @@ class ChunkPump:
 class State:
     engine: BaseEngine | None
     pool: ThreadPoolExecutor
-    swap: asyncio.Lock  # offload / reload, one at a time
+    swap: asyncio.Lock  # one offload at a time; a reload does not take it, so nothing waits behind one
     offloaded: dict[str, Any] | None = None  # {since, reason, reload_at}
     auto_reload: asyncio.Task | None = None
+    load: asyncio.Future | None = None  # the reload under way
+    loading: "RemoteEngine | None" = None  # its engine, while that can still be stopped
+    released_mb: int | None = None  # what the device gave back at the last offload
 
 
 state = State()
@@ -895,6 +1011,13 @@ state = State()
 
 def _engine() -> BaseEngine:
     if state.engine is None:
+        raise ApiError(503, "offloaded")
+    alive = getattr(state.engine, "alive", None)
+    if alive is not None and not alive():
+        log.error("the engine process ended by itself; starting it again")
+        state.engine = None
+        state.offloaded = {"since": time.time(), "reason": "engine crashed", "reload_at": None}
+        asyncio.ensure_future(_bring_back())
         raise ApiError(503, "offloaded")
     return state.engine
 
@@ -904,11 +1027,15 @@ async def lifespan(app: FastAPI):
     state.pool = ThreadPoolExecutor(max_workers=int(os.environ.get("TTS_POOL_SIZE", "4")), thread_name_prefix="tts")
     state.swap = asyncio.Lock()
     state.offloaded = None
+    state.load = state.loading = None
     loop = asyncio.get_running_loop()
-    state.engine = await loop.run_in_executor(state.pool, make_engine)
+    state.engine = await loop.run_in_executor(state.pool, start_engine)
+    state.loading = None
     yield
     if state.auto_reload is not None:
         state.auto_reload.cancel()
+    if state.engine is not None and isinstance(state.engine, RemoteEngine):
+        state.engine.close()
     state.pool.shutdown(wait=False, cancel_futures=True)
 
 
@@ -1082,19 +1209,57 @@ async def _drain(limit_s: float) -> bool:
     return True
 
 
+def _device_before() -> Any:
+    return device_memory.read() if device_memory else None
+
+
+def _released(before: Any, remember: bool = True) -> dict[str, Any]:
+    """What the device gave back since `before`, once the process is really gone. A reload stopped
+    halfway held only part of the model: that says nothing about what an offload frees."""
+    if not device_memory:
+        return {}
+    out = device_memory.report(before, device_memory.settled())
+    if remember:
+        state.released_mb = out["released_mb"]
+    return out
+
+
+def _lease(max_s: float) -> None:
+    """Until `max_s` from now nobody needs to come back; asking again starts it over. A job that is
+    alive renews it, so a reload by itself only happens when whoever asked has gone away (on 11-07 a
+    fixed 15 minutes reloaded both workers into a job that was still running)."""
+    if state.auto_reload is not None:
+        state.auto_reload.cancel()
+    state.auto_reload = asyncio.create_task(_reload_after(max_s)) if max_s > 0 else None
+    if state.offloaded is not None:
+        state.offloaded["reload_at"] = time.time() + max_s if max_s > 0 else None
+
+
 @app.post("/offload")
 async def offload(req: OffloadRequest | None = None) -> dict[str, Any]:
     req = req or OffloadRequest()
+    max_s = req.max_s if req.max_s is not None else float(os.environ.get("TTS_OFFLOAD_MAX_S", "900"))
+    if state.load is not None:
+        # A reload is under way: stopped, not waited for. Stopping one takes no time; one that runs
+        # in this process cannot be stopped at all, so the caller hears that instead of hanging.
+        loader = state.loading
+        if loader is None:
+            return {"state": "reloading", "offload_ms": 0}
+        before = _device_before()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, loader.close)
+        _lease(max_s)
+        released = await loop.run_in_executor(None, _released, before, False)
+        return {"state": "offloaded", "offload_ms": 0, "cancelled_reload": True, **released}
     async with state.swap:
         if state.engine is None:
+            _lease(max_s)
             return {"state": "offloaded", "offload_ms": 0, "already": True, **(state.offloaded or {})}
         loop = asyncio.get_running_loop()
         t0 = time.perf_counter()
-        before = _vram_mb()
+        before, device = _vram_mb(), _device_before()
         eng, state.engine = state.engine, None
-        max_s = req.max_s if req.max_s is not None else float(os.environ.get("TTS_OFFLOAD_MAX_S", "900"))
-        state.offloaded = {"since": time.time(), "reason": (req.reason or "")[:80],
-                           "reload_at": time.time() + max_s if max_s > 0 else None}
+        state.offloaded = {"since": time.time(), "reason": (req.reason or "")[:80], "reload_at": None}
         # New requests already answer 503. The ones under way may finish: an offload in the middle
         # of a line cut her off on 11-07 (Core stops sending lines, it cannot take one back).
         drain_s = req.drain_s if req.drain_s is not None else float(os.environ.get("TTS_OFFLOAD_DRAIN_S", "15"))
@@ -1108,37 +1273,52 @@ async def offload(req: OffloadRequest | None = None) -> dict[str, Any]:
         await loop.run_in_executor(None, eng.close)
         del eng
         await loop.run_in_executor(None, _free_cuda)
+        released = await loop.run_in_executor(None, _released, device)
         ms = (time.perf_counter() - t0) * 1000
         after = _vram_mb()
-        log.info("offloaded for %r in %.0f ms (VRAM %s -> %s MB)", req.reason, ms, before, after)
-        if state.auto_reload is not None:
-            state.auto_reload.cancel()
-        state.auto_reload = asyncio.create_task(_reload_after(max_s)) if max_s > 0 else None
+        log.info("offloaded for %r in %.0f ms: the card gave back %s MB", req.reason, ms, released.get("released_mb"))
+        _lease(max_s)
         return {"state": "offloaded", "offload_ms": round(ms), "drained": drained,
-                "vram_before_mb": before, "vram_after_mb": after}
+                "vram_before_mb": before, "vram_after_mb": after, **released}
 
 
 async def _reload_after(seconds: float) -> None:
     await asyncio.sleep(seconds)
-    log.warning("still offloaded after %.0f s; reloading by itself", seconds)
+    log.warning("nobody renewed the offload for %.0f s; reloading by itself", seconds)
     state.auto_reload = None
     await reload()
 
 
+async def _load_engine() -> dict[str, Any]:
+    t0 = time.perf_counter()
+    try:
+        eng = await asyncio.get_running_loop().run_in_executor(state.pool, start_engine)
+    except EngineGone:
+        log.info("the reload was stopped by an offload")
+        return {"state": "offloaded", "cancelled": True}
+    finally:
+        state.load = state.loading = None
+    state.engine = eng
+    state.offloaded = None
+    ms = (time.perf_counter() - t0) * 1000
+    log.info("reloaded in %.0f ms", ms)
+    return {"state": "ready", "reload_ms": round(ms), "vram_mb": _vram_mb(), **(device_memory.fields() if device_memory else {})}
+
+
+async def _bring_back() -> dict[str, Any]:
+    if state.load is None:
+        state.load = asyncio.ensure_future(_load_engine())
+    return await asyncio.shield(state.load)
+
+
 @app.post("/reload")
 async def reload() -> dict[str, Any]:
-    async with state.swap:
-        if state.engine is not None:
-            return {"state": "ready", "reload_ms": 0, "already": True}
-        task, state.auto_reload = state.auto_reload, None
-        if task is not None and task is not asyncio.current_task():
-            task.cancel()
-        t0 = time.perf_counter()
-        state.engine = await asyncio.get_running_loop().run_in_executor(state.pool, make_engine)
-        state.offloaded = None
-        ms = (time.perf_counter() - t0) * 1000
-        log.info("reloaded in %.0f ms", ms)
-        return {"state": "ready", "reload_ms": round(ms), "vram_mb": _vram_mb()}
+    if state.engine is not None:
+        return {"state": "ready", "reload_ms": 0, "already": True}
+    task, state.auto_reload = state.auto_reload, None
+    if task is not None and task is not asyncio.current_task():
+        task.cancel()
+    return await _bring_back()
 
 
 @app.get("/health")
@@ -1147,7 +1327,8 @@ async def health() -> dict[str, Any]:
     if e is None:
         # Healthy, just not holding a model (POST /reload brings it back).
         return {"status": "ok", "offloaded": True, "model": os.environ.get("TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-Base"),
-                **(state.offloaded or {}), "vram_allocated_mb": _vram_mb()}
+                **(state.offloaded or {}), "loading": state.load is not None, "released_mb": state.released_mb,
+                "vram_allocated_mb": _vram_mb(), **(device_memory.fields() if device_memory else {})}
     info: dict[str, Any] = {
         "offloaded": False,
         "status": "ok",
@@ -1163,6 +1344,9 @@ async def health() -> dict[str, Any]:
         "instruct_supported": e.mode != "clone",
         "clone_mode": e.clone_mode,
         "voice_bank": e.voice_bank,
+        "released_mb": state.released_mb,  # at the last offload, measured on the device
+        "engine_pid": e.process.pid if isinstance(e, RemoteEngine) else None,
+        **(device_memory.fields() if device_memory else {}),
     }
     cuda = getattr(sys.modules.get("torch"), "cuda", None)
     if cuda is not None and cuda.is_available():

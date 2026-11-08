@@ -16,11 +16,16 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
 from songs import PLAY_RATE, Source, Store, safe_id, short_hash
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import device_memory  # noqa: E402
 
 log = logging.getLogger("miyoria.sing.engine")
 
@@ -34,6 +39,26 @@ class JobError(Exception):
 
 class Cancelled(Exception):
     pass
+
+
+class Suspended(Exception):
+    """Raised from the step gate: the stage lets go of the GPU now (gpu.py) and runs again later.
+    ``code`` says why."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass
+class ConvertWork:
+    """What a conversion got done, so a suspended one goes on from the last finished chunk. ``steps``
+    replaces SING_DIFFUSION_STEPS from the next chunk on."""
+
+    done: int = 0
+    chunks: list[Any] = field(default_factory=list)
+    prev: Any = None
+    steps: int | None = None
 
 
 def env_int(name: str, default: int) -> int:
@@ -220,6 +245,20 @@ def is_oom(e: BaseException) -> bool:
     return "out of memory" in str(e).lower()
 
 
+@contextmanager
+def leave_cores_free():
+    """A separation that moved to the CPU to spare her voice uses half the cores: the speech workers
+    need some too, and a CPU that is full would stutter her just the same."""
+    import torch
+
+    before = torch.get_num_threads()
+    torch.set_num_threads(max(1, (os.cpu_count() or 2) // 2))
+    try:
+        yield
+    finally:
+        torch.set_num_threads(before)
+
+
 # ── backend ──────────────────────────────────────────────────────────────────
 
 
@@ -231,6 +270,7 @@ class RealBackend:
 
         self.store = store
         self.device = os.environ.get("SING_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._cuda = str(self.device).startswith("cuda") and torch.cuda.is_available()
         self.separator = os.environ.get("SING_SEPARATOR_MODEL", "htdemucs")
         self.separate_device = os.environ.get("SING_SEPARATE_DEVICE", self.device)
         self.steps = env_int("SING_DIFFUSION_STEPS", 30)
@@ -404,11 +444,18 @@ class RealBackend:
 
     # ── separation (Demucs) ──────────────────────────────────────────────
 
-    def separate(self, source_wav: Path, vocals_out: Path, inst_out: Path, progress: Progress) -> None:
+    def separate(self, source_wav: Path, vocals_out: Path, inst_out: Path, progress: Progress,
+                 device: str | None = None) -> None:
+        """``device``: where gpu.py placed this run, instead of SING_SEPARATE_DEVICE."""
+        on = device or self.separate_device
         try:
-            self._separate_on(self.separate_device, source_wav, vocals_out, inst_out)
+            if device == "cpu":
+                with leave_cores_free():
+                    self._separate_on("cpu", source_wav, vocals_out, inst_out)
+            else:
+                self._separate_on(on, source_wav, vocals_out, inst_out)
         except Exception as e:
-            if not is_oom(e) or self.separate_device == "cpu":
+            if not is_oom(e) or on == "cpu":
                 raise
             log.warning("separation ran out of VRAM; retrying on the CPU")
             self._demucs = None
@@ -461,14 +508,59 @@ class RealBackend:
             m.register_forward_pre_hook(before)
         model._miyoria_gated = True
 
-    def free_vram_mb(self) -> int | None:
-        """What the card has free for everybody, `None` when that cannot be told."""
+    # ── the card, as gpu.py sees it ──────────────────────────────────────
+
+    def uses_cuda(self) -> bool:
+        return self._cuda
+
+    def gpu_name(self) -> str:
+        now = device_memory.read()
+        return now.name if now is not None else "cuda"
+
+    def vram(self, peek: bool = False) -> tuple[int, int] | None:
+        """(free, total) MB of the whole device, other applications included (device_memory.py).
+        Without NVML, ``mem_get_info`` is right on Linux and blind on Windows, where not knowing is
+        the better answer. ``peek``: `None` instead of starting CUDA in a worker not using it yet."""
+        now = device_memory.read()
+        if now is not None:
+            return now.free_mb, now.total_mb
         import torch
 
-        if not str(self.device).startswith("cuda") or not torch.cuda.is_available():
+        if sys.platform == "win32" or (peek and not torch.cuda.is_initialized()):
             return None
-        free, _total = torch.cuda.mem_get_info()
-        return round(free / 2**20)
+        free, total = torch.cuda.mem_get_info()
+        return round(free / 2**20), round(total / 2**20)
+
+    def own_vram_mb(self) -> int:
+        """What this process holds, cache included: part of what is not free, but ours to use."""
+        import torch
+
+        return round(torch.cuda.memory_reserved() / 2**20) if torch.cuda.is_initialized() else 0
+
+    def sync(self) -> None:
+        """Before a step is timed: the work of the last one really ended."""
+        import torch
+
+        if torch.cuda.is_initialized():
+            torch.cuda.synchronize()
+
+    def trim(self) -> None:
+        free_cuda()
+
+    def peak_reset(self) -> None:
+        import torch
+
+        if torch.cuda.is_initialized():
+            torch.cuda.reset_peak_memory_stats()
+
+    def peak_read(self) -> tuple[int, int]:
+        """(reserved, allocated) MB since ``peak_reset``. Reserved is what the card really gave up;
+        allocated is the smaller number the song's ``peak_vram_mb`` has always shown."""
+        import torch
+
+        if not torch.cuda.is_initialized():
+            return 0, 0
+        return round(torch.cuda.max_memory_reserved() / 2**20), round(torch.cuda.max_memory_allocated() / 2**20)
 
     # ── conversion (Seed-VC singing model) ───────────────────────────────
 
@@ -505,17 +597,21 @@ class RealBackend:
         return self._ref_f0
 
     def convert(self, vocals_wav: Path, out_wav: Path, shift: int, progress: Progress,
-                cancelled: Callable[[], bool]) -> None:
+                cancelled: Callable[[], bool], work: ConvertWork | None = None) -> None:
         try:
             vc = self._load_vc()
             vc.step_gate = self.gate
             x, sr = read_audio(vocals_wav)
             ref, rsr = self.reference()
             y = vc.convert(x.mean(axis=1), sr, ref, rsr, shift, self.steps, self.cfg_rate,
-                           progress, cancelled, clean=self.f0_clean)
+                           progress, cancelled, clean=self.f0_clean, work=work)
             y = vocal_gate(x.mean(axis=1), y)
             write_wav(out_wav, y, SR)
         finally:
+            # The model is in a reference cycle (its step hook), so only the collector in `unload`
+            # frees it, and only if nothing here still points at it: on 11-07 an idle worker held
+            # 1.9 GB this way, because an idle process never runs the collector again.
+            vc = None
             if not self.keep:
                 self.unload()
 
@@ -523,6 +619,11 @@ class RealBackend:
         self._vc = None
         self._demucs = None
         free_cuda()
+
+    def idle(self) -> None:
+        """Between jobs: after a failure the traceback kept the models alive through ``unload``."""
+        if not self.keep:
+            self.unload()
 
     # ── key change of the instrumental ───────────────────────────────────
 

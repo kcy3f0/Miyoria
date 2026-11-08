@@ -32,6 +32,7 @@ def asr(monkeypatch):
     monkeypatch.setitem(sys.modules, "asr_server_under_test", server)
     spec.loader.exec_module(server)
     server.make_backend = StubBackend
+    server.device_memory = None  # the real card has nothing to do with these stubs
     server.decode_wav = lambda data: ([0.0] * 4800, 300)  # no soundfile in the test venv
     with TestClient(server.app) as client:
         yield client, server

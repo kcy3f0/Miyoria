@@ -271,7 +271,7 @@ def test_library_video_lookup(tmp_path):
 
 
 @pytest.fixture
-def offload(sing, monkeypatch):
+def offload(sing, monkeypatch, tmp_path):
     """The TTS / ASR workers as a recorder: (url, body, the job's state at that moment)."""
     if not is_mock():
         pytest.skip("mock offload")
@@ -288,7 +288,13 @@ def offload(sing, monkeypatch):
         return {"offload_ms": 5} if url.endswith("/offload") else {"reload_ms": 9}
 
     monkeypatch.setattr(server.state, "offload_post", post, raising=False)
+    monkeypatch.setattr(server.state, "busy_get", lambda url, timeout: {"busy": 0}, raising=False)
     monkeypatch.setenv("SING_OFFLOAD_URLS", "http://tts, http://asr/")
+    monkeypatch.setenv("SING_GPU_POLICY", "offload")
+    monkeypatch.setenv("SING_MOCK_DEVICE", "cuda")
+    server.state.machine.profile = server.Profile(tmp_path)
+    server.state.machine.audience = server.Audience()
+    server.state.machine.gap_until = 0.0
     return calls, fail
 
 
@@ -524,7 +530,8 @@ def share(offload, monkeypatch):
         return {"busy": busy["n"]}
 
     monkeypatch.setattr(server.state, "busy_get", get, raising=False)
-    monkeypatch.setenv("SING_GPU_SHARE", "1")
+    monkeypatch.delenv("SING_GPU_POLICY")
+    monkeypatch.setenv("SING_GPU_SHARE", "1")  # what `auto` was called before
     monkeypatch.setenv("SING_MOCK_FREE_MB", "6000")
     monkeypatch.setenv("SING_YIELD_POLL_MS", "5")
     monkeypatch.setenv("SING_YIELD_HOLD_MS", "100")
@@ -556,10 +563,14 @@ def test_an_unknown_card_is_not_shared(sing, share, monkeypatch):
     assert done["exclusive"] == "done" and len(calls) == 4
 
 
-def test_sharing_is_off_by_default(sing, offload, monkeypatch):
+def test_sharing_is_the_default_and_the_old_switch_still_turns_it_off(sing, offload, monkeypatch):
     calls, _ = offload
+    monkeypatch.delenv("SING_GPU_POLICY")
     monkeypatch.setenv("SING_MOCK_FREE_MB", "9000")
     done = wait(sing, sing.post("/jobs", json={"query": "default song"}).json()["job"]["id"])
+    assert done["exclusive"] == "shared" and calls == []
+    monkeypatch.setenv("SING_GPU_SHARE", "0")
+    done = wait(sing, sing.post("/jobs", json={"query": "old offload song"}).json()["job"]["id"])
     assert done["exclusive"] == "done" and len(calls) == 4
 
 

@@ -4,6 +4,8 @@
 
 export { singCapabilities } from "./actions.js";
 export {
+  type GpuContext,
+  type GpuStatus,
   HttpSingWorker,
   type LyricLine,
   type SingWorker,

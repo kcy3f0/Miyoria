@@ -1,4 +1,4 @@
-"""The song worker gives way to her voice while it shares the GPU.
+"""The song worker gives way to her voice.
 
 Windows has no GPU priority between processes (MPS is Linux only), so the one thing that works is
 not submitting work: while the TTS or ASR worker is busy, the conversion stops between diffusion
@@ -7,7 +7,8 @@ seconds; not stopping costs her first audio seconds, and with her talking that i
 
 A background thread polls ``GET /busy`` on the workers, so the conversion's check is a plain read.
 A worker that does not answer counts as idle: yielding must never be what stops a song, and neither
-must a voice channel that keeps talking, so at most SING_YIELD_MAX_S are given up per job.
+must a voice channel that keeps talking, so a job gives up a limited time: ``max_s``, which gpu.py
+sets from how much the song is needed (SING_YIELD_MAX_S, SING_YIELD_PATIENT_S).
 """
 
 from __future__ import annotations

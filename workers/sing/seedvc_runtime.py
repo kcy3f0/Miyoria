@@ -6,7 +6,9 @@ Differences from upstream: weights are cached under ``<seedvc>/checkpoints`` wit
 the working directory, the pitch shift is given in semitones by the caller (the worker's auto
 key picks it), the source's F0 contour is cleaned before it conditions the model (``pitch.py``:
 octave errors, spikes and dropouts at the top of the range are what cracks high notes), and
-conversion reports progress and can be cancelled between chunks.
+conversion reports progress, can be cancelled between chunks, and can go on from the last finished
+chunk after the step gate suspended it (``ConvertWork``: the features are made again, the audio
+already converted is kept).
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ import numpy as np
 import torch
 import torchaudio
 import yaml
-from engine import Cancelled
+from engine import Cancelled, ConvertWork
 from pitch import clean_f0
 from huggingface_hub import hf_hub_download
 
@@ -142,9 +144,10 @@ class SeedVcSinger:
     @torch.no_grad()
     def convert(self, source: np.ndarray, sr: int, ref: np.ndarray, ref_sr: int, shift: int, steps: int,
                 cfg_rate: float, progress: Callable[[float], None], cancelled: Callable[[], bool],
-                clean: bool = True) -> np.ndarray:
+                clean: bool = True, work: ConvertWork | None = None) -> np.ndarray:
         import librosa
 
+        work = work if work is not None else ConvertWork()
         dev = self.device
         if sr != self.sr:
             source = librosa.resample(source, orig_sr=sr, target_sr=self.sr)
@@ -181,9 +184,9 @@ class SeedVcSinger:
         window = self.sr // self.hop * 30 - mel2.size(2)
         overlap_frames = 16
         overlap_wave = overlap_frames * self.hop
-        chunks: list[np.ndarray] = []
-        prev: np.ndarray | None = None
-        done = 0
+        chunks: list[np.ndarray] = work.chunks
+        prev: np.ndarray | None = work.prev
+        done = work.done
         total = cond.size(1)
         while done < total:
             if cancelled():
@@ -193,7 +196,7 @@ class SeedVcSinger:
             cat = torch.cat([prompt, chunk], dim=1)
             with torch.autocast(device_type=dev.type, dtype=torch.float16, enabled=dev.type == "cuda"):
                 vc = self.model.cfm.inference(cat, torch.LongTensor([cat.size(1)]).to(dev), mel2, style2, None,
-                                              steps, inference_cfg_rate=cfg_rate)
+                                              work.steps or steps, inference_cfg_rate=cfg_rate)
                 vc = vc[:, :, mel2.size(-1):]
             wave = self.vocoder(vc.float()).squeeze().float().cpu().numpy()
             if prev is None:
@@ -208,6 +211,7 @@ class SeedVcSinger:
                     break
             prev = wave[-overlap_wave:]
             done += vc.size(2) - overlap_frames
+            work.prev, work.done = prev, done
             progress(min(0.99, done / max(total, 1)))
         progress(1.0)
         return np.concatenate(chunks).astype(np.float32)

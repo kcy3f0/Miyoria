@@ -1,16 +1,17 @@
-"""The GPU to the song worker alone while it separates and converts, as the last resort.
+"""The GPU to the song worker alone for a while, as the last resort (gpu.py decides when).
 
-With SING_GPU_SHARE=1 the job first looks at the card: with enough free VRAM (no game running, the
-ASR off the GPU) nothing is offloaded, she stays in the channel and hears everything, and the job
-only gives way while she speaks (yielding.py). ``exclusive`` then says ``shared``. What follows is
-what happens when the card is too full, or sharing is off.
+This is the mechanism only: a window in which the speech workers have dropped their models. A job
+can open more than one (each gets its own ``Exclusive``); one that shares the card has an empty one
+whose ``exclusive`` says ``shared``, so Core knows speech goes on.
 
-On a 12 GB card the conversion next to the TTS (~4.7 GB) and ASR (~2 GB) workers spills into
-shared memory and runs 10x slower or more. With ``SING_OFFLOAD_URLS`` set, the job asks those
-workers to drop their models (``POST /offload``) before the first GPU stage and to load them
-again (``POST /reload``) right after the conversion, also when it fails or is cancelled. The
-reload runs while the song is mixed; the job only counts as done once they are back, so her
-opening line has a voice.
+The job asks the workers of ``SING_OFFLOAD_URLS`` to drop their models (``POST /offload``) and to load
+them again (``POST /reload``) when the window ends, also when the job fails or is cancelled. After a
+conversion the reload runs while the song is mixed; the job only counts as done once they are back,
+so her opening line has a voice.
+
+``max_s`` is a lease, renewed by a thread as long as the window is open: on 11-07 a fixed 15 minutes
+ran out during a slow job, both workers loaded themselves back on top of it, and conversion fell to
+34 s per step. Now they only come back by themselves when this worker went away, and soon after.
 
 A job submitted with ``exclusive_ack`` first waits (``exclusive: "waiting"``) until Core says go
 (``POST /jobs/{id}/exclusive``, after she told everyone she is off to prepare the song) or
@@ -47,7 +48,7 @@ def parse_urls(raw: str | None) -> list[str]:
 
 class Exclusive:
     def __init__(self, urls: list[str], post: Poster = http_post, *, ack_wait_s: float = 20.0,
-                 offload_timeout_s: float = 60.0, reload_timeout_s: float = 300.0, max_s: float = 900.0) -> None:
+                 offload_timeout_s: float = 60.0, reload_timeout_s: float = 300.0, max_s: float = 60.0) -> None:
         self.urls = urls
         self.post = post
         self.ack_wait_s = ack_wait_s
@@ -61,6 +62,7 @@ class Exclusive:
         self.errors: list[str] = []
         self._lock = threading.Lock()
         self._reload: threading.Thread | None = None
+        self._ended = threading.Event()
 
     def share(self, free_mb: int | None) -> None:
         """The job runs next to the workers: nothing to offload, nothing to wait for."""
@@ -91,17 +93,31 @@ class Exclusive:
             try:
                 r = self.post(f"{url}/offload", {"reason": "sing", "max_s": self.max_s}, self.offload_timeout_s)
                 self.offloaded.append(url)
-                log.info("offloaded %s (%s ms, VRAM %s -> %s MB)", url, r.get("offload_ms"), r.get("vram_before_mb"),
-                         r.get("vram_after_mb"))
+                released = r.get("released_mb")
+                if isinstance(released, (int, float)):
+                    self.timings["released_mb"] = self.timings.get("released_mb", 0.0) + released
+                log.info("offloaded %s in %s ms: the card gave back %s MB", url, r.get("offload_ms"), released)
             except Exception as e:  # noqa: BLE001
                 self.errors.append(f"offload {url}: {e}"[:200])
                 log.warning("could not offload %s: %s", url, e)
         self.timings["offload_s"] = round(time.monotonic() - t0, 2)
         self.state = "active"
+        if self.asked and self.max_s > 0:
+            threading.Thread(target=self._renew, name="sing-lease", daemon=True).start()
+
+    def _renew(self) -> None:
+        """A worker that cannot be reached now may answer the next time: two more tries in a lease."""
+        while not self._ended.wait(self.max_s / 3):
+            for url in self.asked:
+                try:
+                    self.post(f"{url}/offload", {"reason": "sing", "max_s": self.max_s}, min(5.0, self.max_s / 3))
+                except Exception as e:  # noqa: BLE001
+                    log.info("could not renew the offload of %s: %s", url, e)
 
     def end(self) -> None:
         """Starts loading the offloaded workers again (idempotent)."""
         with self._lock:
+            self._ended.set()
             if self._reload is not None or self.state in (None, "done", "shared"):
                 return
             self.state = "reloading"
@@ -117,7 +133,7 @@ class Exclusive:
                 r = self.post(f"{url}/reload", {}, self.reload_timeout_s)
                 log.info("reloaded %s (%s ms)", url, r.get("reload_ms"))
             except Exception as e:  # noqa: BLE001
-                # It reloads by itself after max_s; nothing better to do from here.
+                # The lease is no longer renewed, so it reloads by itself; nothing better from here.
                 self.errors.append(f"reload {url}: {e}"[:200])
                 log.warning("could not reload %s: %s", url, e)
         self.timings["reload_s"] = round(time.monotonic() - t0, 2)

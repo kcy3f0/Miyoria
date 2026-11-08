@@ -43,6 +43,7 @@ import {
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  type GpuContext,
   SETLIST_KEY,
   SingerKey,
   SingModule,
@@ -98,6 +99,8 @@ class FakeWorker implements SingWorker {
   readonly cancelled: string[] = [];
   /** Jobs told to take the GPU. */
   readonly gone: string[] = [];
+  /** What the worker was last told about who is listening. */
+  told: GpuContext | null = null;
   readonly jobs = new Map<string, WorkerJob>();
   #next = 1;
   cacheHit = false;
@@ -119,6 +122,7 @@ class FakeWorker implements SingWorker {
       source: null,
       song: this.cacheHit ? meta(`s-${id}`, title, this.cacheSeconds) : null,
       exclusive: null,
+      gpu: null,
     };
     this.jobs.set(id, job);
     return structuredClone(job);
@@ -155,6 +159,10 @@ class FakeWorker implements SingWorker {
 
   async goExclusive(id: string): Promise<void> {
     this.gone.push(id);
+  }
+
+  async context(context: GpuContext): Promise<void> {
+    this.told = context;
   }
 
   exclusive(id: string, state: WorkerJob["exclusive"]): void {
@@ -550,6 +558,38 @@ describe("sing module", () => {
     await settle(6000 + 400);
     expect(h.voice.plays).toHaveLength(1);
     expect(h.mind.suggestions.filter((s) => s.reason === "song_ready")).toHaveLength(0);
+  });
+
+  it("tells the worker who is listening and which songs are needed now", async () => {
+    h = await Harness.create();
+    h.sup.services.provide("world", WorldStateKey, {
+      snapshot: () => ({
+        her: { golive: "live", streaming: false },
+        voice_channels: [
+          {
+            guild: VOICE.scope,
+            channel: VOICE.channel,
+            members: [
+              { is_self: true, deafened: false },
+              { is_self: false, deafened: false },
+              { is_self: false, deafened: false },
+              { is_self: false, deafened: true },
+            ],
+          },
+        ],
+      }),
+    } as unknown as WorldState);
+    await h.join();
+    await h.command("queue song request", { song: "Now" });
+    await h.invoke(Principals.user(AMY, TEXT), "sing.request", { query: "Later", by: "Amy" });
+    await settle(2000);
+    expect(h.worker.told).toEqual({ in_voice: true, listeners: 2, live: true, urgent: ["j1"] });
+  });
+
+  it("does not bother the worker when no song is being prepared", async () => {
+    h = await Harness.create();
+    await settle(2000);
+    expect(h.worker.told).toBeNull();
   });
 
   it("the start cue carries the song's video inside the worker's cache", async () => {
