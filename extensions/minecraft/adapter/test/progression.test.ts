@@ -120,6 +120,29 @@ describe("crafting actions", () => {
     expect(() => toRequests({ name: "craft", args: {} })).toThrow("craft 要給 item");
     expect(() => toRequests({ name: "place", args: {} })).toThrow("place 要給 item");
   });
+
+  it("maps speedrun milestone actions and enforces preconditions", () => {
+    expect(() => toRequests({ name: "nether_portal", args: {} }, { inventory: {} })).toThrow("需要打火石");
+    expect(() =>
+      toRequests({ name: "nether_portal", args: {} }, { inventory: { flint_and_steel: 1 } }),
+    ).toThrow("需要至少10個黑曜石或水桶");
+    expect(
+      toRequests({ name: "nether_portal", args: {} }, { inventory: { flint_and_steel: 1, obsidian: 10 } }),
+    ).toEqual([{ type: "altoclef", params: { command: "beatgame" } }]);
+
+    expect(toRequests({ name: "obtain_eyes", args: { count: 14 } })).toEqual([
+      { type: "altoclef", params: { command: "get ender_eye 14" } },
+    ]);
+
+    expect(() => toRequests({ name: "locate_stronghold", args: {} }, { inventory: {} })).toThrow("身上沒有終界之眼");
+    expect(toRequests({ name: "locate_stronghold", args: {} }, { inventory: { ender_eye: 12 } })).toEqual([
+      { type: "altoclef", params: { command: "locate stronghold" } },
+    ]);
+
+    expect(toRequests({ name: "slay_dragon", args: { method: "bed" } })).toEqual([
+      { type: "altoclef", params: { command: "beatgame" } },
+    ]);
+  });
 });
 
 describe("mod errors", () => {

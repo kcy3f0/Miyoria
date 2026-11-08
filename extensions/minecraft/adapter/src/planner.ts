@@ -15,6 +15,24 @@ export type Inventory = Record<string, number>;
 
 const WOODS = ["oak", "birch", "spruce", "jungle", "acacia", "dark_oak", "mangrove", "cherry"];
 const STEMS = ["crimson", "warped"];
+const WOOLS = [
+  "white",
+  "orange",
+  "magenta",
+  "light_blue",
+  "yellow",
+  "lime",
+  "pink",
+  "gray",
+  "light_gray",
+  "cyan",
+  "purple",
+  "blue",
+  "brown",
+  "green",
+  "red",
+  "black",
+];
 
 const GROUPS: Record<string, string[]> = {
   "#logs": [
@@ -24,6 +42,8 @@ const GROUPS: Record<string, string[]> = {
   "#planks": [...WOODS, ...STEMS, "bamboo"].map((w) => `${w}_planks`),
   "#stone": ["cobblestone", "cobbled_deepslate", "blackstone"],
   "#coal": ["coal", "charcoal"],
+  "#wool": WOOLS.map((w) => `${w}_wool`),
+  "#beds": WOOLS.map((w) => `${w}_bed`),
 };
 
 /** The planks a log makes (`stripped_birch_wood` → `birch_planks`). */
@@ -69,7 +89,17 @@ const RECIPES: Record<string, Recipe> = {
   shield: recipe(1, [["#planks", 6], ["iron_ingot", 1]]),
   bowl: recipe(4, [["#planks", 3]]),
   ladder: recipe(3, [["stick", 7]]),
+  flint_and_steel: recipe(1, [["iron_ingot", 1], ["flint", 1]], false),
+  bed: recipe(1, [["#wool", 3], ["#planks", 3]]),
+  ender_eye: recipe(1, [["blaze_powder", 1], ["ender_pearl", 1]], false),
+  blaze_powder: recipe(2, [["blaze_rod", 1]], false),
+  bow: recipe(1, [["stick", 3], ["string", 3]]),
+  arrow: recipe(4, [["flint", 1], ["stick", 1], ["feather", 1]]),
 };
+
+for (const color of WOOLS) {
+  RECIPES[`${color}_bed`] = recipe(1, [["#wool", 3], ["#planks", 3]]);
+}
 
 // Tools and armour of every material.
 const TOOL_MATERIALS: Record<string, string> = {
@@ -123,6 +153,7 @@ const MINED: Record<string, string[]> = {
   sand: ["sand"],
   red_sand: ["red_sand"],
   gravel: ["gravel"],
+  flint: ["gravel"],
   clay_ball: ["clay"],
   obsidian: ["obsidian"],
 };
@@ -176,6 +207,14 @@ export function knows(item: string): boolean {
   if (item in RECIPES || item in SMELTING || item in MINED) return true;
   return item.endsWith("_planks") && planksOf(item) !== undefined;
 }
+
+const MOB_DROPS: Record<string, string> = {
+  blaze_rod: "烈焰棒(要前往下界要塞擊殺烈焰人)",
+  ender_pearl: "終界珍珠(要擊殺終界使者或在下界與豬靈交易)",
+  string: "線(要擊殺蜘蛛或破壞蜘蛛網)",
+  feather: "羽毛(要擊殺雞)",
+  leather: "皮革(要擊殺牛或馬)",
+};
 
 class Planner {
   readonly steps: Step[] = [];
@@ -291,6 +330,10 @@ class Planner {
       this.steps.push({ kind: "mine", item, blocks, count: amount });
       this.#add(item, amount);
       return;
+    }
+    const mobDrop = MOB_DROPS[item];
+    if (mobDrop) {
+      throw new PlanError(`缺少${mobDrop}，無法自動合成或挖掘，請先探索或戰鬥獲取`);
     }
     throw new PlanError(`不知道怎麼取得${zh(item)}(只會砍樹、挖礦、合成和用熔爐燒的東西)`);
   }

@@ -74,7 +74,22 @@ const INSTANT = new Set(["chat", "look", "attack", "use", "select", "respawn", "
 /** Baritone goals that never end by themselves; at the end of their budget they are done. */
 const OPEN_ENDED = new Set(["follow", "explore", "farm"]);
 /** Goals that end with their own events. */
-const JOBS = new Set(["goto", "mine", "follow", "explore", "farm", "build", "craft", "smelt", "get"]);
+const JOBS = new Set([
+  "goto",
+  "mine",
+  "follow",
+  "explore",
+  "farm",
+  "build",
+  "craft",
+  "smelt",
+  "get",
+  "nether_portal",
+  "obtain_eyes",
+  "locate_stronghold",
+  "enter_end",
+  "slay_dragon",
+]);
 /** Strategies of `obtain`. */
 export const OBTAIN_STRATEGIES = ["plan", "altoclef", "craft"] as const;
 export type ObtainStrategy = (typeof OBTAIN_STRATEGIES)[number];
@@ -749,12 +764,17 @@ export function jobEnd(
         return e.name === "death" ? new TaskFailure("died", "死掉了") : undefined;
       };
     case "get":
+    case "nether_portal":
+    case "obtain_eyes":
+    case "locate_stronghold":
+    case "enter_end":
+    case "slay_dragon":
       return (e) => {
         if (e.name !== "baritone_idle") return interrupted(e);
         if (e.data.cancelled === true) return idle(e, "");
         // Baritone goes idle between AltoClef's sub-tasks: ask AltoClef itself (unknown: done).
         void altoClefDone().then((done) => {
-          if (done !== false) later({ detail: "AltoClef 任務做完了", data: { ...e.data, altoclef_done: true } });
+          if (done !== false) later({ detail: "任務做完了", data: { ...e.data, altoclef_done: true } });
         });
         return undefined;
       };

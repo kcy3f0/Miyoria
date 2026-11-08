@@ -114,6 +114,36 @@ export const ACTIONS: GameActionSpec[] = [
   { name: "select", description: "切換快捷列:{slot:0-8} 或 {item}", parameters: obj({ slot: int("0–8"), item: str("物品 id") }), budget_s: 10 },
   { name: "respawn", description: "死掉時按重生", parameters: obj({}), budget_s: 15 },
   {
+    name: "nether_portal",
+    description: "建造並點燃下界傳送門進入地獄；需要黑曜石(至少10個)與打火石，或用水桶在岩漿池澆築",
+    parameters: obj({ method: str("建造方式: obsidian(黑曜石) 或 bucket(澆築)") }),
+    budget_s: 300,
+  },
+  {
+    name: "obtain_eyes",
+    description: "收集通關必備的終界之眼(自動前往下界要塞獵殺烈焰人取烈焰棒、擊殺終界使者取珍珠並合成)",
+    parameters: obj({ count: int("需要的終界之眼數量，預設 12") }),
+    budget_s: 600,
+  },
+  {
+    name: "locate_stronghold",
+    description: "投擲終界之眼定位終界要塞(Stronghold)，並前往要塞傳送門房間",
+    parameters: obj({}),
+    budget_s: 600,
+  },
+  {
+    name: "enter_end",
+    description: "在要塞傳送門房間填入終界之眼啟動傳送門，並跳入終界",
+    parameters: obj({}),
+    budget_s: 120,
+  },
+  {
+    name: "slay_dragon",
+    description: "進入終界擊敗終界龍：優先摧毀黑曜石柱上的終界水晶，龍停留在傳送門祭壇時在龍頭下方引爆床或使用武器斬殺",
+    parameters: obj({ method: str("攻擊方式: bed(床爆破)、bow(遠程弓箭) 或 melee(近戰)") }),
+    budget_s: 900,
+  },
+  {
     name: "launch",
     description: "開遊戲(用 Prism Launcher;開始玩的時候系統會自己做,不用呼叫)",
     parameters: obj({}),
@@ -314,6 +344,39 @@ export function toRequests(action: GameAction, opts: MapOptions = {}): BridgeReq
     }
     case "respawn":
       return [{ type: "respawn", params: {} }];
+    case "nether_portal": {
+      if (opts.inventory) {
+        const obs = (opts.inventory.obsidian ?? 0) + (opts.inventory.crying_obsidian ?? 0);
+        const hasFlintSteel = (opts.inventory.flint_and_steel ?? 0) > 0;
+        const hasWater = (opts.inventory.water_bucket ?? 0) > 0 || (opts.inventory.bucket ?? 0) > 0;
+        if (!hasFlintSteel && (opts.inventory.iron_ingot ?? 0) === 0) {
+          throw new ActionError("建造下界傳送門需要打火石(或鐵錠與燧石合成)，請先 obtain {item:\"flint_and_steel\"}");
+        }
+        if (obs < 10 && !hasWater) {
+          throw new ActionError("需要至少10個黑曜石或水桶才能建造下界傳送門，請先 obtain {item:\"obsidian\", count:10} 或水桶");
+        }
+      }
+      return [{ type: "altoclef", params: { command: "beatgame" } }];
+    }
+    case "obtain_eyes": {
+      const count = Math.max(1, Math.min(20, Math.round(num(a.count) ?? 12)));
+      return [{ type: "altoclef", params: { command: `get ender_eye ${count}` } }];
+    }
+    case "locate_stronghold": {
+      if (opts.inventory) {
+        const eyes = opts.inventory.ender_eye ?? 0;
+        if (eyes < 1) {
+          throw new ActionError("身上沒有終界之眼，無法定位要塞，請先使用 obtain_eyes 取得終界之眼");
+        }
+      }
+      return [{ type: "altoclef", params: { command: "locate stronghold" } }];
+    }
+    case "enter_end": {
+      return [{ type: "altoclef", params: { command: "beatgame" } }];
+    }
+    case "slay_dragon": {
+      return [{ type: "altoclef", params: { command: "beatgame" } }];
+    }
     default:
       throw new ActionError(`沒有「${action.name}」這個動作`);
   }
@@ -349,6 +412,16 @@ export function describeAction(action: GameAction): string {
       return `說了:${a.message}`;
     case "stop":
       return "停下來了";
+    case "nether_portal":
+      return "開始建造並進入下界傳送門";
+    case "obtain_eyes":
+      return `開始收集終界之眼${a.count ? ` ×${a.count}` : " ×12"}`;
+    case "locate_stronghold":
+      return "開始定位終界要塞";
+    case "enter_end":
+      return "開始啟動並進入終界傳送門";
+    case "slay_dragon":
+      return "開始終界屠龍作戰";
     default:
       return `做了 ${action.name}`;
   }
