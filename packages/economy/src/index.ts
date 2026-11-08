@@ -23,6 +23,7 @@ export { PURSE_PLATFORM, Purse } from "./purse.js";
 export { MAX_SCREEN_CHARS, screenText } from "./screen.js";
 export { NO_RECEIVER, NO_TRANSFERS, OWN_ACCOUNT } from "./transfer.js";
 export {
+  type AdjustResult,
   type BoardLine,
   type BountyView,
   type CheckinResult,
@@ -37,6 +38,8 @@ export {
   type FeedResult,
   type FramesResult,
   GIFT_EXPRESSIONS,
+  MAX_ADJUST,
+  MAX_ADJUST_NOTE_CHARS,
   GIFT_TOPIC,
   type GiftEvent,
   type GiftExpression,

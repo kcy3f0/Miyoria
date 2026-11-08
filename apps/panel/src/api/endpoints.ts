@@ -41,6 +41,9 @@ import type {
   UpdateMemoryRequest,
   UpdatePersonRequest,
   UpsertRoleRequest,
+  PersonWalletView,
+  WalletAdjustRequest,
+  WalletAdjustResult,
   VoiceState,
   SelfView,
   WorldView,
@@ -193,6 +196,9 @@ export function createApi(client: ApiClient) {
       client.patch<PersonSummary>(`/api/people/${seg(id)}`, req),
     adjustPerson: (id: string, req: AdjustPersonRequest) =>
       client.post<PersonSummary>(`/api/people/${seg(id)}/adjust`, req),
+    personWallet: (id: string, o?: Opts) => client.get<PersonWalletView>(`/api/people/${seg(id)}/wallet`, o),
+    adjustWallet: (id: string, req: WalletAdjustRequest) =>
+      client.post<WalletAdjustResult>(`/api/people/${seg(id)}/wallet/adjust`, req),
 
     memory: (q: MemoryQuery = {}, o?: Opts) =>
       client.get<Page<MemoryItem>>("/api/memory", { ...o, query: { ...q } }),

@@ -671,6 +671,27 @@ export interface PersonDetail extends PersonSummary {
   memory_count: number;
 }
 
+/** `GET /api/people/{id}/wallet`: their coins and newest rows (newest first). */
+export interface PersonWalletView {
+  balance: number;
+  ledger: { ts: Timestamp; delta: number; label: string }[];
+}
+
+/** `POST /api/people/{id}/wallet/adjust`; a negative `amount` takes coins. */
+export interface WalletAdjustRequest {
+  amount: number;
+  /** 1 to 100 characters. */
+  note: string;
+  /** One per confirmed submit; the same key twice answers the first. */
+  key: string;
+}
+
+export interface WalletAdjustResult {
+  balance: number;
+  entry_id: string;
+  duplicate: boolean;
+}
+
 /** `POST /api/people/{id}/adjust`: added to the affinity, ignoring daily caps. */
 export interface AdjustPersonRequest {
   affinity: number;

@@ -85,7 +85,10 @@ export function keyOf(c: ApiContext): string {
 }
 
 /** Runs `fn` against the wallet; its refusals become their status and words. */
-async function withWallet<T>(state: ApiState, fn: (economy: Economy) => Promise<T>): Promise<T> {
+export async function withWallet<T>(
+  state: ApiState,
+  fn: (economy: Economy) => Promise<T>,
+): Promise<T> {
   const economy = state.optional(EconomyKey);
   if (!economy) throw ApiError.unavailable(NO_WALLET);
   try {

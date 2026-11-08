@@ -216,6 +216,74 @@ describe("PersonSheet", () => {
     expect(screen.getByLabelText("備註")).toHaveValue("其實比較喜歡烏龍麵");
     expect(screen.getByRole("button", { name: "儲存" })).toBeEnabled();
   });
+
+  const coins = {
+    balance: 120,
+    ledger: [
+      { ts: "2026-11-08T04:00:00Z", delta: 50, label: "管理員調整:活動" },
+      { ts: "2026-11-07T04:00:00Z", delta: -20, label: "餵她一碗白飯" },
+    ],
+  };
+
+  it("shows their coins and posts one confirmed adjustment with a fresh key", async () => {
+    const bodies: unknown[] = [];
+    mockFetch((method, url, body) => {
+      if (url.pathname === "/api/people/P1") return { body: detail("x") };
+      if (method === "GET" && url.pathname === "/api/people/P1/wallet") return { body: coins };
+      if (method === "POST" && url.pathname === "/api/people/P1/wallet/adjust") {
+        bodies.push(body);
+        return { body: { balance: 100, entry_id: "e1", duplicate: false } };
+      }
+      return undefined;
+    });
+    const user = userEvent.setup();
+    renderPage(<PersonSheet personId="P1" onClose={() => {}} />);
+    expect(await screen.findByText("120")).toBeInTheDocument();
+    expect(screen.getByText("管理員調整:活動")).toBeInTheDocument();
+    expect(screen.getByText("+50")).toBeInTheDocument();
+    expect(screen.getByText("−20")).toBeInTheDocument();
+
+    const adjust = screen.getByRole("button", { name: "調整" });
+    expect(adjust).toBeDisabled();
+    await user.type(screen.getByLabelText("數量"), "-20");
+    await user.type(screen.getByLabelText("原因"), "補扣");
+    await user.click(adjust);
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(/扣 20 魚幣/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/補扣/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "調整" }));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({ amount: -20, note: "補扣" });
+    expect(typeof (bodies[0] as { key: string }).key).toBe("string");
+    expect(await screen.findByText(/現在有 100 魚幣/)).toBeInTheDocument();
+  });
+
+  it("disables the adjustment for a read-only account and after a 403", async () => {
+    mockFetch((method, url) => {
+      if (url.pathname === "/api/people/P1") return { body: detail("x") };
+      if (method === "GET" && url.pathname === "/api/people/P1/wallet") return { body: coins };
+      if (method === "POST") return { status: 403, body: { error: "this needs `admin.economy.adjust`" } };
+      return undefined;
+    });
+    const readOnly = { session: { method: "token" as const, user: null, permissions: { write: false } }, logout: () => {} };
+    const first = renderPage(<PersonSheet personId="P1" onClose={() => {}} />, { session: readOnly });
+    await screen.findByText("120");
+    expect(screen.getByLabelText("數量")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "調整" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "調整" })).toHaveAttribute("title", expect.stringContaining("admin.panel.write"));
+    first.unmount();
+
+    const user = userEvent.setup();
+    renderPage(<PersonSheet personId="P1" onClose={() => {}} />);
+    await screen.findByText("120");
+    await user.type(screen.getByLabelText("數量"), "5");
+    await user.type(screen.getByLabelText("原因"), "x");
+    await user.click(screen.getByRole("button", { name: "調整" }));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "調整" }));
+    await waitFor(() => expect(screen.getByLabelText("數量")).toBeDisabled());
+    expect(screen.getAllByText(/admin\.economy\.adjust/).length).toBeGreaterThan(0);
+  });
 });
 
 const stage = (over: Partial<StageState> = {}): StageState => ({

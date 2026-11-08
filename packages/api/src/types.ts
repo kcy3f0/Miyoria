@@ -370,6 +370,27 @@ export interface UpdatePersonRequest {
   blocked?: boolean;
 }
 
+/** `GET /api/people/{id}/wallet`: their coins and newest rows (newest first). */
+export interface PersonWalletView {
+  balance: number;
+  ledger: { ts: string; delta: number; label: string }[];
+}
+
+/** Body of `POST /api/people/{id}/wallet/adjust`; a negative `amount` takes coins. */
+export interface WalletAdjustRequest {
+  amount: number;
+  /** 1 to 100 characters. */
+  note: string;
+  /** One per confirmed submit; the same key twice answers the first. */
+  key: string;
+}
+
+export interface WalletAdjustResult {
+  balance: number;
+  entry_id: string;
+  duplicate: boolean;
+}
+
 /** Body of `POST /api/people/{id}/adjust`. */
 export interface AdjustPersonRequest {
   /** Added to the affinity directly, ignoring the daily caps. */

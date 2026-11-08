@@ -5,7 +5,7 @@
 import { ActuatorRegistry, ActuatorRegistryKey, defineCapability } from "@miyoria/actions";
 import { getLogger, ServiceRegistry, Supervisor } from "@miyoria/kernel";
 import { SingerKey } from "@miyoria/sing";
-import { CoinLedgerStoreKey, PeopleStoreKey, SqliteStore } from "@miyoria/store";
+import { AuditLogKey, CoinLedgerStoreKey, PeopleStoreKey, SqliteStore } from "@miyoria/store";
 import {
   type AccountRef,
   AffectStateKey,
@@ -922,5 +922,67 @@ describe("the singer's payment port", () => {
     // Strangers and a short purse come back as a reason, not a throw.
     expect(await pay.charge(DAVE, "dedication", "k4", "song:x", "hi")).toHaveProperty("refused");
     expect(await pay.charge(BOB, "song_ticket", "k5", "song:x")).toHaveProperty("refused");
+  });
+});
+
+describe("admin adjustments", () => {
+  const audited = (r: Rig) => {
+    const rows: { action: string; detail: JsonValue; actor: string }[] = [];
+    r.services.provide("test", AuditLogKey, {
+      append: async (e: { action: string; detail: JsonValue; actor: string }) => {
+        rows.push(e);
+      },
+    } as never);
+    return rows;
+  };
+
+  it("adds and takes coins, labelled, once per key, never below zero", async () => {
+    const r = await rig();
+    const rows = audited(r);
+    const up = await r.economy.adjust(ALICE, 50, "活動獎勵", "owner", "k1");
+    expect(up).toMatchObject({ balance: 50, duplicate: false });
+    expect(await r.economy.adjust(ALICE, 50, "活動獎勵", "owner", "k1")).toEqual({
+      entry_id: up.entry_id,
+      balance: 50,
+      duplicate: true,
+    });
+    // The linked account shares the wallet.
+    expect(await r.economy.adjust(ALICE_TWO, -20, "扣錯", "owner", "k2")).toMatchObject({
+      balance: 30,
+    });
+    await rejects(r.economy.adjust(ALICE, -31, "太多", "owner", "k3"), 402, /30/);
+    expect((await r.economy.adjust(ALICE, -30, "清空", "owner", "k4")).balance).toBe(0);
+    const labels = (await r.economy.wallet(ALICE)).recent.map((l) => l.label);
+    expect(labels).toContain("管理員調整:活動獎勵");
+    await vi.waitFor(() => expect(rows.length).toBe(3));
+    expect(rows[0]).toMatchObject({
+      action: "economy.adjust",
+      detail: { amount: 50, note: "活動獎勵", by: "owner" },
+    });
+  });
+
+  it("refuses bad amounts and notes, and people she does not know; blocked is fine", async () => {
+    const r = await rig();
+    await rejects(r.economy.adjust(ALICE, 0, "x", "o", "a"), 400);
+    await rejects(r.economy.adjust(ALICE, 1.5, "x", "o", "b"), 400);
+    await rejects(r.economy.adjust(ALICE, 100_001, "x", "o", "c"), 400);
+    await rejects(r.economy.adjust(ALICE, 5, "  ", "o", "d"), 400);
+    await rejects(r.economy.adjust(DAVE, 5, "x", "o", "e"), 403);
+    expect((await r.economy.adjust(CAROL, 10, "補償", "o", "f")).balance).toBe(10);
+    expect((await r.economy.adjust(CAROL, -10, "收回", "o", "g")).balance).toBe(0);
+  });
+
+  it("has no side effects: no cap used, no gift, no board line, nothing for her", async () => {
+    const r = await rig();
+    const before = r.hunger.value;
+    await r.economy.adjust(ALICE, 500, "禮物", "o", "a");
+    await r.economy.adjust(BOB, 100, "x", "o", "b");
+    await r.economy.adjust(BOB, -60, "x", "o", "c");
+    expect(r.observed).toEqual([]);
+    expect(r.bus).toEqual([]);
+    expect(r.hunger.value).toBe(before);
+    expect(await r.economy.board()).toEqual([]);
+    // Today's earning caps are untouched.
+    expect((await r.economy.wallet(ALICE)).today_earned).toBe(0);
   });
 });

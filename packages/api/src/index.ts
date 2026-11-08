@@ -21,7 +21,8 @@
 // * `GET /api/llm/usage`, `GET /api/llm/cost`
 // * `GET /api/persona`, `PUT /api/persona/{key}`, `GET /api/persona/{key}/history`
 // * `GET /api/people?q=&limit=&cursor=`, `GET|PATCH /api/people/{id}`,
-//   `POST /api/people/{id}/adjust`
+//   `POST /api/people/{id}/adjust`, `GET /api/people/{id}/wallet`,
+//   `POST /api/people/{id}/wallet/adjust` (coins by hand, needs `admin.economy.adjust`)
 // * `GET /api/memory?q=&kind=&subject=&before=&include_superseded=&limit=`,
 //   `PATCH|DELETE /api/memory/{id}`
 // * `GET /api/auth/roles`, `GET|PUT|DELETE /api/auth/roles/{name}`,

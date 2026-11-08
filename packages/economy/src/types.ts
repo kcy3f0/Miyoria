@@ -45,6 +45,18 @@ export const PAID_ITEMS: readonly PaidItem[] = [
   "fortune",
 ];
 
+/** Most coins one hand adjustment may add or take (docs/design/economy.md §14). */
+export const MAX_ADJUST = 100_000;
+/** Longest note on a hand adjustment, in characters. */
+export const MAX_ADJUST_NOTE_CHARS = 100;
+
+/** What `Economy.adjust` did; `duplicate` when the key was already used (nothing new posted). */
+export interface AdjustResult {
+  entry_id: string;
+  balance: number;
+  duplicate: boolean;
+}
+
 /** One charge of a `PaidItem`; `duplicate` when the key was already used (nothing new charged). */
 export interface Purchase {
   /** The ledger row; pass it to `Economy.refund`. */
@@ -188,6 +200,24 @@ export interface Economy {
     key: string,
     ref?: string | null,
   ): Promise<Purchase>;
+  /**
+   * An admin adds (`amount` > 0) or takes (< 0) coins by hand (docs/design/economy.md §14): one
+   * `admin_adjust` row, audited with the note and `by`, invisible to her and to the board.
+   * `EconomyError`: 400 a bad amount or note, 402 it would go below 0, 403 someone she does not
+   * know. A blocked person is fine. The same key twice answers what the first did.
+   */
+  adjust(
+    account: AccountRef,
+    amount: number,
+    note: string,
+    by: string,
+    key: string,
+  ): Promise<AdjustResult>;
+  /**
+   * An admin's look at someone's wallet (docs/design/economy.md §14): the balance and their
+   * newest `limit` rows, blocked people included. Empty for someone she does not know.
+   */
+  statement(account: AccountRef, limit?: number): Promise<WalletExport>;
   /** Gives back what `entry_id` charged, once; `false` when it already was (or is not theirs). */
   refund(account: AccountRef, entryId: string): Promise<boolean>;
   /** What `item` costs now, and how many one person may buy a day (`0`: off sale). */

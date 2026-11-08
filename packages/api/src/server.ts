@@ -28,6 +28,7 @@ import * as oauth from "./oauth.js";
 import { opsRoutes } from "./ops.js";
 import { servePanel } from "./panel.js";
 import { peopleRoutes } from "./people.js";
+import { personWalletRoutes } from "./people-wallet.js";
 import { planRoutes } from "./plan.js";
 import { promptRoutes } from "./prompts.js";
 import { clientKey, publicViewRoutes, tooMany } from "./public.js";
@@ -150,6 +151,7 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...agencyRoutes(state),
     ...sessionRoutes(),
     ...peopleRoutes(state),
+    ...personWalletRoutes(state),
     ...memoryRoutes(state),
     ...roleRoutes(state),
     ...opsRoutes(state),

@@ -41,6 +41,7 @@ import type {
   UpdateMemoryRequest,
   UpdatePersonRequest,
   UpsertRoleRequest,
+  WalletAdjustRequest,
 } from "@/api/types";
 import { type EvalData, loadEvalData } from "@/lib/eval-data";
 import { startOfDay } from "@/lib/rules";
@@ -58,6 +59,7 @@ export const queryKeys = {
   personaHistory: (key: string) => ["persona", key, "history"] as const,
   people: (q: PeopleQuery) => ["people", q] as const,
   person: (id: string) => ["people", "detail", id] as const,
+  personWallet: (id: string) => ["people", "wallet", id] as const,
   memory: (q: Omit<MemoryQuery, "before">) => ["memory", q] as const,
   roles: ["auth", "roles"] as const,
   assignments: ["auth", "assignments"] as const,
@@ -247,6 +249,24 @@ export function useUpdatePerson(id: string) {
   return useMutation({
     mutationFn: (req: UpdatePersonRequest) => api.updatePerson(id, req),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["people"] }),
+  });
+}
+
+export function usePersonWallet(id: string) {
+  const api = useApi();
+  return useQuery({
+    queryKey: queryKeys.personWallet(id),
+    queryFn: ({ signal }) => api.personWallet(id, { signal }),
+    retry: false,
+  });
+}
+
+export function useAdjustWallet(id: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (req: WalletAdjustRequest) => api.adjustWallet(id, req),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: queryKeys.personWallet(id) }),
   });
 }
 

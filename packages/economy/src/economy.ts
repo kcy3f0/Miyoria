@@ -85,6 +85,9 @@ import {
   PAID_ITEMS,
   type PaidItem,
   type PledgeResult,
+  type AdjustResult,
+  MAX_ADJUST,
+  MAX_ADJUST_NOTE_CHARS,
   type Purchase,
   SCREEN_TOPIC,
   type ShopItem,
@@ -604,6 +607,8 @@ export class EconomyService implements Economy {
         return `${otherName(r.ref) ?? "朋友"} 轉給你`;
       case "refund":
         return "退回";
+      case "admin_adjust":
+        return r.ref ? `管理員調整:${r.ref}` : "管理員調整";
       case "checkin":
         return r.delta > c.checkin ? "每日簽到(連續 7 天)" : EARN_LABEL.checkin;
       default:
@@ -975,6 +980,61 @@ export class EconomyService implements Economy {
       this.#audit(who, "economy.purchase", { item, price, ref });
       return { entry_id: spent.entry.id, charged: price, balance: spent.balance, duplicate: false };
     });
+  }
+
+  async adjust(
+    account: AccountRef,
+    amount: number,
+    note: string,
+    by: string,
+    key: string,
+  ): Promise<AdjustResult> {
+    if (!Number.isInteger(amount) || amount === 0 || Math.abs(amount) > MAX_ADJUST) {
+      throw new EconomyError(400, `數量要是 1 到 ${MAX_ADJUST} 的整數`);
+    }
+    const text = [...note.trim()].slice(0, MAX_ADJUST_NOTE_CHARS).join("");
+    if (text === "") throw new EconomyError(400, "要寫備註");
+    const who = await this.#holder(account);
+    const idem = `admin_adjust:${key}`;
+    return this.#turns.run(async () => {
+      const first = await this.#first(who, idem);
+      if (first) return { entry_id: first.entry.id, balance: first.balance, duplicate: true };
+      const post = await this.#ledger().post(this.#entry(who, amount, "admin_adjust", text, idem), {
+        wallet: who.wallet,
+        covered: amount < 0,
+      });
+      if (post.status === "short") {
+        const have = await this.#balance(who);
+        throw new EconomyError(402, `只有 ${have} ${this.#d.config.currency},扣不了 ${-amount}`);
+      }
+      if (post.status !== "posted") throw new EconomyError(409, "這筆調整沒有成功");
+      this.#audit(who, "economy.adjust", { amount, note: text, by });
+      return { entry_id: post.entry.id, balance: post.balance, duplicate: false };
+    });
+  }
+
+  async statement(account: AccountRef, limit = 20): Promise<WalletExport> {
+    let who: Member;
+    try {
+      who = await this.#holder(account);
+    } catch {
+      return { balance: 0, ledger: [] };
+    }
+    const rows = await this.#ledger().entries(this.#d.profile, who.wallet, {
+      limit: Math.min(Math.max(Math.floor(limit), 1), MAX_EXPORTED),
+    });
+    return { balance: await this.#balance(who), ledger: rows.map((r) => this.#line(r)) };
+  }
+
+  /** Someone she knows, blocked or not (an admin may need to take coins from them). */
+  async #holder(account: AccountRef): Promise<Member> {
+    const people = this.#d.services.get(PeopleStoreKey);
+    const person = people ? await people.personByAccount(account) : null;
+    if (!person) throw new EconomyError(403, STRANGER);
+    const wallet = person.accounts.map((a) => a.account);
+    if (!wallet.some((a) => sameAccount(a, account))) wallet.push(account);
+    const own = person.accounts.find((a) => sameAccount(a.account, account));
+    return { account, person, wallet, name: own?.display_name ?? person.display_name };
   }
 
   async refund(account: AccountRef, entryId: string): Promise<boolean> {
