@@ -1,4 +1,4 @@
-"""The real song pipeline: yt-dlp / library → Demucs → Seed-VC (singing, F0) → mix.
+"""The real song pipeline: yt-dlp / library → Demucs → lead / backing split → Seed-VC (singing, F0) → mix.
 
 Everything heavy is imported lazily so the server (and its mock mode) starts without torch. Models
 are loaded per stage and freed right after (``SING_KEEP_MODELS=1`` keeps them): the GPU is shared
@@ -282,6 +282,8 @@ class RealBackend:
         self.seedvc_dir = Path(os.environ.get("SING_SEEDVC_DIR", here.parent / "models" / "seed-vc"))
         self.ref_paths = ref_paths(os.environ.get("SING_REF") or str(here.parent / "voices" / "deepseek-chan" / "ref.wav"))
         self.f0_clean = os.environ.get("SING_F0_CLEAN", "1") != "0"
+        self.lead_device = os.environ.get("SING_LEAD_DEVICE", self.separate_device)
+        self.lead_overlap = env_int("SING_LEAD_OVERLAP", 4)
         if not (self.seedvc_dir / "modules").exists():
             raise RuntimeError(f"Seed-VC not found at {self.seedvc_dir} (set SING_SEEDVC_DIR)")
         if not self.ref_paths:
@@ -289,6 +291,7 @@ class RealBackend:
         self.model_name = f"seed-vc-f0-44k+{self.separator}"
         self._vc: Any = None
         self._demucs: Any = None
+        self._lead: Any = None
         self.gate: Callable[[], None] | None = None  # sharing the GPU: runs before every step
         self._ref: Any = None
         self._ref_f0: float | None = None
@@ -496,6 +499,55 @@ class RealBackend:
         write_wav(vocals_out, vocals.T.numpy(), sr)
         write_wav(inst_out, inst.T.numpy(), sr)
 
+    # ── lead / backing split (Mel-Band RoFormer, leadsplit.py) ───────────
+
+    def lead_available(self) -> bool:
+        """Whether the split runs: SING_LEAD_SPLIT is not 0 and the checkpoint is where it is looked for."""
+        import leadsplit
+
+        return leadsplit.available()
+
+    def split_lead(self, vocals_wav: Path, lead_out: Path, backing_out: Path, progress: Progress,
+                   device: str | None = None) -> None:
+        """The lead voice of the separated vocals into ``lead_out``, the rest into ``backing_out``
+        (``vocals - lead``, so the two add up to the stem). ``device``: where gpu.py placed this run."""
+        on = device or self.lead_device
+        try:
+            if device == "cpu":
+                with leave_cores_free():
+                    self._split_on("cpu", vocals_wav, lead_out, backing_out, progress)
+            else:
+                self._split_on(on, vocals_wav, lead_out, backing_out, progress)
+        except Exception as e:
+            if not is_oom(e) or on == "cpu":
+                raise
+            log.warning("lead split ran out of VRAM; retrying on the CPU")
+            self._lead = None
+            free_cuda()
+            self._split_on("cpu", vocals_wav, lead_out, backing_out, progress)
+        finally:
+            if not self.keep:
+                self._lead = None
+            free_cuda()
+        progress(1.0)
+
+    def _split_on(self, device: str, vocals_wav: Path, lead_out: Path, backing_out: Path, progress: Progress) -> None:
+        import leadsplit
+
+        if self._lead is not None and self._lead.device != device:
+            self._lead = None
+        if self._lead is None:
+            self._lead = leadsplit.LeadSplitter(leadsplit.model_path(), device)
+        splitter = self._lead
+        splitter.gate = self.gate
+        x, sr = read_audio(vocals_wav)
+        lead = splitter.lead(x, sr, progress, overlap=min(self.lead_overlap, 2) if device == "cpu" else self.lead_overlap)
+        n = min(len(lead), len(x))
+        if x.shape[1] == 1:
+            x = x.repeat(2, axis=1)
+        write_wav(lead_out, lead[:n], sr)
+        write_wav(backing_out, x[:n] - lead[:n], sr)
+
     def _gate_separator(self, model: Any) -> None:
         """Before every segment the separator looks at `self.gate` (a bag of models has several)."""
         if getattr(model, "_miyoria_gated", False):
@@ -619,6 +671,7 @@ class RealBackend:
     def unload(self) -> None:
         self._vc = None
         self._demucs = None
+        self._lead = None
         free_cuda()
 
     def idle(self) -> None:
@@ -716,11 +769,13 @@ def rubberband_shift(x, sr: int, semitones: int):
 
 
 def mix_song(vocals_src: Path, vocals_conv: Path, inst_wav: Path, key: int, out_dir: Path, backend: RealBackend,
-             target_lufs: float) -> dict[str, Any]:
+             target_lufs: float, backing_wav: Path | None = None) -> dict[str, Any]:
     """Writes mix.wav / vocals.wav / instrumental.wav / play_*.pcm; returns loudness info.
 
     The converted vocal gets the separated vocal's loudness back (Seed-VC output level varies),
-    the sum is normalised to ``target_lufs`` and kept under -1 dBFS peak.
+    the sum is normalised to ``target_lufs`` and kept under -1 dBFS peak. After a lead / backing
+    split ``vocals_src`` is the lead and ``backing_wav`` the backing voices: they join the
+    instrumental (at their own level, moved by the key with it), which is then what instrumental.wav holds.
     """
     import numpy as np
 
@@ -729,6 +784,12 @@ def mix_song(vocals_src: Path, vocals_conv: Path, inst_wav: Path, key: int, out_
     inst, isr = read_audio(inst_wav)
     if isr != sr:
         raise JobError("stems have different sample rates")
+    if backing_wav is not None:
+        b, bsr = read_audio(backing_wav)
+        if bsr != sr:
+            raise JobError("stems have different sample rates")
+        k = min(len(inst), len(b))
+        inst = inst[:k] + b[:k]
     inst = backend.transpose(inst, sr, key)
     v = v.mean(axis=1)
     n = min(len(v), len(inst))

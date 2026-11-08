@@ -21,14 +21,21 @@ Pipeline per job (one job at a time; models load per stage and are freed after i
     download  bestaudio → 44.1 kHz stereo WAV (ffmpeg)
     separate  Demucs (SING_SEPARATOR_MODEL, default htdemucs) → vocals + instrumental; skipped for
               library folders that already have both stems, and for sources separated before
-    convert   Seed-VC singing model (F0-conditioned, 44.1 kHz) with her reference voice, on a
+    lead      Mel-Band RoFormer (leadsplit.py; SING_LEAD_MODEL) splits the vocal stem into the lead
+              voice and the backing voices (harmonies, doubles, ad-libs), stored beside the stems
+              (lead.wav, backing.wav; cached with them; a song separated before it existed is split
+              from its cached vocals). Off with SING_LEAD_SPLIT=0 or without the model file (the
+              stage is skipped and the next two work on the whole vocal stem, as before); a split that
+              fails (not out of VRAM: that goes to the CPU) falls back to that as well, ``lead_split`` in
+              the song's meta says which.
+    convert   Seed-VC singing model (F0-conditioned, 44.1 kHz) with her reference voice, of the lead only, on a
               cleaned F0 contour (octave errors, spikes, dropouts: pitch.py); the pitch shift is
               ``pitch`` when given, else auto: the octave from the song's median and its top (95th
               percentile) against her range, and when the top is still over her ceiling the whole
               song goes down a few semitones (``auto_key``, SING_KEY_MIN..SING_KEY_MAX); plus
               ``key`` (whole-song transpose, which turns the auto key off)
-    mix       converted vocal at the original vocal's level + instrumental (moved by the key with
-              Rubber Band when ffmpeg has it), loudness-normalised to SING_TARGET_LUFS, peak ≤ -1 dBFS
+    mix       converted vocal at the original lead's level + instrumental, with the backing voices
+              added to it (moved by the key with Rubber Band when ffmpeg has it), loudness-normalised to SING_TARGET_LUFS, peak ≤ -1 dBFS
     lyrics    lrclib.net synced LRC by title / artist / duration (best effort)
     video     (in parallel, from the download on) the link's video, video only, H.264 <= 1080p
               preferred, into video.mp4 for the stream to show while she sings; library entries
@@ -57,6 +64,12 @@ Environment
     SING_DEVICE            cuda | cpu                             (default cuda when available)
     SING_SEPARATE_DEVICE   device of the separator                (default SING_DEVICE; VRAM OOM → CPU)
     SING_SEPARATOR_MODEL   Demucs model                           (default htdemucs; htdemucs_ft = better, 4x slower)
+    SING_LEAD_SPLIT        0 = no lead / backing split: Seed-VC converts the whole vocal stem (default 1: on
+                           when the model file is there)
+    SING_LEAD_MODEL        the split's checkpoint (.ckpt; its .yaml beside it) (default
+                           ../models/lead-split/mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt)
+    SING_LEAD_DEVICE       device of the split                    (default SING_SEPARATE_DEVICE; VRAM OOM → CPU)
+    SING_LEAD_OVERLAP      chunk overlap of the split, 8 s chunks (default 4; 2 on the CPU at most)
     SING_DIFFUSION_STEPS   Seed-VC steps                          (default 30)
     SING_CFG_RATE          Seed-VC inference cfg rate             (default 0.7)
     SING_TARGET_OFFSET     her singing median vs her speaking median, semitones (default 2)
@@ -137,7 +150,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engine import Cancelled, ConvertWork, JobError, Suspended, allowed_url, env_float, env_int, is_oom  # noqa: E402
 from exclusive import Exclusive, http_post, parse_urls  # noqa: E402
-from gpu import Action, Audience, GpuJob, Limits, Machine, Profile  # noqa: E402
+from gpu import CPU_STAGES, Action, Audience, GpuJob, Limits, Machine, Profile  # noqa: E402
 from yielding import SpeechYield, http_get  # noqa: E402
 from songs import (  # noqa: E402
     PLAY_RATE,
@@ -157,7 +170,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 MAX_JOBS_KEPT = 100
 # Share of the job's progress per stage.
-WEIGHTS = {"resolve": 0.04, "download": 0.12, "exclusive": 0.0, "separate": 0.30, "convert": 0.44, "mix": 0.07, "lyrics": 0.03,
+WEIGHTS = {"resolve": 0.04, "download": 0.12, "exclusive": 0.0, "separate": 0.26, "lead": 0.08, "convert": 0.40, "mix": 0.07, "lyrics": 0.03,
            "video": 0.0}
 # Sources whose link has a video to fetch (a library entry brings its own file).
 VIDEO_KINDS = ("youtube", "url", "mock")
@@ -197,6 +210,10 @@ class MockBackend:
         self.gate: Callable[[], None] | None = None
         self.step_s: Callable[[], float] | None = None  # how long a step takes (tests: a simulated card)
         self.separate_devices: list[str | None] = []
+        self.lead_devices: list[str | None] = []
+        self.convert_inputs: list[str] = []  # which stem each conversion read
+        self.f0_inputs: list[str] = []
+        self.mix_inputs: list[tuple[bool, list[str]]] = []  # (split, the files in the stem folder)
         self.trims = 0
 
     def _wait(self) -> None:
@@ -271,10 +288,26 @@ class MockBackend:
         _write_wav(vocals_out, _tone(self.seconds, 16_000, 440), 16_000)
         _write_wav(inst_out, _tone(self.seconds, 16_000, 220, 0.1), 16_000)
 
+    def lead_available(self) -> bool:
+        return os.environ.get("SING_LEAD_SPLIT", "1") != "0" and os.environ.get("SING_MOCK_LEAD_MODEL", "1") != "0"
+
+    def split_lead(self, vocals_wav: Path, lead_out: Path, backing_out: Path, progress: Callable[[float], None],
+                   device: str | None = None) -> None:
+        self._wait()
+        self.lead_devices.append(device)
+        if os.environ.get("SING_MOCK_LEAD_FAIL") == "1":
+            raise RuntimeError("mock lead split failed")
+        for _ in range(env_int("SING_MOCK_SEGMENTS", 0)):
+            self._step()
+        _write_wav(lead_out, _tone(self.seconds, 16_000, 440, 0.2), 16_000)
+        _write_wav(backing_out, _tone(self.seconds, 16_000, 330, 0.1), 16_000)
+        progress(1.0)
+
     def median_f0(self, path: Path) -> float | None:
         return env_float("SING_MOCK_F0_HZ", 440.0)
 
     def f0_stats(self, path: Path) -> tuple[float, float] | None:
+        self.f0_inputs.append(path.name)
         return env_float("SING_MOCK_F0_HZ", 440.0), env_float("SING_MOCK_F0_TOP_HZ", 440.0)
 
     def ref_f0(self) -> float | None:
@@ -288,6 +321,7 @@ class MockBackend:
 
     def convert(self, vocals_wav: Path, out_wav: Path, shift: int, progress: Callable[[float], None],
                 cancelled: Callable[[], bool], work: ConvertWork | None = None) -> None:
+        self.convert_inputs.append(vocals_wav.name)
         if os.environ.get("SING_MOCK_CONVERT_FAIL") == "1":
             raise JobError("mock conversion failed")
         job = state.jobs.get(state.running or "")
@@ -306,8 +340,9 @@ class MockBackend:
             progress((i + 1) / steps)
         _write_wav(out_wav, _tone(self.seconds, 16_000, 440 * 2 ** (shift / 12)), 16_000)
 
-    def mix(self, sdir: Path, converted: Path, key: int, out: Path) -> dict[str, Any]:
+    def mix(self, sdir: Path, converted: Path, key: int, out: Path, split: bool = False) -> dict[str, Any]:
         self._wait()
+        self.mix_inputs.append((split, sorted(p.name for p in sdir.glob("*.wav"))))
         mix = _tone(self.seconds, PLAY_RATE, 440)
         vocals = _tone(self.seconds, PLAY_RATE, 440, 0.2)
         _write_wav(out / "mix.wav", mix, PLAY_RATE)
@@ -371,11 +406,11 @@ class _RealAdapter:
         x, sr = read_audio(path)
         return self.b.f0_stats(x.mean(axis=1), sr)
 
-    def mix(self, sdir: Path, converted: Path, key: int, out: Path) -> dict[str, Any]:
+    def mix(self, sdir: Path, converted: Path, key: int, out: Path, split: bool = False) -> dict[str, Any]:
         from engine import mix_song
 
-        return mix_song(sdir / "vocals.wav", converted, sdir / "instrumental.wav", key, out, self.b,
-                        env_float("SING_TARGET_LUFS", -16.0))
+        return mix_song(sdir / ("lead.wav" if split else "vocals.wav"), converted, sdir / "instrumental.wav", key, out,
+                        self.b, env_float("SING_TARGET_LUFS", -16.0), sdir / "backing.wav" if split else None)
 
     def lyrics(self, src: Source, duration: float | None) -> dict[str, Any] | None:
         if os.environ.get("SING_LYRICS", "1") == "0":
@@ -546,14 +581,14 @@ def _source_from_request(job: Job) -> Source:
     return src
 
 
-def _auto_shift(sdir: Path, auto_key: bool) -> tuple[int, int, dict[str, Any]]:
+def _auto_shift(vocals: Path, auto_key: bool) -> tuple[int, int, dict[str, Any]]:
     """(octave −12 / 0 / +12 for her voice, whole-song key, info): the octave whose median lands
     closest to her singing median without the song's top going over her ceiling, and with
     ``auto_key`` a transposition down (or a little up) when the top is still out of her range."""
     from pitch import choose_key, parse_note
 
     b = state.backend
-    stats = b.f0_stats(sdir / "vocals.wav")
+    stats = b.f0_stats(vocals)
     ref_hz = b.ref_f0()
     info: dict[str, Any] = {"ref_median_hz": ref_hz}
     if stats is None or not ref_hz:
@@ -737,7 +772,9 @@ def _start_gpu(job: Job, audio_s: float | None) -> None:
 
 
 def _stage_uses_gpu(stage: str) -> bool:
-    return stage != "separate" or getattr(state.backend, "separate_device", "cuda") != "cpu"
+    if stage not in CPU_STAGES:
+        return True
+    return getattr(state.backend, "lead_device" if stage == "lead" else "separate_device", "cuda") != "cpu"
 
 
 def _open_window(job: Job) -> None:
@@ -887,6 +924,39 @@ def run_job(job: Job) -> None:
             job.gpu.window_closed(job.exclusive.timings.get("reload_s") if job.exclusive else None)
 
 
+def _lead_stage(job: Job, sdir: Path, src: Source, timed: Callable[[str, Callable[[], Any]], Any]) -> dict[str, Any]:
+    """Splits the vocal stem into lead + backing when it should and can. Returns the song's
+    ``lead_split`` info; ``used`` says whether the next stages work on the lead.
+
+    Stems cached before the split existed are split on demand from their cached vocals (and
+    kept: lead.wav / backing.wav sit beside them). A split that fails for any other reason than
+    a cancel, the GPU being taken back (both end the job as for any stage) or running out of VRAM
+    (``_gpu_stage`` redoes that on the CPU) leaves the plain pipeline in place, with the reason."""
+    b = state.backend
+    if os.environ.get("SING_LEAD_SPLIT", "1") == "0":
+        return {"used": False, "reason": "off"}
+    if not b.lead_available():
+        return {"used": False, "reason": "no_model"}
+    lead_wav, backing_wav = sdir / "lead.wav", sdir / "backing.wav"
+    if lead_wav.exists() and backing_wav.exists():
+        return {"used": True, "cached": True}
+
+    def split(device: str) -> None:
+        b.split_lead(sdir / "vocals.wav", lead_wav, backing_wav, lambda f: _set(job, "lead", f),
+                     device="cpu" if device == "cpu" else None)
+
+    try:
+        timed("lead", lambda: _gpu_stage(job, "lead", sdir / "vocals.wav", src.duration_s, split))
+    except (Cancelled, Suspended):
+        raise
+    except Exception as e:
+        log.warning("job %s: the lead split failed, converting the whole vocal stem: %s", job.id, e)
+        lead_wav.unlink(missing_ok=True)
+        backing_wav.unlink(missing_ok=True)
+        return {"used": False, "reason": "failed", "error": str(e)[:300]}
+    return {"used": True, "cached": False}
+
+
 def _run_job(job: Job) -> None:
     store, b, req = state.store, state.backend, job.request
     check = job.cancel.is_set
@@ -932,6 +1002,8 @@ def _run_job(job: Job) -> None:
     _start_video(job, src, sdir)
     have_stems = (sdir / "vocals.wav").exists() and (sdir / "instrumental.wav").exists()
     if not have_stems or req.force:
+        for stale in ("lead.wav", "backing.wav"):  # of the stems that are about to be made again
+            (sdir / stale).unlink(missing_ok=True)
         if src.kind == "library":
             timed("download", lambda: b.fetch_library(src, sdir))
         elif not (sdir / "source.wav").exists() or req.force:
@@ -943,6 +1015,9 @@ def _run_job(job: Job) -> None:
                            lambda f: _set(job, "separate", f), device="cpu" if device == "cpu" else None)
 
             timed("separate", lambda: _gpu_stage(job, "separate", sdir / "source.wav", src.duration_s, separate))
+
+    lead = _lead_stage(job, sdir, src, timed)
+    vocal = sdir / ("lead.wav" if lead["used"] else "vocals.wav")
 
     out = store.song_dir(sid)
     out.mkdir(parents=True, exist_ok=True)
@@ -958,7 +1033,7 @@ def _run_job(job: Job) -> None:
 
     def convert() -> dict[str, Any]:
         try:
-            return _gpu_stage(job, "convert", sdir / "vocals.wav", src.duration_s, convert_on_gpu, work)
+            return _gpu_stage(job, "convert", vocal, src.duration_s, convert_on_gpu, work)
         finally:
             _give_gpu_back(job)
 
@@ -968,7 +1043,7 @@ def _run_job(job: Job) -> None:
                 shift, auto_key, info = req.pitch, 0, {"auto": False, "octave_shift": None}
             else:
                 # An explicit key is the requester's choice: only the octave stays automatic.
-                shift, auto_key, info = _auto_shift(sdir, auto_key=req.key == 0)
+                shift, auto_key, info = _auto_shift(vocal, auto_key=req.key == 0)
                 info["auto"] = True
             song_key = req.key + auto_key
             shift += song_key
@@ -976,11 +1051,11 @@ def _run_job(job: Job) -> None:
                          "f0_clean": os.environ.get("SING_F0_CLEAN", "1") != "0",
                          "transposer": getattr(b, "transposer", None) if song_key else None})
             pitch.update(info)
-        b.convert(sdir / "vocals.wav", converted, pitch["vocal_shift"], converted_share, check, work)
+        b.convert(vocal, converted, pitch["vocal_shift"], converted_share, check, work)
         return pitch
 
     pitch_info = timed("convert", convert)
-    mixed = timed("mix", lambda: b.mix(sdir, converted, pitch_info["song_key"], out))
+    mixed = timed("mix", lambda: b.mix(sdir, converted, pitch_info["song_key"], out, lead["used"]))
     converted.unlink(missing_ok=True)
     duration = mixed.get("duration_s") or src.duration_s
     found = timed("lyrics", lambda: b.lyrics(src, duration))
@@ -1006,6 +1081,7 @@ def _run_job(job: Job) -> None:
         "duration_s": duration,
         "source": src.public(),
         "pitch": pitch_info,
+        "lead_split": lead,
         "lyrics": lyrics_meta,
         **video,
         "play": {"sample_rate": PLAY_RATE, "samples": mixed.get("samples"), "format": "s16le", "channels": 1},

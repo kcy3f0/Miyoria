@@ -6,7 +6,8 @@
         video.mp4?                         the original video, muted on stream (a hard link of
                                            the source's when the volume allows; library: video.<ext>)
     <root>/_sources/<source_key>/  downloaded audio and its stems, reused when only the key changes
-        source.wav  vocals.wav  instrumental.wav  info.json  video.mp4?  video.json?
+        source.wav  vocals.wav  instrumental.wav  lead.wav?  backing.wav?  info.json  video.mp4?  video.json?
+                                           lead + backing = vocals (leadsplit.py); older stems get them on demand
     <root>/queries.json          normalised query → source key (so repeated requests skip the search)
     <root>/library/              the owner's own files: full songs, or a folder with
                                  vocals.* + instrumental.* (+ lyrics.lrc, info.json {title, artist});

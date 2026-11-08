@@ -728,3 +728,12 @@ def test_the_model_is_really_gone_after_a_conversion(monkeypatch):
         assert gone() is None
     finally:
         gc.enable()
+
+
+def test_the_lead_split_is_placed_like_the_separation_and_never_takes_her_voice_for_want_of_room():
+    from gpu import CPU_STAGES
+
+    assert "lead" in CPU_STAGES and "separate" in CPU_STAGES and "convert" not in CPU_STAGES
+    assert decide(facts(stage="lead")).mode == "cpu"  # a crowded 12 GB card on stream: the CPU does it
+    assert decide(facts(stage="lead", total_mb=24 * GB, free_mb=15000, headroom_mb=2949)).code == "fits"
+    assert decide(facts(stage="lead", cpu_only=True)).code == "spill_cpu"

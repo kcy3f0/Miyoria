@@ -654,3 +654,210 @@ def test_a_worker_that_does_not_answer_counts_as_idle():
     y.wait()
     assert time.monotonic() - t0 < 0.05
     y.stop()
+
+
+# ── lead / backing split ─────────────────────────────────────────────────────
+
+
+def _sing_server():
+    return sys.modules["sing_server"]
+
+
+def _stems(key: str) -> Path:
+    return Path(os.environ["SING_DATA_DIR"]) / "_sources" / key
+
+
+def _job(sing, query: str, **kw) -> dict:
+    done = wait(sing, sing.post("/jobs", json={"query": query, **kw}).json()["job"]["id"])
+    assert done["state"] == "done", done
+    return done
+
+
+def test_the_lead_is_split_after_the_vocals_and_is_all_that_is_converted(sing):
+    if not is_mock():
+        pytest.skip("reads the mock backend's log")
+    b = _sing_server().state.backend
+    n = len(b.convert_inputs)
+    done = _job(sing, "lead stage order")
+    song = done["song"]
+    assert list(song["timings"])[:6] == ["resolve_s", "download_s", "separate_s", "lead_s", "convert_s", "mix_s"]
+    assert song["lead_split"] == {"used": True, "cached": False}
+    # Seed-VC reads the lead, and so do the F0 statistics behind the auto key.
+    assert b.convert_inputs[n:] == ["lead.wav"]
+    assert b.f0_inputs[-1] == "lead.wav"
+    # The mix gets the split, so it takes the lead's level and puts the backing in the instrumental.
+    split, files = b.mix_inputs[-1]
+    assert split is True and {"lead.wav", "backing.wav", "vocals.wav", "instrumental.wav"} <= set(files)
+    key = song["source"]["key"]
+    assert (_stems(key) / "lead.wav").exists() and (_stems(key) / "backing.wav").exists()
+
+
+def test_the_split_is_off_with_its_switch_and_the_pipeline_is_the_old_one(sing, monkeypatch):
+    if not is_mock():
+        pytest.skip("reads the mock backend's log")
+    monkeypatch.setenv("SING_LEAD_SPLIT", "0")
+    b = _sing_server().state.backend
+    leads, n = len(b.lead_devices), len(b.convert_inputs)
+    song = _job(sing, "lead switch off")["song"]
+    assert song["lead_split"] == {"used": False, "reason": "off"}
+    assert "lead_s" not in song["timings"]
+    assert len(b.lead_devices) == leads
+    assert b.convert_inputs[n:] == ["vocals.wav"] and b.f0_inputs[-1] == "vocals.wav"
+    assert b.mix_inputs[-1][0] is False
+    assert not (_stems(song["source"]["key"]) / "lead.wav").exists()
+
+
+def test_without_the_model_file_the_split_is_skipped(sing, monkeypatch):
+    if not is_mock():
+        pytest.skip("reads the mock backend's log")
+    monkeypatch.setenv("SING_MOCK_LEAD_MODEL", "0")
+    song = _job(sing, "lead no model")["song"]
+    assert song["lead_split"] == {"used": False, "reason": "no_model"}
+    assert "lead_s" not in song["timings"]
+
+
+def test_stems_cached_before_the_split_are_split_on_demand_and_then_reused(sing, monkeypatch):
+    if not is_mock():
+        pytest.skip("reads the mock backend's log")
+    b = _sing_server().state.backend
+    with monkeypatch.context() as m:
+        m.setenv("SING_LEAD_SPLIT", "0")
+        old = _job(sing, "lead old cache")["song"]
+    stems = _stems(old["source"]["key"])
+    assert (stems / "vocals.wav").exists() and not (stems / "lead.wav").exists()
+    separated = len(b.separate_devices)
+    leads, n = len(b.lead_devices), len(b.convert_inputs)
+    # Another key is another song, from the same cached stems.
+    new = _job(sing, "lead old cache", key=1)["song"]
+    assert len(b.separate_devices) == separated  # not separated again
+    assert len(b.lead_devices) == leads + 1  # but split from the cached vocals
+    assert new["lead_split"] == {"used": True, "cached": False}
+    assert (stems / "lead.wav").exists() and (stems / "backing.wav").exists()
+    assert b.convert_inputs[n:] == ["lead.wav"]
+    # The next song from these stems finds the split there.
+    again = _job(sing, "lead old cache", key=2)["song"]
+    assert again["lead_split"] == {"used": True, "cached": True}
+    assert len(b.lead_devices) == leads + 1
+
+
+def test_a_failed_split_falls_back_to_the_whole_vocal_stem(sing, monkeypatch):
+    if not is_mock():
+        pytest.skip("reads the mock backend's log")
+    monkeypatch.setenv("SING_MOCK_LEAD_FAIL", "1")
+    b = _sing_server().state.backend
+    n = len(b.convert_inputs)
+    song = _job(sing, "lead split fails")["song"]
+    assert song["lead_split"]["used"] is False and song["lead_split"]["reason"] == "failed"
+    assert "mock lead split failed" in song["lead_split"]["error"]
+    assert b.convert_inputs[n:] == ["vocals.wav"]
+    assert not (_stems(song["source"]["key"]) / "lead.wav").exists()
+
+
+def test_a_forced_song_splits_the_stems_it_made_again(sing):
+    if not is_mock():
+        pytest.skip("reads the mock backend's log")
+    b = _sing_server().state.backend
+    first = _job(sing, "lead forced")["song"]
+    leads = len(b.lead_devices)
+    forced = _job(sing, "lead forced", force=True)["song"]
+    assert forced["lead_split"] == {"used": True, "cached": False}
+    assert len(b.lead_devices) == leads + 1
+    assert first["id"] == forced["id"]
+
+
+def test_the_worker_and_its_split_import_without_torch():
+    import subprocess
+
+    code = (
+        "import sys; sys.modules['torch'] = None; sys.modules['librosa'] = None; "
+        f"sys.path.insert(0, {str(SING)!r}); import os; os.environ['SING_BACKEND'] = 'mock'; "
+        "import leadsplit, gpu, engine, importlib.util as u; "
+        f"s = u.spec_from_file_location('sing_server', {str(SING / 'server.py')!r}); m = u.module_from_spec(s); "
+        "sys.modules['sing_server'] = m; s.loader.exec_module(m); "
+        "assert leadsplit.available({'SING_LEAD_MODEL': 'nowhere.ckpt'}) is False; print('ok')"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and r.stdout.strip() == "ok", r.stderr[-800:]
+
+
+def test_the_split_looks_for_its_model_and_its_config(tmp_path):
+    import leadsplit
+
+    ckpt = tmp_path / "m.ckpt"
+    assert leadsplit.model_path({"SING_LEAD_MODEL": str(ckpt)}) == ckpt
+    assert leadsplit.model_path({}).name == leadsplit.CKPT_NAME
+    env = {"SING_LEAD_MODEL": str(ckpt)}
+    assert leadsplit.available(env) is False  # no file
+    ckpt.write_bytes(b"x")
+    assert leadsplit.available(env) is False  # no config
+    (tmp_path / "config.yaml").write_text("audio: {}")
+    assert leadsplit.available(env) is True
+    assert leadsplit.available({**env, "SING_LEAD_SPLIT": "0"}) is False
+    (tmp_path / "m.yaml").write_text("audio: {}")
+    assert leadsplit.config_path(ckpt) == tmp_path / "m.yaml"  # the one named like the checkpoint wins
+
+
+def test_chunked_inference_cross_fades_back_to_the_input():
+    torch = pytest.importorskip("torch")
+    import numpy as np
+    import leadsplit
+
+    class Half(torch.nn.Module):  # a "model" that keeps half of what it hears
+        def forward(self, x):
+            return x * 0.5
+
+    s = leadsplit.LeadSplitter.__new__(leadsplit.LeadSplitter)
+    s.model, s.device, s.chunk, s.sr, s.overlap, s._hooked = Half(), "cpu", 4000, 44100, 4, False
+    calls: list[int] = []
+    s.gate = lambda: calls.append(1)
+    rng = np.random.default_rng(0)
+    for n in (9000, 4000, 1234, 30000):
+        x = rng.standard_normal((n, 2)).astype("float32")
+        seen: list[float] = []
+        y = s.lead(x, 44100, seen.append)
+        assert y.shape == x.shape
+        assert np.allclose(y, x * 0.5, atol=1e-5)
+        assert seen[-1] == pytest.approx(1.0)
+    assert calls  # the step gate ran before the chunks
+    with pytest.raises(ValueError):
+        s.lead(x, 16000)
+
+
+def test_the_backing_joins_the_instrumental_at_its_own_level(tmp_path):
+    import numpy as np
+    import soundfile as sf
+    import engine
+
+    sr, n = 44100, 44100
+    t = np.arange(n) / sr
+
+    def tone(hz, a):
+        return (a * np.sin(2 * np.pi * hz * t)).astype("float32")[:, None].repeat(2, axis=1)
+
+    sf.write(tmp_path / "lead.wav", tone(440, 0.4), sr)
+    sf.write(tmp_path / "conv.wav", tone(440, 0.1), sr)
+    sf.write(tmp_path / "inst.wav", tone(220, 0.2), sr)
+    sf.write(tmp_path / "backing.wav", tone(330, 0.1), sr)
+
+    class Backend:
+        def transpose(self, x, sr, key):
+            return x
+
+    plain, split = tmp_path / "plain", tmp_path / "split"
+    plain.mkdir()
+    split.mkdir()
+    engine.mix_song(tmp_path / "lead.wav", tmp_path / "conv.wav", tmp_path / "inst.wav", 0, plain, Backend(), -16.0)
+    engine.mix_song(tmp_path / "lead.wav", tmp_path / "conv.wav", tmp_path / "inst.wav", 0, split, Backend(), -16.0,
+                    tmp_path / "backing.wav")
+    inst_plain, _ = sf.read(plain / "instrumental.wav")
+    inst_split, _ = sf.read(split / "instrumental.wav")
+    f = np.fft.rfftfreq(n, 1 / sr)
+
+    def level(x, hz):
+        return np.abs(np.fft.rfft(x[:, 0]))[np.argmin(np.abs(f - hz))]
+
+    assert level(inst_plain, 330) < 5  # nothing of the backing without it
+    assert level(inst_split, 330) > 1000
+    # Same scale as the 220 Hz instrument it was recorded with: 0.1 against 0.2, whatever the mix gain.
+    assert level(inst_split, 330) / level(inst_split, 220) == pytest.approx(0.5, rel=0.1)
+    assert (split / "mix.wav").exists() and (split / "play_mix.pcm").exists()

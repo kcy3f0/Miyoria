@@ -62,7 +62,10 @@ HISTORY_KEPT = 40
 SPILL_MARGIN_MB = 256  # over the free VRAM at which a spill was seen
 LOW_FREE_READS = 3  # readings in a row before low free VRAM counts
 RELOAD_PRIOR_S = 30.0
-RATE_PRIORS = {"separate": 0.05, "convert": 0.3}  # seconds of work per second of audio
+RATE_PRIORS = {"separate": 0.05, "lead": 0.25, "convert": 0.3}  # seconds of work per second of audio
+# Stages that can run on the CPU instead, so they never take her voice's card: one that does not fit
+# is done there (a spill in one sends the rest of the job's such stages to the CPU as well).
+CPU_STAGES = ("separate", "lead")
 
 
 def policy_from_env(env: Mapping[str, str] = os.environ) -> tuple[str, str]:
@@ -429,7 +432,7 @@ def decide(f: Facts) -> Decision:
     have = f"有 {_gb(room)},要 {_gb(want)}"
     # After a spill or an OOM the estimate was wrong: only more room than then counts.
     fits = room is not None and room >= want and (f.crowded_mb is None or room >= f.crowded_mb + f.need_mb * 0.1)
-    separate = f.stage == "separate"
+    separate = f.stage in CPU_STAGES
 
     if f.policy == "share":
         if f.crowded_mb is not None and f.waited_s < limits.defer_s:
@@ -580,8 +583,8 @@ class GpuJob:
             return None
         p = self.machine.profile
         work = self.audio_s * (1 - self.converted) * p.rate("convert")
-        if stage == "separate":
-            work += self.audio_s * p.rate("separate")
+        if stage in CPU_STAGES:
+            work += self.audio_s * p.rate(stage)
         return work + p.reload_s()
 
     def gather(self, stage: str, on_gpu: bool = True) -> Facts:
@@ -599,7 +602,7 @@ class GpuJob:
             people=self.people(),
             urgent=self.urgent(), waited_s=waited, waited_total_s=self.waited_total_s + waited,
             silence_est_s=self.silence_estimate(stage), gap_s=max(0.0, m.gap_until - now), window=self.window,
-            offload_useless=self.offload_useless, cpu_only=self.cpu_only and stage == "separate",
+            offload_useless=self.offload_useless, cpu_only=self.cpu_only and stage in CPU_STAGES,
             crowded_mb=self.crowded_mb,
         )
 
@@ -776,7 +779,7 @@ class GpuJob:
         self._low_reads = 0
         room = None if free is None else free + self.machine.backend().own_vram_mb()
         reduce = stage == "convert" and self.reduced_to is None and limits.steps_min < limits.steps
-        if stage == "separate":
+        if stage in CPU_STAGES:
             self.cpu_only = True
             return self._do(Action("suspend", "spill_cpu", "分離溢出了,放掉顯示卡,改用 CPU 重做"))
         if self.window:
