@@ -181,7 +181,14 @@ export function activityBlock(src: SelfSources): string {
             ? `正在結束${what}`
             : `${what}失敗了(${short(a.failure?.detail ?? "", 40)})`;
   }
-  return `你現在${voice}、${live}、${doing}。`;
+  // 2026-11-08 15:29: 「我有多少魚幣」 got 「我現在正在唱歌,不方便查」. A song only holds the voice.
+  const textHere = src.context.kind !== "voice";
+  const singing = a.type === "singing" && (a.phase === "running" || a.phase === "starting");
+  const apart =
+    textHere && singing
+      ? "唱歌只佔語音,不影響這裡:文字頻道的事(查錢包、收食物、簽到、約定…)現在就用工具做,不用等唱完。"
+      : "";
+  return `你現在${voice}、${live}、${doing}。${apart}`;
 }
 
 /** `self.policy`: the talkativeness she set here and the owner's level. */

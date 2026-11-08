@@ -352,6 +352,22 @@ describe("self and people renderers", () => {
     expect(activityBlock({ context: tctx(), now, activity: snapshot })).toBe(
       "你現在在語音頻道 c、沒有在直播、正在玩 minecraft。",
     );
+    // A song holds only the voice: in a text channel she still does what is asked, now.
+    const singing: ActivitySnapshot = {
+      ...snapshot,
+      activity: {
+        ...snapshot.activity,
+        type: "singing",
+        target: "春日影",
+      } as ActivitySnapshot["activity"],
+    };
+    expect(activityBlock({ context: tctx(), now, activity: singing })).toBe(
+      "你現在在語音頻道 c、沒有在直播、正在唱春日影。" +
+        "唱歌只佔語音,不影響這裡:文字頻道的事(查錢包、收食物、簽到、約定…)現在就用工具做,不用等唱完。",
+    );
+    expect(activityBlock({ context: { ...tctx(), kind: "voice" }, now, activity: singing })).toBe(
+      "你現在在語音頻道 c、沒有在直播、正在唱春日影。",
+    );
     const ledger: LedgerView = {
       at: toTimestamp(now),
       entries: [],
