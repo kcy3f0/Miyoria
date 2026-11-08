@@ -11,6 +11,7 @@ import type { ToolCall, ToolSpec } from "@miyoria/llm";
 import {
   type ActionCall,
   type CommitmentDraft,
+  type ContextKey,
   isJsonObject,
   type JsonObject,
   type JsonValue,
@@ -60,7 +61,24 @@ function firstSentence(text: string): string {
 /** An argument with the first clause of its description. */
 function slimProperty(value: JsonValue): JsonValue {
   if (!isJsonObject(value) || typeof value.description !== "string") return value;
+  // "(省略 = ...)" is what tells her to leave it out: without it she fills in any id she knows.
+  if (value.description.includes("省略")) return value;
   return { ...value, description: value.description.split(/[,。;(]/u)[0] ?? "" };
+}
+
+/**
+ * Ids a tool call must not take from the model. Inside a server the server is known, so a `guild`
+ * that differs is a mistaken id, and the text channel she is talking in is never a voice channel.
+ * Leaving them out means "here", which is what she meant.
+ */
+export function groundArgs(tool: string, args: JsonValue, key: ContextKey): JsonValue {
+  if (!isJsonObject(args)) return args;
+  const out: JsonObject = { ...args };
+  if (key.scope !== null && typeof out.guild === "string" && out.guild !== key.scope) {
+    delete out.guild;
+  }
+  if (tool === "voice_join" && out.channel === key.channel) delete out.channel;
+  return out;
 }
 
 /**

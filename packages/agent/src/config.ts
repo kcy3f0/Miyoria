@@ -284,6 +284,8 @@ export const MainLineConfigSchema = z.object({
   proposals: z.number().int().nonnegative().default(3),
   /** No first token for this long and the call counts as failed: the fixed line goes out. */
   first_token_timeout_ms: z.number().int().positive().default(15_000),
+  /** The same with reasoning on: a provider can think this long before its first event. */
+  reasoning_first_token_timeout_ms: z.number().int().positive().default(60_000),
   /** At most one fixed line per context this often. */
   fallback_gap_ms: z.number().int().nonnegative().default(20_000),
   /** A commitment without a date is due this long after she made it. */

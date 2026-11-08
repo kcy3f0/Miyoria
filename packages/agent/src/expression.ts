@@ -33,7 +33,11 @@ export type Segment =
   | { type: "pause"; ms: number }
   | { type: "silence" }
   /** `<voice>…</voice>`: what she says out loud for the text that follows. */
-  | { type: "spoken"; text: string };
+  | { type: "spoken"; text: string }
+  /** `<sing_start>`: a tool written as text instead of called. */
+  | { type: "tool"; name: string }
+  /** Markup nobody should see (`<span>`, `</span>`): dropped. */
+  | { type: "markup" };
 
 /**
  * Incremental parser: feed chunks with `push`, then call `finish` once the stream ends.
@@ -92,7 +96,7 @@ export class ExpressionParser {
       const scan = scanTag(input.slice(start));
       if (scan.kind === "tag") {
         flush();
-        out.push(scan.segment);
+        if (scan.segment.type !== "markup") out.push(scan.segment);
         pos = start + scan.len;
       } else if (scan.kind === "partial" && !eof) {
         flush();
@@ -159,8 +163,22 @@ function parseTag(raw: string): Segment | null {
     const ms = Number.isSafeInteger(parsed) ? Math.min(parsed, MAX_PAUSE_MS) : MAX_PAUSE_MS;
     return { type: "pause", ms };
   }
+  // Models imitate the tags they know: an emotion as an HTML attribute, a tool as a tag. Both are
+  // kept out of what people see. `Expression.tools` is for the log: text never runs a tool.
+  const tag = asciiLower(raw);
+  const emotion = /^span\s+emo\s*=\s*["']?([a-z0-9_-]+)["']?$/.exec(tag);
+  if (emotion !== null) return { type: "emotion", emotion: emotion[1] as string };
+  if (SPAN_TAG.test(tag)) return { type: "markup" };
+  if (TOOL_TAG.test(tag)) return { type: "tool", name: tag };
   return null;
 }
+
+/** `<span>` and `</span>`, exactly: `a < b 和 c > d` is not a tag. */
+const SPAN_TAG = /^\/?span(?:\s[a-z0-9_ ="'-]*)?$/;
+/** Tool names are snake_case; an ordinary word in brackets stays text. */
+const TOOL_TAG = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
+/** What a tag above can look like before its `>` arrives. */
+const MARKUP_PREFIX = /^\/?[a-z][a-z0-9_]*(?:\s[a-z0-9_ ="'-]*)?$/;
 
 function isNameChar(c: string): boolean {
   return /^[A-Za-z0-9_-]$/.test(c);
@@ -180,6 +198,7 @@ const PREFIXES: readonly [string, (c: string) => boolean][] = [
 /** Whether `rest` (input after `<`, no `>` yet) can still grow into a tag. */
 function isTagPrefix(rest: string): boolean {
   const lower = asciiLower(rest);
+  if (MARKUP_PREFIX.test(lower)) return true;
   return PREFIXES.some(
     ([keyword, ok]) =>
       keyword.startsWith(lower) ||
@@ -191,6 +210,8 @@ function isTagPrefix(rest: string): boolean {
 export class Expression {
   text = "";
   emotions: string[] = [];
+  /** Tools written as tags, in order. */
+  tools: string[] = [];
   /** `<silence/>` came before any visible text: she chose not to reply. */
   silence = false;
 
@@ -211,8 +232,12 @@ export class Expression {
       case "emotion":
         this.emotions.push(segment.emotion);
         break;
+      case "tool":
+        this.tools.push(segment.name);
+        break;
       case "pause":
       case "spoken":
+      case "markup":
         break;
       case "silence":
         if (this.text.trim() === "") this.silence = true;

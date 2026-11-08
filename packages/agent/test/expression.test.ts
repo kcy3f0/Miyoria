@@ -171,3 +171,37 @@ describe("expression", () => {
     expect(Expression.parse("").isSilent()).toBe(true);
   });
 });
+
+describe("markup the model imitates", () => {
+  it("reads an emotion written as an attribute and shows no tags", () => {
+    const e = Expression.parse('<span emo="smug">哼,才不要。</span>');
+    expect(e.text).toBe("哼,才不要。");
+    expect(e.emotions).toEqual(["smug"]);
+  });
+
+  it("takes a tool written as a tag out of the text", () => {
+    const e = Expression.parse("<sing_start>");
+    expect(e.text).toBe("");
+    expect(e.tools).toEqual(["sing_start"]);
+  });
+
+  it("drops a span, also across chunks", () => {
+    const parser = new ExpressionParser();
+    const e = new Expression();
+    for (const s of [
+      ...parser.push("好<sp"),
+      ...parser.push("an>啦</"),
+      ...parser.push("span>"),
+      ...parser.finish(),
+    ]) {
+      e.apply(s);
+    }
+    expect(e.text).toBe("好啦");
+  });
+
+  it("leaves what people really type alone", () => {
+    for (const text of ["我愛你 <3", "<_<", "a < b 和 c > d", "<看什麼>"]) {
+      expect(Expression.parse(text).text).toBe(text);
+    }
+  });
+});

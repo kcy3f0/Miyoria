@@ -128,7 +128,7 @@ import {
   MainTurn,
   sentences,
 } from "./mainline/main.js";
-import { COMMIT_SPEC, STEER_SPEC, slimTool, turnOutput } from "./mainline/output.js";
+import { COMMIT_SPEC, groundArgs, STEER_SPEC, slimTool, turnOutput } from "./mainline/output.js";
 import {
   contextData,
   contextState,
@@ -1591,7 +1591,8 @@ class Turn {
       ...extras.sections,
       contextData(buckets, m.context_entries),
       proposalData(
-        line.proposals.open(this.key).filter((p) => p.id !== own),
+        // The turn's own proposal stays when it names a tool: its arguments are only here.
+        line.proposals.open(this.key).filter((p) => p.id !== own || p.capability !== undefined),
         m.proposals,
       ),
       resultData(line.hands.takeResults(this.key)),
@@ -1738,7 +1739,9 @@ class Turn {
     this.signal.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(
       () => controller.abort(new TimeoutError()),
-      main.config.first_token_timeout_ms,
+      (this.#level ?? "off") === "off"
+        ? main.config.first_token_timeout_ms
+        : main.config.reasoning_first_token_timeout_ms,
     );
     try {
       return await this.#streamStep(router, request, speech, segments, controller.signal, () =>
@@ -2168,6 +2171,11 @@ class Turn {
     this.#reportLatency(stream.model, stream.firstTokenMs);
     for (const segment of parser.finish()) await this.#take(expression, segment, speech);
     if (speech) await speech.finish();
+    // A tool written as a tag is only logged, never run: text she was talked into repeating must
+    // not become an action. Tools run from native tool calls alone.
+    if (expression.tools.length > 0) {
+      this.agent.log.warn({ turn: this.turn, tools: expression.tools }, "tool written as text");
+    }
     const named = calls.filter((c) => c.name !== "");
     named.forEach((call, i) => {
       if (call.id === "") call.id = `call_${i}`;
@@ -2322,6 +2330,7 @@ class Turn {
         return [false, `error: arguments are not valid JSON: ${errorMessage(error)}`];
       }
     }
+    if (this.#main !== null) args = groundArgs(call.name, args, this.key);
     const last = this.#requester();
     if (!last && this.intent === null && this.#main === null) {
       return [false, "error: no triggering message"];
@@ -2399,6 +2408,8 @@ class Turn {
         await out.voiceLine(segment.text);
         break;
       case "silence":
+      case "tool":
+      case "markup":
         break;
     }
     this.#apply(expression, segment);

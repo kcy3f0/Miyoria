@@ -67,7 +67,7 @@ const ADDRESSING: Record<FloorClaimKind, string> = {
   result: "手上的事有結果了(見參考資料「結果」)。可以順口講一聲,沒什麼好說就 <silence/>。",
   urgent: "剛發生緊急的事(見參考資料「你想聊的事」):馬上用一句話反應。",
   notable: "剛發生一件事(見參考資料「你想聊的事」)。想講就簡短講,不想講就 <silence/>。",
-  wish: "現在沒人跟你說話,這是你自己想做的事(見參考資料)。不適合就 <silence/>。不要說出盤算的過程。",
+  wish: "現在沒人跟你說話,這是你自己想做的事(見參考資料)。要動手就直接呼叫工具,不要只用講的。不適合就 <silence/>。不要說出盤算的過程。",
   ambient: "沒有人叫你,大家在聊。真的想插話才開口,否則 <silence/>。",
 };
 
@@ -95,7 +95,9 @@ export function pinnedSection(
       const due = timestampMs(c.due);
       const what = neutralize(c.what);
       return due <= now
-        ? `- 逾期:你說要「${what}」,還沒做。現在做,或自己老實講做不到。`
+        ? c.capability !== null
+          ? `- 逾期:你說要「${what}」,還沒做。現在就呼叫 ${c.capability},不要再用講的;做不到就老實說為什麼。`
+          : `- 逾期:你說要「${what}」,還沒做。現在做,或自己老實講做不到。`
         : `- 你說要「${what}」(${clock(due, utcOffsetMinutes)} 前)`;
     });
     parts.push(`# 你答應了還沒做的事\n${lines.join("\n")}`);
@@ -127,7 +129,8 @@ export function contextState(buckets: readonly ContextBucket[]): string[] {
 export function proposalData(proposals: readonly Proposal[], max: number): string | null {
   if (proposals.length === 0) return null;
   const lines = proposals.slice(-max).map((p) => {
-    const tool = p.capability === undefined ? "" : `(用 ${p.capability})`;
+    const args = p.args === undefined ? "" : `,參數 ${JSON.stringify(p.args)}`;
+    const tool = p.capability === undefined ? "" : `(用 ${p.capability}${args})`;
     return `${p.what}${tool}:${p.why}`;
   });
   return dataBlock("proposal", "你最近想做的事", lines.join("\n"));
