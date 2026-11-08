@@ -942,7 +942,10 @@ export class Agent {
     if (this.muted) {
       return Promise.resolve({ status: "refused", reason: "denied", detail: "緊急停止中" });
     }
-    const context = aboutHerself(initiative.reason) ? this.ownLinesContext(target) : target;
+    // A result someone asked for is told where they asked: only her own news follows her to voice.
+    const asked = initiative.chain?.requester !== undefined && initiative.chain.requester !== null;
+    const context =
+      aboutHerself(initiative.reason) && !asked ? this.ownLinesContext(target) : target;
     if (context.kind === "voice" && !this.inVoice(context)) {
       return Promise.resolve({ status: "refused", reason: "denied", detail: "不在那個語音頻道" });
     }

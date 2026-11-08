@@ -299,6 +299,24 @@ describe("one call", () => {
     expect(JSON.stringify(llm.requests[1]?.messages)).toContain("slow 完成");
   });
 
+  it("a result someone asked for in text is told there, even while she is in voice", async () => {
+    // 2026-11-08 14:46: 「我有多少魚幣」 got 「等我一下」; the wallet came back, but the turn that
+    // tells it opened in the voice channel (keep_in_voice), found no result there and talked
+    // about the song.
+    const slow = new Probe("slow", null, 5000);
+    const llm = new Scripted([reply("等我一下", ["slow", "{}"]), reply("你有 10 魚幣")]);
+    const h = await rig(llm, { tools: [slow], config: { tool_timeout_ms: 20_000 } });
+    joinVoice(h);
+    await wait(50);
+    h.say(mention(channel("c"), "Alice", "我有多少魚幣"));
+    await wait(1500);
+    expect(h.sink.texts()).toEqual(["等我一下"]);
+    await wait(10_000);
+    expect(h.sink.texts()).toEqual(["等我一下", "你有 10 魚幣"]);
+    expect(h.sink.speeches()).toEqual([]);
+    expect(JSON.stringify(llm.requests[1]?.messages)).toContain("slow 完成");
+  });
+
   it("an output that only acts still tells someone waiting that she heard them", async () => {
     const tool = new Probe("slow", null, 5000);
     const llm = new Scripted([reply("", ["slow", "{}"]), reply("<silence/>")]);
