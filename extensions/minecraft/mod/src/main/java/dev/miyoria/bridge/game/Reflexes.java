@@ -308,7 +308,7 @@ public final class Reflexes {
         release();
         ClientPlayerEntity p = mc.player;
         switch (k) {
-            case FLEE, PICKUP -> {
+            case FLEE, PICKUP, LAVA -> {
                 if (baritone != null) baritone.reflexCancel();
             }
             case SUFFOCATION -> {
@@ -352,8 +352,27 @@ public final class Reflexes {
         if (p == null || w == null) return;
         switch (k) {
             case LAVA -> {
-                if (spot == null || ticks % 20 == 0) spot = safeSpot(p, w, 5, 0, null);
-                moveToward(mc, p, spot, true);
+                // If holding or carrying a water bucket, attempt to deploy it to extinguish / solidify lava
+                int waterSlot = -1;
+                PlayerInventory inv = p.getInventory();
+                for (int i = 0; i < inv.main.size(); i++) {
+                    if (inv.main.get(i).isOf(Items.WATER_BUCKET)) {
+                        waterSlot = i;
+                        break;
+                    }
+                }
+                if (waterSlot >= 0 && mc.interactionManager != null && ticks <= 4) {
+                    hold(mc, p, waterSlot);
+                    p.setPitch(90f);
+                    mc.interactionManager.interactItem(p, Hand.MAIN_HAND);
+                }
+
+                if (spot == null || ticks % 20 == 0) spot = safeSpot(p, w, 6, 0, null);
+                if (baritone != null && spot != null) {
+                    if (ticks % 20 == 1) baritone.reflexGoTo(BlockPos.ofFloored(spot));
+                } else {
+                    moveToward(mc, p, spot, true);
+                }
             }
             case FALLING_BLOCK -> {
                 if (spot == null) {
@@ -368,6 +387,24 @@ public final class Reflexes {
                 BlockPos at = w.getBlockState(head).getCollisionShape(w, head).isEmpty() ? p.getBlockPos() : head;
                 if (mc.interactionManager != null) mc.interactionManager.updateBlockBreakingProgress(at, Direction.UP);
                 p.swingHand(Hand.MAIN_HAND);
+
+                // If suffocation continues beyond 5 ticks, backstep/move laterally toward an adjacent open block
+                if (ticks > 5) {
+                    BlockPos feet = p.getBlockPos();
+                    BlockPos escape = null;
+                    for (Direction d : Direction.values()) {
+                        if (!d.getAxis().isHorizontal()) continue;
+                        BlockPos adj = feet.offset(d);
+                        if (free(w, adj) && free(w, adj.up())) {
+                            escape = adj;
+                            break;
+                        }
+                    }
+                    if (escape != null) {
+                        Vec3d targetVec = new Vec3d(escape.getX() + 0.5, escape.getY(), escape.getZ() + 0.5);
+                        moveToward(mc, p, targetVec, false);
+                    }
+                }
             }
             case DROWNING -> press(mc.options.jumpKey);
             case FLEE -> {

@@ -108,6 +108,9 @@ describe("actions", () => {
     expect(toRequests({ name: "select", args: { item: "bread" } })).toEqual([{ type: "select_slot", params: { item: "bread" } }]);
     expect(toRequests({ name: "respawn" })).toEqual([{ type: "respawn", params: {} }]);
     expect(toRequests({ name: "stop" })).toEqual([{ type: "stop", params: {} }]);
+    expect(toRequests({ name: "drop", args: { item: "dirt", all: true } })).toEqual([
+      { type: "drop", params: { item: "dirt", all: true } },
+    ]);
   });
 
   it("rejects bad arguments with a message for the model", () => {
