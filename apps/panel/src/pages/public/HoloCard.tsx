@@ -1,15 +1,15 @@
 // The card as a thing in the hand: it tilts toward the pointer (or a finger dragged across it),
 // grows a little under the pointer, and catches light. A glare follows the pointer on every card;
-// a foil card has a rainbow that moves across the art and glitter that flashes as it turns; a bought
-// frame's band has its own light (a sheen along gold, caustics in the abyss, a pink shimmer on
-// sakura). With no pointer on it the card sways slowly so the light still moves on a phone. Under
+// a foil card has a rainbow and glitter on the background that move and flash as it turns, and
+// only a faint sheen on her, so she stays as drawn; a bought frame's band has its own light (a
+// sheen along gold, caustics in the abyss, a pink shimmer on sakura). With no pointer on it the card sways slowly so the light still moves on a phone. Under
 // prefers-reduced-motion it lies still. The layers sit over the same SVG the PNG is made from, so
 // the picture they download is the card without the light.
 
 import { useEffect, useRef } from "react";
 import type { IssuedCard } from "@/api/types";
 import { cn } from "@/lib/utils";
-import { InlinedCard } from "./card";
+import { InlinedCard, poseUrl } from "./card";
 
 /** Frames that have a light of their own in `index.css` (`.holo-band-<id>`). */
 const LIT_FRAMES = new Set(["sakura", "abyss", "gold"]);
@@ -118,6 +118,8 @@ export function HoloCard({
       <div
         ref={box}
         className={cn("holo-card", card.voided_at && "opacity-40 grayscale")}
+        // Her picture, as the mask that keeps the foil off her.
+        style={{ "--art": `url("${poseUrl(card.pose)}")` } as React.CSSProperties}
         onPointerMove={move}
         onPointerDown={move}
         onPointerLeave={leave}
@@ -131,6 +133,7 @@ export function HoloCard({
           <>
             <div aria-hidden className="holo-layer holo-foil" />
             <div aria-hidden className="holo-layer holo-glitter" />
+            <div aria-hidden className="holo-layer holo-sheen" />
           </>
         )}
         {lit && <div aria-hidden className={cn("holo-layer holo-band", `holo-band-${lit}`)} />}

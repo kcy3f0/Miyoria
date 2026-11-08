@@ -430,8 +430,36 @@
   opacity: calc(var(--on, 0) * 0.8);
 }
 
-/* Foil: rainbow bands sliding as the card turns, lightening the card (screen, so it shows on the
-   dark parts too), strongest around the pointer and fading out before the words. */
+/* Foil, done the way printed cards balance it: the rainbow is printed on the background, not on her.
+   Her picture has a transparent background, so it is its own mask (`--art`, placed as the SVG places
+   it: 660 of 630 wide, centred, from the top) and the foil takes only where she is not. The rainbow
+   slides as the card turns, is strongest around the pointer and fades out before the words. */
+.holo-foil,
+.holo-glitter {
+  mask-image:
+    radial-gradient(
+      farthest-corner circle at var(--mx, 50%) var(--my, 50%),
+      #000 0%,
+      rgba(0, 0, 0, 0.6) 35%,
+      rgba(0, 0, 0, 0.2) 75%
+    ),
+    linear-gradient(to bottom, #000 0%, #000 55%, transparent 76%),
+    var(--art, none),
+    linear-gradient(#000 0 0);
+  mask-size:
+    100% 100%,
+    100% 100%,
+    104.762% 100%,
+    100% 100%;
+  mask-position:
+    0 0,
+    0 0,
+    50% 0,
+    0 0;
+  mask-repeat: no-repeat;
+  mask-composite: intersect, intersect, exclude, add;
+}
+
 .holo-foil {
   background-image: repeating-linear-gradient(
     115deg,
@@ -445,29 +473,47 @@
   background-size: 300% 300%;
   background-position: calc(var(--px, 50) * 1%) calc(var(--py, 50) * 1%);
   mix-blend-mode: screen;
-  filter: saturate(1.2);
-  opacity: calc(0.2 + var(--on, 0) * (0.2 + var(--hyp, 0) * 0.32));
+  filter: saturate(1.15);
+  opacity: calc(0.18 + var(--on, 0) * (0.2 + var(--hyp, 0) * 0.3));
+}
+
+/* On her, only a faint sheen of the same rainbow, so she stays as drawn. */
+.holo-sheen {
+  background-image: repeating-linear-gradient(
+    115deg,
+    hsl(330 100% 75%) 0%,
+    hsl(45 100% 70%) 5%,
+    hsl(150 90% 68%) 10%,
+    hsl(200 100% 72%) 15%,
+    hsl(265 100% 76%) 20%,
+    hsl(330 100% 75%) 25%
+  );
+  background-size: 300% 300%;
+  background-position: calc(var(--px, 50) * 1%) calc(var(--py, 50) * 1%);
+  mix-blend-mode: soft-light;
+  opacity: calc(var(--on, 0) * (0.12 + var(--hyp, 0) * 0.2));
   mask-image:
-    radial-gradient(
-      farthest-corner circle at var(--mx, 50%) var(--my, 50%),
-      #000 0%,
-      rgba(0, 0, 0, 0.55) 35%,
-      rgba(0, 0, 0, 0.15) 75%
-    ),
-    linear-gradient(to bottom, #000 0%, #000 55%, transparent 78%);
+    var(--art, none),
+    linear-gradient(to bottom, #000 0%, #000 60%, transparent 76%);
+  mask-size:
+    104.762% 100%,
+    100% 100%;
+  mask-position:
+    50% 0,
+    0 0;
+  mask-repeat: no-repeat;
   mask-composite: intersect;
 }
 
-/* Glitter that flashes as the card turns: the same scatter twice, sliding against each other. */
+/* Glitter on the background that flashes as the card turns: one scatter twice, sliding against itself. */
 .holo-glitter {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cpath d='M51.8 21.3L52.3 23.7L54.7 24.1L52.3 24.6L51.8 27.0L51.3 24.6L48.9 24.1L51.3 23.7Z' fill='white' opacity='0.52'/%3E%3Ccircle cx='131.4' cy='15.1' r='0.84' fill='white' opacity='0.53'/%3E%3Ccircle cx='81.2' cy='6.0' r='0.70' fill='white' opacity='0.71'/%3E%3Ccircle cx='38.5' cy='88.2' r='0.42' fill='white' opacity='0.91'/%3E%3Cpath d='M19.8 32.8L20.3 35.2L22.7 35.7L20.3 36.2L19.8 38.6L19.3 36.2L16.9 35.7L19.3 35.2Z' fill='white' opacity='0.79'/%3E%3Ccircle cx='9.9' cy='93.7' r='0.42' fill='white' opacity='0.99'/%3E%3Ccircle cx='7.5' cy='137.4' r='0.70' fill='white' opacity='0.71'/%3E%3Ccircle cx='86.5' cy='91.3' r='0.84' fill='white' opacity='0.91'/%3E%3Cpath d='M28.9 90.2L29.4 92.6L31.8 93.1L29.4 93.5L28.9 95.9L28.4 93.5L26.0 93.1L28.4 92.6Z' fill='white' opacity='0.59'/%3E%3Ccircle cx='15.6' cy='113.9' r='0.84' fill='white' opacity='0.53'/%3E%3Ccircle cx='33.0' cy='108.9' r='0.70' fill='white' opacity='0.89'/%3E%3Ccircle cx='74.5' cy='147.8' r='0.70' fill='white' opacity='0.65'/%3E%3Ccircle cx='127.1' cy='111.8' r='0.56' fill='white' opacity='0.54'/%3E%3Ccircle cx='48.0' cy='79.2' r='0.70' fill='white' opacity='0.86'/%3E%3Ccircle cx='46.1' cy='156.8' r='0.42' fill='white' opacity='0.76'/%3E%3Ccircle cx='26.4' cy='54.7' r='0.70' fill='white' opacity='0.71'/%3E%3Ccircle cx='153.9' cy='12.4' r='0.84' fill='white' opacity='0.79'/%3E%3Cpath d='M140.1 47.3L140.6 49.7L143.0 50.2L140.6 50.7L140.1 53.1L139.6 50.7L137.2 50.2L139.6 49.7Z' fill='white' opacity='0.68'/%3E%3Ccircle cx='79.5' cy='127.5' r='0.42' fill='white' opacity='0.92'/%3E%3Cpath d='M151.1 73.0L151.6 75.4L154.0 75.9L151.6 76.3L151.1 78.7L150.7 76.3L148.3 75.9L150.7 75.4Z' fill='white' opacity='0.53'/%3E%3Ccircle cx='117.0' cy='49.5' r='0.84' fill='white' opacity='1.00'/%3E%3Ccircle cx='131.5' cy='45.5' r='0.70' fill='white' opacity='0.94'/%3E%3Ccircle cx='55.5' cy='150.5' r='0.70' fill='white' opacity='0.58'/%3E%3Cpath d='M18.7 5.1L19.5 8.7L23.1 9.4L19.5 10.2L18.7 13.8L18.0 10.2L14.4 9.4L18.0 8.7Z' fill='white' opacity='0.64'/%3E%3Cpath d='M118.1 59.3L118.9 62.9L122.5 63.7L118.9 64.4L118.1 68.0L117.4 64.4L113.8 63.7L117.4 62.9Z' fill='white' opacity='0.75'/%3E%3Ccircle cx='26.6' cy='64.3' r='0.70' fill='white' opacity='0.94'/%3E%3Ccircle cx='131.1' cy='138.2' r='0.70' fill='white' opacity='0.85'/%3E%3Ccircle cx='157.8' cy='109.2' r='0.70' fill='white' opacity='0.98'/%3E%3Ccircle cx='24.1' cy='28.2' r='0.56' fill='white' opacity='0.83'/%3E%3Ccircle cx='1.9' cy='133.0' r='0.56' fill='white' opacity='0.63'/%3E%3Ccircle cx='0.7' cy='67.0' r='0.70' fill='white' opacity='0.80'/%3E%3Cpath d='M51.0 15.8L51.7 19.4L55.3 20.1L51.7 20.8L51.0 24.4L50.3 20.8L46.7 20.1L50.3 19.4Z' fill='white' opacity='0.76'/%3E%3Ccircle cx='98.8' cy='108.2' r='0.42' fill='white' opacity='0.73'/%3E%3Cpath d='M139.4 149.4L139.8 151.8L142.2 152.3L139.8 152.8L139.4 155.2L138.9 152.8L136.5 152.3L138.9 151.8Z' fill='white' opacity='0.90'/%3E%3Ccircle cx='62.8' cy='63.8' r='0.42' fill='white' opacity='0.74'/%3E%3Ccircle cx='64.1' cy='30.5' r='0.56' fill='white' opacity='0.72'/%3E%3Ccircle cx='17.6' cy='96.1' r='0.42' fill='white' opacity='0.50'/%3E%3Ccircle cx='24.2' cy='16.2' r='0.70' fill='white' opacity='0.81'/%3E%3Ccircle cx='11.3' cy='33.3' r='0.70' fill='white' opacity='0.57'/%3E%3Ccircle cx='40.4' cy='55.6' r='0.70' fill='white' opacity='0.74'/%3E%3Ccircle cx='18.5' cy='78.1' r='0.70' fill='white' opacity='0.74'/%3E%3Cpath d='M49.9 20.2L50.4 22.6L52.8 23.1L50.4 23.5L49.9 25.9L49.4 23.5L47.0 23.1L49.4 22.6Z' fill='white' opacity='0.67'/%3E%3Ccircle cx='42.4' cy='132.6' r='0.56' fill='white' opacity='0.76'/%3E%3Ccircle cx='32.8' cy='152.3' r='0.70' fill='white' opacity='0.57'/%3E%3Ccircle cx='86.9' cy='4.3' r='0.84' fill='white' opacity='0.65'/%3E%3Cpath d='M102.9 10.2L103.6 13.8L107.2 14.6L103.6 15.3L102.9 18.9L102.1 15.3L98.5 14.6L102.1 13.8Z' fill='white' opacity='0.63'/%3E%3C/svg%3E"), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cpath d='M51.8 21.3L52.3 23.7L54.7 24.1L52.3 24.6L51.8 27.0L51.3 24.6L48.9 24.1L51.3 23.7Z' fill='white' opacity='0.52'/%3E%3Ccircle cx='131.4' cy='15.1' r='0.84' fill='white' opacity='0.53'/%3E%3Ccircle cx='81.2' cy='6.0' r='0.70' fill='white' opacity='0.71'/%3E%3Ccircle cx='38.5' cy='88.2' r='0.42' fill='white' opacity='0.91'/%3E%3Cpath d='M19.8 32.8L20.3 35.2L22.7 35.7L20.3 36.2L19.8 38.6L19.3 36.2L16.9 35.7L19.3 35.2Z' fill='white' opacity='0.79'/%3E%3Ccircle cx='9.9' cy='93.7' r='0.42' fill='white' opacity='0.99'/%3E%3Ccircle cx='7.5' cy='137.4' r='0.70' fill='white' opacity='0.71'/%3E%3Ccircle cx='86.5' cy='91.3' r='0.84' fill='white' opacity='0.91'/%3E%3Cpath d='M28.9 90.2L29.4 92.6L31.8 93.1L29.4 93.5L28.9 95.9L28.4 93.5L26.0 93.1L28.4 92.6Z' fill='white' opacity='0.59'/%3E%3Ccircle cx='15.6' cy='113.9' r='0.84' fill='white' opacity='0.53'/%3E%3Ccircle cx='33.0' cy='108.9' r='0.70' fill='white' opacity='0.89'/%3E%3Ccircle cx='74.5' cy='147.8' r='0.70' fill='white' opacity='0.65'/%3E%3Ccircle cx='127.1' cy='111.8' r='0.56' fill='white' opacity='0.54'/%3E%3Ccircle cx='48.0' cy='79.2' r='0.70' fill='white' opacity='0.86'/%3E%3Ccircle cx='46.1' cy='156.8' r='0.42' fill='white' opacity='0.76'/%3E%3Ccircle cx='26.4' cy='54.7' r='0.70' fill='white' opacity='0.71'/%3E%3Ccircle cx='153.9' cy='12.4' r='0.84' fill='white' opacity='0.79'/%3E%3Cpath d='M140.1 47.3L140.6 49.7L143.0 50.2L140.6 50.7L140.1 53.1L139.6 50.7L137.2 50.2L139.6 49.7Z' fill='white' opacity='0.68'/%3E%3Ccircle cx='79.5' cy='127.5' r='0.42' fill='white' opacity='0.92'/%3E%3Cpath d='M151.1 73.0L151.6 75.4L154.0 75.9L151.6 76.3L151.1 78.7L150.7 76.3L148.3 75.9L150.7 75.4Z' fill='white' opacity='0.53'/%3E%3Ccircle cx='117.0' cy='49.5' r='0.84' fill='white' opacity='1.00'/%3E%3Ccircle cx='131.5' cy='45.5' r='0.70' fill='white' opacity='0.94'/%3E%3Ccircle cx='55.5' cy='150.5' r='0.70' fill='white' opacity='0.58'/%3E%3Cpath d='M18.7 5.1L19.5 8.7L23.1 9.4L19.5 10.2L18.7 13.8L18.0 10.2L14.4 9.4L18.0 8.7Z' fill='white' opacity='0.64'/%3E%3Cpath d='M118.1 59.3L118.9 62.9L122.5 63.7L118.9 64.4L118.1 68.0L117.4 64.4L113.8 63.7L117.4 62.9Z' fill='white' opacity='0.75'/%3E%3Ccircle cx='26.6' cy='64.3' r='0.70' fill='white' opacity='0.94'/%3E%3Ccircle cx='131.1' cy='138.2' r='0.70' fill='white' opacity='0.85'/%3E%3Ccircle cx='157.8' cy='109.2' r='0.70' fill='white' opacity='0.98'/%3E%3Ccircle cx='24.1' cy='28.2' r='0.56' fill='white' opacity='0.83'/%3E%3Ccircle cx='1.9' cy='133.0' r='0.56' fill='white' opacity='0.63'/%3E%3Ccircle cx='0.7' cy='67.0' r='0.70' fill='white' opacity='0.80'/%3E%3Cpath d='M51.0 15.8L51.7 19.4L55.3 20.1L51.7 20.8L51.0 24.4L50.3 20.8L46.7 20.1L50.3 19.4Z' fill='white' opacity='0.76'/%3E%3Ccircle cx='98.8' cy='108.2' r='0.42' fill='white' opacity='0.73'/%3E%3Cpath d='M139.4 149.4L139.8 151.8L142.2 152.3L139.8 152.8L139.4 155.2L138.9 152.8L136.5 152.3L138.9 151.8Z' fill='white' opacity='0.90'/%3E%3Ccircle cx='62.8' cy='63.8' r='0.42' fill='white' opacity='0.74'/%3E%3Ccircle cx='64.1' cy='30.5' r='0.56' fill='white' opacity='0.72'/%3E%3Ccircle cx='17.6' cy='96.1' r='0.42' fill='white' opacity='0.50'/%3E%3Ccircle cx='24.2' cy='16.2' r='0.70' fill='white' opacity='0.81'/%3E%3Ccircle cx='11.3' cy='33.3' r='0.70' fill='white' opacity='0.57'/%3E%3Ccircle cx='40.4' cy='55.6' r='0.70' fill='white' opacity='0.74'/%3E%3Ccircle cx='18.5' cy='78.1' r='0.70' fill='white' opacity='0.74'/%3E%3Cpath d='M49.9 20.2L50.4 22.6L52.8 23.1L50.4 23.5L49.9 25.9L49.4 23.5L47.0 23.1L49.4 22.6Z' fill='white' opacity='0.67'/%3E%3Ccircle cx='42.4' cy='132.6' r='0.56' fill='white' opacity='0.76'/%3E%3Ccircle cx='32.8' cy='152.3' r='0.70' fill='white' opacity='0.57'/%3E%3Ccircle cx='86.9' cy='4.3' r='0.84' fill='white' opacity='0.65'/%3E%3Cpath d='M102.9 10.2L103.6 13.8L107.2 14.6L103.6 15.3L102.9 18.9L102.1 15.3L98.5 14.6L102.1 13.8Z' fill='white' opacity='0.63'/%3E%3C/svg%3E");
-  background-size: 14% auto, 21% auto;
+  background-size: 24% auto, 34% auto;
   background-position:
     calc(var(--px, 50) * 0.35%) calc(var(--py, 50) * 0.35%),
     calc(60% - var(--px, 50) * 0.25%) calc(40% - var(--py, 50) * 0.3%);
   mix-blend-mode: plus-lighter;
-  opacity: calc(var(--on, 0) * (0.25 + var(--hyp, 0) * 0.75));
-  mask-image: linear-gradient(to bottom, #000 0%, #000 60%, transparent 80%);
+  opacity: calc(var(--on, 0) * (0.2 + var(--hyp, 0) * 0.6));
 }
 
 /* A bought frame's band (18 of 630, so the same share of the width on every side). */
