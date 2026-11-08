@@ -41,6 +41,7 @@ import {
   type WipeCounts,
 } from "@miyoria/store";
 import {
+  type AccountRef,
   type Clock,
   newId,
   type PersonId,
@@ -134,6 +135,38 @@ export interface MemoryCommandDeps {
   clock?: Clock;
 }
 
+/** What `forget` would take from someone, as far as a place may show it. */
+export interface OwnMemories {
+  records: MemoryRecord[];
+  person: PersonId | null;
+  /** Ids of the records derived from what they said (the rest are about them). */
+  derived: ReadonlySet<string>;
+}
+
+/**
+ * The records about `account`, then the ones derived from what they said, newest first, keeping
+ * what `visible` allows. `/me memory` passes the scopes of the invocation, the member page its own
+ * rule. `derived: false` skips those: finding them walks every memory.
+ */
+export async function ownMemories(
+  engine: MemoryEngine,
+  account: AccountRef,
+  visible: (record: MemoryRecord, person: PersonId | null) => boolean,
+  options: { derived?: boolean } = {},
+): Promise<OwnMemories> {
+  const person = await engine.personOf(account);
+  const own = (await engine.memoriesOf(person, account, false)).filter((r) => visible(r, person));
+  const found =
+    options.derived === false
+      ? { records: [] }
+      : await engine.derivedFrom(person, account, new Set(own.map((r) => r.id)));
+  const derived = found.records.filter((r) => r.superseded_by === null && visible(r, person));
+  const records = [...own, ...derived].sort(
+    (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || (b.id < a.id ? -1 : 1),
+  );
+  return { records, person, derived: new Set(derived.map((r) => r.id)) };
+}
+
 class Handler {
   readonly clock: Clock;
 
@@ -152,24 +185,12 @@ class Handler {
    * What `forget` would take, as far as it may be shown in the invocation's context: the
    * records about the invoker, then the ones derived from what they said (`derived`).
    */
-  async visible(
-    inv: Invocation,
-  ): Promise<{ records: MemoryRecord[]; person: PersonId | null; derived: ReadonlySet<string> }> {
-    const person = await this.engine.personOf(inv.invoker);
+  async visible(inv: Invocation): Promise<OwnMemories> {
     // Only the invoker is "in" the context of the reply, so DM memories show up only in the
     // invoker's own DM.
-    const scopes = visibleScopes(inv.context, [inv.invoker], person === null ? [] : [person]);
-    const own = (await this.engine.memoriesOf(person, inv.invoker, false)).filter((r) =>
-      hasScope(scopes, r.scope),
+    return ownMemories(this.engine, inv.invoker, (r, person) =>
+      hasScope(visibleScopes(inv.context, [inv.invoker], person === null ? [] : [person]), r.scope),
     );
-    const found = await this.engine.derivedFrom(person, inv.invoker, new Set(own.map((r) => r.id)));
-    const derived = found.records.filter(
-      (r) => r.superseded_by === null && hasScope(scopes, r.scope),
-    );
-    const records = [...own, ...derived].sort(
-      (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || (b.id < a.id ? -1 : 1),
-    );
-    return { records, person, derived: new Set(derived.map((r) => r.id)) };
   }
 
   async show(inv: Invocation, page: number): Promise<CommandReply> {

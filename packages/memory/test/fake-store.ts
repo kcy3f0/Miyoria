@@ -3,6 +3,7 @@
 
 import type {
   Account,
+  AuthoredEntry,
   LogEntry,
   MemoryFilter,
   MemoryHit,
@@ -61,6 +62,28 @@ export class FakeStore implements MessageLog, PeopleStore, MemoryRecordStore {
   async recent(profile: ProfileId, context: ContextKey, limit: number): Promise<LogEntry[]> {
     const list = this.#messages.get(`${profile}\u0001${contextKey(context)}`) ?? [];
     return structuredClone(list.slice(Math.max(0, list.length - limit)));
+  }
+
+  async authoredSince(
+    profile: ProfileId,
+    authors: readonly AccountRef[],
+    since: Timestamp,
+    limit: number,
+  ): Promise<AuthoredEntry[]> {
+    const from = Date.parse(since);
+    const all = [...this.#messages.values()]
+      .flat()
+      .filter(
+        (e) =>
+          e.profile === profile &&
+          !e.is_self &&
+          Date.parse(e.ts) >= from &&
+          authors.some((a) => a.platform === e.author.platform && a.id === e.author.id),
+      )
+      .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    return all
+      .slice(Math.max(all.length - limit, 0))
+      .map((e) => ({ ts: e.ts, kind: e.context.kind }));
   }
 
   async purge(profile: ProfileId): Promise<number> {

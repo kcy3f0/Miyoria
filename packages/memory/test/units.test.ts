@@ -22,8 +22,31 @@ import {
   tokenize,
   tokenOverlap,
   visibleScopes,
+  visibleToSelf,
 } from "../src/index.js";
 import { acct, DAY, dmCtx, guildCtx, HOUR, MINUTE, profile, SECOND, T0_MS, t0 } from "./helpers.js";
+
+describe("visibleToSelf", () => {
+  const me = { platform: "discord", id: "1" };
+  const them = { platform: "discord", id: "2" };
+  const place = { platform: "discord", scope: "g", channel: "c", kind: "channel" } as const;
+
+  it("shows what is theirs, and what was said in the open", () => {
+    expect(visibleToSelf({ type: "global" }, me, "p1")).toBe(true);
+    expect(visibleToSelf({ type: "guild", platform: "discord", guild: "g" }, me, "p1")).toBe(true);
+    expect(visibleToSelf({ type: "channel", context: place }, me, "p1")).toBe(true);
+    expect(visibleToSelf({ type: "dm", account: me }, me, "p1")).toBe(true);
+    expect(visibleToSelf({ type: "person", person: "p1" }, me, "p1")).toBe(true);
+  });
+
+  it("hides another account's DM and private channels, even when about them", () => {
+    expect(visibleToSelf({ type: "dm", account: them }, me, "p1")).toBe(false);
+    const dm = { ...place, scope: null, kind: "dm" } as const;
+    expect(visibleToSelf({ type: "channel", context: dm }, me, "p1")).toBe(false);
+    expect(visibleToSelf({ type: "person", person: "p2" }, me, "p1")).toBe(false);
+    expect(visibleToSelf({ type: "person", person: "p2" }, me, null)).toBe(false);
+  });
+});
 
 describe("units", () => {
   it("tokenizes_chinese_with_jieba_and_drops_stop_words", () => {

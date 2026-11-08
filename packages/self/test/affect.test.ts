@@ -23,6 +23,35 @@ const reading = (name: EmotionReading["name"], intensity: number): EmotionReadin
   person: null,
 });
 
+describe("the line shown to the person", () => {
+  it("is written by Reflect alone, kept apart from her feeling, and can be cleared", async () => {
+    const r = rig();
+    r.attitudes.set("p1", { affinity: 10 });
+    await r.self.setFeeling("p1", "比 Bob 有趣", "self");
+    expect(r.affect.card("p1")?.public_feeling).toBeNull();
+
+    await r.affect.adjustBond("p1", { public_feeling: "有人寫的", why: "x" }, "appraise");
+    await r.affect.adjustBond("p1", { public_feeling: "有人寫的", why: "x" }, "panel");
+    expect(r.affect.card("p1")?.public_feeling).toBeNull();
+
+    await r.affect.adjustBond("p1", { public_feeling: "你常來陪我", why: "x" }, "reflect");
+    expect(r.affect.card("p1")).toMatchObject({
+      public_feeling: "你常來陪我",
+      feeling: "比 Bob 有趣",
+    });
+
+    await r.affect.adjustBond("p1", { public_feeling: null, why: "x" }, "panel");
+    expect(r.affect.card("p1")?.public_feeling).toBeNull();
+  });
+
+  it("is never written into her prompt lines", async () => {
+    const r = rig();
+    r.attitudes.set("p1", { affinity: 10 });
+    await r.affect.adjustBond("p1", { public_feeling: "PUBLIC-LINE", why: "x" }, "reflect");
+    expect(r.affect.renderPeople(["p1"]).join("\n")).not.toContain("PUBLIC-LINE");
+  });
+});
+
 describe("the rule-event table", () => {
   it("has an entry for every kind, and only uses the shared strengths", () => {
     const allowed = new Set<number>([

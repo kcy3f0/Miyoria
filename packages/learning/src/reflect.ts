@@ -19,7 +19,12 @@ import {
   userMessage,
   withLlmTag,
 } from "@miyoria/llm";
-import { PeopleStoreKey, type SettingsStore, StoredHandleDirectory } from "@miyoria/store";
+import {
+  knownNames,
+  PeopleStoreKey,
+  type SettingsStore,
+  StoredHandleDirectory,
+} from "@miyoria/store";
 import {
   type AccountRef,
   AffectStateKey,
@@ -31,6 +36,7 @@ import {
   characterCore,
   contextKeyString,
   dataBlock,
+  ephemeralHandlesIn,
   type FeedbackTally,
   GoalAgendaKey,
   type HandleDirectory,
@@ -39,9 +45,12 @@ import {
   type JsonValue,
   KnowledgeKey,
   type KnowledgeSubject,
+  type KnownName,
   type Lesson,
   MemoryCuratorKey,
   MindKey,
+  ModerationKey,
+  mentionsAnother,
   newId,
   type PersonId,
   type ProfileId,
@@ -50,6 +59,7 @@ import {
   repairHandleText,
   SelfStateKey,
   safeName,
+  splitNames,
   toTimestamp,
 } from "@miyoria/types";
 import { z } from "zod";
@@ -120,6 +130,8 @@ export const ReflectionSchema = z.object({
         affinity: z.number().min(-100).max(100).default(0),
         trust: z.number().min(-100).max(100).default(0),
         feeling: z.string().max(300).nullable().default(null),
+        /** Filtered and cut by the program; a bad value here must not cost the reflection. */
+        public_feeling: z.string().nullable().default(null).catch(null),
         why: z.string().max(200).default(""),
       }),
     )
@@ -145,6 +157,8 @@ const FORMAT = `{
 export const REFLECT_ATTACHMENT_STEP = 0.03;
 export const REFLECT_AFFINITY_STEP = 2;
 export const REFLECT_TRUST_STEP = 2;
+/** Longest line shown to the person themselves. */
+export const MAX_PUBLIC_FEELING = 120;
 
 function rules(kind: "daily" | "light", maxGoals: number, maxBonds: number): string {
   return `# 反思
@@ -156,7 +170,8 @@ function rules(kind: "daily" | "light", maxGoals: number, maxBonds: number): str
 - 從回饋(反應、回覆、被說吵、主動開話題有沒有人理、被拒絕的行動)檢討自己,寫成 lessons,每項 {"text": 具體、可以照著做的一句話, "person": 名字或 null, "place": 資料裡的地點(整串)或 null, "talk": 只有這條本身是關於話多話少時才填 -1~1(更安靜是負的),語氣、梗、用詞這類風格的填 null, "days": 幾天後過期}。
 - lessons 要平衡:做得好、大家有接話、玩得開心的也要記(talk 可以是正的)。被嫌一兩次只代表那個人、那個話題、那個時候,不要寫成「整場不主動開話題」「只被點名才回」這種全面沉默的規則;你是有自己想法、會主動找事做的人,不是只會等人點名。舊的 lesson 已經過時或太極端就把它的代號放進 drop_lessons。
 - 用 documents 更新你自己整理的資料庫(人物、伺服器、主題),也包括關於你自己的文件(subject "self":你喜歡做什麼、什麼做得好或不好、你的長期目標)。
-- bonds:整理人物卡,最多 ${maxBonds} 個人,每項 {"person": 名字, "attachment": 你多在意他的變化(一小步,-0.03~0.03), "affinity": 好感的變化(-2~2), "trust": 信任的變化(-2~2), "feeling": 整段改寫的你對他的感覺或 null, "why": 理由}。依累積的互動與感受慢慢調,沒有變化就不要寫;暗戀、在意、疏遠都是這樣一步一步長出來的。實際數值由系統決定,每個人一天最多調一次。
+- bonds:整理人物卡,最多 ${maxBonds} 個人,每項 {"person": 名字, "attachment": 你多在意他的變化(一小步,-0.03~0.03), "affinity": 好感的變化(-2~2), "trust": 信任的變化(-2~2), "feeling": 整段改寫的你對他的感覺或 null, "public_feeling": 給他本人看的一句話或 null, "why": 理由}。依累積的互動與感受慢慢調,沒有變化就不要寫;暗戀、在意、疏遠都是這樣一步一步長出來的。實際數值由系統決定,每個人一天最多調一次。
+- public_feeling 是他本人會讀到的一句話,一定是對他說的,只談你和他,不提任何其他人(不寫別人的名字、也不寫「另一個人」「某人」),不寫數字、不寫你的內心盤算;想不出來就給 null。
 - feelings:只想改寫對某人的感覺時用,每項 {"person": 名字, "note": 整段改寫的感覺}。
 - goals:最多 ${maxGoals} 個值得花幾天去做的長期目標,每項 {"text": 目標, "why": 理由, "days": 幾天},會放進你的目標;沒有就不要。
 - 人一律用名字(資料裡看到的那樣),地點照資料裡的整串寫,不要自己編代號:記憶、lesson、文件、感覺都是留給以後的你看的。
@@ -795,6 +810,8 @@ export class Reflector {
       this.#bondsToday = new Set();
     }
     const step = (v: number, max: number) => Math.min(Math.max(v, -max), max);
+    const asked = reply.bonds.some((b) => b.public_feeling !== null);
+    const names = asked ? await knownNames(this.#d.services) : null;
     const changes = new Map<PersonId, { entry: PersonEntry; change: BondChange }>();
     const merge = (entry: PersonEntry, patch: Omit<BondChange, "why">, why: string) => {
       const prev = changes.get(entry.person);
@@ -814,6 +831,8 @@ export class Reflector {
       if (b.trust !== 0) patch.trust = step(b.trust, REFLECT_TRUST_STEP);
       const feeling = b.feeling === null ? null : repairHandleText(b.feeling);
       if (feeling !== null && feeling.trim() !== "") patch.feeling = short(feeling, 300);
+      const line = await this.#publicFeeling(b.public_feeling, p, names);
+      if (line !== null) patch.public_feeling = line;
       if (Object.keys(patch).length === 0) continue;
       merge(p, patch, repairHandleText(b.why) ?? "反思");
     }
@@ -839,6 +858,36 @@ export class Reflector {
       }
     }
     if (done > 0) this.#saveState();
+  }
+
+  /**
+   * The line for `entry` to read about themselves, or `null`, which keeps the line they have: no
+   * per-call code, nobody else's name, passed by moderation. Without the names or the moderation
+   * nothing can vouch for the text, so nothing is stored.
+   */
+  async #publicFeeling(
+    text: string | null,
+    entry: PersonEntry,
+    names: readonly KnownName[] | null,
+  ): Promise<string | null> {
+    if (text === null || names === null) return null;
+    const line = short(text, MAX_PUBLIC_FEELING);
+    if (line === "" || ephemeralHandlesIn(line).length > 0) return null;
+    const split = splitNames(names, entry.person, entry.account ? [entry.account] : []);
+    const own = { ...split, own: [...split.own, entry.name, entry.handle] };
+    if (mentionsAnother(line, own)) {
+      log.debug({ person: entry.person }, "a line for the page named someone else");
+      return null;
+    }
+    const moderation = this.#d.services.get(ModerationKey);
+    if (!moderation) return null;
+    try {
+      const verdict = await moderation.screenAsync({ path: "other", visible: line });
+      return verdict.ok ? line : null;
+    } catch (error) {
+      log.debug({ err: errorMessage(error) }, "cannot screen a line for the page");
+      return null;
+    }
   }
 
   #addRun(run: ReflectionRun): void {

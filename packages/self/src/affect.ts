@@ -471,6 +471,7 @@ export class AffectService implements AffectState, MoodSignals {
       attachment: heart?.romance ?? 0,
       emotions: heart?.emotions ?? {},
       feeling: feeling?.text ?? "",
+      public_feeling: rec?.extras.public_feeling ?? null,
       label: relationshipLabel({ affinity, familiarity }),
       owner: att?.owner ?? snap?.owner ?? false,
       blocked: att?.blocked ?? snap?.blocked ?? false,
@@ -550,6 +551,11 @@ export class AffectService implements AffectState, MoodSignals {
         l.affinity += Math.abs(done.affinity);
         l.trust += Math.abs(done.trust);
         l.familiarity += Math.abs(done.familiarity);
+        // Only Reflect writes the line; anyone who may change a card may clear it.
+        if (change.public_feeling === null) x.public_feeling = null;
+        else if (change.public_feeling !== undefined && by === "reflect") {
+          x.public_feeling = change.public_feeling;
+        }
         if (x.snapshot) {
           x.snapshot.affinity = clampTo(x.snapshot.affinity + done.affinity, -100, 100);
           x.snapshot.trust = clampTo(x.snapshot.trust + done.trust, 0, 100);

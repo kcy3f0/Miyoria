@@ -186,6 +186,12 @@ export interface PersonCard {
   emotions: Partial<Record<PersonEmotionName, number>>;
   /** Her feeling about them in her own words, using names (Appraise edits, Reflect rewrites). */
   feeling: string;
+  /**
+   * One line for that person's own eyes, written by Reflect: about them alone, other names
+   * filtered, passed through moderation (§17.1). Only the member page reads it, never a prompt.
+   * `null` or absent: she has none yet, and nothing takes its place.
+   */
+  public_feeling?: string | null;
   label: RelationshipLabel;
   owner: boolean;
   blocked: boolean;
@@ -202,6 +208,8 @@ export interface BondChange {
   attachment?: number;
   /** Replaces her feeling text. */
   feeling?: string;
+  /** Replaces the line shown to the person (`null` clears it); already filtered by the writer. */
+  public_feeling?: string | null;
   why: string;
 }
 

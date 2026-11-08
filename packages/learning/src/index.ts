@@ -91,6 +91,7 @@ export {
   subjectsFor,
 } from "./modules.js";
 export {
+  MAX_PUBLIC_FEELING,
   parseContextString,
   REFLECT_STATE_KEY,
   type ReflectDeps,

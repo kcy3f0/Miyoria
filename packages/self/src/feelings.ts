@@ -6,7 +6,8 @@
 // The record keeps its old shape (`text`, `updated_at`, `by`), so what only knows feelings
 // keeps working, and adds `card` for the rest:
 //
-//   { text, updated_at, by, card: { v, handle, call_name, snapshot, ledger, legacy, migrated_at } }
+//   { text, updated_at, by, card: { v, handle, call_name, public_feeling, snapshot, ledger, legacy,
+//     migrated_at } }
 //
 // A person without a feeling text has `text: ""` (readers of feelings skip those).
 
@@ -64,6 +65,8 @@ export interface CardExtras {
   v: 1;
   handle: string | null;
   call_name: string | null;
+  /** The line shown to the person themselves (`PersonCard.public_feeling`). */
+  public_feeling: string | null;
   snapshot: BondSnapshot | null;
   ledger: BondLedger;
   legacy: CardLegacy;
@@ -76,6 +79,7 @@ export function emptyExtras(): CardExtras {
     v: 1,
     handle: null,
     call_name: null,
+    public_feeling: null,
     snapshot: null,
     ledger: { day: 0, attachment: 0, affinity: 0, trust: 0, familiarity: 0 },
     legacy: {},
@@ -142,6 +146,7 @@ function parseExtras(v: JsonValue | undefined): CardExtras {
     v: 1,
     handle: strOrNull(v.handle),
     call_name: strOrNull(v.call_name),
+    public_feeling: strOrNull(v.public_feeling),
     snapshot: parseSnapshot(v.snapshot),
     ledger: parseLedger(v.ledger),
     legacy: parseLegacy(v.legacy),
@@ -296,6 +301,7 @@ function hasExtras(e: CardExtras): boolean {
   return (
     e.handle !== null ||
     e.call_name !== null ||
+    e.public_feeling !== null ||
     e.snapshot !== null ||
     e.migrated_at !== null ||
     Object.keys(e.legacy).length > 0

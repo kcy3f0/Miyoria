@@ -27,6 +27,8 @@ export {
   type MemoryCommandDeps,
   MemoryCommands,
   NODE_WIPE,
+  type OwnMemories,
+  ownMemories,
   PATHS,
   WIPE_SCOPE_LABEL,
   type WipeScope,
@@ -146,6 +148,7 @@ export {
   scopeForNew,
   scopeLabel,
   visibleScopes,
+  visibleToSelf,
 } from "./scope.js";
 export {
   effectiveConfidence,

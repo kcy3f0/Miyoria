@@ -15,6 +15,9 @@ import {
   type GoalAgenda,
   GoalAgendaKey,
   type GoalInput,
+  HandleDirectoryKey,
+  ModerationKey,
+  type ModerationService,
   type PersonCard,
   type PersonId,
 } from "@miyoria/types";
@@ -23,6 +26,7 @@ import {
   DRAFT_FORMAT,
   FeedbackTracker,
   LessonStore,
+  MAX_PUBLIC_FEELING,
   Reflector,
   reflectConfig,
 } from "../src/index.js";
@@ -97,6 +101,16 @@ class FakeGoals {
   }
 }
 
+/** Blocks what holds `BADWORD`, as `screenAsync` would. */
+const MODERATION = {
+  screenAsync: async (check: { visible?: string | null }) => ({
+    ok: !/BADWORD/.test(check.visible ?? ""),
+    visible: check.visible ?? null,
+    voice: null,
+    blocked: [],
+  }),
+} as unknown as ModerationService;
+
 function setup(...replies: string[]) {
   const provider = new MockProvider("p");
   for (const r of replies) provider.reply(r);
@@ -110,6 +124,7 @@ function setup(...replies: string[]) {
   services.provide("t", AffectStateKey, affect as unknown as AffectState);
   const goals = new FakeGoals();
   services.provide("t", GoalAgendaKey, goals as unknown as GoalAgenda);
+  services.provide("moderation", ModerationKey, MODERATION);
   services.provide("t", PeopleStoreKey, {
     all: async () => [
       { id: "p-owen", display_name: "Owen", created_at: "", accounts: [] },
@@ -136,7 +151,7 @@ function setup(...replies: string[]) {
     feedback,
     lessons: new LessonStore(store, "p", config.max_lessons, clock),
   });
-  return { provider, affect, goals, reflector, store };
+  return { provider, affect, goals, reflector, store, services };
 }
 
 describe("Reflect (v2)", () => {
@@ -207,6 +222,110 @@ describe("Reflect (v2)", () => {
     vi.advanceTimersByTime(24 * 60 * 60_000);
     await reflector.reflect("light", null);
     expect(affect.bonds).toHaveLength(4);
+  });
+
+  describe("public_feeling", () => {
+    const reply = (publicFeeling: unknown, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({
+        summary: "嗯",
+        bonds: [{ person: "Owen", public_feeling: publicFeeling, why: "想了想", ...extra }],
+      });
+    const line = (affect: FakeAffect) => affect.bonds[0]?.change.public_feeling;
+
+    it("is asked for by name, as a line that speaks of that person alone", async () => {
+      const { provider, reflector } = setup('{"summary": "嗯"}');
+      await reflector.reflect("daily", null);
+      const system = String(provider.requests()[0]?.messages[0]?.content);
+      expect(system).toContain('"public_feeling": 給他本人看的一句話或 null');
+      expect(system).toContain("不提任何其他人");
+    });
+
+    it("is written through adjustBond when it is about that person alone", async () => {
+      const { affect, reflector } = setup(reply("你最近常來陪我,我有記得。"));
+      await reflector.reflect("daily", null);
+      expect(affect.bonds[0]).toMatchObject({
+        person: "p-owen",
+        by: "reflect",
+        change: { public_feeling: "你最近常來陪我,我有記得。" },
+      });
+    });
+
+    it("may use the person's own name", async () => {
+      const { affect, reflector } = setup(reply("Owen 你今天很努力。"));
+      await reflector.reflect("daily", null);
+      expect(line(affect)).toBe("Owen 你今天很努力。");
+    });
+
+    it("is dropped when it names anyone else, and the rest of the bond still goes", async () => {
+      const { affect, reflector } = setup(reply("你和 Amy 感情真好。", { affinity: 1 }));
+      await reflector.reflect("daily", null);
+      expect(affect.bonds[0]?.change).toEqual({ affinity: 1, why: "想了想" });
+      expect(line(affect)).toBeUndefined();
+    });
+
+    it("is dropped for someone who is only in the handle table", async () => {
+      const { affect, reflector, services } = setup(reply("你和 Carol 感情真好。"));
+      services.provide("t", HandleDirectoryKey, {
+        list: () => [{ handle: "Carol", person: "p-carol", account: null, display_name: "Carol" }],
+        ofPerson: () => null,
+        resolve: () => null,
+      } as never);
+      await reflector.reflect("daily", null);
+      expect(affect.bonds).toEqual([]);
+    });
+
+    it("is dropped when it holds a per-call code", async () => {
+      const { affect, reflector } = setup(reply("你和 u2 感情真好。"));
+      await reflector.reflect("daily", null);
+      expect(affect.bonds).toEqual([]);
+    });
+
+    it("is dropped when moderation does not pass it", async () => {
+      const { affect, reflector } = setup(reply("你真是 BADWORD。"));
+      await reflector.reflect("daily", null);
+      expect(affect.bonds).toEqual([]);
+    });
+
+    it("is not written at all without moderation", async () => {
+      const { affect, reflector, services } = setup(reply("你最近常來陪我。"));
+      services.removeOwnedBy("moderation");
+      await reflector.reflect("daily", null);
+      expect(affect.bonds).toEqual([]);
+    });
+
+    it("is never filled in from her private feeling", async () => {
+      const { affect, reflector } = setup(
+        JSON.stringify({
+          summary: "嗯",
+          bonds: [{ person: "Owen", feeling: "他比 Amy 溫柔。", why: "想了想" }],
+        }),
+      );
+      await reflector.reflect("daily", null);
+      expect(affect.bonds[0]?.change.feeling).toBe("他比 Amy 溫柔。");
+      expect(line(affect)).toBeUndefined();
+    });
+
+    it("cannot cost her the reflection: a bad value is ignored", async () => {
+      const { affect, reflector } = setup(reply(42, { affinity: 1 }));
+      const run = await reflector.reflect("daily", null);
+      expect(run?.error).toBeNull();
+      expect(affect.bonds[0]?.change).toEqual({ affinity: 1, why: "想了想" });
+    });
+
+    it("is cut to the page's length", async () => {
+      const { affect, reflector } = setup(reply("好".repeat(500)));
+      await reflector.reflect("daily", null);
+      expect([...(line(affect) ?? "")].length).toBeLessThanOrEqual(MAX_PUBLIC_FEELING + 1);
+    });
+
+    it("does not come back into her own reflection", async () => {
+      const { affect, provider, reflector } = setup('{"summary": "嗯"}');
+      (affect.list[0] as PersonCard).public_feeling = "PUBLIC-LINE";
+      await reflector.reflect("daily", null);
+      const prompt = JSON.stringify(provider.requests()[0]?.messages);
+      expect(prompt).toContain("Owen");
+      expect(prompt).not.toContain("PUBLIC-LINE");
+    });
   });
 
   it("writes long-term goals into her GoalAgenda as `whenever` goals", async () => {
