@@ -11,9 +11,9 @@ import { notify } from "@/lib/notify";
 import { FRAME_NAME, cardFileName, cardPng, verifyUrl } from "./card";
 import { HoloCard } from "./HoloCard";
 
-/** `#/card/<serial>`: the serial on the address, or `null`. */
-export function cardSerialIn(hash: string): string | null {
-  const m = /^#\/card\/([^/?#]+)/.exec(hash);
+/** `/card/<serial>`: the serial in the page path, or `null`. */
+export function cardSerialIn(path: string): string | null {
+  const m = /^\/card\/([^/?#]+)/.exec(path);
   if (!m) return null;
   try {
     return decodeURIComponent(m[1] ?? "");

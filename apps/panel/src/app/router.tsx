@@ -1,5 +1,5 @@
 import {
-  createHashHistory,
+  createBrowserHistory,
   createRootRoute,
   createRoute,
   createRouter,
@@ -158,10 +158,10 @@ const routeTree = rootRoute.addChildren([
 ]);
 
 /**
- * Hash history: the Core serves `dist/` as static files, and `#/activity`
- * needs no server-side SPA fallback.
+ * Clean addresses (`/activity`, `/card/MYR-…`): the Core answers any page path without a file
+ * extension with `index.html` (`packages/api/src/panel.ts`).
  */
-export function createAppRouter(history: RouterHistory = createHashHistory()) {
+export function createAppRouter(history: RouterHistory = createBrowserHistory()) {
   return createRouter({ routeTree, history, defaultPreload: false, scrollRestoration: true });
 }
 

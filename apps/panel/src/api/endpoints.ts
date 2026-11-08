@@ -125,7 +125,7 @@ export function createApi(client: ApiClient) {
     session: (o?: Opts) => client.get<SessionInfo>("/api/auth/session", o),
     /** Ends the Discord session (clears the cookie); harmless for the token. */
     logout: () => client.post<void>("/api/auth/logout", undefined, { public: true }),
-    /** Where the browser goes to start a Discord login; `next` is a local path such as `/#/people`. */
+    /** Where the browser goes to start a Discord login; `next` is a local path such as `/people`. */
     discordLoginUrl: (next: string) => client.url("/api/auth/oauth/login", { next }),
 
     // what anyone may see, and what a logged-in person has of their own: the cookie alone

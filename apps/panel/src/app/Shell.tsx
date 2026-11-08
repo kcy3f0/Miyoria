@@ -1,4 +1,4 @@
-import { Link, Outlet, useRouterState } from "@tanstack/react-router";
+import { Link, Outlet, useRouter, useRouterState } from "@tanstack/react-router";
 import { IdCard, LogOut, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { CommandPalette } from "@/app/CommandPalette";
@@ -84,6 +84,7 @@ function ConnectionDot() {
 
 function SessionFooter() {
   const value = useSession();
+  const router = useRouter();
   const { signOut } = useConnection();
   const { state, isMobile } = useSidebar();
   const user = value?.session.method === "discord" ? value.session.user : null;
@@ -119,7 +120,16 @@ function SessionFooter() {
       {!user && expanded && <span className="flex-1 truncate px-2 text-xs text-muted-foreground">Admin token</span>}
       {user && (
         <Button asChild variant="ghost" size="icon-sm" className="text-muted-foreground" title="我的頁面">
-          <a href="#/me" aria-label="我的頁面">
+          <a
+            href="/me"
+            aria-label="我的頁面"
+            onClick={(e) => {
+              // Their own page is outside the admin routes; App switches to it on the new address.
+              if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+              e.preventDefault();
+              router.history.push("/me");
+            }}
+          >
             <IdCard />
           </a>
         </Button>

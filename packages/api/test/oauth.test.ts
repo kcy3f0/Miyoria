@@ -266,7 +266,7 @@ describe("oauth", () => {
     const methods = await client.authMethods();
     expect(methods.token && methods.discord).toBe(true);
 
-    const authorize = await h.startLogin("/#/people");
+    const authorize = await h.startLogin("/people");
     expect(authorize.href.split("?")[0]).toBe(`${h.fake.url}/oauth2/authorize`);
     expect(param(authorize, "response_type")).toBe("code");
     expect(param(authorize, "client_id")).toBe("cid");
@@ -281,7 +281,7 @@ describe("oauth", () => {
       ["code", "owner-code"],
       ["state", state],
     ]);
-    expect(done.location).toBe("/#/people");
+    expect(done.location).toBe("/people");
     const setCookie = done.setCookie ?? "";
     for (const attr of ["HttpOnly", "SameSite=Lax", "Path=/", "Max-Age=604800"]) {
       expect(setCookie, `${setCookie} lacks ${attr}`).toContain(attr);
@@ -340,10 +340,10 @@ describe("oauth", () => {
       ["code", "owner-code"],
       ["state", "bogus"],
     ]);
-    expect(bogus.location).toBe("/#/login?error=state");
+    expect(bogus.location).toBe("/login?error=state");
     expect(bogus.setCookie).toBeNull();
     const missing = await h.callback([["code", "owner-code"]]);
-    expect(missing.location).toBe("/#/login?error=state");
+    expect(missing.location).toBe("/login?error=state");
 
     // A state works once.
     let authorize = await h.startLogin();
@@ -352,13 +352,13 @@ describe("oauth", () => {
       ["code", "owner-code"],
       ["state", state],
     ]);
-    expect(first.location, "default next").toBe("/#/");
+    expect(first.location, "default next").toBe("/");
     expect(first.cookie).not.toBeNull();
     const replay = await h.callback([
       ["code", "owner-code"],
       ["state", state],
     ]);
-    expect(replay.location).toBe("/#/login?error=state");
+    expect(replay.location).toBe("/login?error=state");
 
     // The user pressed Cancel on Discord.
     authorize = await h.startLogin();
@@ -367,11 +367,11 @@ describe("oauth", () => {
       ["error", "access_denied"],
       ["state", state],
     ]);
-    expect(cancelled.location).toBe("/#/login?error=cancelled");
+    expect(cancelled.location).toBe("/login?error=cancelled");
 
     // Discord refused the code: no details leak.
     const bad = await h.login("forged-code");
-    expect(bad.location).toBe("/#/login?error=exchange");
+    expect(bad.location).toBe("/login?error=exchange");
     expect(bad.cookie).toBeNull();
 
     for (const evil of [
@@ -381,7 +381,7 @@ describe("oauth", () => {
       "/ok\r\nSet-Cookie: x=1",
     ]) {
       const done = await h.login("owner-code", evil);
-      expect(done.location, JSON.stringify(evil)).toBe("/#/");
+      expect(done.location, JSON.stringify(evil)).toBe("/");
     }
   });
 
@@ -390,7 +390,7 @@ describe("oauth", () => {
     const h = await harnessWith(true, { enabled: false });
 
     const denied = await h.login("stranger-code");
-    expect(denied.location).toBe("/#/login?error=denied");
+    expect(denied.location).toBe("/login?error=denied");
     expect(denied.setCookie).toBeNull();
     expect(await h.persisted()).toEqual([]);
     const audit = await h.auditBy("discord:222");
@@ -612,7 +612,7 @@ describe("oauth", () => {
     expect(methods.token && !methods.discord).toBe(true);
     const response = await fetch(`${h.base()}/api/auth/oauth/login`, { redirect: "manual" });
     await response.arrayBuffer();
-    expect(response.headers.get("location")).toBe("/#/login?error=disabled");
+    expect(response.headers.get("location")).toBe("/login?error=disabled");
     expect((await h.withCookie("GET", "/api/queue", "A".repeat(43), false)).status).toBe(401);
     expect((await client.session()).method).toBe("token");
   });

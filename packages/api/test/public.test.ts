@@ -723,7 +723,7 @@ describe("the session model", () => {
   it("gives a login without panel access a member session, not a refusal", async () => {
     const r = await rig();
     const { location, cookie } = await r.loginResult("alice");
-    expect(location).toBe("/#/");
+    expect(location).toBe("/");
     expect(cookie).not.toBeNull();
     const stored = [...(await r.store.settings.list("_global", "panel_session:")).values()];
     expect(stored).toHaveLength(1);
@@ -926,7 +926,7 @@ describe("the public view", () => {
     const r = await rig({ enabled: false });
     expect((await r.get("/api/public/status")).body).toEqual({ error: "no such endpoint" });
     const { location, cookie } = await r.loginResult("alice");
-    expect(location).toBe("/#/login?error=denied");
+    expect(location).toBe("/login?error=denied");
     expect(cookie).toBeNull();
     const admin = await r.login("owner");
     expect((await r.get("/api/member/me", admin)).status).toBe(404);

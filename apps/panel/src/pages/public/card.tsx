@@ -24,7 +24,7 @@ const MONO = '"Geist Mono", ui-monospace, Consolas, monospace';
 export const poseUrl = (pose: string) => `/card-${pose.replace(/[^a-z0-9-]/g, "")}.local.webp`;
 
 /** Where the code on a card leads: the page that checks it. */
-export const verifyUrl = (serial: string) => `${window.location.origin}/#/card/${encodeURIComponent(serial)}`;
+export const verifyUrl = (serial: string) => `${window.location.origin}/card/${encodeURIComponent(serial)}`;
 
 async function dataUrl(url: string): Promise<string | null> {
   try {

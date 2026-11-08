@@ -3,7 +3,7 @@
 // session; with `[modules.api.public]` on, anyone else gets a member session, which opens the
 // member routes alone (see `session.ts`).
 //
-// Failures redirect to `/#/login?error=<code>` and never carry details: `disabled`,
+// Failures redirect to `/login?error=<code>` and never carry details: `disabled`,
 // `cancelled`, `state`, `exchange`, `discord`, `denied`, `unavailable`. Details go to the log.
 
 import { createHash } from "node:crypto";
@@ -29,7 +29,7 @@ const log = getLogger("api.oauth");
 export const STATE_TTL_MS = 10 * 60_000;
 /** Cap on logins in flight (the login route is public). */
 export const MAX_PENDING = 1024;
-export const DEFAULT_NEXT = "/#/";
+export const DEFAULT_NEXT = "/";
 export const CDN = "https://cdn.discordapp.com";
 /** Timeout of each request to Discord. */
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -381,7 +381,7 @@ export function found(location: string, cookie: string | null = null): Response 
 }
 
 function loginError(code: string): Response {
-  return found(`/#/login?error=${code}`);
+  return found(`/login?error=${code}`);
 }
 
 export function methods(state: ApiState): AuthMethods {

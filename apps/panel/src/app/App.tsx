@@ -20,7 +20,7 @@ import {
   SessionProvider,
   type SessionValue,
   TOKEN_SESSION,
-  takeLoginError,
+  loginErrorIn,
   wantsTokenLogin,
 } from "./session";
 
@@ -47,11 +47,12 @@ async function publicVisitor(api: Api, signal: AbortSignal): Promise<{ member: M
 }
 
 /** Where an admin signed in with Discord finds their own member page. */
-export const OWN_PAGE = "#/me";
+export const OWN_PAGE = "/me";
 
-function subscribeHash(onChange: () => void) {
-  window.addEventListener("hashchange", onChange);
-  return () => window.removeEventListener("hashchange", onChange);
+/** The page's path and query from the router's history (`/card/MYR-…`, `/me`, `/login?error=…`). */
+function pathOf(router: AppRouter): string {
+  const { pathname, search } = router.history.location;
+  return `${pathname || "/"}${search}`;
 }
 
 function OwnPage({ onLogout, onBack }: { onLogout: () => void; onBack: () => void }) {
@@ -78,11 +79,10 @@ function Authenticated({ router }: { router: AppRouter }) {
   const { config, api, signOut } = useConnection();
   const [auth, setAuth] = useState<AuthState>({ status: "checking" });
   const [methods, setMethods] = useState<AuthMethods | null>(null);
-  // Read before `takeLoginError` tidies the address.
-  const [tokenLogin, setTokenLogin] = useState(wantsTokenLogin);
-  const [loginError, setLoginError] = useState<string | null>(() => takeLoginError());
+  const path = useSyncExternalStore(router.history.subscribe, () => pathOf(router));
+  const [tokenLogin, setTokenLogin] = useState(() => wantsTokenLogin(pathOf(router)));
+  const [loginError, setLoginError] = useState<string | null>(() => loginErrorIn(pathOf(router)));
   const [recheck, setRecheck] = useState(0);
-  const hash = useSyncExternalStore(subscribeHash, () => window.location.hash);
   const authRef = useRef(auth);
   authRef.current = auth;
 
@@ -142,14 +142,16 @@ function Authenticated({ router }: { router: AppRouter }) {
     queryClient.clear();
   }, [config.baseUrl, config.token, queryClient]);
 
-  // `#/login` is how the owner reaches the token form from a member's page.
+  // A failed Discord login's `/login?error=…` is read once, then the address goes back to `/`, so
+  // the router never sees the login path and a reload does not show the error again.
   useEffect(() => {
-    const onHash = () => {
-      if (wantsTokenLogin()) setTokenLogin(true);
-    };
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
-  }, []);
+    if (loginErrorIn(path) !== null) router.history.replace("/");
+  }, [path, router]);
+
+  // `/login` is how the owner reaches the token form from a member's page.
+  useEffect(() => {
+    if (wantsTokenLogin(path)) setTokenLogin(true);
+  }, [path]);
 
   const logout = useCallback(() => {
     const current = authRef.current;
@@ -171,7 +173,7 @@ function Authenticated({ router }: { router: AppRouter }) {
   );
 
   // A card's code leads here; anyone may check one, logged in or not.
-  const serial = cardSerialIn(hash);
+  const serial = cardSerialIn(path);
   if (serial !== null) {
     return (
       <QueryClientProvider client={queryClient}>
@@ -185,14 +187,12 @@ function Authenticated({ router }: { router: AppRouter }) {
   }
 
   // An admin who logged in with Discord is a member too, with a page of their own.
-  if (auth.status === "signed_in" && auth.session.method === "discord" && hash.startsWith(OWN_PAGE)) {
+  if (auth.status === "signed_in" && auth.session.method === "discord" && (path === OWN_PAGE || path.startsWith(`${OWN_PAGE}?`))) {
     return (
       <QueryClientProvider client={queryClient}>
         <OwnPage
           onLogout={logout}
-          onBack={() => {
-            window.location.hash = "#/";
-          }}
+          onBack={() => router.history.push("/")}
         />
       </QueryClientProvider>
     );

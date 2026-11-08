@@ -14,7 +14,7 @@
 // Routes (shapes in `types.ts`):
 //
 // * `GET /api/health` → `{ status, version }`
-// * `GET /api/auth/methods`, `GET /api/auth/oauth/login?next=/#/…`,
+// * `GET /api/auth/methods`, `GET /api/auth/oauth/login?next=/…`,
 //   `GET /api/auth/oauth/callback` (public), `GET /api/auth/session`, `POST /api/auth/logout`
 // * `GET /api/modules`, `POST /api/modules/{id}/enable|disable|restart`
 // * `GET /api/decisions?limit=50&context=<json ContextKey>` (newest first)

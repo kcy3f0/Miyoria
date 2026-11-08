@@ -112,7 +112,15 @@ export async function servePanel(dir: string, request: Request): Promise<Respons
       path = join(path, "index.html");
       info = await stat(path).catch(() => null);
     }
-    if (!info?.isFile()) return notFound();
+    if (!info?.isFile()) {
+      // The panel's own pages (`/card/MYR-…`, `/people/…`, `/me`) are routes in the page, not files:
+      // a path whose last part has no extension gets `index.html`. A missing asset stays a 404.
+      const last = parts[parts.length - 1] ?? "";
+      if (last.includes(".")) return notFound();
+      path = join(root, "index.html");
+      info = await stat(path).catch(() => null);
+      if (!info?.isFile()) return notFound();
+    }
 
     const assets = url.pathname.startsWith("/assets/");
     const headers = new Headers({

@@ -306,8 +306,15 @@ function core(o: Options = {}) {
 const paths = (fn: ReturnType<typeof mockFetch>) =>
   fn.mock.calls.map(([input]) => new URL(String(input), "http://panel.test").pathname);
 
+/** The app at the address the test set (`window.location`), as the browser would open it. */
 const renderApp = () =>
-  render(<App router={createAppRouter(createMemoryHistory({ initialEntries: ["/"] }))} />);
+  render(
+    <App
+      router={createAppRouter(
+        createMemoryHistory({ initialEntries: [`${window.location.pathname}${window.location.search}`] }),
+      )}
+    />,
+  );
 
 afterEach(() => {
   window.history.replaceState(null, "", "/");
@@ -320,7 +327,7 @@ describe("an anonymous visitor", () => {
     core();
     renderApp();
     const link = await screen.findByRole("link", { name: "使用 Discord 登入" });
-    expect(link).toHaveAttribute("href", "/api/auth/oauth/login?next=%2F%23%2F");
+    expect(link).toHaveAttribute("href", "/api/auth/oauth/login?next=%2F");
     expect(screen.queryByLabelText("Admin token")).toBeNull();
     expect(screen.queryByRole("region", { name: "現在" })).toBeNull();
     expect(screen.queryByText("她眼中的你")).toBeNull();
@@ -355,8 +362,8 @@ describe("an anonymous visitor", () => {
     expect(await screen.findByLabelText("Admin token")).toBeInTheDocument();
   });
 
-  it("reaches the token form at #/login", async () => {
-    window.history.replaceState(null, "", "/#/login");
+  it("reaches the token form at /login", async () => {
+    window.history.replaceState(null, "", "/login");
     core();
     renderApp();
     expect(await screen.findByLabelText("Admin token")).toBeInTheDocument();
@@ -369,7 +376,7 @@ describe("an anonymous visitor", () => {
   });
 
   it("sees why a Discord login failed, on the login screen", async () => {
-    window.history.replaceState(null, "", "/#/login?error=cancelled");
+    window.history.replaceState(null, "", "/login?error=cancelled");
     core();
     renderApp();
     expect(await screen.findByRole("alert")).toHaveTextContent("已取消 Discord 授權");
@@ -493,12 +500,12 @@ describe("an admin", () => {
     await waitFor(() => expect(screen.queryByRole("region", { name: "歌單" })).toBeNull());
     await waitFor(() => expect(document.querySelector('[data-slot="stage"]')).not.toBeNull());
   });
-  it("as a Discord admin, has a page of their own at #/me and a way back", async () => {
+  it("as a Discord admin, has a page of their own at /me and a way back", async () => {
     core({
       session: { method: "discord", user: { id: "1", name: "Alice", avatar_url: null }, permissions: { write: true } },
       member: USER,
     });
-    window.history.replaceState(null, "", "/#/me");
+    window.history.replaceState(null, "", "/me");
     renderApp();
     expect(await screen.findByRole("heading", { name: "Alice" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "回到管理面板" }));
@@ -520,7 +527,8 @@ describe("a card she gives", () => {
     expect(within(section).getByRole("button", { name: "分享" })).toBeInTheDocument();
     // The new card's digital face is a link away, the same page its code leads to.
     const open = within(section).getByRole("link", { name: "打開數位卡面" });
-    expect(open.getAttribute("href")).toContain("/#/card/MYR-NEW0-0000-0002");
+    expect(open.getAttribute("href")).toContain("/card/MYR-NEW0-0000-0002");
+    expect(open.getAttribute("href")).not.toContain("#");
     expect(open.getAttribute("target")).toBe("_blank");
   });
 
@@ -569,7 +577,7 @@ describe("a card she gives", () => {
 
   it("says a rerolled card's code is void", async () => {
     core({ checked: { ...CARD, voided_at: "2026-11-08T05:00:00Z" } });
-    window.history.replaceState(null, "", `/#/card/${CARD.serial}`);
+    window.history.replaceState(null, "", `/card/${CARD.serial}`);
     renderApp();
     expect(await screen.findByText("這張卡已作廢")).toBeInTheDocument();
     expect(screen.queryByText("這張卡是真的")).toBeNull();
@@ -585,7 +593,7 @@ describe("a card she gives", () => {
 
   it("can be checked by anyone from its code, without logging in", async () => {
     const { fn } = core();
-    window.history.replaceState(null, "", `/#/card/${CARD.serial}`);
+    window.history.replaceState(null, "", `/card/${CARD.serial}`);
     renderApp();
     expect(await screen.findByText("這張卡是真的")).toBeInTheDocument();
     expect(screen.getByText(/發給 Alice 的第 1 張卡/)).toBeInTheDocument();
@@ -596,7 +604,7 @@ describe("a card she gives", () => {
 
   it("shows the card to turn in the light, with what it says beside it", async () => {
     core({ checked: { ...CARD, frame: "gold", foil: true } });
-    window.history.replaceState(null, "", `/#/card/${CARD.serial}`);
+    window.history.replaceState(null, "", `/card/${CARD.serial}`);
     const { container } = renderApp();
     const info = await screen.findByRole("region", { name: "卡片資訊" });
     expect(within(info).getByText("金框 · 閃卡")).toBeInTheDocument();
@@ -611,7 +619,7 @@ describe("a card she gives", () => {
 
   it("says a made-up or revoked code is not a card", async () => {
     core();
-    window.history.replaceState(null, "", "/#/card/MYR-0000-0000-0000");
+    window.history.replaceState(null, "", "/card/MYR-0000-0000-0000");
     renderApp();
     expect(await screen.findByText("這張卡不存在或已經作廢")).toBeInTheDocument();
   });

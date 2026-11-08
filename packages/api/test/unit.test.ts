@@ -135,7 +135,8 @@ describe("oauth", () => {
   });
 
   it("next_must_be_a_local_path", () => {
-    for (const ok of ["/", "/#/", "/#/people?q=1", "/#/login"]) expect(safeNext(ok), ok).toBe(ok);
+    for (const ok of ["/", "/people?q=1", "/card/MYR-AB12-CD34-EF56", "/#/people"])
+      expect(safeNext(ok), ok).toBe(ok);
     for (const bad of [
       "",
       "//evil.example",
