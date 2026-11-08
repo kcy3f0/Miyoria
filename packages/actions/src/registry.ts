@@ -872,8 +872,11 @@ export class ActuatorRegistry implements ActuatorExecutor {
       }
     }
 
-    // 4. Permission (and the principals that need nothing more).
-    if (p.kind === "user" && capability.permission !== null) {
+    // 4. Permission (and the principals that need nothing more). Someone asking her to DM them is
+    // asking about themselves: the permission guards against sending her at someone else, so it is
+    // not needed then (consent above already lets a person reach themselves).
+    const dmToAsker = capability.consent === "dm" && askedForThemselves;
+    if (p.kind === "user" && capability.permission !== null && !dmToAsker) {
       const authorizer = this.#services.get(AuthorizerKey);
       const requester = p.requester;
       if (

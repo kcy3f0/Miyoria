@@ -489,6 +489,37 @@ describe("message.dm", () => {
     );
     expect(unknown.decision).toMatchObject({ stage: "args" });
   });
+
+  it("lets someone ask for a DM to themselves without chat.dm, but not to someone else", async () => {
+    const g = await gate();
+    g.services.provide("scheduler", ActionSinkKey, new FakeScheduler());
+    const { PlatformSinks, PlatformSinksKey } = await import("@miyoria/types");
+    const sinks = new PlatformSinks();
+    sinks.register({
+      platform: "discord",
+      send: async () => ({ context: CTX, id: "x" }),
+      react: async () => {},
+      typing: async () => {},
+      openDm: async (account) => ({
+        platform: "discord",
+        scope: null,
+        channel: `dm-${account.id}`,
+        kind: "dm",
+      }),
+    });
+    g.services.provide("kernel", PlatformSinksKey, sinks);
+    g.social.set(OWEN, { familiarity: 40 });
+    // Amy has no chat.dm: "DM me" is about herself and goes through...
+    const toHerself = await g.registry.invoke(
+      request("message.dm", user(AMY), { to: "speaker", text: "嗨" }),
+    );
+    expect(toHerself.status).toBe("done");
+    // ...but she may not send her at Owen.
+    const toOwen = await g.registry.invoke(
+      request("message.dm", user(AMY), { to: OWEN.id, text: "嗨" }),
+    );
+    expect(toOwen.decision).toMatchObject({ stage: "permission" });
+  });
 });
 
 describe("autonomous requests", () => {
