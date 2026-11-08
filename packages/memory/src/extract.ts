@@ -113,8 +113,8 @@ export function transcript(
 }
 
 /**
- * Parses the summarizer's answer. Tolerates code fences, prose around the object, string
- * numbers and 0..10 / 0..100 scales; malformed items are skipped (counted in `skipped`). Fails
+ * Parses the summarizer's answer. Tolerates code fences, prose around the object, trailing
+ * commas, a bare array of facts, string numbers and 0..10 / 0..100 scales; malformed items are skipped (counted in `skipped`). Fails
  * only when there is no JSON object.
  */
 export function parseExtraction(text: string): Extraction {
@@ -203,29 +203,104 @@ export function parseExtraction(text: string): Extraction {
   return out;
 }
 
+/** Keys that mark an object (or an array's items) as an extraction rather than stray JSON. */
+const OBJECT_KEYS = ["episode", "facts", "self_notes", "followups"];
+const ITEM_KEYS = ["statement", "fact", "note", "about", "summary"];
+
+/** Removes trailing commas before `}` / `]` (outside strings); nothing else is repaired. */
+function dropTrailingCommas(text: string): string {
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] as string;
+    if (inString) {
+      out += c;
+      if (c === "\\") {
+        i += 1;
+        out += text[i] ?? "";
+      } else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === ",") {
+      const rest = text.slice(i + 1).trimStart();
+      if (rest.startsWith("}") || rest.startsWith("]")) continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
+function tryParse(text: string): JsonValue | undefined {
+  for (const t of [text, dropTrailingCommas(text)]) {
+    try {
+      return JSON.parse(t) as JsonValue;
+    } catch {
+      // try the repaired form, then give up on this candidate
+    }
+  }
+  return undefined;
+}
+
+/** Balanced `{ … }` / `[ … ]` spans of `text` (string literals respected), in order, capped. */
+function spans(text: string, open: "{" | "["): string[] {
+  const close = open === "{" ? "}" : "]";
+  const out: string[] = [];
+  for (let start = text.indexOf(open); start >= 0; start = text.indexOf(open, start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i++) {
+      const c = text[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (c === "\\") escaped = true;
+        else if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') inString = true;
+      else if (c === open) depth++;
+      else if (c === close && --depth === 0) {
+        out.push(text.slice(start, i + 1));
+        break;
+      }
+    }
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+const hasKey = (o: JsonObject, keys: readonly string[]) => keys.some((k) => k in o);
+
+/** An extraction object, or a bare array of fact-like items read as `facts`; else `null`. */
+function asExtraction(v: JsonValue | undefined, strict: boolean): JsonObject | null {
+  if (v === undefined) return null;
+  if (isJsonObject(v)) return !strict || hasKey(v, OBJECT_KEYS) ? v : null;
+  if (Array.isArray(v) && v.some((x) => isJsonObject(x) && hasKey(x, ITEM_KEYS))) {
+    return { facts: v };
+  }
+  return null;
+}
+
 function findObject(text: string): JsonObject {
   const trimmed = text.trim();
-  try {
-    const v = JSON.parse(trimmed) as JsonValue;
-    if (isJsonObject(v)) return v;
-  } catch {
-    // fall through to the embedded object
+  // The whole text may be any object (an empty one means "nothing to remember").
+  const whole = tryParse(trimmed);
+  const direct = asExtraction(whole, false);
+  if (direct) return direct;
+  const candidates: string[] = [];
+  for (const m of trimmed.matchAll(/```[a-zA-Z0-9_-]*\s*([\s\S]*?)```/g)) {
+    candidates.push((m[1] ?? "").trim());
   }
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start < 0 || end < 0 || end <= start) {
+  candidates.push(...spans(trimmed, "{"), ...spans(trimmed, "["));
+  for (const c of candidates) {
+    const found = asExtraction(tryParse(c), true);
+    if (found) return found;
+  }
+  if (!trimmed.includes("{") && !trimmed.includes("[")) {
     throw new ExtractionError("no JSON object in summarizer output");
   }
-  let v: JsonValue;
-  try {
-    v = JSON.parse(trimmed.slice(start, end + 1)) as JsonValue;
-  } catch (error) {
-    throw new ExtractionError(
-      `invalid JSON from summarizer: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  if (!isJsonObject(v)) throw new ExtractionError("summarizer output is not a JSON object");
-  return v;
+  throw new ExtractionError("no usable JSON object in summarizer output");
 }
 
 function array(value: JsonObject, key: string): readonly JsonValue[] {

@@ -136,6 +136,26 @@ describe("units", () => {
     expect(empty.facts).toEqual([]);
   });
 
+  it("parses_trailing_commas_arrays_and_embedded_objects", () => {
+    const comma = parseExtraction(
+      `{"facts": [{"subject_name": "Owen", "statement": "Owen 喜歡 a,}", "importance": 0.8,},],}`,
+    );
+    expect(comma.facts).toHaveLength(1);
+    expect(comma.facts[0]?.statement).toBe("Owen 喜歡 a,}");
+
+    // A bare array of fact-like items is read as `facts`.
+    const arr = parseExtraction(`結果:[{"subject_name": "Owen", "statement": "Owen 養貓"}]`);
+    expect(arr.facts.map((f) => f.statement)).toEqual(["Owen 養貓"]);
+
+    // Stray JSON in prose is skipped for the real object; stray JSON alone is refused.
+    const prose = parseExtraction(`範例 {"a": 1} 這是答案 {"facts": [], "episode": null} 完`);
+    expect(prose.facts).toEqual([]);
+    expect(() => parseExtraction(`只有 {"a": 1} 這個`)).toThrow();
+    expect(() => parseExtraction(`[{"x": 1}]`)).toThrow();
+    expect(() => parseExtraction("[]")).toThrow();
+    expect(() => parseExtraction(`{"facts": [1,, 2]}`)).toThrow();
+  });
+
   it("weighted_score", () => {
     const w = { vector: 1, text: 2, recency: 3, importance: 4, subject: 5 };
     const s = { vector: 0.5, text: 0.5, recency: 0.5, importance: 0.5, subject: 1 };

@@ -249,9 +249,13 @@ describe.each(BACKENDS)("consolidation (%s store)", (backend) => {
     expect(sections[0]?.body).toContain("暗戀");
   });
 
-  it("malformed_output_is_skipped", async () => {
+  it("malformed_output_is_retried_then_carried_once_then_skipped", async () => {
+    const bad = "抱歉,我無法完成這個請求。";
     const llm = new MockProvider("sum")
-      .reply("抱歉,我無法完成這個請求。")
+      .reply(bad)
+      .reply(bad) // pass 1 and its retry: carried over
+      .reply(bad)
+      .reply(bad) // pass 2 and its retry: dropped
       .reply(
         `{"facts": [42, {"subject_name": "Owen"}, {"subject_name": "Owen", "statement": "Owen 養了一隻貓", "importance": 0.6}], "episode": 5}`,
       );
@@ -262,14 +266,66 @@ describe.each(BACKENDS)("consolidation (%s store)", (backend) => {
     let report = await e.engine.consolidate(ctx, t0());
     expect(report.malformed).toBe(true);
     expect(await e.all()).toEqual([]);
-    // The lines were skipped (watermark advanced): no retry loop.
+    expect(llm.requests()).toHaveLength(2);
+    // Carried over: the watermark stayed, so the same line is offered again with the next batch.
+    expect(await e.engine.watermark(ctx)).toBeNull();
+
+    await e.log(ctx, acct("2"), "Owen", "你好嗎", t0(-8 * MINUTE), false);
+    report = await e.engine.consolidate(ctx, t0());
+    expect([report.lines, report.malformed]).toEqual([2, true]);
+    const carriedPrompt = llm.requests()[2]?.messages[1]?.content ?? "";
+    expect(carriedPrompt).toContain("嗨");
+    expect(carriedPrompt).toContain("你好嗎");
+    // Failed again: skipped now, so a bad batch cannot grow forever.
+    expect(await e.engine.watermark(ctx)).not.toBeNull();
     expect((await e.engine.consolidate(ctx, t0())).lines).toBe(0);
 
     await e.log(ctx, acct("2"), "Owen", "我家有貓", t0(), false);
     report = await e.engine.consolidate(ctx, t0());
     expect(report.malformed).toBe(false);
     expect([report.inserted, report.skipped], JSON.stringify(report)).toEqual([1, 3]);
-    expect(llm.requests()).toHaveLength(2);
+    expect(llm.requests()).toHaveLength(5);
+  });
+
+  it("bad_first_reply_is_repaired_by_one_corrective_retry", async () => {
+    const llm = new MockProvider("sum").reply("我整理好了,但不知道怎麼寫").reply(GUILD_JSON);
+    const [e, ctx] = await guildSetup(backend, llm);
+    const report = await e.engine.consolidate(ctx, t0());
+    expect(report.malformed).toBe(false);
+    expect(report.inserted).toBe(6);
+    const reqs = llm.requests();
+    expect(reqs).toHaveLength(2);
+    const retry = reqs[1];
+    expect(retry?.json_mode).toBe(true);
+    expect(retry?.messages.map((m) => m.role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(retry?.messages[3]?.content).toContain("JSON");
+    expect(await e.engine.watermark(ctx)).not.toBeNull();
+  });
+
+  it("truncated_reply_is_retried_with_a_bigger_budget", async () => {
+    const llm = new MockProvider("sum")
+      .events([
+        { type: "text_delta", text: `{"facts": [{"subject_name": "Owen", "stat` },
+        { type: "done", finish_reason: "length", usage: null },
+      ])
+      .reply(GUILD_JSON);
+    const [e, ctx] = await guildSetup(backend, llm);
+    const report = await e.engine.consolidate(ctx, t0());
+    expect(report.malformed).toBe(false);
+    const reqs = llm.requests();
+    expect(reqs[1]?.max_tokens).toBe(8000);
+  });
+
+  it("parseable_fenced_reply_needs_no_retry", async () => {
+    const fenced = `好的:
+\`\`\`json
+${GUILD_JSON.replace(/\}$/, ",}")}
+\`\`\``;
+    const llm = new MockProvider("sum").reply(fenced);
+    const [e, ctx] = await guildSetup(backend, llm);
+    const report = await e.engine.consolidate(ctx, t0());
+    expect(report.malformed).toBe(false);
+    expect(llm.requests()).toHaveLength(1);
   });
 
   it("llm_failure_keeps_lines_for_retry", async () => {

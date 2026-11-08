@@ -3,9 +3,12 @@
 
 import { errorMessage, getLogger, type ServiceLookup } from "@miyoria/kernel";
 import {
+  assistantMessage,
   type ChatRequest,
+  type ChatResponse,
   contextHash,
   type LlmRouter,
+  ProviderHttpError,
   sessionId,
   systemMessage,
   userMessage,
@@ -62,7 +65,13 @@ import {
   supporting,
 } from "./evidence.js";
 import { expired, expiryOf, isPresentState, isStateLifetime, wordingTtlHours } from "./expiry.js";
-import { type Extraction, parseExtraction, systemPrompt, transcript } from "./extract.js";
+import {
+  type Extraction,
+  ExtractionError,
+  parseExtraction,
+  systemPrompt,
+  transcript,
+} from "./extract.js";
 import { RepeatDamper } from "./repeat.js";
 import { hasScope, isPrivate, scopeEquals, scopeForNew } from "./scope.js";
 import {
@@ -272,6 +281,27 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i]);
 }
 
+/** Statuses a provider answers with when it does not support `json_mode`. */
+const JSON_MODE_REJECTED: ReadonlySet<number> = new Set([400, 415, 422]);
+
+/** The extraction request again with the unusable reply and a short corrective instruction. */
+function retryRequest(request: ChatRequest, response: ChatResponse): ChatRequest {
+  const cut = response.finish_reason === "length";
+  const note = cut
+    ? "上一個回覆太長,寫到一半被截斷了。請寫得精簡一點,只回傳一個完整的 JSON 物件。"
+    : "上一個回覆不是可用的 JSON。請只回傳一個 JSON 物件,不要加其他文字或程式碼區塊。";
+  return {
+    ...request,
+    max_tokens:
+      cut && typeof request.max_tokens === "number" ? request.max_tokens * 2 : request.max_tokens,
+    messages: [
+      ...request.messages,
+      assistantMessage(response.text.slice(0, 2000)),
+      userMessage(note),
+    ],
+  };
+}
+
 /** Long-term memory of one profile. */
 export class MemoryEngine implements FollowupSource {
   readonly profile: ProfileId;
@@ -286,6 +316,8 @@ export class MemoryEngine implements FollowupSource {
   #handles: HandleDirectory | null;
   readonly #clock: Clock;
   readonly #watermarks = new Map<string, Watermark>();
+  /** Contexts whose last batch was unusable and is being carried over once (key → true). */
+  readonly #carried = new Set<string>();
   readonly #repeats: RepeatDamper;
   #lastMaintenance: Timestamp | null = null;
   #version = 0;
@@ -747,8 +779,9 @@ export class MemoryEngine implements FollowupSource {
   /**
    * Consolidates the lines of `context` written after its watermark.
    *
-   * LLM failures are thrown (the watermark stays, so it is retried); malformed answers are
-   * logged and the lines skipped.
+   * LLM failures are thrown (the watermark stays, so it is retried). An unusable answer is
+   * asked again once with a corrective note; if that fails too, the lines are carried over to
+   * the next pass (watermark stays), and skipped only if that pass fails as well.
    */
   async consolidate(
     context: ContextKey,
@@ -798,21 +831,51 @@ export class MemoryEngine implements FollowupSource {
       json_mode: true,
       session: sessionId(this.profile, `memory-${contextHash(context)}`),
     };
-    const response = await withLlmTag({ module: "memory", label: "extract" }, () =>
-      router.complete(this.config.purpose, request, signal),
-    );
+    const ask = (req: ChatRequest) =>
+      withLlmTag({ module: "memory", label: "extract" }, async () => {
+        try {
+          return await router.complete(this.config.purpose, req, signal);
+        } catch (error) {
+          // JSON mode is only a hint: a provider that rejects it gets the request without it.
+          if (
+            req.json_mode &&
+            error instanceof ProviderHttpError &&
+            JSON_MODE_REJECTED.has(error.status)
+          ) {
+            return router.complete(this.config.purpose, { ...req, json_mode: false }, signal);
+          }
+          throw error;
+        }
+      });
+    const response = await ask(request);
     let extraction: Extraction;
     try {
       extraction = parseExtraction(response.text);
-    } catch (error) {
-      log.warn(
-        { context: contextKeyString(context), error: errorMessage(error) },
-        "unusable consolidation output, skipping lines",
-      );
-      report.malformed = true;
-      await this.#setWatermark(nextMark);
-      return report;
+    } catch {
+      // One corrective retry; a reply cut off at the token limit gets a bigger budget instead.
+      try {
+        extraction = parseExtraction((await ask(retryRequest(request, response))).text);
+      } catch (second) {
+        if (!(second instanceof ExtractionError)) throw second;
+        const key = contextKeyString(context);
+        const carry = !this.#carried.has(key);
+        log.warn(
+          { context: key, error: errorMessage(second), carried: carry },
+          carry
+            ? "unusable consolidation output, keeping lines for the next pass"
+            : "unusable consolidation output again, skipping lines",
+        );
+        report.malformed = true;
+        if (carry) {
+          this.#carried.add(key);
+        } else {
+          this.#carried.delete(key);
+          await this.#setWatermark(nextMark);
+        }
+        return report;
+      }
     }
+    this.#carried.delete(contextKeyString(context));
     const first = speakers[0];
     const dmPartner = priv && speakers.length === 1 && first ? first.account : null;
     await this.#apply(extraction, context, dmPartner, speakers, evidence, now, report, signal);
