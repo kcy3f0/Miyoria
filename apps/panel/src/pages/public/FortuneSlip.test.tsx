@@ -2,9 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { IssuedFortune } from "@/api/types";
-import { FortuneFace, FortuneSlip, fortuneFileName, rankInk } from "./FortuneSlip";
-
-const COLORS = { primary: "#f29dc4", secondary: "#7355e8" };
+import { FortuneFace, FortuneSlip, fortuneFileName, rankInk, slipDate } from "./FortuneSlip";
 
 const SLIP: IssuedFortune = {
   id: "01JABCDEFGHJKMNPQRSTVWXYZ0",
@@ -24,7 +22,7 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("the fortune slip", () => {
   it("draws the rank, title and poem down the slip and says it all to a screen reader", () => {
-    render(<FortuneFace fortune={SLIP} colors={COLORS} />);
+    render(<FortuneFace fortune={SLIP} />);
     const svg = screen.getByRole("img");
     const label = svg.getAttribute("aria-label") ?? "";
     expect(label).toContain("2026.11.08 今日籤");
@@ -52,7 +50,7 @@ describe("the fortune slip", () => {
       fields: [1, 2, 3, 4, 5].map((n) => ({ label: `欄位名稱很長${n}`, text: "很長".repeat(30) })),
       line: "話".repeat(80),
     };
-    const { container } = render(<FortuneFace fortune={long} colors={COLORS} />);
+    const { container } = render(<FortuneFace fortune={long} />);
     const texts = [...container.querySelectorAll("text")].map((t) => t.textContent ?? "");
     expect(texts.filter((t) => t === "題")).toHaveLength(8);
     expect(texts.filter((t) => t === "字")).toHaveLength(7);
@@ -63,19 +61,25 @@ describe("the fortune slip", () => {
     expect(texts.filter((t) => t.startsWith("「") || t.startsWith("話")).length).toBeLessThanOrEqual(3);
   });
 
-  it("is written in an ink that depends on the rank, and the six are told apart", () => {
-    const inks = (["大吉", "吉", "中吉", "小吉", "末吉", "凶"] as const).map((r) => rankInk(r, COLORS.primary));
-    expect(inks[0]).toBe("#f3d77d");
-    expect(inks[1]).toBe(COLORS.primary);
-    expect(inks[5]).toBe("#8c9cc9");
+  it("stamps the rank in a block whose colour depends on the rank, and the six are told apart", () => {
+    const inks = (["大吉", "吉", "中吉", "小吉", "末吉", "凶"] as const).map((r) => rankInk(r));
+    expect(inks[1]).toBe(inks[2]);
+    expect(inks[3]).toBe(inks[4]);
     expect(new Set(inks).size).toBe(4);
     const draw = (rank: IssuedFortune["rank"]) => {
-      const { container, unmount } = render(<FortuneFace fortune={{ ...SLIP, rank }} colors={COLORS} />);
+      const { container, unmount } = render(<FortuneFace fortune={{ ...SLIP, rank }} />);
       const markup = container.innerHTML;
       unmount();
       return markup;
     };
     expect(draw("凶")).not.toBe(draw("大吉"));
+  });
+
+  it("prints its day the way a slip does", () => {
+    expect(slipDate("2026-11-08")).toBe("二〇二六年十一月八日");
+    expect(slipDate("2027-01-20")).toBe("二〇二七年一月二十日");
+    expect(slipDate("2026-12-31")).toBe("二〇二六年十二月三十一日");
+    expect(slipDate("2026-10-10")).toBe("二〇二六年十月十日");
   });
 
   it("downloads the slip as a PNG named for its day", async () => {

@@ -774,7 +774,10 @@ describe("card frames", () => {
     expect(new Set([plain, draw("sakura"), draw("abyss"), gold]).size).toBe(4);
     expect(draw("unknown")).toBe(plain);
     expect(draw(undefined)).toBe(plain);
-    expect(gold).toContain("#c8942a");
+    expect(gold).toContain("#d7a93f");
+    // A bought frame is a band with glitter in it, which the plain border is not.
+    expect(gold).toContain("glitter-");
+    expect(plain).not.toContain("glitter-");
   });
 });
 

@@ -170,20 +170,98 @@ const FIELDS_END = 784;
  */
 export const FRAME_SWATCH: Record<string, string> = { sakura: "#f4b6cf", abyss: "#2f8fb5", gold: "#d9aa3c" };
 
-const PETAL = "M0 0C5-7 15-5 13 4C11 11 2 9 0 0Z";
+/**
+ * How wide a bought frame is. Bought frames are a band of material along the edge, the way printed
+ * collectible cards frame their art, not a line: everything on the card sits at `PAD`, so the band
+ * and what lives in it stay clear of the words.
+ */
+const BAND = 18;
 
-/** Four petals fanned around a corner, so it reads as blown there. */
-function Petals({ x, y, flip }: { x: number; y: number; flip: [number, number] }) {
-  const spec: [number, number, number, number][] = [
-    [0, 0, 20, 1],
-    [11, 5, 70, 0.8],
-    [4, 14, 120, 0.9],
-    [18, 16, 40, 0.6],
-  ];
+/** Fixed glitter positions for one 48 px tile: x, y, size, opacity. A star when size > 1.6. */
+const GLITTER: [number, number, number, number][] = [
+  [4, 6, 1, 0.9],
+  [15, 3, 2.6, 1],
+  [27, 9, 0.8, 0.7],
+  [38, 4, 1.2, 0.8],
+  [44, 15, 2, 0.9],
+  [9, 18, 1.4, 0.6],
+  [21, 22, 0.9, 0.9],
+  [33, 26, 3, 1],
+  [3, 31, 2.2, 0.85],
+  [14, 37, 0.8, 0.6],
+  [26, 41, 1.3, 0.9],
+  [41, 36, 0.9, 0.7],
+  [46, 45, 1.8, 0.8],
+  [19, 46, 0.7, 0.5],
+];
+
+/** The foil glitter printed across a band, the way printed collectible cards sparkle at the edge. */
+function Glitter({ id, tint }: { id: string; tint: string }) {
   return (
-    <g transform={`translate(${x} ${y}) scale(${flip[0]} ${flip[1]})`} fill="#f7c6da" opacity={0.92}>
-      {spec.map(([dx, dy, rot, k], i) => (
-        <path key={i} d={PETAL} transform={`translate(${dx} ${dy}) rotate(${rot}) scale(${k})`} />
+    <>
+      <defs>
+        <pattern id={`glitter-${id}`} width="48" height="48" patternUnits="userSpaceOnUse">
+          {GLITTER.map(([x, y, s, o]) =>
+            s > 1.6 ? (
+              <path
+                key={`${x}-${y}`}
+                d={`M${x} ${y - s * 1.6}L${x + s * 0.3} ${y - s * 0.3}L${x + s * 1.6} ${y}L${x + s * 0.3} ${y + s * 0.3}L${x} ${y + s * 1.6}L${x - s * 0.3} ${y + s * 0.3}L${x - s * 1.6} ${y}L${x - s * 0.3} ${y - s * 0.3}Z`}
+                fill={tint}
+                opacity={o}
+              />
+            ) : (
+              <circle key={`${x}-${y}`} cx={x} cy={y} r={s * 0.6} fill={tint} opacity={o} />
+            ),
+          )}
+        </pattern>
+      </defs>
+      <path d={BAND_PATH} fillRule="evenodd" fill={`url(#glitter-${id})`} />
+    </>
+  );
+}
+const RADIUS = 26;
+
+/** A rounded rectangle inset by `i` from the card's edge, as a path. */
+function rrect(i: number): string {
+  const r = Math.max(RADIUS - i, 4);
+  const x0 = i;
+  const y0 = i;
+  const x1 = W - i;
+  const y1 = H - i;
+  return (
+    `M${x0 + r} ${y0}H${x1 - r}A${r} ${r} 0 0 1 ${x1} ${y0 + r}V${y1 - r}A${r} ${r} 0 0 1 ${x1 - r} ${y1}` +
+    `H${x0 + r}A${r} ${r} 0 0 1 ${x0} ${y1 - r}V${y0 + r}A${r} ${r} 0 0 1 ${x0 + r} ${y0}Z`
+  );
+}
+
+/** The band itself: the card's outline less the opening the art shows through. */
+const BAND_PATH = `${rrect(0)}${rrect(BAND)}`;
+
+/**
+ * The edges every band shares: a dark rim outside, and inside a shadow the band casts on the art with
+ * a lit lip above it, so the band reads as raised rather than painted on.
+ */
+function BandEdges({ rim, lip }: { rim: string; lip: string }) {
+  return (
+    <g fill="none">
+      <path d={rrect(0.75)} stroke={rim} strokeWidth={1.5} />
+      <path d={rrect(BAND + 1.5)} stroke="#000000" strokeOpacity={0.45} strokeWidth={3} />
+      <path d={rrect(BAND - 0.5)} stroke={lip} strokeWidth={1} />
+    </g>
+  );
+}
+
+/** A five-petal cherry blossom, each petal notched at its tip; `r` is its radius. */
+function Blossom({ x, y, r, rot, fill, stroke }: { x: number; y: number; r: number; rot: number; fill: string; stroke: string }) {
+  const petal = `M0 0C${-r * 0.5} ${-r * 0.3} ${-r * 0.52} ${-r * 0.92} ${-r * 0.16} ${-r}L0 ${-r * 0.84}L${r * 0.16} ${-r}C${r * 0.52} ${-r * 0.92} ${r * 0.5} ${-r * 0.3} 0 0Z`;
+  return (
+    <g transform={`translate(${x} ${y}) rotate(${rot})`}>
+      {[0, 72, 144, 216, 288].map((a) => (
+        <path key={a} d={petal} transform={`rotate(${a})`} fill={fill} stroke={stroke} strokeWidth={0.8} strokeLinejoin="round" />
+      ))}
+      <circle r={r * 0.2} fill="#e0668f" />
+      {[0, 72, 144, 216, 288].map((a) => (
+        <circle key={a} r={r * 0.06} cx={0} cy={-r * 0.34} transform={`rotate(${a + 36})`} fill="#c84d77" />
       ))}
     </g>
   );
@@ -229,68 +307,108 @@ function Foil({ id }: { id: string }) {
 
 /** The border of the card, drawn over the picture. Literal colours only: it is exported to PNG. */
 function Frame({ frame, id }: { frame: string | null | undefined; id: string }) {
-  const corners: [number, number, [number, number]][] = [
-    [6, 6, [1, 1]],
-    [W - 6, 6, [-1, 1]],
-    [6, H - 6, [1, -1]],
-    [W - 6, H - 6, [-1, -1]],
-  ];
   if (frame === "sakura") {
+    // Pearl pink, blossoms printed faintly across the band, and one blossom at two opposite corners.
     return (
       <g>
-        <rect x={1.5} y={1.5} width={W - 3} height={H - 3} rx={25} fill="none" stroke="#f4b6cf" strokeWidth={3} />
-        <rect x={10} y={10} width={W - 20} height={H - 20} rx={19} fill="none" stroke="#f9d3e2" strokeOpacity={0.35} />
-        {corners.map(([x, y, f], i) => (
-          <Petals key={i} x={x} y={y} flip={f} />
-        ))}
+        <defs>
+          <linearGradient id={`sakura-${id}`} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2={W} y2={H}>
+            <stop offset="0" stopColor="#fde4ee" />
+            <stop offset="0.35" stopColor="#f5b9cf" />
+            <stop offset="0.65" stopColor="#f9d1e0" />
+            <stop offset="1" stopColor="#e993b5" />
+          </linearGradient>
+          <pattern id={`sakura-print-${id}`} width="34" height="34" patternUnits="userSpaceOnUse" patternTransform="rotate(12)">
+            <Blossom x={8} y={8} r={5.5} rot={0} fill="#ffffff" stroke="none" />
+            <Blossom x={25} y={25} r={4} rot={30} fill="#ffffff" stroke="none" />
+          </pattern>
+        </defs>
+        <path d={BAND_PATH} fillRule="evenodd" fill={`url(#sakura-${id})`} />
+        <path d={BAND_PATH} fillRule="evenodd" fill={`url(#sakura-print-${id})`} opacity={0.5} />
+        <Glitter id={id} tint="#ffffff" />
+        <BandEdges rim="#b85a83" lip="#fff6fa" />
+        <Blossom x={W - 21} y={21} r={14} rot={8} fill="#fff3f7" stroke="#d87aa0" />
+        <Blossom x={21} y={H - 21} r={14} rot={-20} fill="#fff3f7" stroke="#d87aa0" />
       </g>
     );
   }
   if (frame === "abyss") {
+    // Deep water: light from the surface at the top, darker downward, swell lines along the band and
+    // bubbles rising inside it on the right.
+    const bubbles: [number, number, number][] = [
+      [W - 9, 560, 2.4],
+      [W - 10, 492, 3.2],
+      [W - 8.5, 410, 4],
+      [W - 9.5, 312, 5],
+      [W - 9, 214, 3.8],
+      [W - 9.5, 150, 2.6],
+      [9, H - 170, 2.8],
+      [9.5, H - 240, 4.2],
+      [9, H - 318, 3],
+    ];
     return (
       <g>
         <defs>
-          <linearGradient id={`abyss-${id}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor="#4fd1d9" />
-            <stop offset="0.55" stopColor="#1d6f9a" />
-            <stop offset="1" stopColor="#0f2f66" />
+          <linearGradient id={`abyss-${id}`} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2={W * 0.4} y2={H}>
+            <stop offset="0" stopColor="#3fb8c8" />
+            <stop offset="0.2" stopColor="#1a74a0" />
+            <stop offset="0.6" stopColor="#103a6e" />
+            <stop offset="1" stopColor="#071636" />
           </linearGradient>
+          <pattern id={`swell-${id}`} width="28" height="7" patternUnits="userSpaceOnUse">
+            <path d="M0 4.5Q7 1.5 14 4.5T28 4.5" fill="none" stroke="#bff6f8" strokeWidth={0.9} />
+          </pattern>
         </defs>
-        <rect x={2} y={2} width={W - 4} height={H - 4} rx={24} fill="none" stroke={`url(#abyss-${id})`} strokeWidth={4} />
-        <rect x={11} y={11} width={W - 22} height={H - 22} rx={18} fill="none" stroke="#7fe3ea" strokeOpacity={0.3} />
-        <rect x={15} y={15} width={W - 30} height={H - 30} rx={15} fill="none" stroke="#7fe3ea" strokeOpacity={0.14} strokeDasharray="2 9" strokeLinecap="round" />
-        {[
-          [W - 30, 32, 4],
-          [W - 44, 46, 2.5],
-          [W - 26, 58, 2],
-        ].map(([cx, cy, r]) => (
-          <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r={r} fill="none" stroke="#a6f0f4" strokeOpacity={0.75} />
+        <path d={BAND_PATH} fillRule="evenodd" fill={`url(#abyss-${id})`} />
+        <path d={BAND_PATH} fillRule="evenodd" fill={`url(#swell-${id})`} opacity={0.22} />
+        <Glitter id={id} tint="#bdf8ff" />
+        <BandEdges rim="#04122b" lip="#8eeef2" />
+        {bubbles.map(([cx, cy, r]) => (
+          <g key={`${cx}-${cy}`}>
+            <circle cx={cx} cy={cy} r={r} fill="#d9fdff" fillOpacity={0.14} stroke="#d9fdff" strokeOpacity={0.85} strokeWidth={0.9} />
+            <circle cx={cx - r * 0.35} cy={cy - r * 0.35} r={r * 0.28} fill="#ffffff" fillOpacity={0.9} />
+          </g>
         ))}
       </g>
     );
   }
   if (frame === "gold") {
+    // Brushed gold with an engraved line down the middle of the band, and stepped corner plates
+    // that stay inside the band's corner.
+    const plate = `M${BAND - 2} ${BAND - 2}H${BAND + 30}V${BAND + 4}H${BAND + 4}V${BAND + 30}H${BAND - 2}Z`;
+    const corners: [number, number][] = [
+      [1, 1],
+      [-1, 1],
+      [1, -1],
+      [-1, -1],
+    ];
     return (
       <g>
         <defs>
-          <linearGradient id={`gold-${id}`} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="#f8e49a" />
-            <stop offset="0.45" stopColor="#c8942a" />
-            <stop offset="0.7" stopColor="#f3d77d" />
-            <stop offset="1" stopColor="#a8741c" />
+          <linearGradient id={`gold-${id}`} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2={W} y2={H}>
+            <stop offset="0" stopColor="#fff0b5" />
+            <stop offset="0.18" stopColor="#d7a93f" />
+            <stop offset="0.38" stopColor="#8a5f17" />
+            <stop offset="0.55" stopColor="#f4d77c" />
+            <stop offset="0.72" stopColor="#b8862a" />
+            <stop offset="0.88" stopColor="#f0cf6a" />
+            <stop offset="1" stopColor="#7d5413" />
           </linearGradient>
+          <pattern id={`brush-${id}`} width="3" height="3" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)">
+            <rect width="3" height="0.8" fill="#ffffff" />
+          </pattern>
         </defs>
-        <rect x={2} y={2} width={W - 4} height={H - 4} rx={24} fill="none" stroke={`url(#gold-${id})`} strokeWidth={4.5} />
-        <rect x={11} y={11} width={W - 22} height={H - 22} rx={18} fill="none" stroke="#e9c766" strokeOpacity={0.55} />
-        {corners.map(([x, y, f], i) => (
-          <path
-            key={i}
-            d="M0-9L9 0 0 9-9 0Z"
-            transform={`translate(${x + f[0] * 14} ${y + f[1] * 14})`}
-            fill={`url(#gold-${id})`}
-            stroke="#fff4c2"
-            strokeOpacity={0.5}
-          />
+        <path d={BAND_PATH} fillRule="evenodd" fill={`url(#gold-${id})`} />
+        <path d={BAND_PATH} fillRule="evenodd" fill={`url(#brush-${id})`} opacity={0.08} />
+        <Glitter id={id} tint="#fffbe6" />
+        <path d={rrect(BAND / 2 - 0.5)} fill="none" stroke="#5c3d0c" strokeOpacity={0.75} strokeWidth={0.9} />
+        <path d={rrect(BAND / 2 + 0.6)} fill="none" stroke="#fff3c4" strokeOpacity={0.7} strokeWidth={0.7} />
+        <BandEdges rim="#5a3b0a" lip="#fff1bd" />
+        {corners.map(([fx, fy]) => (
+          <g key={`${fx}${fy}`} transform={`translate(${fx < 0 ? W : 0} ${fy < 0 ? H : 0}) scale(${fx} ${fy})`}>
+            <path d={plate} fill={`url(#gold-${id})`} stroke="#5a3b0a" strokeWidth={1} strokeLinejoin="miter" />
+            <path d={`M${BAND + 1} ${BAND + 1}H${BAND + 27}M${BAND + 1} ${BAND + 1}V${BAND + 27}`} stroke="#fff3c4" strokeOpacity={0.75} strokeWidth={0.8} />
+          </g>
         ))}
       </g>
     );
