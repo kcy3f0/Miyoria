@@ -142,15 +142,15 @@ export interface CoinLedgerStore {
     frame: string | null,
     at: Timestamp,
   ): Promise<void>;
-  /** Whether any of `accounts` chose to be on the sponsor board (off unless one did). */
+  /** Whether `accounts` are on the sponsor board: yes unless one of them left it. */
   onBoard(profile: ProfileId, accounts: readonly AccountRef[]): Promise<boolean>;
   /**
    * Puts every one of `accounts` on the board or takes them off, so a person is on it as a whole.
    * It never touches the frame choice.
    */
   setOnBoard(profile: ProfileId, accounts: readonly AccountRef[], on: boolean): Promise<void>;
-  /** The accounts on the board, at most `limit`. */
-  boardAccounts(profile: ProfileId, limit: number): Promise<AccountRef[]>;
+  /** The accounts that left the board, at most `limit`. */
+  offBoardAccounts(profile: ProfileId, limit: number): Promise<AccountRef[]>;
   /**
    * What each account spent since `since` on `reasons`, biggest first, at most `limit`: negative
    * rows that were not refunded. `deal_escrow` counts only for a settled deal (released to her).

@@ -100,7 +100,7 @@ export interface WalletView {
   recent: LedgerLine[];
   /** Her deals with this person, newest first, at most 10; cancelled ones are not shown. */
   deals: DealView[];
-  /** Whether they chose to be on the sponsor board (off unless they did; `false` for strangers). */
+  /** Whether they are on the sponsor board (on unless they left; `false` for strangers). */
   on_board: boolean;
 }
 
@@ -211,7 +211,7 @@ export interface Economy {
    * to her. The same key twice answers what the first did.
    */
   transfer(from: AccountRef, to: AccountRef, amount: number, key: string): Promise<TransferResult>;
-  /** The sponsor board: who opted in, by what they spent on her lately, biggest first. */
+  /** The sponsor board: everyone who left no wish to be off it, by what they spent on her lately, biggest first. */
   board(limit?: number): Promise<BoardLine[]>;
   /** Puts them on the board or takes them off; `false` when they are a stranger. */
   setOnBoard(account: AccountRef, on: boolean): Promise<boolean>;

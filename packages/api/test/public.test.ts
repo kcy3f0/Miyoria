@@ -2522,15 +2522,11 @@ describe("between people, the sponsor board and fortune slips", () => {
   });
 
   describe("the sponsor board", () => {
-    it("lists only those who joined, by name and number, to anyone, and leaves when they do", async () => {
+    it("lists everyone who spent, by name and number, to anyone, and drops those who leave", async () => {
       const r = await socialRig();
       await r.row(ALICE, -40, "feed");
       await r.row(BOB, -90, "feed");
       const cookie = await r.login("alice");
-      expect((await r.get("/api/public/board")).body).toEqual({ entries: [] });
-
-      const joined = await r.spend("/api/member/board", cookie, { on: true });
-      expect(joined.body).toEqual({ on_board: true });
       expect(
         ((await r.get("/api/member/wallet", cookie)).body as { on_board: boolean }).on_board,
       ).toBe(true);
@@ -2539,10 +2535,14 @@ describe("between people, the sponsor board and fortune slips", () => {
       const stranger = await r.spend("/api/member/board", await r.login("dave"), { on: true });
       expect(stranger.status).toBe(403);
 
-      await wait(1100);
       const board = await r.get("/api/public/board");
       expect(board.status).toBe(200);
-      expect(board.body).toEqual({ entries: [{ rank: 1, name: "Alice", spent: 40 }] });
+      expect(board.body).toEqual({
+        entries: [
+          { rank: 1, name: "Bob", spent: 90 },
+          { rank: 2, name: "Alice", spent: 40 },
+        ],
+      });
       expect(shape(board.body)).toEqual(["entries[].name", "entries[].rank", "entries[].spent"]);
       // No account id, no platform, no balance.
       for (const secret of [ALICE, BOB, OWNER, "discord"]) expect(board.text).not.toContain(secret);
@@ -2551,7 +2551,12 @@ describe("between people, the sponsor board and fortune slips", () => {
         on_board: false,
       });
       await wait(1100);
-      expect((await r.get("/api/public/board")).body).toEqual({ entries: [] });
+      expect((await r.get("/api/public/board")).body).toEqual({
+        entries: [{ rank: 1, name: "Bob", spent: 90 }],
+      });
+      expect((await r.spend("/api/member/board", cookie, { on: true })).body).toEqual({
+        on_board: true,
+      });
     });
   });
 

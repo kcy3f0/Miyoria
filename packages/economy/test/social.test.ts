@@ -263,51 +263,60 @@ describe("transfers", () => {
 });
 
 describe("the sponsor board", () => {
-  it("lists only people who opted in, by what they spent on her, without balances", async () => {
+  it("lists everyone who spent, by what they spent on her, without balances, unless they left", async () => {
     const r = await rig();
     await post(r, ALICE, -40, "feed", { ref: "rice:4" });
     await post(r, BOB, -90, "feed", { ref: "big_bowl:1" });
     await post(r, FRANK, -15, "letter");
-    expect(await r.economy.board()).toEqual([]);
-    expect(await r.economy.setOnBoard(ALICE, true)).toBe(true);
-    expect(await r.economy.setOnBoard(FRANK, true)).toBe(true);
     const lines = await r.economy.board();
     expect(lines).toEqual([
-      { rank: 1, name: "Alice", spent: 40 },
-      { rank: 2, name: "Frank", spent: 15 },
+      { rank: 1, name: "Bob∶*x*", spent: 90 },
+      { rank: 2, name: "Alice", spent: 40 },
+      { rank: 3, name: "Frank", spent: 15 },
     ]);
     expect(Object.keys(lines[0] ?? {}).sort()).toEqual(["name", "rank", "spent"]);
     expect((await r.economy.wallet(ALICE)).on_board).toBe(true);
+    expect(await r.economy.setOnBoard(BOB, false)).toBe(true);
     expect((await r.economy.wallet(BOB)).on_board).toBe(false);
-    await r.economy.setOnBoard(ALICE, false);
-    expect((await r.economy.board()).map((l) => l.name)).toEqual(["Frank"]);
+    expect((await r.economy.board()).map((l) => l.name)).toEqual(["Alice", "Frank"]);
+    await r.economy.setOnBoard(BOB, true);
+    expect((await r.economy.board()).map((l) => l.name)).toEqual(["Bob∶*x*", "Alice", "Frank"]);
   });
 
-  it("counts the gifts to her only, within the window, and not what was refunded", async () => {
+  it("counts everything spent on her, within the window, and not transfers or refunds", async () => {
     const r = await rig();
-    await r.economy.setOnBoard(ALICE, true);
     await post(r, ALICE, -10, "feed", { ref: "rice:1" });
     await post(r, ALICE, -15, "letter");
     await post(r, ALICE, -20, "expression", { ref: "heart" });
     await post(r, ALICE, -30, "screen_message");
     await post(r, ALICE, -15, "dedication");
-    // Not gifts to her.
     await post(r, ALICE, -25, "song_ticket");
     await post(r, ALICE, -100, "frame");
     await post(r, ALICE, -50, "card_foil");
+    await post(r, ALICE, -5, "fortune");
+    await post(r, ALICE, -7, "goal_pledge");
+    // Coins to other people, and income.
     await post(r, ALICE, -30, "transfer_out");
+    await post(r, ALICE, -30, "bounty_escrow");
+    await post(r, ALICE, -30, "purse_gift");
     await post(r, ALICE, 500, "checkin");
     // Too old (31 days).
     await post(r, ALICE, -70, "feed", { at: T0 - 31 * DAY, ref: "rice:7" });
     // Refunded.
     const gone = await post(r, ALICE, -40, "dedication");
     await post(r, ALICE, 40, "refund", { ref: gone });
-    expect(await r.economy.board()).toEqual([{ rank: 1, name: "Alice", spent: 90 }]);
+    expect(await r.economy.board()).toEqual([{ rank: 1, name: "Alice", spent: 277 }]);
+  });
+
+  it("lists a fortune-only spender and leaves out a transfer-only one", async () => {
+    const r = await rig();
+    await post(r, ALICE, -5, "fortune");
+    await post(r, BOB, -50, "transfer_out");
+    expect(await r.economy.board()).toEqual([{ rank: 1, name: "Alice", spent: 5 }]);
   });
 
   it("counts a deal's escrow only once it was released to her", async () => {
     const r = await rig();
-    await r.economy.setOnBoard(BOB, true);
     const held = await post(r, BOB, -10, "deal_escrow", { id: "ESC1" });
     const paid = await post(r, BOB, -40, "deal_escrow", { id: "ESC2" });
     const sent = (id: string, escrow: string, status: string) =>
@@ -336,23 +345,21 @@ describe("the sponsor board", () => {
     expect(await r.economy.board()).toEqual([{ rank: 1, name: "Bob∶*x*", spent: 40 }]);
   });
 
-  it("is one person across linked accounts, on when any account is on, and off for all", async () => {
+  it("is one person across linked accounts, off when any account left, and off for all", async () => {
     const r = await rig();
     await post(r, ALICE, -30, "feed", { ref: "rice:3" });
     await post(r, ALICE_TWO, -20, "letter");
-    await r.economy.setOnBoard(ALICE_TWO, true);
     expect(await r.economy.board()).toEqual([{ rank: 1, name: "Alice", spent: 50 }]);
-    expect((await r.economy.wallet(ALICE)).on_board).toBe(true);
-    await r.economy.setOnBoard(ALICE, false);
+    await r.economy.setOnBoard(ALICE_TWO, false);
     expect(await r.economy.board()).toEqual([]);
-    expect((await r.economy.wallet(ALICE_TWO)).on_board).toBe(false);
+    expect((await r.economy.wallet(ALICE)).on_board).toBe(false);
+    await r.economy.setOnBoard(ALICE, true);
+    expect(await r.economy.board()).toEqual([{ rank: 1, name: "Alice", spent: 50 }]);
+    expect((await r.economy.wallet(ALICE_TWO)).on_board).toBe(true);
   });
 
   it("drops the blocked, refuses strangers, shares a rank for a tie and cuts at the limit", async () => {
     const r = await rig();
-    await r.economy.setOnBoard(BOB, true);
-    await r.economy.setOnBoard(FRANK, true);
-    await r.economy.setOnBoard(ALICE, true);
     await post(r, BOB, -20, "feed", { ref: "rice:2" });
     await post(r, FRANK, -20, "feed", { ref: "rice:2" });
     await post(r, ALICE, -10, "feed", { ref: "rice:1" });
@@ -369,8 +376,8 @@ describe("the sponsor board", () => {
   it("leaves a chosen frame alone", async () => {
     const r = await rig();
     await r.store.coins.selectFrame("p", ALICE, "sakura", new Date(T0).toISOString());
-    await r.economy.setOnBoard(ALICE, true);
-    await r.economy.setOnBoard(ALICE_TWO, true);
+    await r.economy.setOnBoard(ALICE, false);
+    await r.economy.setOnBoard(ALICE_TWO, false);
     expect(await r.store.coins.selectedFrame("p", [ALICE, ALICE_TWO])).toBe("sakura");
   });
 });

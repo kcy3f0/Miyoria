@@ -223,7 +223,7 @@ export function Board() {
             <label htmlFor={id} className="text-sm">
               上贊助排行榜
             </label>
-            <p className="text-xs text-muted-foreground">預設不上榜。只顯示你近 30 天花在她身上的錢,隨時可以退出。</p>
+            <p className="text-xs text-muted-foreground">花過錢就預設在榜上。只顯示你近 30 天花在她身上的錢,不顯示餘額,隨時可以退出。</p>
           </div>
         </div>
       )}

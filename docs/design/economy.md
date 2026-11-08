@@ -224,10 +224,10 @@ overlay 的新東西走 `economy.screen`(`ScreenEvent`:留言或獻詞)。
 **人與人之間**:
 
 - **轉帳**:只能轉給她認識、沒被封鎖的人;每人每天轉出、收到都有上限;自己轉自己(連在一起的帳號)不行;收不到時的回答不透露對方被封鎖。轉帳不是給她的禮物,不影響她。
-- **贊助排行榜**:只列自己選擇上榜的人,看的是最近 30 天花在她身上的錢(餵食、信、表情、留言、獻詞);預設不上榜,隨時可以退出;不顯示餘額。
+- **贊助排行榜**:最近 `board_days`(30)天內所有花在她身上的錢都算(餵食、信、表情、卡框、商店買的東西、籤詩、獻詞、留言、目標投入、放給她的預付約定);預設在榜上,任何人隨時可以退出(也可以再加入);轉給別人的錢不算;不顯示餘額。
 - **實作(migration 0014)**:
   - 轉帳 `Economy.transfer`:一次 1 到 `transfer_max`(50),每人每天轉出 `transfer_out_per_day`(100)、收到 `transfer_in_per_day`(100)。帳本沒有跨兩列的交易,所以先寫轉出那列(扣得起才寫),再寫收到那列(鍵由轉出那列的 id 推出);中間當掉,同一個冪等鍵重送會補完,不會付兩次;收的人到上限就把轉出那列退回。對方是陌生人、被封鎖、沒有 `me.wallet`、今天收滿了,一律回「對方現在收不到」。入口:Discord `/me give user amount`(預設只有本人看得到)和 `POST /api/member/transfer {to_discord_id, amount}`。
-  - 排行榜 `Economy.board` / `setOnBoard`:`coin_wallets.on_board`,連在一起的帳號任一個上榜就上榜,退出時全部關掉。算 `feed`、`letter`、`expression`、`screen_message`、`dedication`,以及已經放給她的預付約定(`deal_escrow` 且約定 `settled`);退回的不算;`board_days`(30)天內。同額同名次。入口:Discord `/me board [join]`、`POST /api/member/board {on}`、`GET /api/public/board`(只有名字和數字)。
+  - 排行榜 `Economy.board` / `setOnBoard`:退出記在 `coin_wallets.off_board`(migration 0015,舊的 `on_board` 不再讀),連在一起的帳號任一個退出就退出,`setOnBoard` 一次寫整個錢包;一個人一行、帳號的花費加總。算 `BOARD_REASONS`:`feed`、`letter`、`expression`、`frame`、全部 `PAID_ITEMS`(`card_reroll`、`card_pose`、`card_foil`、`song_ticket`、`dedication`、`screen_message`、`fortune`)、`goal_pledge`,以及已經放給她的預付約定(`deal_escrow` 且約定 `settled`);退回的不算(目標沒達成退回的投入也不算);`transfer_out`、懸賞託管、`purse_gift` 不算;`board_days`(30)天內。同額同名次。入口:Discord `/me board [join]`、`POST /api/member/board {on}`、`GET /api/public/board`(只有名字和數字)。
   - 籤詩:`fortunes` 表,一人一天一張;`GET`/`POST /api/member/fortune`。她寫 {籤等、題、四句、最多三個欄位、一句話},籤等不在六種之內就依權重抽(大吉 10、吉 30、中吉 25、小吉 20、末吉 10、凶 5),每段文字過和卡片一樣的篩;寫不出來就退錢、回 503。匯出有 `fortunes`,「請她忘記我」會刪。
 
 **不做**:競猜、押注,或任何拿魚幣賭結果的東西。

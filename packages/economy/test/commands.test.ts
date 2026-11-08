@@ -450,7 +450,8 @@ describe("wallet commands", () => {
     expect(reply.card?.title).toBe("贊助排行榜");
     expect(reply.text).toContain("1. Bob　90");
     expect(reply.text).toContain("2. Amy　40");
-    expect(reply.text).toContain("你不在榜上");
+    expect(reply.text).toContain("你已經退出榜單");
+    expect(reply.text).toContain("花過就預設在榜上");
     expect(reply.text).not.toContain("120");
     expect(calls).toContain("board:10");
     expect(buttons(reply).map((b) => b.label)).toEqual(["加入排行榜"]);
@@ -462,7 +463,7 @@ describe("wallet commands", () => {
 
     const left = replyOf(await press(registry, "mi:me:board:set:off"));
     expect(calls).toContain("on_board:false");
-    expect(left.text).toContain("你不在榜上");
+    expect(left.text).toContain("你已經退出榜單");
     // A forged value is refused before it reaches the store.
     expect(replyOf(await press(registry, "mi:me:board:set:maybe")).tone).toBe("error");
   });

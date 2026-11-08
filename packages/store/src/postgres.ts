@@ -753,14 +753,14 @@ class PgCoins implements CoinLedgerStore {
   }
 
   async onBoard(profile: ProfileId, accounts: readonly AccountRef[]): Promise<boolean> {
-    if (accounts.length === 0) return false;
+    if (accounts.length === 0) return true;
     const params: unknown[] = [profile];
     const rows = await this.db.query(
-      "SELECT 1 AS x FROM coin_wallets WHERE profile_id = $1 AND on_board AND " +
+      "SELECT 1 AS x FROM coin_wallets WHERE profile_id = $1 AND off_board AND " +
         `(${authorsWhere(accounts, params)}) LIMIT 1`,
       params,
     );
-    return rows.length > 0;
+    return rows.length === 0;
   }
 
   async setOnBoard(
@@ -773,18 +773,18 @@ class PgCoins implements CoinLedgerStore {
       for (const account of accounts) {
         await this.db.execute(
           "INSERT INTO coin_wallets (profile_id, author_platform, author_id, frame, updated_at, " +
-            "on_board) VALUES ($1, $2, $3, NULL, to_timestamp(0), $4) ON CONFLICT (profile_id, " +
-            "author_platform, author_id) DO UPDATE SET on_board = EXCLUDED.on_board",
-          [profile, account.platform, account.id, on],
+            "off_board) VALUES ($1, $2, $3, NULL, to_timestamp(0), $4) ON CONFLICT (profile_id, " +
+            "author_platform, author_id) DO UPDATE SET off_board = EXCLUDED.off_board",
+          [profile, account.platform, account.id, !on],
           client,
         );
       }
     });
   }
 
-  async boardAccounts(profile: ProfileId, limit: number): Promise<AccountRef[]> {
+  async offBoardAccounts(profile: ProfileId, limit: number): Promise<AccountRef[]> {
     const rows = await this.db.query(
-      "SELECT author_platform, author_id FROM coin_wallets WHERE profile_id = $1 AND on_board " +
+      "SELECT author_platform, author_id FROM coin_wallets WHERE profile_id = $1 AND off_board " +
         "ORDER BY author_platform, author_id LIMIT $2",
       [profile, limitParam(limit)],
     );

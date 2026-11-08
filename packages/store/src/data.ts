@@ -229,6 +229,7 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
         author_id: "text",
         frame: "text",
         on_board: "bool",
+        off_board: "bool",
         updated_at: "ts",
       }),
       // The fortune slips she wrote for them, kept like their cards.

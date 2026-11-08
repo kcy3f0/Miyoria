@@ -1525,6 +1525,19 @@ function behaviour(open: () => Promise<Store>): void {
     await store.coins.selectFrame(profile, account(linked), null, at(3_000));
     expect(await store.coins.selectedFrame(profile, wallet)).toBeNull();
     expect(await store.coins.selectedFrame(profile, [account(id)])).toBe("sakura");
+
+    // The board is on unless someone left; leaving writes the whole wallet and keeps the frame.
+    expect(await store.coins.onBoard(profile, wallet)).toBe(true);
+    expect(await store.coins.offBoardAccounts(profile, 10)).toEqual([]);
+    await store.coins.setOnBoard(profile, wallet, false);
+    expect(await store.coins.onBoard(profile, wallet)).toBe(false);
+    expect(await store.coins.onBoard(profile, [account(linked)])).toBe(false);
+    expect(await store.coins.onBoard(profile, [account(other)])).toBe(true);
+    expect(await store.coins.offBoardAccounts(profile, 10)).toHaveLength(2);
+    expect(await store.coins.selectedFrame(profile, [account(id)])).toBe("sakura");
+    await store.coins.setOnBoard(profile, wallet, true);
+    expect(await store.coins.onBoard(profile, wallet)).toBe(true);
+    expect(await store.coins.offBoardAccounts(profile, 10)).toEqual([]);
   });
 
   it("coins: concurrent spends never take the balance below zero", async () => {

@@ -223,7 +223,7 @@ class Handler {
         { type: "text", text },
         {
           type: "muted",
-          text: `最近花在她身上的${view.currency}，只列自己選擇上榜的人，不顯示餘額。`,
+          text: `最近花在她身上的${view.currency}（餵食、信、表情、商店買的東西、獻詞、目標等等），花過就預設在榜上，不想上榜可以退出；不顯示餘額。`,
         },
       ];
       if (view.can_earn) {
@@ -235,7 +235,10 @@ class Handler {
               : { id: componentId(R.board, "on"), label: "加入排行榜", style: "primary" },
           ],
         });
-        blocks.push({ type: "muted", text: view.on_board ? "你在榜上" : "你不在榜上" });
+        blocks.push({
+          type: "muted",
+          text: view.on_board ? "你在榜上（花過就會列出來）" : "你已經退出榜單",
+        });
       }
       return cardReply(blocks, { accent: "neutral", title: "贊助排行榜" });
     });
@@ -408,9 +411,9 @@ function register(registry: CommandRegistry, handler: Handler): void {
     (inv) => handler.give(inv),
   );
   registry.register(
-    commandSpec("me board", "贊助排行榜：看前 10 名，或選擇要不要上榜", {
+    commandSpec("me board", "贊助排行榜：看前 10 名；花過就預設上榜，隨時可以退出", {
       args: [
-        argSpec("join", "加入或退出排行榜（選填）", ArgKind.choice(["on", "off"]), {
+        argSpec("join", "加入（回到榜上）或退出排行榜（選填）", ArgKind.choice(["on", "off"]), {
           required: false,
         }),
       ],

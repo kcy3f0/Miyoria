@@ -723,14 +723,14 @@ class SqliteCoins implements CoinLedgerStore {
   }
 
   async onBoard(profile: ProfileId, accounts: readonly AccountRef[]): Promise<boolean> {
-    if (accounts.length === 0) return false;
+    if (accounts.length === 0) return true;
     const params: Params = { profile };
     const row = this.db.get(
-      "SELECT 1 AS x FROM coin_wallets WHERE profile_id = $profile AND on_board = 1 AND " +
+      "SELECT 1 AS x FROM coin_wallets WHERE profile_id = $profile AND off_board = 1 AND " +
         `(${authorsWhere(accounts, params)}) LIMIT 1`,
       params,
     );
-    return Boolean(row);
+    return !row;
   }
 
   async setOnBoard(
@@ -743,18 +743,18 @@ class SqliteCoins implements CoinLedgerStore {
       for (const account of accounts) {
         this.db.run(
           "INSERT INTO coin_wallets (profile_id, author_platform, author_id, frame, updated_at, " +
-            "on_board) VALUES ($profile, $platform, $id, NULL, 0, $on) ON CONFLICT (profile_id, " +
-            "author_platform, author_id) DO UPDATE SET on_board = excluded.on_board",
-          { profile, platform: account.platform, id: account.id, on: on ? 1 : 0 },
+            "off_board) VALUES ($profile, $platform, $id, NULL, 0, $off) ON CONFLICT (profile_id, " +
+            "author_platform, author_id) DO UPDATE SET off_board = excluded.off_board",
+          { profile, platform: account.platform, id: account.id, off: on ? 0 : 1 },
         );
       }
     });
   }
 
-  async boardAccounts(profile: ProfileId, limit: number): Promise<AccountRef[]> {
+  async offBoardAccounts(profile: ProfileId, limit: number): Promise<AccountRef[]> {
     const rows = this.db.all(
       "SELECT author_platform, author_id FROM coin_wallets WHERE profile_id = $profile AND " +
-        "on_board = 1 ORDER BY author_platform, author_id LIMIT $limit",
+        "off_board = 1 ORDER BY author_platform, author_id LIMIT $limit",
       { profile, limit: limitParam(limit) },
     );
     return rows.map((r) => ({ platform: str(r, "author_platform"), id: str(r, "author_id") }));
