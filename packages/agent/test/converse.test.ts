@@ -331,6 +331,19 @@ describe("self and people renderers", () => {
     expect(fallback).toBe("你現在的心情:心情很好、很睏、很平靜");
   });
 
+  it("she knows when she is full, or hungry, from her drives", () => {
+    const now = Date.now();
+    const self = (hunger: number) =>
+      ({ drives: () => ({ hunger }) }) as unknown as NonNullable<
+        Parameters<typeof moodBlock>[0]["self"]
+      >;
+    const mood = (hunger: number) =>
+      moodBlock({ context: tctx(), now, affect: affect({ top: [] }), self: self(hunger) });
+    expect(mood(0.05)).toContain("你吃飽了,現在吃不下");
+    expect(mood(0.8)).toContain("肚子餓");
+    expect(mood(0.4)).not.toContain("吃");
+  });
+
   it("activity_ledger_and_notices", () => {
     const now = Date.parse("2026-11-04T12:00:00.000Z");
     const snapshot: ActivitySnapshot = {

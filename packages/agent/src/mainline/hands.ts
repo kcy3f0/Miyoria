@@ -321,6 +321,25 @@ export class Hands {
     return jobs;
   }
 
+  /**
+   * Results of `context` she was not told of yet, still unsaid until `told`: a turn that shows
+   * them may be cancelled before it says anything (2026-11-08 15:33: a refused feed was lost so).
+   */
+  peekResults(context: ContextKey): Job[] {
+    return [...(this.#unsaid.get(contextKeyString(context)) ?? [])];
+  }
+
+  /** A turn that showed `jobs` got to its end: they count as told. */
+  toldOf(jobs: readonly Job[]): void {
+    if (jobs.length === 0) return;
+    const ids = new Set(jobs.map((j) => j.id));
+    for (const [key, list] of this.#unsaid) {
+      const left = list.filter((j) => !ids.has(j.id));
+      if (left.length === 0) this.#unsaid.delete(key);
+      else this.#unsaid.set(key, left);
+    }
+  }
+
   // ---- lines waiting for results --------------------------------------------------------------
 
   /** `line` goes out when every one of its tools came back done. */

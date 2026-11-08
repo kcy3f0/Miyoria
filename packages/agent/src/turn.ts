@@ -1678,6 +1678,8 @@ class Turn {
     const own = this.intent?.intent.id ?? main.claim.proposal?.id ?? null;
     const examples = m.examples_chars > 0 ? this.#examples() : null;
     const wishes = services.get(DirectivesKey)?.wishes(this.key) ?? [];
+    const telling = [...line.hands.peekResults(ACTING_ALONE), ...line.hands.peekResults(this.key)];
+    main.telling(telling);
     const data = [
       ...extras.own,
       ...extras.sections,
@@ -1688,7 +1690,7 @@ class Turn {
         m.proposals,
       ),
       // What she did with nobody there (`ACTING_ALONE`) she hears of wherever she speaks next.
-      resultData([...line.hands.takeResults(ACTING_ALONE), ...line.hands.takeResults(this.key)]),
+      resultData(telling),
       wishes.length === 0 ? null : dataBlock("viewers", "觀眾的要求", wishes.join("\n")),
       examples === null ? null : truncate(examples, m.examples_chars),
     ].filter((d): d is string => d !== null);

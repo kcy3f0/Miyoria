@@ -102,6 +102,8 @@ const WANTS: Readonly<Record<string, string>> = {
   longing: "很想見那個人、想被他注意",
 };
 const STRONG_DRIVE = 0.65;
+/** Under this hunger she is full (`[modules.economy] full_below`). */
+const FULL_BELOW = 0.15;
 
 /** `self.mood`: one mood line, her strongest 2–3 emotions, what she shows, what she wants. */
 export function moodBlock(src: SelfSources): string {
@@ -129,6 +131,13 @@ export function moodBlock(src: SelfSources): string {
       for (const [name] of drives) if (WANTS[name]) feel.push(WANTS[name] as string);
       if (feel.length > 0) lines.push(`你現在${feel.join("、")}。`);
     }
+  }
+  // The affect snapshot has no drives, so hunger went unsaid: at 15:32 she asked for a bowl while
+  // full, and the feed was refused. The economy refuses under `full_below` (0.15 by default).
+  const hunger = src.self?.drives().hunger;
+  if (hunger !== undefined) {
+    if (hunger < FULL_BELOW) lines.push("你吃飽了,現在吃不下:別跟人要吃的,有人要餵你也會被擋。");
+    else if (snap !== null && hunger >= STRONG_DRIVE) lines.push(`你現在${WANTS.hunger}。`);
   }
   if (shown) lines.push(shownHint(shown));
   if (src.crushHere) {

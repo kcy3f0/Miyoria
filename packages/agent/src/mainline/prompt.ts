@@ -204,7 +204,13 @@ export function tailSection(s: StateInput): string {
   }
   if (s.tasks.length > 0) lines.push(`# 手上的任務\n${s.tasks.map((t) => `- ${t}`).join("\n")}`);
   if (s.actions.length > 0) {
-    const done = s.actions.map((j) => `- ${j.tool}:${STATE_OF_JOB[j.state]}`);
+    // What came back, not only that it did: a refused feed is 「完成」 too (2026-11-08 15:33).
+    const done = s.actions.map((j) => {
+      const detail = neutralize(j.detail).trim();
+      const what =
+        detail === "" ? "" : `(${detail.length > 40 ? `${detail.slice(0, 40)}…` : detail})`;
+      return `- ${j.tool}:${STATE_OF_JOB[j.state]}${what}`;
+    });
     lines.push(`# 你剛才做的事\n${done.join("\n")}`);
   }
   if (s.recent.length > 0) {

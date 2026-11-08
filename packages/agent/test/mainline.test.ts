@@ -1554,6 +1554,16 @@ describe("the hands merge repeats", () => {
     expect(resultData(h.takeResults(where))).toContain("stream_start 失敗:stage");
   });
 
+  it("a result stays unsaid until a turn that showed it concludes", () => {
+    const { hands: h } = hands();
+    fail(h, { who: "Alice" }, "她吃飽了,吃不下");
+    // A turn showed it and was cancelled: the next one still gets it.
+    expect(h.peekResults(where)).toHaveLength(1);
+    expect(h.peekResults(where)).toHaveLength(1);
+    h.toldOf(h.peekResults(where));
+    expect(h.peekResults(where)).toEqual([]);
+  });
+
   it("long after, the same failure is news again", () => {
     const { hands: h, told } = hands();
     fail(h, undefined);

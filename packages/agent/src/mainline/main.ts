@@ -578,6 +578,8 @@ export class MainTurn {
   #decision: string | null = null;
   #held = false;
   #reminded = false;
+  /** Results this turn's prompt shows: told once the turn concludes. */
+  #telling: readonly Job[] = [];
   /** Tools she wrote as text instead of calling (`toolsWrittenAsText`). */
   #written = new Set<string>();
   /** Overdue commitments she was shown. */
@@ -704,6 +706,11 @@ export class MainTurn {
     return true;
   }
 
+  /** The results this turn's prompt shows (`Hands.peekResults`). */
+  telling(jobs: readonly Job[]): void {
+    this.#telling = jobs;
+  }
+
   /** Tools she wrote as text in this turn. */
   wrote(tools: readonly string[]): void {
     for (const tool of tools) this.#written.add(tool);
@@ -741,6 +748,7 @@ export class MainTurn {
     requester: unknown,
   ): void {
     const main = this.#main;
+    main.hands.toldOf(this.#telling);
     const drafts = this.#commit(output);
     const body: TurnDecision = {
       turn: this.turn,
