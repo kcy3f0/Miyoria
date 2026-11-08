@@ -4,6 +4,8 @@ import {
   ADMIN,
   BLOCKED,
   builtinRoles,
+  builtinStatus,
+  LEGACY_BUILTIN_GRANTS,
   MODERATOR,
   OWNER,
   PANEL_ACCESS,
@@ -32,6 +34,34 @@ describe("built-in roles", () => {
         expect(isValidPattern(p), `${r.name}: ${p}`).toBe(true);
       }
       expect(r.builtin).toBe(true);
+    }
+  });
+
+  test("web_tools_for_members", () => {
+    const roles = builtinRoles();
+    const get = (n: string) => roles.find((r) => r.name === n) as RoleDefinition;
+    for (const name of [ADMIN, MODERATOR, TRUSTED, USER]) {
+      expect(allows(get(name), "tools.web"), name).toBe(true);
+    }
+    expect(allows(get(RESTRICTED), "tools.web")).toBe(false);
+    expect(allows(get(BLOCKED), "tools.web")).toBe(false);
+    // Searching the web is not a licence for every tool.
+    expect(allows(get(USER), "tools.mcp.fs.write")).toBe(false);
+    expect(allows(get(USER), "tools.sandbox.x")).toBe(false);
+  });
+
+  test("a_stored_role_from_before_tools_web_is_upgraded", () => {
+    for (const name of [ADMIN, MODERATOR, TRUSTED, USER]) {
+      const current = builtinRoles().find((r) => r.name === name) as RoleDefinition;
+      const legacy = LEGACY_BUILTIN_GRANTS[name] ?? [];
+      expect(legacy.length, name).toBeGreaterThan(0);
+      for (const old of legacy) {
+        expect(old, name).not.toContain("tools.web");
+        expect(builtinStatus({ ...current, grants: [...old] }), name).toBe("upgrade");
+      }
+      // The latest legacy list is today's grants without tools.web, in the same order.
+      expect(legacy.at(-1), name).toEqual(current.grants.filter((g) => g !== "tools.web"));
+      expect(builtinStatus(current), name).toBe("current");
     }
   });
 

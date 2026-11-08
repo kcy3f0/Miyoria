@@ -13,7 +13,12 @@
 // | restricted | 10 | `help`, `me.*`, `memory.self.*`, `voice.consent` | |
 // | blocked | 0 | nothing | |
 
-import { builtinRoleGrants, DIRECTIVE_MODERATE, SANDBOX_CODE_RUN } from "@miyoria/commands";
+import {
+  builtinRoleGrants,
+  DIRECTIVE_MODERATE,
+  SANDBOX_CODE_RUN,
+  WEB_TOOL,
+} from "@miyoria/commands";
 import type { RoleDefinition } from "@miyoria/store";
 
 export const OWNER = "owner";
@@ -86,7 +91,13 @@ const V1_ADMIN = ["admin.*", "module.*", "memory.*", "stream.*"];
 /** A built-in role's grants before moderators could make rules. */
 function beforeDirectives(name: string): string[] {
   const role = builtinRoleGrants().find((r) => r.name === name);
-  return (role?.grants ?? []).filter((n) => n !== DIRECTIVE_MODERATE);
+  return (role?.grants ?? []).filter((n) => n !== DIRECTIVE_MODERATE && n !== WEB_TOOL);
+}
+
+/** A built-in role's grants before members could ask her to search the web. */
+function beforeWeb(name: string): string[] {
+  const role = builtinRoleGrants().find((r) => r.name === name);
+  return (role?.grants ?? []).filter((n) => n !== WEB_TOOL);
 }
 
 /** A built-in role's grants before trusted people could ask her to run code. */
@@ -103,14 +114,20 @@ export const LEGACY_BUILTIN_GRANTS: Readonly<Record<string, readonly (readonly s
     [...V1_PRIVACY, ...V1_EVERYDAY, ...V1_TRUSTED, ...V1_MODERATOR, ...V1_ADMIN],
     beforeSandbox("admin"),
     beforeDirectives("admin"),
+    beforeWeb("admin"),
   ],
   moderator: [
     [...V1_PRIVACY, ...V1_EVERYDAY, ...V1_TRUSTED, ...V1_MODERATOR],
     beforeSandbox("moderator"),
     beforeDirectives("moderator"),
+    beforeWeb("moderator"),
   ],
-  trusted: [[...V1_PRIVACY, ...V1_EVERYDAY, ...V1_TRUSTED], beforeSandbox("trusted")],
-  user: [[...V1_PRIVACY, ...V1_EVERYDAY]],
+  trusted: [
+    [...V1_PRIVACY, ...V1_EVERYDAY, ...V1_TRUSTED],
+    beforeSandbox("trusted"),
+    beforeWeb("trusted"),
+  ],
+  user: [[...V1_PRIVACY, ...V1_EVERYDAY], beforeWeb("user")],
   restricted: [V1_PRIVACY],
 };
 
