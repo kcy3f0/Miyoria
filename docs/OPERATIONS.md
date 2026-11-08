@@ -220,6 +220,17 @@ python -m venv .venv && .venv/Scripts/pip install -r fake/requirements.txt   # L
 WORKER_ASR_URL=http://127.0.0.1:8001 WORKER_TTS_URL=http://127.0.0.1:8002 python -m pytest tests/test_contract.py
 ```
 
+做歌時的 GPU 分配由 song worker 依當下狀態決定,不用設大小。`GET :8005/health` 的 `gpu` 欄位看得到決定和原因,學到的數字存在歌曲快取的 `_gpu-profile.json`,換卡會重來。要固定做法時設 `SING_GPU_POLICY`:
+
+| 值 | 行為 |
+|---|---|
+| `auto`(預設) | 放得下就共用,放不下先用 CPU 和等待,語音只在必要時短暫下線 |
+| `share` | 永遠不動語音 |
+| `wait` | 永遠不動語音,沒空間就等 |
+| `offload` | 一律讓語音下線(舊行為) |
+
+TTS 和 ASR 的模型跑在子程序,`/offload` 結束子程序,回傳的 `released_mb` 是整張卡實際還回的量。`TTS_ENGINE_PROCESS=0` 或 `ASR_ENGINE_PROCESS=0` 可以改回同一個程序,但卸載就不一定還得回顯存。
+
 ### 從原始碼一個指令跑起來:`up`、`doctor --deep`、`update`
 
 只用在原始碼 checkout(要有 `workers/`、`apps/`、`pnpm-workspace.yaml`);npm 安裝的版本沒有 worker,也沒有可重建的東西。
@@ -328,9 +339,16 @@ Stage 要直接碰 VTube Studio / OBS / 遊戲,所以原生在直播機執行,�
 
 誰能登入:
 
-- `[modules.auth] owners` 裡的擁有者,以及**全域**指派了 `admin` 角色的人(`*` / `admin.*` 已包含 `admin.panel.access` 與 `admin.panel.write`)。其他人會看到「沒有管理面板權限」。
+- `[modules.auth] owners` 裡的擁有者,以及**全域**指派了 `admin` 角色的人(`*` / `admin.*` 已包含 `admin.panel.access` 與 `admin.panel.write`)。其他人登入後是「成員」:只看得到公開頁和她眼中的自己,所有管理 API 都拒絕(`[modules.api.public] enabled = false` 時才是直接拒絕登入)。之後才拿到權限的人要重新登入一次。
 - 開放給其他角色:`/admin perm allow role:moderator node:admin.panel.access scope:global`(唯讀,修改類按鈕會停用),要能修改再加 `node:admin.panel.write`。面板檢查時沒有伺服器 / 頻道,所以只算 `scope:global` 的指派與覆寫。
 - 拿掉角色或權限後幾秒內生效,已登入的人會被送回登入畫面。登入 session 預設 7 天(`session_days`),存在資料庫(只存 token 的雜湊),Core 重啟不會掉;登出會立刻刪掉。
+
+公開頁(`[modules.api.public]`,預設開):
+
+- 根網址對沒登入的人顯示她現在在做什麼、歌單和今天的統計,API 在 `/api/public/*`;登入的成員多看到她眼中的自己、下載資料、請她忘記、點歌,API 在 `/api/member/*`。管理用的 token 表單在 `#/login`,頁面上沒有連結。
+- 放在 Cloudflare tunnel 後面時,請求都從本機進來,速率限制看 `CF-Connecting-IP`。Core 綁在 `127.0.0.1` 才能信這個標頭;綁到其他位址時,非本機的連線一律用連線位址。
+- `identify` 不能證明對方是伺服器成員:任何 Discord 帳號都能登入成員頁,但什麼資料都沒有,而且她不認識的帳號不能點歌。
+- 公開頁會把 `apps/panel/dist` 裡的預設背景圖傳給所有訪客。那張圖是遊戲 CG,對外開放前先確認授權,或把 `public/background.local.jpg` 拿掉,面板會退回暮色漸層。
 
 從別台機器用面板:cookie 和 token 都會走明文 HTTP,所以要嘛走 Tailscale(`redirect_uri` 用 tailnet 位址,例如 `http://100.x.y.z:7878/api/auth/oauth/callback`,並把 `[modules.api] bind` 綁到那個位址),要嘛放在 https 反向代理後面(`redirect_uri = "https://panel.example.com/api/auth/oauth/callback"`,cookie 自動加上 `Secure`)。無論哪種,Developer Portal 的 redirect、`redirect_uri` 和你在瀏覽器開的網址三者要一致。
 
@@ -509,6 +527,7 @@ Voice node 的層級用它的 `LOG_LEVEL`(`error|warn|info|debug`);`debug` 會�
 - [ ] **備份有加密或放在受信任處**:dump 內含所有人的對話記憶。
 - [ ] **收音同意**:語音頻道有公告她在聽;`[modules.voice] consent` 設定符合你的社群規則;預設不存音訊。
 - [ ] **成本煞車**:LLM 供應者後台設用量上限;用 `miyoria status` 定期看用量。
+- [ ] **公開頁**:對外的 tunnel 只應指到 Core;`metrics_public` 維持 false(tunnel 會把 `/metrics` 一起開出去)。
 - [ ] **面板權限**:只有需要的角色有 `admin.panel.access` / `admin.panel.write`;`DISCORD_CLIENT_SECRET` 跟其他秘密一樣只放 `.env`。
 - [ ] Token 外洩時:立刻到 Discord Developer Portal Reset Token / 換 self 帳號密碼,重新產生 `MIYORIA_API_TOKEN` / `VOICE_LINK_TOKEN`(刪掉 `.env` 裡那行再跑 `miyoria init`,或手動改),重啟所有節點。
 

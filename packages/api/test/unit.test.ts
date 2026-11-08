@@ -88,7 +88,7 @@ describe("session", () => {
   it("expired_sessions_are_gone_and_checks_are_cached", async () => {
     const clock = { now: () => Date.now() };
     const sessions = new Sessions(86_400_000, 60_000, clock);
-    const token = await sessions.create(undefined, account(), "A", null);
+    const token = await sessions.create(undefined, account(), "A", null, "admin");
     const found = await sessions.lookup(undefined, new Allow(true, false), token);
     expect(found?.access).toEqual({ panel: true, write: false });
     // Cached: a changed authorizer is not consulted until `recheck` passes.
@@ -96,7 +96,7 @@ describe("session", () => {
     expect(again?.access.panel).toBe(true);
 
     const expired = new Sessions(-1000, 0, clock);
-    const stale = await expired.create(undefined, account(), "A", null);
+    const stale = await expired.create(undefined, account(), "A", null, "admin");
     expect(await expired.lookup(undefined, new Allow(true, true), stale)).toBeNull();
     expect(expired.size).toBe(0);
   });
@@ -111,7 +111,7 @@ describe("session", () => {
 // ---- oauth.rs -----------------------------------------------------------------------------
 
 function login(at: number): PendingLogin {
-  return { verifier: "v", next: "/", at };
+  return { verifier: "v", next: "/", redirect: new URL("http://127.0.0.1/cb"), at };
 }
 
 describe("oauth", () => {
@@ -387,12 +387,21 @@ describe("config and helpers", () => {
         client_id: "",
         client_secret: "",
         redirect_uri: "",
+        redirect_uris: [],
         session_days: 7,
         cookie_secure: null,
         recheck_secs: 5,
         discord_url: "https://discord.com",
       },
       metrics_public: false,
+      public: {
+        enabled: true,
+        song_requests: true,
+        cache_secs: 10,
+        rate_per_minute: 60,
+        rate_total_per_minute: 3000,
+        utc_offset_minutes: 480,
+      },
     });
   });
 

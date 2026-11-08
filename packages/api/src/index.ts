@@ -1,10 +1,12 @@
 // @miyoria/api: the Admin API (module `api`), an HTTP + SSE server for the CLI and the admin
 // panel, plus a typed `ApiClient`.
 //
-// Every `/api` route except `GET /api/health` and the login routes requires
-// `Authorization: Bearer <token>` or a panel session cookie; panel files at `/` never do.
-// Session users need `admin.panel.access`, and `admin.panel.write` for anything but `GET`; their
-// changes must also send `X-Miyoria-Request: 1` (CSRF guard). Unknown `/api/*` routes answer
+// Every `/api` route except `GET /api/health`, the login routes, `/api/public/*` and
+// `/api/member/*` requires `Authorization: Bearer <token>` or an admin session cookie; panel files
+// at `/` never do. Admin sessions need `admin.panel.access`, and `admin.panel.write` for anything
+// but `GET`; their changes must also send `X-Miyoria-Request: 1` (CSRF guard). A login without
+// `admin.panel.access` is a member session, which every admin route refuses. Unknown `/api/*`
+// routes answer
 // `404 {"error":"no such endpoint"}`. Errors are `{"error": "..."}`; a missing service (its
 // module is stopped) is `503`. Changes are recorded in the `AuditLog` (actor `"api"` for the
 // token, `discord:<id>` for a session) when there is one.
@@ -57,7 +59,12 @@
 //   notes), `GET /api/reflection?days=7` (reflections, lessons, feedback),
 //   `GET /api/mind/digests?limit=20`; read-only
 // * `GET /api/events?topics=platform.*,agent.*` (Server-Sent Events of bus envelopes)
+// * `GET /api/public/status|songs` (anyone; see `public.ts`), `GET /api/public/card/{serial}`
+//   (checks a card's code; see `card.ts`)
+// * `GET /api/member/session|me|export|card`, `POST /api/member/forget|songs|card` (a logged-in
+//   person's own data; see `member.ts`, `card.ts`)
 
+export { CARD_POSES, CARDS_PER_DAY } from "./card.js";
 export {
   ApiClient,
   type CallOptions,
@@ -105,6 +112,7 @@ export {
 export { PANEL_DIR_ENV, pickDir } from "./panel.js";
 export { absoluteHistory } from "./people.js";
 export { summarizePrompt } from "./prompts.js";
+export { type PublicConfig, PublicConfigSchema } from "./public.js";
 export { ActiveProfileKey, isQueueNotFound, MCP_MODULE_ID } from "./services.js";
 export {
   COOKIE,
@@ -137,6 +145,7 @@ export type {
   FeelingView,
   GoalsView,
   HealthInfo,
+  IssuedCard,
   KnowledgeDocView,
   KnowledgeView,
   LatencyStats,
@@ -144,6 +153,15 @@ export type {
   McpServerInfo,
   McpState,
   McpToolInfo,
+  MemberCard,
+  MemberCards,
+  MemberDay,
+  MemberExport,
+  MemberForgetResult,
+  MemberMemory,
+  MemberSession,
+  MemberSong,
+  MemberView,
   MemoryItem,
   MemoryListQuery,
   MemoryRecordView,
@@ -157,6 +175,12 @@ export type {
   PersonDetail,
   PersonSummary,
   PromptSummary,
+  PublicDay,
+  PublicSong,
+  PublicSongs,
+  PublicState,
+  PublicStatus,
+  PublicToday,
   QueueAuthor,
   QueueItemInfo,
   QueueState,

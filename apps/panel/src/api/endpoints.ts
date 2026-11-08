@@ -57,8 +57,15 @@ import type {
   HealthInfo,
   ModuleAction,
   ModuleInfo,
+  IssuedCard,
+  MemberCards,
+  MemberForgetResult,
+  MemberSession,
+  MemberView,
   PersonaOverride,
   PersonaSectionInfo,
+  PublicSongs,
+  PublicStatus,
   SessionInfo,
   SetPersonaRequest,
   SetPersonaResponse,
@@ -100,6 +107,20 @@ export function createApi(client: ApiClient) {
     logout: () => client.post<void>("/api/auth/logout", undefined, { public: true }),
     /** Where the browser goes to start a Discord login; `next` is a local path such as `/#/people`. */
     discordLoginUrl: (next: string) => client.url("/api/auth/oauth/login", { next }),
+
+    // what anyone may see, and what a logged-in person has of their own: the cookie alone
+    publicStatus: (o?: Opts) => client.get<PublicStatus>("/api/public/status", { ...o, public: true }),
+    publicSongs: (o?: Opts) => client.get<PublicSongs>("/api/public/songs", { ...o, public: true }),
+    memberSession: (o?: Opts) => client.get<MemberSession>("/api/member/session", { ...o, public: true }),
+    memberMe: (o?: Opts) => client.get<MemberView>("/api/member/me", { ...o, public: true }),
+    memberExportUrl: () => client.url("/api/member/export"),
+    memberForget: () => client.post<MemberForgetResult>("/api/member/forget", { confirm: true }, { public: true }),
+    memberRequestSong: (query: string) =>
+      client.post<{ accepted: boolean }>("/api/member/songs", { query }, { public: true }),
+    memberCards: (o?: Opts) => client.get<MemberCards>("/api/member/card", { ...o, public: true }),
+    memberIssueCard: () => client.post<IssuedCard>("/api/member/card", {}, { public: true }),
+    publicCard: (serial: string, o?: Opts) =>
+      client.get<IssuedCard>(`/api/public/card/${seg(serial)}`, { ...o, public: true }),
 
     modules: (o?: Opts) => client.get<ModuleInfo[]>("/api/modules", o),
     moduleAction: (id: string, action: ModuleAction) =>

@@ -16,8 +16,9 @@ import { ApiError } from "./errors.js";
 import { ContextLabels } from "./labels.js";
 import type { Monitor } from "./monitor.js";
 import type { OAuth } from "./oauth.js";
+import { PublicConfigSchema, PublicSide } from "./public.js";
 import { ActiveProfileKey } from "./services.js";
-import { type Principal, principalActor, type Sessions } from "./session.js";
+import { type Principal, principalActor, type SessionRecord, type Sessions } from "./session.js";
 import { Telemetry } from "./telemetry.js";
 import { DecisionTrail } from "./trail.js";
 
@@ -28,7 +29,11 @@ export type Tokenizer = (text: string) => string[];
 
 /** Hono environment of the API app. */
 export interface ApiEnv {
-  Variables: { principal: Principal };
+  Variables: {
+    principal: Principal;
+    /** The logged-in person on a member route. No admin route ever has this. */
+    member: SessionRecord;
+  };
 }
 
 export type ApiContext = Context<ApiEnv>;
@@ -56,6 +61,12 @@ export class ApiState {
     readonly telemetry: Telemetry = new Telemetry(),
     /** The arbiter's recent decisions (`GET /api/arbiter/decisions`). */
     readonly trail: DecisionTrail = new DecisionTrail(),
+    /** Limits, cache and numbers of the public side (`[modules.api.public]`). */
+    readonly publicSide: PublicSide = new PublicSide(PublicConfigSchema.parse({}), () =>
+      ctx.clock.now(),
+    ),
+    /** Uniform in [0, 1), for choices that need no secrecy (a card's pose). */
+    readonly random: () => number = Math.random,
   ) {}
 
   /** The service, or a 503 naming `what`. */

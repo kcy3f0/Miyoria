@@ -1,5 +1,5 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { LogOut, Search } from "lucide-react";
+import { IdCard, LogOut, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { CommandPalette } from "@/app/CommandPalette";
 import { EmergencyStop, HER_NAME, useHerNow } from "@/components/live-state";
@@ -117,6 +117,13 @@ function SessionFooter() {
         </div>
       )}
       {!user && expanded && <span className="flex-1 truncate px-2 text-xs text-muted-foreground">Admin token</span>}
+      {user && (
+        <Button asChild variant="ghost" size="icon-sm" className="text-muted-foreground" title="我的頁面">
+          <a href="#/me" aria-label="我的頁面">
+            <IdCard />
+          </a>
+        </Button>
+      )}
       <Button
         variant="ghost"
         size="icon-sm"

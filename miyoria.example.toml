@@ -169,8 +169,20 @@ token = "${MIYORIA_API_TOKEN:-}"
 # client_id = "${DISCORD_CLIENT_ID:-}"
 # client_secret = "${DISCORD_CLIENT_SECRET:-}"
 # redirect_uri = "http://127.0.0.1:7878/api/auth/oauth/callback"
+# redirect_uris = ["https://panel.example.com/api/auth/oauth/callback"]  # 其他網址:從哪個網址登入就回哪裡,每個都要在 Developer Portal 登記
 # session_days = 7
 # cookie_secure = true             # 預設:redirect_uri 是 https 就開
+
+# 公開頁:沒登入的人在根網址看到她現在在做什麼、歌單和今天的統計;用 Discord 登入但沒有
+# admin.panel.access 的人是「成員」,只看得到她眼中的自己,碰不到任何管理 API。
+# 下面都是預設值。enabled = false 就回到只有管理登入的樣子,沒有權限的登入會被拒絕。
+# [modules.api.public]
+# enabled = true
+# song_requests = true             # 成員可以在頁面點歌,算一般使用者的請求:權限、速率限制和規則都照走
+# cache_secs = 10                  # 同一份回應給所有人用多久,流量不會打到 Core 和語音
+# rate_per_minute = 60             # 每個訪客每分鐘的請求數(Cloudflare tunnel 後面看 CF-Connecting-IP)
+# rate_total_per_minute = 3000     # 所有訪客加起來每分鐘的請求數
+# utc_offset_minutes = 480         # 「今天」從哪個時區的午夜開始算
 
 # Self 帳號語音節點(apps/voice-node)連進來的位址;token 由 `miyoria init` 產生
 [modules."voice.link"]

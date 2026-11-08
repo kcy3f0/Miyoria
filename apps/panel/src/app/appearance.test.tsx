@@ -5,7 +5,7 @@ import { mockFetch, renderRoute } from "@/test/render";
 import { DEFAULT_LOOK, glassVariables, normalizeLook, resetLook, setLook } from "./appearance";
 import { groupFor, NAV, NAV_GROUPS, titleFor } from "./nav";
 
-const KEY = "miyoria.panel.look";
+const KEY = "miyoria.panel.look.v2";
 const root = document.documentElement;
 
 afterEach(() => resetLook());
@@ -38,7 +38,7 @@ describe("look", () => {
   });
 
   it("starts from a gradient, never from a picture", () => {
-    expect(DEFAULT_LOOK.background).toMatch(/^gradient-/);
+    expect(DEFAULT_LOOK.background).toBe("picture");
   });
 });
 

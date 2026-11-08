@@ -86,6 +86,8 @@ describe("only the main line acts", () => {
       "packages/activity/src/port.ts",
       // `chat.*` only under V3 (`#propose` runs nothing): the consent check of a line she chose.
       "packages/agent/src/intents.ts",
+      // A person on the member page asking for a song, as a `user`: a request she may turn down.
+      "packages/api/src/member.ts",
       // A person at the panel, or a slash command: people, not her.
       "packages/api/src/ops.ts",
       // `actThroughGate`: V2 only, `ArbiterEnv.act` is not set under V3.

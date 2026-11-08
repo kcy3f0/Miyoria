@@ -38,3 +38,5 @@ workers/.venv-*/
 # Claude Code 子代理的暫存 worktree
 /.claude/worktrees/
 workers/pytest-of-*/
+# The owner's panel pictures (background, login): game art, local only
+apps/panel/public/*.local.*

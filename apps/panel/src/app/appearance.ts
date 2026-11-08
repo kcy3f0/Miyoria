@@ -1,12 +1,13 @@
-// How the panel looks in this browser. Settings live in localStorage, the owner's picture in
-// IndexedDB; nothing here reaches the Core. No picture ships with the panel: the default
-// background is a built-in gradient.
+// How the panel looks in this browser. Settings live in localStorage, added pictures in
+// IndexedDB; nothing here reaches the Core. The default background is the owner's picture at
+// public/background.local.jpg, kept out of git because it is game art. Where that file is
+// missing, the gradient underneath shows instead.
 
 import { useSyncExternalStore } from "react";
 import { deleteBackgroundImage, loadBackgroundImage, saveBackgroundImage } from "@/lib/image-store";
 import { readJson, writeJson } from "@/lib/storage";
 
-const STORAGE_KEY = "miyoria.panel.look";
+const STORAGE_KEY = "miyoria.panel.look.v2";
 
 /** Paired on purpose: most free pairs of accents leave the charts unreadable. */
 export const THEMES = {
@@ -19,13 +20,21 @@ export const THEMES = {
 export type ThemeId = keyof typeof THEMES;
 export const THEME_IDS = Object.keys(THEMES) as ThemeId[];
 
+const DUSK =
+  "radial-gradient(90% 70% at 78% 8%, #8a6a86 0%, transparent 62%), radial-gradient(80% 80% at 12% 96%, #5c5f8e 0%, transparent 60%), linear-gradient(160deg, #3b4a66 0%, #2e3350 45%, #4a3350 100%)";
+
 export const BACKGROUNDS = [
+  {
+    id: "picture",
+    label: "預設圖",
+    css: `url("/background.local.jpg") 24% 62% / auto 150% no-repeat, ${DUSK}`,
+  },
   { id: "solid-ink", label: "墨黑", css: "#0b0d12" },
   { id: "solid-night", label: "夜藍", css: "#1b2233" },
   {
     id: "gradient-dusk",
     label: "暮色",
-    css: "radial-gradient(90% 70% at 78% 8%, #8a6a86 0%, transparent 62%), radial-gradient(80% 80% at 12% 96%, #5c5f8e 0%, transparent 60%), linear-gradient(160deg, #3b4a66 0%, #2e3350 45%, #4a3350 100%)",
+    css: DUSK,
   },
   {
     id: "gradient-tide",
@@ -68,7 +77,7 @@ export const DEFAULT_LOOK: Look = {
   glass: true,
   theme: "sakura",
   density: "normal",
-  background: "gradient-dusk",
+  background: "picture",
 };
 
 const clamp = (v: unknown, min: number, max: number, fallback: number) =>

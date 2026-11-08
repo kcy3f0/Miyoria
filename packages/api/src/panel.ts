@@ -119,6 +119,8 @@ export async function servePanel(dir: string, request: Request): Promise<Respons
       "content-type": MIME[extname(path).toLowerCase()] ?? "application/octet-stream",
       "cache-control": assets ? IMMUTABLE : REVALIDATE,
       "x-content-type-options": "nosniff",
+      // The page is open to the internet and has buttons that delete: nobody may frame it.
+      "x-frame-options": "DENY",
       "last-modified": new Date(Math.floor(info.mtimeMs / 1000) * 1000).toUTCString(),
       "accept-ranges": "bytes",
     });

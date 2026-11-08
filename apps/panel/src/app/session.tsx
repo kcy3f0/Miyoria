@@ -63,6 +63,12 @@ export function takeLoginError(): string | null {
   return code;
 }
 
+/** The address asks for the login screen itself, not for a failed login's message. */
+export function wantsTokenLogin(): boolean {
+  const hash = window.location.hash;
+  return hash.startsWith("#/login") && !hash.includes("error=");
+}
+
 /** Where to come back to after a Discord login: the current page. */
 export function loginNext(): string {
   const hash = window.location.hash.startsWith("#/") && !window.location.hash.startsWith("#/login") ? window.location.hash : "#/";

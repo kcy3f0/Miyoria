@@ -275,6 +275,122 @@ export interface SessionInfo {
 }
 
 // ---------------------------------------------------------------------------
+// public side (`/api/public/*`, `/api/member/*`)
+// ---------------------------------------------------------------------------
+
+export type PublicState = "singing" | "playing" | "live" | "in_voice" | "idle" | "offline";
+
+/** `GET /api/public/status`. */
+export interface PublicStatus {
+  state: PublicState;
+  live: boolean;
+  in_voice: boolean;
+  game: string | null;
+  today: PublicToday;
+  /** The last 14 local days, oldest first, today last. Missing on an older Core. */
+  days?: PublicDay[];
+}
+
+export interface PublicToday {
+  songs_sung: number;
+  hours_live: number;
+  hours_in_voice: number;
+}
+
+/** One local day, `date` as `YYYY-MM-DD`. */
+export interface PublicDay extends PublicToday {
+  date: string;
+}
+
+export interface PublicSong {
+  title: string | null;
+  artist: string | null;
+  duration_s: number | null;
+}
+
+/** `GET /api/public/songs`. */
+export interface PublicSongs {
+  playing: PublicSong | null;
+  upcoming: (PublicSong & { ready: boolean })[];
+  recent: PublicSong[];
+}
+
+/** `GET /api/member/session`. */
+export interface MemberSession {
+  name: string;
+  avatar_url: string | null;
+}
+
+/** 她眼中的你, in words. All `null` for someone she does not know. */
+export interface MemberCard {
+  call_name: string | null;
+  relationship: string | null;
+  affinity: string | null;
+  trust: string | null;
+  familiarity: string | null;
+  public_feeling: string | null;
+}
+
+export interface MemberSong {
+  title: string;
+  artist: string | null;
+  state: string;
+  requested_at: string;
+}
+
+/** `GET /api/member/me`. */
+/** Their own lines on one local day. */
+export interface MemberDay {
+  date: string;
+  text: number;
+  voice: number;
+}
+
+/** A card she gave someone: what she thought of them then, kept so its code can be checked. */
+export interface IssuedCard {
+  /** `MYR-XXXX-XXXX-XXXX`. */
+  serial: string;
+  issued_at: string;
+  name: string;
+  avatar_url: string | null;
+  /** The nth card this person has been given, from 1. */
+  number: number;
+  call_name: string | null;
+  relationship: string | null;
+  affinity: string | null;
+  trust: string | null;
+  familiarity: string | null;
+  public_feeling: string | null;
+  /** Which picture of her is on it. */
+  pose: string;
+}
+
+/** `GET /api/member/card`. */
+export interface MemberCards {
+  latest: IssuedCard | null;
+  today: number;
+  per_day: number;
+}
+
+export interface MemberView {
+  card: MemberCard;
+  memories: { text: string; kind: string; date: string }[];
+  songs: MemberSong[];
+  /** The last 30 local days, oldest first, today last. Missing on an older Core. */
+  activity?: MemberDay[];
+  can_request_song: boolean;
+  forget: { removes: string; keeps: string };
+}
+
+/** `POST /api/member/forget`. */
+export interface MemberForgetResult {
+  deleted: number;
+  about: number;
+  derived: number;
+  unverified: number;
+}
+
+// ---------------------------------------------------------------------------
 // panel routes
 
 /** A page of results. `next_cursor` is opaque; `null` on the last page. */

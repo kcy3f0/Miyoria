@@ -208,7 +208,10 @@ afterEach(async () => {
   }
 });
 
-async function harnessWith(withOauth: boolean): Promise<Harness> {
+async function harnessWith(
+  withOauth: boolean,
+  publicConfig: Record<string, JsonValue> = {},
+): Promise<Harness> {
   const fake = await startFake();
   const sup = new Supervisor();
   const store = new TestStore();
@@ -228,6 +231,7 @@ async function harnessWith(withOauth: boolean): Promise<Harness> {
     bind: "127.0.0.1:0",
     token: TOKEN,
     panel_dir: "",
+    public: publicConfig,
   };
   if (withOauth) {
     config.discord_oauth = {
@@ -373,7 +377,8 @@ describe("oauth", () => {
   });
 
   it("denied_and_read_only_users", async () => {
-    const h = await harnessWith(true);
+    // With the public side on, such a login is a member session instead (test/public.test.ts).
+    const h = await harnessWith(true, { enabled: false });
 
     const denied = await h.login("stranger-code");
     expect(denied.location).toBe("/#/login?error=denied");

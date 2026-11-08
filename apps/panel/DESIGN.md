@@ -14,6 +14,9 @@ Tokens: `src/index.css` (`:root` variables + Tailwind v4 `@theme inline`). Appea
 components: `src/components/*`. Charts: `src/components/charts/*` (hand-drawn SVG, no chart
 library). Chart blocks over the Core's telemetry: `src/components/trends.tsx`.
 
+The same app is also the public site (`src/pages/public/`), for people without panel access. See
+"Public site" below; everything here applies to it unless that section says otherwise.
+
 ## Rules the owner set
 
 - No subtitle or description under page or section titles. A title, then the data.
@@ -51,6 +54,10 @@ Text on the content surface carries `0 1px 2px` shadow and a lighter `--muted-fo
 brightest part of a picture and secondary text about 4:1. Raising see-through lowers this, so the
 controls exist and the owner decides. Solid controls drop the text shadow.
 
+The login screen is the one card in the panel, two columns (shadcn `login-04`): the form on overlay
+glass and a clear pane that lifts the picture behind it, so it follows the chosen background. Under
+`md` the pane goes and the form stands alone.
+
 ## Appearance
 
 Header icon button, a `.glass-float` popover. Everything is applied as variables on `<html>` before
@@ -66,10 +73,12 @@ clamped on read), the owner's picture in IndexedDB (`miyoria-panel`). Never a li
 | 元件深色遮罩 | 0 to 100, 35 | One dial for content, frame and band, the mock's formula with `t = 1 - mask / 100` |
 | 配色 | 櫻花 | Paired themes (below). The two accents are never chosen separately: most free pairs break the charts |
 | 密度 | 標準 | 緊湊 tightens rows, sections and the sidebar through `--row-y`, `--stage-gap`, `--nav-h` |
-| 背景 | 暮色 | A gallery of thumbnails: 純色, 漸層, the owner's picture |
+| 背景 | 預設圖 | A gallery of thumbnails: 預設圖, 純色, 漸層, a picture the viewer adds |
 
-The default background is a built-in gradient. **No picture ships with the panel**: the owner's
-picture is copyrighted game art and is only ever added in this popover.
+The default background is the owner's picture, `public/background.local.jpg`. It is game art, so it
+is ignored by git and never ships; where the file is missing the 暮色 gradient shows instead. The
+login card's right half shows `public/login.local.jpg` the same way, at 82% over the frosted
+backdrop, beside a lighter glass (`--login`) than the floating surfaces.
 
 ## Color
 
@@ -155,8 +164,8 @@ Navigation is four levels, each visible at once:
 - Page: `Page` is the content surface, 28 px padding (16 px on phones), `--stage-gap` (32 px)
   between blocks. `Page rail={...}` adds the right rail (19.5 rem, under the content below 1180 px).
   A rail holds things to act on, and only pages with real content for it have one: 總覽 (needs
-  attention, voice, say, spend, modules), 直播 (voice, say, game, channel levels). Rail blocks are
-  split by hairlines.
+  attention, voice, say, spend, modules), 直播 (voice, say, game, channel levels), the public site
+  for someone logged in (點歌, 你的資料). Rail blocks are split by hairlines.
 - Rows: hairlines, `--row-y` vertical padding, no horizontal inset, so rows align with block titles.
 - Chart blocks (`ChartBlock`): title 13 muted, headline value 24 semibold with its unit and one
   muted aside, legend, then the plot. Two per row from `lg`, one below.
@@ -166,6 +175,28 @@ Navigation is four levels, each visible at once:
 - 直播: the scene switch is a `.glass-well` band, the selected scene solid primary.
 - LLM (`/llm`): 概況, 呼叫 (the call inspector), 價格與用量. Detail sheets (`sm:max-w-3xl`) for an
   LLM call and a thought live in the URL (`?call=`, `?thought=`), so one links to the other.
+
+## Public site
+
+What `/` shows to anyone who is not an admin. `App.tsx` picks it after `GET /api/auth/session`
+answers 401 and `GET /api/public/status` answers; the admin shell, its router and its event stream
+are never mounted, so nothing there can call an admin route. Without a public side on the Core
+(`[modules.api.public] enabled = false`, or an older Core) the login screen shows as before. The
+token form stays at `#/login`, with no link to it from the page.
+
+| Who | Sees |
+|---|---|
+| Anyone | 現在, 今天, 歌單, and a Discord login button |
+| Logged in | Also 她眼中的你, 一起的回憶, 你點的歌, and a rail with 點歌 and 你的資料 |
+| Someone she does not know, or a blocked person | The same page, "她還不認識你", no 點歌. The two cannot be told apart |
+
+- Frame: a `.glass-dock` header like the shell's: the mark, her name, her state, then login or the
+  person and 登出. No sidebar, no navigation.
+- Content: `Page` straight away. There is no opening on the picture; that stays 總覽's.
+- 現在, 今天 and the bands of 她眼中的你 are strips of facts, label over value, at 14. Never tiles.
+- Words, not numbers, for anything she feels: 好感, 信任 and 熟悉 arrive as bands from the Core.
+- No ranking of people, anywhere.
+- 請她忘記我 confirms with what goes and what stays, in the words `/me memory forget` uses.
 
 ## Charts
 

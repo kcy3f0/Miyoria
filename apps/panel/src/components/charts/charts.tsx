@@ -406,6 +406,8 @@ export interface ColumnChartProps {
   /** Tooltip row for the column total (e.g. `合計`). */
   totalLabel?: string;
   legend?: boolean;
+  /** Counts: no tick between whole numbers. */
+  integer?: boolean;
   className?: string;
 }
 
@@ -418,6 +420,7 @@ export function ColumnChart({
   format = (v) => String(Math.round(v)),
   totalLabel,
   legend = true,
+  integer = false,
   className,
 }: ColumnChartProps) {
   const [ref, width] = useWidth<HTMLDivElement>();
@@ -431,7 +434,7 @@ export function ColumnChart({
   const n = Math.max(columns.length, 1);
   const slot = Math.max(0, (width - m.l - m.r) / n);
   const bar = Math.max(2, Math.min(24, slot * 0.62));
-  const yTicks = ticks(yDomain, height < 140 ? 2 : 3);
+  const yTicks = ticks(yDomain, height < 140 ? 2 : 3).filter((v) => !integer || Number.isInteger(v));
   const span = columns.length > 0 ? (columns[columns.length - 1]?.t ?? 0) - (columns[0]?.t ?? 0) : 0;
   // Label the columns that start on a round time, about one per 80px.
   const every = bucketMs * Math.max(1, Math.ceil(n / Math.max(2, Math.floor(width / 80))));
@@ -450,9 +453,11 @@ export function ColumnChart({
   };
 
   const hoverCol = hi === null ? null : columns[hi];
-  const rows = sampleIndexes(columns.length, 24).map((i) => {
+  const daily = bucketMs >= 86_400_000;
+  const when = (t: number) => (daily ? dayFmt.format(t) : clockFmt.format(t));
+  const rows = sampleIndexes(columns.length, daily ? 31 : 24).map((i) => {
     const c = columns[i] as Column;
-    return [clockFmt.format(c.t), ...series.map((s) => format(c.values[s.key] ?? 0))];
+    return [when(c.t), ...series.map((s) => format(c.values[s.key] ?? 0))];
   });
 
   return (
@@ -521,7 +526,7 @@ export function ColumnChart({
           <Tooltip
             x={m.l + slot * hi + slot / 2}
             width={width}
-            title={`${clockFmt.format(hoverCol.t)}–${clockFmt.format(hoverCol.t + bucketMs)}`}
+            title={daily ? dayFmt.format(hoverCol.t) : `${clockFmt.format(hoverCol.t)}–${clockFmt.format(hoverCol.t + bucketMs)}`}
             rows={[
               ...[...series].reverse().map((s) => ({ key: s.key, color: s.color, label: s.label, value: format(hoverCol.values[s.key] ?? 0) })),
               ...(totalLabel ? [{ key: "__total", label: totalLabel, value: format(totals[hi] ?? 0) }] : []),
@@ -529,7 +534,7 @@ export function ColumnChart({
           />
         )}
       </div>
-      <DataTableSr caption={label} head={["時間", ...series.map((s) => s.label)]} rows={rows} />
+      <DataTableSr caption={label} head={[daily ? "日期" : "時間", ...series.map((s) => s.label)]} rows={rows} />
     </div>
   );
 }

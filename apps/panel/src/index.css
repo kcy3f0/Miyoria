@@ -31,6 +31,8 @@
   --well: rgba(4, 5, 10, var(--well-a));
   --float: rgba(15, 15, 21, 0.84);
   --float-fx: blur(20px);
+  --login: rgba(15, 15, 21, 0.5);
+  --login-fx: blur(16px) saturate(1.3);
 
   /* Density. */
   --row-y: 0.5625rem;
@@ -106,6 +108,8 @@
   --well: #0a0b10;
   --float: #181a22;
   --float-fx: none;
+  --login: #181a22;
+  --login-fx: none;
 }
 
 :root[data-density="compact"] {
@@ -266,6 +270,36 @@
     backdrop-filter: var(--float-fx);
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
     text-shadow: none;
+  }
+
+  /* Login: glass beside a clear pane onto the picture, siblings so each filters the backdrop. */
+  .login-card {
+    border: 1px solid var(--line-strong);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  }
+
+  .login-form {
+    background: var(--login);
+    -webkit-backdrop-filter: var(--login-fx);
+    backdrop-filter: var(--login-fx);
+  }
+
+  /*
+   * Frosts the backdrop and takes back some of its dimming, then lays the owner's login picture
+   * over it, a little see-through. `public/login.local.jpg` is game art kept out of git; without it the backdrop shows.
+   */
+  .login-window {
+    position: relative;
+    -webkit-backdrop-filter: blur(16px) brightness(1.2);
+    backdrop-filter: blur(16px) brightness(1.2);
+  }
+
+  .login-window::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: url("/login.local.jpg") 64% 30% / cover no-repeat;
+    opacity: 0.82;
   }
 
   /* The header on 總覽 has no surface until the page slides under it. */

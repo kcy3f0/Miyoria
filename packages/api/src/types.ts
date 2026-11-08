@@ -80,6 +80,152 @@ export interface SessionInfo {
   permissions: SessionPermissions;
 }
 
+/** What she is doing, as the public page says it. `offline`: the modules that know are stopped. */
+export type PublicState = "singing" | "playing" | "live" | "in_voice" | "idle" | "offline";
+
+/** Today's aggregate numbers: nothing in them points at a person. */
+export interface PublicToday {
+  songs_sung: number;
+  hours_live: number;
+  hours_in_voice: number;
+}
+
+/** One local day of `PublicToday`, `date` as `YYYY-MM-DD`. */
+export interface PublicDay extends PublicToday {
+  date: string;
+}
+
+/** `GET /api/public/status`. */
+export interface PublicStatus {
+  state: PublicState;
+  live: boolean;
+  in_voice: boolean;
+  /** The game id while she plays one. */
+  game: string | null;
+  today: PublicToday;
+  /** The last `PUBLIC_DAYS` local days, oldest first, today last. */
+  days: PublicDay[];
+}
+
+/** A song on the public page. `title` is `null` until the worker found it, or if it was screened. */
+export interface PublicSong {
+  title: string | null;
+  artist: string | null;
+  duration_s: number | null;
+}
+
+/** `GET /api/public/songs`. */
+export interface PublicSongs {
+  playing: PublicSong | null;
+  /** Still to come, in order. */
+  upcoming: (PublicSong & { ready: boolean })[];
+  /** What she sang last, newest first. */
+  recent: PublicSong[];
+}
+
+/** `GET /api/member/session`. */
+export interface MemberSession {
+  name: string;
+  avatar_url: string | null;
+}
+
+/** 她眼中的你, in words. All `null` for someone she does not know. */
+export interface MemberCard {
+  call_name: string | null;
+  relationship: string | null;
+  affinity: string | null;
+  trust: string | null;
+  familiarity: string | null;
+  public_feeling: string | null;
+}
+
+export interface MemberMemory {
+  text: string;
+  kind: string;
+  /** `YYYY-MM-DD`. */
+  date: string;
+}
+
+export interface MemberSong {
+  title: string;
+  artist: string | null;
+  state: string;
+  requested_at: string;
+}
+
+/** `GET /api/member/me`. */
+/** How much someone talked to her on one local day: their own lines, counted. */
+export interface MemberDay {
+  date: string;
+  /** Lines written in text channels, threads and DMs. */
+  text: number;
+  /** Lines said in voice. */
+  voice: number;
+}
+
+export interface MemberView {
+  card: MemberCard;
+  memories: MemberMemory[];
+  songs: MemberSong[];
+  /** The last `MEMBER_DAYS` local days, oldest first, today last. */
+  activity: MemberDay[];
+  can_request_song: boolean;
+  /** What forgetting takes and leaves, in the words `/me memory forget` uses. */
+  forget: { removes: string; keeps: string };
+}
+
+/** A card she gave someone: what she thought of them then, kept so its code can be checked. */
+export interface IssuedCard {
+  /** `MYR-XXXX-XXXX-XXXX`, Crockford base32 (no I L O U), 60 random bits from crypto. */
+  serial: string;
+  /** ISO 8601 UTC. */
+  issued_at: string;
+  /** Their display name when it was issued (from the session record). */
+  name: string;
+  /** Their avatar URL when it was issued, or null. */
+  avatar_url: string | null;
+  /** The nth card this person has been given, from 1. */
+  number: number;
+  call_name: string | null;
+  relationship: string | null;
+  affinity: string | null;
+  trust: string | null;
+  familiarity: string | null;
+  public_feeling: string | null;
+  /** Which picture of her is on it: a key from CARD_POSES. */
+  pose: string;
+}
+
+/** `GET /api/member/card`. */
+export interface MemberCards {
+  latest: IssuedCard | null;
+  /** Cards issued to them in the current local day (utc offset as public stats use). */
+  today: number;
+  /** Most cards a person may be issued per local day. */
+  per_day: number;
+}
+
+/** `GET /api/member/export` (a file). */
+export interface MemberExport {
+  exported_at: string;
+  card: MemberCard;
+  memories: (MemberMemory & { derived_from_you: boolean })[];
+  /** Memories left out because they hold someone else's name or words, or her own notes. */
+  withheld: number;
+  songs: MemberSong[];
+  /** The cards she gave them, newest first. */
+  cards: IssuedCard[];
+}
+
+/** `POST /api/member/forget`. */
+export interface MemberForgetResult {
+  deleted: number;
+  about: number;
+  derived: number;
+  /** Memories whose evidence is gone, so nothing ties them to the person; they stay. */
+  unverified: number;
+}
+
 /** One module as reported by `GET /api/modules` (the supervisor's `ModuleStatus`). */
 export type ModuleInfo = ModuleStatus;
 

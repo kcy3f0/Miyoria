@@ -73,18 +73,19 @@ describe("評測", () => {
 
     const addressed = (await block("直接叫她的開口率(語音)")) as HTMLElement;
     // t1 and t2 were answered, t3 was not: 2 of 3.
-    expect(within(addressed).getByText("67%")).toBeInTheDocument();
+    // Fixtures on both sides of midnight also show it per day.
+    expect(within(addressed).getAllByText("67%")[0]).toBeInTheDocument();
     expect(addressed).toHaveTextContent("目標 > 95%");
     expect(addressed).toHaveTextContent("3 回合");
-    expect(within(addressed).getByText("未達標")).toBeInTheDocument();
+    expect(within(addressed).getAllByText("未達標")[0]).toBeInTheDocument();
 
     const latency = await block("語音說完到出聲") as HTMLElement;
     expect(within(latency).getAllByText("2.00 s")[0]).toBeInTheDocument();
-    expect(within(latency).getByText("達標")).toBeInTheDocument();
+    expect(within(latency).getAllByText("達標")[0]).toBeInTheDocument();
 
     // u3 says the key of u1 again at the same revision: 1 of 3 lines.
     const repeat = await block("重複率") as HTMLElement;
-    expect(within(repeat).getByText("33%")).toBeInTheDocument();
+    expect(within(repeat).getAllByText("33%")[0]).toBeInTheDocument();
 
     // No promise was ever logged: not measured, never zero.
     const broken = await block("「說了沒做」(承諾逾期作廢)") as HTMLElement;
