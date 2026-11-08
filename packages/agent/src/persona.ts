@@ -48,8 +48,7 @@ export class PersonaHandle {
    * chat prompt. The example dialogues are data (`examples`), not rules.
    */
   corePrompt(): string {
-    return this.#profile.sections
-      .map((s) => s.body.trim())
+    return [this.#profile.ownIdentity(), ...this.#profile.sections.map((s) => s.body.trim())]
       .filter((b) => b !== "")
       .join("\n\n");
   }

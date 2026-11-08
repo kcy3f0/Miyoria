@@ -67,7 +67,9 @@ describe("agent module", () => {
     // situation with her own state.
     expect(msgs.length).toBe(4);
     expect(msgs[0]?.role).toBe("system");
-    expect(msgs[0]?.content).toMatch(/^你是住在深海的鯨魚娘。\n\n# 規則\n/);
+    expect(msgs[0]?.content).toMatch(
+      /^你的本名是 Miyoria[^\n]*\n\n你是住在深海的鯨魚娘。\n\n# 規則\n/,
+    );
     expect(msgs[1]?.role).toBe("user");
     expect(msgs[1]?.content).toBe("Owen: 早安\nOwen: DeepSeek 在嗎\n阿明: 安安");
     expect(msgs[2]?.role).toBe("user");
@@ -362,9 +364,9 @@ describe("agent module", () => {
     persona.setSection("style", "說話很短");
     h.say(incoming(channel("c"), "Owen", "嗨"));
     await wait(3000);
-    // The fixed system part: persona sections, then the rules.
+    // The fixed system part: her own name, persona sections, then the rules.
     const system = mock.requests()[0]?.messages[0]?.content as string;
-    expect(system.startsWith("新的人格\n\n說話很短\n\n# 規則\n"), system).toBe(true);
+    expect(system).toMatch(/^你的本名是 Miyoria[^\n]*\n\n新的人格\n\n說話很短\n\n# 規則\n/);
   });
 
   it("ignores_other_bots_by_default", async () => {
@@ -677,7 +679,7 @@ describe("agent module", () => {
     let shown = await run(command("channel mode", "阿明"));
     expect(shown.text).toContain("`normal`");
     expect(shown.text).toContain("（預設）");
-    expect(reg.get(["channel", "mode"])?.ephemeral).toBe(true);
+    expect(reg.get(["channel", "mode"])?.ephemeral).toBe(false);
     const select = shown.card?.blocks.find((b) => b.type === "select");
     expect(select?.type === "select" && select.select.id).toBe("mi:channel:mode:set");
 
