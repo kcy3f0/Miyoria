@@ -398,6 +398,9 @@ importers:
       '@miyoria/auth':
         specifier: workspace:*
         version: link:../auth
+      '@miyoria/economy':
+        specifier: workspace:*
+        version: link:../economy
       '@miyoria/ext-host':
         specifier: workspace:*
         version: link:../ext-host
@@ -670,6 +673,9 @@ importers:
       '@miyoria/discord':
         specifier: workspace:*
         version: link:../discord
+      '@miyoria/economy':
+        specifier: workspace:*
+        version: link:../economy
       '@miyoria/ext-host':
         specifier: workspace:*
         version: link:../ext-host
@@ -742,6 +748,9 @@ importers:
       '@miyoria/voice':
         specifier: workspace:*
         version: link:../voice
+      '@miyoria/web':
+        specifier: workspace:*
+        version: link:../web
       '@miyoria/world':
         specifier: workspace:*
         version: link:../world
@@ -810,6 +819,65 @@ importers:
       discord.js:
         specifier: ^14.26.0
         version: 14.28.0
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@24.19.2)(jsdom@26.1.0)(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.15))
+
+  packages/economy:
+    dependencies:
+      '@miyoria/actions':
+        specifier: workspace:*
+        version: link:../actions
+      '@miyoria/commands':
+        specifier: workspace:*
+        version: link:../commands
+      '@miyoria/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@miyoria/sing':
+        specifier: workspace:*
+        version: link:../sing
+      '@miyoria/store':
+        specifier: workspace:*
+        version: link:../store
+      '@miyoria/types':
+        specifier: workspace:*
+        version: link:../types
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@24.19.2)(jsdom@26.1.0)(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.15))
+
+  packages/eval:
+    dependencies:
+      '@miyoria/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@miyoria/directive':
+        specifier: workspace:*
+        version: link:../directive
+      '@miyoria/game':
+        specifier: workspace:*
+        version: link:../game
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -1600,6 +1668,31 @@ importers:
       smol-toml:
         specifier: ^1.9.1
         version: 1.9.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@24.19.2)(jsdom@26.1.0)(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.15))
+
+  packages/web:
+    dependencies:
+      '@miyoria/actions':
+        specifier: workspace:*
+        version: link:../actions
+      '@miyoria/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@miyoria/types':
+        specifier: workspace:*
+        version: link:../types
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
       typescript:
         specifier: ~5.9.3
         version: 5.9.3

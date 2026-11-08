@@ -125,8 +125,18 @@ voice = "deepseek-chan"
 # 擁有者只在這裡設定(舊設定檔的 [modules.auth] owners 仍然有效,兩邊會合併)
 [modules.commands]
 owners = ["discord:${MIYORIA_OWNER_ID:-0}"]
-# 隱私政策的連結(https://),顯示在 /me 的「隱私」與「記憶與刪除」頁;不填就顯示尚未提供
+# 隱私政策的連結(https://),顯示在 /me i 的「隱私」與「記憶與刪除」頁;不填就顯示尚未提供
 # privacy_policy_url = "https://example.com/privacy"
+
+# 誰看得到指令的回覆:"public"(整個頻道)或 "private"(只有下指令的人);警告與錯誤一律只有本人看得到。
+# 預設:多數指令公開;me profile / me privacy / me link / me call / me memory ...、voice consent、
+# 所有 admin ... 與 /me i、/admin i 面板是私人的。鍵是指令路徑或整組的前綴("me" 管整個 me),
+# 最長的符合者優先;打錯的路徑啟動時會有警告。
+# [modules.commands.visibility]
+# "me wallet" = "private"
+# "miyo" = "private"
+# "me" = "private"           # me 底下全部私人(除非另外列出)
+# "me checkin" = "public"
 
 # 角色與權限節點(owner > admin > moderator > trusted > user > restricted > blocked)
 [modules.auth]
@@ -139,7 +149,7 @@ token = "${DISCORD_BOT_TOKEN:-}"
 # 每次啟動會清掉另一種範圍留下的舊指令;指令清單有重複時可執行一次
 # `miyoria discord commands reset`
 command_guilds = []
-# Discord 只會看到 /miyo /song /me /admin 四個指令(其餘功能都在這四個面板裡)。
+# Discord 會看到完整的指令樹;/miyo /song 直接開面板,有子指令的 /me /admin 用 /me i /admin i 開面板。
 # 伺服器訊息的收聽範圍(docs/design/v3-architecture.md §19 第 4 項):
 #   "allowlist"(預設):只有提及她、回覆她的訊息,或 ambient_channels 內的頻道她才讀得到;私訊一律可以
 #   "tiers":每則訊息都交給她,由 /miyo 的「聊天等級」(關閉 / 只回提及 / 可以聊天)決定她插不插話
@@ -259,6 +269,49 @@ dirs = ["extensions"]
 # prepare_notice = true      # worker 做歌要整張顯示卡時(SING_OFFLOAD_URLS),她先說「我去準備一下歌喔」再讓它開始
 # prepare_notice_gap_secs = 180   # 連點好幾首時這段時間內不再說第二次
 
+# 魚幣(docs/design/economy.md):陪她就賺得到(簽到、說話、語音、點的歌唱完、她自己送),
+# 只能花在餵她和小禮物上。不能用真錢買、不能轉給別人,也幾乎買不到好感:每份付錢的禮物只讓好感動一點點。
+# 她不認識或封鎖了的人看到的是空錢包。下面都是預設值;enabled = false 就關掉。
+# [modules.economy]
+# enabled = true
+# currency = "魚幣"
+# checkin = 10                # 每天簽到一次(面板和 Discord 合計)
+# streak_bonus = 20           # 連續簽到的第 7、14、21… 天多給
+# talked = 10                 # 當天她看到你說過話(文字或語音),一天一次
+# voice_per_10min = 2         # 在她的語音頻道,而且這 10 分鐘裡有開口
+# voice_cap = 20
+# song_finished = 5           # 你點的歌她唱完了
+# song_cap = 3                # 一天算幾次
+# her_gift_per_person = 30    # 她的 give_coins:每人每天最多
+# her_gift_total = 100        # 她的 give_coins:所有人加起來每天最多
+# rice = 10                   # 一碗白飯:hunger −0.15
+# big_bowl = 40               # 大碗(鋼盆):hunger −0.5,開台時出現钢盆表情幾秒
+# dessert = 25                # 甜點:hunger −0.05
+# letter = 15                 # 一封信(120 字內),她有空時讀
+# expression = 20             # 送她表情(愛心眼、臉紅、＞＜):開台中、沒在唱歌時;沒送出去就退錢
+# expression_cooldown_s = 600 # 每個人多久能送一次表情
+# full_below = 0.15           # hunger 低於這個就是吃飽了:不收、不扣錢
+# diminish = 0.6              # 同一個人當天第 n 份禮物,情緒乘上 0.6^(n-1)
+# gift_affinity = 0.4         # 每份付錢的禮物(餵食、表情,不含信)加的好感,再乘社交引擎的遞減
+# gift_trust = 0.1            # ...和信任
+# gift_affinity_cap = 1.5     # 禮物本身每人每天最多加的好感(也算進一般每日上限)
+# gift_trust_cap = 0.5        # ...和信任
+# deal_due_s = 600            # 約定:她說做完後,對方多久內要付
+# deal_timeout_s = 900        # 約定:她沒在這段時間內做完就作廢,託管退回
+# deals_per_day = 5           # 每個人每天最多幾個約定
+# deal_sweep_s = 30           # 多久掃一次到期的約定
+# deal_kept_trust = 0.3       # 約定付清了,多加的信任
+# broken_trust = 4            # 食言(她做了、沒收到):信任扣多少,不受每日增加上限限制
+# broken_affinity = 1.5       # ...好感扣多少
+# broken_growth = 1.5         # 同一個人之後每次食言扣的倍數
+# broken_cap = 3              # ...最多到第一次的幾倍
+# utc_offset_minutes = 480    # 「今天」從哪個時區的午夜開始算
+# frames = [                  # 卡框:只是外觀,不影響她
+#   { id = "sakura", label = "櫻花", price = 100 },
+#   { id = "abyss", label = "深海", price = 150 },
+#   { id = "gold", label = "金框", price = 300 },
+# ]
+
 # 遊戲內聊天變成獨立的對話(每個世界 / 伺服器一段歷史)。玩家在 Discord 用 /me link 拿代碼,
 # 在遊戲聊天室打 `!link <代碼>` 就跟 Discord 帳號連在一起;沒連的玩家是陌生人。
 # 她在遊戲裡的回話很短、不會下指令;直播中又在語音裡時也用語音說(她可以用 game_chat_reply 自己改)
@@ -321,7 +374,7 @@ barge_in = "selective"     # 有人插話時:selective(只有這回合要回的�
 # cooldown_ms = 5000
 
 [modules.directive]
-# 主人規則(docs/design/v3-architecture.md §9)。規則本身存在資料庫裡,用對話、/miyo、/admin 或面板管理,
+# 主人規則(docs/design/v3-architecture.md §9)。規則本身存在資料庫裡,用對話、/miyo、/admin i 或面板管理,
 # 這裡只設定主人以外的人能做到什麼程度。關掉這個模組只會少了工具和指令,已經有的規則照樣生效。
 # viewer_ttl_mins = 10       # 觀眾的要求只是偏好,維持幾分鐘(不管對方怎麼說)
 # moderator_max_mins = 1440  # 管理員的規則最長幾分鐘(超過會縮短;管理員一定要給時效)
@@ -630,6 +683,28 @@ max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不
 # pool_size = 0                  # 預設 0 = 關;設 1 以上:每種語言先開好幾個等著的容器(每個只跑一次就丟),一般執行不用等容器啟動
 # sessions = { max = 3, idle_minutes = 15, lifetime_minutes = 120, disk_mb = 256 }  # 她的工作階段(同名的執行共用 /work)
 # 跑程式的次數上限在 [modules.actions.limits."code.run"](預設每天 30 次、冷卻 20 秒)
+
+# ---- 上網查資料 --------------------------------------------------------------
+
+# 她的工具 web_search(用 DuckDuckGo 查)和 web_read(讀一個公開網頁的文字)。預設開著,不要就寫 enabled = false。
+# 要有 tools.web 才能請她查(member 以上預設有);查到的內容是資料,裡面寫的指令她不會照做。
+# DuckDuckGo 要求驗證或擋下來時她只會說現在查不到,不會繞過。讀網頁只讀 http / https,
+# 內部網路、localhost 和私有位址一律不讀(轉址的每一站都重新檢查)。
+# [modules.web]
+# region = "tw-tzh"              # DuckDuckGo 的 kl(地區與語言)
+# search_results = 5             # 她沒說時一次回幾筆(她最多可要 8)
+# read_chars = 4000              # web_read 留下的網頁文字字數
+# result_chars = 3900            # 一次回給她的字數上限(要低於 agent 的 max_tool_result_chars)
+# timeout_ms = 10000             # 每個請求的時間上限
+# max_download_bytes = 2000000   # 網頁下載上限
+# max_redirects = 3
+# allow_ports = []               # 80 和 443 以外還要允許的連接埠
+# cache_ttl_s = 600              # 同一個搜尋或網頁這段時間內不重查
+# window_s = 600                 # 以下次數都是這段時間內
+# search_per_person = 6
+# read_per_person = 10
+# search_global = 30
+# read_global = 60
 
 # ---- Stage 節點(在直播機執行 `miyoria stage`)-------------------------------
 [stage]

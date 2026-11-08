@@ -126,3 +126,20 @@ export interface MemoryRetrieval {
 }
 
 export const MemoryRetrievalKey = serviceKey<MemoryRetrieval>("MemoryRetrieval");
+
+// ---- notes about a person -------------------------------------------------------------------
+
+/**
+ * Provided by the `memory` module: something she lived with one person, kept like any episode
+ * (recalled when they are present, faded and merged by the usual upkeep).
+ */
+export interface PersonNoteWriter {
+  /** `false` when nothing was stored (no store, or the note was refused). */
+  note(
+    person: PersonId,
+    content: string,
+    options: { importance: number; at: Timestamp },
+  ): Promise<boolean>;
+}
+
+export const PersonNoteWriterKey = serviceKey<PersonNoteWriter>("PersonNoteWriter");

@@ -92,6 +92,8 @@ describe("only the main line acts", () => {
       "packages/api/src/ops.ts",
       // `actThroughGate`: V2 only, `ArbiterEnv.act` is not set under V3.
       "packages/arbiter/src/module.ts",
+      // An expression a person bought on the member page: `stage.expression`, as the panel.
+      "packages/economy/src/economy.ts",
       // The game executor: the steps of a session the main line started.
       "packages/game/src/actions.ts",
       "packages/game/src/chat.ts",

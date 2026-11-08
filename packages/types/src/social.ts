@@ -38,6 +38,37 @@ export interface SocialSignals {
 export const SocialSignalsKey = serviceKey<SocialSignals>("SocialSignals");
 
 /**
+ * What the economy moves in a relationship besides what someone said: `treat` is a paid gift,
+ * `deal_kept` a deal they paid for. Both are small, diminish like any other event and count toward
+ * the daily caps; `kind_cap` limits what that kind alone gains per day on top of them.
+ */
+export interface RelationshipGain {
+  kind: "treat" | "deal_kept";
+  affinity: number;
+  trust: number;
+  /** Most this kind alone may gain per person per day (`null`: only the overall caps). */
+  kind_cap: { affinity: number; trust: number } | null;
+}
+
+/** Provided by the social module. Neither call publishes an emotion: the caller already did. */
+export interface RelationshipEffects {
+  /** Applies a small gain; returns what actually changed (the caps and the decay apply). */
+  gain(
+    person: PersonId,
+    gain: RelationshipGain,
+    now: number,
+  ): Promise<{ affinity: number; trust: number }>;
+  /** A loss outside the daily caps (a broken promise); `reason` is recorded with the change. */
+  penalty(
+    person: PersonId,
+    loss: { affinity: number; trust: number; reason: string },
+    now: number,
+  ): Promise<{ affinity: number; trust: number }>;
+}
+
+export const RelationshipEffectsKey = serviceKey<RelationshipEffects>("RelationshipEffects");
+
+/**
  * Bus topic of every social event someone caused toward her (`SocialEvent`), published by the
  * social module whether or not the daily caps let it change the numbers: her emotions react
  * to all of them.

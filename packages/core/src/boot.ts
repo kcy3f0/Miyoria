@@ -20,6 +20,8 @@ import { ReplayRecorderModule } from "@miyoria/replay";
 import {
   AuditLogKey,
   AuthStoreKey,
+  CoinLedgerStoreKey,
+  DealStoreKey,
   DecisionLogKey,
   IdentityStoreKey,
   MemberCardStoreKey,
@@ -212,6 +214,8 @@ export async function buildCoreWith(
   services.provide(k, PersonaOverrideStoreKey, store.personaOverrides);
   services.provide(k, MessageLogKey, store.messages);
   services.provide(k, MemberCardStoreKey, store.cards);
+  services.provide(k, CoinLedgerStoreKey, store.coins);
+  services.provide(k, DealStoreKey, store.deals);
   services.provide(k, PeopleStoreKey, store.people);
   services.provide(k, MemoryRecordStoreKey, store.memories);
   services.provide(k, RelationshipStoreKey, store.relationships);

@@ -25,6 +25,8 @@ import {
   newId,
   type PersonId,
   type ProfileId,
+  type RelationshipEffects,
+  type RelationshipGain,
   SOCIAL_APPRAISAL_TOPIC,
   SOCIAL_EVENT_TOPIC,
   type SocialAppraisal,
@@ -228,7 +230,7 @@ export function stripTags(text: string): string {
 }
 
 /** Relationships of one profile. Provided as `SocialKey` and as `SocialSignalsKey`. */
-export class Social implements SocialSignals {
+export class Social implements SocialSignals, RelationshipEffects {
   readonly profile: ProfileId;
   readonly herName: string;
   /** Lower-cased names that address her. */
@@ -814,6 +816,52 @@ export class Social implements SocialSignals {
       this.#dirty.delete(person);
       await this.#persist(clone(r), rows, context);
     });
+  }
+
+  /**
+   * A small gain from the economy (a paid gift, a deal paid): worth less for each earlier one of
+   * its kind today (`repeat_decay`), within the kind's own daily cap and the overall ones. It
+   * publishes no `social.event`: the economy already told her emotions.
+   */
+  gain(
+    person: PersonId,
+    gain: RelationshipGain,
+    now: number,
+  ): Promise<{ affinity: number; trust: number }> {
+    return this.#gate.run(async () => {
+      await this.#ensureLedger(person, now);
+      const r = getOrInsert(this.#rels, person, () => this.#newRel(person, now));
+      const none = { affinity: 0, trust: 0 };
+      const ledger = this.#ledgers.get(person);
+      if (!ledger || isBlocked(r)) return none;
+      const cap =
+        gain.kind_cap === null ? null : ([gain.kind_cap.affinity, gain.kind_cap.trust] as const);
+      const [a, t] = ledger.take(gain.kind, [gain.affinity, gain.trust], this.config, cap);
+      const [da, dt] = apply(r, a, t, 0, this.config);
+      r.updated_at = toTimestamp(now);
+      if (!nonzero(da) && !nonzero(dt)) {
+        this.#dirty.add(person);
+        return none;
+      }
+      this.#dirty.delete(person);
+      await this.#persist(clone(r), [[row(now, da, dt, 0, `economy: ${gain.kind}`), null]], null);
+      return { affinity: da, trust: dt };
+    });
+  }
+
+  /** A loss outside the daily caps, recorded as one delta with `reason`. */
+  async penalty(
+    person: PersonId,
+    loss: { affinity: number; trust: number; reason: string },
+    now: number,
+  ): Promise<{ affinity: number; trust: number }> {
+    let before = { affinity: 0, trust: 0 };
+    const after = await this.modify(person, loss.reason, now, (r) => {
+      before = { affinity: r.affinity, trust: r.trust };
+      r.affinity -= Math.abs(loss.affinity);
+      r.trust -= Math.abs(loss.trust);
+    });
+    return { affinity: after.affinity - before.affinity, trust: after.trust - before.trust };
   }
 
   async #persist(

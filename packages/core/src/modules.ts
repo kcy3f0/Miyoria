@@ -5,7 +5,7 @@
 // which is there before anything can say a word): llm, speech, voice.link, voice, scheduler, agent, commands,
 // auth, actions, directive, activity, social, mood, world, self, memory, arbiter, mind, knowledge, conversation,
 // reflect, queue, game, game.chat, sing, mcp,
-// stage.link, sandbox (opt-in), recorder, Discord bot, Admin API, terminal chat, then the
+// stage.link, economy, web, sandbox (opt-in), recorder, Discord bot, Admin API, terminal chat, then the
 // extension host and one `ext.<id>` per extension.
 
 import { mkdir } from "node:fs/promises";
@@ -19,6 +19,7 @@ import { AuthConfigSchema, AuthModule } from "@miyoria/auth";
 import { CommandsModule } from "@miyoria/commands";
 import { DirectiveModule } from "@miyoria/directive";
 import { DiscordBotModule } from "@miyoria/discord";
+import { EconomyModule } from "@miyoria/economy";
 import * as extHost from "@miyoria/ext-host";
 import { FactsModule } from "@miyoria/facts";
 import { GameChatModule, GameHandleKey, GameModule } from "@miyoria/game";
@@ -68,6 +69,7 @@ import {
 } from "@miyoria/store";
 import { isJsonObject, type ProfileId } from "@miyoria/types";
 import { VoiceLinkModule, VoiceModule } from "@miyoria/voice";
+import { WebModule } from "@miyoria/web";
 import { WorldModule } from "@miyoria/world";
 import {
   buildCoreWith,
@@ -172,6 +174,8 @@ async function coreModules({
     new SingModule(null, { baseDir }),
     McpModule.fromAppConfig(config),
     new StageLinkModule(),
+    new EconomyModule(profileId),
+    new WebModule(),
     new SandboxModule(profileId, { baseDir }),
   ];
 }

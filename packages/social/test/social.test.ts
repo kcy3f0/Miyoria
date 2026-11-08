@@ -201,6 +201,98 @@ describe("social engine", () => {
     expect(r.familiarity > 5.5, `${r.familiarity}`).toBe(true);
   });
 
+  it("economy gains: tiny, diminishing, a kind cap inside the overall caps, no emotion event", async () => {
+    const h = new Harness();
+    await h.say("discord:2", "Amy", "嗨", dm(), t(1, 10));
+    const p = h.person("discord:2");
+    const start = h.rel("discord:2");
+    const events = () =>
+      h.events.filter((e) => e.type === "custom" && e.data.topic === "social.event").length;
+    const before = events();
+    const treat = (now: number) =>
+      h.social.gain(
+        p,
+        { kind: "treat", affinity: 0.4, trust: 0.1, kind_cap: { affinity: 1.5, trust: 0.5 } },
+        now,
+      );
+    const first = await treat(t(1, 11));
+    expect(close(first.affinity, 0.4) && close(first.trust, 0.1), JSON.stringify(first)).toBe(true);
+    // The n-th of the day is worth repeat_decay^n of it.
+    const second = await treat(t(1, 11));
+    expect(close(second.affinity, 0.2) && close(second.trust, 0.05)).toBe(true);
+    for (let i = 0; i < 10; i++) await treat(t(1, 11));
+    const gained = h.rel("discord:2").affinity - start.affinity;
+    // 0.4 / (1 - .5) is 0.8 at most however many; far below the kind cap.
+    expect(gained > 0.7 && gained < 0.81, `${gained}`).toBe(true);
+    const reasons = h.store.deltas(p).map((d) => d.reason);
+    expect(reasons).toContain("economy: treat");
+    expect(events(), "her emotions are the economy's to publish").toBe(before);
+
+    // The kind's own cap: a big raw gain stops at it, and counts toward the overall cap.
+    const big = new Harness();
+    await big.say("discord:3", "Bob", "嗨", dm(), t(1, 10));
+    const bob = big.person("discord:3");
+    const got = await big.social.gain(
+      bob,
+      { kind: "treat", affinity: 5, trust: 3, kind_cap: { affinity: 1.5, trust: 0.5 } },
+      t(1, 11),
+    );
+    expect(close(got.affinity, 1.5) && close(got.trust, 0.5), JSON.stringify(got)).toBe(true);
+    const more = await big.social.gain(
+      bob,
+      { kind: "treat", affinity: 5, trust: 3, kind_cap: { affinity: 1.5, trust: 0.5 } },
+      t(1, 12),
+    );
+    expect(more).toEqual({ affinity: 0, trust: 0 });
+    const ledger = big.social.today(bob, t(1, 12));
+    expect(close(ledger?.affinity_gained ?? 0, 1.5 + 0.5)).toBe(true);
+    // Used up by gifts, the rest of her day's budget is still there for other things.
+    await big.say("discord:3", "Bob", "謝謝你,你好可愛", dm(), t(1, 13));
+    expect((big.social.today(bob, t(1, 13))?.affinity_gained ?? 0) > 2).toBe(true);
+
+    // A restart rebuilds the kind's total from the recorded deltas.
+    const again = new Harness(socialConfig(), big.store);
+    await again.social.load();
+    const after = await again.social.gain(
+      bob,
+      { kind: "treat", affinity: 5, trust: 3, kind_cap: { affinity: 1.5, trust: 0.5 } },
+      t(1, 14),
+    );
+    expect(after).toEqual({ affinity: 0, trust: 0 });
+    // A new day, a new budget.
+    const next = await again.social.gain(
+      bob,
+      { kind: "treat", affinity: 0.4, trust: 0.1, kind_cap: { affinity: 1.5, trust: 0.5 } },
+      t(2, 10),
+    );
+    expect(close(next.affinity, 0.4)).toBe(true);
+  });
+
+  it("economy gains do nothing for blocked people; a penalty is outside the caps", async () => {
+    const h = new Harness();
+    await h.say("discord:5", "Troll", "嗨", dm(), t(1, 10));
+    const p = h.person("discord:5");
+    const gain = { kind: "deal_kept" as const, affinity: 0, trust: 0.3, kind_cap: null };
+    const kept = await h.social.gain(p, gain, t(1, 11));
+    expect(close(kept.trust, 0.3), JSON.stringify(kept)).toBe(true);
+    // A day of insults used up the loss budget; the penalty still lands in full.
+    for (let i = 0; i < 6; i++) await h.say("discord:5", "Troll", "你這個智障", dm(), t(1, 12));
+    const before = h.rel("discord:5");
+    const hit = await h.social.penalty(
+      p,
+      { affinity: 1.5, trust: 4, reason: "deal: broken_promise" },
+      t(1, 13),
+    );
+    expect(close(hit.affinity, -1.5) && close(hit.trust, -4), JSON.stringify(hit)).toBe(true);
+    expect(close(before.trust - h.rel("discord:5").trust, 4)).toBe(true);
+    expect(h.store.deltas(p).map((d) => d.reason)).toContain("deal: broken_promise");
+
+    expect(await h.social.setTag(p, "blocked", true, "test", t(1, 14))).toBe(true);
+    const n = h.store.deltas(p).length;
+    expect(await h.social.gain(p, gain, t(1, 15))).toEqual({ affinity: 0, trust: 0 });
+    expect(h.store.deltas(p)).toHaveLength(n);
+  });
+
   it("rules_only_count_lines_said_to_her", async () => {
     const h = new Harness();
     await h.say("discord:2", "Amy", "謝謝你喔 Bob", channel(), t(1, 10));

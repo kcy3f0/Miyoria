@@ -26,6 +26,7 @@
     "@hono/node-server": "^2.1.5",
     "@miyoria/agent": "workspace:*",
     "@miyoria/auth": "workspace:*",
+    "@miyoria/economy": "workspace:*",
     "@miyoria/ext-host": "workspace:*",
     "@miyoria/kernel": "workspace:*",
     "@miyoria/llm": "workspace:*",

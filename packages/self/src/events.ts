@@ -46,6 +46,11 @@ export interface RuleContext {
   missed: number;
   /** 0..1, how much a social event counts (the LLM's `scale` of warm / cold). */
   scale: number;
+  /**
+   * How much a `gift` eases her hunger, when the giver says (food it already counted); default
+   * 0.3 × `scale`.
+   */
+  hunger?: number;
 }
 
 export const NO_CONTEXT: RuleContext = {
@@ -138,12 +143,15 @@ export function socialEffects(kind: string, c: RuleContext): Effect[] | null {
         { type: "toward", emotion: "gratitude", amount: a(S.weak) },
         drive("esteem", -0.05 * k),
       ];
-    case "gift":
-      return [
+    case "gift": {
+      const out = [
         emo("joy", a(S.strong)),
         emo("gratitude", a(S.strong), { toward: "gratitude", towardAmount: a(S.strong) }),
-        drive("hunger", -0.3 * k),
       ];
+      const fed = c.hunger ?? 0.3 * k;
+      if (fed > 0) out.push(drive("hunger", -fed));
+      return out;
+    }
     case "friendly":
     case "warm":
       return [emo("joy", a(S.weak))];
@@ -192,6 +200,13 @@ export function socialEffects(kind: string, c: RuleContext): Effect[] | null {
       return [
         emo("sorrow", a(c.crush ? S.medium : S.weak)),
         { type: "toward", emotion: "resentment", amount: a(S.medium) },
+      ];
+    // A deal she kept her side of, and they did not pay (the economy's `broken_promise`).
+    case "broken_promise":
+      return [
+        emo("anger", a(S.medium)),
+        emo("sorrow", a(S.weak)),
+        { type: "toward", emotion: "resentment", amount: a(S.strong) },
       ];
     // Her song was cut off (skipped or stopped); she does not know it was not about her singing.
     case "song_cut":

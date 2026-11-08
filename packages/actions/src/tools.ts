@@ -84,6 +84,7 @@ export class CapabilityTool implements Tool {
       args,
       why,
       turn: ctx.turn,
+      message: ctx.message,
     };
     if (this.capability.risk === "high") {
       // The review (and maybe the owners) take longer than a tool call may; it goes on alone.

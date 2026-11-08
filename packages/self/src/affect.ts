@@ -329,6 +329,7 @@ export class AffectService implements AffectState, MoodSignals {
     person: PersonId | null,
     scale: number,
     cause: string,
+    extra: Pick<RuleContext, "hunger"> = {},
   ): AppliedEffect[] | null {
     const self = this.#self;
     const now = self.now();
@@ -338,6 +339,7 @@ export class AffectService implements AffectState, MoodSignals {
       crush: person !== null && self.crushPerson() === person,
       tsundere: self.engine.emotions.temperament.display === "tsundere",
       scale,
+      ...extra,
     };
     const effects = socialEffects(kind, ctx);
     if (effects === null) return null;

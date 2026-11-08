@@ -136,6 +136,7 @@ export {
   MemoryModuleError,
   type MemoryModuleOptions,
 } from "./module.js";
+export { PersonNotes } from "./person-note.js";
 export { PINNED_TITLE, PinnedReader } from "./pinned.js";
 export { RepeatDamper } from "./repeat.js";
 export { MemoryRetriever } from "./retrieval.js";

@@ -6,10 +6,12 @@
 // * `GET /api/public/card/{serial}`: anyone may check a code; unknown, deleted and malformed
 //   serials get the same 404.
 //
-// A card holds what the member page showed, in words, and nothing else: it is built field by
-// field from the stored snapshot, so a field added to the snapshot stays private until named here.
+// A card holds what the member page showed, in words, and the frame they chose, nothing else: it
+// is built field by field from the stored snapshot, so a field added to the snapshot stays private
+// until named here.
 
 import { randomBytes } from "node:crypto";
+import { EconomyKey } from "@miyoria/economy";
 import { errorMessage, getLogger } from "@miyoria/kernel";
 import {
   type MemberCardRecord,
@@ -123,6 +125,8 @@ function issuedCard(r: MemberCardRecord): IssuedCard | null {
     familiarity: text(s.familiarity),
     public_feeling: text(s.public_feeling),
     pose,
+    // Cards from before frames have none.
+    frame: text(s.frame),
   };
 }
 
@@ -156,6 +160,16 @@ export async function memberCards(state: ApiState, holder: CardHolder): Promise<
     today: await store.countSince(profile, holder.accounts, todayStart(state)),
     per_day: CARDS_PER_DAY,
   };
+}
+
+/** The frame they chose for their cards; none when the wallet cannot say. */
+async function frameOf(state: ApiState, account: AccountRef): Promise<string | null> {
+  try {
+    return (await state.optional(EconomyKey)?.selectedFrame(account)) ?? null;
+  } catch (error) {
+    log.warn({ error: errorMessage(error) }, "cannot read the card frame");
+    return null;
+  }
 }
 
 /** Issues run one at a time, so two clicks cannot both take the last card of the day. */
@@ -193,6 +207,7 @@ async function issue(
     familiarity: view.familiarity,
     public_feeling: view.public_feeling,
     pose: pickPose(view.affinity, state.random),
+    frame: await frameOf(state, holder.session.account),
   };
   // 60 bits do not collide; a retry costs nothing if they ever do.
   for (let attempt = 0; ; attempt++) {

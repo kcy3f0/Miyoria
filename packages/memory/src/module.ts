@@ -32,6 +32,7 @@ import {
   type JsonValue,
   MemoryCuratorKey,
   MemoryRetrievalKey,
+  PersonNoteWriterKey,
   PinnedMemoryKey,
   type ProfileId,
   type PromptContributors,
@@ -49,6 +50,7 @@ import { CONTRIBUTOR_KEY, MemoryContributor } from "./contributor.js";
 import { Curator } from "./curate.js";
 import { buildEmbedder, type Embedder } from "./embed.js";
 import { MemoryEngine, MemoryEngineKey } from "./engine.js";
+import { PersonNotes } from "./person-note.js";
 import { PinnedReader } from "./pinned.js";
 import { MemoryRetriever } from "./retrieval.js";
 import { RECALL, REMEMBER, RecallTool, RememberTool } from "./tools.js";
@@ -141,6 +143,7 @@ export class MemoryModule implements Module {
     ctx.provide(MemoryRetrievalKey, new MemoryRetriever(engine));
     ctx.provide(FollowupSourceKey, engine);
     ctx.provide(MemoryCuratorKey, new Curator(engine));
+    ctx.provide(PersonNoteWriterKey, new PersonNotes(engine));
     this.#installer.install(ctx, engine);
     ctx.log.info({ embedder: embedder.name }, "memory started");
 

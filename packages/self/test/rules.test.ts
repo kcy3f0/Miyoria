@@ -187,6 +187,26 @@ const value = (h: Booted, name: string) =>
   h.self.emotions(0).find((e) => e.name === name)?.intensity ?? 0;
 
 describe("rule triggers", () => {
+  it("gift: joy and gratitude; food the giver counted itself takes only what it says", async () => {
+    const h = await boot();
+    h.self.adjust({ hunger: 0.9 - h.self.drives().hunger }, "test");
+    h.publish(socialEvent("p1", "gift", { source: "economy", scale: 0.36, hunger: 0 }));
+    await vi.waitFor(() => expect(value(h, "gratitude")).toBeGreaterThan(0));
+    expect(h.self.drives().hunger).toBeCloseTo(0.9, 5);
+    h.publish(socialEvent("p2", "gift"));
+    await vi.waitFor(() => expect(h.self.drives().hunger).toBeCloseTo(0.6, 5));
+  });
+
+  it("broken_promise: anger and resentment toward the person who did not pay", async () => {
+    const h = await boot();
+    h.publish(socialEvent("p2", "broken_promise", { source: "economy" }));
+    await vi.waitFor(() =>
+      expect(h.self.heart("p2")?.emotions.resentment ?? 0).toBeGreaterThan(0.3),
+    );
+    expect(value(h, "anger")).toBeGreaterThan(0.15);
+    expect(h.self.heart("p1")?.emotions.resentment ?? 0).toBe(0);
+  });
+
   it("praise: joy (medium) and, for a tsundere, a little shyness; attachment does not grow by itself", async () => {
     const h = await boot();
     h.publish(socialEvent("p1", "praise"));

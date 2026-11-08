@@ -27,6 +27,7 @@ import {
   MindKey,
   type PersonId,
   type ProfileId,
+  RelationshipEffectsKey,
   type SelfState,
   SelfStateKey,
   SocialSignalsKey,
@@ -97,7 +98,7 @@ function stores(ctx: ModuleContext): SocialStores {
  * Services used: `RelationshipStoreKey` (required), `PeopleStoreKey` (or the `StoreKey`
  * bundle), `IdentityStoreKey` (optional, for `/me link`), `MemoryRecordStoreKey` (optional, so
  * `/me link` moves memories too), `PromptContributorsKey`, `CommandRegistryKey` and
- * `AuthorizerKey` (optional). Provides `SocialSignalsKey` and `SocialKey`.
+ * `AuthorizerKey` (optional). Provides `SocialSignalsKey`, `SocialKey` and `RelationshipEffectsKey`.
  */
 export class SocialModule implements Module {
   static readonly ID = "social";
@@ -155,6 +156,7 @@ export class SocialModule implements Module {
 
     ctx.provide(SocialSignalsKey, social);
     ctx.provide(SocialKey, social);
+    ctx.provide(RelationshipEffectsKey, social);
 
     const commands = new CommandMount(
       "social",

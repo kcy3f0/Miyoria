@@ -36,6 +36,7 @@
     "@miyoria/commands": "workspace:*",
     "@miyoria/directive": "workspace:*",
     "@miyoria/discord": "workspace:*",
+    "@miyoria/economy": "workspace:*",
     "@miyoria/ext-host": "workspace:*",
     "@miyoria/facts": "workspace:*",
     "@miyoria/game": "workspace:*",
@@ -60,6 +61,7 @@
     "@miyoria/tools": "workspace:*",
     "@miyoria/types": "workspace:*",
     "@miyoria/voice": "workspace:*",
+    "@miyoria/web": "workspace:*",
     "@miyoria/world": "workspace:*"
   },
   "devDependencies": {

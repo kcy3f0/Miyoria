@@ -10,6 +10,8 @@
 // * `POST /api/member/songs` `{ query }`: a song request, as if said in chat.
 // * `GET /api/member/card`, `POST /api/member/card` `{}`: the card she gives them, the card view
 //   below frozen with a serial (`card.ts`).
+// * `/api/member/wallet`, `checkin`, `feed`, `letter`, `expression`, `frame`: their coins
+//   (`wallet.ts`). Forgetting keeps the wallet: coins are not her memory of them.
 //
 // The person comes from the session and from nowhere else: no route takes an id, a query parameter
 // or a body field that could name somebody, and bodies with unknown fields are refused. Responses
@@ -63,6 +65,7 @@ import type {
   MemberSong,
   MemberView,
 } from "./types.js";
+import { walletExport } from "./wallet.js";
 
 /** Nodes of `/me memory`: a role that may not use those may not use these. */
 const NODE_SHOW = "memory.self.show";
@@ -344,6 +347,8 @@ async function exportMine(state: ApiState, c: ApiContext): Promise<Response> {
     songs: allowed ? ownSongs(state, who) : [],
     // Their cards are theirs whatever she thinks of them now: each holds what it held then.
     cards: await cardsOf(state, accountsOf(who)),
+    // A blocked person's wallet is a stranger's, like everywhere else.
+    wallet: await walletExport(state, account),
   };
   return new Response(`${JSON.stringify(body, null, 2)}\n`, {
     status: 200,

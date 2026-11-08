@@ -5,8 +5,10 @@
 import { createServer, type Server } from "node:http";
 import { ActuatorRegistry, ActuatorRegistryKey, defineCapability } from "@miyoria/actions";
 import { AuthService, AuthServiceKey } from "@miyoria/auth";
+import { EconomyConfigSchema, EconomyKey, EconomyService } from "@miyoria/economy";
 import {
   defineManifest,
+  getLogger,
   type Module,
   type ModuleContext,
   Supervisor,
@@ -17,12 +19,15 @@ import { SingerKey, type SongEntry } from "@miyoria/sing";
 import {
   AuditLogKey,
   AuthStoreKey,
+  CoinLedgerStoreKey,
+  DealStoreKey,
   MemberCardStoreKey,
   type MemoryRecord,
   MemorySettingsStore,
   MessageLogKey,
   PeopleStoreKey,
   SettingsStoreKey,
+  SqliteStore,
 } from "@miyoria/store";
 import {
   type AccountRef,
@@ -41,6 +46,7 @@ import {
   newEnvelope,
   type PersonCard,
   type PersonId,
+  SelfStateKey,
   SONG_TOPIC,
   SocialSignalsKey,
 } from "@miyoria/types";
@@ -640,8 +646,14 @@ describe("the route table", () => {
       "GET /api/member/export",
       "GET /api/member/me",
       "GET /api/member/session",
+      "GET /api/member/wallet",
       "POST /api/member/card",
+      "POST /api/member/checkin",
+      "POST /api/member/expression",
+      "POST /api/member/feed",
       "POST /api/member/forget",
+      "POST /api/member/frame",
+      "POST /api/member/letter",
       "POST /api/member/songs",
     ]);
     expect(all.filter((r) => !r.public && !r.member).length).toBeGreaterThan(90);
@@ -1349,6 +1361,7 @@ describe("the export", () => {
       "songs[].requested_at",
       "songs[].state",
       "songs[].title",
+      "wallet.balance",
       "withheld",
     ]);
     expect(res.text).not.toContain("SECRET");
@@ -1498,6 +1511,7 @@ describe("cards she gives", () => {
     "avatar_url",
     "call_name",
     "familiarity",
+    "frame",
     "issued_at",
     "name",
     "number",
@@ -1712,5 +1726,279 @@ describe("cards she gives", () => {
     expect(res.status).toBe(503);
     expect(res.body).toEqual({ error: "這個 Core 還不能發卡" });
     expect((await anyone(r, "MYR-0000-0000-0000")).status).toBe(404);
+  });
+});
+
+describe("the wallet", () => {
+  const WALLET_SHAPE = [
+    "balance",
+    "can_earn",
+    "checked_in_today",
+    "currency",
+    "earn[].amount",
+    "earn[].cap",
+    "earn[].earned_today",
+    "earn[].label",
+    "earn[].reason",
+    "frames.selected",
+    "hungry",
+    "shop[].available",
+    "shop[].id",
+    "shop[].kind",
+    "shop[].label",
+    "shop[].price",
+    "shop[].why",
+    "streak",
+    "today_earned",
+  ];
+
+  /** The rig with a real wallet on an in-memory ledger, and her hunger. */
+  async function walletRig(config: Record<string, JsonValue> = {}) {
+    const r = await rig();
+    const coins = await SqliteStore.open(":memory:");
+    cleanups.push(() => coins.close());
+    const hunger = { value: 0.8 };
+    const s = r.sup.services;
+    s.provide("economy", CoinLedgerStoreKey, coins.coins);
+    s.provide("economy", DealStoreKey, coins.deals);
+    s.provide("self", SelfStateKey, {
+      drives: () => ({ hunger: hunger.value }),
+      adjust: (d: { hunger?: number }) => {
+        hunger.value = Math.max(hunger.value + (d.hunger ?? 0), 0);
+      },
+    } as never);
+    const economy = new EconomyService({
+      config: EconomyConfigSchema.parse(config),
+      services: s,
+      profile: "p",
+      clock: { now: () => Date.now() },
+      publish: () => undefined,
+      log: getLogger("test"),
+    });
+    s.provide("economy", EconomyKey, economy);
+    const spend = (path: string, cookie: string, json: unknown, key?: string) =>
+      raw(r.base, "POST", path, {
+        json,
+        headers: {
+          cookie: `miyoria_session=${cookie}`,
+          "x-miyoria-request": "1",
+          ...(key === undefined ? {} : { "idempotency-key": key }),
+        },
+      });
+    const fund = (id: string, delta: number) =>
+      coins.coins.post(
+        {
+          id: `seed-${id}-${delta}`,
+          profile: "p",
+          account: discord(id),
+          delta,
+          reason: "checkin",
+          ref: null,
+          idem_key: null,
+          ts: "2026-01-01T00:00:00Z",
+        },
+        { wallet: [] },
+      );
+    return { ...r, coins, hunger, spend, fund };
+  }
+
+  it("shows their own wallet, field by field", async () => {
+    const r = await walletRig();
+    const cookie = await r.login("alice");
+    const res = await r.get("/api/member/wallet", cookie);
+    expect(res.status).toBe(200);
+    expect(shape(res.body)).toEqual(WALLET_SHAPE);
+    expect(res.body).toMatchObject({
+      currency: "魚幣",
+      balance: 0,
+      can_earn: true,
+      checked_in_today: false,
+      hungry: "starving",
+      frames: { owned: [], selected: null },
+      recent: [],
+      deals: [],
+    });
+  });
+
+  it("shows her deals with them: what she said she would do, the reward, where it stands", async () => {
+    const r = await walletRig();
+    const cookie = await r.login("alice");
+    await r.coins.deals.create({
+      id: "deal-1",
+      profile: "p",
+      account: discord(ALICE),
+      item: "rice",
+      count: 2,
+      value: 20,
+      task: "喵喵叫",
+      prepaid: false,
+      escrow: null,
+      status: "open",
+      created_at: "2026-01-01T00:00:00Z",
+      done_at: null,
+      due_at: "2026-01-01T00:15:00Z",
+      closed_at: null,
+    });
+    await r.coins.deals.create({
+      id: "deal-2",
+      profile: "p",
+      account: discord(BOB),
+      item: "dessert",
+      count: 1,
+      value: 25,
+      task: "別人的約定",
+      prepaid: false,
+      escrow: null,
+      status: "open",
+      created_at: "2026-01-01T00:00:00Z",
+      done_at: null,
+      due_at: "2026-01-01T00:15:00Z",
+      closed_at: null,
+    });
+    const res = await r.get("/api/member/wallet", cookie);
+    expect(res.status).toBe(200);
+    expect((res.body as { deals: unknown }).deals).toEqual([
+      {
+        task: "喵喵叫",
+        reward_label: "2 碗白飯",
+        status: "open",
+        due_at: "2026-01-01T00:15:00.000Z",
+      },
+    ]);
+    expect(shape(res.body)).toEqual(
+      [
+        ...WALLET_SHAPE,
+        "deals[].due_at",
+        "deals[].reward_label",
+        "deals[].status",
+        "deals[].task",
+      ].sort(),
+    );
+  });
+
+  it("checks in once a day", async () => {
+    const r = await walletRig();
+    const cookie = await r.login("alice");
+    const first = await r.spend("/api/member/checkin", cookie, {});
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual({ gained: 10, streak: 1, balance: 10 });
+    const again = await r.spend("/api/member/checkin", cookie, {});
+    expect(again.status).toBe(409);
+    expect(again.body).toEqual({ error: "今天已經簽到過了" });
+    expect((await r.spend("/api/member/checkin", cookie, { who: BOB })).status).toBe(422);
+    const view = (await r.get("/api/member/wallet", cookie)).body as Record<string, unknown>;
+    expect(view).toMatchObject({ balance: 10, checked_in_today: true, streak: 1 });
+    expect(shape(view)).toContain("recent[].label");
+  });
+
+  it("feeds her once per key, and says when coins are short or she is full", async () => {
+    const r = await walletRig();
+    await r.fund(ALICE, 25);
+    const cookie = await r.login("alice");
+    const first = await r.spend("/api/member/feed", cookie, { item: "rice" }, "click-1");
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual({
+      accepted: true,
+      eaten: 1,
+      charged: 10,
+      balance: 15,
+      message: "她吃了一碗白飯",
+    });
+    const again = await r.spend("/api/member/feed", cookie, { item: "rice" }, "click-1");
+    expect(again.body).toEqual(first.body);
+    const short = await r.spend("/api/member/feed", cookie, { item: "big_bowl" }, "click-2");
+    expect(short.status).toBe(402);
+    expect(short.body).toEqual({ error: "魚幣不夠" });
+    r.hunger.value = 0.05;
+    const full = await r.spend("/api/member/feed", cookie, { item: "rice", count: 1 }, "c-3");
+    expect(full.body).toMatchObject({ accepted: false, charged: 0, balance: 15 });
+    for (const bad of [{ item: "steak" }, { item: "rice", count: 6 }, { item: "rice", to: BOB }]) {
+      expect((await r.spend("/api/member/feed", cookie, bad, "c-4")).status).toBe(422);
+    }
+    expect((await r.spend("/api/member/feed", cookie, { item: "rice" }, "a b")).status).toBe(400);
+    expect(await r.coins.coins.balance("p", [discord(ALICE)])).toBe(15);
+  });
+
+  it("answers a stranger and every blocked person alike, and charges nothing", async () => {
+    const r = await walletRig();
+    for (const id of [CAROL, ERIN, FRANK]) await r.fund(id, 500);
+    const bodies = new Set<string>();
+    for (const who of ["dave", "carol", "erin", "frank"]) {
+      const cookie = await r.login(who);
+      const view = await r.get("/api/member/wallet", cookie);
+      expect(view.status).toBe(200);
+      expect(view.body).toMatchObject({ balance: 0, can_earn: false, hungry: null, recent: [] });
+      bodies.add(view.text);
+      for (const [path, json] of [
+        ["/api/member/checkin", {}],
+        ["/api/member/feed", { item: "rice" }],
+        ["/api/member/letter", { text: "嗨" }],
+        ["/api/member/expression", { expression: "heart" }],
+        ["/api/member/frame", { buy: "sakura" }],
+      ] as const) {
+        const res = await r.spend(path, cookie, json, "k");
+        expect(res.status, `${who} ${path}`).toBe(403);
+        expect(res.body).toEqual({ error: "她還不認識你,先和她說說話吧" });
+      }
+    }
+    expect(bodies.size).toBe(1);
+    for (const id of [CAROL, ERIN, FRANK]) {
+      expect(await r.coins.coins.balance("p", [discord(id)])).toBe(500);
+    }
+    expect(r.hunger.value).toBe(0.8);
+  });
+
+  it("sends letters through moderation and refuses expressions while the stage is down", async () => {
+    const r = await walletRig();
+    await r.fund(ALICE, 100);
+    const cookie = await r.login("alice");
+    const sent = await r.spend("/api/member/letter", cookie, { text: "今天辛苦了" }, "l-1");
+    expect(sent.body).toEqual({
+      accepted: true,
+      charged: 15,
+      balance: 85,
+      message: "信送出去了,她有空會看",
+    });
+    const bad = await r.spend("/api/member/letter", cookie, { text: "BADWORD" }, "l-2");
+    expect(bad.body).toMatchObject({ accepted: false, charged: 0, balance: 85 });
+    expect((await r.spend("/api/member/letter", cookie, { text: " " }, "l-3")).status).toBe(400);
+    const face = await r.spend("/api/member/expression", cookie, { expression: "blush" }, "e-1");
+    expect(face.body).toEqual({
+      accepted: false,
+      charged: 0,
+      balance: 85,
+      message: "她現在沒有開台",
+    });
+  });
+
+  it("buys a frame, puts it on the next card and keeps the wallet in the export", async () => {
+    const r = await walletRig();
+    await r.fund(ALICE, 120);
+    const cookie = await r.login("alice");
+    const bought = await r.spend("/api/member/frame", cookie, { buy: "sakura", select: "sakura" });
+    expect(bought.body).toEqual({ owned: ["sakura"], selected: "sakura", balance: 20 });
+    expect((await r.spend("/api/member/frame", cookie, { select: "gold" })).status).toBe(409);
+    const card = (await r.post("/api/member/card", cookie, {})).body as { frame: string | null };
+    expect(card.frame).toBe("sakura");
+    const exported = (await r.get("/api/member/export", cookie)).body as {
+      wallet: { balance: number; ledger: { delta: number; label: string }[] };
+    };
+    expect(exported.wallet.balance).toBe(20);
+    expect(exported.wallet.ledger.map((l) => l.delta)).toEqual([-100, 120]);
+    expect(exported.wallet.ledger[0]?.label).toBe("買卡框「櫻花」");
+    // Forgetting leaves the wallet.
+    await r.post("/api/member/forget", cookie, { confirm: true });
+    expect(await r.coins.coins.balance("p", [discord(ALICE)])).toBe(20);
+  });
+
+  it("is not there on a Core without the economy module", async () => {
+    const r = await rig();
+    const cookie = await r.login("alice");
+    const res = await r.get("/api/member/wallet", cookie);
+    expect(res.status).toBe(503);
+    const exported = (await r.get("/api/member/export", cookie)).body as { wallet: unknown };
+    expect(exported.wallet).toEqual({ balance: 0, ledger: [] });
+    const card = (await r.post("/api/member/card", cookie, {})).body as { frame: unknown };
+    expect(card.frame).toBeNull();
   });
 });

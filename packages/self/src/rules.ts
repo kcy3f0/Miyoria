@@ -287,7 +287,12 @@ export class EmotionRules {
       }
       return true;
     }
-    return this.d.affect.applySocial(kind, person, scale, `${who}${REASONS[kind] ?? ""}`) !== null;
+    // A gift of food the giver already fed her says how much it took away (the economy's).
+    const fed = payload.hunger;
+    const extra =
+      typeof fed === "number" && Number.isFinite(fed) ? { hunger: clamp(fed, 0, 1) } : {};
+    const cause = `${who}${REASONS[kind] ?? ""}`;
+    return this.d.affect.applySocial(kind, person, scale, cause, extra) !== null;
   }
 
   /**
@@ -488,4 +493,5 @@ const REASONS: Readonly<Record<string, string>> = {
   insult: "罵我",
   harassment: "威脅、騷擾我",
   flirt_too_far: "對我講噁心的話",
+  broken_promise: "答應給我零食卻沒給",
 };

@@ -2,6 +2,7 @@
 // nullability mirror the serde JSON exactly; `apps/panel/src/api/*types.ts` mirror these.
 
 import type { PendingApproval } from "@miyoria/actions";
+import type { WalletExport } from "@miyoria/economy";
 import type { ModuleStatus } from "@miyoria/kernel";
 
 import type { CostReport, ModelUsage, PeriodReport } from "@miyoria/llm";
@@ -194,6 +195,8 @@ export interface IssuedCard {
   public_feeling: string | null;
   /** Which picture of her is on it: a key from CARD_POSES. */
   pose: string;
+  /** The card frame they had chosen then (`[modules.economy] frames`), null for none. */
+  frame: string | null;
 }
 
 /** `GET /api/member/card`. */
@@ -215,6 +218,8 @@ export interface MemberExport {
   songs: MemberSong[];
   /** The cards she gave them, newest first. */
   cards: IssuedCard[];
+  /** Their coins: the balance and every line of the ledger, newest first. */
+  wallet: WalletExport;
 }
 
 /** `POST /api/member/forget`. */

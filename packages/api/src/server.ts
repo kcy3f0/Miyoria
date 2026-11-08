@@ -43,6 +43,7 @@ import {
 } from "./session.js";
 import type { ApiContext, ApiEnv, ApiState } from "./state.js";
 import { telemetryRoutes } from "./telemetry.js";
+import { walletRoutes } from "./wallet.js";
 
 const log = getLogger("api.server");
 
@@ -140,6 +141,7 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...publicViewRoutes(state),
     ...cardCheckRoutes(state),
     ...memberRoutes(state),
+    ...walletRoutes(state),
     ...sessionRoutes(),
     ...peopleRoutes(state),
     ...memoryRoutes(state),

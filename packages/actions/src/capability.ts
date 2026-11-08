@@ -10,6 +10,7 @@ import type {
   JsonObject,
   JsonValue,
   LaneKey,
+  MessageRef,
   Principal,
   TaskId,
   Timestamp,
@@ -150,6 +151,8 @@ export interface ActionRequest {
   /** Why she (or whoever) wants it, for the audit and the review. */
   why: string | null;
   turn: TurnId | null;
+  /** The message (or voice utterance) the turn answers; set by capability tools. */
+  message?: MessageRef | null;
   /**
    * Who an autonomous request is about when the capability itself names nobody (e.g. she joins
    * a voice channel because someone is there): their consent and per-person limits apply.
