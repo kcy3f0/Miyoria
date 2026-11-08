@@ -311,7 +311,6 @@ export function registerCommands(
   registry.register(
     commandSpec("voice golive status", "查看 Go Live 的狀態", {
       permission: "voice.golive.view",
-      ephemeral: true,
     }),
     goliveStatus,
     {

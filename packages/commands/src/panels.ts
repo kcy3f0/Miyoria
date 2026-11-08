@@ -1,4 +1,7 @@
-// The four panel commands Discord shows: `/miyo`, `/song`, `/me` and `/admin`.
+// The four panel commands: `/miyo`, `/song`, `/me i` and `/admin i` (`i` is the interactive
+// subcommand a command with subcommands needs; `/miyo` and `/song` have none and stay bare).
+// `/miyo` and `/song` are public, `/me i` and `/admin i` private (the registry's visibility
+// table can change either).
 //
 // Each page lists controls that run the commands the feature modules registered (`voice join`,
 // `queue song request`, `me privacy`, ...), so a feature keeps its own handlers, permission
@@ -69,9 +72,11 @@ const MODULE_FIELD = field("id", "模組 id", { placeholder: "例如 llm" });
 
 /**
  * The rules she keeps (docs/design/v3-architecture.md §9), on `/miyo` and `/admin` both. What a
- * person may do with a rule depends on their account, not on the page they use.
+ * person may do with a rule depends on their account, not on the page they use. The list is a
+ * status line on the private `/admin` and a button on the public `/miyo` (the answer comes back
+ * privately: a shared message never shows it).
  */
-function rulesPage(): PanelPage {
+function rulesPage(listButton: boolean): PanelPage {
   return {
     id: "rules",
     label: "規則",
@@ -82,6 +87,16 @@ function rulesPage(): PanelPage {
     ],
     status: [{ path: "admin directive list", label: "現在的規則" }],
     actions: [
+      ...(listButton
+        ? [
+            {
+              id: "rule-list",
+              label: "查看規則",
+              path: "admin directive list",
+              style: "primary" as const,
+            },
+          ]
+        : []),
       {
         id: "rule-add",
         label: "建立規則",
@@ -339,7 +354,7 @@ function miyoPages(): PanelPage[] {
         },
       ],
     },
-    rulesPage(),
+    rulesPage(true),
     {
       id: "safety",
       label: "緊急停止",
@@ -516,6 +531,19 @@ function mePages(policyUrl: string | null): PanelPage[] {
       ],
     },
     {
+      // Commands come from the economy module; without it the page is hidden.
+      id: "wallet",
+      label: "錢包",
+      description: "魚幣、簽到、餵她",
+      refresh: true,
+      status: [{ path: "me wallet", label: "我的錢包" }],
+      actions: [
+        { id: "checkin", label: "簽到", path: "me checkin", style: "primary" },
+        { id: "rice", label: "餵一碗", path: "me feed", args: { item: "rice" } },
+        { id: "big-bowl", label: "餵鋼盆", path: "me feed", args: { item: "big_bowl" } },
+      ],
+    },
+    {
       id: "memory",
       label: "記憶與刪除",
       description: "查看、匯出、忘記她記得的事",
@@ -646,7 +674,7 @@ function adminPages(): PanelPage[] {
       label: "她認識的人",
       description: "好感、標籤、封鎖",
       focusable: true,
-      intro: ["也可以直接用 `/admin user:@某人` 開啟並指定對象。"],
+      intro: ["也可以直接用 `/admin i user:@某人` 開啟並指定對象。"],
       actions: [
         { id: "show", label: "查看", path: "admin person show", style: "primary", ...person() },
         {
@@ -687,7 +715,7 @@ function adminPages(): PanelPage[] {
         },
       ],
     },
-    rulesPage(),
+    rulesPage(false),
     {
       id: "data",
       label: "資料",
@@ -731,12 +759,14 @@ export function panelDefs(options: PanelsOptions = {}): PanelDef[] {
       command: "me",
       title: "我的面板",
       description: "你的資料、隱私、語音同意與她記得的事",
+      ephemeral: true,
       pages: mePages(policyUrl),
     },
     {
       command: "admin",
       title: "管理",
       description: "模組、角色權限、她認識的人與資料",
+      ephemeral: true,
       args: [argSpec("user", "要處理的人（選填）", ArgKind.user, { required: false })],
       pages: adminPages(),
       open: (inv) => {
@@ -756,7 +786,7 @@ export function panelDefs(options: PanelsOptions = {}): PanelDef[] {
 export function registerPanels(registry: CommandRegistry, options: PanelsOptions = {}): void {
   const defs = panelDefs(options);
   const mapped = mappedPaths(defs);
-  // `help` is folded into `/me` (text platforms keep it).
+  // `help` stays a command of its own.
   mapped.add("help");
   for (const def of defs) {
     registerPanelCommand(registry, def, { services: options.services ?? null, mapped });

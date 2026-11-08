@@ -1,11 +1,18 @@
 // Panels: one message that holds a whole feature's controls.
 //
-// A panel command (`/miyo`, `/song`, `/me`, `/admin`) answers with a card that has a page
+// A panel command (`/miyo`, `/song`, `/me i`, `/admin i`) answers with a card that has a page
 // selector, status lines and the controls of the current page. Every control runs an existing
 // command (its `path`) through the registry, so permission nodes, argument checks, auditing and
 // replies stay where the feature put them. A control is shown only when the command exists and
 // the invoker's node allows it; the same checks run again when it is pressed, because component
 // ids can be forged.
+//
+// A panel is public or private like any command (`CommandSpec.ephemeral`, overridable in the
+// configuration). A private panel is the invoker's own message. A public one is shared: anyone
+// in the channel can press it, and a press always runs as the presser with the presser's own
+// permissions. What the shared message shows never depends on private data: status lines of
+// private commands are left out, and answers of private commands (and any press by someone
+// other than the opener) are ephemeral messages to the presser, never written into it.
 //
 // Controls:
 //
@@ -25,7 +32,7 @@ import { createHash } from "node:crypto";
 import { errorMessage, getLogger, type ServiceLookup, withTimeout } from "@miyoria/kernel";
 import {
   type AnyComponentRoute,
-  type ComponentInvocation,
+  ComponentInvocation,
   ComponentResult,
   componentId,
   defineRoute,
@@ -124,9 +131,11 @@ export interface PanelDef {
   title: string;
   description: string;
   pages: readonly PanelPage[];
-  /** The command's own arguments (e.g. `/admin user:`). */
+  /** The command's own arguments (e.g. `/admin i user:`). */
   args?: CommandSpec["args"];
   permission?: string;
+  /** `true` = the panel is private to whoever opens it. Default `false` (public). */
+  ephemeral?: boolean;
   /** Where a call with these arguments starts. */
   open?: (inv: Invocation) => Promise<PanelStart> | PanelStart;
   /** Lists commands no page has a control for, as a page of its own. */
@@ -263,9 +272,12 @@ async function statusBlock(
   services: ServiceLookup | null,
   line: StatusLine,
   allowed: (node: string) => Promise<boolean>,
+  shared: boolean,
 ): Promise<CardBlock | null> {
   const spec = view.registry.get(splitPath(line.path));
   if (!spec || !(await allowed(spec.permission))) return null;
+  // A shared message is read by everyone: only what the channel may see goes into it.
+  if (shared && spec.ephemeral) return null;
   const reply = await withTimeout(
     // Drawing a page is not something anyone did: no audit entry per refresh.
     runCommand(
@@ -352,6 +364,7 @@ interface PanelRoutes {
   ask: string;
   pask: string;
   sel: string;
+  psel: string;
   yes: string;
   pyes: string;
   more: string;
@@ -376,6 +389,7 @@ class Panel {
       ask: `${c}:ask`,
       pask: `${c}:pask`,
       sel: `${c}:sel`,
+      psel: `${c}:psel`,
       yes: `${c}:yes`,
       pyes: `${c}:pyes`,
       more: `${c}:more`,
@@ -387,9 +401,42 @@ class Panel {
     return componentId(route, page, action, target ?? NO_TARGET);
   }
 
-  /** `true` when the command answers the channel, not just the invoker. */
+  /** Whether the panel itself is a public command. */
+  #panelPublic(): boolean {
+    const spec = this.registry.panelSpec(this.def.command);
+    return spec !== undefined && !spec.ephemeral;
+  }
+
+  /**
+   * `true` when the command answers the channel, not just the invoker. A private panel keeps
+   * everything private: it is the invoker's own space.
+   */
   #public(spec: CommandSpec): boolean {
-    return !spec.ephemeral;
+    return this.#panelPublic() && !spec.ephemeral;
+  }
+
+  /**
+   * Whether the message this view is drawn into is shared with the channel: a public panel
+   * seen by its opener. Opening a panel asks the registry; a press reads the session (a public
+   * panel's session is not initiator-only). Anyone else gets a private copy.
+   */
+  #shared(inv: Invocation): boolean {
+    if (inv instanceof ComponentInvocation) {
+      const session = inv.session;
+      return (
+        session !== null && !session.initiator_only && sameAccount(session.initiator, inv.invoker)
+      );
+    }
+    return this.#panelPublic();
+  }
+
+  /** Replaces the panel message, unless it is not the presser's: then a private copy. */
+  #update(inv: ComponentInvocation, reply: CommandReply): ComponentResult {
+    const session = inv.session;
+    if (session !== null && !sameAccount(session.initiator, inv.invoker)) {
+      return ComponentResult.reply({ ...reply, ephemeral: true });
+    }
+    return ComponentResult.update(reply);
   }
 
   async render(
@@ -400,6 +447,7 @@ class Panel {
   ): Promise<CommandReply> {
     const view: PanelView = { registry: this.registry, inv, target };
     const allowed = memo(inv);
+    const shared = this.#shared(inv);
     const states = await pageStates(this.def, view, allowed);
     const rest = this.def.rest ? await restCommands(view, this.options.mapped) : [];
     const restVisible = this.def.rest !== undefined && rest.length > 0;
@@ -419,7 +467,9 @@ class Panel {
       }
       if (page.focusable) blocks.push(...this.#focusBlocks(page, target));
       const lines = await Promise.all(
-        (page.status ?? []).map((line) => statusBlock(view, this.options.services, line, allowed)),
+        (page.status ?? []).map((line) =>
+          statusBlock(view, this.options.services, line, allowed, shared),
+        ),
       );
       for (const line of lines) if (line) blocks.push(line);
       blocks.push(...this.#controls(page, usable, target));
@@ -457,7 +507,12 @@ class Panel {
         },
       });
     }
-    return cardReply(blocks, { title: this.def.title, accent: "neutral", session: {} });
+    // A shared panel is open to everyone's presses; a private one only to its opener.
+    return cardReply(blocks, {
+      title: this.def.title,
+      accent: "neutral",
+      session: { initiatorOnly: !shared },
+    });
   }
 
   #focusBlocks(page: PanelPage, target: string | null): CardBlock[] {
@@ -516,7 +571,12 @@ class Panel {
     return {
       type: "select",
       select: {
-        id: this.#id(this.routes.sel, page.id, action.id, target),
+        id: this.#id(
+          this.#public(spec) ? this.routes.psel : this.routes.sel,
+          page.id,
+          action.id,
+          target,
+        ),
         placeholder: choice.placeholder,
         options: values.map((v) => ({ label: choice.labels?.[v] ?? v, value: v })),
       },
@@ -556,8 +616,9 @@ class Panel {
     isPublic: boolean,
   ): Promise<ComponentResult> {
     if (reply.tone === "warn" || reply.tone === "error") return ComponentResult.reply(reply);
-    if (isPublic || !plain(reply)) return ComponentResult.reply(reply);
-    return ComponentResult.update(await this.render(inv, page, target, reply.text));
+    // Into the panel only when the panel is the presser's own private message.
+    if (isPublic || !plain(reply) || this.#shared(inv)) return ComponentResult.reply(reply);
+    return this.#update(inv, await this.render(inv, page, target, reply.text));
   }
 
   #find(pageId: string, actionId: string): { page: PanelPage; action: PanelAction } | null {
@@ -618,6 +679,22 @@ class Panel {
         handle: async (inv, ref) => this.#run(inv, ref, {}, isPublic),
       });
 
+    const choose = (isPublic: boolean) =>
+      defineRoute<Ref>({
+        route: isPublic ? R.psel : R.sel,
+        ...common,
+        ephemeral: !isPublic,
+        parse: parseRef,
+        handle: async (inv, ref) => {
+          const found = this.#find(ref.page, ref.action);
+          const value = inv.values[0];
+          if (!found?.action.choice || value === undefined) {
+            return ComponentResult.reply(notice("error", "控制項資料無效。"));
+          }
+          return this.#run(inv, ref, { [found.action.choice.arg]: value }, isPublic);
+        },
+      });
+
     return [
       defineRoute<{ page: string | null; target: string | null }>({
         route: R.page,
@@ -627,7 +704,7 @@ class Panel {
           target: p[1] === undefined || p[1] === NO_TARGET ? null : p[1],
         }),
         handle: async (inv, { page, target }) =>
-          ComponentResult.update(await this.render(inv, page ?? inv.values[0] ?? null, target)),
+          this.#update(inv, await this.render(inv, page ?? inv.values[0] ?? null, target)),
       }),
       press(false),
       press(true),
@@ -635,19 +712,8 @@ class Panel {
       submit(true),
       accept(false),
       accept(true),
-      defineRoute<Ref>({
-        route: R.sel,
-        ...common,
-        parse: parseRef,
-        handle: async (inv, ref) => {
-          const found = this.#find(ref.page, ref.action);
-          const value = inv.values[0];
-          if (!found?.action.choice || value === undefined) {
-            return ComponentResult.reply(notice("error", "控制項資料無效。"));
-          }
-          return this.#run(inv, ref, { [found.action.choice.arg]: value }, false);
-        },
-      }),
+      choose(false),
+      choose(true),
       defineRoute<Ref>({
         route: R.focus,
         ...common,
@@ -659,7 +725,7 @@ class Panel {
           if (!/^[A-Za-z0-9_.@-]{1,40}$/u.test(id) || id === NO_TARGET) {
             return ComponentResult.reply(notice("warn", "請輸入對方的使用者 ID 或 @提及。"));
           }
-          return ComponentResult.update(await this.render(inv, ref.page, id));
+          return this.#update(inv, await this.render(inv, ref.page, id));
         },
       }),
       ...(this.def.rest ? this.#restRoutes() : []),
@@ -711,15 +777,15 @@ class Panel {
     }
     if (action.confirm) {
       const route = isPublic ? this.routes.pyes : this.routes.yes;
-      return ComponentResult.update(
-        confirm({
-          title: action.label,
-          text: action.confirm,
-          confirmId: this.#id(route, ref.page, ref.action, ref.target),
-          cancelId: componentId(this.routes.page, ref.page, ref.target ?? NO_TARGET),
-          confirmLabel: action.label,
-        }),
-      );
+      const card = confirm({
+        title: action.label,
+        text: action.confirm,
+        confirmId: this.#id(route, ref.page, ref.action, ref.target),
+        cancelId: componentId(this.routes.page, ref.page, ref.target ?? NO_TARGET),
+        confirmLabel: action.label,
+      });
+      // The confirm card is for the presser alone: never over a shared panel.
+      return this.#shared(inv) ? ComponentResult.reply(card) : this.#update(inv, card);
     }
     return this.#run(inv, ref, {}, isPublic);
   }
@@ -787,7 +853,7 @@ class Panel {
               spec.path.join(" "),
               {},
             );
-            return this.#finish(inv, reply, rest.id, null, !spec.ephemeral);
+            return this.#finish(inv, reply, rest.id, null, this.#public(spec));
           }
           return ComponentResult.modal(
             restModal(spec, componentId(R.moreAsk, pathKey(spec.path.join(" ")))),
@@ -814,11 +880,15 @@ class Panel {
             spec.path.join(" "),
             args,
           );
-          return this.#finish(inv, reply, rest.id, null, !spec.ephemeral);
+          return this.#finish(inv, reply, rest.id, null, this.#public(spec));
         },
       }),
     ];
   }
+}
+
+function sameAccount(a: { platform: string; id: string }, b: { platform: string; id: string }) {
+  return a.platform === b.platform && a.id === b.id;
 }
 
 /** A success / info notice with nothing to press: it fits into the panel as a line. */
@@ -828,8 +898,8 @@ function plain(reply: CommandReply): boolean {
 }
 
 /**
- * Registers the panel command `def.command` with its routes. The panel is ephemeral, open to
- * every member (`permission` ""): what it shows follows the invoker's permission nodes.
+ * Registers the panel command `def.command` with its routes. The panel is open to every member
+ * (`permission` ""): what it shows follows the presser's permission nodes.
  */
 export function registerPanelCommand(
   registry: CommandRegistry,
@@ -842,7 +912,7 @@ export function registerPanelCommand(
     description: def.description,
     args: [...(def.args ?? [])],
     permission: def.permission ?? "",
-    ephemeral: true,
+    ephemeral: def.ephemeral ?? false,
   };
   registry.registerPanel(
     spec,

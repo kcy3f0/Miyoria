@@ -195,7 +195,6 @@ function setup(options: { grants?: Map<string, string[]>; resolver?: UserResolve
   if (options.resolver) services.provide("test", UserResolverKey, options.resolver);
   const registry = new CommandRegistry(Permissions.fromStrings([`discord:${OWNER}`]), {
     services,
-    surface: "panels",
   });
   const calls: Call[] = [];
   const fakes = [...FAKES];
@@ -273,7 +272,7 @@ async function open(
   args: Record<string, string> = {},
   admin = false,
 ): Promise<CommandReply> {
-  const data = inv(command, invoker, args, guildContext);
+  const data = inv(registry.panelPath(command).join(" "), invoker, args, guildContext);
   data.invoker_is_guild_admin = admin;
   return registry.dispatch(data);
 }
@@ -300,17 +299,41 @@ function modalOf(outcome: ComponentOutcome | null): Modal {
 }
 
 describe("registration", () => {
-  it("shows_only_the_four_panels_to_a_slash_platform", () => {
+  it("a_slash_platform_gets_the_panels_first_and_then_the_whole_tree", () => {
     const { registry } = setup();
-    expect(registry.slashSpecs().map((s) => s.path.join(" "))).toEqual([
-      "admin",
-      "me",
-      "miyo",
-      "song",
-    ]);
-    // The commands behind the panels stay registered for text platforms.
-    expect(registry.specs().some((s) => s.path.join(" ") === "me profile")).toBe(true);
+    const paths = registry.slashSpecs().map((s) => s.path.join(" "));
+    // Commands with subcommands get `i`; the others stay bare.
+    expect(paths.slice(0, 4)).toEqual(["admin i", "me i", "miyo", "song"]);
+    expect(paths).toContain("me profile");
+    expect(paths).toContain("voice join");
+    expect(paths.length).toBe(4 + registry.specs().length);
+    // The panels are not in the command list of text platforms.
+    expect(registry.specs().some((s) => s.path.join(" ") === "me i")).toBe(false);
     expect(registry.specs().some((s) => s.path.length === 1 && s.path[0] === "me")).toBe(false);
+  });
+
+  it("i_opens_the_panel_and_a_bare_command_with_subcommands_does_not", async () => {
+    const { registry } = setup();
+    expect(registry.panelPath("me")).toEqual(["me", "i"]);
+    expect(registry.panelPath("miyo")).toEqual(["miyo"]);
+    const me = await registry.dispatch(inv("me i", MEMBER, {}, guildContext));
+    expect(me.card?.title).toBe("我的面板");
+    const bare = await registry.dispatch(inv("me", MEMBER, {}, guildContext));
+    expect(bare.tone).toBe("warn");
+    const miyoBare = await registry.dispatch(inv("miyo", MEMBER, {}, guildContext));
+    expect(miyoBare.card?.title).toBe("Miyoria 控制面板");
+    const miyoI = await registry.dispatch(inv("miyo i", MEMBER, {}, guildContext));
+    expect(miyoI.tone).toBe("warn");
+    // `i` takes the arguments of the panel (`/admin i user:`).
+    const admin = registry.get(["admin", "i"]);
+    expect(admin?.args.map((a) => a.name)).toEqual(["user"]);
+  });
+
+  it("an_extension_cannot_take_the_name_i_of_a_panel", () => {
+    const { registry } = setup();
+    expect(() => registry.register(commandSpec("me i", "x"), () => notice("info", "x"))).toThrow(
+      "panel",
+    );
   });
 
   it("a_plain_registry_still_shows_every_command", () => {
@@ -324,15 +347,20 @@ describe("registration", () => {
     const before = registry.routes();
     registerPanels(registry, { services });
     expect(registry.routes()).toEqual(before);
-    expect(registry.slashSpecs()).toHaveLength(4);
+    expect(registry.slashSpecs()).toHaveLength(4 + registry.specs().length);
   });
 
   it("panels_are_open_to_everyone_and_not_gated_by_manage_server", () => {
     const { registry } = setup();
-    for (const spec of registry.slashSpecs()) {
-      expect(spec.permission).toBe("");
-      expect(spec.ephemeral).toBe(true);
-    }
+    const panels = registry.slashSpecs().slice(0, 4);
+    for (const spec of panels) expect(spec.permission).toBe("");
+    // `/miyo` and `/song` are public, `/me i` and `/admin i` private.
+    expect(panels.map((s) => [s.path.join(" "), s.ephemeral])).toEqual([
+      ["admin i", true],
+      ["me i", true],
+      ["miyo", false],
+      ["song", false],
+    ]);
     expect(registry.groupInfo("admin")?.member_permission).toBeNull();
     expect(registry.groupInfo("me")?.guild_only).toBe(false);
     expect(registry.groupInfo("miyo")?.guild_only).toBe(true);
@@ -343,7 +371,10 @@ describe("registration", () => {
       const def = panelDefs().find((d) => d.command === command);
       const page = def?.pages.find((p) => p.id === "rules");
       expect(page?.status?.map((s) => s.path)).toEqual(["admin directive list"]);
+      // The public `/miyo` lists the rules by a button (the answer is private), `/admin` by
+      // its status line.
       expect(page?.actions.map((a) => a.path)).toEqual([
+        ...(command === "miyo" ? ["admin directive list"] : []),
         "admin directive add",
         "admin directive remove",
       ]);
@@ -443,9 +474,9 @@ describe("what a member sees", () => {
 });
 
 describe("ephemeral rules", () => {
-  it("panels_are_ephemeral_and_replies_follow_the_command", async () => {
+  it("public_panels_answer_public_commands_in_the_channel", async () => {
     const { registry } = setup();
-    const home = await open(registry, "me", MEMBER);
+    const home = await open(registry, "song", MEMBER);
     const song = home.card ? button(home, "點歌") : null;
     // `queue song request` is public, so its button uses the public route.
     const opened = await registry.dispatchComponent(click(song?.id ?? "", MEMBER));
@@ -759,5 +790,198 @@ describe("the rest of the commands", () => {
     expect(admin.tone).toBe("warn");
     const owner = await open(registry, "admin", OWNER);
     expect(owner.tone).toBeUndefined();
+  });
+});
+
+// ---- shared (public) panels -----------------------------------------------------------------
+
+const shared = (opener: string) => ({
+  initiator: { platform: "discord", id: opener },
+  initiator_only: false,
+  data: null,
+});
+
+/** `voice join` that records who ran it. */
+function joinBy(ran: string[]): Fake {
+  return {
+    path: "voice join",
+    permission: "voice.join",
+    ephemeral: false,
+    reply: (call) => {
+      ran.push(call.invoker.id);
+      return notice("success", `joined by ${call.invoker.id}`);
+    },
+  };
+}
+
+async function voicePage(registry: CommandRegistry, opener: string) {
+  const home = await open(registry, "miyo", opener);
+  const nav = selectOf(home);
+  return updated(
+    await registry.dispatchComponent(
+      click(nav?.id ?? "", opener, { values: ["voice"], session: shared(opener) }),
+    ),
+  );
+}
+
+describe("public panels", () => {
+  it("a_public_panel_is_open_to_presses_and_a_private_one_is_not", async () => {
+    const { registry } = setup();
+    expect((await open(registry, "miyo", MEMBER)).session).toEqual({ initiatorOnly: false });
+    expect((await open(registry, "song", MEMBER)).session).toEqual({ initiatorOnly: false });
+    expect((await open(registry, "me", MEMBER)).session).toEqual({ initiatorOnly: true });
+    expect((await open(registry, "admin", OWNER)).session).toEqual({ initiatorOnly: true });
+  });
+
+  it("someone_else_presses_with_their_own_permissions_not_the_openers", async () => {
+    const ran: string[] = [];
+    const grants = new Map([
+      ["5", ["voice.join"]],
+      ["6", []],
+      ["7", ["voice.join"]],
+    ]);
+    const { registry, add } = setup({ grants });
+    add(joinBy(ran));
+    const voice = await voicePage(registry, "5");
+    const join = button(voice, "加入我的語音頻道");
+    // 6 has no `voice.join`: a private refusal, and the command never runs.
+    const refused = await registry.dispatchComponent(click(join.id, "6", { session: shared("5") }));
+    expect(replied(refused).tone).toBe("error");
+    expect(refused?.ephemeral).toBe(true);
+    expect(ran).toEqual([]);
+    // 7 has it: the command runs as 7 (not as the opener 5), and the answer is public.
+    const ok = await registry.dispatchComponent(click(join.id, "7", { session: shared("5") }));
+    expect(replied(ok).text).toContain("joined by 7");
+    expect(ok?.ephemeral).toBe(false);
+    expect(ran).toEqual(["7"]);
+  });
+
+  it("the_openers_rights_do_not_carry_over_to_a_member_without_them", async () => {
+    const { registry, calls } = setup();
+    // The owner opens `/miyo` and reaches the safety page; a plain member pressing its button
+    // is refused, because the control is checked again for the presser.
+    const home = await open(registry, "miyo", OWNER);
+    const nav = selectOf(home);
+    const safety = updated(
+      await registry.dispatchComponent(
+        click(nav?.id ?? "", OWNER, { values: ["safety"], session: shared(OWNER) }),
+      ),
+    );
+    const pause = button(safety, "緊急停止");
+    const forged = await registry.dispatchComponent(
+      click(pause.id, MEMBER, { session: shared(OWNER) }),
+    );
+    expect(replied(forged).tone).toBe("error");
+    expect(forged?.ephemeral).toBe(true);
+    expect(calls.some((c) => c.path === "admin autonomy pause")).toBe(false);
+  });
+
+  it("someone_elses_navigation_is_a_private_copy_and_the_shared_message_stays", async () => {
+    const { registry } = setup();
+    const home = await open(registry, "miyo", "5");
+    const nav = selectOf(home);
+    const mine = await registry.dispatchComponent(
+      click(nav?.id ?? "", "5", { values: ["voice"], session: shared("5") }),
+    );
+    expect(mine?.result.type).toBe("update");
+    const theirs = await registry.dispatchComponent(
+      click(nav?.id ?? "", "6", { values: ["voice"], session: shared("5") }),
+    );
+    // A new ephemeral message for 6, bound to 6 alone.
+    const copy = replied(theirs);
+    expect(theirs?.ephemeral).toBe(true);
+    expect(copy.card?.title).toBe("Miyoria 控制面板");
+    expect(copy.session).toEqual({ initiatorOnly: true });
+  });
+
+  it("a_private_answer_is_never_written_into_a_shared_panel", async () => {
+    const { registry } = setup();
+    const owner = await open(registry, "miyo", OWNER);
+    const level = updated(
+      await registry.dispatchComponent(
+        click(selectOf(owner)?.id ?? "", OWNER, { values: ["chat"], session: shared(OWNER) }),
+      ),
+    );
+    // `channel mode` is private by declaration in these fixtures.
+    const pick = selectOf(level);
+    expect(pick).not.toBeNull();
+    const outcome = await registry.dispatchComponent(
+      click(pick?.id ?? "", OWNER, { values: ["quiet"], session: shared(OWNER) }),
+    );
+    expect(outcome?.result.type).toBe("reply");
+    expect(outcome?.ephemeral).toBe(true);
+  });
+
+  it("a_confirm_card_is_for_the_presser_alone", async () => {
+    const { registry } = setup();
+    const song = await open(registry, "song", OWNER);
+    const stop = button(song, "停止並清空");
+    const outcome = await registry.dispatchComponent(
+      click(stop.id, OWNER, { session: shared(OWNER) }),
+    );
+    expect(outcome?.result.type).toBe("reply");
+    expect(outcome?.ephemeral).toBe(true);
+    expect(replied(outcome).session).toEqual({});
+  });
+
+  it("a_private_status_line_stays_out_of_a_shared_panel", async () => {
+    const { registry, add } = setup();
+    add({
+      path: "admin directive list",
+      permission: "admin.directive.view",
+      ephemeral: true,
+      reply: () => notice("info", "SECRET RULE"),
+    });
+    add({ path: "admin directive add", permission: "admin.directive.add", ephemeral: true });
+    const miyo = await open(registry, "miyo", OWNER);
+    const rules = updated(
+      await registry.dispatchComponent(
+        click(selectOf(miyo)?.id ?? "", OWNER, { values: ["rules"], session: shared(OWNER) }),
+      ),
+    );
+    expect(JSON.stringify(rules)).not.toContain("SECRET RULE");
+    // The list is a button whose answer is private.
+    const list = await registry.dispatchComponent(
+      click(button(rules, "查看規則").id, OWNER, { session: shared(OWNER) }),
+    );
+    expect(replied(list).text).toContain("SECRET RULE");
+    expect(list?.ephemeral).toBe(true);
+    // On the private `/admin i` it is a status line.
+    const admin = await open(registry, "admin", OWNER);
+    const adminRules = updated(
+      await registry.dispatchComponent(
+        click(selectOf(admin)?.id ?? "", OWNER, { values: ["rules"] }),
+      ),
+    );
+    expect(JSON.stringify(adminRules)).toContain("SECRET RULE");
+  });
+
+  it("a_private_panel_writes_answers_into_itself_and_stays_private", async () => {
+    const { registry } = setup();
+    const me = await open(registry, "me", MEMBER);
+    const privacy = updated(
+      await registry.dispatchComponent(
+        click(selectOf(me)?.id ?? "", MEMBER, { values: ["privacy"] }),
+      ),
+    );
+    const outcome = await registry.dispatchComponent(click(button(privacy, "禁止私訊").id, MEMBER));
+    expect(outcome?.ephemeral).toBe(true);
+    expect(outcome?.result.type).toBe("update");
+  });
+
+  it("the_configuration_can_make_a_panel_private_or_a_command_public", async () => {
+    const { registry } = setup();
+    registry.setVisibility({ miyo: "private", "me i": "public" });
+    expect((await open(registry, "miyo", MEMBER)).session).toEqual({ initiatorOnly: true });
+    expect((await open(registry, "me", MEMBER)).session).toEqual({ initiatorOnly: false });
+    expect(registry.get(["miyo"])?.ephemeral).toBe(true);
+    expect(registry.get(["me", "i"])?.ephemeral).toBe(false);
+    // The prefix covers the whole group; the longest key wins.
+    registry.setVisibility({ me: "private", "me profile": "public" });
+    expect(registry.get(["me", "call"])?.ephemeral).toBe(true);
+    expect(registry.get(["me", "profile"])?.ephemeral).toBe(false);
+    expect(registry.unknownVisibility()).toEqual([]);
+    registry.setVisibility({ "me wallett": "private", nothing: "public", "me i": "public" });
+    expect(registry.unknownVisibility().sort()).toEqual(["me wallett", "nothing"]);
   });
 });

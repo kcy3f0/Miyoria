@@ -1,18 +1,22 @@
 // The command tree's groups (command → group → subcommand), declared in one place so every
 // module that adds a subcommand shares the same descriptions and platform gates.
 //
-// Discord shows only the four panel commands (`/miyo`, `/song`, `/me`, `/admin`, see
-// `panels/`). The commands below are what the panels run; they stay registered for text
-// platforms and the CLI. Gates of the four panels are the entries named like them.
+// Discord shows the whole tree. The four panels (`/miyo`, `/song`, `/me i`, `/admin i`, see
+// `panels.ts`) sit beside it: a command with subcommands opens its panel with the subcommand
+// `i`, listed first; `/miyo` and `/song` have none and stay bare. Gates of the panels are the
+// entries named like them.
 //
+//   /miyo     (panel)
+//   /song     (panel)
 //   /voice    join · leave · mode · consent · golive start|stop|status
 //   /stream   start · stop · status · scene
-//   /me       profile · call · link · privacy · memory show|export|forget
+//   /me       i · profile · call · link · privacy · wallet · checkin · feed ·
+//             memory show|export|forget
 //   /queue    add · list · upvote · manage ... · vote start|end · song request|list|skip|stop
 //   /game     start · stop · goal · status
 //   /channel  mode · activeness
-//   /admin    module ... · role ... · perm ... · person ... · persona show · memory wipe ·
-//             autonomy pause|resume|status
+//   /admin    i · module ... · role ... · perm ... · person ... · persona show · memory wipe ·
+//             autonomy pause|resume|status · directive list|add|remove
 //   /help
 
 import type { GroupInfo } from "./spec.js";

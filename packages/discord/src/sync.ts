@@ -1,10 +1,10 @@
 // Keeps Discord's application commands in step with the `CommandRegistry`.
 //
-// What Discord shows is the registry's `slashSpecs()`: the four panel commands. The commands
-// behind the panels stay registered but are never sent, and every sync is a bulk overwrite, so
-// the old subcommand tree (`/voice`, `/queue song request`, ...) disappears from Discord on the
-// first sync after an upgrade. A sync never overwrites with an empty set (a registry that has
-// not been filled yet would wipe the commands).
+// What Discord shows is the registry's `slashSpecs()`: the whole command tree plus the panels
+// (`/miyo`, `/song`, and `i` under a command that has subcommands: `/me i`, `/admin i`). Every
+// sync is a bulk overwrite, so commands that left the registry disappear from Discord on the
+// next sync. A sync never overwrites with an empty set (a registry that has not been filled
+// yet would wipe the commands).
 //
 // Commands live in one scope at a time: globally when `command_guilds` is empty, otherwise in
 // each listed guild. Whatever the other scope still holds (from an earlier run in the other
@@ -152,9 +152,8 @@ export interface SyncRunnerOptions {
 }
 
 /**
- * The `sync` of `runSyncLoop`. Modules register commands all the time, but Discord only shows
- * the panels; a bulk overwrite is rate limited, so a sync whose slash set is the one sent last
- * is skipped. The first sync of a run always goes out and clears the scope not in use.
+ * The `sync` of `runSyncLoop`. Modules register commands all the time and a bulk overwrite is
+ * rate limited, so a sync whose slash set is the one sent last is skipped. The first sync of a run always goes out and clears the scope not in use.
  */
 export function syncRunner(options: SyncRunnerOptions): (first: boolean) => Promise<void> {
   let sent: string | null = null;

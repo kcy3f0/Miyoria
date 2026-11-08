@@ -515,7 +515,7 @@ describe("voice", () => {
     e.node.sendJson({ type: "golive", guild: "g1", state: "live" });
     await waitUntil(() => e.h.link().golive("g1")?.state === "live");
     const live = await e.command("voice golive status", "u7");
-    expect(live.ephemeral).toBe(true);
+    expect(live.ephemeral).toBe(false);
     expect(live.text).toContain("直播中");
 
     // A second start is refused while it runs.

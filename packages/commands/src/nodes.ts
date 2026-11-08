@@ -10,7 +10,7 @@
 // | admin | 80 | moderator plus `admin.*`, `module.*`, `memory.*`, `stream.*` |
 // | moderator | 60 | trusted plus `voice.*`, `queue.*`, `game.*`, `stream.scene`, setting changes, time-limited rules, ... |
 // | trusted | 40 | user plus `chat.*`, `tools.*`, `queue.priority`, `game.suggest`, `stream.clip` |
-// | user | 20 | restricted plus joining voice, queue requests and votes, views of settings, ... |
+// | user | 20 | restricted plus joining voice, queue requests and votes, `tools.web`, views of settings, ... |
 // | restricted | 10 | `help`, `me.*`, `memory.self.*`, `voice.consent` |
 // | blocked | 0 | nothing |
 
@@ -53,6 +53,9 @@ export function isAdminNode(node: string): boolean {
 /** Self-service privacy controls; kept even for `restricted`. */
 const PRIVACY: readonly string[] = ["help", "help.*", "me.*", "memory.self.*", "voice.consent"];
 
+/** `web_search` / `web_read`: members may ask her to look things up (trusted and above have `tools.*`). */
+export const WEB_TOOL = "tools.web";
+
 const EVERYDAY: readonly string[] = [
   "chat.talk",
   "link.*",
@@ -70,6 +73,7 @@ const EVERYDAY: readonly string[] = [
   "queue.song.play",
   "game.status",
   "stream.status",
+  WEB_TOOL,
 ];
 
 /** Trusted people may ask her to run code in the sandbox (she can still decline). */

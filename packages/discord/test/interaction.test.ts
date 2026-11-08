@@ -50,7 +50,7 @@ interface Sent {
   options?: Record<string, unknown>;
 }
 
-function base(sent: Sent[]) {
+function base(sent: Sent[], prefix = "m") {
   let n = 0;
   const push = (call: Call, options?: unknown) =>
     sent.push({ call, options: options as Record<string, unknown> | undefined });
@@ -65,7 +65,7 @@ function base(sent: Sent[]) {
       push("reply", options);
       self.replied = true;
       n += 1;
-      return { resource: { message: { id: `m${n}` } } };
+      return { resource: { message: { id: `${prefix}${n}` } } };
     },
     async deferReply(options: unknown) {
       push("deferReply", options);
@@ -102,9 +102,13 @@ function command(overrides: Partial<CommandInteractionLike> = {}) {
   return { i, sent };
 }
 
-function component(customId: string, overrides: Partial<ComponentInteractionLike> = {}) {
+function component(
+  customId: string,
+  overrides: Partial<ComponentInteractionLike> = {},
+  idPrefix = "m",
+) {
   const sent: Sent[] = [];
-  const b = base(sent);
+  const b = base(sent, idPrefix);
   const i = Object.assign(b, {
     customId,
     message: { id: "panel", flags: { has: (f: number) => f === MessageFlags.Ephemeral } },
@@ -584,10 +588,20 @@ describe("handleAutocomplete", () => {
 
 describe("panels through the interaction layer", () => {
   function panelEnv() {
-    const registry = new CommandRegistry(Permissions.fromStrings(["discord:1"]), {
-      surface: "panels",
-    });
+    const registry = new CommandRegistry(Permissions.fromStrings(["discord:1"]));
     const calls: string[] = [];
+    // `voice leave` needs an owner node; `voice join` is for everyone.
+    registry.register(commandSpec("voice join", "j", { permission: "voice.join" }), (inv) => {
+      calls.push(`join by ${inv.invoker.id}`);
+      return notice("success", "已加入");
+    });
+    registry.register(
+      commandSpec("voice leave", "l", { permission: "owner.voice.leave" }),
+      (inv) => {
+        calls.push(`leave by ${inv.invoker.id}`);
+        return notice("success", "已離開");
+      },
+    );
     registry.register(
       commandSpec("voice consent", "c", {
         args: [argSpec("state", "s", ArgKind.choice(["on", "off"]), { required: false })],
@@ -609,9 +623,13 @@ describe("panels through the interaction layer", () => {
 
   const flagsOf = (s: Sent | undefined) => (s?.options?.flags ?? 0) as number;
 
+  const sub = (name: string) => [
+    { name, type: ApplicationCommandOptionType.Subcommand, options: [] as never[] },
+  ];
+
   test("a_panel_opens_ephemeral_with_controls_and_a_session", async () => {
     const { registry, sessions } = panelEnv();
-    const { i, sent } = command({ commandName: "me" });
+    const { i, sent } = command({ commandName: "me", options: { data: sub("i") } });
     await handleCommandInteraction({ registry, sessions }, i, "channel");
     expect(sent.map((s) => s.call)).toEqual(["reply"]);
     expect(flagsOf(sent[0]) & MessageFlags.Ephemeral).toBeTruthy();
@@ -626,7 +644,7 @@ describe("panels through the interaction layer", () => {
 
   test("a_button_updates_the_panel_in_place_and_runs_the_command", async () => {
     const { registry, sessions, calls } = panelEnv();
-    const opened = command({ commandName: "me" });
+    const opened = command({ commandName: "me", options: { data: sub("i") } });
     await handleCommandInteraction({ registry, sessions }, opened.i, "channel");
     // The panel message is the one the platform tracked.
     const panelId = "m1";
@@ -637,6 +655,75 @@ describe("panels through the interaction layer", () => {
     expect(calls).toEqual(["consent on"]);
     expect(sent.map((s) => s.call)).toEqual(["update"]);
     expect(JSON.stringify(sent[0]?.options)).toContain("已更新");
+    sessions.closeAll();
+  });
+
+  const OWNER = { id: "1", username: "owner" };
+  const publicMessage = (id: string) => ({ id, flags: { has: () => false } });
+
+  test("a_public_panel_opens_in_the_channel_and_anyone_may_press_it", async () => {
+    const { registry, sessions } = panelEnv();
+    const opened = command({ commandName: "miyo", user: OWNER });
+    await handleCommandInteraction({ registry, sessions }, opened.i, "channel");
+    expect(flagsOf(opened.sent[0]) & MessageFlags.Ephemeral).toBeFalsy();
+    expect(sessions.get("m1")).toMatchObject({
+      initiator: { platform: "discord", id: "1" },
+      initiator_only: false,
+    });
+    // The bare `/miyo` is the panel; `/me` alone is not (it has subcommands).
+    const bare = command({ commandName: "me" });
+    await handleCommandInteraction({ registry, sessions }, bare.i, "channel");
+    expect(flagsOf(bare.sent[0]) & MessageFlags.Ephemeral).toBeTruthy();
+    expect(JSON.stringify(bare.sent[0]?.options)).not.toContain("我的面板");
+    sessions.closeAll();
+  });
+
+  test("a_press_by_someone_else_runs_as_them_with_their_own_rights", async () => {
+    const { registry, sessions, calls } = panelEnv();
+    const opened = command({ commandName: "miyo", user: OWNER });
+    await handleCommandInteraction({ registry, sessions }, opened.i, "channel");
+    const shared = publicMessage("m1");
+    // The owner turns to the voice page: the shared message is edited in place.
+    const mine = component("mi:miyo:page:-:-", {
+      user: OWNER,
+      values: ["voice"],
+      message: shared,
+    });
+    await handleComponentInteraction({ registry, sessions }, mine.i, "channel");
+    expect(mine.sent.map((s) => s.call)).toEqual(["update"]);
+    // Someone else turning the page gets a private copy; the shared message is untouched.
+    const theirs = component(
+      "mi:miyo:page:-:-",
+      { user: { id: "42", username: "alice_w" }, values: ["voice"], message: shared },
+      "copy",
+    );
+    await handleComponentInteraction({ registry, sessions }, theirs.i, "channel");
+    expect(theirs.sent.map((s) => s.call)).toEqual(["reply"]);
+    expect(flagsOf(theirs.sent[0]) & MessageFlags.Ephemeral).toBeTruthy();
+    expect(sessions.get("copy1")).toMatchObject({
+      initiator: { platform: "discord", id: "42" },
+      initiator_only: true,
+    });
+    expect(sessions.get("m1")).toMatchObject({ initiator: { id: "1" }, initiator_only: false });
+    // The owner's admin control: the owner runs it, a member is refused privately.
+    const leave = "mi:miyo:pdo:voice:leave:-";
+    const refused = component(leave, { user: { id: "42", username: "alice_w" }, message: shared });
+    await handleComponentInteraction({ registry, sessions }, refused.i, "channel");
+    expect(calls).toEqual([]);
+    expect(refused.sent.map((s) => s.call)).toEqual(["reply"]);
+    expect(flagsOf(refused.sent[0]) & MessageFlags.Ephemeral).toBeTruthy();
+    const allowed = component(leave, { user: OWNER, message: shared });
+    await handleComponentInteraction({ registry, sessions }, allowed.i, "channel");
+    expect(calls).toEqual(["leave by 1"]);
+    expect(flagsOf(allowed.sent[0]) & MessageFlags.Ephemeral).toBeFalsy();
+    // A member's own press of a control they may use runs as the member.
+    const join = component("mi:miyo:pdo:voice:join:-", {
+      user: { id: "42", username: "alice_w" },
+      message: shared,
+    });
+    await handleComponentInteraction({ registry, sessions }, join.i, "channel");
+    expect(calls).toEqual(["leave by 1", "join by 42"]);
+    expect(flagsOf(join.sent[0]) & MessageFlags.Ephemeral).toBeFalsy();
     sessions.closeAll();
   });
 
