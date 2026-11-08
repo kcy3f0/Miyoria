@@ -23,6 +23,20 @@ export const DEFAULT_REASONING_MAX_TOKENS: Readonly<Record<ReasoningLevel, numbe
   high: null,
 };
 
+/** Half of a surrogate pair: what cutting text by UTF-16 units leaves of an emoji. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
+ * The body as JSON, with half emoji (a lone surrogate, left where some text was cut) dropped:
+ * `JSON.stringify` writes one as an escape strict parsers (DeepSeek's) refuse with 400
+ * "unexpected end of hex escape", failing the whole call.
+ */
+export function bodyJson(body: Record<string, JsonValue>): string {
+  return JSON.stringify(body, (_key, value: unknown) =>
+    typeof value === "string" ? value.replace(LONE_SURROGATE, "") : value,
+  );
+}
+
 /**
  * Request body. Only `content` / `tool_calls` are ever sent for assistant messages, so
  * reasoning output (e.g. DeepSeek `reasoning_content`) never goes back. The session id is

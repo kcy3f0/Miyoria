@@ -507,7 +507,7 @@ export class MindLoop implements Mind {
   #heardLately(now: number): string[] {
     return this.#heard
       .filter((h) => now - h.at <= HEARD_WINDOW_MS)
-      .map((h) => `${h.who}: ${h.text.slice(0, 120)}`);
+      .map((h) => `${h.who}: ${short(h.text, 120)}`);
   }
 
   #handleOfAccount(account: AccountRef, name: string | null): Handle | null {
@@ -1266,7 +1266,7 @@ export class MindLoop implements Mind {
           if (!fixable || attempt >= 2) throw error;
           current = [
             ...current,
-            assistantMessage(response.text.slice(0, 4000)),
+            assistantMessage([...response.text].slice(0, 4000).join("")),
             userMessage(
               `上面的回覆不能用:${(error as Error).message}。請只回傳一個符合格式的 JSON 物件,不要加其他文字。`,
             ),

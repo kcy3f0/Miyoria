@@ -22,6 +22,7 @@ import {
 import { MIYORIA_VERSION } from "../version.js";
 import { SseParser } from "./sse.js";
 import {
+  bodyJson,
   ChunkSchema,
   DEFAULT_REASONING_MAX_TOKENS,
   type ReasoningWire,
@@ -258,7 +259,7 @@ export class OpenAiProvider implements ChatProvider {
   }
 
   async stream(request: ChatRequest, signal?: AbortSignal): Promise<ChatStream> {
-    const body = JSON.stringify(requestBody(request, this.#thinkingOff, this.#reasoning));
+    const body = bodyJson(requestBody(request, this.#thinkingOff, this.#reasoning));
     log.debug(
       { provider: this.name, model: request.model, url: this.url },
       "chat completion request",

@@ -296,7 +296,7 @@ function retryRequest(request: ChatRequest, response: ChatResponse): ChatRequest
       cut && typeof request.max_tokens === "number" ? request.max_tokens * 2 : request.max_tokens,
     messages: [
       ...request.messages,
-      assistantMessage(response.text.slice(0, 2000)),
+      assistantMessage([...response.text].slice(0, 2000).join("")),
       userMessage(note),
     ],
   };
