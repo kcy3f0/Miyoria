@@ -776,9 +776,16 @@ export class Singer implements VoiceFloor, SpeechPause {
   }
 
   /** Stops the song she is singing; `all` also drops every other song in the list. */
-  async stop(all: boolean): Promise<{ stopped: SongEntry | null; dropped: number }> {
+  /**
+   * Stops the song she is singing and, with `all`, cancels the rest of the set list. With
+   * `stopCurrent` false the song she is singing goes on to its end: only the rest is cancelled.
+   */
+  async stop(
+    all: boolean,
+    stopCurrent = true,
+  ): Promise<{ stopped: SongEntry | null; dropped: number }> {
     const current = this.#playing;
-    current?.stop.abort();
+    if (stopCurrent) current?.stop.abort();
     let dropped = 0;
     if (all) {
       for (const e of this.list.open()) {
@@ -792,7 +799,7 @@ export class Singer implements VoiceFloor, SpeechPause {
         dropped += 1;
       }
     }
-    return { stopped: current?.entry ?? null, dropped };
+    return { stopped: stopCurrent ? (current?.entry ?? null) : null, dropped };
   }
 
   // ----- steer: changing a song that has not started (v3 §10.6) -----

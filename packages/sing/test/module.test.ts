@@ -863,6 +863,25 @@ describe("sing module", () => {
     expect(h.singer.list.open()).toHaveLength(0);
   });
 
+  it("her wrap-up clears the rest of the list and lets the song she is singing finish", async () => {
+    h = await Harness.create();
+    await h.join();
+    h.worker.cacheHit = true;
+    h.worker.cacheSeconds = 30;
+    await h.command("queue song request", { song: "Long" });
+    h.worker.cacheHit = false;
+    await h.invoke(Principals.user(AMY, TEXT), "sing.request", { query: "Next one" });
+    await settle(6000 + 400);
+    expect(h.voice.plays).toHaveLength(1);
+
+    const stop = await h.invoke(Principals.self(VOICE), "sing.stop", { all: true, current: false });
+    expect(stop.status === "done" && stop.result.text).toBe("這首會唱完。取消了歌單上的 1 首。");
+    await settle(50);
+    expect(h.voice.plays[0]?.stoppedWith).toBeNull();
+    expect(h.worker.cancelled).toEqual(["j2"]);
+    expect(h.singer.list.playing()?.query).toBe("Long");
+  });
+
   describe("steer", () => {
     const steer = (task: string, patch: Record<string, JsonValue>, id = "st1") =>
       h.singer.steer({ id, task, patch, why: "test", cause: "c1" });

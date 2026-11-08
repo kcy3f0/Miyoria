@@ -29,7 +29,7 @@ const RequestArgs = z.object({
   dedication: z.string().trim().max(200).nullish(),
 });
 const PlayArgs = z.object({ song: z.number().int().positive().nullish() });
-const StopArgs = z.object({ all: z.boolean().nullish() });
+const StopArgs = z.object({ all: z.boolean().nullish(), current: z.boolean().nullish() });
 const SteerArgs = z.object({
   steer: z.object({
     id: z.string().min(1).max(64),
@@ -142,13 +142,23 @@ export function singCapabilities(singer: Singer, perms: SingPermissions): Capabi
     permission: perms.skip,
     tool: {
       name: "sing_stop",
-      description: "停止正在唱的歌;all = true 時歌單上其他還沒唱的也一起取消。",
-      properties: { all: { type: "boolean", description: "也取消歌單上其他的歌" } },
+      description:
+        "停止唱歌。預設停掉正在唱的這首;all = true 時歌單上還沒唱的也一起取消。" +
+        "想讓這首唱完、只把後面的清掉(例如要收尾),用 all = true 加 current = false。",
+      properties: {
+        all: { type: "boolean", description: "也取消歌單上其他還沒唱的歌" },
+        current: {
+          type: "boolean",
+          description: "要不要停掉正在唱的這首(預設 true;false = 讓它唱完)",
+        },
+      },
     },
     async execute(args) {
-      const { stopped, dropped } = await singer.stop(args.all === true);
+      const keep = args.current === false;
+      const { stopped, dropped } = await singer.stop(args.all === true, !keep);
       const parts: string[] = [];
-      parts.push(stopped ? `已停止 ${songLabel(stopped)}。` : "現在沒有在唱歌。");
+      if (keep) parts.push(singer.playing() ? "這首會唱完。" : "現在沒有在唱歌。");
+      else parts.push(stopped ? `已停止 ${songLabel(stopped)}。` : "現在沒有在唱歌。");
       if (dropped > 0) parts.push(`取消了歌單上的 ${dropped} 首。`);
       return { text: parts.join(""), data: { stopped: stopped?.no ?? null, dropped } };
     },
