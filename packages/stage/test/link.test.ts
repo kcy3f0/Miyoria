@@ -1,5 +1,6 @@
 // Stage Link protocol tests: `stage.link` on a real socket and a scripted Stage node.
 
+import { ActuatorRegistry, ActuatorRegistryKey, defineCapability } from "@miyoria/actions";
 import {
   CommandRegistry,
   CommandRegistryKey,
@@ -20,6 +21,7 @@ import {
 } from "@miyoria/types";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
+import { z } from "zod";
 import {
   EMOTION_TOPIC,
   formatAddress,
@@ -42,8 +44,12 @@ class Harness {
     readonly module: StageLinkModule,
   ) {}
 
-  static async start(config: JsonObject = {}): Promise<Harness> {
+  static async start(
+    config: JsonObject = {},
+    prepare: (services: ServiceRegistry) => void = () => undefined,
+  ): Promise<Harness> {
     const services = new ServiceRegistry();
+    prepare(services);
     services.provide("commands", CommandRegistryKey, new CommandRegistry(new Permissions()));
     const bus = new EventBus();
     const sup = new Supervisor({ bus, services });
@@ -487,6 +493,33 @@ describe("stage.link", () => {
     for (const p of STREAM_COMMAND_PATHS) {
       expect(registry.get(p.split(" ")), `${p} unregistered on stop`).toBeUndefined();
     }
+  });
+
+  it("starts and stops the whole broadcast when the voice module is there", async () => {
+    const h = await Harness.start({}, (services) => {
+      services.provide("actuators", ActuatorRegistryKey, new ActuatorRegistry({ services }));
+    });
+    const asked: string[] = [];
+    const actuators = h.services.require(ActuatorRegistryKey);
+    for (const name of ["stream.start", "stream.stop"]) {
+      actuators.register(
+        defineCapability({
+          name,
+          summary: name,
+          risk: "low",
+          args: z.object({}),
+          permission: "voice.golive",
+          async execute() {
+            asked.push(name);
+            return { text: "ok", data: null };
+          },
+        }),
+      );
+    }
+    const registry = h.registry();
+    expect((await registry.dispatch(invocation("stream start"))).text).toBe("已開始直播。");
+    expect((await registry.dispatch(invocation("stream stop"))).text).toBe("已停止直播。");
+    expect(asked).toEqual(["stream.start", "stream.stop"]);
   });
 
   it("stop_closes_the_node_with_going_away_and_heartbeat_times_out", async () => {

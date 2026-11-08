@@ -150,7 +150,11 @@ export class StageLink {
 
   /** Starts or stops streaming in OBS. */
   stream(action: StreamAction): Promise<StageStatus> {
-    return this.#request((id) => ({ type: "stream", action, id }));
+    // The node answers once OBS reports the change (`stream_wait_ms`, 15 s by default).
+    return this.#request(
+      (id) => ({ type: "stream", action, id }),
+      this.#timings.requestTimeoutMs * 2,
+    );
   }
 
   /** Triggers a VTube Studio hotkey by name (or id). */
@@ -175,7 +179,10 @@ export class StageLink {
     return this.#conn?.trySendJson(msg) ?? false;
   }
 
-  #request(build: (id: number) => CoreMessage): Promise<StageStatus> {
+  #request(
+    build: (id: number) => CoreMessage,
+    timeoutMs = this.#timings.requestTimeoutMs,
+  ): Promise<StageStatus> {
     const conn = this.#conn;
     if (!conn) return Promise.reject(new StageLinkError("stage node not connected"));
     const id = this.#nextRequest;
@@ -184,7 +191,7 @@ export class StageLink {
       const timer = setTimeout(() => {
         conn.pending.delete(id);
         reject(new StageLinkError("stage node did not answer in time"));
-      }, this.#timings.requestTimeoutMs);
+      }, timeoutMs);
       conn.pending.set(id, {
         resolve: (status) => {
           clearTimeout(timer);

@@ -117,8 +117,12 @@ export function registerStreamCommands(
     });
 
   const stream = async (inv: Invocation, action: StreamAction): Promise<CommandReply> => {
-    if (!link.isConnected()) return offline();
-    const outcome = await act(inv, "stage.stream", { action });
+    // OBS streams to the listener Go Live opens, so OBS alone has nowhere to go. Where the voice
+    // module is on, the whole broadcast starts and stops as one task; this is OBS only elsewhere.
+    const broadcast = action === "start" ? "stream.start" : "stream.stop";
+    const whole = actuators.get(broadcast) !== undefined && inv.context.scope !== null;
+    if (!whole && !link.isConnected()) return offline();
+    const outcome = await (whole ? act(inv, broadcast, {}) : act(inv, "stage.stream", { action }));
     if (outcome.status === "denied") {
       return notice("warn", deniedText(outcome.decision.stage), outcome.decision.reason);
     }
@@ -130,6 +134,7 @@ export function registerStreamCommands(
         outcome.error,
       );
     }
+    if (whole) return notice("success", action === "start" ? "已開始直播。" : "已停止直播。");
     const status = link.status() ?? defaultStageStatus();
     const data = outcome.result.data;
     const streaming = isJsonObject(data) && data.streaming === true;
