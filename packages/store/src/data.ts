@@ -204,6 +204,15 @@ export const DATA_CATEGORIES: readonly DataCategory[] = [
         familiarity: "num",
         reason: "text",
       }),
+      // The member page's cards are snapshots of the relationship; they go with it.
+      table("member_cards", "member_cards", "profile", "issued_at", "issued_at, serial", {
+        serial: "text",
+        author_platform: "text",
+        author_id: "text",
+        person_id: "text",
+        issued_at: "ts",
+        snapshot: "json",
+      }),
     ],
     { modules: ["social", "agent"] },
   ),

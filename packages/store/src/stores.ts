@@ -24,9 +24,11 @@ import type { DataCategoryId, DataExport, DataInventory, WipeCounts, WipeOptions
 import type {
   Account,
   AuditEntry,
+  AuthoredEntry,
   AuthScope,
   DecisionRecord,
   LogEntry,
+  MemberCardRecord,
   MemoryFilter,
   MemoryHit,
   MemoryQuery,
@@ -51,8 +53,45 @@ export interface MessageLog {
    * keep their append order.
    */
   recent(profile: ProfileId, context: ContextKey, limit: number): Promise<LogEntry[]>;
+  /**
+   * When and where `authors` wrote since `since`, oldest first, without the text: for counting.
+   * At most `limit` entries, the most recent ones.
+   */
+  authoredSince(
+    profile: ProfileId,
+    authors: readonly AccountRef[],
+    since: Timestamp,
+    limit: number,
+  ): Promise<AuthoredEntry[]>;
   /** Deletes every entry of a profile (all contexts); returns how many. */
   purge(profile: ProfileId): Promise<number>;
+}
+
+/**
+ * Cards issued on the member page. "Their cards" are the cards of any of `accounts`, so a person
+ * with several linked accounts sees one set.
+ */
+export interface MemberCardStore {
+  /** Stores a card. Serials must be unique. */
+  issue(card: MemberCardRecord): Promise<void>;
+  /** The card with this exact serial in the profile, or `null`. */
+  bySerial(profile: ProfileId, serial: string): Promise<MemberCardRecord | null>;
+  /** The cards of `accounts`, newest first, at most `limit`. */
+  listFor(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    limit: number,
+  ): Promise<MemberCardRecord[]>;
+  /** How many cards `accounts` were issued at or after `since`. */
+  countSince(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    since: Timestamp,
+  ): Promise<number>;
+  /** How many cards `accounts` hold. */
+  countFor(profile: ProfileId, accounts: readonly AccountRef[]): Promise<number>;
+  /** Deletes every card of `accounts`; returns how many. */
+  deleteFor(profile: ProfileId, accounts: readonly AccountRef[]): Promise<number>;
 }
 
 /** Persisted runtime enabled / disabled flag per module. */
@@ -318,6 +357,7 @@ export interface Store {
   /** The EventLog. Only the SQLite backend has it so far; without it the log stays in memory. */
   readonly events?: EventLogStore;
   readonly directives: DirectiveStore;
+  readonly cards: MemberCardStore;
   /** Releases the backend (closes the database). */
   close(): Promise<void>;
 }
@@ -337,4 +377,5 @@ export const AuditLogKey = serviceKey<AuditLog>("AuditLog");
 export const ProfileDataStoreKey = serviceKey<ProfileDataStore>("ProfileDataStore");
 export const EventLogStoreKey = serviceKey<EventLogStore>("EventLogStore");
 export const DirectiveStoreKey = serviceKey<DirectiveStore>("DirectiveStore");
+export const MemberCardStoreKey = serviceKey<MemberCardStore>("MemberCardStore");
 export const StoreKey = serviceKey<Store>("Store");

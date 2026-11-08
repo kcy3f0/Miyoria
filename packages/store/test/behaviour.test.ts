@@ -25,6 +25,7 @@ import {
   type DecisionRecord,
   dataCategory,
   type LogEntry,
+  type MemberCardRecord,
   type MemoryFilter,
   type MemoryHit,
   type MemoryKind,
@@ -1349,6 +1350,83 @@ function behaviour(open: () => Promise<Store>): void {
     await expect(audit.append(first), "duplicate id must fail").rejects.toThrow(/already exists/);
   });
 
+  it("counts what someone wrote since a time, theirs only", async () => {
+    const profile = unique("profile");
+    const ctx = channel("guild", unique("chan"), "channel");
+    const voice = channel("guild", unique("chan"), "voice");
+    const theirs = (text: string, context: ContextKey, ms: number, id = "100"): LogEntry => ({
+      ...entry(profile, context, text, at(ms)),
+      author: account(id),
+    });
+    await store.messages.append(theirs("old", ctx, 0));
+    await store.messages.append(theirs("a", ctx, 10_000));
+    await store.messages.append(theirs("b", voice, 20_000));
+    await store.messages.append(theirs("other", ctx, 30_000, "200"));
+    await store.messages.append({ ...theirs("her", ctx, 40_000), is_self: true });
+    await store.messages.append(theirs("c", ctx, 50_000));
+    const got = await store.messages.authoredSince(profile, [account("100")], at(5_000), 10);
+    expect(got.map((e) => e.kind)).toEqual(["channel", "voice", "channel"]);
+    expect(Date.parse(got[0]?.ts ?? "")).toBe(Date.parse(at(10_000)));
+    expect(
+      await store.messages.authoredSince(profile, [account("100")], at(5_000), 2),
+    ).toHaveLength(2);
+    expect(await store.messages.authoredSince(profile, [], at(0), 10)).toEqual([]);
+    const both = await store.messages.authoredSince(
+      profile,
+      [account("100"), account("200")],
+      at(0),
+      10,
+    );
+    expect(both).toHaveLength(5);
+  });
+
+  it("member cards: issued, found by serial, counted and deleted per account", async () => {
+    const profile = unique("profile");
+    const id = unique("acct");
+    const linked = unique("acct");
+    const serial = () => unique("MYR");
+    const card = (who: string, ms: number, n: number): MemberCardRecord => ({
+      serial: serial(),
+      profile,
+      account: account(who),
+      person: who === id ? "person-1" : null,
+      issued_at: at(ms),
+      snapshot: { number: n, affinity: "很好", call_name: null },
+    });
+    const first = card(id, 10_000, 1);
+    const second = card(linked, 20_000, 2);
+    // Same instant: the later one is still the latest.
+    const third = card(id, 20_000, 3);
+    const other = card(unique("acct"), 30_000, 1);
+    for (const c of [first, second, third, other]) await store.cards.issue(c);
+    await expect(store.cards.issue(first), "duplicate serial must fail").rejects.toThrow(
+      /already exists/,
+    );
+
+    const got = await store.cards.bySerial(profile, first.serial);
+    expect(got).toEqual({ ...first, issued_at: got?.issued_at });
+    expect(Date.parse(got?.issued_at ?? "")).toBe(10_000);
+    expect(await store.cards.bySerial(unique("profile"), first.serial)).toBeNull();
+    expect(await store.cards.bySerial(profile, "MYR-NONE")).toBeNull();
+
+    const both = [account(id), account(linked)];
+    const list = await store.cards.listFor(profile, both, 10);
+    expect(list.map((c) => c.serial)).toEqual([third.serial, second.serial, first.serial]);
+    expect((await store.cards.listFor(profile, both, 1)).map((c) => c.serial)).toEqual([
+      third.serial,
+    ]);
+    expect(await store.cards.listFor(profile, [], 10)).toEqual([]);
+    expect(await store.cards.countFor(profile, both)).toBe(3);
+    expect(await store.cards.countFor(profile, [account(id)])).toBe(2);
+    expect(await store.cards.countSince(profile, both, at(15_000))).toBe(2);
+    expect(await store.cards.countSince(profile, [], at(0))).toBe(0);
+
+    expect(await store.cards.deleteFor(profile, both)).toBe(3);
+    expect(await store.cards.bySerial(profile, first.serial)).toBeNull();
+    expect(await store.cards.countFor(profile, both)).toBe(0);
+    expect(await store.cards.bySerial(profile, other.serial)).not.toBeNull();
+  });
+
   // ---- TS-specific ------------------------------------------------------------------------
 
   it("timestamps keep microseconds and are normalized to UTC", async () => {
@@ -1402,6 +1480,14 @@ function behaviour(open: () => Promise<Store>): void {
       await store.memories.upsert(memory(p, "episode", guildScope("g"), "一起玩", at(t0)));
       await store.relationships.upsert(relationship(p, person, t0));
       await store.relationships.recordDelta(p, person, delta(at(t0), 1, "nice"));
+      await store.cards.issue({
+        serial: unique("MYR"),
+        profile: p,
+        account: account("100"),
+        person,
+        issued_at: at(t0),
+        snapshot: { affinity: "很好" },
+      });
       await store.messages.append(entry(p, ctx, "嗨", at(t0)));
       await store.decisions.append(decision(p, ctx, "replied", at(t0)));
       await store.decisions.appendOutcome?.(p, outcome(ctx, "sent", at(t0)));
@@ -1429,7 +1515,7 @@ function behaviour(open: () => Promise<Store>): void {
       fact: 1,
       episode: 1,
     });
-    expect(count("relationships")).toBe(2);
+    expect(count("relationships")).toBe(3); // relationship, delta, card
     expect(count("call_names")).toBe(1);
     expect(count("inner")).toBe(2);
     expect(count("mood")).toBe(1);
@@ -1493,6 +1579,7 @@ function behaviour(open: () => Promise<Store>): void {
       memory_maintenance: 1,
       relationships: 1,
       relationship_deltas: 1,
+      member_cards: 1,
       self_state: 1,
       self_feelings: 1,
       self_cards_migration: 0,

@@ -4,8 +4,10 @@
 import type {
   AccountRef,
   ContextKey,
+  ContextKind,
   DecisionTrace,
   IncomingMessage,
+  JsonObject,
   JsonValue,
   MemoryOrigin,
   PersonId,
@@ -35,6 +37,12 @@ export interface LogEntry {
   turn: TurnId | null;
 }
 
+/** When and in what kind of context someone wrote: what `MessageLog.authoredSince` returns. */
+export interface AuthoredEntry {
+  ts: Timestamp;
+  kind: ContextKind;
+}
+
 /**
  * Builds an entry from a platform message, with a fresh id and no turn. Stickers, embeds,
  * attachments and forwards are noted inline in `text` (`incomingText`).
@@ -55,6 +63,22 @@ export function logEntryFromIncoming(
     ts: message.ts,
     turn: null,
   };
+}
+
+// ---- member cards -----------------------------------------------------------------------
+
+/** A card she gave someone on the member page: what it showed, kept so its serial can be checked. */
+export interface MemberCardRecord {
+  /** `MYR-XXXX-XXXX-XXXX`, unique across profiles. */
+  serial: string;
+  profile: ProfileId;
+  /** The session account it was issued to. */
+  account: AccountRef;
+  /** The person she knew them as then, if any. */
+  person: PersonId | null;
+  issued_at: Timestamp;
+  /** What the card shows; the store does not look inside. */
+  snapshot: JsonObject;
 }
 
 // ---- persona overrides ------------------------------------------------------------------

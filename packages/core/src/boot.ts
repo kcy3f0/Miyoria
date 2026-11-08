@@ -22,6 +22,7 @@ import {
   AuthStoreKey,
   DecisionLogKey,
   IdentityStoreKey,
+  MemberCardStoreKey,
   MemoryRecordStoreKey,
   MessageLogKey,
   ModuleStateStoreKey,
@@ -210,6 +211,7 @@ export async function buildCoreWith(
   services.provide(k, DecisionLogKey, store.decisions);
   services.provide(k, PersonaOverrideStoreKey, store.personaOverrides);
   services.provide(k, MessageLogKey, store.messages);
+  services.provide(k, MemberCardStoreKey, store.cards);
   services.provide(k, PeopleStoreKey, store.people);
   services.provide(k, MemoryRecordStoreKey, store.memories);
   services.provide(k, RelationshipStoreKey, store.relationships);

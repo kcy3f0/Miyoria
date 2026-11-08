@@ -26,6 +26,7 @@ import {
   type Directive,
   type DirectiveRecord,
   isJsonObject,
+  type JsonObject,
   type JsonValue,
   type LogEvent,
   type LogEventFilter,
@@ -80,9 +81,11 @@ import {
 import type {
   Account,
   AuditEntry,
+  AuthoredEntry,
   AuthScope,
   DecisionRecord,
   LogEntry,
+  MemberCardRecord,
   MemoryFilter,
   MemoryHit,
   MemoryQuery,
@@ -109,6 +112,7 @@ import type {
   EventLogStore,
   EventRollup,
   IdentityStore,
+  MemberCardStore,
   MemoryRecordStore,
   MessageLog,
   ModuleStateStore,
@@ -389,6 +393,143 @@ class SqliteMessageLog implements MessageLog {
       { profile, key: contextLookupKey(context), limit: limitParam(limit) },
     );
     return rows.map(logEntryFromRow);
+  }
+
+  async authoredSince(
+    profile: ProfileId,
+    authors: readonly AccountRef[],
+    since: Timestamp,
+    limit: number,
+  ): Promise<AuthoredEntry[]> {
+    if (authors.length === 0) return [];
+    const params: Record<string, string | number> = {
+      profile,
+      since: toMicros(since),
+      limit: limitParam(limit),
+    };
+    const who = authors.map((a, i) => {
+      params[`p${i}`] = a.platform;
+      params[`a${i}`] = a.id;
+      return `(author_platform = $p${i} AND author_id = $a${i})`;
+    });
+    const rows = this.db.all(
+      "SELECT * FROM (SELECT ts, kind, seq FROM message_log WHERE profile_id = $profile AND " +
+        `is_self = 0 AND ts >= $since AND (${who.join(" OR ")}) ORDER BY ts DESC, seq DESC ` +
+        "LIMIT $limit) ORDER BY ts ASC, seq ASC",
+      params,
+    );
+    return rows.map((row) => ({ ts: ts(row, "ts"), kind: str(row, "kind") as ContextKind }));
+  }
+}
+
+// ---- member cards -------------------------------------------------------------------------
+
+function memberCardFromRow(row: Row): MemberCardRecord {
+  return {
+    serial: str(row, "serial"),
+    profile: str(row, "profile_id"),
+    account: { platform: str(row, "author_platform"), id: str(row, "author_id") },
+    person: optStr(row, "person_id"),
+    issued_at: ts(row, "issued_at"),
+    snapshot: json<JsonObject>(row, "snapshot", "member card"),
+  };
+}
+
+/** `(author_platform = … AND author_id = …) OR …` over `accounts`, its parameters added to `params`. */
+function authorsWhere(accounts: readonly AccountRef[], params: Params): string {
+  return accounts
+    .map((a, i) => {
+      params[`p${i}`] = a.platform;
+      params[`a${i}`] = a.id;
+      return `(author_platform = $p${i} AND author_id = $a${i})`;
+    })
+    .join(" OR ");
+}
+
+class SqliteMemberCards implements MemberCardStore {
+  constructor(private readonly db: Db) {}
+
+  async issue(card: MemberCardRecord): Promise<void> {
+    try {
+      this.db.run(
+        "INSERT INTO member_cards (serial, profile_id, author_platform, author_id, person_id, " +
+          "issued_at, snapshot) VALUES ($serial, $profile, $platform, $id, $person, $at, $snapshot)",
+        {
+          serial: card.serial,
+          profile: card.profile,
+          platform: card.account.platform,
+          id: card.account.id,
+          person: card.person,
+          at: toMicros(card.issued_at),
+          snapshot: JSON.stringify(card.snapshot),
+        },
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      if (isConstraintError(cause)) {
+        throw new StoreError(`member card \`${card.serial}\` already exists`, { cause });
+      }
+      throw new StoreError("cannot store the member card", { cause });
+    }
+  }
+
+  async bySerial(profile: ProfileId, serial: string): Promise<MemberCardRecord | null> {
+    const row = this.db.get(
+      "SELECT * FROM member_cards WHERE profile_id = $profile AND serial = $serial",
+      { profile, serial },
+    );
+    return row ? memberCardFromRow(row) : null;
+  }
+
+  async listFor(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    limit: number,
+  ): Promise<MemberCardRecord[]> {
+    if (accounts.length === 0) return [];
+    const params: Params = { profile, limit: limitParam(limit) };
+    const rows = this.db.all(
+      `SELECT * FROM member_cards WHERE profile_id = $profile AND (${authorsWhere(accounts, params)}) ` +
+        "ORDER BY issued_at DESC, rowid DESC LIMIT $limit",
+      params,
+    );
+    return rows.map(memberCardFromRow);
+  }
+
+  async countSince(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    since: Timestamp,
+  ): Promise<number> {
+    if (accounts.length === 0) return 0;
+    const params: Params = { profile, since: toMicros(since) };
+    const row = this.db.get(
+      "SELECT COUNT(*) AS n FROM member_cards WHERE profile_id = $profile AND " +
+        `issued_at >= $since AND (${authorsWhere(accounts, params)})`,
+      params,
+    );
+    return row ? num(row, "n") : 0;
+  }
+
+  async countFor(profile: ProfileId, accounts: readonly AccountRef[]): Promise<number> {
+    if (accounts.length === 0) return 0;
+    const params: Params = { profile };
+    const row = this.db.get(
+      "SELECT COUNT(*) AS n FROM member_cards WHERE profile_id = $profile AND " +
+        `(${authorsWhere(accounts, params)})`,
+      params,
+    );
+    return row ? num(row, "n") : 0;
+  }
+
+  async deleteFor(profile: ProfileId, accounts: readonly AccountRef[]): Promise<number> {
+    if (accounts.length === 0) return 0;
+    const params: Params = { profile };
+    return this.db.run(
+      "DELETE FROM member_cards WHERE profile_id = $profile AND " +
+        `(${authorsWhere(accounts, params)})`,
+      params,
+    );
   }
 }
 
@@ -1758,6 +1899,7 @@ export class SqliteStore implements Store {
   readonly profileData: ProfileDataStore;
   readonly events: EventLogStore;
   readonly directives: DirectiveStore;
+  readonly cards: MemberCardStore;
   readonly #db: Db;
 
   private constructor(db: Db, maxDecisions: number | null) {
@@ -1776,6 +1918,7 @@ export class SqliteStore implements Store {
     this.profileData = new SqliteProfileData(db);
     this.events = new SqliteEventLog(db);
     this.directives = new SqliteDirectives(db);
+    this.cards = new SqliteMemberCards(db);
   }
 
   /**

@@ -11,9 +11,11 @@ import {
   type AccountRef,
   type Clock,
   type ContextKey,
+  type ContextKind,
   type DecisionTrace,
   type Directive,
   type DirectiveRecord,
+  type JsonObject,
   type JsonValue,
   type ModuleId,
   newId,
@@ -60,9 +62,11 @@ import {
 import type {
   Account,
   AuditEntry,
+  AuthoredEntry,
   AuthScope,
   DecisionRecord,
   LogEntry,
+  MemberCardRecord,
   MemoryFilter,
   MemoryHit,
   MemoryKind,
@@ -86,6 +90,7 @@ import type {
   DecisionLog,
   DirectiveStore,
   IdentityStore,
+  MemberCardStore,
   MemoryRecordStore,
   MessageLog,
   ModuleStateStore,
@@ -407,6 +412,140 @@ class PgMessageLog implements MessageLog {
       [profile, contextLookupKey(context), limitParam(limit)],
     );
     return rows.map(logEntryFromRow);
+  }
+
+  async authoredSince(
+    profile: ProfileId,
+    authors: readonly AccountRef[],
+    since: Timestamp,
+    limit: number,
+  ): Promise<AuthoredEntry[]> {
+    if (authors.length === 0) return [];
+    const params: unknown[] = [profile, tsParam(since), limitParam(limit)];
+    const who = authors.map((a) => {
+      params.push(a.platform, a.id);
+      return `(author_platform = $${params.length - 1} AND author_id = $${params.length})`;
+    });
+    const rows = await this.db.query(
+      "SELECT * FROM (SELECT ts, kind, seq FROM message_log WHERE profile_id = $1 AND " +
+        `NOT is_self AND ts >= $2 AND (${who.join(" OR ")}) ORDER BY ts DESC, seq DESC ` +
+        "LIMIT $3) authored ORDER BY ts ASC, seq ASC",
+      params,
+    );
+    return rows.map((row) => ({ ts: ts(row, "ts"), kind: str(row, "kind") as ContextKind }));
+  }
+}
+
+// ---- member cards -------------------------------------------------------------------------
+
+const MEMBER_CARD_COLUMNS =
+  "serial, profile_id, author_platform, author_id, person_id, issued_at, " +
+  "snapshot::text AS snapshot";
+
+function memberCardFromRow(row: Row): MemberCardRecord {
+  return {
+    serial: str(row, "serial"),
+    profile: str(row, "profile_id"),
+    account: { platform: str(row, "author_platform"), id: str(row, "author_id") },
+    person: optStr(row, "person_id"),
+    issued_at: ts(row, "issued_at"),
+    snapshot: parseJson<JsonObject>(str(row, "snapshot"), "member card"),
+  };
+}
+
+/** `(author_platform = … AND author_id = …) OR …` over `accounts`, its parameters added to `params`. */
+function authorsWhere(accounts: readonly AccountRef[], params: unknown[]): string {
+  return accounts
+    .map((a) => {
+      params.push(a.platform, a.id);
+      return `(author_platform = $${params.length - 1} AND author_id = $${params.length})`;
+    })
+    .join(" OR ");
+}
+
+class PgMemberCards implements MemberCardStore {
+  constructor(private readonly db: Pg) {}
+
+  async issue(card: MemberCardRecord): Promise<void> {
+    try {
+      await this.db.execute(
+        "INSERT INTO member_cards (serial, profile_id, author_platform, author_id, person_id, " +
+          "issued_at, snapshot) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)",
+        [
+          card.serial,
+          card.profile,
+          card.account.platform,
+          card.account.id,
+          card.person,
+          tsParam(card.issued_at),
+          JSON.stringify(card.snapshot),
+        ],
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      if (pgCode(cause) === UNIQUE_VIOLATION) {
+        throw new StoreError(`member card \`${card.serial}\` already exists`, { cause });
+      }
+      throw new StoreError("cannot store the member card", { cause });
+    }
+  }
+
+  async bySerial(profile: ProfileId, serial: string): Promise<MemberCardRecord | null> {
+    const rows = await this.db.query(
+      `SELECT ${MEMBER_CARD_COLUMNS} FROM member_cards WHERE profile_id = $1 AND serial = $2`,
+      [profile, serial],
+    );
+    return rows[0] ? memberCardFromRow(rows[0]) : null;
+  }
+
+  async listFor(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    limit: number,
+  ): Promise<MemberCardRecord[]> {
+    if (accounts.length === 0) return [];
+    const params: unknown[] = [profile, limitParam(limit)];
+    const rows = await this.db.query(
+      `SELECT ${MEMBER_CARD_COLUMNS} FROM member_cards WHERE profile_id = $1 AND ` +
+        `(${authorsWhere(accounts, params)}) ORDER BY issued_at DESC, seq DESC LIMIT $2`,
+      params,
+    );
+    return rows.map(memberCardFromRow);
+  }
+
+  async countSince(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    since: Timestamp,
+  ): Promise<number> {
+    if (accounts.length === 0) return 0;
+    const params: unknown[] = [profile, tsParam(since)];
+    const rows = await this.db.query(
+      "SELECT COUNT(*) AS n FROM member_cards WHERE profile_id = $1 AND issued_at >= $2 AND " +
+        `(${authorsWhere(accounts, params)})`,
+      params,
+    );
+    return rows[0] ? num(rows[0], "n") : 0;
+  }
+
+  async countFor(profile: ProfileId, accounts: readonly AccountRef[]): Promise<number> {
+    if (accounts.length === 0) return 0;
+    const params: unknown[] = [profile];
+    const rows = await this.db.query(
+      "SELECT COUNT(*) AS n FROM member_cards WHERE profile_id = $1 AND " +
+        `(${authorsWhere(accounts, params)})`,
+      params,
+    );
+    return rows[0] ? num(rows[0], "n") : 0;
+  }
+
+  async deleteFor(profile: ProfileId, accounts: readonly AccountRef[]): Promise<number> {
+    if (accounts.length === 0) return 0;
+    const params: unknown[] = [profile];
+    return this.db.execute(
+      `DELETE FROM member_cards WHERE profile_id = $1 AND (${authorsWhere(accounts, params)})`,
+      params,
+    );
   }
 }
 
@@ -1556,6 +1695,7 @@ export class PostgresStore implements Store {
   readonly audit: AuditLog;
   readonly profileData: ProfileDataStore;
   readonly directives: DirectiveStore;
+  readonly cards: MemberCardStore;
   readonly #pool: pg.Pool;
   #closed = false;
 
@@ -1574,6 +1714,7 @@ export class PostgresStore implements Store {
     this.audit = new PgAudit(db);
     this.profileData = new PgProfileData(db);
     this.directives = new PgDirectives(db);
+    this.cards = new PgMemberCards(db);
   }
 
   /** Connects and runs pending migrations. */

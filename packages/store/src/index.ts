@@ -31,6 +31,7 @@ export {
   type WipeOptions,
 } from "./data.js";
 export { HANDLE_PREFIX, handleKey, StoredHandleDirectory } from "./handles.js";
+export { knownNames } from "./known-names.js";
 export { MemorySettingsStore } from "./memory-settings.js";
 export {
   DEFAULT_STORE_URL,
@@ -43,10 +44,12 @@ export { PostgresStore, type PostgresStoreOptions } from "./postgres.js";
 export {
   type Account,
   type AuditEntry,
+  type AuthoredEntry,
   type AuthScope,
   type DecisionRecord,
   type LogEntry,
   logEntryFromIncoming,
+  type MemberCardRecord,
   type MemoryFilter,
   type MemoryHit,
   type MemoryKind,
@@ -81,6 +84,8 @@ export {
   type EventRollup,
   type IdentityStore,
   IdentityStoreKey,
+  type MemberCardStore,
+  MemberCardStoreKey,
   type MemoryRecordStore,
   MemoryRecordStoreKey,
   type MessageLog,
