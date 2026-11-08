@@ -32,8 +32,13 @@ export const WebConfigSchema = z.object({
   max_redirects: z.number().int().min(0).max(5).default(3),
   /** Ports besides 80 and 443 a page may use. */
   allow_ports: z.array(z.number().int().min(1).max(65_535)).max(20).default([]),
-  /** Sent to DuckDuckGo and to every page; honest, no spoofing. */
-  user_agent: z.string().min(1).max(200).default("Miyoria/0.1 (+self-hosted VTuber bot)"),
+  /** Sent to DuckDuckGo and to every page; honest, no spoofing. The usual crawler form: DuckDuckGo
+   * answers a challenge to an agent that calls itself a "bot". */
+  user_agent: z
+    .string()
+    .min(1)
+    .max(200)
+    .default("Mozilla/5.0 (compatible; Miyoria/0.1; +https://github.com/owenliu0924/Miyoria)"),
   /** The same search or page is answered from memory this long. */
   cache_ttl_s: z.number().int().min(0).max(86_400).default(600),
   cache_entries: z.number().int().min(1).max(1000).default(100),

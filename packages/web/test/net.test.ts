@@ -233,7 +233,9 @@ describe("guardedGet", () => {
     expect(out.truncated).toBe(false);
     expect(transport.calls).toHaveLength(1);
     expect(transport.calls[0]?.address).toEqual({ address: "93.184.216.34", family: 4 });
-    expect(transport.calls[0]?.headers["user-agent"]).toBe("Miyoria/0.1 (+self-hosted VTuber bot)");
+    expect(transport.calls[0]?.headers["user-agent"]).toBe(
+      "Mozilla/5.0 (compatible; Miyoria/0.1; +https://github.com/owenliu0924/Miyoria)",
+    );
     expect(Object.keys(transport.calls[0]?.headers ?? {})).not.toContain("cookie");
   });
 

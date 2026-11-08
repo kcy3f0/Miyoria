@@ -46,7 +46,9 @@ describe("web_search", () => {
     expect(req?.url).toBe(SEARCH_URL);
     expect(req?.init.method).toBe("POST");
     const headers = req?.init.headers as Record<string, string>;
-    expect(headers["user-agent"]).toBe("Miyoria/0.1 (+self-hosted VTuber bot)");
+    expect(headers["user-agent"]).toBe(
+      "Mozilla/5.0 (compatible; Miyoria/0.1; +https://github.com/owenliu0924/Miyoria)",
+    );
     expect(Object.keys(headers).some((k) => /cookie|referer|origin/i.test(k))).toBe(false);
     const body = new URLSearchParams(String(req?.init.body));
     expect(body.get("q")).toBe("Claude Opus 5.5");
