@@ -143,6 +143,27 @@ function BandColumn({
   );
 }
 
+/** Her stamp: a seal pressed at a tilt beside the title, in the primary colour. */
+function Stamp({ text, x, y, primary }: { text: string; x: number; y: number; primary: string }) {
+  const size = 19;
+  const width = [...text].reduce((w, ch) => w + (/[\u0000-ɏ]/.test(ch) ? 0.6 : 1), 0) * size + 26;
+  return (
+    <g transform={`translate(${x - width / 2} ${y}) rotate(-8)`} opacity={0.94}>
+      <rect x={-width / 2} y={-22} width={width} height={44} rx={7} fill="rgba(12,14,22,0.35)" stroke={primary} strokeWidth={2.5} />
+      <rect x={-width / 2 + 4} y={-18} width={width - 8} height={36} rx={4} fill="none" stroke={primary} strokeOpacity={0.55} />
+      <text y={7} fontSize={size} fontWeight={700} textAnchor="middle" letterSpacing={2} fill={primary}>
+        {text}
+      </text>
+    </g>
+  );
+}
+
+/** Lines of words the lower half holds above the footer, and how far the rest moves up for them. */
+const QUOTE_Y = 718;
+const QUOTE_STEP = 25;
+const FIELD_STEP = 26;
+const FIELDS_END = 784;
+
 /**
  * Frames they can buy: a colour per id for the little swatch in the shop. The card draws the
  * real thing in `Frame`. An id the panel does not know falls back to the plain border.
@@ -261,11 +282,30 @@ export const CardFace = forwardRef<SVGSVGElement, CardFaceProps>(function CardFa
 ) {
   const known = card.relationship !== null;
   const title = card.relationship ?? "初次見面";
-  const feeling = card.public_feeling ?? (known ? null : "她還不認識你");
+  // What she wrote as she issued it; older cards carry the line her reflection wrote instead.
+  const feeling = card.line ?? card.public_feeling ?? (known ? null : "她還不認識你");
   const lines = feeling ? wrap(`「${feeling}」`, 26, 3) : [];
+  const fields = (card.fields ?? []).slice(0, 3);
+  // Her fields sit under the quote and end above the footer; what is above moves up to make room.
+  const quoteBlock = lines.length > 0 ? (lines.length - 1) * QUOTE_STEP + 34 : 0;
+  const lift =
+    fields.length === 0
+      ? 0
+      : Math.max(0, quoteBlock + (fields.length - 1) * FIELD_STEP - (FIELDS_END - QUOTE_Y));
+  const fieldsTop = QUOTE_Y - lift + quoteBlock;
+  const titleY = (known && card.call_name ? 566 : 590) - lift;
   const initial = [...card.name.trim()][0] ?? "?";
   const id = card.serial.replace(/[^A-Z0-9]/gi, "");
-  const label = `${card.name} 的卡,${title}${card.call_name ? `,她叫你${card.call_name}` : ""},編號 ${card.serial}`;
+  const label = [
+    `${card.name} 的卡,${title}`,
+    card.call_name ? `她叫你${card.call_name}` : null,
+    card.stamp ? `蓋了「${card.stamp}」` : null,
+    feeling ? `她說「${feeling}」` : null,
+    ...fields.map((f) => `${f.label}:${f.text}`),
+    `編號 ${card.serial}`,
+  ]
+    .filter((s): s is string => s !== null)
+    .join(",");
   return (
     <svg
       ref={ref}
@@ -319,8 +359,8 @@ export const CardFace = forwardRef<SVGSVGElement, CardFaceProps>(function CardFa
         <circle cx={W * 0.8} cy={170} r={330} fill={`url(#glow-a-${id})`} />
         <circle cx={W * 0.1} cy={440} r={300} fill={`url(#glow-b-${id})`} />
         {art && <image href={art} x={-15} y={-6} width={W + 30} height={(W + 30) * (4 / 3)} preserveAspectRatio="xMidYMin slice" />}
-        <rect y={340} width={W} height={270} fill={`url(#fade-${id})`} />
-        <rect y={609} width={W} height={H - 609} fill={INK} />
+        <rect y={340 - lift} width={W} height={270} fill={`url(#fade-${id})`} />
+        <rect y={609 - lift} width={W} height={H - 609 + lift} fill={INK} />
         <rect width={W} height={H} fill={`url(#sheen-${id})`} />
 
         <text x={PAD} y={56} fontSize={15} fontWeight={600} letterSpacing={5} fill="#ffffff" opacity={0.9}>
@@ -330,22 +370,35 @@ export const CardFace = forwardRef<SVGSVGElement, CardFaceProps>(function CardFa
           No.{String(card.number).padStart(3, "0")}
         </text>
 
-        <text x={PAD} y={known && card.call_name ? 566 : 590} fontSize={46} fontWeight={700} fill="#ffffff" letterSpacing={1}>
+        <text x={PAD} y={titleY} fontSize={46} fontWeight={700} fill="#ffffff" letterSpacing={1}>
           {title}
         </text>
         {known && card.call_name && (
-          <text x={PAD} y={600} fontSize={18} fill="rgba(255,255,255,0.72)">
+          <text x={PAD} y={600 - lift} fontSize={18} fill="rgba(255,255,255,0.72)">
             她叫你 <tspan fill="#ffffff" fontWeight={600}>{card.call_name}</tspan>
           </text>
         )}
+        {card.stamp && <Stamp text={card.stamp} x={W - PAD} y={titleY - 16} primary={colors.primary} />}
 
-        <BandColumn x={PAD} label="好感" value={card.affinity} scale={AFFINITY} primary={colors.primary} />
-        <BandColumn x={PAD + 194} label="信任" value={card.trust} scale={TRUST} primary={colors.primary} />
-        <BandColumn x={PAD + 388} label="熟悉" value={card.familiarity} scale={FAMILIARITY} primary={colors.primary} />
+        <g transform={`translate(0 ${-lift})`}>
+          <BandColumn x={PAD} label="好感" value={card.affinity} scale={AFFINITY} primary={colors.primary} />
+          <BandColumn x={PAD + 194} label="信任" value={card.trust} scale={TRUST} primary={colors.primary} />
+          <BandColumn x={PAD + 388} label="熟悉" value={card.familiarity} scale={FAMILIARITY} primary={colors.primary} />
+        </g>
 
         {lines.map((l, i) => (
-          <text key={i} x={PAD} y={718 + i * 25} fontSize={16} fill="rgba(255,255,255,0.86)">
+          <text key={i} x={PAD} y={QUOTE_Y - lift + i * QUOTE_STEP} fontSize={16} fill="rgba(255,255,255,0.86)">
             {l}
+          </text>
+        ))}
+        {fields.map((f, i) => (
+          <text key={i} x={PAD} y={fieldsTop + i * FIELD_STEP} fontSize={15}>
+            <tspan fill="rgba(255,255,255,0.6)" fontSize={13}>
+              {wrap(f.label, 6, 1)[0]}
+            </tspan>
+            <tspan x={PAD + 84} fill="#f1f0f4">
+              {wrap(f.text, 24, 1)[0]}
+            </tspan>
           </text>
         ))}
 

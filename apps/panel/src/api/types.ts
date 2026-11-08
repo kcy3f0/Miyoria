@@ -361,7 +361,13 @@ export interface IssuedCard {
   trust: string | null;
   familiarity: string | null;
   public_feeling: string | null;
-  /** Which picture of her is on it. */
+  /** What she wrote for them as she issued it. Missing on an older Core, null when she did not. */
+  line?: string | null;
+  /** The stamp she put on it. Missing on an older Core. */
+  stamp?: string | null;
+  /** Fields she chose to add, at most three. Missing on an older Core. */
+  fields?: { label: string; text: string }[];
+  /** Which picture of her is on it (she picks within her feeling's band). */
   pose: string;
   /** The frame they had selected when it was issued; `null` is the plain border. Missing on an older Core. */
   frame?: string | null;
