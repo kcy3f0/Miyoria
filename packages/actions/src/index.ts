@@ -16,7 +16,10 @@
 
 export {
   builtinCapabilities,
+  dmCapability,
+  handleLookup,
   messageDm,
+  type NameLookup,
   priorityFor,
   recipient,
   speak,

@@ -3,6 +3,7 @@ import {
   type Action,
   type ActionSink,
   ActionSinkKey,
+  HandleDirectoryKey,
   type JsonValue,
   type Principal,
   Principals,
@@ -21,6 +22,8 @@ import {
   REVIEW_PENDING,
 } from "../src/index.js";
 import { AMY, CTX, decisions, gate, OWEN, OWNER } from "./helpers.js";
+
+const CREATED = "2026-11-08T00:00:00.000Z";
 
 const request = (
   capability: string,
@@ -436,7 +439,7 @@ describe("message.dm", () => {
       },
     });
     g.services.provide("kernel", PlatformSinksKey, sinks);
-    expect(g.registry.get("message.dm")).toBe(messageDm);
+    expect(g.registry.get("message.dm")?.name).toBe(messageDm.name);
 
     // A stranger: never on her own.
     const stranger = await g.registry.invoke(
@@ -462,6 +465,29 @@ describe("message.dm", () => {
       message: { text: "嗨 everyone", reply_to: null },
     });
     expect(scheduler.actions[0]?.priority).toBe("initiative");
+
+    // The name she sees for someone in her prompts (their handle) finds them too.
+    g.services.provide("kernel", HandleDirectoryKey, {
+      ofAccount: () => "Amy",
+      ofPerson: () => null,
+      resolve: (handle: string) =>
+        handle === "Amy"
+          ? { handle, person: null, account: AMY, display_name: "Amy", created_at: CREATED }
+          : null,
+      list: () => [],
+    });
+    const byName = await g.registry.invoke(
+      request("message.dm", self(), { to: "@Amy", text: "嗨" }),
+    );
+    // Found: past the arguments, held only by the DM cooldown of the one just sent.
+    expect(byName.decision).toMatchObject({
+      stage: "rate",
+      reason: expect.stringMatching(/cooling/),
+    });
+    const unknown = await g.registry.invoke(
+      request("message.dm", self(), { to: "u1", text: "嗨" }),
+    );
+    expect(unknown.decision).toMatchObject({ stage: "args" });
   });
 });
 

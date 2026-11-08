@@ -289,7 +289,7 @@ export class ActuatorRegistry implements ActuatorExecutor {
       stepMs: () => this.#config.emergency_step_ms,
     });
     if (options.builtins ?? true) {
-      for (const capability of builtinCapabilities()) this.register(capability);
+      for (const capability of builtinCapabilities(options.services)) this.register(capability);
     }
   }
 
