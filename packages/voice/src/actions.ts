@@ -160,7 +160,7 @@ export function voiceCapabilities(
     tool: {
       name: "voice_join",
       description:
-        "進語音頻道一起聊天。channel 省略 = 跟你說話的人現在所在的語音頻道(對方要在語音裡)。",
+        "進語音頻道。有 channel 就直接進那個頻道,裡面沒人也可以。channel 省略 = 跟你說話的人現在所在的語音頻道(對方要在語音裡)。",
       properties: {
         channel: { type: "string", description: "語音頻道 id(通常省略)" },
         guild: GUILD_PROPERTY,
