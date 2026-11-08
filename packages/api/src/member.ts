@@ -48,7 +48,16 @@ import {
   toTimestamp,
 } from "@miyoria/types";
 import { z } from "zod";
-import { type CardHolder, cardsOf, deleteCards, issueCard, memberCards } from "./card.js";
+import {
+  type CardHolder,
+  canIssue,
+  cardsOf,
+  deleteCards,
+  issueCard,
+  memberCards,
+  posesFor,
+} from "./card.js";
+import { writeCard } from "./card-words.js";
 import { ApiError } from "./errors.js";
 import { readJson } from "./extract.js";
 import { dateOf, localDay, tooMany } from "./public.js";
@@ -286,9 +295,12 @@ async function activity(state: ApiState, who: Member): Promise<MemberDay[]> {
   return days;
 }
 
-async function memberView(state: ApiState, c: ApiContext): Promise<MemberView> {
-  const who = await member(state, c);
-  const names = who.hidden ? null : await namesFor(state, who);
+/** The memories the member page shows this person, newest first. */
+async function shownMemories(
+  state: ApiState,
+  who: Member,
+  names: NameSplit | null,
+): Promise<MemberMemory[]> {
   const engine = state.optional(MemoryEngineKey);
   const memories: MemberMemory[] = [];
   if (!who.hidden && engine) {
@@ -305,6 +317,13 @@ async function memberView(state: ApiState, c: ApiContext): Promise<MemberView> {
       if (text !== null) memories.push(memoryView(text, r));
     }
   }
+  return memories;
+}
+
+async function memberView(state: ApiState, c: ApiContext): Promise<MemberView> {
+  const who = await member(state, c);
+  const names = who.hidden ? null : await namesFor(state, who);
+  const memories = await shownMemories(state, who, names);
   return {
     card: cardView(state, who, names),
     memories,
@@ -468,7 +487,24 @@ async function issueMine(state: ApiState, c: ApiContext): Promise<Response> {
   await readJson(c, CardSchema);
   const who = await member(state, c);
   const names = who.hidden ? null : await namesFor(state, who);
-  const card = await issueCard(state, holderOf(c, who), cardView(state, who, names));
+  const holder = holderOf(c, who);
+  const view = cardView(state, who, names);
+  // She writes on the card of someone she knows, only when it will be issued; a hidden person's
+  // card stays a stranger's and says nothing.
+  const words =
+    !who.hidden && view.relationship !== null && (await canIssue(state, holder))
+      ? await writeCard(
+          state,
+          {
+            name: record(c).name,
+            view,
+            memories: (await shownMemories(state, who, names)).slice(0, 5).map((m) => m.text),
+            poses: posesFor(view.affinity),
+          },
+          (text) => shown(state, text, names),
+        )
+      : null;
+  const card = await issueCard(state, holder, view, words);
   const actor = accountRefString(record(c).account);
   await state.auditAs(actor, "member.card", actor, { serial: card.serial }, true);
   return json(card);

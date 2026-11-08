@@ -27,12 +27,13 @@ import {
   type PersonId,
   toTimestamp,
 } from "@miyoria/types";
+import type { CardWords } from "./card-words.js";
 import { ApiError } from "./errors.js";
 import { clientKey, localDay, tooMany } from "./public.js";
 import { param, type Route } from "./route.js";
 import type { SessionRecord } from "./session.js";
 import type { ApiContext, ApiState } from "./state.js";
-import type { IssuedCard, MemberCard, MemberCards } from "./types.js";
+import type { CardField, IssuedCard, MemberCard, MemberCards } from "./types.js";
 
 const log = getLogger("api.card");
 
@@ -94,14 +95,31 @@ export function normalizeSerial(input: string): string | null {
 // ---- cards ----------------------------------------------------------------------------------
 
 /** One of the band's poses, by `random` in [0, 1). */
-export function pickPose(affinity: string | null, random: () => number): string {
+/** The poses a card of `affinity` may use. */
+export function posesFor(affinity: string | null): readonly string[] {
   const poses = (affinity !== null ? CARD_POSES[affinity] : undefined) ?? CARD_POSES.stranger;
-  const list = poses && poses.length > 0 ? poses : ["calm"];
+  return poses && poses.length > 0 ? poses : ["calm"];
+}
+
+export function pickPose(affinity: string | null, random: () => number): string {
+  const list = posesFor(affinity);
   const i = Math.min(Math.max(Math.floor(random() * list.length), 0), list.length - 1);
   return list[i] as string;
 }
 
 const text = (v: JsonValue | undefined): string | null => (typeof v === "string" ? v : null);
+
+function fieldsOf(v: JsonValue | undefined): CardField[] {
+  if (!Array.isArray(v)) return [];
+  const out: CardField[] = [];
+  for (const f of v) {
+    if (!isJsonObject(f)) continue;
+    const label = text(f.label);
+    const body = text(f.text);
+    if (label !== null && body !== null) out.push({ label, text: body });
+  }
+  return out;
+}
 
 /** A stored card as it may leave, or `null` when the snapshot is not one. */
 function issuedCard(r: MemberCardRecord): IssuedCard | null {
@@ -124,6 +142,10 @@ function issuedCard(r: MemberCardRecord): IssuedCard | null {
     trust: text(s.trust),
     familiarity: text(s.familiarity),
     public_feeling: text(s.public_feeling),
+    // Cards from before she wrote on them have none of these.
+    line: text(s.line),
+    stamp: text(s.stamp),
+    fields: fieldsOf(s.fields),
     pose,
     // Cards from before frames have none.
     frame: text(s.frame),
@@ -131,8 +153,8 @@ function issuedCard(r: MemberCardRecord): IssuedCard | null {
 }
 
 function snapshotOf(card: IssuedCard): JsonObject {
-  const { serial: _serial, issued_at: _at, ...rest } = card;
-  return rest;
+  const { serial: _serial, issued_at: _at, fields, ...rest } = card;
+  return { ...rest, fields: fields.map((f) => ({ label: f.label, text: f.text })) };
 }
 
 /** Whose cards these are. */
@@ -185,11 +207,20 @@ function serialized<T>(state: ApiState, run: () => Promise<T>): Promise<T> {
   return next;
 }
 
+/** Whether they may still be given a card today (checked again when it is issued). */
+export async function canIssue(state: ApiState, holder: CardHolder): Promise<boolean> {
+  const store = state.optional(MemberCardStoreKey);
+  if (!store) return false;
+  const today = await store.countSince(state.profile(), holder.accounts, todayStart(state));
+  return today < CARDS_PER_DAY;
+}
+
 async function issue(
   state: ApiState,
   store: MemberCardStore,
   holder: CardHolder,
   view: MemberCard,
+  words: CardWords | null,
 ): Promise<IssuedCard> {
   const profile = state.profile();
   const today = await store.countSince(profile, holder.accounts, todayStart(state));
@@ -206,7 +237,10 @@ async function issue(
     trust: view.trust,
     familiarity: view.familiarity,
     public_feeling: view.public_feeling,
-    pose: pickPose(view.affinity, state.random),
+    line: words?.line ?? null,
+    stamp: words?.stamp ?? null,
+    fields: words?.fields ?? [],
+    pose: words?.pose ?? pickPose(view.affinity, state.random),
     frame: await frameOf(state, holder.session.account),
   };
   // 60 bits do not collide; a retry costs nothing if they ever do.
@@ -230,15 +264,19 @@ async function issue(
   }
 }
 
-/** `POST /api/member/card`: a card of `view`, what the member page shows them right now. */
+/**
+ * `POST /api/member/card`: a card of `view`, what the member page shows them right now, with what
+ * she wrote on it (`words`, null for none).
+ */
 export async function issueCard(
   state: ApiState,
   holder: CardHolder,
   view: MemberCard,
+  words: CardWords | null = null,
 ): Promise<IssuedCard> {
   const store = state.optional(MemberCardStoreKey);
   if (!store) throw ApiError.unavailable(NO_STORE);
-  return serialized(state, () => issue(state, store, holder, view));
+  return serialized(state, () => issue(state, store, holder, view, words));
 }
 
 /** Their cards for the export, newest first. */

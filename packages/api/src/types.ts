@@ -175,6 +175,12 @@ export interface MemberView {
   forget: { removes: string; keeps: string };
 }
 
+/** A field she added to a card herself: its name and what she wrote. */
+export interface CardField {
+  label: string;
+  text: string;
+}
+
 /** A card she gave someone: what she thought of them then, kept so its code can be checked. */
 export interface IssuedCard {
   /** `MYR-XXXX-XXXX-XXXX`, Crockford base32 (no I L O U), 60 random bits from crypto. */
@@ -193,7 +199,13 @@ export interface IssuedCard {
   trust: string | null;
   familiarity: string | null;
   public_feeling: string | null;
-  /** Which picture of her is on it: a key from CARD_POSES. */
+  /** What she wrote for them as she issued it; null on older cards or when she could not. */
+  line: string | null;
+  /** The stamp she put on it, or null. */
+  stamp: string | null;
+  /** Fields she chose to add (at most three); empty on older cards. */
+  fields: CardField[];
+  /** Which picture of her is on it: a key from CARD_POSES (she picks within the band). */
   pose: string;
   /** The card frame they had chosen then (`[modules.economy] frames`), null for none. */
   frame: string | null;

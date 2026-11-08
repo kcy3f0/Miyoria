@@ -1513,12 +1513,14 @@ describe("cards she gives", () => {
     "familiarity",
     "frame",
     "issued_at",
+    "line",
     "name",
     "number",
     "pose",
     "public_feeling",
     "relationship",
     "serial",
+    "stamp",
     "trust",
   ];
   type Card = Record<string, unknown> & { serial: string; pose: string; number: number };
