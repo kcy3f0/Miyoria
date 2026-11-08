@@ -374,6 +374,21 @@
 /* The digital card (HoloCard.tsx): it tilts toward the pointer and catches light. The variables are
    written each frame: --rx/--ry the turn, --mx/--my and --px/--py where the pointer is, --hyp how far
    from the middle (0 to 1), --on how lit it is, --s its size. Radii are the SVG's 26 of 630 x 880. */
+/* Behind the digital card: the picture pushed back under dark frosted glass, so the card and its
+   light read clearly. Opaque when glass mode is off. */
+.card-veil {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: rgba(5, 6, 11, 0.62);
+  backdrop-filter: blur(22px) saturate(1.2) brightness(0.8);
+}
+
+:root[data-glass="off"] .card-veil {
+  background: #08090e;
+  backdrop-filter: none;
+}
+
 .holo-stage {
   perspective: 1100px;
 }

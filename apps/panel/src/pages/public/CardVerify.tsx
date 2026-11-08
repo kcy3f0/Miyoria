@@ -150,7 +150,8 @@ export function CardVerify({ serial }: { serial: string }) {
   });
   const missing = isApiError(card.error) && card.error.status === 404;
   return (
-    <div className="flex min-h-svh flex-col items-center gap-8 px-4 py-8 md:justify-center md:py-12">
+    <div className="relative isolate flex min-h-svh flex-col items-center gap-8 px-4 py-8 md:justify-center md:py-12">
+      <div aria-hidden className="card-veil" />
       <a href="/" className="flex items-center gap-2.5">
         <Logo className="size-5 text-primary" />
         <span className="text-[15px] font-semibold">Miyoria</span>
