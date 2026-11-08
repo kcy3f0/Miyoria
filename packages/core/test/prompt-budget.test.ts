@@ -50,7 +50,7 @@ const NOW = Date.UTC(2026, 10, 7, 6);
 const SPEAKS_IN = "Japanese";
 // The default has no cap (2026-11-08); this is the compact setting an owner can still choose.
 const budget = MainLineConfigSchema.parse({
-  prompt_tokens: 4000,
+  prompt_tokens: 4500,
   self_chars: 400,
   data_chars: 500,
   history_lines: 14,

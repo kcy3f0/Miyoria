@@ -18,7 +18,8 @@ import type { ToolScope } from "./tool-scope.js";
 /** A claim of something only a tool does, by the transition (and tool) it stands for. */
 export interface Claim {
   tool: string;
-  request: ActivityRequestType;
+  /** The body transition it stands for; `null` for a claim only its tool backs (coins). */
+  request: ActivityRequestType | null;
   said: RegExp;
   /** Saying it is done (or that she is in that state). */
   finished: RegExp;
@@ -84,6 +85,34 @@ export const CLAIMS: readonly Claim[] = [
   },
 ];
 
+/** A claim no promise stands for: only saying it is done counts. */
+const NEVER = /(?!)/;
+
+/** A claim about coins: only her tool call (or a recent result of it) backs it. */
+function coins(tool: string, done: string): Claim {
+  const finished = new RegExp(`${NOT_REFUSED}(?:${done})`);
+  return { tool, request: null, said: finished, finished, promised: NEVER, holds: () => false };
+}
+
+/**
+ * 2026-11-08 15:20-15:23: with the whole conversation in front of her she answered a wallet
+ * question, took five bowls, made a deal and agreed to be paid, all in words, with no tool call.
+ */
+export const COIN_CLAIMS: readonly Claim[] = [
+  coins(
+    "accept_food",
+    "收下了|[(（]收下[)）]|(?:飯|零食|甜點|這碗)(?:我)?(?:就)?收(?:下|了)|吃掉了|開動了|謝謝招待|扣吧|扣了|從你(?:的)?錢包扣",
+  ),
+  coins("make_deal", "一言為定|說定了|成交|約定成立|就這麼說好了?|一換一"),
+  coins(
+    "wallet_of_speaker",
+    "你(?:現在|目前|錢包裡)?(?:只|才|還)?(?:有|剩下?)\\s*\\d+\\s*(?:個|枚)?\\s*魚幣|你.{0,4}比我(?:少|多|窮)",
+  ),
+];
+
+/** Every claim the gate and the reminder read: the body's and the coins'. */
+export const ALL_CLAIMS: readonly Claim[] = [...CLAIMS, ...COIN_CLAIMS];
+
 const GAME_ASKED = new RegExp(
   `${NOT_REFUSED}(?:開|玩|打開|啟動)(?:一下|個)? ?(?:minecraft|麥塊|mc|遊戲)`,
   "i",
@@ -135,9 +164,10 @@ export function unbackedClaim(
   offered: ReadonlySet<string>,
   backing: Backing,
 ): Claim | null {
-  for (const claim of CLAIMS) {
+  for (const claim of ALL_CLAIMS) {
     if (!offered.has(claim.tool) || !claim.said.test(text)) continue;
-    if (backing.requests.has(claim.request) || backing.tools.has(claim.tool)) continue;
+    if (claim.request !== null && backing.requests.has(claim.request)) continue;
+    if (backing.tools.has(claim.tool)) continue;
     if (backing.scope !== null && claim.holds(backing.scope)) continue;
     return claim;
   }

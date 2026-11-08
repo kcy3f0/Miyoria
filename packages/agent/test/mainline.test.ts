@@ -303,9 +303,12 @@ describe("one call", () => {
     // 2026-11-08 14:46: 「我有多少魚幣」 got 「等我一下」; the wallet came back, but the turn that
     // tells it opened in the voice channel (keep_in_voice), found no result there and talked
     // about the song.
-    const slow = new Probe("slow", null, 5000);
-    const llm = new Scripted([reply("等我一下", ["slow", "{}"]), reply("你有 10 魚幣")]);
-    const h = await rig(llm, { tools: [slow], config: { tool_timeout_ms: 20_000 } });
+    const wallet = new Probe("wallet_of_speaker", null, 5000);
+    const llm = new Scripted([
+      reply("等我一下", ["wallet_of_speaker", "{}"]),
+      reply("你有 10 魚幣"),
+    ]);
+    const h = await rig(llm, { tools: [wallet], config: { tool_timeout_ms: 20_000 } });
     joinVoice(h);
     await wait(50);
     h.say(mention(channel("c"), "Alice", "我有多少魚幣"));
@@ -314,7 +317,7 @@ describe("one call", () => {
     await wait(10_000);
     expect(h.sink.texts()).toEqual(["等我一下", "你有 10 魚幣"]);
     expect(h.sink.speeches()).toEqual([]);
-    expect(JSON.stringify(llm.requests[1]?.messages)).toContain("slow 完成");
+    expect(JSON.stringify(llm.requests[1]?.messages)).toContain("wallet_of_speaker 完成");
   });
 
   it("an output that only acts still tells someone waiting that she heard them", async () => {
@@ -416,6 +419,34 @@ describe("finished-tense lines (§10.1)", () => {
     await wait(3000);
     expect(h.sink.texts()).not.toContain("我進語音了");
     expect(llm.requests).toHaveLength(2);
+  });
+
+  it("coins only move by a tool: 「扣吧」 without accept_food is asked again", async () => {
+    // 2026-11-08 15:23: 「從我錢包扣」 got 「好,扣吧扣吧」 and nothing was paid.
+    const food = new Probe("accept_food");
+    const llm = new Scripted([
+      reply("好,扣吧扣吧,這碗我吃得心安理得。"),
+      reply("好,扣吧扣吧,這碗我吃得心安理得。", ["accept_food", '{"item":"big_bowl"}']),
+      reply("<silence/>"),
+    ]);
+    const h = await rig(llm, { tools: [food] });
+    h.say(mention(channel("c"), "Alice", "從我錢包扣"));
+    await wait(3000);
+    expect(food.calls).toHaveLength(1);
+    expect(JSON.stringify(llm.requests[1]?.messages)).toContain("accept_food");
+  });
+
+  it("a balance she was not told is a claim too; a refusal is not", async () => {
+    const { ALL_CLAIMS } = await import("../src/claims.js");
+    const said = (text: string) =>
+      ALL_CLAIMS.filter((c) => c.finished.test(text)).map((c) => c.tool);
+    expect(said("你只有 10 魚幣啦")).toEqual(["wallet_of_speaker"]);
+    expect(said("喂,你居然比我少這麼多?")).toEqual(["wallet_of_speaker"]);
+    expect(said("(收下)")).toEqual(["accept_food"]);
+    expect(said("好啦,白飯收了")).toEqual(["accept_food"]);
+    expect(said("一言為定,不准賴帳")).toEqual(["make_deal"]);
+    expect(said("不收,我不吃這套")).toEqual([]);
+    expect(said("自己查錢包啦")).toEqual([]);
   });
 
   it("「我在語音」 needs the state to be in", async () => {

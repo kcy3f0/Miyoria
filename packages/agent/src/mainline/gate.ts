@@ -14,7 +14,7 @@
 // order. Once the stream ended the actions are known, and each held sentence goes one of three
 // ways: out as it is, parked for its result (she says "started" meanwhile), or dropped.
 
-import { CLAIMS, type Claim } from "../claims.js";
+import { ALL_CLAIMS, type Claim } from "../claims.js";
 import type { ToolScope } from "../tool-scope.js";
 
 /** What she says instead of a finished line while its result is out. */
@@ -60,12 +60,12 @@ export interface Settled {
 
 /** Claims of a finished thing in `text`. */
 export function finishedClaims(text: string): Claim[] {
-  return CLAIMS.filter((c) => c.finished.test(text));
+  return ALL_CLAIMS.filter((c) => c.finished.test(text));
 }
 
 /** Claims of something she is about to do in `text`. */
 export function promisedClaims(text: string): Claim[] {
-  return CLAIMS.filter((c) => c.promised.test(text));
+  return ALL_CLAIMS.filter((c) => c.promised.test(text));
 }
 
 export function isFinished(text: string): boolean {
