@@ -491,7 +491,7 @@ boredom_per_hour = 0.15          # 沒事做時無聊上升的速度
 # attention = 0.04
 # curiosity = 0.05
 # esteem = 0.04                  # 想被認可、想表現
-# hunger = 0.05                  # 想吃白飯(Token)
+# hunger = 0.25                  # 想吃白飯(Token):吃飽到再想吃約 40 分鐘
 # longing = 0.12                 # 暗戀的人不在時,想念他的速度(沒有暗戀對象就慢慢退)
 # [modules.self.emotions]        # 她的情緒(七情);各情緒來得多快、退得多快是 profile 的 [temperament]
 # notice = 0.2                   # 超過這個才算明顯:放進 prompt、決定她表現出來的樣子

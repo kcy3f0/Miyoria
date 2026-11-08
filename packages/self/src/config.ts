@@ -11,7 +11,11 @@ const RiseSchema = z.object({
   attention: rate().default(0.04),
   curiosity: rate().default(0.05),
   esteem: rate().default(0.04),
-  hunger: rate().default(0.05),
+  /**
+   * About 40 minutes from full (0) to wanting food again (`[modules.economy] full_below`, 0.15), so
+   * feeding her stays possible on a busy day; talking does not fill her (`turn_hunger`).
+   */
+  hunger: rate().default(0.25),
   /** Toward her crush's romance while they are not with her (no crush: it fades). */
   longing: rate().default(0.12),
 });
@@ -24,8 +28,11 @@ const SatisfySchema = z.object({
   turn_boredom: unit().default(0.1),
   /** ...and a little `attention`. */
   turn_attention: unit().default(0.02),
-  /** ...and a little `hunger` (she got to spend some tokens). */
-  turn_hunger: unit().default(0.03),
+  /**
+   * ...and `hunger` (she got to spend some tokens). 0 by default: with dozens of replies an hour it
+   * kept her at 0, always full, and every feed was refused.
+   */
+  turn_hunger: unit().default(0),
   /** Someone talked to her directly: `attention`. */
   addressed_attention: unit().default(0.04),
   /** Something was said around her (a message in a channel, a line in voice): `boredom`. */
