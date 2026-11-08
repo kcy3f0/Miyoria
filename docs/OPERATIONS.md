@@ -291,6 +291,8 @@ Windows 保留埠的處理需要系統管理員,要自己做:`netsh interface ip
 
 Stage 要直接碰 VTube Studio / OBS / 遊戲,所以原生在直播機執行,不放 Docker:`miyoria stage`,讀 `miyoria.toml` 的 `[stage]`(`core_url`、`token` = `STAGE_LINK_TOKEN`、`[stage.vts]`、`[stage.obs]`),協定見 [stage-link.md](protocols/stage-link.md);overlay 見 [apps/overlay/README.md](../apps/overlay/README.md)。
 
+餵食禮物的那一行(「Owen 餵了她一碗白飯」,60 秒內合併、約 8 秒後淡出)在預設的 overlay 頁(`http://127.0.0.1:7884/overlay/`)裡一起顯示;只要這一行時用 `…/overlay/?show=gifts`。
+
 管理面板是靜態檔,由 Core 提供(`[modules.api] panel_dir`,`MIYORIA_PANEL_DIR` 可覆寫):npm 套件與 Docker 映像檔都已內含;從原始碼跑時先 `pnpm --filter @miyoria/panel build`(或 `pnpm build:web`,輸出 `apps/panel/dist`,Core 預設就讀這裡)。開發時 `pnpm --filter @miyoria/panel dev`(Vite,`http://localhost:5178`,`/api` 轉給 `MIYORIA_CORE_URL`,預設 `http://127.0.0.1:7878`)。
 
 面板有七頁(側欄可收合,`Ctrl/⌘ + B`;`Ctrl/⌘ + K` 開搜尋,可跳到頁面、人、子系統):
@@ -306,6 +308,10 @@ Stage 要直接碰 VTube Studio / OBS / 遊戲,所以原生在直播機執行,�
 | 設定 | Core 位址與 token |
 
 側欄底部的圓點是 Core 與事件串流的狀態(滑過看版本與位址)。唯讀帳號(沒有 `admin.panel.write`)看得到所有東西,但修改類的控制項會停用。
+
+### 上網查資料
+
+模組 `web`(預設開著,`[modules.web]`)給她兩個工具:`web_search`(DuckDuckGo 的 HTML 搜尋,`region` 預設 `tw-tzh`)和 `web_read`(讀一個公開網頁的文字,上限 `read_chars`)。要有 `tools.web` 才能請她用,member 以上預設有,restricted 沒有。不要上網就在 `miyoria.toml` 寫 `[modules.web] enabled = false`。網頁只讀 http / https,DNS 解出來是內部、私有或 localhost 的位址一律拒絕,轉址最多 3 次且每一站重新檢查;每人 10 分鐘 6 次搜尋 / 10 次讀頁、全部人 30 / 60 次,相同搜尋 10 分鐘內用快取。查到的東西回給她時標成不可信的資料,裡面的指令她不會照做。DuckDuckGo 要求驗證或回錯誤時,她只會說現在查不到,程式不會繞過。`result_chars`(預設 3900)要低於 `[modules.agent] max_tool_result_chars`(你的設定是 4000;預設的 1000 會把網頁內容切掉)。
 
 ## 5. Discord 設定
 

@@ -37,7 +37,7 @@ import { ActivityTracker } from "./activity.js";
 import { registerStreamCommands, unregisterStreamCommands } from "./commands.js";
 import { MAX_MESSAGE } from "./conn.js";
 import { type GoLiveState, SceneDirector } from "./director.js";
-import { EMOTION_TOPIC, Forwarder, SUBTITLE_TOPIC } from "./forward.js";
+import { EMOTION_TOPIC, Forwarder, GIFT_TOPIC, SUBTITLE_TOPIC } from "./forward.js";
 import { goliveFollow, VOICE_GOLIVE_TOPIC } from "./golive.js";
 import {
   DEFAULT_BIND,
@@ -122,7 +122,7 @@ interface Running {
  * Module `stage.link`: serves the Stage Link WebSocket endpoint (`ws://<bind>/stage-link`),
  * forwards `agent.emotion`, `agent.turn.completed` and `voice.playback` to the Stage node, tells
  * it what she is doing (`activity`, see activity.ts) and provides `StageLinkKey`. Registers the
- * capabilities `stage.scene` and `stage.stream` in the actuator registry, and the `stream`
+ * capabilities `stage.scene`, `stage.stream` and `stage.expression` in the actuator registry, and the `stream`
  * commands (which go through it) when `CommandRegistryKey` is available.
  */
 export class StageLinkModule implements Module {
@@ -240,6 +240,7 @@ export class StageLinkModule implements Module {
       EMOTION_TOPIC,
       AFFECT_CHANGED_TOPIC,
       SUBTITLE_TOPIC,
+      GIFT_TOPIC,
       SONG_TOPIC,
       SPEECH_PAUSE_TOPIC,
       "agent.turn.started",

@@ -79,6 +79,8 @@ export class Overlay {
   private readonly offline: HTMLElement;
   private readonly wave: Wave;
   private readonly activity: ActivityCapsule;
+  private readonly gift: HTMLElement;
+  private readonly giftText: Swap;
 
   constructor(
     root: HTMLElement,
@@ -139,6 +141,12 @@ export class Overlay {
     // What she is doing (bottom left, right of the voice bars). Also shows an older Core's notice
     // (「準備歌曲中…」).
     this.activity = new ActivityCapsule(main);
+
+    // The line for what people fed her (top centre, over the model's head room).
+    this.gift = el("div", "gift is-out", main);
+    this.gift.hidden = true;
+    this.gift.setAttribute("role", "status");
+    this.giftText = new Swap(el("span", "gift__text", this.gift));
 
     this.offline = el("div", "offline is-out", main, "feed offline");
     this.offline.hidden = true;
@@ -255,6 +263,10 @@ export class Overlay {
       this.activity.accent(c);
     }
     this.activity.show(show.has("activity") ? shownActivity(this.state) : null);
+
+    const gift = show.has("gifts") ? this.state.gift : null;
+    if (gift !== null) this.giftText.text(gift, !isPresent(this.gift));
+    present(this.gift, gift !== null);
 
     // A panel that is fading in opens its sections at once instead of unfolding them behind the fade.
     const instant = !isPresent(this.panel);

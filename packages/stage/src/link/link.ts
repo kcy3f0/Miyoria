@@ -16,6 +16,7 @@ import {
   type CoreMessage,
   defaultStageStatus,
   type GazeTarget,
+  type GiftExpression,
   parseStageMessage,
   type SceneTransition,
   type StageMessage,
@@ -160,6 +161,14 @@ export class StageLink {
   /** Triggers a VTube Studio hotkey by name (or id). */
   hotkey(name: string): Promise<StageStatus> {
     return this.#request((id) => ({ type: "avatar_hotkey", name: name.trim(), id }));
+  }
+
+  /**
+   * Shows a gift expression on her for `seconds`, then lets her own expression come back. Resolves
+   * once the node has it on; rejects when no node is connected or VTube Studio refuses.
+   */
+  expression(expression: GiftExpression, seconds: number): Promise<StageStatus> {
+    return this.#request((id) => ({ type: "avatar_expression", expression, seconds, id }));
   }
 
   /** Asks the node for a fresh status. */

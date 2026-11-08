@@ -13,6 +13,23 @@ import {
 const run = (actions: Action[], from: OverlayState = initialState()): OverlayState => actions.reduce(reduce, from);
 const sub = (turn: string, text: string, final = false): Action => ({ type: "subtitle", turn, text, final });
 
+describe("gift line", () => {
+  it("parses the Stage's gift frame; empty text hides it", () => {
+    expect(parseMessage('{"type":"gift","text":"Owen 餵了她一碗白飯"}')).toEqual({ type: "gift", text: "Owen 餵了她一碗白飯" });
+    expect(parseMessage('{"type":"gift","text":""}')).toEqual({ type: "gift", text: null });
+    expect(parseMessage('{"type":"gift"}')).toEqual({ type: "gift", text: null });
+  });
+
+  it("shows, replaces and clears the line, and drops it with the connection", () => {
+    const on = run([{ type: "gift", text: "a" }]);
+    expect(on.gift).toBe("a");
+    expect(reduce(on, { type: "gift", text: "a" })).toBe(on);
+    expect(reduce(on, { type: "gift", text: "b" }).gift).toBe("b");
+    expect(reduce(on, { type: "gift", text: null }).gift).toBeNull();
+    expect(reduce(on, { type: "connection", connected: false }).gift).toBeNull();
+  });
+});
+
 describe("parseMessage", () => {
   it("parses the Stage's subtitle frame", () => {
     expect(parseMessage('{"type":"subtitle","turn":"t1","text":"你好","final":false}')).toEqual({
@@ -82,7 +99,7 @@ describe("parseMessage", () => {
 describe("reduce", () => {
   it("starts empty and offline", () => {
     expect(initialState()).toEqual({
-      connected: false, speaking: false, subtitleSeq: 0, subtitle: null, emotion: null, status: null, queue: [], notice: null, activity: null,
+      connected: false, speaking: false, subtitleSeq: 0, subtitle: null, emotion: null, status: null, queue: [], notice: null, activity: null, gift: null,
     });
   });
 

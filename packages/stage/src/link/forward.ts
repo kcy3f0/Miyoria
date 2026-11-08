@@ -11,10 +11,12 @@ import {
   SPEECH_PAUSE_TOPIC,
   type TurnId,
 } from "@miyoria/types";
-import type { CoreMessage } from "../protocol.js";
+import { type CoreMessage, GIFT_LABEL_MAX, GIFT_NAME_MAX } from "../protocol.js";
 
 /** Topic of the agent's emotion markers. */
 export const EMOTION_TOPIC = "agent.emotion";
+/** Topic of a gift to her (`{name, item, count, label}`), shown on the overlay. */
+export const GIFT_TOPIC = "economy.gift";
 /** How much a feeling must change before her resting face follows it. */
 const RESTING_STEP = 0.1;
 /**
@@ -198,6 +200,7 @@ export class Forwarder {
         if (event.data.topic === SONG_TOPIC) return this.#onSong(event.data.payload);
         if (event.data.topic === SPEECH_PAUSE_TOPIC) return pauseNotice(event.data.payload);
         if (event.data.topic === SUBTITLE_TOPIC) return this.#onWritten(event.data.payload);
+        if (event.data.topic === GIFT_TOPIC) return giftMessage(event.data.payload);
         if (event.data.topic === AFFECT_CHANGED_TOPIC) return this.#onAffect(event.data.payload);
         return event.data.topic === EMOTION_TOPIC ? this.#onEmotion(event.data.payload) : [];
       case "voice_playback": {
@@ -334,6 +337,24 @@ function pauseNotice(payload: JsonValue): CoreMessage[] {
   const p = isJsonObject(payload) ? payload : {};
   if (typeof p.paused !== "boolean") return [];
   return [{ type: "notice", text: p.paused ? PREPARING_NOTICE : "" }];
+}
+
+function giftMessage(payload: JsonValue): CoreMessage[] {
+  const p = isJsonObject(payload) ? payload : {};
+  const name = typeof p.name === "string" ? p.name.trim() : "";
+  const label = typeof p.label === "string" ? p.label.trim() : "";
+  const item = typeof p.item === "string" ? p.item.trim() : "";
+  const count = typeof p.count === "number" && Number.isFinite(p.count) ? Math.floor(p.count) : 1;
+  if (name === "" || label === "" || item === "" || count < 1) return [];
+  return [
+    {
+      type: "gift",
+      name: name.slice(0, GIFT_NAME_MAX),
+      item: item.slice(0, 32),
+      count: Math.min(count, 99),
+      label: label.slice(0, GIFT_LABEL_MAX),
+    },
+  ];
 }
 
 function subtitle(turn: TurnId, text: string, final: boolean): CoreMessage {

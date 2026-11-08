@@ -224,7 +224,6 @@ export function registerStreamCommands(
     commandSpec("stream scene", "切換 OBS 場景", {
       args: [argSpec("name", "場景名稱", ArgKind.string)],
       permission: "stream.scene",
-      ephemeral: true,
     }),
     (inv) => setScene(inv, inv.str("name") ?? ""),
     { autocomplete: { name: suggestScenes } },
@@ -233,7 +232,6 @@ export function registerStreamCommands(
   registry.register(
     commandSpec("stream status", "查看直播機與 OBS 的狀態", {
       permission: "stream.status",
-      ephemeral: true,
     }),
     async () => {
       if (!link.isConnected()) return offline();

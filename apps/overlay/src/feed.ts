@@ -12,6 +12,7 @@
 //   {"type":"activity","kind":"thinking"|"synthesizing"|"song_prepare"|"singing"|null,
 //    "label":"…","detail":"…"|null,"progress":0..1|null,"elapsed_ms":n|null,"duration_ms":n|null}
 //                                               what she is doing; kind null hides it
+//   {"type":"gift","text":"Owen 餵了她一碗白飯"}  the gift line (the Stage merges gifts); "" hides it
 
 export interface Subtitle {
   turn: string;
@@ -71,6 +72,8 @@ export interface OverlayState {
   /** A status line such as 「準備歌曲中…」 from an older Core, or null. Shown in the activity capsule when there is no activity. */
   notice: string | null;
   activity: Activity | null;
+  /** The gift line, or null. */
+  gift: string | null;
 }
 
 export type FeedMessage =
@@ -84,7 +87,9 @@ export type FeedMessage =
 
   | { type: "notice"; text: string }
   /** `null` hides the activity capsule. */
-  | { type: "activity"; activity: Activity | null };
+  | { type: "activity"; activity: Activity | null }
+  /** The gift line (already merged by the Stage); `null` hides it. */
+  | { type: "gift"; text: string | null };
 
 /** Everything the reducer accepts: feed messages plus the connection state, which the transport reports. */
 export type Action = FeedMessage | { type: "connection"; connected: boolean };
@@ -106,6 +111,7 @@ export function initialState(): OverlayState {
     queue: [],
     notice: null,
     activity: null,
+    gift: null,
   };
 }
 
@@ -221,6 +227,10 @@ export function parseMessage(text: string): FeedMessage | null {
     }
     case "activity":
       return parseActivity(raw);
+    case "gift": {
+      const body = nonEmpty(raw.text);
+      return { type: "gift", text: body ? body.slice(0, MAX_TITLE) : null };
+    }
     default:
       return null;
   }
@@ -273,7 +283,7 @@ export function reduce(state: OverlayState, action: Action): OverlayState {
       // A dropped feed means nobody is driving the overlay: stop claiming she is talking.
       return action.connected
         ? { ...state, connected: true }
-        : { ...state, connected: false, speaking: false, activity: null };
+        : { ...state, connected: false, speaking: false, activity: null, gift: null };
     case "speaking":
       return { ...state, speaking: action.state === "started" };
     case "emotion":
@@ -288,6 +298,8 @@ export function reduce(state: OverlayState, action: Action): OverlayState {
     }
     case "activity":
       return sameActivity(state.activity, action.activity) ? state : { ...state, activity: action.activity };
+    case "gift":
+      return action.text === state.gift ? state : { ...state, gift: action.text };
     case "subtitle":
       return reduceSubtitle(state, action);
     case "levels":

@@ -153,7 +153,10 @@ export function startDemo(emit: (m: FeedMessage) => void): () => void {
     for (let turn = 1; !stopped; turn++) {
       const line = LINES[(turn - 1) % LINES.length] as Line;
       await speak(`demo-${turn}`, line);
+      // The Stage merges gifts; the demo just shows a plain and a merged line in turn.
+      emit({ type: "gift", text: turn % 2 === 1 ? "Owen 餵了她一碗白飯" : "Owen 和另外 3 人餵了她 5 碗白飯" });
       await wait(2600);
+      emit({ type: "gift", text: null });
       if (turn % 2 === 0 && !stopped) {
         await sing(turn / 2);
         await wait(2000);

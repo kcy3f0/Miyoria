@@ -364,6 +364,15 @@ class Stage {
           return vts.triggerHotkey(msg.name);
         });
         return;
+      case "avatar_expression":
+        this.#answer(msg.id, async () => {
+          if (!this.#avatar) throw new StageError("VTube Studio is disabled on the stage");
+          await this.#avatar.gift(msg.expression, msg.seconds);
+        });
+        return;
+      case "gift":
+        this.#overlay.gift(msg);
+        return;
       case "status_request":
         this.#answer(msg.id, () => this.#refreshHotkeys());
         return;

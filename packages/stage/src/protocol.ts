@@ -49,6 +49,18 @@ export function sceneTransitionOf(msg: {
   return msg.transition ? { name: msg.transition, duration_ms: msg.transition_ms ?? null } : null;
 }
 
+/** Expressions the economy can show for a gift (`stage.expression`); the avatar config maps them to files. */
+export const GIFT_EXPRESSIONS = ["heart", "blush", "squint", "big_bowl"] as const;
+export type GiftExpression = (typeof GIFT_EXPRESSIONS)[number];
+export const GiftExpressionSchema = z.enum(GIFT_EXPRESSIONS);
+
+/** Longest time a gift expression stays on, in seconds. */
+export const GIFT_EXPRESSION_MAX_S = 15;
+
+/** Longest giver name / gift label the overlay line takes (code units). */
+export const GIFT_NAME_MAX = 32;
+export const GIFT_LABEL_MAX = 24;
+
 /** `song_video` actions. */
 export type SongVideoAction = "play" | "stop";
 export const SongVideoActionSchema = z.enum(["play", "stop"]);
@@ -190,6 +202,13 @@ export type CoreMessage =
   | { type: "avatar_hotkey"; name: string; id?: number }
   | { type: "gaze"; target: GazeTarget }
   /**
+   * Shows a gift expression for `seconds` (the node maps `expression` to a VTS expression file),
+   * then takes it off and restores her own. Answered (with `id`) once it is on.
+   */
+  | { type: "avatar_expression"; expression: GiftExpression; seconds: number; id?: number }
+  /** Someone fed her something (`economy.gift`); the overlay merges gifts into one line. */
+  | { type: "gift"; name: string; item: string; count: number; label: string }
+  /**
    * The song she sings has a video: `play` shows `path` (a file in the song worker's cache on
    * the streaming PC) in the media source, muted, `offset_ms` into the song at the moment the
    * message was sent, in `scene` when the scene director switches to a `sing` scene (else the
@@ -246,6 +265,19 @@ const CoreMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("stream"), action: StreamActionSchema, id: requestId }),
   z.object({ type: z.literal("avatar_hotkey"), name: z.string(), id: requestId }),
   z.object({ type: z.literal("gaze"), target: GazeTargetSchema }),
+  z.object({
+    type: z.literal("avatar_expression"),
+    expression: GiftExpressionSchema,
+    seconds: z.number().min(1).max(GIFT_EXPRESSION_MAX_S),
+    id: requestId,
+  }),
+  z.object({
+    type: z.literal("gift"),
+    name: z.string().max(GIFT_NAME_MAX),
+    item: z.string().max(32),
+    count: z.number().int().min(1).max(99),
+    label: z.string().max(GIFT_LABEL_MAX),
+  }),
   z.object({
     type: z.literal("song_video"),
     action: SongVideoActionSchema,

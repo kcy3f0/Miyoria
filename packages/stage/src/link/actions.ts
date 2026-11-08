@@ -1,7 +1,8 @@
 // Capabilities of the Stage node: `stage.scene` (switch the OBS scene by role or name, with the
 // role's transition; she may do it herself, the scene director does it as `director`) and
 // `stage.stream` (OBS start / stop streaming; commands and the panel only, her own tool is
-// `stream.start`, the Go Live that OBS follows).
+// `stream.start`, the Go Live that OBS follows) and `stage.expression` (a gift expression on her
+// model for a few seconds; the economy asks, she has no tool for it).
 //
 // Scene switches run one at a time (whoever asks), so two switches and their transitions never
 // interleave. With the ActivityManager, a switch that does not come from the scene director (her
@@ -12,7 +13,7 @@ import { type Capability, CapabilityError, defineCapability } from "@miyoria/act
 import { SerialQueue } from "@miyoria/kernel";
 import { actLane, type StreamCurtain } from "@miyoria/types";
 import { z } from "zod";
-import type { SceneTransition } from "../protocol.js";
+import { GIFT_EXPRESSION_MAX_S, GIFT_EXPRESSIONS, type SceneTransition } from "../protocol.js";
 import { sceneNames } from "./commands.js";
 import type { StageLink } from "./link.js";
 import { BUILTIN_ROLES, matchScene, ROLE_LABELS, type SceneRoles } from "./scenes.js";
@@ -24,7 +25,12 @@ const SceneArgs = z
   })
   .refine((a) => (a.name ?? a.role ?? null) !== null, { message: "give `role` or `name`" });
 const StreamArgs = z.object({ action: z.enum(["start", "stop"]) });
+const ExpressionArgs = z.object({
+  expression: z.enum(GIFT_EXPRESSIONS),
+  seconds: z.number().min(1).max(GIFT_EXPRESSION_MAX_S),
+});
 type SceneArgs = z.output<typeof SceneArgs>;
+type ExpressionArgs = z.output<typeof ExpressionArgs>;
 type StreamArgs = z.output<typeof StreamArgs>;
 
 const STAGE_LANE = actLane("stage");
@@ -145,5 +151,24 @@ export function stageCapabilities(
     },
   });
 
-  return [scene, stream] as Capability[];
+  // A bought expression (economy): not a tool of hers, only the backend asks. It answers once the
+  // expression is on (the node takes it off by itself), so it does not hold the lane for `seconds`.
+  const expression = defineCapability<ExpressionArgs>({
+    name: "stage.expression",
+    summary: "讓她的模型短暫換上一個表情(禮物)",
+    risk: "low",
+    args: ExpressionArgs,
+    permission: "stream.expression",
+    lane: () => STAGE_LANE,
+    async execute(args) {
+      requireNode(link);
+      await link.expression(args.expression, args.seconds);
+      return {
+        text: `expression ${args.expression} for ${args.seconds}s`,
+        data: { expression: args.expression, seconds: args.seconds },
+      };
+    },
+  });
+
+  return [scene, stream, expression] as Capability[];
 }
