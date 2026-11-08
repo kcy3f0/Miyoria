@@ -14,6 +14,7 @@ import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import { AFFINITY, FAMILIARITY, TRUST } from "./card";
 import { CardSection } from "./CardSection";
+import { Transfer } from "./Extras";
 import { WalletCard } from "./Wallet";
 
 /** Her view of someone changes with a reflection, not by the second. */
@@ -256,11 +257,11 @@ function RequestSong() {
       </CardHeader>
       <form className="grid gap-2" onSubmit={submit}>
         <label htmlFor={id} className="sr-only">
-          歌名或 YouTube 連結
+          歌名或 YouTube / bilibili 連結
         </label>
         <Input
           id={id}
-          placeholder="歌名或 YouTube 連結"
+          placeholder="歌名或 YouTube / bilibili 連結"
           maxLength={120}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -334,6 +335,7 @@ export function MemberActions() {
     <>
       <WalletCard />
       <CardSection />
+      <Transfer />
       {me.data?.can_request_song && <RequestSong />}
       <YourData />
     </>

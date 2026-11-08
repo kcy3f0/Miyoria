@@ -14,10 +14,12 @@ import { describe, expect, it } from "vitest";
 import { EconomyCommands, PATHS, walletText } from "../src/commands.js";
 import { STRANGER } from "../src/economy.js";
 import {
+  type BountyView,
   type Economy,
   EconomyError,
   EconomyKey,
   type FeedItem,
+  type GoalView,
   type WalletView,
 } from "../src/types.js";
 
@@ -46,6 +48,7 @@ function view(over: Partial<WalletView> = {}): WalletView {
     hungry: "hungry",
     recent: [],
     deals: [],
+    on_board: false,
     ...over,
   };
 }
@@ -53,12 +56,28 @@ function view(over: Partial<WalletView> = {}): WalletView {
 interface Fake {
   economy: Economy;
   calls: string[];
-  state: { view: WalletView; fail: EconomyError | null; full: boolean };
+  state: {
+    view: WalletView;
+    fail: EconomyError | null;
+    full: boolean;
+    board: { rank: number; name: string; spent: number }[];
+    goals: GoalView[];
+    bounties: BountyView[];
+    screenOk: boolean;
+  };
 }
 
 function fake(): Fake {
   const calls: string[] = [];
-  const state = { view: view(), fail: null as EconomyError | null, full: false };
+  const state = {
+    view: view(),
+    fail: null as EconomyError | null,
+    full: false,
+    board: [] as { rank: number; name: string; spent: number }[],
+    goals: [] as GoalView[],
+    bounties: [] as BountyView[],
+    screenOk: true,
+  };
   const economy = {
     wallet: async () => state.view,
     checkin: async () => {
@@ -74,6 +93,41 @@ function fake(): Fake {
       }
       return { accepted: true, eaten: 1, charged: 10, balance: 110, message: "她吃了一碗白飯" };
     },
+    transfer: async (_a: AccountRef, to: AccountRef, amount: number, key: string) => {
+      calls.push(`transfer:${to.platform}:${to.id}:${amount}:${key}`);
+      if (state.fail) throw state.fail;
+      return { sent: amount, balance: 90, to: "Bob" };
+    },
+    board: async (limit?: number) => {
+      calls.push(`board:${limit}`);
+      return state.board;
+    },
+    screenMessage: async (_a: AccountRef, text: string, key: string) => {
+      calls.push(`screen:${text}:${key}`);
+      if (state.fail) throw state.fail;
+      if (!state.screenOk)
+        return { accepted: false, charged: 0, balance: 120, message: "現在沒有開台" };
+      return { accepted: true, charged: 30, balance: 90, message: "留言送上大螢幕了" };
+    },
+    goals: async () => state.goals,
+    pledge: async (_a: AccountRef, goal: string, amount: number, key: string) => {
+      calls.push(`pledge:${goal}:${amount}:${key}`);
+      if (state.fail) throw state.fail;
+      return {
+        pledged: amount,
+        raised: 300 + amount,
+        target: 500,
+        reached: false,
+        balance: 70,
+        duplicate: false,
+      };
+    },
+    bounties: async () => state.bounties,
+    setOnBoard: async (_a: AccountRef, on: boolean) => {
+      calls.push(`on_board:${on}`);
+      state.view = { ...state.view, on_board: on };
+      return true;
+    },
   } as unknown as Economy;
   return { economy, calls, state };
 }
@@ -87,7 +141,11 @@ function setup(withEconomy = true) {
   return { ...f, registry };
 }
 
-function run(registry: CommandRegistry, path: string, args: Record<string, string> = {}) {
+function run(
+  registry: CommandRegistry,
+  path: string,
+  args: Record<string, string | number | boolean> = {},
+) {
   return registry.dispatch({
     path: path.split(" "),
     args,
@@ -238,7 +296,183 @@ describe("wallet commands", () => {
       ["簽到", "me checkin", undefined],
       ["餵一碗", "me feed", { item: "rice" }],
       ["餵鋼盆", "me feed", { item: "big_bowl" }],
+      ["留言上大螢幕", "me screen", undefined],
+      ["轉給別人", "me give", undefined],
+      ["排行榜", "me board", undefined],
     ]);
+    const screen = page?.actions.find((a) => a.id === "screen");
+    expect(screen?.ask?.fields.map((f) => f.arg)).toEqual(["text"]);
+    expect(page?.actions.find((a) => a.id === "give")?.ask?.fields.map((f) => f.arg)).toEqual([
+      "user",
+      "amount",
+    ]);
+  });
+
+  it("the_me_panel_has_a_wishes_page_for_goals_and_bounties", () => {
+    const me = panelDefs().find((d) => d.command === "me");
+    const page = me?.pages.find((p) => p.id === "wishes");
+    expect(page?.status?.map((s) => s.path)).toEqual(["me goals", "me bounties"]);
+    expect(page?.actions.map((a) => [a.path, a.ask?.fields.map((f) => f.arg)])).toEqual([
+      ["me pledge", ["amount"]],
+      ["me goals", undefined],
+      ["me bounties", undefined],
+    ]);
+  });
+
+  it("screen_posts_a_message_and_is_public_like_feeding", async () => {
+    const { registry, calls, state } = setup();
+    expect(registry.get(["me", "screen"])?.ephemeral).toBeFalsy();
+    const reply = await run(registry, "me screen", { text: " 加油 " });
+    expect(reply.text).toContain("留言送上大螢幕了，花了 30 魚幣，剩 90");
+    expect(reply.card?.accent).toBe("neutral");
+    expect(calls[0]).toMatch(/^screen:加油:discord:/);
+    state.screenOk = false;
+    const off = await run(registry, "me screen", { text: "嗨" });
+    expect(off.text).toBe("現在沒有開台");
+    expect(off.tone).toBeUndefined();
+    state.fail = new EconomyError(429, "10 分鐘內只能留一則");
+    expect((await run(registry, "me screen", { text: "嗨" })).tone).toBe("info");
+    expect((await run(registry, "me screen", { text: "  " })).tone).toBe("warn");
+  });
+
+  it("goals_show_the_open_one_with_my_pledge_and_quick_buttons", async () => {
+    const { registry, state, calls } = setup();
+    expect((await run(registry, "me goals")).text).toContain("沒有開著的目標");
+    const goal = (over: Partial<GoalView>): GoalView => ({
+      id: "g1",
+      title: "新泳裝",
+      promise: "穿給大家看",
+      target: 500,
+      raised: 300,
+      my_pledge: 40,
+      deadline: "2026-11-10T00:00:00.000Z",
+      status: "open",
+      ...over,
+    });
+    state.goals = [goal({}), goal({ id: "g0", title: "舊的", status: "expired" })];
+    const reply = await run(registry, "me goals");
+    expect(reply.card?.title).toBe("她的目標");
+    expect(reply.text).toContain("新泳裝");
+    expect(reply.text).toContain("她答應：穿給大家看");
+    expect(reply.text).toContain("300 / 500 魚幣");
+    expect(reply.text).toContain("你投了 40");
+    expect(reply.text).toContain("舊的");
+    expect(buttons(reply).map((b) => b.label)).toEqual(["投 10", "投 50"]);
+
+    const pressed = await press(registry, "mi:me:goal:pledge:g1:50");
+    expect(pressed?.ephemeral).toBe(true);
+    expect(replyOf(pressed).text).toContain("現在 350 / 500");
+    expect(calls[0]).toMatch(/^pledge:g1:50:discord:/);
+    // A forged amount never reaches the ledger.
+    expect(replyOf(await press(registry, "mi:me:goal:pledge:g1:9999")).tone).toBe("error");
+    expect(calls).toHaveLength(1);
+
+    state.view = view({ can_earn: false });
+    expect(buttons(await run(registry, "me goals"))).toEqual([]);
+  });
+
+  it("pledge_goes_to_the_open_goal_privately_and_refusals_are_plain", async () => {
+    const { registry, state, calls } = setup();
+    expect(registry.get(["me", "pledge"])?.ephemeral).toBe(true);
+    const none = await run(registry, "me pledge", { amount: 20 });
+    expect(none.text).toContain("沒有開著的目標");
+    expect(calls).toHaveLength(0);
+    state.goals = [
+      {
+        id: "g1",
+        title: "t",
+        promise: "p",
+        target: 500,
+        raised: 0,
+        my_pledge: 0,
+        deadline: "2026-11-10T00:00:00.000Z",
+        status: "open",
+      },
+    ];
+    const reply = await run(registry, "me pledge", { amount: 20 });
+    expect(reply.text).toBe("投了 20 魚幣，現在 320 / 500，剩 70。");
+    expect(calls[0]).toMatch(/^pledge:g1:20:discord:/);
+    state.fail = new EconomyError(429, "每個目標最多投 200 魚幣");
+    const refused = await run(registry, "me pledge", { amount: 20 });
+    expect(refused.text).toBe("每個目標最多投 200 魚幣");
+    expect(refused.tone).toBe("info");
+  });
+
+  it("bounties_list_what_she_has_posted", async () => {
+    const { registry, state } = setup();
+    expect((await run(registry, "me bounties")).text).toContain("沒有貼懸賞");
+    state.bounties = [
+      {
+        id: "b1",
+        task: "講一個笑話給她聽",
+        reward: 30,
+        posted_at: "2026-11-08T00:00:00.000Z",
+        expires_at: "2026-11-11T00:00:00.000Z",
+      },
+    ];
+    const reply = await run(registry, "me bounties");
+    expect(reply.card?.title).toBe("她的懸賞");
+    expect(reply.text).toContain("講一個笑話給她聽　30");
+    expect(replyEphemeral(registry.get(["me", "bounties"])?.ephemeral ?? true, reply)).toBe(false);
+  });
+
+  it("give_sends_coins_to_a_discord_user_and_says_so_only_to_the_sender", async () => {
+    const { registry, calls } = setup();
+    const spec = registry.get(["me", "give"]);
+    expect(spec?.ephemeral).toBe(true);
+    const reply = await run(registry, "me give", { user: "77", amount: 25 });
+    expect(reply.text).toBe("轉了 25 魚幣給 Bob，剩 90。");
+    expect(reply.card?.accent).toBe("neutral");
+    expect(calls[0]).toMatch(/^transfer:discord:77:25:discord:/);
+    // Another platform's account is not someone one can reach, in the receiver's usual words.
+    const other = await run(registry, "me give", { user: "slack:9", amount: 5 });
+    expect(other.text).toBe("對方現在收不到");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("give_refusals_are_plain_information", async () => {
+    const { registry, state } = setup();
+    state.fail = new EconomyError(403, "對方現在收不到");
+    const reply = await run(registry, "me give", { user: "77", amount: 5 });
+    expect(reply.text).toBe("對方現在收不到");
+    expect(reply.tone).toBe("info");
+    state.fail = new EconomyError(429, "今天最多轉出 100 魚幣");
+    expect((await run(registry, "me give", { user: "77", amount: 5 })).tone).toBe("info");
+  });
+
+  it("board_lists_the_top_without_balances_and_joins_or_leaves", async () => {
+    const { registry, state, calls } = setup();
+    state.board = [
+      { rank: 1, name: "Bob", spent: 90 },
+      { rank: 2, name: "Amy", spent: 40 },
+    ];
+    const reply = await run(registry, "me board");
+    expect(reply.card?.title).toBe("贊助排行榜");
+    expect(reply.text).toContain("1. Bob　90");
+    expect(reply.text).toContain("2. Amy　40");
+    expect(reply.text).toContain("你不在榜上");
+    expect(reply.text).not.toContain("120");
+    expect(calls).toContain("board:10");
+    expect(buttons(reply).map((b) => b.label)).toEqual(["加入排行榜"]);
+
+    const joined = await run(registry, "me board", { join: "on" });
+    expect(calls).toContain("on_board:true");
+    expect(joined.text).toContain("你在榜上");
+    expect(buttons(joined).map((b) => b.label)).toEqual(["退出排行榜"]);
+
+    const left = replyOf(await press(registry, "mi:me:board:set:off"));
+    expect(calls).toContain("on_board:false");
+    expect(left.text).toContain("你不在榜上");
+    // A forged value is refused before it reaches the store.
+    expect(replyOf(await press(registry, "mi:me:board:set:maybe")).tone).toBe("error");
+  });
+
+  it("an_empty_board_and_a_stranger", async () => {
+    const { registry, state } = setup();
+    expect((await run(registry, "me board")).text).toContain("還沒有人上榜");
+    state.view = view({ can_earn: false, on_board: false });
+    const reply = await run(registry, "me board");
+    expect(buttons(reply)).toEqual([]);
   });
 
   it("a_new_person_has_no_streak_noise", () => {

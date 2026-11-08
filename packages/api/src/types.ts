@@ -209,15 +209,39 @@ export interface IssuedCard {
   pose: string;
   /** The card frame they had chosen then (`[modules.economy] frames`), null for none. */
   frame: string | null;
+  /** Bought foil finish (`card_foil`); false on older cards. */
+  foil: boolean;
+  /** When a reroll replaced it, or null: a voided card is shown as 已作廢, never as valid. */
+  voided_at: string | null;
+}
+
+/** One picture of her they may choose for a card. */
+export interface CardPoseChoice {
+  id: string;
+  /** zh label. */
+  label: string;
+}
+
+/** What the card extras cost them now; a price is null when it is off sale or there is no wallet. */
+export interface CardPrices {
+  pose: number | null;
+  foil: number | null;
+  reroll: number | null;
 }
 
 /** `GET /api/member/card`. */
 export interface MemberCards {
+  /** Their newest card that is not voided. */
   latest: IssuedCard | null;
-  /** Cards issued to them in the current local day (utc offset as public stats use). */
+  /** Cards issued to them in the current local day (utc offset as public stats use); rerolls and voided cards not counted. */
   today: number;
   /** Most cards a person may be issued per local day. */
   per_day: number;
+  /** Pictures their affinity band allows, for `card_pose`. */
+  poses: CardPoseChoice[];
+  prices: CardPrices;
+  /** Rerolls of today's newest card they may still buy today (0 when none is possible). */
+  rerolls_left: number;
 }
 
 /** `GET /api/member/export` (a file). */
@@ -232,6 +256,31 @@ export interface MemberExport {
   cards: IssuedCard[];
   /** Their coins: the balance and every line of the ledger, newest first. */
   wallet: WalletExport;
+  /** The fortune slips she wrote for them, newest first. */
+  fortunes: IssuedFortune[];
+}
+
+/** A field on a fortune slip: its name (戀愛, 學業, ...) and what she wrote. */
+export interface FortuneField {
+  label: string;
+  text: string;
+}
+
+/** A fortune slip she wrote for them, one per local day (`GET`/`POST /api/member/fortune`). */
+export interface IssuedFortune {
+  id: string;
+  /** The local day it is for, `YYYY-MM-DD`. */
+  date: string;
+  issued_at: string;
+  rank: "大吉" | "吉" | "中吉" | "小吉" | "末吉" | "凶";
+  /** At most 8 characters. */
+  title: string;
+  /** Four lines of at most 7 characters. */
+  poem: string[];
+  /** At most three. */
+  fields: FortuneField[];
+  /** A personal line, at most 30 characters. */
+  line: string | null;
 }
 
 /** `POST /api/member/forget`. */

@@ -28,12 +28,12 @@ const mod: ModuleInfo = {
 
 /** Answers the auth routes; `extra` handles everything else. */
 function core(opts: { discord: boolean; session?: SessionInfo | null; extra?: Handler }) {
-  return mockFetch((method, url, body) => {
+  return mockFetch((method, url, body, headers) => {
     if (url.pathname === "/api/auth/methods") return { body: { token: true, discord: opts.discord } };
     if (url.pathname === "/api/auth/session")
       return opts.session ? { body: opts.session } : { status: 401, body: { error: "missing or invalid bearer token" } };
     if (url.pathname === "/api/health") return { body: { status: "ok", version: "0.4.0" } };
-    return opts.extra?.(method, url, body);
+    return opts.extra?.(method, url, body, headers);
   });
 }
 

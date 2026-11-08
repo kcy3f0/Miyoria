@@ -54,9 +54,17 @@ import {
   toTimestamp,
   v2Event,
 } from "@miyoria/types";
+import { setBoard, sponsorBoard } from "./board.js";
+import { BountyBoard } from "./bounties.js";
 import type { EconomyConfig } from "./config.js";
 import { DealDesk } from "./deals.js";
+import { GoalDesk } from "./goals.js";
+import { Purse } from "./purse.js";
+import { MAX_SCREEN_CHARS, screenEvent, screenText, screenWait, waitMinutes } from "./screen.js";
+import { otherName, sendCoins } from "./transfer.js";
 import {
+  type BoardLine,
+  type BountyView,
   type CheckinResult,
   type EarnLine,
   type EarnReason,
@@ -71,10 +79,17 @@ import {
   type GiftEvent,
   type GiftExpression,
   type GiftItem,
+  type GoalView,
   type Hunger,
   type LedgerLine,
+  PAID_ITEMS,
+  type PaidItem,
+  type PledgeResult,
+  type Purchase,
+  SCREEN_TOPIC,
   type ShopItem,
   type SpendResult,
+  type TransferResult,
   type WalletExport,
   type WalletView,
 } from "./types.js";
@@ -132,6 +147,28 @@ const EARN_LABEL: Readonly<Record<EarnReason, string>> = {
   voice: "在語音陪她",
   song: "點的歌她唱完了",
   her_gift: "她送你的",
+};
+
+/** The `[modules.economy]` key of each paid thing's daily limit. */
+const PER_DAY = {
+  card_reroll: "card_rerolls_per_day",
+  card_pose: "card_poses_per_day",
+  card_foil: "card_foils_per_day",
+  song_ticket: "song_tickets_per_day",
+  dedication: "dedications_per_day",
+  screen_message: "screen_messages_per_day",
+  fortune: "fortunes_per_day",
+} as const satisfies Record<PaidItem, keyof EconomyConfig>;
+
+/** How a paid thing reads in the shop and the ledger, and its shop kind. */
+export const PAID_NAME: Readonly<Record<PaidItem, { label: string; kind: ShopItem["kind"] }>> = {
+  card_reroll: { label: "抽卡重製券", kind: "card" },
+  card_pose: { label: "指定立繪", kind: "card" },
+  card_foil: { label: "閃卡加工", kind: "card" },
+  song_ticket: { label: "點歌加點券", kind: "song" },
+  dedication: { label: "歌曲獻詞", kind: "song" },
+  screen_message: { label: "留言上大螢幕", kind: "stream" },
+  fortune: { label: "今日籤詩", kind: "fortune" },
 };
 
 /** Ledger reasons that are gifts to her (they diminish each other). */
@@ -219,10 +256,17 @@ export class EconomyService implements Economy {
   readonly #turns = new SerialQueue();
   /** Deals she accepted (deals.ts). */
   readonly deals: DealDesk;
+  /** Her own coins (purse.ts), her crowdfunding goals (goals.ts) and her bounties (bounties.ts). */
+  readonly purse: Purse;
+  readonly goalDesk: GoalDesk;
+  readonly bountyDesk: BountyBoard;
 
   constructor(deps: EconomyDeps) {
     this.#d = deps;
     this.deals = new DealDesk(this);
+    this.purse = new Purse(this);
+    this.goalDesk = new GoalDesk(this);
+    this.bountyDesk = new BountyBoard(this);
   }
 
   get config(): EconomyConfig {
@@ -284,8 +328,22 @@ export class EconomyService implements Economy {
   }
 
   /** Whether the text passes the screen a letter passes (moderation, input and output). */
-  passes(who: Member, text: string): boolean {
+  passes(who: Pick<Member, "account">, text: string): boolean {
     return this.#passes(who, text);
+  }
+
+  // ---- her goals and bounties (§13) -------------------------------------------------------
+
+  goals(account: AccountRef): Promise<GoalView[]> {
+    return this.goalDesk.view(account);
+  }
+
+  pledge(account: AccountRef, goal: string, amount: number, key: string): Promise<PledgeResult> {
+    return this.goalDesk.pledge(account, goal, amount, key);
+  }
+
+  bounties(): Promise<BountyView[]> {
+    return this.bountyDesk.view();
   }
 
   /**
@@ -296,6 +354,7 @@ export class EconomyService implements Economy {
     const label = feedLabel(item, count);
     this.#d.services.get(SelfStateKey)?.adjust({ hunger: -HUNGER_OF[item] * count }, "fed");
     await this.#gift(who, entry, item, count, label);
+    await this.purse.share(entry, true);
     if (item === "big_bowl") this.#bigBowl();
   }
 
@@ -525,6 +584,24 @@ export class EconomyService implements Economy {
       }
       case "deal_escrow":
         return "先付給她的約定";
+      case "goal_pledge":
+        return "投給她的目標";
+      case "purse_gift":
+        return "她請你的";
+      case "bounty":
+        return "領到她的懸賞";
+      case "card_reroll":
+      case "card_pose":
+      case "card_foil":
+      case "song_ticket":
+      case "dedication":
+      case "screen_message":
+      case "fortune":
+        return PAID_NAME[r.reason].label;
+      case "transfer_out":
+        return `轉給 ${otherName(r.ref) ?? "朋友"}`;
+      case "transfer_in":
+        return `${otherName(r.ref) ?? "朋友"} 轉給你`;
       case "refund":
         return "退回";
       case "checkin":
@@ -559,6 +636,7 @@ export class EconomyService implements Economy {
       hungry: null,
       recent: [],
       deals: [],
+      on_board: false,
     };
   }
 
@@ -621,6 +699,12 @@ export class EconomyService implements Economy {
     for (const f of c.frames) {
       add(`frame:${f.id}`, "frame", f.label, f.price, state?.owned.has(f.id) ? "已經有了" : null);
     }
+    // Whether one can be used right now (a card to re-draw, a song to dedicate) is the seller's.
+    for (const item of PAID_ITEMS) {
+      const { price, per_day } = this.price(item);
+      if (per_day === 0) continue;
+      add(item, PAID_NAME[item].kind, PAID_NAME[item].label, price, null);
+    }
     return out;
   }
 
@@ -673,6 +757,7 @@ export class EconomyService implements Economy {
       hungry: hunger === null ? null : hungerWord(hunger, c.full_below),
       recent: recent.map((r) => this.#line(r)),
       deals,
+      on_board: await ledger.onBoard(this.#d.profile, who.wallet),
     };
   }
 
@@ -683,6 +768,20 @@ export class EconomyService implements Economy {
       limit: MAX_EXPORTED,
     });
     return { balance: await this.#balance(who), ledger: rows.map((r) => this.#line(r)) };
+  }
+
+  // ---- between people (§13) --------------------------------------------------------------
+
+  transfer(from: AccountRef, to: AccountRef, amount: number, key: string): Promise<TransferResult> {
+    return sendCoins(this, from, to, amount, key);
+  }
+
+  board(limit?: number): Promise<BoardLine[]> {
+    return sponsorBoard(this, limit);
+  }
+
+  setOnBoard(account: AccountRef, on: boolean): Promise<boolean> {
+    return setBoard(this, account, on);
   }
 
   async selectedFrame(account: AccountRef): Promise<string | null> {
@@ -761,6 +860,8 @@ export class EconomyService implements Economy {
     });
     if (post.status === "short") throw new EconomyError(402, `${this.#d.config.currency}不夠`);
     if (post.status === "capped") throw new EconomyError(429, "今天到上限了");
+    // A share of a paid gift is hers (once per row: the key is the row's).
+    if (post.status === "posted") await this.purse.share(post.entry);
     return { entry: post.entry, balance: post.balance, fresh: post.status === "posted" };
   }
 
@@ -778,6 +879,8 @@ export class EconomyService implements Economy {
       this.#entry(who, -entry.delta, "refund", entry.id, `refund:${entry.id}`),
       { wallet: who.wallet },
     );
+    // What she was given of it goes back too.
+    await this.purse.claw(entry);
     return post.balance;
   }
 
@@ -837,6 +940,66 @@ export class EconomyService implements Economy {
     void this.#expressOnStage("big_bowl", BIG_BOWL_SECONDS).catch(() => false);
   }
 
+  // ---- paid things other parts sell (§13) ----------------------------------------------
+
+  price(item: PaidItem): { price: number; per_day: number } {
+    if (!PAID_ITEMS.includes(item)) return { price: 0, per_day: 0 };
+    const c = this.#d.config;
+    return { price: c[item], per_day: c[PER_DAY[item]] };
+  }
+
+  async purchase(
+    account: AccountRef,
+    item: PaidItem,
+    key: string,
+    ref: string | null = null,
+  ): Promise<Purchase> {
+    const { price, per_day } = this.price(item);
+    if (per_day === 0) throw new EconomyError(400, "現在不賣這個");
+    const who = await this.#known(account);
+    const idem = `${item}:${key}`;
+    return this.#turns.run(async () => {
+      const first = await this.#first(who, idem);
+      if (first) {
+        return {
+          entry_id: first.entry.id,
+          charged: -first.entry.delta,
+          balance: first.balance,
+          duplicate: true,
+        };
+      }
+      if ((await this.#boughtToday(who, item)) >= per_day) {
+        throw new EconomyError(429, `今天最多 ${per_day} 次`);
+      }
+      const spent = await this.#spend(who, price, item, ref, idem);
+      this.#audit(who, "economy.purchase", { item, price, ref });
+      return { entry_id: spent.entry.id, charged: price, balance: spent.balance, duplicate: false };
+    });
+  }
+
+  async refund(account: AccountRef, entryId: string): Promise<boolean> {
+    const who = await this.member(account);
+    if (!who) return false;
+    return this.#turns.run(async () => {
+      const rows = await this.#ledger().entries(this.#d.profile, who.wallet, {
+        reasons: PAID_ITEMS,
+        limit: MAX_DAY_ROWS,
+      });
+      const entry = rows.find((r) => r.id === entryId);
+      if (!entry || entry.delta >= 0 || (await this.#refunded(who, entry))) return false;
+      await this.#refund(who, entry);
+      this.#audit(who, "economy.refund", { item: entry.reason, ref: entry.ref });
+      return true;
+    });
+  }
+
+  /** How many of `item` they bought today and kept (refunded ones do not count). */
+  async #boughtToday(who: Member, item: PaidItem): Promise<number> {
+    const today = await this.#todayRows(who);
+    const refunded = new Set(today.filter((r) => r.reason === "refund").map((r) => r.ref));
+    return today.filter((r) => r.reason === item && !refunded.has(r.id)).length;
+  }
+
   async letter(account: AccountRef, text: string, key: string): Promise<SpendResult> {
     const body = text.trim();
     const length = [...body].length;
@@ -866,8 +1029,53 @@ export class EconomyService implements Economy {
     };
   }
 
+  async screenMessage(account: AccountRef, text: string, key: string): Promise<SpendResult> {
+    const body = screenText(text);
+    if (body === null) throw new EconomyError(400, `留言要 1 到 ${MAX_SCREEN_CHARS} 個字`);
+    const { price, per_day } = this.price("screen_message");
+    if (per_day === 0) throw new EconomyError(400, "現在不賣這個");
+    const who = await this.#known(account);
+    const idem = `screen_message:${key}`;
+    const cooldown = this.#d.config.screen_message_cooldown_s * 1000;
+    const spent = await this.#turns.run(async (): Promise<Spent | SpendResult> => {
+      const first = await this.#first(who, idem);
+      if (first) return first;
+      const now = this.#d.clock.now();
+      const rows = await this.#ledger().entries(this.#d.profile, who.wallet, {
+        reasons: ["screen_message", "refund"],
+        since: toTimestamp(now - cooldown),
+        limit: MAX_DAY_ROWS,
+      });
+      const wait = screenWait(rows, cooldown, now);
+      if (wait > 0) {
+        const every = waitMinutes(cooldown);
+        throw new EconomyError(429, `每 ${every} 分鐘只能留一則,還要等 ${waitMinutes(wait)} 分鐘`);
+      }
+      if (!this.#stageUp()) throw new EconomyError(409, "她現在沒有開台");
+      if (!this.#passes(who, body)) return this.#refused(who, "這則留言沒辦法上螢幕");
+      if ((await this.#boughtToday(who, "screen_message")) >= per_day) {
+        throw new EconomyError(429, `今天最多 ${per_day} 次`);
+      }
+      return this.#spend(who, price, "screen_message", null, idem);
+    });
+    if (!("entry" in spent)) return spent;
+    if (spent.fresh) {
+      const name = plainName(who.name);
+      this.#d.publish(customEvent(SCREEN_TOPIC, screenEvent(name, body) as unknown as JsonValue));
+      // Silent, like a letter: she may read it out when free, and a song is not interrupted.
+      this.#perceive(who, spent.entry, `${safeName(who.name)}把一則留言放上了大螢幕:「${body}」`);
+      this.#audit(who, "economy.screen_message", { charged: price, chars: [...body].length });
+    }
+    return {
+      accepted: true,
+      charged: -spent.entry.delta,
+      balance: spent.balance,
+      message: "留言上螢幕了,她看得到",
+    };
+  }
+
   /** Moderation reads a letter as input and as text on a page; without it nothing passes. */
-  #passes(who: Member, text: string): boolean {
+  #passes(who: Pick<Member, "account">, text: string): boolean {
     const s = this.#d.services;
     const moderation = s.get(ModerationKey);
     if (!moderation) return false;

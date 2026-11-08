@@ -9,6 +9,7 @@ import {
   type ContextKey,
   type Directive,
   type DirectiveRecord,
+  type JsonObject,
   type JsonValue,
   type LogEvent,
   type LogEventFilter,
@@ -26,6 +27,9 @@ import type {
   AuditEntry,
   AuthoredEntry,
   AuthScope,
+  Bounty,
+  BountyPatch,
+  BountyStatus,
   CoinEntry,
   CoinPost,
   CoinRule,
@@ -33,6 +37,11 @@ import type {
   DealPatch,
   DealStatus,
   DecisionRecord,
+  FortuneRecord,
+  Goal,
+  GoalPatch,
+  GoalPledge,
+  GoalStatus,
   LogEntry,
   MemberCardRecord,
   MemoryFilter,
@@ -82,6 +91,8 @@ export interface MemberCardStore {
   issue(card: MemberCardRecord): Promise<void>;
   /** The card with this exact serial in the profile, or `null`. */
   bySerial(profile: ProfileId, serial: string): Promise<MemberCardRecord | null>;
+  /** Replaces a card's snapshot (voiding it); `false` when there is no such card. */
+  amend(profile: ProfileId, serial: string, snapshot: JsonObject): Promise<boolean>;
   /** The cards of `accounts`, newest first, at most `limit`. */
   listFor(
     profile: ProfileId,
@@ -131,6 +142,48 @@ export interface CoinLedgerStore {
     frame: string | null,
     at: Timestamp,
   ): Promise<void>;
+  /** Whether any of `accounts` chose to be on the sponsor board (off unless one did). */
+  onBoard(profile: ProfileId, accounts: readonly AccountRef[]): Promise<boolean>;
+  /**
+   * Puts every one of `accounts` on the board or takes them off, so a person is on it as a whole.
+   * It never touches the frame choice.
+   */
+  setOnBoard(profile: ProfileId, accounts: readonly AccountRef[], on: boolean): Promise<void>;
+  /** The accounts on the board, at most `limit`. */
+  boardAccounts(profile: ProfileId, limit: number): Promise<AccountRef[]>;
+  /**
+   * What each account spent since `since` on `reasons`, biggest first, at most `limit`: negative
+   * rows that were not refunded. `deal_escrow` counts only for a settled deal (released to her).
+   */
+  spent(
+    profile: ProfileId,
+    reasons: readonly string[],
+    since: Timestamp,
+    limit: number,
+  ): Promise<{ account: AccountRef; spent: number }[]>;
+}
+
+/**
+ * Fortune slips she wrote on the member page (docs/design/economy.md §13), at most one per person
+ * per local day. "Theirs" are the slips of any of `accounts`.
+ */
+export interface FortuneStore {
+  /** Stores a slip; `false` when one of these `accounts` already has one for that `day`. */
+  put(record: FortuneRecord, accounts: readonly AccountRef[]): Promise<boolean>;
+  /** The slip of `day` of any of `accounts`, or `null`. */
+  forDay(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    day: number,
+  ): Promise<FortuneRecord | null>;
+  /** The slips of `accounts`, newest first, at most `limit`. */
+  listFor(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    limit: number,
+  ): Promise<FortuneRecord[]>;
+  /** Deletes every slip of `accounts`; returns how many. */
+  deleteFor(profile: ProfileId, accounts: readonly AccountRef[]): Promise<number>;
 }
 
 /** Deals she accepted (docs/design/economy.md §12): they outlive restarts. */
@@ -154,6 +207,35 @@ export interface DealStore {
     statuses: readonly DealStatus[],
     filter: { since?: Timestamp; limit: number },
   ): Promise<Deal[]>;
+}
+
+/** Her crowdfunding goals and what people pledged (docs/design/economy.md §13). */
+export interface GoalStore {
+  create(goal: Goal): Promise<void>;
+  get(id: string): Promise<Goal | null>;
+  /** Changes the goal only while its status is one of `from`; `false` when it was not. */
+  transition(id: string, from: readonly GoalStatus[], patch: GoalPatch): Promise<boolean>;
+  /** Goals newest first; `statuses` narrows them. */
+  list(
+    profile: ProfileId,
+    filter: { statuses?: readonly GoalStatus[]; limit: number },
+  ): Promise<Goal[]>;
+  addPledge(pledge: GoalPledge): Promise<void>;
+  /** Every pledge of a goal, oldest first. */
+  pledges(goal: string): Promise<GoalPledge[]>;
+}
+
+/** Bounties she posted from her purse (docs/design/economy.md §13). */
+export interface BountyStore {
+  create(bounty: Bounty): Promise<void>;
+  get(id: string): Promise<Bounty | null>;
+  /** Changes the bounty only while its status is one of `from`; `false` when it was not. */
+  transition(id: string, from: readonly BountyStatus[], patch: BountyPatch): Promise<boolean>;
+  /** Bounties newest first; `statuses` narrows them. */
+  list(
+    profile: ProfileId,
+    filter: { statuses?: readonly BountyStatus[]; limit: number },
+  ): Promise<Bounty[]>;
 }
 
 /** Persisted runtime enabled / disabled flag per module. */
@@ -422,6 +504,9 @@ export interface Store {
   readonly cards: MemberCardStore;
   readonly coins: CoinLedgerStore;
   readonly deals: DealStore;
+  readonly fortunes: FortuneStore;
+  readonly goals: GoalStore;
+  readonly bounties: BountyStore;
   /** Releases the backend (closes the database). */
   close(): Promise<void>;
 }
@@ -444,4 +529,7 @@ export const DirectiveStoreKey = serviceKey<DirectiveStore>("DirectiveStore");
 export const MemberCardStoreKey = serviceKey<MemberCardStore>("MemberCardStore");
 export const CoinLedgerStoreKey = serviceKey<CoinLedgerStore>("CoinLedgerStore");
 export const DealStoreKey = serviceKey<DealStore>("DealStore");
+export const FortuneStoreKey = serviceKey<FortuneStore>("FortuneStore");
+export const GoalStoreKey = serviceKey<GoalStore>("GoalStore");
+export const BountyStoreKey = serviceKey<BountyStore>("BountyStore");
 export const StoreKey = serviceKey<Store>("Store");

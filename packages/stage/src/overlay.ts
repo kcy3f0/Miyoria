@@ -10,7 +10,7 @@ import { getLogger } from "@miyoria/kernel";
 import { type Gift, GiftMerger } from "./gifts.js";
 import { closeOnAbort, type ServeResult } from "./lipsync.js";
 import { formatAddress, HttpServer } from "./net.js";
-import type { Activity, SpeakingState, StageStatus } from "./protocol.js";
+import type { Activity, CoreMessage, SpeakingState, StageStatus } from "./protocol.js";
 
 const log = getLogger("stage.overlay");
 
@@ -110,6 +110,15 @@ export class OverlayHub {
       this.#send(JSON.stringify({ type: "gift", text: "" }));
     }, wait);
     this.#giftTimer.unref?.();
+  }
+
+  /**
+   * A paid message or dedication, passed on as it is: the overlay queues them. Not kept for new
+   * clients (a card that was due while nobody watched is not worth showing late).
+   */
+  screen(card: Extract<CoreMessage, { type: "screen" }>): void {
+    const { kind, name, text, song } = card;
+    this.#send(JSON.stringify({ type: "screen", kind, name, text, song }));
   }
 
   speaking(state: SpeakingState): void {

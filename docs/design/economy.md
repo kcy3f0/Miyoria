@@ -189,3 +189,45 @@ A、B 階段的後端和 C 的卡框做好了;面板、直播 overlay 和 Discor
 - **食言**:她做了、沒收到。信任 −`broken_trust`(4)、好感 −`broken_affinity`(1.5),**不受每日增加上限限制**;對這個人生氣、不爽(`broken_promise` 社交事件);寫一則記憶「X 答應給我…,我照做了卻沒給」,走一般的記憶路徑,下次見面她想得起來。同一個人之後每次食言 ×`broken_growth`(1.5),最多到 `broken_cap`(3)倍。她的脈絡(工作脈絡的 `deals` 桶)看得到欠她的人、食言的人和今天結束了幾個約定,所以她可以要對方先付。反悔(`cancel_deal`)沒有代價,但看得到次數。
 - **付錢的禮物和好感**:餵食和表情(信不算,內容才算)經社交引擎讓 affinity +`gift_affinity`(0.4)、trust +`gift_trust`(0.1),再乘上引擎自己的每日遞減(同一種事每多一次減半);禮物本身另有每人每天 `gift_affinity_cap`(1.5)、`gift_trust_cap`(0.5)的上限,同時也算進一般的每日上限(8 / 5)。情緒反應不變,不會重複。
 - **錢包**:`WalletView.deals` 列出最近 10 個(任務、獎勵、狀態 `open` / `owed` / `settled` / `broken` / `refunded`、下一個期限);面板之後再做。
+
+## 13. 更多能花的地方(2026-11-08)
+
+一個人一天大約賺 55,原本只能花在餵食、信、表情、卡框。這一節加上卡片、點歌、直播、她自己的錢和人與人之間的東西。owner 決定:轉帳和排行榜要做,原則 1(不能轉給別人)和 5(沒有排行榜)照下面的限制改;競猜(押注)不做。
+
+**共用的收費**:別的部分賣的東西都走 `Economy.purchase(account, item, key, ref)`:扣 `[modules.economy]` 同名的價格、檢查同名 `*_per_day` 的每日上限(退錢的不算)、冪等鍵、稽核;`Economy.refund(account, entry_id)` 退一次。買到的東西是賣的那邊的事,經濟只管錢。`*_per_day = 0` 就是下架。
+
+| 東西 | 價格 | 每日 | 誰賣 | 怎麼做 |
+|---|---|---|---|---|
+| 抽卡重製券 `card_reroll` | 30 | 2 | 卡片 | 今天最新那張作廢(驗證頁顯示已作廢),她重新發一張:重寫那句話、重挑立繪;不算進每天的張數。發不出來就退錢 |
+| 指定立繪 `card_pose` | 20 | 5 | 卡片 | 發卡時自己從好感區間允許的立繪挑一張;她就不挑了 |
+| 閃卡加工 `card_foil` | 50 | 5 | 卡片 | 這張卡加一層箔,純外觀 |
+| 點歌加點券 `song_ticket` | 25 | 3 | 點歌 | 同時點歌數到上限時多點一首;這首沒唱(被丟掉、失敗、她不唱)就退錢 |
+| 歌曲獻詞 `dedication` | 15 | 3 | 點歌 | 點歌附一句獻詞(過審查、不點名別人);唱之前她知道「這首是 X 點給 Y 的」,overlay 顯示;沒唱就退錢 |
+| 留言上大螢幕 `screen_message` | 30 | 10 | 直播 | 開台時 overlay 顯示 60 字內的留言;過審查;每人每 10 分鐘一則;她看得到,有空可能念 |
+| 今日籤詩 `fortune` | 10 | 1 | 籤詩 | 她現寫一張籤(籤等、四句、幾個欄位),可以下載;寫不出來就退錢 |
+
+overlay 的新東西走 `economy.screen`(`ScreenEvent`:留言或獻詞)。
+
+**她自己的錢(§3.3 開始做)**:她有一個錢包。別人餵她、送她東西,有一部分進她的錢包;她可以用來送人、買給自己(例如自己換表情)、開懸賞。她錢包裡有多少、在存什麼,她自己看得到。
+
+- **群眾募資目標**:她提一個目標(要多少、到了她會做什麼、幾天內),一次一個;大家投錢,錢先託管;到了就變成她的承諾,錢進她的錢包;時間到沒達成全部退回。承諾的內容和約定一樣要是她自己能決定的事(§12 的閘門)。
+- **懸賞**:她用自己的錢貼一個懸賞(任務、獎金),誰完成由她判定,獎金付給正在跟她說話的人。這是多一種賺錢的方法,錢從她的錢包出,不是憑空生。
+
+**實作(她自己的錢)**:
+
+- **錢包**:帳本上的一個合成帳號 `{ platform: "self", id: <profile> }`。每筆付費禮物(餵食、信、表情、留言上大螢幕、歌曲獻詞)的 `her_share`(0.2,無條件捨去)進她的錢包(`her_share`,`ref` 是那筆扣款);退款時按她還剩的拿回(`her_share_back`)。她的工作脈絡有 `purse`(餘額、在存的目標、貼著的懸賞、答應過大家的事)和 `purse_news`(剛發生的事)兩個桶。
+- **她的工具**(中風險,要 `economy.agency`,沒有人有,所以她用 `on_own` 呼叫):`treat_from_purse`(請正在跟她說話的人,每人每天 `treat_per_person`、所有人 `treat_total`,不算進 `give_coins` 的上限)、`buy_for_self`(花 `expression` 買自己的表情,每天 `self_expressions_per_day`,沒做出來就退回錢包)、`propose_goal` / `cancel_goal`、`post_bounty` / `award_bounty` / `cancel_bounty`。
+- **目標**:一次一個,名稱 30 字、承諾 60 字,目標最多 `goal_max_target`(2000),最多 `goal_max_days`(7)天;承諾和懸賞任務過約定的同一道閘門(`guardTask`)。投的錢是 `goal_pledge`(託管,每人每個目標最多 `goal_pledge_max`);湊滿就變成她的(`goal_funds` 進錢包),她被告知「大家湊到了…你答應過要…」,承諾留在 `purse` 桶 `goal_keep_days` 天(目前沒有 service key 可以寫進她的承諾簿,所以只靠這兩行)。時間到沒湊滿或她取消,每筆退一次。
+- **懸賞**:`bounty_max`(50)以內,同時最多 `bounties_open`(3)個,獎金先從錢包扣下(`bounty_hold`),付給說話的人(`bounty`,一個懸賞只付一次,不付給自己),取消或 `bounty_days`(3)天沒人領就回到錢包。
+- **API**:`GET /api/member/goals`、`POST /api/member/goals/:id/pledge {amount}`(`Idempotency-Key`)、`GET /api/member/bounties`(`packages/api/src/agency.ts`)。陌生人看得到目標,不能投(403)。表:`goals`、`goal_pledges`、`bounties`(migration 0013)。
+
+**人與人之間**:
+
+- **轉帳**:只能轉給她認識、沒被封鎖的人;每人每天轉出、收到都有上限;自己轉自己(連在一起的帳號)不行;收不到時的回答不透露對方被封鎖。轉帳不是給她的禮物,不影響她。
+- **贊助排行榜**:只列自己選擇上榜的人,看的是最近 30 天花在她身上的錢(餵食、信、表情、留言、獻詞);預設不上榜,隨時可以退出;不顯示餘額。
+- **實作(migration 0014)**:
+  - 轉帳 `Economy.transfer`:一次 1 到 `transfer_max`(50),每人每天轉出 `transfer_out_per_day`(100)、收到 `transfer_in_per_day`(100)。帳本沒有跨兩列的交易,所以先寫轉出那列(扣得起才寫),再寫收到那列(鍵由轉出那列的 id 推出);中間當掉,同一個冪等鍵重送會補完,不會付兩次;收的人到上限就把轉出那列退回。對方是陌生人、被封鎖、沒有 `me.wallet`、今天收滿了,一律回「對方現在收不到」。入口:Discord `/me give user amount`(預設只有本人看得到)和 `POST /api/member/transfer {to_discord_id, amount}`。
+  - 排行榜 `Economy.board` / `setOnBoard`:`coin_wallets.on_board`,連在一起的帳號任一個上榜就上榜,退出時全部關掉。算 `feed`、`letter`、`expression`、`screen_message`、`dedication`,以及已經放給她的預付約定(`deal_escrow` 且約定 `settled`);退回的不算;`board_days`(30)天內。同額同名次。入口:Discord `/me board [join]`、`POST /api/member/board {on}`、`GET /api/public/board`(只有名字和數字)。
+  - 籤詩:`fortunes` 表,一人一天一張;`GET`/`POST /api/member/fortune`。她寫 {籤等、題、四句、最多三個欄位、一句話},籤等不在六種之內就依權重抽(大吉 10、吉 30、中吉 25、小吉 20、末吉 10、凶 5),每段文字過和卡片一樣的篩;寫不出來就退錢、回 503。匯出有 `fortunes`,「請她忘記我」會刪。
+
+**不做**:競猜、押注,或任何拿魚幣賭結果的東西。

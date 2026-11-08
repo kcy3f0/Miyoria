@@ -61,6 +61,11 @@ export const GIFT_EXPRESSION_MAX_S = 15;
 export const GIFT_NAME_MAX = 32;
 export const GIFT_LABEL_MAX = 24;
 
+/** Longest payer name / message / song title a screen card takes (code units). */
+export const SCREEN_NAME_MAX = 32;
+export const SCREEN_TEXT_MAX = 200;
+export const SCREEN_SONG_MAX = 128;
+
 /** `song_video` actions. */
 export type SongVideoAction = "play" | "stop";
 export const SongVideoActionSchema = z.enum(["play", "stop"]);
@@ -209,6 +214,17 @@ export type CoreMessage =
   /** Someone fed her something (`economy.gift`); the overlay merges gifts into one line. */
   | { type: "gift"; name: string; item: string; count: number; label: string }
   /**
+   * A paid message or a song dedication (`economy.screen`). Unlike gifts they are not merged: the
+   * overlay queues them and shows one at a time. `song` is the title for a dedication, else null.
+   */
+  | {
+      type: "screen";
+      kind: "message" | "dedication";
+      name: string;
+      text: string;
+      song: string | null;
+    }
+  /**
    * The song she sings has a video: `play` shows `path` (a file in the song worker's cache on
    * the streaming PC) in the media source, muted, `offset_ms` into the song at the moment the
    * message was sent, in `scene` when the scene director switches to a `sing` scene (else the
@@ -277,6 +293,13 @@ const CoreMessageSchema = z.discriminatedUnion("type", [
     item: z.string().max(32),
     count: z.number().int().min(1).max(99),
     label: z.string().max(GIFT_LABEL_MAX),
+  }),
+  z.object({
+    type: z.literal("screen"),
+    kind: z.enum(["message", "dedication"]),
+    name: z.string().max(SCREEN_NAME_MAX),
+    text: z.string().max(SCREEN_TEXT_MAX),
+    song: z.string().max(SCREEN_SONG_MAX).nullable(),
   }),
   z.object({
     type: z.literal("song_video"),

@@ -183,8 +183,8 @@ const DECISION_RECORD: DecisionRecord = {
 };
 
 function serve(extra?: Parameters<typeof mockFetch>[0]) {
-  return mockFetch((method, url, body) => {
-    const custom = extra?.(method, url, body);
+  return mockFetch((method, url, body, headers) => {
+    const custom = extra?.(method, url, body, headers);
     if (custom) return custom;
     switch (url.pathname) {
       case "/api/activity":

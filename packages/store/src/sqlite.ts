@@ -85,6 +85,9 @@ import type {
   AuditEntry,
   AuthoredEntry,
   AuthScope,
+  Bounty,
+  BountyPatch,
+  BountyStatus,
   CoinCap,
   CoinEntry,
   CoinPost,
@@ -93,6 +96,11 @@ import type {
   DealPatch,
   DealStatus,
   DecisionRecord,
+  FortuneRecord,
+  Goal,
+  GoalPatch,
+  GoalPledge,
+  GoalStatus,
   LogEntry,
   MemberCardRecord,
   MemoryFilter,
@@ -114,6 +122,7 @@ import type {
 import type {
   AuditLog,
   AuthStore,
+  BountyStore,
   CoinLedgerStore,
   DealStore,
   DecisionLog,
@@ -122,6 +131,8 @@ import type {
   EventCompactionResult,
   EventLogStore,
   EventRollup,
+  FortuneStore,
+  GoalStore,
   IdentityStore,
   MemberCardStore,
   MemoryRecordStore,
@@ -492,6 +503,14 @@ class SqliteMemberCards implements MemberCardStore {
     return row ? memberCardFromRow(row) : null;
   }
 
+  async amend(profile: ProfileId, serial: string, snapshot: JsonObject): Promise<boolean> {
+    const changed = this.db.run(
+      "UPDATE member_cards SET snapshot = $snapshot WHERE profile_id = $profile AND serial = $serial",
+      { profile, serial, snapshot: JSON.stringify(snapshot) },
+    );
+    return changed > 0;
+  }
+
   async listFor(
     profile: ProfileId,
     accounts: readonly AccountRef[],
@@ -702,6 +721,165 @@ class SqliteCoins implements CoinLedgerStore {
       { profile, platform: account.platform, id: account.id, frame, at: toMicros(at) },
     );
   }
+
+  async onBoard(profile: ProfileId, accounts: readonly AccountRef[]): Promise<boolean> {
+    if (accounts.length === 0) return false;
+    const params: Params = { profile };
+    const row = this.db.get(
+      "SELECT 1 AS x FROM coin_wallets WHERE profile_id = $profile AND on_board = 1 AND " +
+        `(${authorsWhere(accounts, params)}) LIMIT 1`,
+      params,
+    );
+    return Boolean(row);
+  }
+
+  async setOnBoard(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    on: boolean,
+  ): Promise<void> {
+    // A row made only for the board is the oldest, so it never hides a chosen frame.
+    this.db.tx(() => {
+      for (const account of accounts) {
+        this.db.run(
+          "INSERT INTO coin_wallets (profile_id, author_platform, author_id, frame, updated_at, " +
+            "on_board) VALUES ($profile, $platform, $id, NULL, 0, $on) ON CONFLICT (profile_id, " +
+            "author_platform, author_id) DO UPDATE SET on_board = excluded.on_board",
+          { profile, platform: account.platform, id: account.id, on: on ? 1 : 0 },
+        );
+      }
+    });
+  }
+
+  async boardAccounts(profile: ProfileId, limit: number): Promise<AccountRef[]> {
+    const rows = this.db.all(
+      "SELECT author_platform, author_id FROM coin_wallets WHERE profile_id = $profile AND " +
+        "on_board = 1 ORDER BY author_platform, author_id LIMIT $limit",
+      { profile, limit: limitParam(limit) },
+    );
+    return rows.map((r) => ({ platform: str(r, "author_platform"), id: str(r, "author_id") }));
+  }
+
+  async spent(
+    profile: ProfileId,
+    reasons: readonly string[],
+    since: Timestamp,
+    limit: number,
+  ): Promise<{ account: AccountRef; spent: number }[]> {
+    if (reasons.length === 0) return [];
+    const params: Params = { profile, since: toMicros(since), limit: limitParam(limit) };
+    const names = reasons.map((r, i) => {
+      params[`r${i}`] = r;
+      return `$r${i}`;
+    });
+    const rows = this.db.all(
+      "SELECT l.author_platform AS author_platform, l.author_id AS author_id, " +
+        "-SUM(l.delta) AS n FROM coin_ledger l WHERE l.profile_id = $profile AND l.ts >= $since " +
+        `AND l.delta < 0 AND l.reason IN (${names.join(", ")}) AND (l.reason <> 'deal_escrow' ` +
+        "OR EXISTS (SELECT 1 FROM deals d WHERE d.escrow_entry = l.id AND d.status = 'settled')) " +
+        "AND NOT EXISTS (SELECT 1 FROM coin_ledger r WHERE r.profile_id = l.profile_id AND " +
+        "r.reason = 'refund' AND r.ref = l.id) GROUP BY l.author_platform, l.author_id " +
+        "HAVING SUM(l.delta) < 0 ORDER BY n DESC, l.author_platform, l.author_id LIMIT $limit",
+      params,
+    );
+    return rows.map((r) => ({
+      account: { platform: str(r, "author_platform"), id: str(r, "author_id") },
+      spent: num(r, "n"),
+    }));
+  }
+}
+
+// ---- fortunes ------------------------------------------------------------------------------
+
+function fortuneFromRow(row: Row): FortuneRecord {
+  return {
+    id: str(row, "id"),
+    profile: str(row, "profile_id"),
+    account: { platform: str(row, "author_platform"), id: str(row, "author_id") },
+    person: optStr(row, "person_id"),
+    day: num(row, "day"),
+    issued_at: ts(row, "issued_at"),
+    entry: optStr(row, "entry_id"),
+    slip: json<JsonObject>(row, "slip", "fortune"),
+  };
+}
+
+class SqliteFortunes implements FortuneStore {
+  constructor(private readonly db: Db) {}
+
+  async put(record: FortuneRecord, accounts: readonly AccountRef[]): Promise<boolean> {
+    const wallet = walletWith(record.account, accounts);
+    try {
+      return this.db.tx((): boolean => {
+        const params: Params = { profile: record.profile, day: record.day };
+        const taken = this.db.get(
+          "SELECT id FROM fortunes WHERE profile_id = $profile AND day = $day AND " +
+            `(${authorsWhere(wallet, params)}) LIMIT 1`,
+          params,
+        );
+        if (taken) return false;
+        this.db.run(
+          "INSERT INTO fortunes (id, profile_id, author_platform, author_id, person_id, day, " +
+            "issued_at, entry_id, slip) VALUES ($id, $profile, $platform, $account, $person, " +
+            "$day, $at, $entry, $slip)",
+          {
+            id: record.id,
+            profile: record.profile,
+            platform: record.account.platform,
+            account: record.account.id,
+            person: record.person,
+            day: record.day,
+            at: toMicros(record.issued_at),
+            entry: record.entry,
+            slip: JSON.stringify(record.slip),
+          },
+        );
+        return true;
+      });
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot store the fortune", { cause });
+    }
+  }
+
+  async forDay(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    day: number,
+  ): Promise<FortuneRecord | null> {
+    if (accounts.length === 0) return null;
+    const params: Params = { profile, day };
+    const row = this.db.get(
+      "SELECT * FROM fortunes WHERE profile_id = $profile AND day = $day AND " +
+        `(${authorsWhere(accounts, params)}) ORDER BY issued_at DESC, rowid DESC LIMIT 1`,
+      params,
+    );
+    return row ? fortuneFromRow(row) : null;
+  }
+
+  async listFor(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    limit: number,
+  ): Promise<FortuneRecord[]> {
+    if (accounts.length === 0) return [];
+    const params: Params = { profile, limit: limitParam(limit) };
+    const rows = this.db.all(
+      `SELECT * FROM fortunes WHERE profile_id = $profile AND (${authorsWhere(accounts, params)}) ` +
+        "ORDER BY issued_at DESC, rowid DESC LIMIT $limit",
+      params,
+    );
+    return rows.map(fortuneFromRow);
+  }
+
+  async deleteFor(profile: ProfileId, accounts: readonly AccountRef[]): Promise<number> {
+    if (accounts.length === 0) return 0;
+    const params: Params = { profile };
+    return this.db.run(
+      `DELETE FROM fortunes WHERE profile_id = $profile AND (${authorsWhere(accounts, params)})`,
+      params,
+    );
+  }
 }
 
 // ---- deals ---------------------------------------------------------------------------------
@@ -830,6 +1008,216 @@ class SqliteDeals implements DealStore {
       params,
     );
     return rows.map(dealFromRow);
+  }
+}
+
+// ---- goals and bounties --------------------------------------------------------------------
+
+function goalFromRow(row: Row): Goal {
+  return {
+    id: str(row, "id"),
+    profile: str(row, "profile_id"),
+    title: str(row, "title"),
+    promise: str(row, "promise"),
+    target: num(row, "target"),
+    status: str(row, "status") as GoalStatus,
+    created_at: ts(row, "created_at"),
+    deadline: ts(row, "deadline"),
+    closed_at: optTs(row, "closed_at"),
+  };
+}
+
+function pledgeFromRow(row: Row): GoalPledge {
+  return {
+    id: str(row, "id"),
+    goal: str(row, "goal_id"),
+    profile: str(row, "profile_id"),
+    account: { platform: str(row, "author_platform"), id: str(row, "author_id") },
+    amount: num(row, "amount"),
+    created_at: ts(row, "created_at"),
+  };
+}
+
+class SqliteGoals implements GoalStore {
+  constructor(private readonly db: Db) {}
+
+  async create(goal: Goal): Promise<void> {
+    try {
+      this.db.run(
+        "INSERT INTO goals (id, profile_id, title, promise, target, status, created_at, " +
+          "deadline, closed_at) VALUES ($id, $profile, $title, $promise, $target, $status, " +
+          "$created, $deadline, $closed)",
+        {
+          id: goal.id,
+          profile: goal.profile,
+          title: goal.title,
+          promise: goal.promise,
+          target: goal.target,
+          status: goal.status,
+          created: toMicros(goal.created_at),
+          deadline: toMicros(goal.deadline),
+          closed: optionalMicros(goal.closed_at),
+        },
+      );
+    } catch (cause) {
+      throw new StoreError("cannot write the goal", { cause });
+    }
+  }
+
+  async get(id: string): Promise<Goal | null> {
+    const row = this.db.get("SELECT * FROM goals WHERE id = $id", { id });
+    return row ? goalFromRow(row) : null;
+  }
+
+  async transition(id: string, from: readonly GoalStatus[], patch: GoalPatch): Promise<boolean> {
+    if (from.length === 0) return false;
+    const params: Params = { id, status: patch.status };
+    const sets = ["status = $status"];
+    if (patch.closed_at !== undefined) {
+      params.closed_at = optionalMicros(patch.closed_at);
+      sets.push("closed_at = $closed_at");
+    }
+    return (
+      this.db.run(
+        `UPDATE goals SET ${sets.join(", ")} WHERE id = $id AND ${statusIn(from, params)}`,
+        params,
+      ) > 0
+    );
+  }
+
+  async list(
+    profile: ProfileId,
+    filter: { statuses?: readonly GoalStatus[]; limit: number },
+  ): Promise<Goal[]> {
+    if (filter.statuses?.length === 0) return [];
+    const params: Params = { profile, limit: limitParam(filter.limit) };
+    let where = "profile_id = $profile";
+    if (filter.statuses) where += ` AND ${statusIn(filter.statuses, params)}`;
+    const rows = this.db.all(
+      `SELECT * FROM goals WHERE ${where} ORDER BY created_at DESC, rowid DESC LIMIT $limit`,
+      params,
+    );
+    return rows.map(goalFromRow);
+  }
+
+  async addPledge(pledge: GoalPledge): Promise<void> {
+    try {
+      this.db.run(
+        "INSERT INTO goal_pledges (id, goal_id, profile_id, author_platform, author_id, " +
+          "amount, created_at) VALUES ($id, $goal, $profile, $platform, $account, $amount, " +
+          "$created)",
+        {
+          id: pledge.id,
+          goal: pledge.goal,
+          profile: pledge.profile,
+          platform: pledge.account.platform,
+          account: pledge.account.id,
+          amount: pledge.amount,
+          created: toMicros(pledge.created_at),
+        },
+      );
+    } catch (cause) {
+      throw new StoreError("cannot write the pledge", { cause });
+    }
+  }
+
+  async pledges(goal: string): Promise<GoalPledge[]> {
+    const rows = this.db.all(
+      "SELECT * FROM goal_pledges WHERE goal_id = $goal ORDER BY created_at, rowid",
+      { goal },
+    );
+    return rows.map(pledgeFromRow);
+  }
+}
+
+function bountyFromRow(row: Row): Bounty {
+  const platform = optStr(row, "winner_platform");
+  const id = optStr(row, "winner_id");
+  return {
+    id: str(row, "id"),
+    profile: str(row, "profile_id"),
+    task: str(row, "task"),
+    reward: num(row, "reward"),
+    hold: str(row, "hold_entry"),
+    status: str(row, "status") as BountyStatus,
+    created_at: ts(row, "created_at"),
+    expires_at: ts(row, "expires_at"),
+    closed_at: optTs(row, "closed_at"),
+    winner: platform !== null && id !== null ? { platform, id } : null,
+  };
+}
+
+class SqliteBounties implements BountyStore {
+  constructor(private readonly db: Db) {}
+
+  async create(bounty: Bounty): Promise<void> {
+    try {
+      this.db.run(
+        "INSERT INTO bounties (id, profile_id, task, reward, hold_entry, status, created_at, " +
+          "expires_at, closed_at, winner_platform, winner_id) VALUES ($id, $profile, $task, " +
+          "$reward, $hold, $status, $created, $expires, $closed, $platform, $winner)",
+        {
+          id: bounty.id,
+          profile: bounty.profile,
+          task: bounty.task,
+          reward: bounty.reward,
+          hold: bounty.hold,
+          status: bounty.status,
+          created: toMicros(bounty.created_at),
+          expires: toMicros(bounty.expires_at),
+          closed: optionalMicros(bounty.closed_at),
+          platform: bounty.winner?.platform ?? null,
+          winner: bounty.winner?.id ?? null,
+        },
+      );
+    } catch (cause) {
+      throw new StoreError("cannot write the bounty", { cause });
+    }
+  }
+
+  async get(id: string): Promise<Bounty | null> {
+    const row = this.db.get("SELECT * FROM bounties WHERE id = $id", { id });
+    return row ? bountyFromRow(row) : null;
+  }
+
+  async transition(
+    id: string,
+    from: readonly BountyStatus[],
+    patch: BountyPatch,
+  ): Promise<boolean> {
+    if (from.length === 0) return false;
+    const params: Params = { id, status: patch.status };
+    const sets = ["status = $status"];
+    if (patch.closed_at !== undefined) {
+      params.closed_at = optionalMicros(patch.closed_at);
+      sets.push("closed_at = $closed_at");
+    }
+    if (patch.winner !== undefined) {
+      params.winner_platform = patch.winner?.platform ?? null;
+      params.winner_id = patch.winner?.id ?? null;
+      sets.push("winner_platform = $winner_platform", "winner_id = $winner_id");
+    }
+    return (
+      this.db.run(
+        `UPDATE bounties SET ${sets.join(", ")} WHERE id = $id AND ${statusIn(from, params)}`,
+        params,
+      ) > 0
+    );
+  }
+
+  async list(
+    profile: ProfileId,
+    filter: { statuses?: readonly BountyStatus[]; limit: number },
+  ): Promise<Bounty[]> {
+    if (filter.statuses?.length === 0) return [];
+    const params: Params = { profile, limit: limitParam(filter.limit) };
+    let where = "profile_id = $profile";
+    if (filter.statuses) where += ` AND ${statusIn(filter.statuses, params)}`;
+    const rows = this.db.all(
+      `SELECT * FROM bounties WHERE ${where} ORDER BY created_at DESC, rowid DESC LIMIT $limit`,
+      params,
+    );
+    return rows.map(bountyFromRow);
   }
 }
 
@@ -2202,6 +2590,9 @@ export class SqliteStore implements Store {
   readonly cards: MemberCardStore;
   readonly coins: CoinLedgerStore;
   readonly deals: DealStore;
+  readonly fortunes: FortuneStore;
+  readonly goals: GoalStore;
+  readonly bounties: BountyStore;
   readonly #db: Db;
 
   private constructor(db: Db, maxDecisions: number | null) {
@@ -2223,6 +2614,9 @@ export class SqliteStore implements Store {
     this.cards = new SqliteMemberCards(db);
     this.coins = new SqliteCoins(db);
     this.deals = new SqliteDeals(db);
+    this.fortunes = new SqliteFortunes(db);
+    this.goals = new SqliteGoals(db);
+    this.bounties = new SqliteBounties(db);
   }
 
   /**

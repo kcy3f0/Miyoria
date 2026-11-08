@@ -4,7 +4,11 @@
 // * `GET /api/member/wallet`: balance, what they can still earn today, the shop, their frames.
 // * `POST /api/member/checkin` `{}`: once a local day (Discord's `/me` counts too); 409 after.
 // * `POST /api/member/feed` `{ item, count? }`, `POST /api/member/letter` `{ text }`,
-//   `POST /api/member/expression` `{ expression }`, `POST /api/member/frame` `{ buy?, select? }`.
+//   `POST /api/member/expression` `{ expression }`,
+//   `POST /api/member/screen` `{ text }` (a message on the stream: 409 when she is not live), `POST /api/member/frame` `{ buy?, select? }`.
+// * `POST /api/member/transfer` `{ to_discord_id, amount }`: coins to another member (403 in the
+//   same words for every reason they cannot take them); `POST /api/member/board` `{ on }`: join or
+//   leave the sponsor board (`GET /api/public/board` is in `board.ts`).
 //
 // Spends take an `Idempotency-Key` header: the same key answers what it answered first. A
 // stranger (and a blocked person) reads an empty wallet and gets 403 for every spend, in the same
@@ -25,6 +29,8 @@ import {
   MAX_FEED_COUNT,
   type ShopItem,
   type SpendResult,
+  STRANGER,
+  type TransferResult,
   type WalletExport,
   type WalletView,
 } from "@miyoria/economy";
@@ -49,9 +55,16 @@ const FeedSchema = z.strictObject({
   count: z.number().int().min(1).max(MAX_FEED_COUNT).optional(),
 });
 const LetterSchema = z.strictObject({ text: z.string().max(2_000) });
+const ScreenSchema = z.strictObject({ text: z.string().max(500) });
 const ExpressionSchema = z.strictObject({
   expression: z.enum(GIFT_EXPRESSIONS as [string, ...string[]]),
 });
+const TransferSchema = z.strictObject({
+  /** The receiver is named by their Discord user id, in the body only. */
+  to_discord_id: z.string().regex(/^[0-9]{1,25}$/),
+  amount: z.number().int().min(1).max(1_000_000),
+});
+const BoardSchema = z.strictObject({ on: z.boolean() });
 const FrameSchema = z.strictObject({
   buy: z.string().max(64).optional(),
   select: z.string().max(64).nullable().optional(),
@@ -62,7 +75,7 @@ function accountOf(c: ApiContext): AccountRef {
 }
 
 /** The request's `Idempotency-Key`; a fresh one when there is none (no retry protection). */
-function keyOf(c: ApiContext): string {
+export function keyOf(c: ApiContext): string {
   const key = c.req.header("idempotency-key")?.trim();
   if (key === undefined || key === "") return newId();
   if (key.length > MAX_KEY_CHARS || !/^[\x21-\x7e]+$/.test(key)) {
@@ -127,6 +140,7 @@ function walletView(v: WalletView): WalletView {
     hungry: v.hungry,
     recent: v.recent.map(ledgerLine),
     deals: v.deals.map(dealView),
+    on_board: v.on_board,
   };
 }
 
@@ -143,6 +157,12 @@ const feedResult = (r: FeedResult): FeedResult => ({
   charged: r.charged,
   balance: r.balance,
   message: r.message,
+});
+
+const transferResult = (r: TransferResult): TransferResult => ({
+  sent: r.sent,
+  balance: r.balance,
+  to: r.to,
 });
 
 const framesResult = (r: FramesResult): FramesResult => ({
@@ -221,6 +241,16 @@ export function walletRoutes(state: ApiState): Route[] {
     },
     {
       method: "POST",
+      path: "/api/member/screen",
+      handler: limited(state, async (c) => {
+        const { text } = await readJson(c, ScreenSchema);
+        const key = keyOf(c);
+        const r = await withWallet(state, (e) => e.screenMessage(accountOf(c), text, key));
+        return json(spendResult(r));
+      }),
+    },
+    {
+      method: "POST",
       path: "/api/member/expression",
       handler: limited(state, async (c) => {
         const body = await readJson(c, ExpressionSchema);
@@ -228,6 +258,27 @@ export function walletRoutes(state: ApiState): Route[] {
         const expression = body.expression as (typeof GIFT_EXPRESSIONS)[number];
         const r = await withWallet(state, (e) => e.expression(accountOf(c), expression, key));
         return json(spendResult(r));
+      }),
+    },
+    {
+      method: "POST",
+      path: "/api/member/transfer",
+      handler: limited(state, async (c) => {
+        const body = await readJson(c, TransferSchema);
+        const key = keyOf(c);
+        const to: AccountRef = { platform: "discord", id: body.to_discord_id };
+        const r = await withWallet(state, (e) => e.transfer(accountOf(c), to, body.amount, key));
+        return json(transferResult(r));
+      }),
+    },
+    {
+      method: "POST",
+      path: "/api/member/board",
+      handler: limited(state, async (c) => {
+        const { on } = await readJson(c, BoardSchema);
+        const done = await withWallet(state, (e) => e.setOnBoard(accountOf(c), on));
+        if (!done) throw new ApiError(403, STRANGER);
+        return json({ on_board: on });
       }),
     },
     {

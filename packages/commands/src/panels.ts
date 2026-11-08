@@ -383,7 +383,7 @@ function songPages(): PanelPage[] {
       description: "點歌、投票跳過",
       alwaysVisible: true,
       refresh: true,
-      intro: ["她會用自己的聲音翻唱。歌名加上歌手比較準，也可以貼 YouTube 連結。"],
+      intro: ["她會用自己的聲音翻唱。歌名加上歌手比較準，也可以貼 YouTube 或 bilibili 連結。"],
       status: [{ path: "queue song list", label: "歌單" }],
       actions: [
         {
@@ -394,7 +394,9 @@ function songPages(): PanelPage[] {
           ask: {
             title: "點歌",
             fields: [
-              field("song", "歌名或 YouTube 連結", { placeholder: "例如：櫻ノ詩 / 歌手" }),
+              field("song", "歌名或 YouTube / bilibili 連結", {
+                placeholder: "例如：櫻ノ詩 / 歌手",
+              }),
               field("key", "升降幾個半音（-6 到 6，可留空）", {
                 placeholder: "0",
                 required: false,
@@ -449,7 +451,9 @@ function mePages(policyUrl: string | null): PanelPage[] {
           ask: {
             title: "點歌",
             fields: [
-              field("song", "歌名或 YouTube 連結", { placeholder: "例如：櫻ノ詩 / 歌手" }),
+              field("song", "歌名或 YouTube / bilibili 連結", {
+                placeholder: "例如：櫻ノ詩 / 歌手",
+              }),
               field("key", "升降幾個半音（-6 到 6，可留空）", {
                 placeholder: "0",
                 required: false,
@@ -541,6 +545,49 @@ function mePages(policyUrl: string | null): PanelPage[] {
         { id: "checkin", label: "簽到", path: "me checkin", style: "primary" },
         { id: "rice", label: "餵一碗", path: "me feed", args: { item: "rice" } },
         { id: "big-bowl", label: "餵鋼盆", path: "me feed", args: { item: "big_bowl" } },
+        {
+          id: "screen",
+          label: "留言上大螢幕",
+          path: "me screen",
+          ask: {
+            title: "留言上大螢幕",
+            fields: [field("text", "留言（60 字內）", { maxLength: 60 })],
+          },
+        },
+        {
+          id: "give",
+          label: "轉給別人",
+          path: "me give",
+          ask: {
+            title: "轉魚幣給別人",
+            fields: [USER_FIELD, field("amount", "多少魚幣", { placeholder: "1 到 50" })],
+          },
+        },
+        { id: "board", label: "排行榜", path: "me board" },
+      ],
+    },
+    {
+      id: "wishes",
+      label: "她的願望",
+      description: "她的目標、懸賞",
+      refresh: true,
+      status: [
+        { path: "me goals", label: "她的目標" },
+        { path: "me bounties", label: "她的懸賞" },
+      ],
+      actions: [
+        {
+          id: "pledge",
+          label: "投給目標",
+          path: "me pledge",
+          style: "primary",
+          ask: {
+            title: "投給她的目標",
+            fields: [field("amount", "多少魚幣", { placeholder: "例如 20" })],
+          },
+        },
+        { id: "goals", label: "看目標", path: "me goals" },
+        { id: "bounties", label: "看懸賞", path: "me bounties" },
       ],
     },
     {

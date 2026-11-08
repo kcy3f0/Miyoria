@@ -88,8 +88,8 @@ const GOAL: Goal = {
 const DONE: Goal = { ...GOAL, id: "G0", what: "玩一小時 MC", status: "done", trigger: { kind: "whenever" }, closed_at: AT };
 
 function serve(extra?: Parameters<typeof mockFetch>[0]) {
-  return mockFetch((method, url, body) => {
-    const custom = extra?.(method, url, body);
+  return mockFetch((method, url, body, headers) => {
+    const custom = extra?.(method, url, body, headers);
     if (custom) return custom;
     switch (url.pathname) {
       case "/api/self":

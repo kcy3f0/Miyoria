@@ -37,7 +37,7 @@ import { ActivityTracker } from "./activity.js";
 import { registerStreamCommands, unregisterStreamCommands } from "./commands.js";
 import { MAX_MESSAGE } from "./conn.js";
 import { type GoLiveState, SceneDirector } from "./director.js";
-import { EMOTION_TOPIC, Forwarder, GIFT_TOPIC, SUBTITLE_TOPIC } from "./forward.js";
+import { EMOTION_TOPIC, Forwarder, GIFT_TOPIC, SCREEN_TOPIC, SUBTITLE_TOPIC } from "./forward.js";
 import { goliveFollow, VOICE_GOLIVE_TOPIC } from "./golive.js";
 import {
   DEFAULT_BIND,
@@ -241,6 +241,7 @@ export class StageLinkModule implements Module {
       AFFECT_CHANGED_TOPIC,
       SUBTITLE_TOPIC,
       GIFT_TOPIC,
+      SCREEN_TOPIC,
       SONG_TOPIC,
       SPEECH_PAUSE_TOPIC,
       "agent.turn.started",

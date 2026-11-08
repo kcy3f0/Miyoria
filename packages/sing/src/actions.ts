@@ -23,6 +23,10 @@ const RequestArgs = z.object({
   key: z.number().int().min(-6).max(6).nullish(),
   /** How to call the person who asked (shown in the list and to her later). */
   by: z.string().trim().min(1).max(64).nullish(),
+  /** Commands only: use a ticket when the person is at the limit. */
+  ticket: z.boolean().nullish(),
+  /** Commands only: a paid dedication (up to 40 characters). */
+  dedication: z.string().trim().max(200).nullish(),
 });
 const PlayArgs = z.object({ song: z.number().int().positive().nullish() });
 const StopArgs = z.object({ all: z.boolean().nullish() });
@@ -66,9 +70,9 @@ export function singCapabilities(singer: Singer, perms: SingPermissions): Capabi
       description:
         "準備一首歌給你唱(在背景下載、分離人聲、轉成你的聲音,通常要一到兩分鐘;已經唱過的歌馬上好)。" +
         "有人點歌、你想唱的時候用;準備的時候照常聊天,好了會告訴你,再用 sing_start 開唱。" +
-        "query 寫歌名(加上歌手更準),也可以是 YouTube 連結。不想唱、歌不適合可以拒絕。",
+        "query 寫歌名(加上歌手更準),也可以是 YouTube 或 bilibili 連結。不想唱、歌不適合可以拒絕。",
       properties: {
-        query: { type: "string", description: "歌名 + 歌手,或 YouTube 連結" },
+        query: { type: "string", description: "歌名 + 歌手,或 YouTube / bilibili 連結" },
         key: { type: "integer", description: "整首升降幾個半音(-6 到 6,通常省略)" },
         by: { type: "string", description: "點歌的人怎麼稱呼(可省略)" },
       },
@@ -84,6 +88,10 @@ export function singCapabilities(singer: Singer, perms: SingPermissions): Capabi
           requester_name: byOf(p, args.by),
           context: p.context,
           forced: forced(p),
+          // Money moves only on the person's own command, never on her tool call.
+          ...(p.kind === "command"
+            ? { ticket: args.ticket === true, dedication: args.dedication ?? null }
+            : {}),
         },
         ctx.signal,
       );

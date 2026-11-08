@@ -373,6 +373,9 @@ class Stage {
       case "gift":
         this.#overlay.gift(msg);
         return;
+      case "screen":
+        this.#overlay.screen(msg);
+        return;
       case "status_request":
         this.#answer(msg.id, () => this.#refreshHotkeys());
         return;

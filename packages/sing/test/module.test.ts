@@ -50,6 +50,8 @@ import {
   type SingWorker,
   SingWorkerError,
   type SongMeta,
+  type SongPayments,
+  SongPaymentsKey,
   type SongQuery,
   type SongTrack,
   skipVotesNeeded,
@@ -956,6 +958,162 @@ describe("sing module", () => {
 
     const none = await h.invoke(Principals.self(VOICE), "sing.play", {});
     expect(none.status).toBe("denied");
+  });
+
+  describe("paid extras", () => {
+    class FakePayments implements SongPayments {
+      charges: { item: string; ref: string; text?: string }[] = [];
+      refunds: string[] = [];
+      refuse: string | null = null;
+
+      async charge(_who: AccountRef, item: string, _key: string, ref: string, text?: string) {
+        if (this.refuse !== null) return { refused: this.refuse };
+        this.charges.push({ item, ref, ...(text === undefined ? {} : { text }) });
+        return { entryId: `e${this.charges.length}` };
+      }
+
+      async refund(_who: AccountRef, id: string) {
+        if (this.refunds.includes(id)) return false;
+        this.refunds.push(id);
+        return true;
+      }
+    }
+
+    const asAmy = (h2: Harness, args: Record<string, JsonValue>) =>
+      h2.invoke(Principals.command(AMY, TEXT), "sing.request", args);
+
+    async function paid(config: JsonValue = { max_pending_per_user: 1 }) {
+      h = await Harness.create(config);
+      const pay = new FakePayments();
+      h.sup.services.provide("economy", SongPaymentsKey, pay);
+      await h.join();
+      return pay;
+    }
+
+    it("a ticket lets one more past the limit, and is only charged at the limit", async () => {
+      const pay = await paid();
+      // Below the limit nothing is charged, ticket or not.
+      expect((await asAmy(h, { query: "one", ticket: true })).status).toBe("done");
+      expect(pay.charges).toEqual([]);
+      // At the limit: refused without a ticket (and the text points to the ticket)...
+      const no = await asAmy(h, { query: "two" });
+      expect(no.status === "failed" && no.error).toContain("ticket");
+      expect(pay.charges).toEqual([]);
+      // ...a ticket makes room for one more, not two.
+      expect((await asAmy(h, { query: "two", ticket: true })).status).toBe("done");
+      expect(pay.charges.map((c) => c.item)).toEqual(["song_ticket"]);
+      expect(h.singer.list.get(2)?.ticket_entry).toBe("e1");
+      const three = await asAmy(h, { query: "three", ticket: true });
+      expect(three.status).toBe("failed");
+      // The failed attempt's ticket went back.
+      expect(pay.charges.map((c) => c.item)).toEqual(["song_ticket", "song_ticket"]);
+      expect(pay.refunds).toEqual(["e2"]);
+    });
+
+    it("her own tool call never spends money", async () => {
+      const pay = await paid();
+      await h.invoke(Principals.user(AMY, TEXT), "sing.request", { query: "one" });
+      const r = await h.invoke(Principals.user(AMY, TEXT), "sing.request", {
+        query: "two",
+        ticket: true,
+        dedication: "hi",
+      });
+      expect(r.status).toBe("failed");
+      expect(pay.charges).toEqual([]);
+    });
+
+    it("refunds the ticket when the song fails, or is dropped; keeps it when sung", async () => {
+      const pay = await paid();
+      await asAmy(h, { query: "one" });
+      await asAmy(h, { query: "two", ticket: true });
+      h.worker.fail("j2", "no search result");
+      await settle(200);
+      expect(h.singer.list.get(2)?.state).toBe("failed");
+      expect(pay.refunds).toEqual(["e1"]);
+      expect(h.singer.list.get(2)?.ticket_entry).toBeNull();
+
+      // Dropped by stop-all while still waiting.
+      await asAmy(h, { query: "three", ticket: true });
+      await h.singer.stop(true);
+      expect(pay.refunds).toEqual(["e1", "e2"]);
+    });
+
+    it("a sung song keeps its ticket and dedication, and the dedication goes on screen", async () => {
+      const pay = await paid({ max_pending_per_user: 1 });
+      await asAmy(h, { query: "one" });
+      await asAmy(h, { query: "Song A", ticket: true, dedication: "給今天加班的人" });
+      expect(pay.charges.map((c) => c.item)).toEqual(["song_ticket", "dedication"]);
+      h.worker.finish("j2", "Song A", 1);
+      await settle(6000 + 3000);
+      expect(h.singer.list.get(2)?.state).toBe("done");
+      const shown = h.events.filter(
+        (e) => e.type === "custom" && e.data.topic === "economy.screen",
+      );
+      expect(shown).toHaveLength(1);
+      expect(shown[0]?.type === "custom" && shown[0].data.payload).toMatchObject({
+        kind: "dedication",
+        text: "給今天加班的人",
+        song: "Song A",
+      });
+      expect(pay.refunds).toEqual([]);
+    });
+
+    it("a dedication skipped before she sings is refunded", async () => {
+      const pay = await paid({});
+      await asAmy(h, { query: "Song A", dedication: "加油" });
+      h.worker.finish("j1", "Song A", 1);
+      await settle(200);
+      expect(h.singer.list.playing()?.no).toBe(1);
+      await h.singer.stop(false);
+      await settle(50);
+      expect(pay.refunds).toEqual(["e1"]);
+      expect(h.events.some((e) => e.type === "custom" && e.data.topic === "economy.screen")).toBe(
+        false,
+      );
+    });
+
+    it("tells her about the dedication before the song, and keeps it in her prompt", async () => {
+      await paid({});
+      await asAmy(h, { query: "Song A", dedication: "加油" });
+      h.worker.finish("j1", "Song A", 1);
+      await settle(200);
+      expect(h.initiatives().at(-1)?.hint).toContain("獻詞:「加油」");
+      expect(await h.section()).toContain("獻詞:「加油」");
+    });
+
+    it("rejects a long or naming dedication and a refused charge, without a song", async () => {
+      const pay = await paid({});
+      for (const text of ["長".repeat(41), "給 @someone", "給 <@123456>", "看 https://x.y"]) {
+        expect((await asAmy(h, { query: "S", dedication: text })).status).toBe("failed");
+      }
+      pay.refuse = "這句獻詞沒辦法通過";
+      const r = await asAmy(h, { query: "S", dedication: "ok" });
+      expect(r.status === "failed" && r.error).toContain("沒辦法通過");
+      expect(h.singer.list.all()).toHaveLength(0);
+      expect(h.worker.submitted).toHaveLength(0);
+    });
+
+    it("is unavailable without the payment port", async () => {
+      h = await Harness.create({ max_pending_per_user: 1 });
+      await h.join();
+      await asAmy(h, { query: "one" });
+      const t = await asAmy(h, { query: "two", ticket: true });
+      expect(t.status === "failed" && t.error).toContain("現在不能用");
+      const d = await asAmy(h, { query: "three", dedication: "hi" });
+      expect(d.status === "failed" && d.error).toContain("現在不能用");
+      expect(h.singer.list.all()).toHaveLength(1);
+    });
+
+    it("keeps the paid fields across a restart", async () => {
+      const pay = await paid();
+      await asAmy(h, { query: "one" });
+      await asAmy(h, { query: "two", ticket: true, dedication: "hi" });
+      await h.singer.save();
+      expect(pay.charges).toHaveLength(2);
+      const snap = JSON.stringify(h.singer.list.snapshot());
+      expect(snap).toContain('"ticket_entry":"e1"');
+      expect(snap).toContain('"dedication_entry":"e2"');
+    });
   });
 
   it("tells the requester's channel when a song could not be prepared", async () => {

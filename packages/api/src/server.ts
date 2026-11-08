@@ -5,6 +5,8 @@ import { SettingsStoreKey } from "@miyoria/store";
 import { AuthorizerKey } from "@miyoria/types";
 import { Hono } from "hono";
 import { affectRoutes } from "./affect.js";
+import { agencyRoutes } from "./agency.js";
+import { boardRoutes } from "./board.js";
 import { bodyRoutes } from "./body.js";
 import { cardCheckRoutes } from "./card.js";
 import { channelRoutes } from "./channels.js";
@@ -14,6 +16,7 @@ import { dataRoutes } from "./data.js";
 import { directiveRoutes } from "./directives.js";
 import { ApiError, NO_SUCH_ENDPOINT } from "./errors.js";
 import { factRoutes } from "./facts.js";
+import { fortuneRoutes } from "./fortune-routes.js";
 import { innerRoutes } from "./inner.js";
 import { learningRoutes } from "./learning.js";
 import { llmCallRoutes } from "./llmcalls.js";
@@ -140,8 +143,11 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...publicRoutes(state),
     ...publicViewRoutes(state),
     ...cardCheckRoutes(state),
+    ...boardRoutes(state),
     ...memberRoutes(state),
     ...walletRoutes(state),
+    ...fortuneRoutes(state),
+    ...agencyRoutes(state),
     ...sessionRoutes(),
     ...peopleRoutes(state),
     ...memoryRoutes(state),

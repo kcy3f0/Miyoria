@@ -58,7 +58,7 @@ export interface CardContext {
   poses: readonly string[];
 }
 
-const POSE_WORDS: Readonly<Record<string, string>> = {
+export const POSE_WORDS: Readonly<Record<string, string>> = {
   calm: "平靜",
   smile: "微笑",
   blush: "害羞臉紅",

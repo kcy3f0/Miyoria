@@ -26,9 +26,18 @@ export {
   SingPermissionsSchema,
 } from "./config.js";
 export { SingerKey, SingModule } from "./module.js";
+export {
+  dedicationProblem,
+  MAX_DEDICATION_CHARS,
+  type SongCharge,
+  type SongPaidItem,
+  type SongPayments,
+  SongPaymentsKey,
+} from "./payments.js";
 export { paced, singSong, sleep, songVideoPath } from "./player.js";
 export { PROMPT_KEY, SingPrompt } from "./prompt.js";
 export {
+  dedicationNote,
   type NewSong,
   SetList,
   SetListError,

@@ -34,6 +34,7 @@ import {
   type AccountRef,
   type ContextKey,
   contextKeyEquals,
+  type JsonObject,
   newId,
   type PersonId,
   type PlatformId,
@@ -360,6 +361,12 @@ export class MemoryMemberCards implements MemberCardStore {
   async bySerial(profile: ProfileId, serial: string): Promise<MemberCardRecord | null> {
     const found = this.#cards.find((c) => c.profile === profile && c.serial === serial);
     return found ? clone(found) : null;
+  }
+  async amend(profile: ProfileId, serial: string, snapshot: JsonObject): Promise<boolean> {
+    const found = this.#cards.find((c) => c.profile === profile && c.serial === serial);
+    if (!found) return false;
+    found.snapshot = clone(snapshot);
+    return true;
   }
   async listFor(
     profile: ProfileId,

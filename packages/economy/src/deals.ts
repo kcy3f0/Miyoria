@@ -79,11 +79,69 @@ const TASK_CAPABILITIES: ReadonlyArray<readonly [RegExp, readonly string[]]> = [
 // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters
 const CONTROL = /[\u0000-\u001f\u007f]/g;
 
+/** One line of at most `max` characters. */
+export function cleanText(text: string, max: number): string {
+  return [...text.replace(CONTROL, " ").replace(/\s+/g, " ").trim()].slice(0, max).join("");
+}
+
 /** One line of at most `MAX_TASK_CHARS` characters. */
 export function cleanTask(task: string): string {
-  return [...task.replace(CONTROL, " ").replace(/\s+/g, " ").trim()]
-    .slice(0, MAX_TASK_CHARS)
-    .join("");
+  return cleanText(task, MAX_TASK_CHARS);
+}
+
+/**
+ * What she may promise (the gate of the bribe, shared by deals, goals and bounties): the text
+ * passes moderation, no owner rule forbids it, and what it stands for is something she may do.
+ * `who` is the person it is for (their permissions are checked), `null` for her own promise.
+ * Throws `DealRefusal`.
+ */
+export async function guardTask(
+  e: EconomyService,
+  who: Member | null,
+  task: string,
+  context: ContextKey | null,
+  about: { noun: string; why: string },
+): Promise<void> {
+  const s = e.services;
+  if (!e.passes(who ?? { account: e.purse.account }, task)) {
+    throw new DealRefusal(`這個${about.noun}的內容不行`);
+  }
+  const directives = s.get(DirectivesKey);
+  const forbids = directives?.forbids({
+    what: task,
+    why: about.why,
+    steps: [task],
+    person: who ? e.handleOf(who.person.id) : null,
+    context,
+  });
+  if (forbids) throw new DealRefusal(`有規則不允許:${forbids.text}`);
+  const names = new Set<string>();
+  for (const [pattern, capabilities] of TASK_CAPABILITIES) {
+    if (pattern.test(task)) for (const name of capabilities) names.add(name);
+  }
+  if (names.size === 0) return;
+  const registry = s.get(ActuatorRegistryKey);
+  for (const name of names) {
+    const capability = registry?.get(name);
+    if (!registry || !capability) throw new DealRefusal("這件事現在做不到");
+    if (registry.paused) throw new DealRefusal("她現在被暫停了,不能答應");
+    if (registry.config.forbidden.some((p) => capabilityMatches(p, name))) {
+      throw new DealRefusal("這件事不允許做");
+    }
+    // Review and approval are for her own judgement and the owners: a snack does not buy them.
+    if (capability.risk === "high") throw new DealRefusal(`這件事要經過審核,不能用${about.noun}買`);
+    if (who && capability.permission !== null) {
+      const allowed = s.get(AuthorizerKey)?.allows(who.account, capability.permission);
+      if (!allowed) throw new DealRefusal("你本來就沒有權限要她做這件事");
+    }
+    // An owner rule on the capability itself: denied or waiting for approval, a snack buys neither.
+    const verdict = await directives?.check({
+      capability: name,
+      args: {},
+      principal: Principals.self(context, who?.account ?? null),
+    });
+    if (verdict && verdict.outcome !== "allow") throw new DealRefusal("有規則不允許這件事");
+  }
 }
 
 export interface MakeDealRequest {
@@ -235,44 +293,7 @@ export class DealDesk {
    * forbids it, and what it stands for is something she may do for this person.
    */
   async #guard(who: Member, task: string, context: ContextKey | null): Promise<void> {
-    const s = this.e.services;
-    if (!this.e.passes(who, task)) throw new DealRefusal("這個約定的內容不行");
-    const directives = s.get(DirectivesKey);
-    const forbids = directives?.forbids({
-      what: task,
-      why: "收零食的約定",
-      steps: [task],
-      person: this.e.handleOf(who.person.id),
-      context,
-    });
-    if (forbids) throw new DealRefusal(`有規則不允許:${forbids.text}`);
-    const names = new Set<string>();
-    for (const [pattern, capabilities] of TASK_CAPABILITIES) {
-      if (pattern.test(task)) for (const name of capabilities) names.add(name);
-    }
-    if (names.size === 0) return;
-    const registry = s.get(ActuatorRegistryKey);
-    for (const name of names) {
-      const capability = registry?.get(name);
-      if (!registry || !capability) throw new DealRefusal("這件事現在做不到");
-      if (registry.paused) throw new DealRefusal("她現在被暫停了,不能答應");
-      if (registry.config.forbidden.some((p) => capabilityMatches(p, name))) {
-        throw new DealRefusal("這件事不允許做");
-      }
-      // Review and approval are for her own judgement and the owners: a snack does not buy them.
-      if (capability.risk === "high") throw new DealRefusal("這件事要經過審核,不能用約定買");
-      if (capability.permission !== null) {
-        const allowed = s.get(AuthorizerKey)?.allows(who.account, capability.permission);
-        if (!allowed) throw new DealRefusal("你本來就沒有權限要她做這件事");
-      }
-      // An owner rule on the capability itself: denied or waiting for approval, a snack buys neither.
-      const verdict = await directives?.check({
-        capability: name,
-        args: {},
-        principal: Principals.self(context, who.account),
-      });
-      if (verdict && verdict.outcome !== "allow") throw new DealRefusal("有規則不允許這件事");
-    }
+    await guardTask(this.e, who, task, context, { noun: "約定", why: "收零食的約定" });
   }
 
   // ---- her side -------------------------------------------------------------------------

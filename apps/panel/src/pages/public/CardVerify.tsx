@@ -12,7 +12,7 @@ export function cardSerialIn(hash: string): string | null {
   const m = /^#\/card\/([^/?#]+)/.exec(hash);
   if (!m) return null;
   try {
-    return decodeURIComponent(m[1]);
+    return decodeURIComponent(m[1] ?? "");
   } catch {
     return null;
   }
@@ -46,16 +46,31 @@ export function CardVerify({ serial }: { serial: string }) {
           <SkeletonRows count={6} />
         ) : card.data ? (
           <>
-            <InlinedCard card={card.data} />
-            <div role="status" className="flex gap-2.5">
-              <BadgeCheck aria-hidden className="mt-0.5 size-5 shrink-0 text-primary" />
-              <div className="grid gap-0.5">
-                <p className="text-sm font-semibold">這張卡是真的</p>
-                <p className="text-[13px] text-muted-foreground">
-                  她在 {longDate(card.data.issued_at)}發給 {card.data.name} 的第 {card.data.number} 張卡
-                </p>
-              </div>
+            <div className={card.data.voided_at ? "opacity-40 grayscale" : undefined}>
+              <InlinedCard card={card.data} />
             </div>
+            {card.data.voided_at ? (
+              <div role="alert" className="flex gap-2.5">
+                <CircleX aria-hidden className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
+                <div className="grid gap-0.5">
+                  <p className="text-sm font-semibold">這張卡已作廢</p>
+                  <p className="text-[13px] text-muted-foreground">
+                    {card.data.name} 在 {longDate(card.data.voided_at)}重抽了,這張不再有效
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div role="status" className="flex gap-2.5">
+                <BadgeCheck aria-hidden className="mt-0.5 size-5 shrink-0 text-primary" />
+                <div className="grid gap-0.5">
+                  <p className="text-sm font-semibold">這張卡是真的</p>
+                  <p className="text-[13px] text-muted-foreground">
+                    她在 {longDate(card.data.issued_at)}發給 {card.data.name} 的第 {card.data.number} 張卡
+                    {card.data.foil ? ",閃卡加工" : ""}
+                  </p>
+                </div>
+              </div>
+            )}
           </>
         ) : (
           <div role="alert" className="flex gap-2.5">

@@ -25,24 +25,53 @@ import {
 import { errorMessage, getLogger, type ServiceLookup } from "@miyoria/kernel";
 import { newId } from "@miyoria/types";
 import { STRANGER, WALLET_NODE } from "./economy.js";
+import { NO_RECEIVER } from "./transfer.js";
 import {
   type Economy,
   EconomyError,
   EconomyKey,
   FEED_ITEMS,
   type FeedItem,
+  type GoalView,
   type Hunger,
   type WalletView,
 } from "./types.js";
 
 const log = getLogger("economy.commands");
 
-export const PATHS = ["me wallet", "me checkin", "me feed"] as const;
+export const PATHS = [
+  "me wallet",
+  "me checkin",
+  "me feed",
+  "me give",
+  "me board",
+  "me screen",
+  "me goals",
+  "me pledge",
+  "me bounties",
+] as const;
 
 const R = {
   checkin: "me:wallet:checkin",
   feed: "me:wallet:feed",
+  board: "me:board:set",
+  pledge: "me:goal:pledge",
 } as const;
+
+/** Quick pledge buttons on the goals card; the exact amount is `/me pledge`. */
+const PLEDGE_BUTTONS = [10, 50] as const;
+
+/** Bounties `/me bounties` lists. */
+const BOUNTY_PLACES = 10;
+
+/** A Discord timestamp (shown in the reader's own time zone). */
+function when(iso: string): string {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? `<t:${Math.floor(ms / 1000)}:R>` : iso;
+}
+
+/** Places `/me board` lists. */
+const BOARD_PLACES = 10;
 
 const HUNGER_WORD: Readonly<Record<Hunger, string>> = {
   full: "吃飽了",
@@ -161,6 +190,152 @@ class Handler {
       return result(`${r.message}，花了 ${r.charged} ${view.currency}，剩 ${r.balance}。`);
     });
   }
+
+  /** `/me give`: coins to another member (the answer is only for the sender). */
+  give(inv: Invocation): Promise<CommandReply> {
+    return this.#guard(async (economy) => {
+      const to = inv.account("user");
+      const amount = inv.int("amount");
+      if (to === null || amount === null) return notice("warn", "要轉給誰、轉多少?");
+      // The option is a Discord user; another platform's account is not someone one can reach.
+      if (to.platform !== inv.invoker.platform) return notice("info", NO_RECEIVER);
+      const r = await economy.transfer(inv.invoker, to, amount, `discord:${newId()}`);
+      const view = await economy.wallet(inv.invoker);
+      return result(`轉了 ${r.sent} ${view.currency}給 ${r.to}，剩 ${r.balance}。`);
+    });
+  }
+
+  /** `/me board`: the sponsor board; `on` joins or leaves it first. */
+  board(inv: Invocation, on: boolean | null): Promise<CommandReply> {
+    return this.#guard(async (economy) => {
+      if (on !== null && !(await economy.setOnBoard(inv.invoker, on))) {
+        return notice("info", STRANGER);
+      }
+      const [lines, view] = await Promise.all([
+        economy.board(BOARD_PLACES),
+        economy.wallet(inv.invoker),
+      ]);
+      const text =
+        lines.length === 0
+          ? "還沒有人上榜"
+          : lines.map((l) => `${l.rank}. ${l.name}　${l.spent}`).join("\n");
+      const blocks: CardBlock[] = [
+        { type: "text", text },
+        {
+          type: "muted",
+          text: `最近花在她身上的${view.currency}，只列自己選擇上榜的人，不顯示餘額。`,
+        },
+      ];
+      if (view.can_earn) {
+        blocks.push({
+          type: "buttons",
+          buttons: [
+            view.on_board
+              ? { id: componentId(R.board, "off"), label: "退出排行榜" }
+              : { id: componentId(R.board, "on"), label: "加入排行榜", style: "primary" },
+          ],
+        });
+        blocks.push({ type: "muted", text: view.on_board ? "你在榜上" : "你不在榜上" });
+      }
+      return cardReply(blocks, { accent: "neutral", title: "贊助排行榜" });
+    });
+  }
+
+  /** `/me screen`: a short message on the stream's screen (paid; public like feeding her). */
+  screen(inv: Invocation): Promise<CommandReply> {
+    return this.#guard(async (economy) => {
+      const text = inv.str("text")?.trim() ?? "";
+      if (text === "") return notice("warn", "要寫什麼?");
+      const r = await economy.screenMessage(inv.invoker, text, `discord:${newId()}`);
+      if (!r.accepted) return result(r.message);
+      const view = await economy.wallet(inv.invoker);
+      return result(`${r.message}，花了 ${r.charged} ${view.currency}，剩 ${r.balance}。`);
+    });
+  }
+
+  /** `/me goals`: her open goal (and the last one that ended), with quick pledge buttons. */
+  goals(inv: Invocation): Promise<CommandReply> {
+    return this.#guard(async (economy) => {
+      const [goals, view] = await Promise.all([
+        economy.goals(inv.invoker),
+        economy.wallet(inv.invoker),
+      ]);
+      const open = goals.find((g) => g.status === "open");
+      const ended = goals.find((g) => g.status !== "open");
+      const blocks: CardBlock[] = [];
+      if (open) {
+        blocks.push({ type: "text", text: goalText(open, view.currency) });
+        if (view.can_earn) {
+          blocks.push({
+            type: "buttons",
+            buttons: PLEDGE_BUTTONS.map(
+              (n): CardButton => ({
+                id: componentId(R.pledge, open.id, String(n)),
+                label: `投 ${n}`,
+              }),
+            ),
+          });
+        }
+      } else {
+        blocks.push({ type: "text", text: "她現在沒有開著的目標" });
+      }
+      if (ended) blocks.push({ type: "muted", text: `上一個：${goalEnded(ended)}` });
+      return cardReply(blocks, { accent: "neutral", title: "她的目標" });
+    });
+  }
+
+  /** `/me pledge`: coins to the open goal (the answer is only for the sender). */
+  pledge(inv: Invocation, amount: number | null, goalId: string | null): Promise<CommandReply> {
+    return this.#guard(async (economy) => {
+      if (amount === null) return notice("warn", "要投多少?");
+      const id =
+        goalId ?? (await economy.goals(inv.invoker)).find((g) => g.status === "open")?.id ?? null;
+      if (id === null) return notice("info", "她現在沒有開著的目標");
+      const r = await economy.pledge(inv.invoker, id, amount, `discord:${newId()}`);
+      const view = await economy.wallet(inv.invoker);
+      const tail = r.reached ? "目標到了。" : "";
+      return result(
+        `投了 ${r.pledged} ${view.currency}，現在 ${r.raised} / ${r.target}，剩 ${r.balance}。${tail}`,
+      );
+    });
+  }
+
+  /** `/me bounties`: what she has posted. */
+  bounties(): Promise<CommandReply> {
+    return this.#guard(async (economy) => {
+      const list = (await economy.bounties()).slice(0, BOUNTY_PLACES);
+      if (list.length === 0) return result("她現在沒有貼懸賞");
+      const lines = list.map((b) => `・${b.task}　${b.reward}　到 ${when(b.expires_at)}`);
+      return cardReply(
+        [
+          { type: "text", text: lines.join("\n") },
+          { type: "muted", text: "誰完成由她判定，獎金付給正在跟她說話的人。" },
+        ],
+        { accent: "neutral", title: "她的懸賞" },
+      );
+    });
+  }
+}
+
+/** One goal as lines: title, promise, progress, deadline, what this person put in. */
+export function goalText(g: GoalView, currency: string): string {
+  const lines = [
+    `**${g.title}**`,
+    `她答應：${g.promise}`,
+    `${g.raised} / ${g.target} ${currency}　到 ${when(g.deadline)}`,
+  ];
+  if (g.my_pledge > 0) lines.push(`你投了 ${g.my_pledge}`);
+  return lines.join("\n");
+}
+
+function goalEnded(g: GoalView): string {
+  const word = {
+    reached: "達成了",
+    expired: "沒湊滿，已退回",
+    cancelled: "取消了，已退回",
+    open: "",
+  }[g.status];
+  return `${g.title}　${word}`;
 }
 
 function unregister(registry: CommandRegistry): void {
@@ -177,6 +352,25 @@ function register(registry: CommandRegistry, handler: Handler): void {
       route: R.feed,
       parse: (p) => (isFeedItem(p[0]) ? p[0] : null),
       handle: async (inv, item) => ComponentResult.reply(await handler.feed(inv, item)),
+    }),
+  ];
+  const boardRoutes: AnyComponentRoute[] = [
+    defineRoute<boolean>({
+      route: R.board,
+      parse: (p) => (p[0] === "on" ? true : p[0] === "off" ? false : null),
+      handle: async (inv, on) => ComponentResult.reply(await handler.board(inv, on)),
+    }),
+  ];
+  const goalRoutes: AnyComponentRoute[] = [
+    defineRoute<{ goal: string; amount: number }>({
+      route: R.pledge,
+      ephemeral: true,
+      parse: (p) => {
+        const amount = Number(p[1]);
+        return p[0] && PLEDGE_BUTTONS.some((n) => n === amount) ? { goal: p[0], amount } : null;
+      },
+      handle: async (inv, { goal, amount }) =>
+        ComponentResult.reply(await handler.pledge(inv, amount, goal)),
     }),
   ];
   registry.register(
@@ -201,6 +395,57 @@ function register(registry: CommandRegistry, handler: Handler): void {
         ? handler.feed(inv, item)
         : Promise.resolve(notice("warn", "沒有這種食物"));
     },
+  );
+  registry.register(
+    commandSpec("me give", "把魚幣轉給她認識的另一個人", {
+      args: [
+        argSpec("user", "要轉給誰", ArgKind.user),
+        argSpec("amount", "多少魚幣", ArgKind.integer),
+      ],
+      permission: WALLET_NODE,
+      ephemeral: true,
+    }),
+    (inv) => handler.give(inv),
+  );
+  registry.register(
+    commandSpec("me board", "贊助排行榜：看前 10 名，或選擇要不要上榜", {
+      args: [
+        argSpec("join", "加入或退出排行榜（選填）", ArgKind.choice(["on", "off"]), {
+          required: false,
+        }),
+      ],
+      permission: WALLET_NODE,
+    }),
+    (inv) => {
+      const join = inv.str("join");
+      return handler.board(inv, join === "on" ? true : join === "off" ? false : null);
+    },
+    { components: boardRoutes },
+  );
+  registry.register(
+    commandSpec("me screen", "花魚幣在直播大螢幕上留一則短留言（60 字內）", {
+      args: [argSpec("text", "留言", ArgKind.string)],
+      permission: WALLET_NODE,
+    }),
+    (inv) => handler.screen(inv),
+  );
+  registry.register(
+    commandSpec("me goals", "她現在的目標：要做什麼、湊到哪、你投了多少", {
+      permission: WALLET_NODE,
+    }),
+    (inv) => handler.goals(inv),
+    { components: goalRoutes },
+  );
+  registry.register(
+    commandSpec("me pledge", "把魚幣投給她現在的目標", {
+      args: [argSpec("amount", "多少魚幣", ArgKind.integer)],
+      permission: WALLET_NODE,
+      ephemeral: true,
+    }),
+    (inv) => handler.pledge(inv, inv.int("amount"), null),
+  );
+  registry.register(commandSpec("me bounties", "她貼著的懸賞", { permission: WALLET_NODE }), () =>
+    handler.bounties(),
   );
 }
 

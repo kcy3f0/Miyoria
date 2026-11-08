@@ -56,10 +56,12 @@ import {
   issueCard,
   memberCards,
   posesFor,
+  rerollCard,
 } from "./card.js";
-import { writeCard } from "./card-words.js";
+import { type CardWords, writeCard } from "./card-words.js";
 import { ApiError } from "./errors.js";
 import { readJson } from "./extract.js";
+import { deleteFortunes, fortunesOf } from "./fortune.js";
 import { dateOf, localDay, tooMany } from "./public.js";
 import { json, type Route } from "./route.js";
 import type { SessionRecord } from "./session.js";
@@ -74,7 +76,7 @@ import type {
   MemberSong,
   MemberView,
 } from "./types.js";
-import { walletExport } from "./wallet.js";
+import { keyOf, walletExport } from "./wallet.js";
 
 /** Nodes of `/me memory`: a role that may not use those may not use these. */
 const NODE_SHOW = "memory.self.show";
@@ -98,7 +100,11 @@ const SongRequestSchema = z.strictObject({
   query: z.string().trim().min(1).max(MAX_QUERY_CHARS),
 });
 const ForgetSchema = z.strictObject({ confirm: z.literal(true) });
-const CardSchema = z.strictObject({});
+const CardSchema = z.strictObject({
+  pose: z.string().max(16).optional(),
+  foil: z.boolean().optional(),
+});
+const RerollSchema = z.strictObject({});
 
 // ---- bands ----------------------------------------------------------------------------------
 
@@ -368,6 +374,8 @@ async function exportMine(state: ApiState, c: ApiContext): Promise<Response> {
     cards: await cardsOf(state, accountsOf(who)),
     // A blocked person's wallet is a stranger's, like everywhere else.
     wallet: await walletExport(state, account),
+    // Their fortune slips, like their cards.
+    fortunes: await fortunesOf(state, accountsOf(who)),
   };
   return new Response(`${JSON.stringify(body, null, 2)}\n`, {
     status: 200,
@@ -387,6 +395,7 @@ async function forgetMine(state: ApiState, c: ApiContext): Promise<Response> {
   const who = await member(state, c);
   // Cards go for everyone, so a forget that finds nothing still leaves no card that checks out.
   await deleteCards(state, accountsOf(who));
+  await deleteFortunes(state, accountsOf(who));
   const nothing: MemberForgetResult = { deleted: 0, about: 0, derived: 0, unverified: 0 };
   const allowed = !who.hidden && state.optional(AuthorizerKey)?.allows(account, NODE_FORGET);
   if (!allowed) return json(nothing);
@@ -410,23 +419,27 @@ async function forgetMine(state: ApiState, c: ApiContext): Promise<Response> {
   return json(body);
 }
 
-const YOUTUBE = new Set([
+const SONG_HOSTS = new Set([
   "youtube.com",
   "www.youtube.com",
   "m.youtube.com",
   "music.youtube.com",
   "youtu.be",
+  "bilibili.com",
+  "www.bilibili.com",
+  "m.bilibili.com",
+  "b23.tv",
 ]);
 
 /**
- * A song name or a YouTube link. The song worker also takes files of its library and any other
+ * A song name or a YouTube / bilibili link. The song worker also takes files of its library and any other
  * link; a page open to the internet has no business naming either.
  */
 export function acceptableQuery(query: string): boolean {
   if (/^\s*library:/i.test(query)) return false;
   for (const link of query.match(/https?:\/\/[^\s<>"'「」]+/gi) ?? []) {
     try {
-      if (!YOUTUBE.has(new URL(link).hostname.toLowerCase())) return false;
+      if (!SONG_HOSTS.has(new URL(link).hostname.toLowerCase())) return false;
     } catch {
       return false;
     }
@@ -476,37 +489,77 @@ function holderOf(c: ApiContext, who: Member): CardHolder {
 
 async function cardsMine(state: ApiState, c: ApiContext): Promise<Response> {
   const who = await member(state, c);
-  return json(await memberCards(state, holderOf(c, who)));
+  const view = cardView(state, who, null);
+  return json(await memberCards(state, holderOf(c, who), view));
 }
 
 /**
- * A card of what the page shows them now. A hidden person gets a stranger's card, stored and
- * counted like anyone's, so neither the card nor the limit says anything.
+ * What she writes on a card, for the card routes: only for someone she knows (a hidden person's
+ * card stays a stranger's and says nothing),.
+ */
+async function cardWords(
+  state: ApiState,
+  c: ApiContext,
+  who: Member,
+  view: MemberCard,
+  poses: readonly string[],
+): Promise<CardWords | null> {
+  if (who.hidden || view.relationship === null) return null;
+  const names = await namesFor(state, who);
+  return writeCard(
+    state,
+    {
+      name: record(c).name,
+      view,
+      memories: (await shownMemories(state, who, names)).slice(0, 5).map((m) => m.text),
+      poses,
+    },
+    (text) => shown(state, text, names),
+  );
+}
+
+/**
+ * A card of what the page shows them now, with a picture of their choosing (`card_pose`) and a
+ * foil finish (`card_foil`) if they pay for them. A hidden person gets a stranger's card, stored
+ * and counted like anyone's, so neither the card nor the limit says anything.
  */
 async function issueMine(state: ApiState, c: ApiContext): Promise<Response> {
-  await readJson(c, CardSchema);
+  const { pose = null, foil = false } = await readJson(c, CardSchema);
   const who = await member(state, c);
   const names = who.hidden ? null : await namesFor(state, who);
   const holder = holderOf(c, who);
   const view = cardView(state, who, names);
-  // She writes on the card of someone she knows, only when it will be issued; a hidden person's
-  // card stays a stranger's and says nothing.
-  const words =
-    !who.hidden && view.relationship !== null && (await canIssue(state, holder))
-      ? await writeCard(
-          state,
-          {
-            name: record(c).name,
-            view,
-            memories: (await shownMemories(state, who, names)).slice(0, 5).map((m) => m.text),
-            poses: posesFor(view.affinity),
-          },
-          (text) => shown(state, text, names),
-        )
-      : null;
-  const card = await issueCard(state, holder, view, words);
+  // She writes only on a card that will be issued, and knows the picture when it was chosen.
+  const card = await issueCard(
+    state,
+    holder,
+    view,
+    async () =>
+      (await canIssue(state, holder))
+        ? cardWords(state, c, who, view, pose !== null ? [pose] : posesFor(view.affinity))
+        : null,
+    { pose, foil, key: keyOf(c) },
+  );
   const actor = accountRefString(record(c).account);
   await state.auditAs(actor, "member.card", actor, { serial: card.serial }, true);
+  return json(card);
+}
+
+/** Today's newest card is voided and she writes a new one (`card_reroll`). */
+async function rerollMine(state: ApiState, c: ApiContext): Promise<Response> {
+  await readJson(c, RerollSchema);
+  const who = await member(state, c);
+  const names = who.hidden ? null : await namesFor(state, who);
+  const view = cardView(state, who, names);
+  const card = await rerollCard(
+    state,
+    holderOf(c, who),
+    view,
+    () => cardWords(state, c, who, view, posesFor(view.affinity)),
+    keyOf(c),
+  );
+  const actor = accountRefString(record(c).account);
+  await state.auditAs(actor, "member.card.reroll", actor, { serial: card.serial }, true);
   return json(card);
 }
 
@@ -550,6 +603,15 @@ export function memberRoutes(state: ApiState): Route[] {
       path: "/api/member/card",
       handler: limited(state, (c) => issueMine(state, c)),
     },
+    {
+      method: "POST",
+      path: "/api/member/card/reroll",
+      handler: limited(state, (c) => rerollMine(state, c)),
+    },
   ];
   return routes.map((r) => ({ ...r, member: true }));
 }
+
+// What `fortune-routes.ts` builds a slip from: the same views the page and the cards use.
+export type { Member as MemberContext };
+export { accountsOf, cardView, member as loadMember, namesFor, shown, shownMemories };

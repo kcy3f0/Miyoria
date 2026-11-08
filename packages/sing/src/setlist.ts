@@ -46,19 +46,32 @@ export interface SongEntry {
   /** How often her mind was told it is ready. */
   reminders: number;
   last_reminder_ms: number | null;
+  /** Ledger row of the ticket that let this song past the per-person limit; refunded once. */
+  ticket_entry: string | null;
+  /** The paid dedication's words (already screened), or `null`. */
+  dedication: string | null;
+  /** Ledger row of the dedication; refunded once when the song is not sung. */
+  dedication_entry: string | null;
 }
 
 export type NewSong = Pick<
   SongEntry,
   "query" | "key" | "requester" | "requester_name" | "context"
 > &
-  Partial<Pick<SongEntry, "forced" | "queue_item">>;
+  Partial<
+    Pick<SongEntry, "forced" | "queue_item" | "ticket_entry" | "dedication" | "dedication_entry">
+  >;
 
 export class SetListError extends Error {
   override readonly name = "SetListError";
 }
 
 const OPEN: readonly SongState[] = ["preparing", "ready", "playing"];
+
+/** ` 獻詞:「…」` for a paid dedication, else nothing (the words are short and screened). */
+export function dedicationNote(e: SongEntry): string {
+  return e.dedication ? `;獻詞:「${safeName(e.dedication, 60)}」` : "";
+}
 
 /** One line naming a song for her or for a card: `「title」- artist`, escaped and short. */
 export function songLabel(e: SongEntry): string {
@@ -95,6 +108,9 @@ const StoredEntrySchema = z.object({
   ready_at: z.string().nullable().catch(null),
   reminders: z.number().int().nonnegative().catch(0),
   last_reminder_ms: z.number().nullable().catch(null),
+  ticket_entry: z.string().nullable().catch(null),
+  dedication: z.string().nullable().catch(null),
+  dedication_entry: z.string().nullable().catch(null),
 });
 
 const StoredSetListSchema = z.object({
@@ -177,6 +193,15 @@ export class SetList {
     return this.open().find((e) => e.key === key && e.query.trim().toLowerCase() === q) ?? null;
   }
 
+  /** Whether `who` already has as many open songs as one person may (a ticket adds one more). */
+  atUserLimit(who: AccountRef): boolean {
+    return this.#byUser(who) >= this.limits.max_pending_per_user;
+  }
+
+  #byUser(who: AccountRef): number {
+    return this.open().filter((e) => e.requester !== null && sameAccount(e.requester, who)).length;
+  }
+
   add(song: NewSong, now: Timestamp): SongEntry {
     const open = this.open();
     if (open.length >= this.limits.max_pending) {
@@ -185,8 +210,8 @@ export class SetList {
     const requester = song.requester;
     if (
       requester !== null &&
-      open.filter((e) => e.requester !== null && sameAccount(e.requester, requester)).length >=
-        this.limits.max_pending_per_user
+      this.#byUser(requester) >=
+        this.limits.max_pending_per_user + (song.ticket_entry != null ? 1 : 0)
     ) {
       throw new SetListError(
         `already ${this.limits.max_pending_per_user} songs requested by this person`,
@@ -211,6 +236,9 @@ export class SetList {
       ready_at: null,
       reminders: 0,
       last_reminder_ms: null,
+      ticket_entry: song.ticket_entry ?? null,
+      dedication: song.dedication ?? null,
+      dedication_entry: song.dedication_entry ?? null,
     };
     this.#entries.push(entry);
     return entry;

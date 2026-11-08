@@ -371,6 +371,46 @@ export interface IssuedCard {
   pose: string;
   /** The frame they had selected when it was issued; `null` is the plain border. Missing on an older Core. */
   frame?: string | null;
+  /** A foil finish they bought. Missing on an older Core. */
+  foil?: boolean;
+  /** When a reroll replaced it: the card is void, never a valid one. Missing on an older Core. */
+  voided_at?: string | null;
+}
+
+/** A field on a fortune slip: its name (戀愛, 學業, ...) and what she wrote. */
+export interface FortuneField {
+  label: string;
+  text: string;
+}
+
+/** A fortune slip she wrote for them, one per local day (`GET`/`POST /api/member/fortune`). */
+export interface IssuedFortune {
+  id: string;
+  /** The local day it is for, `YYYY-MM-DD`. */
+  date: string;
+  issued_at: string;
+  rank: "大吉" | "吉" | "中吉" | "小吉" | "末吉" | "凶";
+  /** At most 8 characters. */
+  title: string;
+  /** Four lines of at most 7 characters. */
+  poem: string[];
+  /** At most three. */
+  fields: FortuneField[];
+  /** A personal line, at most 30 characters. */
+  line: string | null;
+}
+
+/** `GET /api/member/fortune`: today's slip or `null`, and the price of one. */
+export interface FortuneToday {
+  fortune: IssuedFortune | null;
+  price: number;
+}
+
+/** `POST /api/member/fortune`: the slip (today's own when one existed: nothing charged then). */
+export interface FortuneDraw {
+  fortune: IssuedFortune;
+  charged: number;
+  balance: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +430,8 @@ export interface EarnLine {
 
 export interface ShopItem {
   id: string;
-  kind: "feed" | "letter" | "expression" | "frame";
+  /** `card`, `song`, `stream` and `fortune` are newer: an older Core never sends them. */
+  kind: "feed" | "letter" | "expression" | "frame" | "card" | "song" | "stream" | "fortune";
   label: string;
   price: number;
   available: boolean;
@@ -418,6 +459,8 @@ export interface WalletView {
   hungry: Hungry | null;
   /** Newest first. */
   recent: LedgerLine[];
+  /** On the sponsor board. Missing on an older Core. */
+  on_board?: boolean;
 }
 
 /** `POST /api/member/checkin`. */
@@ -444,6 +487,52 @@ export interface SpendResult {
   message: string;
 }
 
+/** `POST /api/member/transfer`. */
+export interface TransferResult {
+  sent: number;
+  balance: number;
+  /** The receiver as their ledger names them. */
+  to: string;
+}
+
+/** `GET /api/public/board`: only people who chose to be on it. */
+export interface BoardView {
+  entries: { rank: number; name: string; spent: number }[];
+}
+
+/** One of her goals (`GET /api/member/goals`). */
+export interface GoalView {
+  id: string;
+  title: string;
+  /** What she will do when it is reached. */
+  promise: string;
+  target: number;
+  raised: number;
+  /** What this person put in. */
+  my_pledge: number;
+  deadline: string;
+  status: "open" | "reached" | "expired" | "cancelled";
+}
+
+/** `POST /api/member/goals/:id/pledge`. */
+export interface PledgeResult {
+  pledged: number;
+  raised: number;
+  target: number;
+  reached: boolean;
+  balance: number;
+  duplicate: boolean;
+}
+
+/** One bounty she has open (`GET /api/member/bounties`). */
+export interface BountyView {
+  id: string;
+  task: string;
+  reward: number;
+  posted_at: string;
+  expires_at: string;
+}
+
 /** `POST /api/member/frame`. */
 export interface FramesResult {
   owned: string[];
@@ -453,9 +542,16 @@ export interface FramesResult {
 
 /** `GET /api/member/card`. */
 export interface MemberCards {
+  /** Their newest card that is not voided. */
   latest: IssuedCard | null;
   today: number;
   per_day: number;
+  /** Pictures their band allows, for a chosen pose. Missing on an older Core. */
+  poses?: { id: string; label: string }[];
+  /** Prices of the extras; null is off sale. Missing on an older Core. */
+  prices?: { pose: number | null; foil: number | null; reroll: number | null };
+  /** Rerolls of today's newest card still to buy today. Missing on an older Core. */
+  rerolls_left?: number;
 }
 
 export interface MemberView {

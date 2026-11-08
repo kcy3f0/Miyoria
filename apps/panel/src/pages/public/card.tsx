@@ -80,7 +80,7 @@ function wrap(text: string, em: number, lines: number): string[] {
     width += w;
   }
   if (out.length < lines && line !== "") out.push(line);
-  else if (out.length === lines) out[lines - 1] = `${out[lines - 1].slice(0, -1)}…`;
+  else if (out.length === lines) out[lines - 1] = `${(out[lines - 1] ?? "").slice(0, -1)}…`;
   return out;
 }
 
@@ -185,6 +185,44 @@ function Petals({ x, y, flip }: { x: number; y: number; flip: [number, number] }
       {spec.map(([dx, dy, rot, k], i) => (
         <path key={i} d={PETAL} transform={`translate(${dx} ${dy}) rotate(${rot}) scale(${k})`} />
       ))}
+    </g>
+  );
+}
+
+/**
+ * The foil finish: a faint holographic wash, a fine diagonal grain and one soft glint that crosses
+ * the card now and then (not at all under prefers-reduced-motion; the PNG keeps it still).
+ */
+function Foil({ id }: { id: string }) {
+  return (
+    <g pointerEvents="none">
+      <style>
+        {`@keyframes myr-foil-glint{0%,60%{transform:translateX(0)}100%{transform:translateX(${W + 360}px)}}
+@media (prefers-reduced-motion: no-preference){.myr-foil-glint{animation:myr-foil-glint 7s ease-in-out infinite}}`}
+      </style>
+      <defs>
+        <linearGradient id={`holo-${id}`} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2={W} y2={H}>
+          <stop offset="0" stopColor="#ff9bd2" />
+          <stop offset="0.22" stopColor="#ffd9a0" />
+          <stop offset="0.44" stopColor="#a4ffd0" />
+          <stop offset="0.66" stopColor="#9bd6ff" />
+          <stop offset="0.88" stopColor="#c7a1ff" />
+          <stop offset="1" stopColor="#ff9bd2" />
+        </linearGradient>
+        <linearGradient id={`glint-${id}`} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stopColor="#ffffff" stopOpacity="0" />
+          <stop offset="0.5" stopColor="#ffffff" stopOpacity="0.22" />
+          <stop offset="1" stopColor="#ffffff" stopOpacity="0" />
+        </linearGradient>
+        <pattern id={`grain-${id}`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(35)">
+          <rect width="1" height="6" fill="#ffffff" />
+        </pattern>
+      </defs>
+      <rect width={W} height={H} fill={`url(#holo-${id})`} opacity={0.14} style={{ mixBlendMode: "screen" }} />
+      <rect width={W} height={H} fill={`url(#grain-${id})`} opacity={0.045} />
+      <g className="myr-foil-glint">
+        <rect x={-300} y={-40} width={220} height={H + 80} fill={`url(#glint-${id})`} transform="skewX(-16)" />
+      </g>
     </g>
   );
 }
@@ -299,6 +337,7 @@ export const CardFace = forwardRef<SVGSVGElement, CardFaceProps>(function CardFa
   const label = [
     `${card.name} 的卡,${title}`,
     card.call_name ? `她叫你${card.call_name}` : null,
+    card.foil ? "閃卡" : null,
     card.stamp ? `蓋了「${card.stamp}」` : null,
     feeling ? `她說「${feeling}」` : null,
     ...fields.map((f) => `${f.label}:${f.text}`),
@@ -362,6 +401,7 @@ export const CardFace = forwardRef<SVGSVGElement, CardFaceProps>(function CardFa
         <rect y={340 - lift} width={W} height={270} fill={`url(#fade-${id})`} />
         <rect y={609 - lift} width={W} height={H - 609 + lift} fill={INK} />
         <rect width={W} height={H} fill={`url(#sheen-${id})`} />
+        {card.foil && <Foil id={id} />}
 
         <text x={PAD} y={56} fontSize={15} fontWeight={600} letterSpacing={5} fill="#ffffff" opacity={0.9}>
           MIYORIA

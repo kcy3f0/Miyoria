@@ -22,9 +22,12 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type AuditEntry,
   type AuthScope,
+  type Bounty,
   type Deal,
   type DecisionRecord,
   dataCategory,
+  type Goal,
+  type GoalPledge,
   type LogEntry,
   type MemberCardRecord,
   type MemoryFilter,
@@ -1648,6 +1651,94 @@ function behaviour(open: () => Promise<Store>): void {
     expect(await store.deals.get(paid.id)).toMatchObject({ prepaid: true, escrow: paid.escrow });
   });
 
+  it("goals and bounties: pledges kept per goal, statuses move once and only from where they were", async () => {
+    const profile = unique("profile");
+    const goal = (ms: number, title: string): Goal => ({
+      id: newId(),
+      profile,
+      title,
+      promise: "meow",
+      target: 50,
+      status: "open",
+      created_at: at(ms),
+      deadline: at(ms + 5_000),
+      closed_at: null,
+    });
+    const first = goal(1_000, "mic");
+    const second = goal(2_000, "lamp");
+    for (const g of [first, second]) await store.goals.create(g);
+    expect(await store.goals.get(first.id)).toEqual(first);
+    expect(await store.goals.get(newId())).toBeNull();
+    expect((await store.goals.list(profile, { limit: 9 })).map((g) => g.title)).toEqual([
+      "lamp",
+      "mic",
+    ]);
+    expect(await store.goals.list(profile, { statuses: [], limit: 9 })).toEqual([]);
+    expect(await store.goals.list(unique("profile"), { limit: 9 })).toEqual([]);
+
+    const pledge = (g: Goal, who: string, amount: number, ms: number): GoalPledge => ({
+      id: newId(),
+      goal: g.id,
+      profile,
+      account: account(who),
+      amount,
+      created_at: at(ms),
+    });
+    const a = pledge(first, unique("acct"), 20, 1_100);
+    const b = pledge(first, unique("acct"), 5, 1_200);
+    for (const p of [b, a]) await store.goals.addPledge(p);
+    await store.goals.addPledge(pledge(second, unique("acct"), 1, 2_100));
+    expect(await store.goals.pledges(first.id)).toEqual([a, b]);
+    await expect(store.goals.addPledge(a)).rejects.toThrow();
+
+    const closed = at(3_000);
+    expect(
+      await store.goals.transition(first.id, ["open"], { status: "reached", closed_at: closed }),
+    ).toBe(true);
+    expect(await store.goals.transition(first.id, ["open"], { status: "expired" })).toBe(false);
+    expect(await store.goals.transition(first.id, [], { status: "open" })).toBe(false);
+    expect(await store.goals.get(first.id)).toMatchObject({ status: "reached", closed_at: closed });
+    expect(
+      (await store.goals.list(profile, { statuses: ["open"], limit: 9 })).map((g) => g.title),
+    ).toEqual(["lamp"]);
+
+    const bounty = (ms: number, task: string): Bounty => ({
+      id: newId(),
+      profile,
+      task,
+      reward: 30,
+      hold: newId(),
+      status: "open",
+      created_at: at(ms),
+      expires_at: at(ms + 5_000),
+      closed_at: null,
+      winner: null,
+    });
+    const one = bounty(1_000, "guess");
+    const two = bounty(2_000, "draw");
+    for (const x of [one, two]) await store.bounties.create(x);
+    expect(await store.bounties.get(one.id)).toEqual(one);
+    expect((await store.bounties.list(profile, { limit: 9 })).map((x) => x.task)).toEqual([
+      "draw",
+      "guess",
+    ]);
+    const winner = account(unique("acct"));
+    expect(
+      await store.bounties.transition(one.id, ["open"], {
+        status: "awarded",
+        closed_at: closed,
+        winner,
+      }),
+    ).toBe(true);
+    expect(await store.bounties.transition(one.id, ["open"], { status: "cancelled" })).toBe(false);
+    expect(await store.bounties.get(one.id)).toMatchObject({ status: "awarded", winner });
+    expect(
+      (await store.bounties.list(profile, { statuses: ["open"], limit: 9 })).map((x) => x.task),
+    ).toEqual(["draw"]);
+    expect(await store.bounties.transition(two.id, ["open"], { status: "expired" })).toBe(true);
+    expect(await store.bounties.get(two.id)).toMatchObject({ status: "expired", winner: null });
+  });
+
   // ---- TS-specific ------------------------------------------------------------------------
 
   it("timestamps keep microseconds and are normalized to UTC", async () => {
@@ -1816,7 +1907,11 @@ function behaviour(open: () => Promise<Store>): void {
       member_cards: 1,
       coin_ledger: 1,
       coin_wallets: 0,
+      fortunes: 0,
       deals: 0,
+      goals: 0,
+      goal_pledges: 0,
+      bounties: 0,
       self_state: 1,
       self_feelings: 1,
       self_cards_migration: 0,

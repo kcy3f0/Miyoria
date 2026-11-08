@@ -2,7 +2,7 @@
 // main-column blocks (shop, how to earn, recent). Everything is what `GET /api/member/wallet`
 // answers; a Core without the route shows one line, and someone she does not know sees one line.
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import type { FeedItem, FeedResult, GiftExpression, ShopItem, SpendResult, WalletView } from "@/api/types";
 import { isNotProvided } from "@/api/http";
@@ -11,15 +11,16 @@ import { ConfirmDialog } from "@/components/confirm";
 import { EmptyLine, ErrorLine, SkeletonRows } from "@/components/query-state";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/input";
+import { Input, Textarea } from "@/components/ui/input";
 import { fmtInt, fmtRelative } from "@/lib/format";
 import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import { FRAME_SWATCH } from "./card";
+import { Board, Bounties, Fortune, Goals } from "./Extras";
+import { newKey, priceText, say, usePatchWallet, useWallet } from "./spend";
 
-const WALLET = ["member", "wallet"] as const;
-const POLL_MS = 60_000;
 const LETTER_MAX = 120;
+const SCREEN_MAX = 60;
 
 export const STRANGER_LINE = "她還不認識你,先和她說說話吧";
 
@@ -27,37 +28,6 @@ const HUNGRY: Record<string, string> = { full: "吃飽了", ok: "還好", hungry
 const FEED_LABEL: Record<string, string> = { rice: "一碗白飯", big_bowl: "鋼盆", dessert: "甜點" };
 const EXPRESSION_LABEL: Record<string, string> = { heart: "愛心眼", blush: "臉紅", squint: "＞＜" };
 const FRAME_LABEL: Record<string, string> = { sakura: "櫻花", abyss: "深海", gold: "金框" };
-
-/** One fresh key per click: a retry of the same request is charged once, a second click is a second spend. */
-function newKey(): string {
-  const c = globalThis.crypto;
-  if (typeof c?.randomUUID === "function") return c.randomUUID();
-  return `k-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-
-function useWallet() {
-  const api = useApi();
-  return useQuery({
-    queryKey: WALLET,
-    queryFn: ({ signal }) => api.memberWallet({ signal }),
-    refetchInterval: POLL_MS,
-    // An older Core has no such route: asking again will not change that.
-    retry: (n, e) => !isNotProvided(e) && n < 2,
-  });
-}
-
-/** Lets a result patch what is on screen at once; the refetch that follows has the final say. */
-function usePatchWallet() {
-  const client = useQueryClient();
-  return {
-    patch: (fn: (w: WalletView) => WalletView) =>
-      client.setQueryData<WalletView>(WALLET, (old) => (old ? fn(old) : old)),
-    refresh: () => client.invalidateQueries({ queryKey: WALLET }),
-  };
-}
-
-const _byId = (shop: ShopItem[], id: string) => shop.find((s) => s.id === id);
-const priceText = (price: number, currency: string) => `${fmtInt(price)} ${currency}`;
 
 // ---------------------------------------------------------------------------
 // rail
@@ -193,12 +163,6 @@ export function WalletCard() {
 // ---------------------------------------------------------------------------
 // main column
 
-/** A spend that answers with a message: a refusal is a notice, not an error. */
-function say(r: { accepted: boolean; message: string }) {
-  if (r.accepted) notify.ok(r.message);
-  else notify.info(r.message);
-}
-
 function Letter({ item, currency }: { item: ShopItem; currency: string }) {
   const api = useApi();
   const { patch, refresh } = usePatchWallet();
@@ -242,6 +206,70 @@ function Letter({ item, currency }: { item: ShopItem; currency: string }) {
       </div>
       {!item.available && item.why && <p className="text-xs text-muted-foreground">{item.why}</p>}
     </form>
+  );
+}
+
+/** One line on the stream's screen while she is live; she sees it and may read it out. */
+function ScreenMessage({ item, currency }: { item: ShopItem; currency: string }) {
+  const api = useApi();
+  const { patch, refresh } = usePatchWallet();
+  const [text, setText] = useState("");
+  const id = useId();
+  const count = [...text.trim()].length;
+  const over = count > SCREEN_MAX;
+  const send = useMutation({
+    mutationFn: (t: string) => api.memberScreen(t, newKey()),
+    onSuccess: (r: SpendResult) => {
+      patch((v) => ({ ...v, balance: r.balance }));
+      if (r.accepted) setText("");
+      say(r);
+      void refresh();
+    },
+    onError: (e) => notify.error(e),
+  });
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (count > 0 && !over) send.mutate(text.trim());
+  };
+  return (
+    <form className="grid content-start gap-2" onSubmit={submit}>
+      <label htmlFor={id} className="text-xs text-muted-foreground">
+        留言上大螢幕
+      </label>
+      <Input id={id} value={text} onChange={(e) => setText(e.target.value)} placeholder="她直播時才送得出去" />
+      <div className="flex items-center justify-between gap-3">
+        <span className={cn("text-xs tabular-nums", over ? "text-primary" : "text-muted-foreground")} aria-live="polite">
+          {count}/{SCREEN_MAX}
+        </span>
+        <Button
+          type="submit"
+          variant="secondary"
+          busy={send.isPending}
+          disabled={count === 0 || over || !item.available}
+          title={item.available ? undefined : (item.why ?? undefined)}
+        >
+          送上螢幕 · {priceText(item.price, currency)}
+        </Button>
+      </div>
+      {!item.available && item.why && <p className="text-xs text-muted-foreground">{item.why}</p>}
+    </form>
+  );
+}
+
+/** Song extras are spent from Discord's `/queue song`: shown here so they can be found, not bought. */
+function SongExtras({ items, currency }: { items: ShopItem[]; currency: string }) {
+  return (
+    <div className="grid gap-1">
+      <p className="text-xs text-muted-foreground">點歌加購 · 在 Discord 點歌時用</p>
+      <ul className="divide-y divide-line-soft">
+        {items.map((s) => (
+          <li key={s.id} className="flex items-center gap-3 py-(--row-y)">
+            <span className="min-w-0 flex-1 text-sm">{s.label}</span>
+            <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{priceText(s.price, currency)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -358,13 +386,18 @@ function Shop({ w }: { w: WalletView }) {
   const letter = w.shop.find((s) => s.kind === "letter");
   const expressions = w.shop.filter((s) => s.kind === "expression");
   const frames = w.shop.filter((s) => s.kind === "frame");
+  const screen = w.shop.find((s) => s.id === "screen_message");
+  const songs = w.shop.filter((s) => s.kind === "song");
   return (
     <Card aria-label="商店">
       <CardHeader>
         <CardTitle>商店</CardTitle>
       </CardHeader>
       <div className="grid gap-5 lg:grid-cols-2">
-        {letter && <Letter item={letter} currency={w.currency} />}
+        <div className="grid content-start gap-5">
+          {letter && <Letter item={letter} currency={w.currency} />}
+          {screen && <ScreenMessage item={screen} currency={w.currency} />}
+        </div>
         <div className="grid content-start gap-5">
           {expressions.length > 0 && (
             <div className="grid gap-1">
@@ -386,6 +419,7 @@ function Shop({ w }: { w: WalletView }) {
               </ul>
             </div>
           )}
+          {songs.length > 0 && <SongExtras items={songs} currency={w.currency} />}
         </div>
       </div>
     </Card>
@@ -443,7 +477,7 @@ function Recent({ w }: { w: WalletView }) {
   );
 }
 
-/** 商店, 怎麼賺 and 最近. Nothing at all for someone who cannot earn, or on a Core without a wallet. */
+/** 商店, 籤詩, 排行榜, 目標, 懸賞, 怎麼賺 and 最近. Nothing at all for someone who cannot earn, or on a Core without a wallet. */
 export function WalletMain() {
   const wallet = useWallet();
   const w = wallet.data;
@@ -451,6 +485,14 @@ export function WalletMain() {
   return (
     <>
       <Shop w={w} />
+      <div className="grid items-start gap-(--stage-gap) lg:grid-cols-2">
+        <Fortune />
+        <Board />
+      </div>
+      <div className="grid items-start gap-(--stage-gap) lg:grid-cols-2">
+        <Goals />
+        <Bounties />
+      </div>
       <div className="grid gap-(--stage-gap) lg:grid-cols-2">
         <Earn w={w} />
         <Recent w={w} />

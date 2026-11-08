@@ -134,8 +134,19 @@ export function registerCommands(
   add(
     commandSpec("queue song request", "點一首歌給她唱（用她的聲音翻唱，準備好她就唱）", {
       args: [
-        argSpec("song", "歌名（加上歌手更準）或 YouTube 連結", ArgKind.string),
+        argSpec("song", "歌名（加上歌手更準）或 YouTube / bilibili 連結", ArgKind.string),
         argSpec("key", "整首升降幾個半音（-6 到 6）", ArgKind.integer, { required: false }),
+        argSpec(
+          "ticket",
+          "同時點歌數到上限時，用點歌加點券多點一首（沒到上限不收費）",
+          ArgKind.boolean,
+          {
+            required: false,
+          },
+        ),
+        argSpec("dedication", "獻詞（40 字內，要付費；過審查、不能點名別人）", ArgKind.string, {
+          required: false,
+        }),
       ],
       permission: perms.request,
     }),
@@ -145,6 +156,9 @@ export function registerCommands(
       const key = inv.int("key");
       const args: JsonObject = { query, by: inv.invoker_display_name };
       if (key !== null && key !== undefined) args.key = key;
+      if (inv.bool("ticket") === true) args.ticket = true;
+      const dedication = (inv.str("dedication") ?? "").trim();
+      if (dedication !== "") args.dedication = dedication;
       return ask(actuators, inv, "sing.request", args);
     },
   );
