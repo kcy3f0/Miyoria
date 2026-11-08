@@ -5,9 +5,10 @@
 // so a gift is hers to decide (`on_own`), not something to talk her into.
 //
 // The speaker's own wallet, by talking to her (`economy.accept_food`, `economy.checkin`,
-// `economy.wallet`): always the authenticated author of the message she answers (the `user`
+// `economy.look`): always the authenticated author of the message she answers (the `user`
 // principal's requester), never a name in the arguments or the text; the schemas take no "who"
-// and reject unknown keys. Without such a speaker (her own turn, a game, the panel) they refuse.
+// and reject unknown keys. Without such a speaker (her own turn, a game, the panel) the first two
+// refuse and `economy.look` gives only the shop.
 // A feed is keyed on the triggering message, so a retry or a second call charges once. In voice
 // the first call only records an offer: ASR mishears, so the speaker confirms in a later
 // utterance and the call with `confirm: true` charges (keyed on the offer's utterance).
@@ -53,7 +54,7 @@ import {
   MAX_FEED_COUNT,
   STRANGER,
 } from "./economy.js";
-import { EconomyError, FEED_ITEMS, type FeedItem } from "./types.js";
+import { EconomyError, FEED_ITEMS, type FeedItem, type ShopItem } from "./types.js";
 
 const GiveArgs = z.object({
   /** Her handle for them, or the name she knows them by. */
@@ -485,53 +486,118 @@ export function checkinCapability(economy: EconomyService): Capability {
   }) as Capability;
 }
 
-/** `economy.wallet` (tool `wallet_of_speaker`): the speaker's own wallet, as data. */
-export function walletCapability(economy: EconomyService): Capability {
+// ---- looking things up -----------------------------------------------------------------------
+
+const LookArgs = z.strictObject({ about: z.enum(["me", "shop"]).nullish() });
+type LookArgs = z.output<typeof LookArgs>;
+
+const SHOP_GROUPS: readonly { title: string; kinds: readonly ShopItem["kind"][] }[] = [
+  { title: "送她東西", kinds: ["feed", "letter", "expression"] },
+  { title: "直播", kinds: ["stream", "song"] },
+  { title: "卡片", kinds: ["card", "frame"] },
+  { title: "其他", kinds: ["fortune"] },
+];
+
+/** The shop in words, grouped; `why` is shown only when the items were judged for a real person. */
+function shopText(shop: readonly ShopItem[], withWhy: boolean): string {
+  const lines: string[] = [];
+  for (const group of SHOP_GROUPS) {
+    const items = shop.filter((i) => group.kinds.includes(i.kind));
+    if (items.length === 0) continue;
+    const parts = items.map((i) =>
+      withWhy && !i.available && i.why !== null
+        ? `${i.label} ${i.price}(現在不行:${i.why})`
+        : `${i.label} ${i.price}`,
+    );
+    lines.push(`${group.title}:${parts.join("、")}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * `economy.look` (tool `check_coins`): what someone asked her about the coins, how many they have
+ * and what they buy. The wallet is always the asker's own (the `user` principal's requester); there
+ * is no argument to pick a person (docs/design/economy.md §2 principle 5, §15). Without a person
+ * asking, or for a stranger, only the shop.
+ */
+export function lookCapability(economy: EconomyService): Capability {
   const cur = economy.config.currency;
-  return defineCapability<NoArgs>({
-    name: "economy.wallet",
-    summary: "看說話的人自己的錢包",
+  return defineCapability<LookArgs>({
+    name: "economy.look",
+    summary: `查說話的人自己的${cur}餘額和${cur}能買什麼`,
     risk: "low",
-    args: NoArgs,
+    args: LookArgs,
     permission: null,
     tool: {
-      name: "wallet_of_speaker",
+      name: "check_coins",
       description:
-        `查正在跟你說話的人自己的${cur}:餘額、今天賺了多少、簽到了沒、今天還能賺什麼。` +
-        `只能查對方本人,查不了別人。用你自己的話告訴對方。${NOT_ON_OWN}`,
-      properties: {},
-    },
-    check: (_args, principal) => noSpeaker(principal),
-    async execute(_args, ctx) {
-      const who = speakerOf(ctx);
-      const w = await economy.wallet(who.account);
-      if (!w.can_earn) return refusal("看不到對方的錢包", "stranger", STRANGER);
-      const left = w.earn
-        .filter((l) => l.reason !== "her_gift")
-        .map((l) => ({
-          reason: l.reason,
-          label: l.label,
-          left: Math.max(l.cap - l.earned_today, 0),
-        }));
-      const open = left.filter((l) => l.left > 0);
-      const can =
-        open.length === 0
-          ? "今天能賺的都賺滿了"
-          : open.map((l) => `${l.label} ${l.left}`).join("、");
-      return {
-        text:
-          `對方自己的錢包:有 ${w.balance} ${cur};今天賺了 ${w.today_earned};` +
-          `今天${w.checked_in_today ? "簽到過了" : "還沒簽到"}(連續 ${w.streak} 天);` +
-          `今天還能賺:${can}。`,
-        data: {
-          currency: cur,
-          balance: w.balance,
-          today_earned: w.today_earned,
-          checked_in_today: w.checked_in_today,
-          streak: w.streak,
-          can_still_earn: left,
+        `有人問他有多少${cur}、今天還能賺多少,或${cur}能買什麼、商店有什麼的時候用這個,` +
+        "不要自己猜餘額或商品。只會給正在跟你說話的人看他自己的錢包,看不到別人的;" +
+        `不要說「我晚點查」或「等一下給你」,直接呼叫這個。${NOT_ON_OWN}`,
+      properties: {
+        about: {
+          type: "string",
+          enum: ["me", "shop"],
+          description: "me 只看他自己的錢包、shop 只看商店;不填就兩個都給",
         },
-      };
+      },
+    },
+    async execute(args, ctx) {
+      const about = args.about ?? null;
+      const { principal } = ctx;
+      const account = principal.kind === "user" ? principal.requester : null;
+      const w = account === null ? null : await economy.wallet(account);
+      const known = w !== null && w.can_earn;
+      const out: string[] = [];
+      const data: JsonObject = { currency: cur, has_wallet: known };
+      if (about !== "shop") {
+        if (w !== null && known) {
+          const open = w.earn
+            .filter((l) => l.reason !== "her_gift" && l.cap > l.earned_today)
+            .map((l) => `${l.label} ${l.cap - l.earned_today}`);
+          out.push(
+            `對方自己的錢包:有 ${w.balance} ${cur};今天賺了 ${w.today_earned};` +
+              `今天${w.checked_in_today ? "簽到過了" : "還沒簽到"}(連續 ${w.streak} 天);` +
+              `今天還能賺:${open.length === 0 ? "都賺滿了" : open.join("、")}。`,
+          );
+          data.balance = w.balance;
+          data.can_still_earn = w.earn
+            .filter((l) => l.reason !== "her_gift")
+            .map((l) => ({
+              reason: l.reason,
+              label: l.label,
+              left: Math.max(l.cap - l.earned_today, 0),
+            }));
+          data.today_earned = w.today_earned;
+          data.checked_in_today = w.checked_in_today;
+          data.streak = w.streak;
+        } else {
+          out.push(
+            account === null
+              ? "現在不是對著某個人,沒有錢包可以看。"
+              : `看不到對方的錢包:${STRANGER}。`,
+          );
+        }
+      }
+      if (about !== "me") {
+        const shop = known && w !== null ? w.shop : economy.shop();
+        out.push(
+          `商店(價格單位:${cur}):\n${shopText(shop, known)}`,
+          "不在商店的:約定(預付一碗飯請她做一件事)、募資目標(投給她現在的目標)、" +
+            "懸賞(她貼的任務)、轉帳(給她認識的人)、贊助排行榜。",
+          "在哪裡花:公開面板的會員頁,或 Discord 的 /me wallet、/me feed、/me screen、" +
+            "/me goals、/me pledge、/me bounties、/me give、/me board。" +
+            "用自己的話說,只講上面有的,不要加沒列出的東西。",
+        );
+        data.shop = shop.map((i) => ({
+          id: i.id,
+          label: i.label,
+          price: i.price,
+          available: known ? i.available : null,
+          why: known ? i.why : null,
+        }));
+      }
+      return { text: out.join("\n"), data };
     },
   }) as Capability;
 }
@@ -864,7 +930,7 @@ export function speakerCapabilities(economy: EconomyService, clock: Clock): Capa
   return [
     acceptFoodCapability(economy, new VoiceOffers(clock)),
     checkinCapability(economy),
-    walletCapability(economy),
+    lookCapability(economy),
     makeDealCapability(economy, new VoiceDeals(clock)),
     dealDoneCapability(economy),
     cancelDealCapability(economy),

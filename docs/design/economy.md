@@ -241,3 +241,11 @@ overlay 的新東西走 `economy.screen`(`ScreenEvent`:留言或獻詞)。
 - **權限**:`admin.economy.adjust`。`owner`(`*`)和 `admin`(`admin.*`)本來就有;`moderator` 沒有,除非另外授予。面板的變更請求還要 `admin.panel.write`。
 - **API**:`GET /api/people/:id/wallet`(餘額和最近 20 列,只要能進面板;`Economy.statement`,被封鎖的人也看得到)、`POST /api/people/:id/wallet/adjust {amount, note, key}` → `{balance, entry_id, duplicate}`(`packages/api/src/people-wallet.ts`;錯誤沿用錢包路由的狀態和訊息)。不需要新的 migration。
 - **面板**:人物側欄的「魚幣」區塊:餘額、最近幾列(說明、正負數、多久以前),有權限的人可以輸入數量(有正負號)和原因,按「調整」後在確認視窗看到「給 X 加 50 魚幣」或「從 X 扣 20 魚幣」和原因,每次確認用一個新的冪等鍵送出,成功跳出新餘額。唯讀帳號的控制項停用並說明原因,Core 回 403 時也停用並說明。
+
+## 15. 她查得到的(2026-11-08)
+
+有人問「我有多少魚幣」「魚幣能買什麼」,她以前只能猜(看截圖、亂列商店、答應「等下給」)。現在有唯讀工具 `economy.look`(`check_coins`,風險低、不需權限、不需同意):只回正在跟她說話的人自己的餘額和今天還能賺的(沿用 `wallet`),加上整個商店(`EconomyService.shop()` 或錢包裡的 `shop`,分成送她東西/直播/卡片/其他,買不了的附原因),以及商店以外的花法和 `/me` 指令。沒有「查誰」的參數(§2 第 5 點);不是對著某個人說話、陌生人或被封鎖的人,只給商店(不標買得了買不了)。選填 `about: "me" | "shop"` 只給其中一半。
+
+它取代原本只查餘額的 `economy.wallet`(`wallet_of_speaker`):兩個重疊的工具讓她更容易都不用。「說了沒做」的檢查(`agent/src/claims.ts`)改看 `check_coins`。
+
+**她會餓**:原本每回一句話 `hunger` −0.03(`[modules.self.satisfy] turn_hunger`),自己上升卻只有每小時剩餘差距的 0.05,伺服器一熱鬧她就一直是 0、一直吃飽,所有餵食都被擋。現在說話不算吃(`turn_hunger = 0`),`[modules.self.rise_per_hour] hunger = 0.25`:從吃飽到再想吃(`full_below` 0.15)約 40 分鐘。

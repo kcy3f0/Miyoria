@@ -713,6 +713,11 @@ export class EconomyService implements Economy {
     return out;
   }
 
+  /** Every shop item and its price, for nobody in particular (nothing is marked buyable). */
+  shop(): ShopItem[] {
+    return this.#shop(null);
+  }
+
   async wallet(account: AccountRef): Promise<WalletView> {
     const who = await this.member(account);
     if (!who) return this.#strangerView();

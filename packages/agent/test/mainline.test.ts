@@ -303,11 +303,8 @@ describe("one call", () => {
     // 2026-11-08 14:46: 「我有多少魚幣」 got 「等我一下」; the wallet came back, but the turn that
     // tells it opened in the voice channel (keep_in_voice), found no result there and talked
     // about the song.
-    const wallet = new Probe("wallet_of_speaker", null, 5000);
-    const llm = new Scripted([
-      reply("等我一下", ["wallet_of_speaker", "{}"]),
-      reply("你有 10 魚幣"),
-    ]);
+    const wallet = new Probe("check_coins", null, 5000);
+    const llm = new Scripted([reply("等我一下", ["check_coins", "{}"]), reply("你有 10 魚幣")]);
     const h = await rig(llm, { tools: [wallet], config: { tool_timeout_ms: 20_000 } });
     joinVoice(h);
     await wait(50);
@@ -317,7 +314,7 @@ describe("one call", () => {
     await wait(10_000);
     expect(h.sink.texts()).toEqual(["等我一下", "你有 10 魚幣"]);
     expect(h.sink.speeches()).toEqual([]);
-    expect(JSON.stringify(llm.requests[1]?.messages)).toContain("wallet_of_speaker 完成");
+    expect(JSON.stringify(llm.requests[1]?.messages)).toContain("check_coins 完成");
   });
 
   it("an output that only acts still tells someone waiting that she heard them", async () => {
@@ -440,8 +437,8 @@ describe("finished-tense lines (§10.1)", () => {
     const { ALL_CLAIMS } = await import("../src/claims.js");
     const said = (text: string) =>
       ALL_CLAIMS.filter((c) => c.finished.test(text)).map((c) => c.tool);
-    expect(said("你只有 10 魚幣啦")).toEqual(["wallet_of_speaker"]);
-    expect(said("喂,你居然比我少這麼多?")).toEqual(["wallet_of_speaker"]);
+    expect(said("你只有 10 魚幣啦")).toEqual(["check_coins"]);
+    expect(said("喂,你居然比我少這麼多?")).toEqual(["check_coins"]);
     expect(said("(收下)")).toEqual(["accept_food"]);
     expect(said("好啦,白飯收了")).toEqual(["accept_food"]);
     expect(said("一言為定,不准賴帳")).toEqual(["make_deal"]);
@@ -1538,7 +1535,7 @@ describe("the hands merge repeats", () => {
     const job = h.begin({
       turn: newId(),
       context: where,
-      tool: "wallet_of_speaker",
+      tool: "check_coins",
       args: {},
       report: "turn",
       depth: 0,
@@ -1547,7 +1544,7 @@ describe("the hands merge repeats", () => {
     });
     h.answered(job, { ok: true, text: "對方自己的錢包:有 10 魚幣", data: null });
     expect(resultData(h.takeResults(where))).toContain(
-      "wallet_of_speaker 完成(b.netanyahu 問的「@Miyoria 我有多少魚幣」):對方自己的錢包:有 10 魚幣",
+      "check_coins 完成(b.netanyahu 問的「@Miyoria 我有多少魚幣」):對方自己的錢包:有 10 魚幣",
     );
     // Her own doing names nobody.
     fail(h, undefined);

@@ -882,7 +882,8 @@ describe("the module", () => {
       expect(registry.get("economy.give")?.tool?.name).toBe("give_coins");
       expect(registry.get("economy.accept_food")?.tool?.name).toBe("accept_food");
       expect(registry.get("economy.checkin")?.tool?.name).toBe("checkin_for_speaker");
-      expect(registry.get("economy.wallet")?.tool?.name).toBe("wallet_of_speaker");
+      expect(registry.get("economy.look")?.tool?.name).toBe("check_coins");
+      expect(registry.get("economy.wallet")).toBeUndefined();
       expect(registry.get("economy.make_deal")?.tool?.name).toBe("make_deal");
       expect(registry.get("economy.deal_done")?.tool?.name).toBe("deal_done");
       expect(registry.get("economy.cancel_deal")?.tool?.name).toBe("cancel_deal");

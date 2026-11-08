@@ -105,7 +105,7 @@ export const COIN_CLAIMS: readonly Claim[] = [
   ),
   coins("make_deal", "一言為定|說定了|成交|約定成立|就這麼說好了?|一換一"),
   coins(
-    "wallet_of_speaker",
+    "check_coins",
     "你(?:現在|目前|錢包裡)?(?:只|才|還)?(?:有|剩下?)\\s*\\d+\\s*(?:個|枚)?\\s*魚幣|你.{0,4}比我(?:少|多|窮)",
   ),
 ];

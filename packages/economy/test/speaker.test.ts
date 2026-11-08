@@ -1,5 +1,5 @@
 // Her tools for the speaker's own wallet (`accept_food`, `checkin_for_speaker`,
-// `wallet_of_speaker`) through the real gate and the capability tool: who pays is always the
+// `check_coins`) through the real gate and the capability tool: who pays is always the
 // author of the message she answers, a message pays once, voice needs a spoken yes, and the
 // refusals are the panel's, as data.
 
@@ -95,7 +95,7 @@ async function rig(): Promise<Rig> {
   const registry = new ActuatorRegistry({ services, builtins: false });
   for (const c of speakerCapabilities(economy, { now: () => clock.at })) registry.register(c);
   const tools = new Map<string, CapabilityTool>();
-  for (const name of ["economy.accept_food", "economy.checkin", "economy.wallet"]) {
+  for (const name of ["economy.accept_food", "economy.checkin", "economy.look"]) {
     const capability = registry.get(name);
     if (!capability?.tool) throw new Error(`no tool for ${name}`);
     tools.set(capability.tool.name, new CapabilityTool(registry, capability));
@@ -226,7 +226,7 @@ describe("who pays", () => {
     await expect(
       say(r, "accept_food", ALICE, "m2", { item: "rice", on_own: true }),
     ).rejects.toBeInstanceOf(ActionDeniedError);
-    for (const name of ["economy.checkin", "economy.wallet"]) {
+    for (const name of ["economy.checkin"]) {
       const o = await r.registry.invoke({
         principal: Principals.self(TEXT, ALICE),
         capability: name,
@@ -346,7 +346,7 @@ describe("voice", () => {
     const r = await rig();
     const out = await say(r, "checkin_for_speaker", ALICE, "u1", {}, VOICE);
     expect(out.data).toMatchObject({ checked_in: true, gained: 10 });
-    expect((await say(r, "wallet_of_speaker", ALICE, "u2", {}, VOICE)).data).toMatchObject({
+    expect((await say(r, "check_coins", ALICE, "u2", {}, VOICE)).data).toMatchObject({
       balance: 10,
     });
   });
@@ -404,7 +404,7 @@ describe("the wallet", () => {
     const r = await rig();
     await fund(r, ALICE, 500);
     await fund(r, BOB, 7);
-    const bob = await say(r, "wallet_of_speaker", BOB, "m1");
+    const bob = await say(r, "check_coins", BOB, "m1", { about: "me" });
     expect(bob.data).toMatchObject({ balance: 7, checked_in_today: false });
     expect(bob.text).toContain("7");
     expect(bob.text).not.toContain("500");
@@ -413,10 +413,91 @@ describe("the wallet", () => {
       (l) => l.reason === "checkin",
     );
     expect(checkin?.left).toBe(10);
-    await expect(say(r, "wallet_of_speaker", BOB, "m2", { who: "Alice" })).rejects.toBeInstanceOf(
+    await expect(say(r, "check_coins", BOB, "m2", { who: "Alice" })).rejects.toBeInstanceOf(
       ActionDeniedError,
     );
-    const dave = await say(r, "wallet_of_speaker", DAVE, "m3");
-    expect(dave.data).toMatchObject({ accepted: false, reason: "stranger" });
+    const dave = await say(r, "check_coins", DAVE, "m3", { about: "me" });
+    expect(dave.data).toMatchObject({ has_wallet: false });
+    expect(dave.data).not.toHaveProperty("balance");
+  });
+});
+
+describe("check_coins", () => {
+  it("shows the asker their own balance and the shop, and nobody else's", async () => {
+    const r = await rig();
+    await fund(r, ALICE, 123);
+    await fund(r, BOB, 4567);
+    const out = await say(r, "check_coins", ALICE, "m1");
+    expect(out.data).toMatchObject({ has_wallet: true, balance: 123 });
+    expect(out.text).toContain("有 123");
+    expect(out.text).toContain("今天還沒簽到");
+    expect(out.text).toContain("送她東西:一碗白飯 10");
+    expect(out.text).toContain("直播:");
+    expect(out.text).toContain("卡片:");
+    expect(out.text).toContain("其他:今日籤詩");
+    expect(out.text).toContain("/me wallet");
+    expect(out.text).not.toContain("4567");
+    expect(JSON.stringify(out.data)).not.toContain("4567");
+    // Naming a person is not an option.
+    await expect(say(r, "check_coins", ALICE, "m2", { to: "Bob" })).rejects.toBeInstanceOf(
+      ActionDeniedError,
+    );
+  });
+
+  it("marks what cannot be bought right now, with the reason", async () => {
+    const r = await rig();
+    await fund(r, ALICE, 5);
+    r.hunger.value = 0;
+    const out = await say(r, "check_coins", ALICE, "m1");
+    expect(out.text).toContain("一碗白飯 10(現在不行:她吃飽了)");
+    expect(out.text).toContain("魚幣不夠");
+    const rice = (out.data.shop as { id: string; available: boolean; why: string }[]).find(
+      (i) => i.id === "rice",
+    );
+    expect(rice).toMatchObject({ available: false, why: "她吃飽了" });
+  });
+
+  it("gives only the shop to a stranger or a blocked person", async () => {
+    const r = await rig();
+    for (const [who, id] of [
+      [DAVE, "s1"],
+      [CAROL, "s2"],
+    ] as const) {
+      const out = await say(r, "check_coins", who, id);
+      expect(out.data).toMatchObject({ has_wallet: false });
+      expect(out.data).not.toHaveProperty("balance");
+      expect(out.text).toContain("看不到對方的錢包");
+      expect(out.text).toContain("一碗白飯 10");
+      expect(out.text).not.toContain("現在不行");
+    }
+  });
+
+  it("gives only the shop without a person asking", async () => {
+    const r = await rig();
+    await fund(r, ALICE, 123);
+    const o = await r.registry.invoke({
+      principal: Principals.panel("api"),
+      capability: "economy.look",
+      args: {},
+      why: null,
+      turn: null,
+    });
+    if (o.status === "done") {
+      expect(JSON.stringify(o.result)).not.toContain("123");
+      expect(JSON.stringify(o.result)).toContain("沒有錢包");
+    } else {
+      expect(o.status).toBe("denied");
+    }
+  });
+
+  it("about: shop leaves the wallet out, about: me leaves the shop out", async () => {
+    const r = await rig();
+    await fund(r, ALICE, 50);
+    const shop = await say(r, "check_coins", ALICE, "m1", { about: "shop" });
+    expect(shop.text).not.toContain("有 50");
+    expect(shop.text).toContain("商店");
+    const me = await say(r, "check_coins", ALICE, "m2", { about: "me" });
+    expect(me.text).toContain("有 50");
+    expect(me.text).not.toContain("商店");
   });
 });

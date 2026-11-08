@@ -25,7 +25,7 @@ const VOICE_TICK_MS = 30_000;
  * Module `economy` (docs/design/economy.md): coins people earn by being with her and spend on
  * feeding her and small gifts. Provides `EconomyKey` (the member routes and the Discord commands
  * use it) and registers `economy.give` (her tool `give_coins`) and the speaker's own
- * `economy.accept_food` / `economy.checkin` / `economy.wallet` and her deals `economy.make_deal` /
+ * `economy.accept_food` / `economy.checkin` / `economy.look` and her deals `economy.make_deal` /
  * `economy.deal_done` / `economy.cancel_deal` (tools.ts, deals.ts), and her own money's tools
  * (`economy.treat`, `buy_self`, `propose_goal`, `cancel_goal`, `post_bounty`, `award_bounty`,
  * `cancel_bounty`; agency-tools.ts, purse.ts, goals.ts, bounties.ts). Uses `CoinLedgerStore`,
