@@ -143,6 +143,107 @@ function BandColumn({
   );
 }
 
+/**
+ * Frames they can buy: a colour per id for the little swatch in the shop. The card draws the
+ * real thing in `Frame`. An id the panel does not know falls back to the plain border.
+ */
+export const FRAME_SWATCH: Record<string, string> = { sakura: "#f4b6cf", abyss: "#2f8fb5", gold: "#d9aa3c" };
+
+const PETAL = "M0 0C5-7 15-5 13 4C11 11 2 9 0 0Z";
+
+/** Four petals fanned around a corner, so it reads as blown there. */
+function Petals({ x, y, flip }: { x: number; y: number; flip: [number, number] }) {
+  const spec: [number, number, number, number][] = [
+    [0, 0, 20, 1],
+    [11, 5, 70, 0.8],
+    [4, 14, 120, 0.9],
+    [18, 16, 40, 0.6],
+  ];
+  return (
+    <g transform={`translate(${x} ${y}) scale(${flip[0]} ${flip[1]})`} fill="#f7c6da" opacity={0.92}>
+      {spec.map(([dx, dy, rot, k], i) => (
+        <path key={i} d={PETAL} transform={`translate(${dx} ${dy}) rotate(${rot}) scale(${k})`} />
+      ))}
+    </g>
+  );
+}
+
+/** The border of the card, drawn over the picture. Literal colours only: it is exported to PNG. */
+function Frame({ frame, id }: { frame: string | null | undefined; id: string }) {
+  const corners: [number, number, [number, number]][] = [
+    [6, 6, [1, 1]],
+    [W - 6, 6, [-1, 1]],
+    [6, H - 6, [1, -1]],
+    [W - 6, H - 6, [-1, -1]],
+  ];
+  if (frame === "sakura") {
+    return (
+      <g>
+        <rect x={1.5} y={1.5} width={W - 3} height={H - 3} rx={25} fill="none" stroke="#f4b6cf" strokeWidth={3} />
+        <rect x={10} y={10} width={W - 20} height={H - 20} rx={19} fill="none" stroke="#f9d3e2" strokeOpacity={0.35} />
+        {corners.map(([x, y, f], i) => (
+          <Petals key={i} x={x} y={y} flip={f} />
+        ))}
+      </g>
+    );
+  }
+  if (frame === "abyss") {
+    return (
+      <g>
+        <defs>
+          <linearGradient id={`abyss-${id}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#4fd1d9" />
+            <stop offset="0.55" stopColor="#1d6f9a" />
+            <stop offset="1" stopColor="#0f2f66" />
+          </linearGradient>
+        </defs>
+        <rect x={2} y={2} width={W - 4} height={H - 4} rx={24} fill="none" stroke={`url(#abyss-${id})`} strokeWidth={4} />
+        <rect x={11} y={11} width={W - 22} height={H - 22} rx={18} fill="none" stroke="#7fe3ea" strokeOpacity={0.3} />
+        <rect x={15} y={15} width={W - 30} height={H - 30} rx={15} fill="none" stroke="#7fe3ea" strokeOpacity={0.14} strokeDasharray="2 9" strokeLinecap="round" />
+        {[
+          [W - 30, 32, 4],
+          [W - 44, 46, 2.5],
+          [W - 26, 58, 2],
+        ].map(([cx, cy, r]) => (
+          <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r={r} fill="none" stroke="#a6f0f4" strokeOpacity={0.75} />
+        ))}
+      </g>
+    );
+  }
+  if (frame === "gold") {
+    return (
+      <g>
+        <defs>
+          <linearGradient id={`gold-${id}`} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#f8e49a" />
+            <stop offset="0.45" stopColor="#c8942a" />
+            <stop offset="0.7" stopColor="#f3d77d" />
+            <stop offset="1" stopColor="#a8741c" />
+          </linearGradient>
+        </defs>
+        <rect x={2} y={2} width={W - 4} height={H - 4} rx={24} fill="none" stroke={`url(#gold-${id})`} strokeWidth={4.5} />
+        <rect x={11} y={11} width={W - 22} height={H - 22} rx={18} fill="none" stroke="#e9c766" strokeOpacity={0.55} />
+        {corners.map(([x, y, f], i) => (
+          <path
+            key={i}
+            d="M0-9L9 0 0 9-9 0Z"
+            transform={`translate(${x + f[0] * 14} ${y + f[1] * 14})`}
+            fill={`url(#gold-${id})`}
+            stroke="#fff4c2"
+            strokeOpacity={0.5}
+          />
+        ))}
+      </g>
+    );
+  }
+  return (
+    <g>
+      <rect x={1.5} y={1.5} width={W - 3} height={H - 3} rx={25} fill="none" stroke={`url(#foil-${id})`} strokeWidth={3} />
+      <rect x={10} y={10} width={W - 20} height={H - 20} rx={19} fill="none" stroke="#ffffff" strokeOpacity={0.12} />
+    </g>
+  );
+}
+
 export interface CardFaceProps {
   card: IssuedCard;
   /** Her picture, inlined; `null` draws the card without it. */
@@ -268,8 +369,7 @@ export const CardFace = forwardRef<SVGSVGElement, CardFaceProps>(function CardFa
         <rect x={W - PAD - 104} y={742} width={104} height={104} rx={10} fill="#ffffff" />
         <Qr text={verifyUrl(card.serial)} x={W - PAD - 96} y={750} size={88} />
       </g>
-      <rect x={1.5} y={1.5} width={W - 3} height={H - 3} rx={25} fill="none" stroke={`url(#foil-${id})`} strokeWidth={3} />
-      <rect x={10} y={10} width={W - 20} height={H - 20} rx={19} fill="none" stroke="#ffffff" strokeOpacity={0.12} />
+      <Frame frame={card.frame} id={id} />
     </svg>
   );
 });

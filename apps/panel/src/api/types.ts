@@ -363,6 +363,86 @@ export interface IssuedCard {
   public_feeling: string | null;
   /** Which picture of her is on it. */
   pose: string;
+  /** The frame they had selected when it was issued; `null` is the plain border. Missing on an older Core. */
+  frame?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// the coin economy (`/api/member/wallet` and the spends)
+
+export type FeedItem = "rice" | "big_bowl" | "dessert";
+export type GiftExpression = "heart" | "blush" | "squint";
+export type Hungry = "full" | "ok" | "hungry" | "starving";
+
+export interface EarnLine {
+  reason: "checkin" | "talked" | "voice" | "song" | "her_gift";
+  label: string;
+  amount: number;
+  earned_today: number;
+  cap: number;
+}
+
+export interface ShopItem {
+  id: string;
+  kind: "feed" | "letter" | "expression" | "frame";
+  label: string;
+  price: number;
+  available: boolean;
+  why: string | null;
+}
+
+export interface LedgerLine {
+  ts: string;
+  delta: number;
+  label: string;
+}
+
+/** `GET /api/member/wallet`. */
+export interface WalletView {
+  currency: string;
+  balance: number;
+  can_earn: boolean;
+  today_earned: number;
+  checked_in_today: boolean;
+  streak: number;
+  earn: EarnLine[];
+  shop: ShopItem[];
+  frames: { owned: string[]; selected: string | null };
+  /** Words, never the number; `null` for someone she does not know. */
+  hungry: Hungry | null;
+  /** Newest first. */
+  recent: LedgerLine[];
+}
+
+/** `POST /api/member/checkin`. */
+export interface CheckinResult {
+  gained: number;
+  streak: number;
+  balance: number;
+}
+
+/** `POST /api/member/feed`. Refused (she is full): `accepted` false, nothing charged. */
+export interface FeedResult {
+  accepted: boolean;
+  eaten: number;
+  charged: number;
+  balance: number;
+  message: string;
+}
+
+/** `POST /api/member/letter` and `/expression`. */
+export interface SpendResult {
+  accepted: boolean;
+  charged: number;
+  balance: number;
+  message: string;
+}
+
+/** `POST /api/member/frame`. */
+export interface FramesResult {
+  owned: string[];
+  selected: string | null;
+  balance: number;
 }
 
 /** `GET /api/member/card`. */

@@ -58,10 +58,17 @@ import type {
   ModuleAction,
   ModuleInfo,
   IssuedCard,
+  CheckinResult,
+  FeedItem,
+  FeedResult,
+  FramesResult,
+  GiftExpression,
   MemberCards,
   MemberForgetResult,
   MemberSession,
   MemberView,
+  SpendResult,
+  WalletView,
   PersonaOverride,
   PersonaSectionInfo,
   PublicSongs,
@@ -96,6 +103,9 @@ import type {
 
 type Opts = { signal?: AbortSignal };
 
+/** A spend: the member routes, with its idempotency key. */
+const spend = (key: string) => ({ public: true, headers: { "Idempotency-Key": key } });
+
 export function createApi(client: ApiClient) {
   return {
     health: (o?: Opts) => client.get<HealthInfo>("/api/health", { ...o, public: true }),
@@ -119,6 +129,17 @@ export function createApi(client: ApiClient) {
       client.post<{ accepted: boolean }>("/api/member/songs", { query }, { public: true }),
     memberCards: (o?: Opts) => client.get<MemberCards>("/api/member/card", { ...o, public: true }),
     memberIssueCard: () => client.post<IssuedCard>("/api/member/card", {}, { public: true }),
+    memberWallet: (o?: Opts) => client.get<WalletView>("/api/member/wallet", { ...o, public: true }),
+    memberCheckin: () => client.post<CheckinResult>("/api/member/checkin", {}, { public: true }),
+    // Spends carry one key per click, so a retried request is charged once.
+    memberFeed: (item: FeedItem, count: number, key: string) =>
+      client.post<FeedResult>("/api/member/feed", { item, count }, spend(key)),
+    memberLetter: (text: string, key: string) =>
+      client.post<SpendResult>("/api/member/letter", { text }, spend(key)),
+    memberExpression: (expression: GiftExpression, key: string) =>
+      client.post<SpendResult>("/api/member/expression", { expression }, spend(key)),
+    memberFrame: (req: { buy?: string; select?: string | null }, key: string) =>
+      client.post<FramesResult>("/api/member/frame", req, spend(key)),
     publicCard: (serial: string, o?: Opts) =>
       client.get<IssuedCard>(`/api/public/card/${seg(serial)}`, { ...o, public: true }),
 

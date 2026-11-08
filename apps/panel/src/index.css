@@ -337,3 +337,36 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Feeding her: the price floats up from the balance, the pressed button gives a little. */
+@keyframes wallet-spent {
+  from {
+    opacity: 1;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+}
+
+@keyframes wallet-press {
+  40% {
+    transform: scale(0.95);
+  }
+}
+
+.wallet-spent {
+  animation: wallet-spent 1.2s ease-out forwards;
+}
+
+.wallet-press {
+  animation: wallet-press 0.3s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The price just stays beside the balance until it is taken away. */
+  .wallet-spent {
+    animation: none;
+  }
+}

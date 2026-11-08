@@ -13,6 +13,7 @@ import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Segmented } from "@/components/ui/segmented";
 import { fmtInt } from "@/lib/format";
 import { DAY_MS, localMidnight, MemberActions, MemberActivity, MemberLists, MemberProfile } from "./Member";
+import { WalletMain } from "./Wallet";
 
 /** The Core rebuilds these every few seconds at most, so polling faster buys nothing. */
 const POLL_MS = 15_000;
@@ -276,6 +277,7 @@ export function PublicSite({
           </div>
           <Now />
           <MemberLists />
+          <WalletMain />
           <Songs />
         </Page>
       </main>

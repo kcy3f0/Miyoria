@@ -14,6 +14,7 @@ import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import { AFFINITY, FAMILIARITY, TRUST } from "./card";
 import { CardSection } from "./CardSection";
+import { WalletCard } from "./Wallet";
 
 /** Her view of someone changes with a reflection, not by the second. */
 const POLL_MS = 60_000;
@@ -331,6 +332,7 @@ export function MemberActions() {
   const me = useMe();
   return (
     <>
+      <WalletCard />
       <CardSection />
       {me.data?.can_request_song && <RequestSong />}
       <YourData />
