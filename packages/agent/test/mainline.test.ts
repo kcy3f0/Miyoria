@@ -1253,8 +1253,9 @@ describe("helpers", () => {
     expect(sentences("好喔。做好了!\n還有嗎")).toEqual(["好喔。", "做好了!\n", "還有嗎"]);
   });
 
-  it("the config has the token target of §10.4", () => {
-    expect(MainLineConfigSchema.parse({}).prompt_tokens).toBe(4000);
+  it("the prompt has no token cap unless the owner sets one", () => {
+    expect(MainLineConfigSchema.parse({}).prompt_tokens).toBeNull();
+    expect(MainLineConfigSchema.parse({ prompt_tokens: 4000 }).prompt_tokens).toBe(4000);
   });
 });
 
@@ -1495,6 +1496,31 @@ describe("the hands merge repeats", () => {
     fail(h, { who: "Alice" });
     fail(h, { who: "Alice" });
     expect(told).toHaveLength(2);
+  });
+
+  it("a result says whose it is: the name and words of the message it answered", () => {
+    const { hands: h } = hands();
+    const asked = {
+      author: { account: { platform: "test", id: "b" }, display_name: "b.netanyahu" },
+      text: "@Miyoria 我有多少魚幣",
+    };
+    const job = h.begin({
+      turn: newId(),
+      context: where,
+      tool: "wallet_of_speaker",
+      args: {},
+      report: "turn",
+      depth: 0,
+      requester: asked,
+      cause: null,
+    });
+    h.answered(job, { ok: true, text: "對方自己的錢包:有 10 魚幣", data: null });
+    expect(resultData(h.takeResults(where))).toContain(
+      "wallet_of_speaker 完成(b.netanyahu 問的「@Miyoria 我有多少魚幣」):對方自己的錢包:有 10 魚幣",
+    );
+    // Her own doing names nobody.
+    fail(h, undefined);
+    expect(resultData(h.takeResults(where))).toContain("stream_start 失敗:stage");
   });
 
   it("long after, the same failure is news again", () => {

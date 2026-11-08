@@ -1739,7 +1739,7 @@ class Turn {
         },
         images,
       });
-    return fitHistory(build, history, tools, m.prompt_tokens);
+    return fitHistory(build, history, tools, m.prompt_tokens, m.history_floor);
   }
 
   /** The turn of `#generate` under the main line. */

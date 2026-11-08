@@ -20,6 +20,7 @@ import {
   type FloorClaimKind,
   neutralize,
   type Proposal,
+  safeName,
   timestampMs,
 } from "@miyoria/types";
 import {
@@ -137,13 +138,36 @@ export function proposalData(proposals: readonly Proposal[], max: number): strin
   return dataBlock("proposal", "你最近想做的事", lines.join("\n"));
 }
 
+/** Longest quote of the message a result answers. */
+export const MAX_ASKED_EXCERPT = 40;
+
+/**
+ * Who a result is for: the message the turn answered (`Job.requester`), so a result turn knows
+ * whose it is. 2026-11-08 14:52: a wallet came back as 「對方自己的錢包」 with no transcript, and
+ * she told it to whoever the summary named last.
+ */
+export function askedBy(requester: unknown): string {
+  if (typeof requester !== "object" || requester === null) return "";
+  const m = requester as { author?: { display_name?: unknown }; text?: unknown };
+  const name = m.author?.display_name;
+  if (typeof name !== "string" || name === "") return "";
+  const text = typeof m.text === "string" ? neutralize(m.text).trim() : "";
+  const quote =
+    text === ""
+      ? ""
+      : `「${text.length > MAX_ASKED_EXCERPT ? `${text.slice(0, MAX_ASKED_EXCERPT)}…` : text}」`;
+  return `(${safeName(name)} 問的${quote})`;
+}
+
 /** Results to tell, as data: a tool's answer is not hers. */
 export function resultData(results: readonly Job[]): string | null {
   if (results.length === 0) return null;
   // The same result again is one line: she says it once.
   const counts = new Map<string, number>();
   for (const j of results) {
-    const line = j.state === "done" ? `${j.tool} 完成:${j.detail}` : `${j.tool} 失敗:${j.detail}`;
+    const who = askedBy(j.requester);
+    const line =
+      j.state === "done" ? `${j.tool} 完成${who}:${j.detail}` : `${j.tool} 失敗${who}:${j.detail}`;
     counts.set(line, (counts.get(line) ?? 0) + 1);
   }
   const lines = [...counts].map(([line, n]) => (n > 1 ? `${line}(${n} 次)` : line));
@@ -248,18 +272,21 @@ export function promptTokens(messages: readonly ChatMessage[], tools: unknown = 
 
 /**
  * The newest history that keeps the prompt within `target` tokens: the oldest lines go first, the
- * ones she answers never do.
+ * ones she answers never do, nor the newest `floor` lines. 2026-11-08: the tool specs alone were
+ * over the target, so every line but the one she answered went and a result turn had none.
  */
 export function fitHistory(
   build: (history: readonly HistoryEntry[]) => ChatMessage[],
   history: readonly HistoryEntry[],
   tools: unknown,
-  target: number,
+  target: number | null,
+  floor = 0,
 ): ChatMessage[] {
   let kept = [...history];
   let messages = build(kept);
-  while (promptTokens(messages, tools) > target) {
-    const oldest = kept.findIndex((e) => e.current !== true);
+  if (target === null) return messages;
+  while (promptTokens(messages, tools) > target && kept.length > floor) {
+    const oldest = kept.findIndex((e, i) => e.current !== true && i < kept.length - floor);
     if (oldest < 0) break;
     kept = kept.filter((_, i) => i !== oldest);
     messages = build(kept);

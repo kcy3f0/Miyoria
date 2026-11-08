@@ -48,7 +48,16 @@ const PROFILE = join(fileURLToPath(new URL("../../..", import.meta.url)), "profi
 const VOICE: ContextKey = { platform: "discord", scope: "g", channel: "v", kind: "voice" };
 const NOW = Date.UTC(2026, 10, 7, 6);
 const SPEAKS_IN = "Japanese";
-const budget = MainLineConfigSchema.parse({});
+// The default has no cap (2026-11-08); this is the compact setting an owner can still choose.
+const budget = MainLineConfigSchema.parse({
+  prompt_tokens: 4000,
+  self_chars: 400,
+  data_chars: 500,
+  history_lines: 14,
+  history_chars: 1000,
+  entry_chars: 300,
+});
+const target = budget.prompt_tokens ?? 0;
 
 /** `n` characters of ordinary chat. */
 function chat(n: number): string {
@@ -232,10 +241,10 @@ describe("the prompt budget (§10.4)", () => {
   it("a full turn stays within the target, tools included", async () => {
     const { raw, tools, build, lines, persona } = await mainPrompt();
     const whole = build(lines);
-    const fitted = fitHistory(build, lines, tools, budget.prompt_tokens);
+    const fitted = fitHistory(build, lines, tools, target);
     const toolTokens = promptTokens([], tools);
     const parts = {
-      target: budget.prompt_tokens,
+      target,
       tools_raw: promptTokens([], raw),
       tools_slim: toolTokens,
       tool_count: tools.length,
@@ -253,7 +262,7 @@ describe("the prompt budget (§10.4)", () => {
     if (process.env.MIYORIA_PROMPT_REPORT) {
       writeFileSync(process.env.MIYORIA_PROMPT_REPORT, JSON.stringify(parts, null, 2));
     }
-    expect(parts.total).toBeLessThanOrEqual(budget.prompt_tokens);
+    expect(parts.total).toBeLessThanOrEqual(target);
     expect(parts.tools_slim).toBeLessThan(parts.tools_raw);
   });
 
@@ -261,6 +270,24 @@ describe("the prompt budget (§10.4)", () => {
     const { tools, build, lines } = await mainPrompt();
     const fitted = fitHistory(build, lines, tools, 1);
     expect(JSON.stringify(fitted)).toContain("要回的訊息");
+  });
+
+  it("the newest lines stay even over the target, so a turn never reads no conversation", async () => {
+    // 2026-11-08 14:52: the tool specs alone were over the target; a result turn had no history.
+    const { tools, build, lines } = await mainPrompt();
+    const marked = lines.map((e, i) => ({ ...e, text: `第${i}行 ${e.text}` }));
+    const bare = JSON.stringify(fitHistory(build, marked, tools, 1));
+    const kept = JSON.stringify(fitHistory(build, marked, tools, 1, budget.history_floor));
+    const n = marked.length;
+    for (let i = n - budget.history_floor; i < n; i++) expect(kept).toContain(`第${i}行`);
+    expect(kept).not.toContain(`第${n - budget.history_floor - 1}行`);
+    expect(bare).not.toContain(`第${n - 2}行`);
+  });
+
+  it("by default nothing is cut for tokens", async () => {
+    expect(MainLineConfigSchema.parse({}).prompt_tokens).toBeNull();
+    const { tools, build, lines } = await mainPrompt();
+    expect(fitHistory(build, lines, tools, null)).toEqual(build(lines));
   });
 
   it("the state is the last thing she reads, the fixed part comes first", async () => {

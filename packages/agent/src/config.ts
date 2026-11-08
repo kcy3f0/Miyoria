@@ -264,20 +264,23 @@ export type PromptConfig = z.output<typeof PromptConfigSchema>;
 
 /**
  * `[modules.agent.mainline]`: the main line of `pipeline = "v3"` (docs/design/v3-architecture.md
- * §10). The prompt budgets are what brings it from about 7000 tokens to `prompt_tokens`.
+ * §10). The prompt has no token cap by default (2026-11-08: 4000 left her with no conversation);
+ * each part keeps its own character budget.
  */
 export const MainLineConfigSchema = z.object({
-  /** The prompt's target; the oldest history gives way when it does not fit. */
-  prompt_tokens: z.number().int().positive().default(4000),
+  /** A cap on the prompt (null: none); over it the oldest history gives way. */
+  prompt_tokens: z.number().int().positive().nullable().default(null),
   /** Her own state in the tail of the prompt. */
-  self_chars: z.number().int().nonnegative().default(400),
+  self_chars: z.number().int().nonnegative().default(1600),
   /** What contributors add to the data part, together. */
-  data_chars: z.number().int().nonnegative().default(500),
+  data_chars: z.number().int().nonnegative().default(4000),
   /** History lines shown at most, and their characters. */
-  history_lines: z.number().int().nonnegative().default(14),
-  history_chars: z.number().int().nonnegative().default(1000),
+  history_lines: z.number().int().nonnegative().default(30),
+  history_chars: z.number().int().nonnegative().default(4000),
+  /** The newest lines kept even when the prompt is over `prompt_tokens`. */
+  history_floor: z.number().int().nonnegative().default(8),
   /** One history entry. */
-  entry_chars: z.number().int().nonnegative().default(300),
+  entry_chars: z.number().int().nonnegative().default(600),
   /** Example dialogues in the data part (0: none). */
   examples_chars: z.number().int().nonnegative().default(0),
   /** Lines of "最近講過" in the tail. */

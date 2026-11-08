@@ -421,14 +421,15 @@ barge_in = "selective"     # 有人插話時:selective(只有這回合要回的�
 # 語音聊天。也可以用 /voice mode 即時切換。要不要插話 = 她的多話程度(心智迴圈或「活躍點」)
 # × 佔比上限;有人還在講話時她不插嘴。舊的 ambient_factor、cooldown_ms、min_cooldown_ms、
 # interrupt_scale 已經拿掉(留著也能讀,只會警告);她自己多久開一次口由 [modules.arbiter] 決定
-# pipeline = "v3" 的主線:一次呼叫同時決定說什麼和做什麼。prompt 的預算把 7000 token 壓到 4000 以內
+# pipeline = "v3" 的主線:一次呼叫同時決定說什麼和做什麼。prompt 預設沒有 token 上限,各部分各有字數預算
 # [modules.agent.mainline]
-# prompt_tokens = 4000           # prompt 目標;放不下時先丟最舊的對話
-# self_chars = 400               # 「現在」裡她自己的狀態
-# data_chars = 500               # 參考資料(世界、遊戲、筆記)合計
-# history_lines = 14             # 對話紀錄最多幾則
-# history_chars = 1000           # 對話紀錄最多幾字
-# entry_chars = 300              # 單則上限
+# prompt_tokens = 8000           # prompt 上限(不設 = 不限);超過時先丟最舊的對話,最新 history_floor 則一定留
+# history_floor = 8
+# self_chars = 1600              # 「現在」裡她自己的狀態
+# data_chars = 4000              # 參考資料(世界、遊戲、筆記)合計
+# history_lines = 30             # 對話紀錄最多幾則
+# history_chars = 4000           # 對話紀錄最多幾字
+# entry_chars = 600              # 單則上限
 # examples_chars = 0             # 範例對話(0 = 不放)
 # recent_lines = 4               # 「最近講過」幾句
 # first_token_timeout_ms = 15000 # 模型這麼久沒開始回就算失敗,改說固定的短句
