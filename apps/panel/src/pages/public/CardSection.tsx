@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Dices, Download, Share2, Sparkles } from "lucide-react";
+import { Dices, Download, ExternalLink, Share2, Sparkles } from "lucide-react";
 import { useRef, useState } from "react";
 import type { IssuedCard, WalletView } from "@/api/types";
 import { useApi } from "@/app/connection";
@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";
-import { CardFace, cardColors, cardFileName, cardPng, poseUrl, useInlined, verifyUrl } from "./card";
+import { cardFileName, cardPng, verifyUrl } from "./card";
+import { HoloCard } from "./HoloCard";
 
 const CARDS = ["member", "cards"] as const;
 const WALLET = ["member", "wallet"] as const;
@@ -35,23 +36,6 @@ function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; chi
     >
       {children}
     </button>
-  );
-}
-
-/** The card with its pictures inlined, so the same `<svg>` can become a PNG. */
-export function InlinedCard({ card, svgRef }: { card: IssuedCard; svgRef?: React.Ref<SVGSVGElement> }) {
-  const art = useInlined(poseUrl(card.pose));
-  const avatar = useInlined(card.avatar_url);
-  const [colors] = useState(cardColors);
-  return (
-    <CardFace
-      ref={svgRef}
-      card={card}
-      art={art.data ?? null}
-      avatar={avatar.data ?? null}
-      colors={colors}
-      className="h-auto w-full rounded-[13px] shadow-[0_12px_32px_rgba(0,0,0,0.45)]"
-    />
   );
 }
 
@@ -150,7 +134,7 @@ export function CardSection() {
           return (
             <div className="grid gap-3">
               {c.latest ? (
-                <InlinedCard card={c.latest} svgRef={svg} />
+                <HoloCard card={c.latest} svgRef={svg} sway={false} zoom={1.03} />
               ) : (
                 <EmptyLine>還沒有卡,抽一張看看她怎麼看你</EmptyLine>
               )}
@@ -195,6 +179,14 @@ export function CardSection() {
                 <Button variant="outline" onClick={() => setAskingReroll(true)}>
                   <Dices aria-hidden />
                   重抽這張({prices.reroll} {currency},今天還能 {rerolls} 次)
+                </Button>
+              )}
+              {c.latest && (
+                <Button asChild variant="outline">
+                  <a href={verifyUrl(c.latest.serial)} target="_blank" rel="noopener">
+                    <ExternalLink aria-hidden />
+                    打開數位卡面
+                  </a>
                 </Button>
               )}
               {c.latest && (

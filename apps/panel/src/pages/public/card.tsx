@@ -3,7 +3,7 @@
 // and colours resolved to literals, so the SVG stands on its own when it is turned into a PNG.
 
 import { useQuery } from "@tanstack/react-query";
-import { forwardRef } from "react";
+import { forwardRef, useState } from "react";
 import { encode } from "uqr";
 import type { IssuedCard } from "@/api/types";
 
@@ -169,6 +169,9 @@ const FIELDS_END = 784;
  * real thing in `Frame`. An id the panel does not know falls back to the plain border.
  */
 export const FRAME_SWATCH: Record<string, string> = { sakura: "#f4b6cf", abyss: "#2f8fb5", gold: "#d9aa3c" };
+
+/** The frames' names as the shop sells them (`DEFAULT_FRAMES` in `packages/economy`), for the card's page. */
+export const FRAME_NAME: Record<string, string> = { sakura: "櫻花框", abyss: "深海框", gold: "金框" };
 
 /**
  * How wide a bought frame is. Bought frames are a band of material along the edge, the way printed
@@ -584,6 +587,23 @@ export const CardFace = forwardRef<SVGSVGElement, CardFaceProps>(function CardFa
     </svg>
   );
 });
+
+/** The card with its pictures inlined, so the same `<svg>` can become a PNG. */
+export function InlinedCard({ card, svgRef }: { card: IssuedCard; svgRef?: React.Ref<SVGSVGElement> }) {
+  const art = useInlined(poseUrl(card.pose));
+  const avatar = useInlined(card.avatar_url);
+  const [colors] = useState(cardColors);
+  return (
+    <CardFace
+      ref={svgRef}
+      card={card}
+      art={art.data ?? null}
+      avatar={avatar.data ?? null}
+      colors={colors}
+      className="h-auto w-full"
+    />
+  );
+}
 
 /** The card as a PNG, twice its size: what is downloaded and shared. */
 export async function cardPng(svg: SVGSVGElement, scale = 2): Promise<Blob> {

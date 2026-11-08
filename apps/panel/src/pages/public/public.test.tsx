@@ -518,6 +518,10 @@ describe("a card she gives", () => {
     expect(await within(section).findByRole("img", { name: /MYR-NEW0-0000-0002/ })).toBeInTheDocument();
     expect(within(section).getByRole("button", { name: "下載" })).toBeInTheDocument();
     expect(within(section).getByRole("button", { name: "分享" })).toBeInTheDocument();
+    // The new card's digital face is a link away, the same page its code leads to.
+    const open = within(section).getByRole("link", { name: "打開數位卡面" });
+    expect(open.getAttribute("href")).toContain("/#/card/MYR-NEW0-0000-0002");
+    expect(open.getAttribute("target")).toBe("_blank");
   });
 
   const OFFERS = {
@@ -588,6 +592,21 @@ describe("a card she gives", () => {
     expect(screen.getByRole("img", { name: /好朋友/ })).toBeInTheDocument();
     expect(paths(fn)).toContain(`/api/public/card/${CARD.serial}`);
     expect(screen.queryByRole("link", { name: "使用 Discord 登入" })).toBeNull();
+  });
+
+  it("shows the card to turn in the light, with what it says beside it", async () => {
+    core({ checked: { ...CARD, frame: "gold", foil: true } });
+    window.history.replaceState(null, "", `/#/card/${CARD.serial}`);
+    const { container } = renderApp();
+    const info = await screen.findByRole("region", { name: "卡片資訊" });
+    expect(within(info).getByText("金框 · 閃卡")).toBeInTheDocument();
+    expect(within(info).getByText(CARD.serial)).toBeInTheDocument();
+    expect(within(info).getByRole("button", { name: "下載圖片" })).toBeInTheDocument();
+    expect(within(info).getByRole("button", { name: "複製連結" })).toBeInTheDocument();
+    // Foil and a lit frame each put their light over the card; the plain card has only the glare.
+    expect(container.querySelector(".holo-foil")).not.toBeNull();
+    expect(container.querySelector(".holo-band-gold")).not.toBeNull();
+    expect(container.querySelector(".holo-glare")).not.toBeNull();
   });
 
   it("says a made-up or revoked code is not a card", async () => {
