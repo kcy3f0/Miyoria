@@ -81,6 +81,99 @@ export interface MemberCardRecord {
   snapshot: JsonObject;
 }
 
+// ---- coins ------------------------------------------------------------------------------
+
+/** One row of the coin ledger (docs/design/economy.md §6). Rows are never changed. */
+export interface CoinEntry {
+  /** ULID. */
+  id: string;
+  profile: ProfileId;
+  /** The account it was written for; a wallet is all accounts of a person. */
+  account: AccountRef;
+  /** Positive: earned or refunded; negative: spent. A whole number. */
+  delta: number;
+  /** `checkin`, `talked`, `voice`, `song`, `her_gift`, `feed`, `letter`, `refund`, ... */
+  reason: string;
+  ref: string | null;
+  /** Counts once per account; `null`: no key. */
+  idem_key: string | null;
+  ts: Timestamp;
+}
+
+/** At most `limit` of `reasons` since `since`, summed over `accounts` (`null`: everyone). */
+export interface CoinCap {
+  accounts: readonly AccountRef[] | null;
+  reasons: readonly string[];
+  since: Timestamp;
+  limit: number;
+}
+
+/** What `CoinLedgerStore.post` checks in the same transaction. */
+export interface CoinRule {
+  /** The accounts that are one wallet with the entry's (its balance, its keys). */
+  wallet: readonly AccountRef[];
+  /** Refused when the balance would go below zero. */
+  covered?: boolean;
+  /** Earnings: refused when a cap is reached. */
+  caps?: readonly CoinCap[];
+  /** With `caps`: post what still fits instead of refusing. */
+  partial?: boolean;
+}
+
+/**
+ * `posted`: written (`entry.delta` may be less than asked, with `partial`); `duplicate`: the key
+ * was there, `entry` is the first row; `short`: not enough coins; `capped`: a cap is reached.
+ */
+export type CoinPost =
+  | { status: "posted"; entry: CoinEntry; balance: number }
+  | { status: "duplicate"; entry: CoinEntry; balance: number }
+  | { status: "short"; balance: number }
+  | { status: "capped"; balance: number };
+
+// ---- deals ------------------------------------------------------------------------------
+
+/**
+ * `open`: she took the deal, the task is not done; `owed`: she says it is done, payment awaited;
+ * `settled`: paid (or escrow released); `broken`: not paid by its due time; `refunded`: escrow
+ * returned; `cancelled`: ended with nothing to return.
+ */
+export type DealStatus = "open" | "owed" | "settled" | "broken" | "refunded" | "cancelled";
+
+/** A bribe she accepted (docs/design/economy.md §12): someone's promise of a reward for a task. */
+export interface Deal {
+  /** ULID. */
+  id: string;
+  profile: ProfileId;
+  /** The account that made it (the speaker); its wallet pays. */
+  account: AccountRef;
+  /** `rice`, `big_bowl` or `dessert`. */
+  item: string;
+  count: number;
+  /** What the reward costs in coins, fixed when the deal was made. */
+  value: number;
+  /** What she will do, short. */
+  task: string;
+  /** Paid into escrow at once (`escrow` is its ledger row). */
+  prepaid: boolean;
+  /** The escrow's coin ledger row id. */
+  escrow: string | null;
+  status: DealStatus;
+  created_at: Timestamp;
+  /** When she said she did it. */
+  done_at: Timestamp | null;
+  /** Unpaid deals: when payment is due once she is done; escrow deals: the refund time. */
+  due_at: Timestamp | null;
+  closed_at: Timestamp | null;
+}
+
+/** What `DealStore.transition` changes besides the status. */
+export interface DealPatch {
+  status: DealStatus;
+  done_at?: Timestamp | null;
+  due_at?: Timestamp | null;
+  closed_at?: Timestamp | null;
+}
+
 // ---- persona overrides ------------------------------------------------------------------
 
 /** One version of a persona section override. */

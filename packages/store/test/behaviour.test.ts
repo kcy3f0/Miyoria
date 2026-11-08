@@ -22,6 +22,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type AuditEntry,
   type AuthScope,
+  type Deal,
   type DecisionRecord,
   dataCategory,
   type LogEntry,
@@ -1427,6 +1428,226 @@ function behaviour(open: () => Promise<Store>): void {
     expect(await store.cards.bySerial(profile, other.serial)).not.toBeNull();
   });
 
+  it("coins: a wallet's sum, keys once per wallet, caps and the balance in one transaction", async () => {
+    const profile = unique("profile");
+    const id = unique("acct");
+    const linked = unique("acct");
+    const other = unique("acct");
+    const wallet = [account(id), account(linked)];
+    const coin = (who: string, delta: number, reason: string, key: string | null, ms: number) => ({
+      id: newId(),
+      profile,
+      account: account(who),
+      delta,
+      reason,
+      ref: null,
+      idem_key: key,
+      ts: at(ms),
+    });
+
+    const first = await store.coins.post(coin(id, 10, "checkin", "checkin:1", 1_000), { wallet });
+    expect(first).toMatchObject({ status: "posted", balance: 10 });
+    // The same key from the linked account is the same click.
+    const again = await store.coins.post(coin(linked, 10, "checkin", "checkin:1", 2_000), {
+      wallet,
+    });
+    expect(again.status).toBe("duplicate");
+    expect(again.status === "duplicate" && again.entry.id).toBe(
+      first.status === "posted" && first.entry.id,
+    );
+    expect(again).toMatchObject({ balance: 10 });
+    // Someone else's key is theirs.
+    expect(
+      (await store.coins.post(coin(other, 5, "checkin", "checkin:1", 2_000), { wallet: [] }))
+        .status,
+    ).toBe("posted");
+
+    // Caps: the voice cap is 4, the second earning gets what fits, the third nothing.
+    const cap = { accounts: wallet, reasons: ["voice"], since: at(0), limit: 4 };
+    const capped = { wallet, caps: [cap], partial: true };
+    expect(await store.coins.post(coin(id, 3, "voice", "v:1", 3_000), capped)).toMatchObject({
+      status: "posted",
+      balance: 13,
+    });
+    const part = await store.coins.post(coin(linked, 3, "voice", "v:2", 4_000), capped);
+    expect(part).toMatchObject({ status: "posted", balance: 14 });
+    expect(part.status === "posted" && part.entry.delta).toBe(1);
+    expect(await store.coins.post(coin(id, 3, "voice", "v:3", 5_000), capped)).toMatchObject({
+      status: "capped",
+      balance: 14,
+    });
+    // A cap over everyone (`accounts: null`), not partial.
+    const total = { accounts: null, reasons: ["checkin"], since: at(0), limit: 16 };
+    expect(
+      (await store.coins.post(coin(id, 2, "checkin", null, 5_000), { wallet, caps: [total] }))
+        .status,
+    ).toBe("capped");
+
+    // Spending needs the coins.
+    expect(
+      await store.coins.post(coin(id, -20, "feed", "f:1", 6_000), { wallet, covered: true }),
+    ).toMatchObject({ status: "short", balance: 14 });
+    expect(
+      await store.coins.post(coin(linked, -14, "feed", "f:2", 7_000), { wallet, covered: true }),
+    ).toMatchObject({ status: "posted", balance: 0 });
+    await expect(
+      store.coins.post({ ...coin(id, 1.5, "feed", null, 7_000) }, { wallet }),
+    ).rejects.toThrow(/whole/);
+
+    expect(await store.coins.balance(profile, wallet)).toBe(0);
+    expect(await store.coins.balance(profile, [account(other)])).toBe(5);
+    expect(await store.coins.balance(profile, [])).toBe(0);
+    expect(await store.coins.balance(unique("profile"), wallet)).toBe(0);
+
+    const all = await store.coins.entries(profile, wallet, { limit: 10 });
+    expect(all.map((e) => e.idem_key)).toEqual(["f:2", "v:2", "v:1", "checkin:1"]);
+    expect(all[0]).toMatchObject({ delta: -14, reason: "feed", account: account(linked) });
+    expect(Date.parse(all[0]?.ts ?? "")).toBe(7_000);
+    expect(
+      (await store.coins.entries(profile, wallet, { reasons: ["voice"], limit: 10 })).length,
+    ).toBe(2);
+    expect(
+      (await store.coins.entries(profile, wallet, { since: at(3_500), limit: 10 })).length,
+    ).toBe(2);
+    expect(await store.coins.entries(profile, wallet, { limit: 1 })).toHaveLength(1);
+    expect(await store.coins.entries(profile, wallet, { reasons: [], limit: 9 })).toEqual([]);
+    expect((await store.coins.byKey(profile, wallet, "v:2"))?.delta).toBe(1);
+    expect(await store.coins.byKey(profile, [account(id)], "v:2")).toBeNull();
+
+    // Frames: the latest choice of any account.
+    expect(await store.coins.selectedFrame(profile, wallet)).toBeNull();
+    await store.coins.selectFrame(profile, account(id), "sakura", at(1_000));
+    await store.coins.selectFrame(profile, account(linked), "gold", at(2_000));
+    expect(await store.coins.selectedFrame(profile, wallet)).toBe("gold");
+    await store.coins.selectFrame(profile, account(linked), null, at(3_000));
+    expect(await store.coins.selectedFrame(profile, wallet)).toBeNull();
+    expect(await store.coins.selectedFrame(profile, [account(id)])).toBe("sakura");
+  });
+
+  it("coins: concurrent spends never take the balance below zero", async () => {
+    const profile = unique("profile");
+    const id = unique("acct");
+    const wallet = [account(id)];
+    await store.coins.post(
+      {
+        id: newId(),
+        profile,
+        account: account(id),
+        delta: 30,
+        reason: "checkin",
+        ref: null,
+        idem_key: null,
+        ts: at(1_000),
+      },
+      { wallet },
+    );
+    const spends = await Promise.all(
+      Array.from({ length: 6 }, (_, i) =>
+        store.coins.post(
+          {
+            id: newId(),
+            profile,
+            account: account(id),
+            delta: -10,
+            reason: "feed",
+            ref: null,
+            idem_key: `f:${i}`,
+            ts: at(2_000 + i),
+          },
+          { wallet, covered: true },
+        ),
+      ),
+    );
+    expect(spends.filter((s) => s.status === "posted")).toHaveLength(3);
+    expect(await store.coins.balance(profile, wallet)).toBe(0);
+  });
+
+  it("deals: kept per wallet, statuses move once and only from where they were", async () => {
+    const profile = unique("profile");
+    const id = unique("acct");
+    const linked = unique("acct");
+    const other = unique("acct");
+    const wallet = [account(id), account(linked)];
+    const deal = (who: string, ms: number, task: string): Deal => ({
+      id: newId(),
+      profile,
+      account: account(who),
+      item: "rice",
+      count: 2,
+      value: 20,
+      task,
+      prepaid: false,
+      escrow: null,
+      status: "open",
+      created_at: at(ms),
+      done_at: null,
+      due_at: null,
+      closed_at: null,
+    });
+    const first = deal(id, 1_000, "meow");
+    const second = deal(linked, 2_000, "sing");
+    const third = deal(other, 3_000, "dance");
+    for (const d of [first, second, third]) await store.deals.create(d);
+    expect(await store.deals.get(first.id)).toEqual(first);
+    expect(await store.deals.get(newId())).toBeNull();
+
+    // A wallet is every account of the person; newest first.
+    const mine = await store.deals.forAccounts(profile, wallet, { limit: 10 });
+    expect(mine.map((d) => d.task)).toEqual(["sing", "meow"]);
+    expect(await store.deals.forAccounts(profile, wallet, { limit: 1 })).toHaveLength(1);
+    expect(await store.deals.forAccounts(profile, wallet, { since: at(1_500), limit: 9 })).toEqual([
+      second,
+    ]);
+    expect(await store.deals.forAccounts(profile, [], { limit: 9 })).toEqual([]);
+    expect(await store.deals.forAccounts(profile, wallet, { statuses: [], limit: 9 })).toEqual([]);
+    expect(await store.deals.forAccounts(unique("profile"), wallet, { limit: 9 })).toEqual([]);
+
+    // A status moves once, from where it was, with the times it sets.
+    const done = { status: "owed" as const, done_at: at(5_000), due_at: at(9_000) };
+    expect(await store.deals.transition(first.id, ["open"], done)).toBe(true);
+    expect(await store.deals.transition(first.id, ["open"], done)).toBe(false);
+    expect(await store.deals.transition(first.id, [], done)).toBe(false);
+    expect(await store.deals.transition(newId(), ["open"], done)).toBe(false);
+    expect(await store.deals.get(first.id)).toMatchObject({
+      status: "owed",
+      done_at: at(5_000),
+      due_at: at(9_000),
+      closed_at: null,
+    });
+    // Fields left out stay, `null` clears.
+    expect(
+      await store.deals.transition(first.id, ["owed"], {
+        status: "broken",
+        closed_at: at(9_500),
+        due_at: null,
+      }),
+    ).toBe(true);
+    expect(await store.deals.get(first.id)).toMatchObject({
+      status: "broken",
+      done_at: at(5_000),
+      due_at: null,
+      closed_at: at(9_500),
+    });
+
+    const open = await store.deals.byStatus(profile, ["open", "owed"], { limit: 10 });
+    expect(open.map((d) => d.task)).toEqual(["sing", "dance"]);
+    expect(await store.deals.byStatus(profile, ["broken"], { limit: 10 })).toHaveLength(1);
+    expect(await store.deals.byStatus(profile, [], { limit: 10 })).toEqual([]);
+    expect(await store.deals.byStatus(profile, ["open"], { since: at(2_500), limit: 10 })).toEqual([
+      third,
+    ]);
+    const broken = await store.deals.forAccounts(profile, wallet, {
+      statuses: ["broken"],
+      limit: 10,
+    });
+    expect(broken.map((d) => d.id)).toEqual([first.id]);
+
+    // A prepaid deal keeps its escrow row.
+    const paid = { ...deal(id, 4_000, "escrowed"), prepaid: true, escrow: newId() };
+    await store.deals.create(paid);
+    expect(await store.deals.get(paid.id)).toMatchObject({ prepaid: true, escrow: paid.escrow });
+  });
+
   // ---- TS-specific ------------------------------------------------------------------------
 
   it("timestamps keep microseconds and are normalized to UTC", async () => {
@@ -1488,6 +1709,19 @@ function behaviour(open: () => Promise<Store>): void {
         issued_at: at(t0),
         snapshot: { affinity: "很好" },
       });
+      await store.coins.post(
+        {
+          id: newId(),
+          profile: p,
+          account: account("100"),
+          delta: 10,
+          reason: "checkin",
+          ref: null,
+          idem_key: null,
+          ts: at(t0),
+        },
+        { wallet: [] },
+      );
       await store.messages.append(entry(p, ctx, "嗨", at(t0)));
       await store.decisions.append(decision(p, ctx, "replied", at(t0)));
       await store.decisions.appendOutcome?.(p, outcome(ctx, "sent", at(t0)));
@@ -1515,7 +1749,7 @@ function behaviour(open: () => Promise<Store>): void {
       fact: 1,
       episode: 1,
     });
-    expect(count("relationships")).toBe(3); // relationship, delta, card
+    expect(count("relationships")).toBe(4); // relationship, delta, card, coins
     expect(count("call_names")).toBe(1);
     expect(count("inner")).toBe(2);
     expect(count("mood")).toBe(1);
@@ -1580,6 +1814,9 @@ function behaviour(open: () => Promise<Store>): void {
       relationships: 1,
       relationship_deltas: 1,
       member_cards: 1,
+      coin_ledger: 1,
+      coin_wallets: 0,
+      deals: 0,
       self_state: 1,
       self_feelings: 1,
       self_cards_migration: 0,

@@ -41,6 +41,7 @@ import {
   type TurnOutcomeRecord,
 } from "@miyoria/types";
 import {
+  allowedDelta,
   authScopeKey,
   canonicalMemoryScope,
   cleanEmbedding,
@@ -64,6 +65,7 @@ import {
   sqlLimit,
   toMicros,
   u32,
+  walletWith,
 } from "./common.js";
 import {
   addCount,
@@ -83,6 +85,13 @@ import type {
   AuditEntry,
   AuthoredEntry,
   AuthScope,
+  CoinCap,
+  CoinEntry,
+  CoinPost,
+  CoinRule,
+  Deal,
+  DealPatch,
+  DealStatus,
   DecisionRecord,
   LogEntry,
   MemberCardRecord,
@@ -105,6 +114,8 @@ import type {
 import type {
   AuditLog,
   AuthStore,
+  CoinLedgerStore,
+  DealStore,
   DecisionLog,
   DirectiveStore,
   EventCompaction,
@@ -530,6 +541,295 @@ class SqliteMemberCards implements MemberCardStore {
         `(${authorsWhere(accounts, params)})`,
       params,
     );
+  }
+}
+
+// ---- coins ---------------------------------------------------------------------------------
+
+function coinFromRow(row: Row): CoinEntry {
+  return {
+    id: str(row, "id"),
+    profile: str(row, "profile_id"),
+    account: { platform: str(row, "author_platform"), id: str(row, "author_id") },
+    delta: num(row, "delta"),
+    reason: str(row, "reason"),
+    ref: optStr(row, "ref"),
+    idem_key: optStr(row, "idem_key"),
+    ts: ts(row, "ts"),
+  };
+}
+
+/** `reason IN (…)` over `reasons`, its parameters added to `params`. */
+function reasonsIn(reasons: readonly string[], params: Params): string {
+  const names = reasons.map((r, i) => {
+    params[`r${i}`] = r;
+    return `$r${i}`;
+  });
+  return `reason IN (${names.join(", ")})`;
+}
+
+class SqliteCoins implements CoinLedgerStore {
+  constructor(private readonly db: Db) {}
+
+  #balance(profile: ProfileId, accounts: readonly AccountRef[]): number {
+    if (accounts.length === 0) return 0;
+    const params: Params = { profile };
+    const row = this.db.get(
+      "SELECT COALESCE(SUM(delta), 0) AS n FROM coin_ledger WHERE profile_id = $profile AND " +
+        `(${authorsWhere(accounts, params)})`,
+      params,
+    );
+    return row ? num(row, "n") : 0;
+  }
+
+  #sum(profile: ProfileId, cap: CoinCap): number {
+    if (cap.reasons.length === 0 || cap.accounts?.length === 0) return 0;
+    const params: Params = { profile, since: toMicros(cap.since) };
+    const who = cap.accounts === null ? "" : ` AND (${authorsWhere(cap.accounts, params)})`;
+    const row = this.db.get(
+      "SELECT COALESCE(SUM(delta), 0) AS n FROM coin_ledger WHERE profile_id = $profile AND " +
+        `ts >= $since AND ${reasonsIn(cap.reasons, params)}${who}`,
+      params,
+    );
+    return row ? num(row, "n") : 0;
+  }
+
+  #byKey(profile: ProfileId, accounts: readonly AccountRef[], key: string): CoinEntry | null {
+    if (accounts.length === 0) return null;
+    const params: Params = { profile, key };
+    const row = this.db.get(
+      "SELECT * FROM coin_ledger WHERE profile_id = $profile AND idem_key = $key AND " +
+        `(${authorsWhere(accounts, params)}) ORDER BY ts, rowid LIMIT 1`,
+      params,
+    );
+    return row ? coinFromRow(row) : null;
+  }
+
+  async post(entry: CoinEntry, rule: CoinRule): Promise<CoinPost> {
+    if (!Number.isSafeInteger(entry.delta)) throw new StoreError("a coin delta must be whole");
+    const wallet = walletWith(entry.account, rule.wallet);
+    const profile = entry.profile;
+    try {
+      return this.db.tx((): CoinPost => {
+        if (entry.idem_key !== null) {
+          const first = this.#byKey(profile, wallet, entry.idem_key);
+          if (first) {
+            return { status: "duplicate", entry: first, balance: this.#balance(profile, wallet) };
+          }
+        }
+        const balance = this.#balance(profile, wallet);
+        const delta = allowedDelta(entry.delta, rule, (cap) => this.#sum(profile, cap));
+        if (delta === null) return { status: "capped", balance };
+        if (rule.covered && balance + delta < 0) return { status: "short", balance };
+        this.db.run(
+          "INSERT INTO coin_ledger (id, profile_id, author_platform, author_id, delta, reason, " +
+            "ref, idem_key, ts) VALUES ($id, $profile, $platform, $account, $delta, $reason, " +
+            "$ref, $key, $ts)",
+          {
+            id: entry.id,
+            profile,
+            platform: entry.account.platform,
+            account: entry.account.id,
+            delta,
+            reason: entry.reason,
+            ref: entry.ref,
+            key: entry.idem_key,
+            ts: toMicros(entry.ts),
+          },
+        );
+        return { status: "posted", entry: { ...entry, delta }, balance: balance + delta };
+      });
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot write to the coin ledger", { cause });
+    }
+  }
+
+  async balance(profile: ProfileId, accounts: readonly AccountRef[]): Promise<number> {
+    return this.#balance(profile, accounts);
+  }
+
+  async entries(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    filter: { reasons?: readonly string[]; since?: Timestamp; limit: number },
+  ): Promise<CoinEntry[]> {
+    if (accounts.length === 0 || filter.reasons?.length === 0) return [];
+    const params: Params = { profile, limit: limitParam(filter.limit) };
+    let where = `profile_id = $profile AND (${authorsWhere(accounts, params)})`;
+    if (filter.reasons) where += ` AND ${reasonsIn(filter.reasons, params)}`;
+    if (filter.since !== undefined) {
+      params.since = toMicros(filter.since);
+      where += " AND ts >= $since";
+    }
+    const rows = this.db.all(
+      `SELECT * FROM coin_ledger WHERE ${where} ORDER BY ts DESC, rowid DESC LIMIT $limit`,
+      params,
+    );
+    return rows.map(coinFromRow);
+  }
+
+  async byKey(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    key: string,
+  ): Promise<CoinEntry | null> {
+    return this.#byKey(profile, accounts, key);
+  }
+
+  async selectedFrame(profile: ProfileId, accounts: readonly AccountRef[]): Promise<string | null> {
+    if (accounts.length === 0) return null;
+    const params: Params = { profile };
+    const row = this.db.get(
+      "SELECT frame FROM coin_wallets WHERE profile_id = $profile AND " +
+        `(${authorsWhere(accounts, params)}) ORDER BY updated_at DESC LIMIT 1`,
+      params,
+    );
+    return row ? optStr(row, "frame") : null;
+  }
+
+  async selectFrame(
+    profile: ProfileId,
+    account: AccountRef,
+    frame: string | null,
+    at: Timestamp,
+  ): Promise<void> {
+    this.db.run(
+      "INSERT INTO coin_wallets (profile_id, author_platform, author_id, frame, updated_at) " +
+        "VALUES ($profile, $platform, $id, $frame, $at) ON CONFLICT (profile_id, " +
+        "author_platform, author_id) DO UPDATE SET frame = excluded.frame, updated_at = " +
+        "excluded.updated_at",
+      { profile, platform: account.platform, id: account.id, frame, at: toMicros(at) },
+    );
+  }
+}
+
+// ---- deals ---------------------------------------------------------------------------------
+
+function dealFromRow(row: Row): Deal {
+  return {
+    id: str(row, "id"),
+    profile: str(row, "profile_id"),
+    account: { platform: str(row, "author_platform"), id: str(row, "author_id") },
+    item: str(row, "reward_item"),
+    count: num(row, "reward_count"),
+    value: num(row, "reward_value"),
+    task: str(row, "task"),
+    prepaid: bool(row, "prepaid"),
+    escrow: optStr(row, "escrow_entry"),
+    status: str(row, "status") as DealStatus,
+    created_at: ts(row, "created_at"),
+    done_at: optTs(row, "done_at"),
+    due_at: optTs(row, "due_at"),
+    closed_at: optTs(row, "closed_at"),
+  };
+}
+
+/** `status IN (...)` over `statuses`, its parameters added to `params`. */
+function statusIn(statuses: readonly string[], params: Params): string {
+  const names = statuses.map((s, i) => {
+    params[`s${i}`] = s;
+    return `$s${i}`;
+  });
+  return `status IN (${names.join(", ")})`;
+}
+
+class SqliteDeals implements DealStore {
+  constructor(private readonly db: Db) {}
+
+  async create(deal: Deal): Promise<void> {
+    try {
+      this.db.run(
+        "INSERT INTO deals (id, profile_id, author_platform, author_id, reward_item, " +
+          "reward_count, reward_value, task, prepaid, escrow_entry, status, created_at, " +
+          "done_at, due_at, closed_at) VALUES ($id, $profile, $platform, $account, $item, " +
+          "$count, $value, $task, $prepaid, $escrow, $status, $created, $done, $due, $closed)",
+        {
+          id: deal.id,
+          profile: deal.profile,
+          platform: deal.account.platform,
+          account: deal.account.id,
+          item: deal.item,
+          count: deal.count,
+          value: deal.value,
+          task: deal.task,
+          prepaid: deal.prepaid ? 1 : 0,
+          escrow: deal.escrow,
+          status: deal.status,
+          created: toMicros(deal.created_at),
+          done: optionalMicros(deal.done_at),
+          due: optionalMicros(deal.due_at),
+          closed: optionalMicros(deal.closed_at),
+        },
+      );
+    } catch (cause) {
+      throw new StoreError("cannot write the deal", { cause });
+    }
+  }
+
+  async get(id: string): Promise<Deal | null> {
+    const row = this.db.get("SELECT * FROM deals WHERE id = $id", { id });
+    return row ? dealFromRow(row) : null;
+  }
+
+  async transition(id: string, from: readonly DealStatus[], patch: DealPatch): Promise<boolean> {
+    if (from.length === 0) return false;
+    const params: Params = { id, status: patch.status };
+    const sets = ["status = $status"];
+    for (const [column, value] of [
+      ["done_at", patch.done_at],
+      ["due_at", patch.due_at],
+      ["closed_at", patch.closed_at],
+    ] as const) {
+      if (value === undefined) continue;
+      params[column] = optionalMicros(value);
+      sets.push(`${column} = $${column}`);
+    }
+    return (
+      this.db.run(
+        `UPDATE deals SET ${sets.join(", ")} WHERE id = $id AND ${statusIn(from, params)}`,
+        params,
+      ) > 0
+    );
+  }
+
+  async forAccounts(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    filter: { statuses?: readonly DealStatus[]; since?: Timestamp; limit: number },
+  ): Promise<Deal[]> {
+    if (accounts.length === 0 || filter.statuses?.length === 0) return [];
+    const params: Params = { profile, limit: limitParam(filter.limit) };
+    let where = `profile_id = $profile AND (${authorsWhere(accounts, params)})`;
+    if (filter.statuses) where += ` AND ${statusIn(filter.statuses, params)}`;
+    if (filter.since !== undefined) {
+      params.since = toMicros(filter.since);
+      where += " AND created_at >= $since";
+    }
+    const rows = this.db.all(
+      `SELECT * FROM deals WHERE ${where} ORDER BY created_at DESC, rowid DESC LIMIT $limit`,
+      params,
+    );
+    return rows.map(dealFromRow);
+  }
+
+  async byStatus(
+    profile: ProfileId,
+    statuses: readonly DealStatus[],
+    filter: { since?: Timestamp; limit: number },
+  ): Promise<Deal[]> {
+    if (statuses.length === 0) return [];
+    const params: Params = { profile, limit: limitParam(filter.limit) };
+    let where = `profile_id = $profile AND ${statusIn(statuses, params)}`;
+    if (filter.since !== undefined) {
+      params.since = toMicros(filter.since);
+      where += " AND created_at >= $since";
+    }
+    const rows = this.db.all(
+      `SELECT * FROM deals WHERE ${where} ORDER BY created_at, rowid LIMIT $limit`,
+      params,
+    );
+    return rows.map(dealFromRow);
   }
 }
 
@@ -1900,6 +2200,8 @@ export class SqliteStore implements Store {
   readonly events: EventLogStore;
   readonly directives: DirectiveStore;
   readonly cards: MemberCardStore;
+  readonly coins: CoinLedgerStore;
+  readonly deals: DealStore;
   readonly #db: Db;
 
   private constructor(db: Db, maxDecisions: number | null) {
@@ -1919,6 +2221,8 @@ export class SqliteStore implements Store {
     this.events = new SqliteEventLog(db);
     this.directives = new SqliteDirectives(db);
     this.cards = new SqliteMemberCards(db);
+    this.coins = new SqliteCoins(db);
+    this.deals = new SqliteDeals(db);
   }
 
   /**

@@ -27,6 +27,7 @@ import {
 } from "@miyoria/types";
 import pg from "pg";
 import {
+  allowedDeltaAsync,
   authScopeKey,
   canonicalMemoryScope,
   cleanEmbedding,
@@ -45,6 +46,7 @@ import {
   sqlLimit,
   toMicros,
   u32,
+  walletWith,
 } from "./common.js";
 import {
   addCount,
@@ -64,6 +66,13 @@ import type {
   AuditEntry,
   AuthoredEntry,
   AuthScope,
+  CoinCap,
+  CoinEntry,
+  CoinPost,
+  CoinRule,
+  Deal,
+  DealPatch,
+  DealStatus,
   DecisionRecord,
   LogEntry,
   MemberCardRecord,
@@ -87,6 +96,8 @@ import type {
 import type {
   AuditLog,
   AuthStore,
+  CoinLedgerStore,
+  DealStore,
   DecisionLog,
   DirectiveStore,
   IdentityStore,
@@ -546,6 +557,305 @@ class PgMemberCards implements MemberCardStore {
       `DELETE FROM member_cards WHERE profile_id = $1 AND (${authorsWhere(accounts, params)})`,
       params,
     );
+  }
+}
+
+// ---- coins ---------------------------------------------------------------------------------
+
+const COIN_COLUMNS = "id, profile_id, author_platform, author_id, delta, reason, ref, idem_key, ts";
+
+function coinFromRow(row: Row): CoinEntry {
+  return {
+    id: str(row, "id"),
+    profile: str(row, "profile_id"),
+    account: { platform: str(row, "author_platform"), id: str(row, "author_id") },
+    delta: num(row, "delta"),
+    reason: str(row, "reason"),
+    ref: optStr(row, "ref"),
+    idem_key: optStr(row, "idem_key"),
+    ts: ts(row, "ts"),
+  };
+}
+
+/** `reason = ANY(…)` over `reasons`, its parameter added to `params`. */
+function reasonsIn(reasons: readonly string[], params: unknown[]): string {
+  params.push([...reasons]);
+  return `reason = ANY($${params.length}::text[])`;
+}
+
+class PgCoins implements CoinLedgerStore {
+  constructor(private readonly db: Pg) {}
+
+  async #balance(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    on?: Queryable,
+  ): Promise<number> {
+    if (accounts.length === 0) return 0;
+    const params: unknown[] = [profile];
+    const rows = await this.db.query(
+      "SELECT COALESCE(SUM(delta), 0)::bigint AS n FROM coin_ledger WHERE profile_id = $1 AND " +
+        `(${authorsWhere(accounts, params)})`,
+      params,
+      on,
+    );
+    return rows[0] ? num(rows[0], "n") : 0;
+  }
+
+  async #sum(profile: ProfileId, cap: CoinCap, on: Queryable): Promise<number> {
+    if (cap.reasons.length === 0 || cap.accounts?.length === 0) return 0;
+    const params: unknown[] = [profile, tsParam(cap.since)];
+    const reasons = reasonsIn(cap.reasons, params);
+    const who = cap.accounts === null ? "" : ` AND (${authorsWhere(cap.accounts, params)})`;
+    const rows = await this.db.query(
+      "SELECT COALESCE(SUM(delta), 0)::bigint AS n FROM coin_ledger WHERE profile_id = $1 AND " +
+        `ts >= $2 AND ${reasons}${who}`,
+      params,
+      on,
+    );
+    return rows[0] ? num(rows[0], "n") : 0;
+  }
+
+  async #byKey(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    key: string,
+    on?: Queryable,
+  ): Promise<CoinEntry | null> {
+    if (accounts.length === 0) return null;
+    const params: unknown[] = [profile, key];
+    const rows = await this.db.query(
+      `SELECT ${COIN_COLUMNS} FROM coin_ledger WHERE profile_id = $1 AND idem_key = $2 AND ` +
+        `(${authorsWhere(accounts, params)}) ORDER BY ts, seq LIMIT 1`,
+      params,
+      on,
+    );
+    return rows[0] ? coinFromRow(rows[0]) : null;
+  }
+
+  async post(entry: CoinEntry, rule: CoinRule): Promise<CoinPost> {
+    if (!Number.isSafeInteger(entry.delta)) throw new StoreError("a coin delta must be whole");
+    const wallet = walletWith(entry.account, rule.wallet);
+    const profile = entry.profile;
+    try {
+      // Posts of one profile take turns: the checks and the insert see the same ledger.
+      return await this.db.tx(async (client): Promise<CoinPost> => {
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          `coin_ledger/${profile}`,
+        ]);
+        if (entry.idem_key !== null) {
+          const first = await this.#byKey(profile, wallet, entry.idem_key, client);
+          if (first) {
+            const balance = await this.#balance(profile, wallet, client);
+            return { status: "duplicate", entry: first, balance };
+          }
+        }
+        const balance = await this.#balance(profile, wallet, client);
+        const delta = await allowedDeltaAsync(entry.delta, rule, (cap) =>
+          this.#sum(profile, cap, client),
+        );
+        if (delta === null) return { status: "capped", balance };
+        if (rule.covered && balance + delta < 0) return { status: "short", balance };
+        await this.db.execute(
+          "INSERT INTO coin_ledger (id, profile_id, author_platform, author_id, delta, reason, " +
+            "ref, idem_key, ts) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+          [
+            entry.id,
+            profile,
+            entry.account.platform,
+            entry.account.id,
+            delta,
+            entry.reason,
+            entry.ref,
+            entry.idem_key,
+            tsParam(entry.ts),
+          ],
+          client,
+        );
+        return { status: "posted", entry: { ...entry, delta }, balance: balance + delta };
+      });
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot write to the coin ledger", { cause });
+    }
+  }
+
+  balance(profile: ProfileId, accounts: readonly AccountRef[]): Promise<number> {
+    return this.#balance(profile, accounts);
+  }
+
+  async entries(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    filter: { reasons?: readonly string[]; since?: Timestamp; limit: number },
+  ): Promise<CoinEntry[]> {
+    if (accounts.length === 0 || filter.reasons?.length === 0) return [];
+    const params: unknown[] = [profile, limitParam(filter.limit)];
+    let where = `profile_id = $1 AND (${authorsWhere(accounts, params)})`;
+    if (filter.reasons) where += ` AND ${reasonsIn(filter.reasons, params)}`;
+    if (filter.since !== undefined) {
+      params.push(tsParam(filter.since));
+      where += ` AND ts >= $${params.length}`;
+    }
+    const rows = await this.db.query(
+      `SELECT ${COIN_COLUMNS} FROM coin_ledger WHERE ${where} ORDER BY ts DESC, seq DESC LIMIT $2`,
+      params,
+    );
+    return rows.map(coinFromRow);
+  }
+
+  byKey(profile: ProfileId, accounts: readonly AccountRef[], key: string) {
+    return this.#byKey(profile, accounts, key);
+  }
+
+  async selectedFrame(profile: ProfileId, accounts: readonly AccountRef[]): Promise<string | null> {
+    if (accounts.length === 0) return null;
+    const params: unknown[] = [profile];
+    const rows = await this.db.query(
+      "SELECT frame FROM coin_wallets WHERE profile_id = $1 AND " +
+        `(${authorsWhere(accounts, params)}) ORDER BY updated_at DESC LIMIT 1`,
+      params,
+    );
+    return rows[0] ? optStr(rows[0], "frame") : null;
+  }
+
+  async selectFrame(
+    profile: ProfileId,
+    account: AccountRef,
+    frame: string | null,
+    at: Timestamp,
+  ): Promise<void> {
+    await this.db.execute(
+      "INSERT INTO coin_wallets (profile_id, author_platform, author_id, frame, updated_at) " +
+        "VALUES ($1, $2, $3, $4, $5) ON CONFLICT (profile_id, author_platform, author_id) " +
+        "DO UPDATE SET frame = EXCLUDED.frame, updated_at = EXCLUDED.updated_at",
+      [profile, account.platform, account.id, frame, tsParam(at)],
+    );
+  }
+}
+
+// ---- deals ---------------------------------------------------------------------------------
+
+function dealFromRow(row: Row): Deal {
+  return {
+    id: str(row, "id"),
+    profile: str(row, "profile_id"),
+    account: { platform: str(row, "author_platform"), id: str(row, "author_id") },
+    item: str(row, "reward_item"),
+    count: num(row, "reward_count"),
+    value: num(row, "reward_value"),
+    task: str(row, "task"),
+    prepaid: bool(row, "prepaid"),
+    escrow: optStr(row, "escrow_entry"),
+    status: str(row, "status") as DealStatus,
+    created_at: ts(row, "created_at"),
+    done_at: optTs(row, "done_at"),
+    due_at: optTs(row, "due_at"),
+    closed_at: optTs(row, "closed_at"),
+  };
+}
+
+/** `status = ANY(...)` over `statuses`, its parameter added to `params`. */
+function statusIn(statuses: readonly string[], params: unknown[]): string {
+  params.push([...statuses]);
+  return `status = ANY($${params.length}::text[])`;
+}
+
+class PgDeals implements DealStore {
+  constructor(private readonly db: Pg) {}
+
+  async create(deal: Deal): Promise<void> {
+    try {
+      await this.db.execute(
+        "INSERT INTO deals (id, profile_id, author_platform, author_id, reward_item, " +
+          "reward_count, reward_value, task, prepaid, escrow_entry, status, created_at, " +
+          "done_at, due_at, closed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, " +
+          "$12, $13, $14, $15)",
+        [
+          deal.id,
+          deal.profile,
+          deal.account.platform,
+          deal.account.id,
+          deal.item,
+          deal.count,
+          deal.value,
+          deal.task,
+          deal.prepaid,
+          deal.escrow,
+          deal.status,
+          tsParam(deal.created_at),
+          optTsParam(deal.done_at),
+          optTsParam(deal.due_at),
+          optTsParam(deal.closed_at),
+        ],
+      );
+    } catch (cause) {
+      throw new StoreError("cannot write the deal", { cause });
+    }
+  }
+
+  async get(id: string): Promise<Deal | null> {
+    const rows = await this.db.query("SELECT * FROM deals WHERE id = $1", [id]);
+    return rows[0] ? dealFromRow(rows[0]) : null;
+  }
+
+  async transition(id: string, from: readonly DealStatus[], patch: DealPatch): Promise<boolean> {
+    if (from.length === 0) return false;
+    const params: unknown[] = [id, patch.status];
+    const sets = ["status = $2"];
+    for (const [column, value] of [
+      ["done_at", patch.done_at],
+      ["due_at", patch.due_at],
+      ["closed_at", patch.closed_at],
+    ] as const) {
+      if (value === undefined) continue;
+      params.push(optTsParam(value));
+      sets.push(`${column} = $${params.length}::timestamptz`);
+    }
+    const changed = await this.db.execute(
+      `UPDATE deals SET ${sets.join(", ")} WHERE id = $1 AND ${statusIn(from, params)}`,
+      params,
+    );
+    return changed > 0;
+  }
+
+  async forAccounts(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    filter: { statuses?: readonly DealStatus[]; since?: Timestamp; limit: number },
+  ): Promise<Deal[]> {
+    if (accounts.length === 0 || filter.statuses?.length === 0) return [];
+    const params: unknown[] = [profile, limitParam(filter.limit)];
+    let where = `profile_id = $1 AND (${authorsWhere(accounts, params)})`;
+    if (filter.statuses) where += ` AND ${statusIn(filter.statuses, params)}`;
+    if (filter.since !== undefined) {
+      params.push(tsParam(filter.since));
+      where += ` AND created_at >= $${params.length}`;
+    }
+    const rows = await this.db.query(
+      `SELECT * FROM deals WHERE ${where} ORDER BY created_at DESC, seq DESC LIMIT $2`,
+      params,
+    );
+    return rows.map(dealFromRow);
+  }
+
+  async byStatus(
+    profile: ProfileId,
+    statuses: readonly DealStatus[],
+    filter: { since?: Timestamp; limit: number },
+  ): Promise<Deal[]> {
+    if (statuses.length === 0) return [];
+    const params: unknown[] = [profile, limitParam(filter.limit)];
+    let where = `profile_id = $1 AND ${statusIn(statuses, params)}`;
+    if (filter.since !== undefined) {
+      params.push(tsParam(filter.since));
+      where += ` AND created_at >= $${params.length}`;
+    }
+    const rows = await this.db.query(
+      `SELECT * FROM deals WHERE ${where} ORDER BY created_at, seq LIMIT $2`,
+      params,
+    );
+    return rows.map(dealFromRow);
   }
 }
 
@@ -1696,6 +2006,8 @@ export class PostgresStore implements Store {
   readonly profileData: ProfileDataStore;
   readonly directives: DirectiveStore;
   readonly cards: MemberCardStore;
+  readonly coins: CoinLedgerStore;
+  readonly deals: DealStore;
   readonly #pool: pg.Pool;
   #closed = false;
 
@@ -1715,6 +2027,8 @@ export class PostgresStore implements Store {
     this.profileData = new PgProfileData(db);
     this.directives = new PgDirectives(db);
     this.cards = new PgMemberCards(db);
+    this.coins = new PgCoins(db);
+    this.deals = new PgDeals(db);
   }
 
   /** Connects and runs pending migrations. */

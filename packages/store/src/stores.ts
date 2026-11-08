@@ -26,6 +26,12 @@ import type {
   AuditEntry,
   AuthoredEntry,
   AuthScope,
+  CoinEntry,
+  CoinPost,
+  CoinRule,
+  Deal,
+  DealPatch,
+  DealStatus,
   DecisionRecord,
   LogEntry,
   MemberCardRecord,
@@ -92,6 +98,62 @@ export interface MemberCardStore {
   countFor(profile: ProfileId, accounts: readonly AccountRef[]): Promise<number>;
   /** Deletes every card of `accounts`; returns how many. */
   deleteFor(profile: ProfileId, accounts: readonly AccountRef[]): Promise<number>;
+}
+
+/**
+ * The coin ledger (docs/design/economy.md §6): append-only, the balance is a sum. "A wallet" is
+ * the rows of any of `accounts`, so a person with several linked accounts has one.
+ */
+export interface CoinLedgerStore {
+  /**
+   * Appends `entry` in one transaction with the checks of `rule`: the key (once per wallet), the
+   * caps, the balance.
+   */
+  post(entry: CoinEntry, rule: CoinRule): Promise<CoinPost>;
+  balance(profile: ProfileId, accounts: readonly AccountRef[]): Promise<number>;
+  /** Rows of the wallet, newest first, at most `limit`; `reasons` and `since` narrow them. */
+  entries(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    filter: { reasons?: readonly string[]; since?: Timestamp; limit: number },
+  ): Promise<CoinEntry[]>;
+  /** The first row of the wallet with this key, or `null`. */
+  byKey(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    key: string,
+  ): Promise<CoinEntry | null>;
+  /** The card frame chosen last by any of `accounts`, or `null`. */
+  selectedFrame(profile: ProfileId, accounts: readonly AccountRef[]): Promise<string | null>;
+  selectFrame(
+    profile: ProfileId,
+    account: AccountRef,
+    frame: string | null,
+    at: Timestamp,
+  ): Promise<void>;
+}
+
+/** Deals she accepted (docs/design/economy.md §12): they outlive restarts. */
+export interface DealStore {
+  create(deal: Deal): Promise<void>;
+  get(id: string): Promise<Deal | null>;
+  /**
+   * Changes the deal only while its status is one of `from`; `false` when it was not (another
+   * writer got there first, or it is gone). The one place a status moves.
+   */
+  transition(id: string, from: readonly DealStatus[], patch: DealPatch): Promise<boolean>;
+  /** Deals of any of `accounts`, newest first; `statuses` and `since` (created) narrow them. */
+  forAccounts(
+    profile: ProfileId,
+    accounts: readonly AccountRef[],
+    filter: { statuses?: readonly DealStatus[]; since?: Timestamp; limit: number },
+  ): Promise<Deal[]>;
+  /** Deals of everyone in these statuses, oldest first (the sweep, her context). */
+  byStatus(
+    profile: ProfileId,
+    statuses: readonly DealStatus[],
+    filter: { since?: Timestamp; limit: number },
+  ): Promise<Deal[]>;
 }
 
 /** Persisted runtime enabled / disabled flag per module. */
@@ -358,6 +420,8 @@ export interface Store {
   readonly events?: EventLogStore;
   readonly directives: DirectiveStore;
   readonly cards: MemberCardStore;
+  readonly coins: CoinLedgerStore;
+  readonly deals: DealStore;
   /** Releases the backend (closes the database). */
   close(): Promise<void>;
 }
@@ -378,4 +442,6 @@ export const ProfileDataStoreKey = serviceKey<ProfileDataStore>("ProfileDataStor
 export const EventLogStoreKey = serviceKey<EventLogStore>("EventLogStore");
 export const DirectiveStoreKey = serviceKey<DirectiveStore>("DirectiveStore");
 export const MemberCardStoreKey = serviceKey<MemberCardStore>("MemberCardStore");
+export const CoinLedgerStoreKey = serviceKey<CoinLedgerStore>("CoinLedgerStore");
+export const DealStoreKey = serviceKey<DealStore>("DealStore");
 export const StoreKey = serviceKey<Store>("Store");
