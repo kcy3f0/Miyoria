@@ -127,7 +127,7 @@ function RequestForm() {
         maxLength={300}
         disabled={!canWrite}
         title={canWrite ? undefined : READ_ONLY_HINT}
-        placeholder="歌名、歌手或 YouTube 連結"
+        placeholder="歌名、歌手或 YouTube / bilibili 連結"
         className="h-8 min-w-0 flex-1 basis-48"
       />
       <Select value={key} onValueChange={setKey} disabled={!canWrite}>

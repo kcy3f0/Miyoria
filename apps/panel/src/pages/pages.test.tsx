@@ -353,7 +353,7 @@ describe("Live", () => {
     expect(within(set).getByRole("progressbar", { name: "#3 準備進度" })).toHaveAttribute("aria-valuenow", "40");
     expect(within(set).getByText("分離人聲")).toBeInTheDocument();
 
-    await user.type(screen.getByPlaceholderText("歌名、歌手或 YouTube 連結"), "アイドル");
+    await user.type(screen.getByPlaceholderText("歌名、歌手或 YouTube / bilibili 連結"), "アイドル");
     await user.click(screen.getByRole("button", { name: "點歌" }));
     await user.click(within(set).getByRole("button", { name: "唱這首" }));
     await user.click(screen.getByRole("button", { name: "停止這首" }));

@@ -81,6 +81,7 @@ DEFAULT_URL_HOSTS = (
     "music.youtube.com",
     "soundcloud.com",
     "bilibili.com",
+    "b23.tv",
     "nicovideo.jp",
 )
 
