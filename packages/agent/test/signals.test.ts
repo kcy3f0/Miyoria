@@ -10,7 +10,7 @@ describe("signals", () => {
       masked: true,
     });
     expect(hint).toBe(
-      "你現在表現出來的樣子:兇回去、嫌棄對方,但臉紅了。台詞和 <emo:…> 照這個走(多半是 <emo:embarrassed>);心裡真正的感受藏起來,不要直接說出來",
+      "你現在表現出來的樣子:兇回去、嫌棄對方,但臉紅了。台詞和 <emo:…> 照這個走(多半是 <emo:embarrassed>);不要直接說出感受,但可以從用詞、反應、做的事裡透出來",
     );
     // Only a plain tag name gets through.
     expect(shownHint({ from: "joy", tag: "x>y", style: "開心", masked: false })).toContain(

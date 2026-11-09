@@ -13,6 +13,7 @@
 // | `self.ledger`   | `ArbiterKey.ledger(context)`    | `MindKey.unanswered(context)`          |
 // | `self.notices`  | `agent.notice` events the agent collected                                |
 // | people (data)   | `AffectStateKey` person cards   | `SocialSignalsKey` + `SelfStateKey`    |
+// | feeling (data)  | `AffectStateKey.snapshot()`     | `SelfStateKey`                         |
 //
 // Her own state carries no text other people wrote (emotion causes, names): those stay in the
 // data part. One affinity scale: `relationshipLabel()`.
@@ -26,6 +27,7 @@ import {
   affinityStep,
   type ContextKey,
   EMOTION_LABELS,
+  type EmotionName,
   type EmotionReading,
   type Goal,
   type HerStatus,
@@ -87,9 +89,25 @@ function clock(ms: number, offsetMinutes: number): string {
   return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
 }
 
-/** `喜、害羞` (names only: causes may quote people). */
-function emotionNames(emotions: readonly EmotionReading[]): string {
-  return emotions.map((e) => EMOTION_LABELS[e.name] ?? e.name).join("、");
+/** The emotions whose label is one literary character: `很喜` does not read. */
+const FELT_WORDS: Partial<Record<EmotionName, string>> = {
+  joy: "開心",
+  anger: "生氣",
+  sorrow: "難過",
+  fear: "害怕",
+  surprise: "驚訝",
+  disgust: "嫌惡",
+};
+
+/** `很開心` (no cause: causes may quote people). */
+function feltWord(e: EmotionReading): string {
+  const degree = e.intensity >= 0.7 ? "很" : e.intensity >= 0.4 ? "有點" : "微微";
+  return `${degree}${FELT_WORDS[e.name] ?? EMOTION_LABELS[e.name] ?? e.name}`;
+}
+
+/** `很開心、有點害羞`. */
+function feltLine(emotions: readonly EmotionReading[]): string {
+  return emotions.map(feltWord).join("、");
 }
 
 /** The drives that stand out, in words. */
@@ -114,12 +132,12 @@ export function moodBlock(src: SelfSources): string {
   let shown: ShownEmotion | null;
   if (snap !== null) {
     lines.push(`你現在的心情:${short(snap.mood_line, 60)}`);
-    if (snap.top.length > 0) lines.push(`心裡最強的感受:${emotionNames(snap.top.slice(0, 3))}`);
+    if (snap.top.length > 0) lines.push(`心裡最強的感受:${feltLine(snap.top.slice(0, 3))}`);
     shown = snap.shown;
   } else {
     if (src.mood) lines.push(`你現在的心情:${moodLine(src.mood)}`);
     const felt = src.self?.emotions().slice(0, 3) ?? [];
-    if (felt.length > 0) lines.push(`心裡最強的感受:${emotionNames(felt)}`);
+    if (felt.length > 0) lines.push(`心裡最強的感受:${feltLine(felt)}`);
     shown = src.self?.shown() ?? null;
     const self = src.self;
     if (self) {
@@ -148,6 +166,23 @@ export function moodBlock(src: SelfSources): string {
     );
   }
   return lines.join("\n");
+}
+
+const MAX_CAUSE = 80;
+
+/**
+ * What stirred her strongest emotion, for the `feeling` data block: a cause may quote people, so
+ * it never goes in `moodBlock`. Empty when there is none, or only the emotion's own name (what
+ * the self module stores for a cause it was not told).
+ */
+export function feelingCauseBody(src: SelfSources): string {
+  return safely(() => {
+    const snap = src.affect?.snapshot() ?? null;
+    const top = snap !== null ? snap.top[0] : src.self?.emotions()[0];
+    if (top === undefined) return "";
+    const cause = short(top.cause, MAX_CAUSE);
+    return cause === "" || cause === top.name ? "" : `讓你${feltWord(top)}的事:${cause}`;
+  });
 }
 
 /** `self.activity`: where she is and what she is doing. */

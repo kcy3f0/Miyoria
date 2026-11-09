@@ -208,6 +208,7 @@ export {
 export { BARGE_IN_TOPIC, SUBTITLE_TOPIC } from "./runtime.js";
 export {
   activityBlock,
+  feelingCauseBody,
   goalsBlock,
   ledgerBlock,
   moodBlock,

@@ -14,7 +14,7 @@ export const BUDGET_TOPIC = "llm.budget";
  * What she says (at most once per context per notice interval) when the LLM budget is
  * exhausted. Constant: no model is involved.
  */
-export const EXHAUSTED_LINE = "哼……今天的能量用完了啦,才、才不是想偷懶!明天再陪你們聊。";
+export const EXHAUSTED_LINE = "今天的能量用完了,伺服器繁忙中。明天再陪你們聊。";
 
 /**
  * State of the LLM budget as reported on `llm.budget`.
@@ -70,6 +70,6 @@ export function unansweredHint(topics: readonly RaisedTopic[]): string {
 export function shownHint(shown: ShownEmotion): string {
   const tag = /^[a-z_]{1,32}$/.test(shown.tag) ? shown.tag : "neutral";
   const style = neutralize(shown.style).replace(/\s+/g, " ").trim().slice(0, 80);
-  const hide = shown.masked ? ";心裡真正的感受藏起來,不要直接說出來" : "";
+  const hide = shown.masked ? ";不要直接說出感受,但可以從用詞、反應、做的事裡透出來" : "";
   return `你現在表現出來的樣子:${style}。台詞和 <emo:…> 照這個走(多半是 <emo:${tag}>)${hide}`;
 }
