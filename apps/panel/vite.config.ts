@@ -12,8 +12,10 @@ export default defineConfig({
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },
-  // Served by the Core under its own origin; keep asset URLs relative.
-  base: "./",
+  // Served by the Core at the root of its own origin. Absolute asset URLs: with clean addresses a
+  // page opened directly at a nested path (/card/<serial>, a QR code on a phone) would look for
+  // ./assets under /card/ and stay blank.
+  base: "/",
   server: {
     port: 5178,
     proxy: {
