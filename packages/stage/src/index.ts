@@ -81,7 +81,9 @@ export {
   SUBTITLE_TOPIC,
 } from "./link/forward.js";
 export { type GoLiveFollow, goliveFollow, VOICE_GOLIVE_TOPIC } from "./link/golive.js";
+export { Highlights, type HighlightsConfig, HighlightsConfigSchema } from "./link/highlights.js";
 export {
+  CLIP_TOPIC,
   DEFAULT_BIND,
   ERROR_TOPIC,
   STATUS_TOPIC,

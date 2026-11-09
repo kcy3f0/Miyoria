@@ -232,6 +232,17 @@ token = "${VOICE_LINK_TOKEN:-}"
 bind = "127.0.0.1:7882"
 token = "${STAGE_LINK_TOKEN:-}"
 
+# 直播精華:直播中唱完一首歌、她情緒很強、聊天室突然很多訊息時,叫 OBS 存 replay buffer(最後幾十秒),
+# 檔案旁邊放一個 <檔名>.json 寫為什麼存。replay buffer 的長度和資料夾在 OBS 設定 → 輸出 → 重播緩衝。
+# [modules."stage.link".highlights]
+# enabled = true
+# cooldown_secs = 90             # 兩段精華至少隔多久
+# delay_ms = 4000                # 那一刻之後再等多久才存(反應也錄進去)
+# emotions = ["laugh", "surprised", "excited"]
+# emotion_intensity = 0.85
+# chat_burst_messages = 8        # chat_burst_secs 秒內這麼多句就算聊天室炸開(0 = 關)
+# chat_burst_secs = 20
+
 # OBS 智慧場景:每個場景的用途(chat 聊天 / game 遊戲 / brb 暫離 / starting 開場 / ending 結尾 / sing 唱歌)。
 # 第一次看到 OBS 的場景清單時用 fast 模型從名稱判斷(沒有模型就用關鍵字),面板「直播」頁可以改;
 # 這裡寫的最優先,面板不能改。導演:開台 → 開場再到聊天、開始玩遊戲 → 遊戲、直播中沒人講話或她離開語音
@@ -764,6 +775,17 @@ max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不
 [stage]
 core_url = "ws://127.0.0.1:7882/stage-link"
 token = "${STAGE_LINK_TOKEN:-}"
+
+# 直播精華:直播中唱完一首歌、她情緒很強、聊天室突然很多訊息時,叫 OBS 存 replay buffer(最後幾十秒),
+# 檔案旁邊放一個 <檔名>.json 寫為什麼存。replay buffer 的長度和資料夾在 OBS 設定 → 輸出 → 重播緩衝。
+# [modules."stage.link".highlights]
+# enabled = true
+# cooldown_secs = 90             # 兩段精華至少隔多久
+# delay_ms = 4000                # 那一刻之後再等多久才存(反應也錄進去)
+# emotions = ["laugh", "surprised", "excited"]
+# emotion_intensity = 0.85
+# chat_burst_messages = 8        # chat_burst_secs 秒內這麼多句就算聊天室炸開(0 = 關)
+# chat_burst_secs = 20
 # overlay_backdrop = "data/stage/backdrop.jpg"   # 直播背景圖(overlay 的 ?layer=backdrop 會模糊、壓暗它)
 
 [stage.vts]
@@ -786,6 +808,7 @@ password = "${OBS_PASSWORD:-}"
 # song_video_dir = "data/songs"      # worker 的 SING_DATA_DIR;不在裡面的路徑不放
 # song_video_lead_ms = 0             # 影片比歌慢就加大(OBS 開檔要一點時間)
 # song_video_resync_ms = 300         # 跟歌差超過就 seek
+# replay_buffer = true               # 直播時自動開 OBS 的重播緩衝,精華才存得到
 
 # 回放紀錄(v2 §4):把她聽到、看到的事件(訊息、語音轉錄、在線狀態、遊戲 / 唱歌事件)逐行寫進
 # <dir>/<日期>.jsonl,之後用 `pnpm replay <檔案>` 拿假模型重播,看回合、Arbiter 與活動狀態的決策。

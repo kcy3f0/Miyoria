@@ -66,6 +66,9 @@ export const SCREEN_NAME_MAX = 32;
 export const SCREEN_TEXT_MAX = 200;
 export const SCREEN_SONG_MAX = 128;
 
+/** Longest highlight reason (code units). */
+export const CLIP_REASON_MAX = 120;
+
 /** Most beats a `beat` message carries (as `MAX_BEATS` in `@miyoria/types`). */
 export const BEATS_MAX = 2_000;
 
@@ -174,6 +177,8 @@ export type StageMessage =
   | { type: "hello"; version: number; token: string; node: string; capabilities: string[] }
   | ({ type: "status"; id?: number } & StageStatus)
   | { type: "error"; message: string; id?: number }
+  /** A highlight was saved (answers `clip`): why, and the file OBS wrote on the streaming PC. */
+  | { type: "clip_saved"; reason: string; path: string }
   | { type: "ping" }
   | { type: "pong" };
 
@@ -187,6 +192,11 @@ const StageMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("status"), ...StageStatusFields, id: requestId }),
   z.object({ type: z.literal("error"), message: z.string(), id: requestId }),
+  z.object({
+    type: z.literal("clip_saved"),
+    reason: z.string().max(CLIP_REASON_MAX),
+    path: z.string().max(1024),
+  }),
   z.object({ type: z.literal("ping") }),
   z.object({ type: z.literal("pong") }),
 ]);
@@ -247,6 +257,11 @@ export type CoreMessage =
    * Empty `times_ms` stops it. An older node ignores it.
    */
   | { type: "beat"; song: string; bpm: number; times_ms: number[]; offset_ms: number }
+  /**
+   * Save a highlight: OBS's replay buffer (the last seconds of the stream) as a file, with a
+   * note of `reason` next to it. Answered (with `id`) when done; `clip_saved` names the file.
+   */
+  | { type: "clip"; reason: string; id?: number }
   /** A line of status for the overlay (`""` clears it), e.g. 「準備歌曲中…」. */
   | { type: "notice"; text: string }
   /** What she is doing now, for the overlay's activity line. */
@@ -337,6 +352,7 @@ const CoreMessageSchema = z.discriminatedUnion("type", [
     times_ms: z.array(z.number().min(0).max(86_400_000)).max(BEATS_MAX),
     offset_ms: z.number().min(0).max(86_400_000),
   }),
+  z.object({ type: z.literal("clip"), reason: z.string().max(CLIP_REASON_MAX), id: requestId }),
   z.object({ type: z.literal("notice"), text: z.string().max(200) }),
   z.object({
     type: z.literal("activity"),
