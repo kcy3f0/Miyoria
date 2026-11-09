@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Config } from "@miyoria/kernel";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../src/cli.js";
 import * as up from "../src/commands/up.js";
 import * as update from "../src/commands/update.js";
@@ -34,6 +34,17 @@ import {
   workerBaseEnv,
 } from "../src/stack/system.js";
 import { type Output, setOutput } from "../src/ui.js";
+
+// Folders the tests declare to have no source checkout above them, wherever the temp folder is
+// (a TMP inside the repo would otherwise find the repo's own `pnpm-workspace.yaml`).
+const noSource = vi.hoisted(() => new Set<string>());
+vi.mock("../src/stack/config.js", async (original) => {
+  const real = await original<typeof import("../src/stack/config.js")>();
+  return {
+    ...real,
+    repoRoot: (configPath: string) => (noSource.has(configPath) ? null : real.repoRoot(configPath)),
+  };
+});
 
 const NOENV = () => undefined;
 const NONE: RunResult = { code: 0, stdout: "", stderr: "", missing: false, timedOut: false };
@@ -763,6 +774,7 @@ describe("update", () => {
     const lone = mkdtempSync(join(tmpdir(), "miyoria-lone-"));
     try {
       writeFileSync(join(lone, "miyoria.toml"), "");
+      noSource.add(join(lone, "miyoria.toml"));
       await expect(
         update.run(join(lone, "miyoria.toml"), {}, deps(() => undefined).d),
       ).rejects.toThrow(/原始碼資料夾/);

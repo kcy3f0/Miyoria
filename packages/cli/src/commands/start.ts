@@ -17,6 +17,7 @@ import {
   defaultLaunchDeps,
   type LaunchDeps,
   openTab,
+  runningFrom,
   scriptPath,
   tabRunning,
 } from "../stack/launch.js";
@@ -66,10 +67,24 @@ export type Decision =
 const WINNAT_HINT =
   "Windows 保留了這個埠(動態埠範圍從 1024 開始時常見):用系統管理員 PowerShell 執行 net stop winnat 再 net start winnat;`miyoria doctor --deep` 有長期做法";
 
+/** Our own services answer their health URL with `{"status":"ok"}`; any other 200 is somebody else's. */
 async function healthy(deps: StartDeps, url: string): Promise<boolean> {
   try {
     const res = await deps.fetchImpl(url, { signal: AbortSignal.timeout(2000) });
-    return res.ok;
+    if (!res.ok) return false;
+    const body: unknown = await res.json().catch(() => null);
+    return (
+      typeof body === "object" && body !== null && (body as { status?: unknown }).status === "ok"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Whether the stage overlay page answers on its port (stage has no health URL). */
+async function answers(deps: StartDeps, url: string): Promise<boolean> {
+  try {
+    return (await deps.fetchImpl(url, { signal: AbortSignal.timeout(2000) })).ok;
   } catch {
     return false;
   }
@@ -87,13 +102,39 @@ export async function decide(
   if (await tabRunning(deps.run, script)) {
     return { action: "skip", why: "它的分頁還開著(可能還在載入模型);到那個分頁看" };
   }
+  // The voice node has no port and no health URL: it dials out to Core. A second one logging in to
+  // the same account would kick the first off voice and end its Go Live, so look at the process
+  // list, whoever started it, and when that cannot be read, do not start it.
+  if (spec.kind === "voice-node") {
+    const found = await runningFrom(deps.run, spec.cwd);
+    if (found === "yes") {
+      return {
+        action: "skip",
+        why: "voice node 已在執行(行程清單裡有它);不會再開第二個,同一個帳號會被踢下線",
+      };
+    }
+    if (found === "unknown") {
+      return {
+        action: "skip",
+        why: "讀不到行程清單,無法確認 voice node 有沒有在跑;為了不把正在直播的那個踢下線,不啟動它(確定沒有在跑再自己 `pnpm start`)",
+      };
+    }
+  }
   if (spec.port !== null) {
     const state = await deps.probe(spec.port, spec.host);
     if (state === "denied")
       return { action: "refuse", why: `埠 ${spec.port} 被 Windows 保留:${WINNAT_HINT}` };
     if (state === "in-use") {
       if (spec.health === null) {
-        return { action: "skip", why: `埠 ${spec.port} 已有程式在聽,視為已經在執行` };
+        // Stage: the overlay page answering confirms it; otherwise something else may hold the
+        // port, which is still not a reason to start a second copy.
+        const confirmed = spec.url !== null && (await answers(deps, spec.url));
+        return {
+          action: "skip",
+          why: confirmed
+            ? `已在執行(${spec.url})`
+            : `埠 ${spec.port} 已有程式在聽,但無法確認是 ${spec.name};不啟動(確定不是它的話,自己先關掉那個程式)`,
+        };
       }
       return {
         action: "refuse",
