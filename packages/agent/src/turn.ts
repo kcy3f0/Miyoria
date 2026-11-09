@@ -121,7 +121,7 @@ import { fileParts, selectFiles } from "./files.js";
 import { type FocusSelection, focusVerb, type TurnFocusInit } from "./focus.js";
 import { voiceScope } from "./handle.js";
 import { awaitBackfill, fetchAround, quotedParent, replyParents } from "./history.js";
-import { looksLikeReasoning, ReplyScreen } from "./leak.js";
+import { isSelfTalk, looksLikeReasoning, ReplyScreen } from "./leak.js";
 import { ceilingFor, levelHint } from "./levels.js";
 import type { HeldLine } from "./mainline/gate.js";
 import type { Run } from "./mainline/hands.js";
@@ -536,8 +536,8 @@ class Speech {
     // Links taken out may leave double spaces behind.
     const text = safe.text.replace(/[ \t]{2,}/g, " ");
     if (!isSpeakable(text)) return;
-    // Her reasoning is no sentence to say (leak.ts).
-    if (looksLikeReasoning(text)) return;
+    // Her reasoning, or a note to herself, is no sentence to say (leak.ts).
+    if (looksLikeReasoning(text) || isSelfTalk(text)) return;
     // The filtered line is said as it is: there is nothing to translate.
     const said = (safe.spoken ?? (safe.blocked === null ? "" : text)).trim();
     const line = { text, spoken: said === "" ? null : said, emotion, blocked };
