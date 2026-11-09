@@ -36,7 +36,19 @@ export class GoLiveJoinError extends CapabilityError {
 const Id = z.string().trim().min(1).max(64);
 
 const GuildArgs = z.object({ guild: Id.nullish() });
-const JoinArgs = GuildArgs.extend({ channel: Id.nullish() });
+/**
+ * A voice channel id as she may write it: the bare id, a `<#id>` mention, or the id at the end
+ * of a context key she saw (`guild:channel`, `discord:guild:channel`), which Discord rejects.
+ */
+export function channelIdOf(raw: string): string {
+  const mention = /^<#(\d+)>$/.exec(raw);
+  if (mention?.[1]) return mention[1];
+  const parts = raw.split(":").filter((p) => p !== "");
+  return parts.at(-1) ?? raw;
+}
+
+const ChannelId = Id.transform(channelIdOf);
+const JoinArgs = GuildArgs.extend({ channel: ChannelId.nullish() });
 const GoLiveArgs = GuildArgs.extend({ source: z.string().trim().min(1).nullish() });
 const StatusArgs = GuildArgs.extend({ status: z.string().trim().max(500) });
 type GuildArgs = z.output<typeof GuildArgs>;
