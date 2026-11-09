@@ -1,3 +1,5 @@
+/** @jsxRuntime automatic */
+/** @jsxImportSource react */
 // The member card as an SVG, drawn from what the Core issued. One drawing, two users: the panel
 // shows it (and turns it into the PNG people download), and the Core renders it to a PNG for the
 // preview a link to the card unfurls with. Pictures come in as data URLs and colours as literals,

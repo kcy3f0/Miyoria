@@ -1,3 +1,5 @@
+/** @jsxRuntime automatic */
+/** @jsxImportSource react */
 // The card as SVG markup, for the Core (no DOM): the same drawing the panel shows.
 
 import { renderToStaticMarkup } from "react-dom/server";
