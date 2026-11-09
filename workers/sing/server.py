@@ -639,7 +639,34 @@ def _other_voice(meta: dict[str, Any], backend: Any) -> bool:
     voice = getattr(backend, "voice", None)
     if voice is None:
         return False
-    return (meta.get("engine") or {}).get("voice", "seedvc") != voice
+    engine = meta.get("engine") or {}
+    if engine.get("voice", "seedvc") != voice:
+        return True
+    # Its separator: the last part of the model name ("ying+rvc+melband", "seed-vc-f0-44k+htdemucs").
+    sep = _separator_of(backend)
+    made = str(engine.get("model") or "").rsplit("+", 1)[-1]
+    return sep is not None and bool(made) and made != sep
+
+
+def _separator_of(backend: Any) -> str | None:
+    return getattr(backend, "separator", None)
+
+
+STEMS_INFO = "stems.json"
+
+
+def _stems_separator(sdir: Path) -> str:
+    """The separator that made a source's cached vocals / instrumental. Stems from before this was
+    recorded were all made by htdemucs."""
+    try:
+        return str(json.loads((sdir / STEMS_INFO).read_text(encoding="utf-8")).get("separator") or "htdemucs")
+    except (OSError, ValueError):
+        return "htdemucs"
+
+
+def _write_stems_separator(sdir: Path, separator: str | None) -> None:
+    if separator is not None:
+        (sdir / STEMS_INFO).write_text(json.dumps({"separator": separator}), encoding="utf-8")
 
 
 def _needs_video(meta: dict[str, Any], kind: str | None) -> bool:
@@ -1025,6 +1052,9 @@ def _run_job(job: Job) -> None:
             old.unlink(missing_ok=True)
     _start_video(job, src, sdir)
     have_stems = (sdir / "vocals.wav").exists() and (sdir / "instrumental.wav").exists()
+    sep = _separator_of(b)
+    if have_stems and sep is not None and not (src.kind == "library" and src.split) and _stems_separator(sdir) != sep:
+        have_stems = False  # made by another separator: separate again with this one
     if not have_stems or req.force:
         for stale in ("lead.wav", "backing.wav"):  # of the stems that are about to be made again
             (sdir / stale).unlink(missing_ok=True)
@@ -1039,6 +1069,7 @@ def _run_job(job: Job) -> None:
                            lambda f: _set(job, "separate", f), device="cpu" if device == "cpu" else None)
 
             timed("separate", lambda: _gpu_stage(job, "separate", sdir / "source.wav", src.duration_s, separate))
+            _write_stems_separator(sdir, _separator_of(b))
 
     lead = _lead_stage(job, sdir, src, timed)
     vocal = sdir / ("lead.wav" if lead["used"] else "vocals.wav")

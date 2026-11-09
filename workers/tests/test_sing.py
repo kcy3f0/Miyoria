@@ -990,3 +990,21 @@ def test_a_song_made_with_another_voice_chain_is_made_again():
     assert server._other_voice({"engine": {"voice": "seedvc"}}, B()) is True
     assert server._other_voice({"engine": {}}, B()) is True  # before the chain was recorded: Seed-VC
     assert server._other_voice({}, object()) is False  # the mock backend has no chain
+
+
+def test_stems_and_songs_of_another_separator_are_made_again(tmp_path):
+    import server
+
+    class B:
+        voice = "ying+rvc"
+        separator = "melband"
+
+    # A song: the separator is the last part of the model name.
+    assert server._other_voice({"engine": {"voice": "ying+rvc", "model": "ying+rvc+melband"}}, B()) is False
+    assert server._other_voice({"engine": {"voice": "ying+rvc", "model": "ying+rvc+htdemucs"}}, B()) is True
+    # Stems: recorded beside them; stems from before that were htdemucs.
+    assert server._stems_separator(tmp_path) == "htdemucs"
+    server._write_stems_separator(tmp_path, "melband")
+    assert server._stems_separator(tmp_path) == "melband"
+    server._write_stems_separator(tmp_path / "x", None)  # the mock backend: nothing written
+    assert not (tmp_path / "x").exists()
