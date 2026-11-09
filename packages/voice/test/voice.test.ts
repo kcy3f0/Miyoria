@@ -987,6 +987,42 @@ describe("TTS prefetch", () => {
     expect(e.tts.requests).toHaveLength(2);
   });
 
+  it("announces each line's subtitle before it plays: the first at once, the next before the first ends", async () => {
+    // A lead longer than the lines: everything is announced as soon as it can be.
+    const e = await boot({ subtitle_lead_ms: 5_000 });
+    const upcoming = e.h.subscribe(["voice.upcoming"]);
+    const sink = e.h.services.require(VoiceSinkKey);
+    const texts = async () => {
+      const env = await nextEvent(upcoming);
+      const ev = env.event;
+      return ev.type === "custom" ? (ev.data.payload as { text: string; turn: string }) : null;
+    };
+    sink.prepare?.(voiceCtx, "第一句", undefined, "happy");
+    const first = sink.speak(voiceCtx, "第一句", "happy", "turn-1");
+    expect(await texts()).toMatchObject({ text: "第一句", turn: "turn-1" });
+    const p1 = await e.node.recvType("play_start");
+    // Prepared while the first plays, inside its lead: announced at once, for the same turn.
+    sink.prepare?.(voiceCtx, "第二句", undefined, "happy");
+    expect(await texts()).toMatchObject({ text: "第二句", turn: "turn-1" });
+    e.node.sendJson({ type: "playback", play: p1.play as number, state: "finished" });
+    expect(await first).toBe("completed");
+    const second = sink.speak(voiceCtx, "第二句", "happy", "turn-1");
+    const p2 = await e.node.recvType("play_start");
+    e.node.sendJson({ type: "playback", play: p2.play as number, state: "finished" });
+    expect(await second).toBe("completed");
+  });
+
+  it("a lead of 0 announces nothing", async () => {
+    const e = await boot({ subtitle_lead_ms: 0 });
+    const upcoming = e.h.subscribe(["voice.upcoming"]);
+    const sink = e.h.services.require(VoiceSinkKey);
+    const speaking = sink.speak(voiceCtx, "安靜", "happy", "turn-1");
+    const p = await e.node.recvType("play_start");
+    e.node.sendJson({ type: "playback", play: p.play as number, state: "finished" });
+    await speaking;
+    expect(upcoming.tryRecv?.() ?? null).toBeNull();
+  });
+
   describe("the line's tone", () => {
     const shown = (tag: string | null) =>
       ({

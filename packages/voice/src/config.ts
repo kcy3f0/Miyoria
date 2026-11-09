@@ -127,6 +127,13 @@ export const VoiceConfigSchema = z.object({
    * (it would be stale by then). Default 90 000.
    */
   speech_hold_max_ms: z.number().int().nonnegative().default(90_000),
+  /**
+   * Each line's subtitle goes up this long before the line plays (`voice.upcoming`), so it lands
+   * with her voice where the picture runs late: Go Live measured 0.58 s behind on 2026-11-09. The
+   * first line of a reply is announced from the learned TTS wait, later ones this long before the
+   * line before them ends. 0: subtitles start with the audio. Default 600.
+   */
+  subtitle_lead_ms: z.number().int().nonnegative().max(5_000).default(600),
   /** Language hint sent to TTS. Default `Chinese`. */
   tts_language: z.string().default("Chinese"),
   /**

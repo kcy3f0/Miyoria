@@ -25,6 +25,7 @@ import {
   TurnFocusViewKey,
   type TurnId,
   VOICE_BARGE_IN_TOPIC,
+  VOICE_UPCOMING_TOPIC,
   VoiceFloorKey,
   type VoiceSink,
 } from "@miyoria/types";
@@ -73,6 +74,21 @@ interface Reviewed {
   blocked: string | null;
 }
 
+/** A line prepared ahead (`prepare`), waiting to be announced before the one playing ends. */
+interface PendingLine {
+  context: ContextKey;
+  text: string;
+  emotion: string | null;
+  at: number;
+}
+
+/** Lines remembered per guild for the subtitle lead (more are dropped, oldest first). */
+const PENDING_MAX = 8;
+/** How often a playing line's length is looked at again while its audio is still arriving. */
+const LENGTH_POLL_MS = 100;
+/** The TTS wait (speak → first audio) assumed until one is measured, ms. */
+const FIRST_AUDIO_PRIOR_MS = 700;
+
 /** What a playback event says beyond its state. */
 type PlaybackFacts = Pick<EventData<"voice_playback">, "heard_ms" | "total_ms" | "blocked">;
 
@@ -86,6 +102,17 @@ export class Speaker implements VoiceSink {
   readonly #playing = new Map<string, number>();
   /** Every playback of hers going on, for the emergency stop. */
   readonly #live = new Set<Playback>();
+  /** Lines announced as upcoming per guild (their text) and not started yet. */
+  readonly #announced = new Map<string, Set<string>>();
+  /** Lines prepared ahead per guild, in order. */
+  readonly #pending = new Map<string, PendingLine[]>();
+  /** speak → first audio, learned (ms): when the first line of a reply plays. */
+  #firstAudioMs = FIRST_AUDIO_PRIOR_MS;
+  /** The line playing per guild: its turn, and when it ends once its length is known. */
+  readonly #current = new Map<
+    string,
+    { playback: Playback; turn: TurnId | null; endsAt: number | null }
+  >();
 
   constructor(deps: SpeakerDeps) {
     this.#d = deps;
@@ -104,6 +131,69 @@ export class Speaker implements VoiceSink {
       { type: "voice_playback", data: { context, turn, state, text, emotion, ...facts } },
       { turn },
     );
+  }
+
+  /** The line's subtitle goes up now (`VOICE_UPCOMING_TOPIC`), once per line. */
+  #announce(context: ContextKey, turn: TurnId | null, text: string, emotion: string | null): void {
+    const guild = context.scope;
+    if (guild === null || this.#d.config.subtitle_lead_ms <= 0 || text === "") return;
+    const seen = this.#announced.get(guild) ?? new Set<string>();
+    if (seen.has(text)) return;
+    seen.add(text);
+    this.#announced.set(guild, seen);
+    this.#d.ctx.publish(
+      customEvent(VOICE_UPCOMING_TOPIC, { context: { ...context }, turn, text, emotion }),
+      { turn },
+    );
+  }
+
+  /** `text` is being said now: it is neither pending nor waiting for its start any more. */
+  #settle(guild: string, text: string): void {
+    this.#announced.get(guild)?.delete(text);
+    const pending = this.#pending.get(guild);
+    const i = pending?.findIndex((p) => p.text === text) ?? -1;
+    if (pending && i >= 0) pending.splice(i, 1);
+  }
+
+  /**
+   * While `playback` plays, the next prepared line is announced `subtitle_lead_ms` before it
+   * ends. Its length is known once all of its audio is there.
+   */
+  #leadNext(
+    guild: string,
+    turn: TurnId | null,
+    playback: Playback,
+    line: PreparedLine,
+    startedAt: number,
+  ): void {
+    const lead = this.#d.config.subtitle_lead_ms;
+    if (lead <= 0) return;
+    const { clock } = this.#d.ctx;
+    this.#current.set(guild, { playback, turn, endsAt: null });
+    const fire = () => {
+      if (!this.#live.has(playback)) return;
+      const now = clock.now();
+      const next = (this.#pending.get(guild) ?? []).find(
+        (p) =>
+          now - p.at <= this.#d.config.tts_prefetch_ttl_ms &&
+          !this.#announced.get(guild)?.has(p.text),
+      );
+      if (next) this.#announce(next.context, turn, next.text, next.emotion);
+    };
+    const check = () => {
+      if (!this.#live.has(playback)) return;
+      const total = line.audio.totalMs;
+      if (total === null) {
+        setTimeout(check, LENGTH_POLL_MS).unref?.();
+        return;
+      }
+      const cur = this.#current.get(guild);
+      if (cur?.playback === playback) cur.endsAt = startedAt + total;
+      const wait = startedAt + total - lead - clock.now();
+      if (wait <= 0) fire();
+      else setTimeout(fire, wait).unref?.();
+    };
+    check();
   }
 
   /** The emergency stop is on. */
@@ -349,7 +439,34 @@ export class Speaker implements VoiceSink {
     const session = this.#d.session(context);
     if (said !== "") this.#d.translator?.provide(text, said, session);
     else this.#d.translator?.prepare(text, session);
-    this.#prefetch(context, text, this.#prefetchEmotion(context.scope ?? "", emotion));
+    const lineEmotion = this.#prefetchEmotion(context.scope ?? "", emotion);
+    this.#remember(context, text, lineEmotion ?? null);
+    this.#prefetch(context, text, lineEmotion);
+  }
+
+  /** A prepared line, for the subtitle lead of the line before it. */
+  #remember(context: ContextKey, text: string, emotion: string | null): void {
+    const guild = context.scope;
+    if (guild === null || this.#d.config.subtitle_lead_ms <= 0) return;
+    const pending = this.#pending.get(guild) ?? [];
+    if (pending.some((p) => p.text === text)) return;
+    const now = this.#d.ctx.clock.now();
+    pending.push({ context, text, emotion, at: now });
+    while (pending.length > PENDING_MAX) pending.shift();
+    this.#pending.set(guild, pending);
+    // Prepared in the lead of the line playing: the next one, announced now.
+    const cur = this.#current.get(guild);
+    const next = pending[0];
+    const lead = this.#d.config.subtitle_lead_ms;
+    if (
+      cur &&
+      this.#live.has(cur.playback) &&
+      cur.endsAt !== null &&
+      cur.endsAt - now <= lead &&
+      next
+    ) {
+      this.#announce(next.context, cur.turn, next.text, next.emotion);
+    }
   }
 
   #prefetch(context: ContextKey, text: string, emotion: string | null | undefined): void {
@@ -476,6 +593,16 @@ export class Speaker implements VoiceSink {
       return "interrupted";
     }
     this.#lastEmotion.set(guild, emotion);
+    // The first line of a reply (nothing of hers playing): its subtitle goes up the lead before
+    // the TTS wait is expected to end. Later lines were announced by the line before them.
+    const lead = this.#d.config.subtitle_lead_ms;
+    const speakAt = this.#d.ctx.clock.now();
+    let early: ReturnType<typeof setTimeout> | null = null;
+    if (lead > 0 && (this.#playing.get(guild) ?? 0) === 0) {
+      const wait = Math.max(0, this.#firstAudioMs - lead);
+      if (wait === 0) this.#announce(context, turn, text, emotion);
+      else early = setTimeout(() => this.#announce(context, turn, text, emotion), wait);
+    }
     let playback: Playback;
     let line: PreparedLine;
     try {
@@ -495,13 +622,19 @@ export class Speaker implements VoiceSink {
       else this.#d.ctx.log.warn({ err }, "cannot start speech");
       this.#playbackEvent(context, turn, "failed", text, emotion);
       throw error;
+    } finally {
+      if (early !== null) clearTimeout(early);
     }
+    const startedAt = this.#d.ctx.clock.now();
+    this.#firstAudioMs = Math.round(this.#firstAudioMs * 0.7 + (startedAt - speakAt) * 0.3);
+    this.#settle(guild, text);
     const blocked = screened ?? line.blocked ?? (this.#filtered(text) ? text : null);
     const facts = blocked === null ? {} : { blocked };
     this.#playbackEvent(context, turn, "started", text, emotion, facts);
     echo.started(guild, [text, line.said]);
     this.#playing.set(guild, (this.#playing.get(guild) ?? 0) + 1);
     this.#live.add(playback);
+    this.#leadNext(guild, turn, playback, line, startedAt);
     const token = barge.register(guild, playback, { context, turn });
     let state: PlaybackState;
     try {
@@ -517,6 +650,7 @@ export class Speaker implements VoiceSink {
       echo.ended(guild);
       this.#playing.set(guild, Math.max(0, (this.#playing.get(guild) ?? 0) - 1));
       this.#live.delete(playback);
+      if (this.#current.get(guild)?.playback === playback) this.#current.delete(guild);
       playback.stop(0);
     }
     this.#playbackEvent(context, turn, state, text, emotion, {

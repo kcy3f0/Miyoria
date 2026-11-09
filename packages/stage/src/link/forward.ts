@@ -10,6 +10,7 @@ import {
   SONG_TOPIC,
   SPEECH_PAUSE_TOPIC,
   type TurnId,
+  VOICE_UPCOMING_TOPIC,
 } from "@miyoria/types";
 import {
   type CoreMessage,
@@ -47,6 +48,8 @@ interface TurnSubtitle {
   written: Map<string, string>;
   /** Playbacks started and not yet ended. */
   active: number;
+  /** Lines shown before they started (`voice.upcoming`): their text and segment. */
+  early: { text: string; index: number }[];
   completed: boolean;
   finalized: boolean;
 }
@@ -84,8 +87,10 @@ const clampIntensity = (i: unknown): number =>
  *
  * Subtitles follow her speech: every started playback appends its text and sends a non-final
  * `subtitle`; once the turn completed and no playback of it is running, the text is sent again
- * with `final: true`. Turns outside voice contexts produce one final subtitle when `textTurns`
- * is set.
+ * with `final: true`. A line announced as upcoming (`VOICE_UPCOMING_TOPIC`, a little before it
+ * plays, so the subtitle lands with her voice where the picture runs late) is appended then, and
+ * its start appends nothing; one that never starts is taken out again when the turn's subtitle
+ * is final. Turns outside voice contexts produce one final subtitle when `textTurns` is set.
  *
  * Emotions of voice turns are sent when the sentence spoken with them starts playing (the
  * marker is parsed a sentence or more ahead of the audio): `voice.playback` `started` carries
@@ -157,6 +162,7 @@ export class Forwarder {
       segments: [],
       written: new Map(),
       active: 0,
+      early: [],
       completed: false,
       finalized: false,
     };
@@ -209,6 +215,7 @@ export class Forwarder {
         if (event.data.topic === SONG_TOPIC) return this.#onSong(event.data.payload);
         if (event.data.topic === SPEECH_PAUSE_TOPIC) return pauseNotice(event.data.payload);
         if (event.data.topic === SUBTITLE_TOPIC) return this.#onWritten(event.data.payload);
+        if (event.data.topic === VOICE_UPCOMING_TOPIC) return this.#onUpcoming(event.data.payload);
         if (event.data.topic === GIFT_TOPIC) return giftMessage(event.data.payload);
         if (event.data.topic === SCREEN_TOPIC) return screenMessage(event.data.payload);
         if (event.data.topic === AFFECT_CHANGED_TOPIC) return this.#onAffect(event.data.payload);
@@ -225,7 +232,8 @@ export class Forwarder {
         const e = this.#entry(turn);
         e.completed = true;
         if (voice || e.spoken !== "") {
-          if (e.active === 0 && e.spoken !== "" && !e.finalized) {
+          // A line shown early is about to play: the subtitle is final after it.
+          if (e.active === 0 && e.early.length === 0 && e.spoken !== "" && !e.finalized) {
             e.finalized = true;
             return [subtitle(turn, e.spoken, true)];
           }
@@ -248,10 +256,15 @@ export class Forwarder {
         const e = this.#entry(turn);
         e.active += 1;
         e.finalized = false;
-        // A line whose written sentence is known already shows that instead.
-        const shown = e.written.get(text) ?? text;
-        e.written.delete(text);
-        if (shown !== "") e.segments.push(shown);
+        const early = e.early.findIndex((x) => x.text === text);
+        if (early >= 0) {
+          e.early.splice(early, 1); // shown already
+        } else {
+          // A line whose written sentence is known already shows that instead.
+          const shown = e.written.get(text) ?? text;
+          e.written.delete(text);
+          if (shown !== "") e.segments.push(shown);
+        }
         e.spoken = joined(e.segments);
         if (e.spoken !== "") out.push(subtitle(turn, e.spoken, false));
       } else if (text !== "") {
@@ -262,9 +275,22 @@ export class Forwarder {
     const out: CoreMessage[] = [{ type: "speaking", state: "stopped" }];
     if (turn !== null) {
       const e = this.#entry(turn);
-      // `failed` without `started` (TTS failed) has nothing running.
-      if (state !== "failed" || e.active > 0) e.active = Math.max(e.active - 1, 0);
-      if (e.completed && e.active === 0 && e.spoken !== "" && !e.finalized) {
+      // `failed` without `started` (TTS failed) has nothing running; a line shown early that
+      // fails so is taken out of the subtitle.
+      const early = state === "failed" ? e.early.find((x) => x.text === text) : undefined;
+      if (early !== undefined) {
+        dropEarly(e, [early]);
+        out.push(subtitle(turn, e.spoken, false));
+      } else if (state !== "failed" || e.active > 0) {
+        e.active = Math.max(e.active - 1, 0);
+      }
+      if (
+        e.completed &&
+        e.active === 0 &&
+        e.early.length === 0 &&
+        e.spoken !== "" &&
+        !e.finalized
+      ) {
         e.finalized = true;
         out.push(subtitle(turn, e.spoken, true));
       }
@@ -272,6 +298,26 @@ export class Forwarder {
       out.push({ type: "subtitle", turn: "", text, final: true });
     }
     return out;
+  }
+
+  /**
+   * A line about to play (`VOICE_UPCOMING_TOPIC`): its subtitle goes up now. Its `started`
+   * then appends nothing.
+   */
+  #onUpcoming(payload: JsonValue): CoreMessage[] {
+    const p = isJsonObject(payload) ? payload : {};
+    const turn = typeof p.turn === "string" && p.turn !== "" ? p.turn : null;
+    const text = typeof p.text === "string" ? p.text.trim() : "";
+    if (turn === null || text === "") return [];
+    const e = this.#entry(turn);
+    if (e.early.some((x) => x.text === text)) return [];
+    const shown = e.written.get(text) ?? text;
+    e.written.delete(text);
+    e.early.push({ text, index: e.segments.length });
+    e.segments.push(shown);
+    e.finalized = false;
+    e.spoken = joined(e.segments);
+    return [subtitle(turn, e.spoken, false)];
   }
 
   /**
@@ -384,6 +430,17 @@ function screenMessage(payload: JsonValue): CoreMessage[] {
       song: kind === "dedication" ? song.slice(0, SCREEN_SONG_MAX) : null,
     },
   ];
+}
+
+/** Takes lines shown early that will not play out of `e`'s subtitle. */
+function dropEarly(e: TurnSubtitle, lines: { text: string; index: number }[]): void {
+  const gone = new Set(lines.map((x) => x.index));
+  e.segments = e.segments.filter((_, i) => !gone.has(i));
+  // The later early lines moved up by the ones taken out before them.
+  e.early = e.early
+    .filter((x) => !gone.has(x.index))
+    .map((x) => ({ ...x, index: x.index - [...gone].filter((g) => g < x.index).length }));
+  e.spoken = joined(e.segments);
 }
 
 function subtitle(turn: TurnId, text: string, final: boolean): CoreMessage {

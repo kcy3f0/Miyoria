@@ -163,3 +163,11 @@ export const SPEECH_PAUSE_TOPIC = "speech.pause";
  * `started` (first audio playing) or `failed` follows.
  */
 export const SPEECH_SYNTH_TOPIC = "voice.synthesis";
+
+/**
+ * Topic of `{context, turn, text, emotion}` custom events: a line of hers is about to play, about
+ * `subtitle_lead_ms` from now (`[modules.voice]`). Its subtitle goes up now, so that where the
+ * picture runs late (Go Live) it still arrives with her voice. Its `voice_playback` `started`
+ * follows, or nothing if it is dropped first (a barge-in).
+ */
+export const VOICE_UPCOMING_TOPIC = "voice.upcoming";

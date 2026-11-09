@@ -32,6 +32,7 @@
 
   /* Motion timings (motion.ts reads --t-exit to know when an exit is over). */
   --t-enter: 260ms;
+  --t-subtitle-enter: 90ms;
   --t-exit: 200ms;
   --t-change: 240ms;
   --t-move: 280ms;
@@ -56,6 +57,7 @@
 @media (prefers-reduced-motion: reduce) {
   :root {
     --t-enter: 1ms;
+    --t-subtitle-enter: 1ms;
     --t-exit: 1ms;
     --t-change: 1ms;
     --t-move: 1ms;
@@ -171,9 +173,10 @@ body {
   border-radius: var(--radius);
   box-shadow: var(--plate-shadow);
   transform: translateX(-50%);
+  /* Faster than the other panels: the words arrive with her voice, so they are readable at once. */
   transition:
-    opacity var(--t-enter) var(--ease-out),
-    transform var(--t-enter) var(--ease-out);
+    opacity var(--t-subtitle-enter) var(--ease-out),
+    transform var(--t-subtitle-enter) var(--ease-out);
 }
 
 .subtitle.is-hidden {

@@ -274,6 +274,7 @@ export {
   type SpeakOutcome,
   type SpeechPause,
   SpeechPauseKey,
+  VOICE_UPCOMING_TOPIC,
   type VoiceFloor,
   VoiceFloorKey,
   type VoiceParticipant,

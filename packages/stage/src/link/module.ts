@@ -29,6 +29,7 @@ import {
   SPEECH_PAUSE_TOPIC,
   SPEECH_SYNTH_TOPIC,
   StreamCurtainKey,
+  VOICE_UPCOMING_TOPIC,
   v2Payload,
 } from "@miyoria/types";
 import { type BoundAddress, formatAddress, HttpServer, isLoopback } from "../net.js";
@@ -248,6 +249,7 @@ export class StageLinkModule implements Module {
       "agent.turn.completed",
       "voice.playback",
       SPEECH_SYNTH_TOPIC,
+      VOICE_UPCOMING_TOPIC,
       SONG_PREPARE_TOPIC,
       VOICE_GOLIVE_TOPIC,
       GAME_SESSION_TOPIC,
