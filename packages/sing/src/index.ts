@@ -17,7 +17,7 @@ export {
   type WorkerJob,
   WorkerJobSchema,
 } from "./client.js";
-export { listCard, registerCommands } from "./commands.js";
+export { backingOf, listCard, registerCommands } from "./commands.js";
 export {
   defaultSingConfig,
   type SingConfig,
@@ -37,6 +37,9 @@ export {
 export { paced, singSong, sleep, songVideoPath } from "./player.js";
 export { PROMPT_KEY, SingPrompt } from "./prompt.js";
 export {
+  BACKING_LABELS,
+  BACKING_MODES,
+  type BackingMode,
   dedicationNote,
   type NewSong,
   SetList,

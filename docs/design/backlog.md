@@ -70,6 +70,8 @@
 - **她會把整串 context key 當頻道 ID**:語音加入已修(`d0f5eac`);其他吃頻道 ID 的工具還沒檢查會不會一樣。
 - **Core 記錄裡反覆出現的錯誤**:對話摘要 `notes` 超過 2500 字被拒(`fold failed`)、每日反省 `insights` / `lessons` 超過上限(`reflection failed`)、`accept_food` 沒有人跟她說話時被擋(`she claimed without doing`)。
 - **MelBand karaoke 模型的原始授權**沒確認。
+- **becruily BS-RoFormer karaoke 的授權**:HF 上沒標(`becruily/bs-roformer-karaoke`);現在是唱歌預設的主唱模型,只在本機跑、沒散布。
+- **「伴唱也轉」(`backing=convert`)**沒實測:伴唱常是好幾個聲音疊在一起,RVC 的 RMVPE 只抓一條音高,可能轉得很怪。
 - **推理外洩的源頭沒查實**:2026-11-09 15:29 她在一回合(`reasoning` off、4.9 秒、23 則)把整段思考當回覆一行一行發出去。DB 的訊息和 `turn_outcomes` 看得出推理在 content 裡(provider 已把 `reasoning_content` 分開,不是它併進來的),但 LLM 呼叫的原始回應只存在 Core 記憶體,查不到;最可能是 opencode 上的 `deepseek-v4.1-flash` 收了 `thinking: disabled` 卻仍把思考寫在 content。已加的是送出前的防線(`packages/agent/src/leak.ts`)和提示詞一行;要根治得在 Core 重啟後的面板呼叫檢視器看原始回應,再決定是換模型、改 `thinking_off`,還是讓 `chat_text` 開 `low`。防線擋不住不含「情緒標記 / 回覆要短 / 可以說:」這類字眼的純驗算自言自語(要兩行以上才算外洩)。
 
 ## 4. 自我修復與自我改進(備忘)

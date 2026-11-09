@@ -89,8 +89,8 @@ export interface SongQuery {
   path?: string;
   /** Whole-song transposition in semitones (her voice follows). */
   key?: number;
-  /** `false`: her voice without the song's backing voices (a song of its own in the worker). */
-  harmony?: boolean;
+  /** The song's backing voices (`keep` when left out; each mode is a song of its own in the worker). */
+  backing?: "keep" | "drop" | "convert" | "acapella";
   /** The worker waits for `goExclusive` before it takes the GPU (she says she is off first). */
   exclusive_ack?: boolean;
 }

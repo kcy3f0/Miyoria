@@ -682,6 +682,8 @@ def test_the_lead_is_split_after_the_vocals_and_is_all_that_is_converted(sing):
     song = done["song"]
     assert list(song["timings"])[:6] == ["resolve_s", "download_s", "separate_s", "lead_s", "convert_s", "mix_s"]
     assert song["lead_split"] == {"used": True, "cached": False}
+    # The karaoke model reads the whole song when it is there (it was trained on mixes).
+    assert b.lead_sources[-1] == "source.wav"
     # Seed-VC reads the lead, and so do the F0 statistics behind the auto key.
     assert b.convert_inputs[n:] == ["lead.wav"]
     assert b.f0_inputs[-1] == "lead.wav"
@@ -692,18 +694,22 @@ def test_the_lead_is_split_after_the_vocals_and_is_all_that_is_converted(sing):
     assert (_stems(key) / "lead.wav").exists() and (_stems(key) / "backing.wav").exists()
 
 
-def test_harmony_is_kept_by_default_and_a_song_without_it_is_a_song_of_its_own(sing):
+def test_the_backing_is_kept_by_default_and_each_mode_is_a_song_of_its_own(sing):
     if not is_mock():
         pytest.skip("reads the mock backend's log")
     b = _sing_server().state.backend
-    with_it = _job(sing, "harmony switch")["song"]
-    assert b.mix_harmony[-1] is True and with_it["harmony"] is True
-    solo = _job(sing, "harmony switch", harmony=False)
-    assert solo["cached"] is False and b.mix_harmony[-1] is False
-    assert solo["song"]["id"] == with_it["id"] + "-solo" and solo["song"]["harmony"] is False
-    # Each is cached on its own.
-    assert _job(sing, "harmony switch", harmony=False)["cached"] is True
-    assert _job(sing, "harmony switch")["song"]["id"] == with_it["id"]
+    kept = _job(sing, "backing modes")["song"]
+    assert b.mix_backing[-1] == "keep" and kept["backing"] == "keep"
+    for mode, suffix in (("drop", "-nobk"), ("convert", "-cvbk"), ("acapella", "-acap")):
+        n = len(b.convert_inputs)
+        done = _job(sing, "backing modes", backing=mode)
+        assert done["cached"] is False and done["song"]["id"] == kept["id"] + suffix
+        assert done["song"]["backing"] == mode and b.mix_backing[-1] == mode
+        # Converting the backing is one more conversion, of the backing stem.
+        assert b.convert_inputs[n:] == (["lead.wav", "backing.wav"] if mode == "convert" else ["lead.wav"])
+        assert _job(sing, "backing modes", backing=mode)["cached"] is True
+    assert _job(sing, "backing modes")["song"]["id"] == kept["id"]
+    assert sing.post("/jobs", json={"query": "x", "backing": "loud"}).status_code in (400, 422)
 
 
 def test_the_split_is_off_with_its_switch_and_the_pipeline_is_the_old_one(sing, monkeypatch):
@@ -799,7 +805,10 @@ def test_the_split_looks_for_its_model_and_its_config(tmp_path):
 
     ckpt = tmp_path / "m.ckpt"
     assert leadsplit.model_path({"SING_LEAD_MODEL": str(ckpt)}) == ckpt
-    assert leadsplit.model_path({}).name == leadsplit.CKPT_NAME
+    # The BS-RoFormer karaoke model when it is there, else the Mel-Band one.
+    assert leadsplit.model_path({}).name in (leadsplit.BS_CKPT.name, leadsplit.CKPT_NAME)
+    assert leadsplit.tag(env := {"SING_LEAD_MODEL": str(ckpt)}) == "m@mix"
+    assert leadsplit.tag({**env, "SING_LEAD_INPUT": "vocals"}) == "m@vocals"
     env = {"SING_LEAD_MODEL": str(ckpt)}
     assert leadsplit.available(env) is False  # no file
     ckpt.write_bytes(b"x")
@@ -876,6 +885,23 @@ def test_the_backing_joins_the_instrumental_at_its_own_level(tmp_path):
     assert level(inst_split, 330) / level(inst_split, 220) == pytest.approx(0.5, rel=0.1)
     assert (split / "mix.wav").exists() and (split / "play_mix.pcm").exists()
 
+    # Converted backing joins her vocal at the backing's own level; a cappella drops the instrumental.
+    sf.write(tmp_path / "bconv.wav", tone(330, 0.2), sr)
+    conv, acap = tmp_path / "conv_b", tmp_path / "acap"
+    conv.mkdir()
+    acap.mkdir()
+    engine.mix_song(tmp_path / "lead.wav", tmp_path / "conv.wav", tmp_path / "inst.wav", 0, conv, Backend(), -16.0,
+                    backing_conv=tmp_path / "bconv.wav", backing_src=tmp_path / "backing.wav")
+    v_conv, _ = sf.read(conv / "vocals.wav")
+    inst_conv, _ = sf.read(conv / "instrumental.wav")
+    assert level(inst_conv, 330) < 5 and level(v_conv[:, None], 330) > 1000
+    # Lead 0.4 and backing 0.1 as in the source, after the converters' levels are undone.
+    assert level(v_conv[:, None], 330) / level(v_conv[:, None], 440) == pytest.approx(0.25, rel=0.1)
+    engine.mix_song(tmp_path / "lead.wav", tmp_path / "conv.wav", tmp_path / "inst.wav", 0, acap, Backend(), -16.0,
+                    instrumental=False)
+    mix_acap, _ = sf.read(acap / "mix.wav")
+    assert level(mix_acap, 220) < 5 and level(mix_acap, 440) > 1000
+
 
 def test_the_vocal_separator_is_the_roformer_when_its_files_are_there(tmp_path):
     import engine
@@ -938,10 +964,12 @@ def test_the_voice_chain_leaves_out_what_is_missing(tmp_path):
     model.parent.mkdir(parents=True)
     model.write_bytes(b"x")
     env["SING_RVC_MODEL"] = str(model)
-    assert engine.voice_chain(env) == "ying+rvc"
+    # Her RVC model alone by default; YingMusic / Seed-VC first only when asked.
+    assert engine.voice_chain(env) == "rvc"
+    assert engine.voice_chain({**env, "SING_VOICE": "ying+rvc"}) == "ying+rvc"
     assert engine.voice_chain({**env, "SING_VOICE": "seedvc"}) == "seedvc"
     assert engine.voice_chain({**env, "SING_VOICE": "seedvc+rvc"}) == "seedvc+rvc"
-    assert engine.voice_chain({**env, "SING_VOICE": "nonsense"}) == "ying+rvc"
+    assert engine.voice_chain({**env, "SING_VOICE": "nonsense"}) == "rvc"
 
 
 def test_the_rvc_pass_command_keeps_pitch_and_turns_retrieval_off(tmp_path):
@@ -955,6 +983,8 @@ def test_the_rvc_pass_command_keeps_pitch_and_turns_retrieval_off(tmp_path):
     cmd = rvcpass.command(tmp_path / "in.wav", tmp_path / "out.wav", env)
     assert cmd[1:3] == ["core.py", "infer"]
     assert cmd[cmd.index("--pitch") + 1] == "0"
+    alone = rvcpass.command(tmp_path / "in.wav", tmp_path / "out.wav", env, pitch=-3)
+    assert alone[alone.index("--pitch") + 1] == "-3"  # RVC alone moves the lead by the job's shift
     assert cmd[cmd.index("--index-rate") + 1] == "0"
     assert "--index-path" not in cmd
     (model.parent / "m.index").write_bytes(b"x")
@@ -1016,6 +1046,21 @@ def test_stems_and_songs_of_another_separator_are_made_again(tmp_path):
     # A song: the separator is the last part of the model name.
     assert server._other_voice({"engine": {"voice": "ying+rvc", "model": "ying+rvc+melband"}}, B()) is False
     assert server._other_voice({"engine": {"voice": "ying+rvc", "model": "ying+rvc+htdemucs"}}, B()) is True
+
+    # The lead split: a song whose lead came from another karaoke model is made again.
+    class L(B):
+        lead_tag = "bs_karaoke@mix"
+
+    made = {"engine": {"voice": "ying+rvc", "model": "ying+rvc+melband", "lead": "bs_karaoke@mix"},
+            "lead_split": {"used": True}}
+    assert server._other_voice(made, L()) is False
+    assert server._other_voice({**made, "engine": {**made["engine"], "lead": None}}, L()) is True  # legacy lead
+    assert server._other_voice({**made, "lead_split": {"used": False}}, L()) is False  # no lead to differ
+    # Stems: the lead is recorded beside them, and new vocals drop it.
+    server._write_stems_info(tmp_path, lead="bs_karaoke@mix")
+    assert server._stems_lead(tmp_path) == "bs_karaoke@mix"
+    server._write_stems_separator(tmp_path, "htdemucs")
+    assert server._stems_lead(tmp_path) == server.LEGACY_LEAD
     # Stems: recorded beside them; stems from before that were htdemucs.
     assert server._stems_separator(tmp_path) == "htdemucs"
     server._write_stems_separator(tmp_path, "melband")

@@ -43,7 +43,7 @@ def vocal_model_path(env: dict[str, str] | None = None) -> Path:
     return Path(e.get("SING_VOCAL_MODEL") or Path(__file__).resolve().parent.parent / "models" / "vocal-split" / VOCAL_CKPT)
 
 
-VOICE_CHAINS = ("ying+rvc", "ying", "seedvc+rvc", "seedvc")
+VOICE_CHAINS = ("rvc", "ying+rvc", "ying", "seedvc+rvc", "seedvc")
 YING_CKPT = Path("ckpt") / "YingMusic-SVC-full.pt"
 YING_CONFIG = Path("configs") / "YingMusic-SVC.yml"
 
@@ -59,15 +59,21 @@ def ying_available(env: dict[str, str] | None = None) -> bool:
 
 
 def voice_chain(env: dict[str, str] | None = None) -> str:
-    """How her voice is made: SING_VOICE (``ying+rvc`` default, ``ying``, ``seedvc+rvc``, ``seedvc``).
-    A part whose files are missing is left out (no YingMusic: Seed-VC; no RVC model: no pass)."""
+    """How her voice is made: SING_VOICE (``rvc`` default: her own RVC model sings the lead;
+    ``ying+rvc``, ``ying``, ``seedvc+rvc``, ``seedvc``: YingMusic / Seed-VC first). A part whose files
+    are missing is left out (no RVC model: YingMusic alone; no YingMusic: Seed-VC)."""
     import rvcpass
 
     e = env if env is not None else os.environ
-    want = (e.get("SING_VOICE") or "ying+rvc").strip().lower()
+    want = (e.get("SING_VOICE") or "rvc").strip().lower()
     if want not in VOICE_CHAINS:
-        log.warning("SING_VOICE=%r is none of %s; using ying+rvc", want, "|".join(VOICE_CHAINS))
-        want = "ying+rvc"
+        log.warning("SING_VOICE=%r is none of %s; using rvc", want, "|".join(VOICE_CHAINS))
+        want = "rvc"
+    if want == "rvc":
+        if rvcpass.available(e):
+            return "rvc"
+        log.warning("RVC model or Applio not found (%s); converting with YingMusic", rvcpass.model_path(e))
+        want = "ying"
     base, _, rvc = want.partition("+")
     if base == "ying" and not ying_available(e):
         log.warning("YingMusic-SVC not found at %s; converting with Seed-VC", ying_dir(e))
@@ -348,9 +354,12 @@ class RealBackend:
             raise RuntimeError("reference voice not found (set SING_REF to a file, a list or a folder)")
         self.voice = voice_chain()
         self.ying_dir = ying_dir()
-        self.rvc = self.voice.endswith("+rvc")
+        self.rvc = self.voice == "rvc" or self.voice.endswith("+rvc")
         self.rvc_error: str | None = None
         self.model_name = f"{self.voice}+{self.separator}"
+        import leadsplit
+
+        self.lead_tag = leadsplit.tag()  # which karaoke model makes the lead stems, and from what
         self._vc: Any = None
         self._demucs: Any = None  # the vocal separator, whichever it is
         self._lead: Any = None
@@ -587,7 +596,7 @@ class RealBackend:
         write_wav(vocals_out, vocals[:n], sr)
         write_wav(inst_out, x[:n] - vocals[:n], sr)
 
-    # ── lead / backing split (Mel-Band RoFormer, leadsplit.py) ───────────
+    # ── lead / backing split (karaoke RoFormer, leadsplit.py) ────────────
 
     def lead_available(self) -> bool:
         """Whether the split runs: SING_LEAD_SPLIT is not 0 and the checkpoint is where it is looked for."""
@@ -596,30 +605,33 @@ class RealBackend:
         return leadsplit.available()
 
     def split_lead(self, vocals_wav: Path, lead_out: Path, backing_out: Path, progress: Progress,
-                   device: str | None = None) -> None:
-        """The lead voice of the separated vocals into ``lead_out``, the rest into ``backing_out``
-        (``vocals - lead``, so the two add up to the stem). ``device``: where gpu.py placed this run."""
+                   device: str | None = None, source_wav: Path | None = None) -> None:
+        """The lead voice into ``lead_out``, the rest of the separated vocals into ``backing_out``
+        (``vocals - lead``, so the two add up to the stem). The model reads the whole song
+        (``source_wav``) when leadsplit says so and it is there, else the vocals. ``device``: where
+        gpu.py placed this run."""
         on = device or self.lead_device
         try:
             if device == "cpu":
                 with leave_cores_free():
-                    self._split_on("cpu", vocals_wav, lead_out, backing_out, progress)
+                    self._split_on("cpu", vocals_wav, lead_out, backing_out, progress, source_wav)
             else:
-                self._split_on(on, vocals_wav, lead_out, backing_out, progress)
+                self._split_on(on, vocals_wav, lead_out, backing_out, progress, source_wav)
         except Exception as e:
             if not is_oom(e) or on == "cpu":
                 raise
             log.warning("lead split ran out of VRAM; retrying on the CPU")
             self._lead = None
             free_cuda()
-            self._split_on("cpu", vocals_wav, lead_out, backing_out, progress)
+            self._split_on("cpu", vocals_wav, lead_out, backing_out, progress, source_wav)
         finally:
             if not self.keep:
                 self._lead = None
             free_cuda()
         progress(1.0)
 
-    def _split_on(self, device: str, vocals_wav: Path, lead_out: Path, backing_out: Path, progress: Progress) -> None:
+    def _split_on(self, device: str, vocals_wav: Path, lead_out: Path, backing_out: Path, progress: Progress,
+                  source_wav: Path | None = None) -> None:
         import leadsplit
 
         if self._lead is not None and self._lead.device != device:
@@ -629,7 +641,12 @@ class RealBackend:
         splitter = self._lead
         splitter.gate = self.gate
         x, sr = read_audio(vocals_wav)
-        lead = splitter.lead(x, sr, progress, overlap=min(self.lead_overlap, 2) if device == "cpu" else self.lead_overlap)
+        src = x
+        if leadsplit.reads_mix() and source_wav is not None and Path(source_wav).exists():
+            src, ssr = read_audio(source_wav)
+            if ssr != sr:
+                raise RuntimeError(f"the song is at {ssr} Hz, its vocals at {sr}")
+        lead = splitter.lead(src, sr, progress, overlap=min(self.lead_overlap, 2) if device == "cpu" else self.lead_overlap)
         n = min(len(lead), len(x))
         if x.shape[1] == 1:
             x = x.repeat(2, axis=1)
@@ -747,6 +764,10 @@ class RealBackend:
 
     def convert(self, vocals_wav: Path, out_wav: Path, shift: int, progress: Progress,
                 cancelled: Callable[[], bool], work: ConvertWork | None = None) -> None:
+        self.rvc_error = None
+        if getattr(self, "voice", "") == "rvc":
+            self._convert_rvc(vocals_wav, out_wav, shift, progress, cancelled)
+            return
         try:
             vc = self._load_vc()
             vc.step_gate = self.gate
@@ -762,7 +783,6 @@ class RealBackend:
             vc = None
             if not self.keep:
                 self.unload()
-        self.rvc_error = None
         if getattr(self, "rvc", False):
             if cancelled():
                 raise Cancelled()
@@ -773,9 +793,29 @@ class RealBackend:
                 log.warning("RVC pass failed, keeping the converted vocal: %s", e)
         write_wav(out_wav, y, SR)
 
-    def _rvc_pass(self, source_mono, converted, workdir: Path):
-        """Her RVC model re-sings the converted vocal (rvcpass.py); back at SR, the source's length,
-        gated like the conversion."""
+    def _convert_rvc(self, vocals_wav: Path, out_wav: Path, shift: int, progress: Progress,
+                     cancelled: Callable[[], bool]) -> None:
+        """SING_VOICE=rvc: her RVC model sings the lead itself, moved by ``shift`` (one subprocess,
+        so no progress in between and no letting go of the GPU halfway; it takes well under a minute)."""
+        import librosa
+
+        if cancelled():
+            raise Cancelled()
+        x, sr = read_audio(vocals_wav)
+        src = x.mean(axis=1)
+        if sr != SR:
+            src = librosa.resample(src, orig_sr=sr, target_sr=SR)
+        try:
+            y = self._rvc_pass(src, src, out_wav.parent, pitch=shift)
+        except Exception as e:
+            self.rvc_error = str(e)
+            raise JobError(f"RVC conversion failed: {e}") from e
+        progress(1.0)
+        write_wav(out_wav, y, SR)
+
+    def _rvc_pass(self, source_mono, converted, workdir: Path, pitch: int = 0):
+        """Her RVC model re-sings ``converted`` (rvcpass.py), moved by ``pitch``; back at SR, the
+        source's length, gated like the conversion."""
         import librosa
         import numpy as np
         import rvcpass
@@ -783,7 +823,7 @@ class RealBackend:
         tmp_in, tmp_out = workdir / "rvc_in.wav", workdir / "rvc_out.wav"
         try:
             write_wav(tmp_in, converted, SR)
-            rvcpass.run(tmp_in, tmp_out)
+            rvcpass.run(tmp_in, tmp_out, pitch=pitch)
             y, rsr = read_audio(tmp_out)
             y = y.mean(axis=1)
             if rsr != SR:
@@ -896,13 +936,16 @@ def rubberband_shift(x, sr: int, semitones: int):
 
 
 def mix_song(vocals_src: Path, vocals_conv: Path, inst_wav: Path, key: int, out_dir: Path, backend: RealBackend,
-             target_lufs: float, backing_wav: Path | None = None) -> dict[str, Any]:
+             target_lufs: float, backing_wav: Path | None = None, backing_conv: Path | None = None,
+             backing_src: Path | None = None, instrumental: bool = True) -> dict[str, Any]:
     """Writes mix.wav / vocals.wav / instrumental.wav / play_*.pcm; returns loudness info.
 
-    The converted vocal gets the separated vocal's loudness back (Seed-VC output level varies),
-    the sum is normalised to ``target_lufs`` and kept under -1 dBFS peak. After a lead / backing
-    split ``vocals_src`` is the lead and ``backing_wav`` the backing voices: they join the
-    instrumental (at their own level, moved by the key with it), which is then what instrumental.wav holds.
+    The converted vocal gets the separated vocal's loudness back (the converters' output level
+    varies), the sum is normalised to ``target_lufs`` and kept under -1 dBFS peak. After a lead /
+    backing split ``vocals_src`` is the lead, and the backing voices are either
+    ``backing_wav`` as recorded: they join the instrumental (at their own level, moved by the key
+    with it), which is then what instrumental.wav holds; or ``backing_conv``, converted like the
+    lead: it joins her vocal at ``backing_src``'s level. ``instrumental`` False: her voice alone.
     """
     import numpy as np
 
@@ -911,6 +954,8 @@ def mix_song(vocals_src: Path, vocals_conv: Path, inst_wav: Path, key: int, out_
     inst, isr = read_audio(inst_wav)
     if isr != sr:
         raise JobError("stems have different sample rates")
+    if not instrumental:
+        inst = np.zeros_like(inst)
     if backing_wav is not None:
         b, bsr = read_audio(backing_wav)
         if bsr != sr:
@@ -931,6 +976,12 @@ def mix_song(vocals_src: Path, vocals_conv: Path, inst_wav: Path, key: int, out_
 
     g = min(4.0, max(0.25, voiced_rms(v_src) / max(voiced_rms(v), 1e-6)))
     v = v * g
+    if backing_conv is not None and backing_src is not None:
+        bc, _ = read_audio(backing_conv)
+        bs, _ = read_audio(backing_src)
+        bc, bs = bc.mean(axis=1)[:n], bs.mean(axis=1)[:n]
+        gb = min(4.0, max(0.25, voiced_rms(bs) / max(voiced_rms(bc), 1e-6)))
+        v[:len(bc)] += bc * gb
     mix = inst + v[:, None]
     lufs = loudness(mix, sr)
     gain = 10 ** ((target_lufs - lufs) / 20) if lufs is not None else 0.25 / max(float(np.sqrt((mix ** 2).mean())), 1e-6)

@@ -69,6 +69,7 @@ import type { SingConfig } from "./config.js";
 import { dedicationProblem, type SongPayments, SongPaymentsKey } from "./payments.js";
 import { singSong, sleep } from "./player.js";
 import {
+  type BackingMode,
   dedicationNote,
   type NewSong,
   SetList,
@@ -123,11 +124,11 @@ const LINK = /https?:\/\/[^\s<>"'「」]+/i;
  * The worker request for a set list query: a link (anywhere in it, e.g. 「唱這首 https://…」),
  * `library:<path>`, or a search.
  */
-export function workerQuery(query: string, key: number, harmony = true): SongQuery {
+export function workerQuery(query: string, key: number, backing: BackingMode = "keep"): SongQuery {
   const q = query.trim();
   const link = LINK.exec(q)?.[0];
-  // Only the exception is sent: the worker keeps the harmonies by default.
-  const extra = harmony ? {} : { harmony: false };
+  // Only the exception is sent: the worker keeps the backing voices by default.
+  const extra = backing === "keep" ? {} : { backing };
   if (link !== undefined) return { url: link, key, ...extra };
   if (q.toLowerCase().startsWith("library:")) return { path: q.slice(8).trim(), key, ...extra };
   return { query: q, key, ...extra };
@@ -263,7 +264,7 @@ export class Singer implements VoiceFloor, SpeechPause {
     if ([...query].length > this.cfg.max_query_chars) {
       throw new SingError(`the song name is longer than ${this.cfg.max_query_chars} characters`);
     }
-    const same = this.list.findOpen(query, req.key, req.harmony ?? true);
+    const same = this.list.findOpen(query, req.key, req.backing ?? "keep");
     if (same) {
       if (req.forced) same.forced = true;
       return same;
@@ -289,7 +290,7 @@ export class Singer implements VoiceFloor, SpeechPause {
       throw new SingError(`${errorMessage(error)}${hint}`, { cause: error });
     }
     try {
-      const job = await this.worker.submit(this.#query(query, req.key, entry.harmony), signal);
+      const job = await this.worker.submit(this.#query(query, req.key, entry.backing), signal);
       entry.job = job.id;
       this.#apply(entry, job);
       this.#publishPrepare();
@@ -375,8 +376,8 @@ export class Singer implements VoiceFloor, SpeechPause {
     if (ids.length > 0) void this.#refundAll(entry.requester, ids);
   }
 
-  #query(query: string, key: number, harmony = true): SongQuery {
-    return { ...workerQuery(query, key, harmony), exclusive_ack: this.cfg.prepare_notice };
+  #query(query: string, key: number, backing: BackingMode = "keep"): SongQuery {
+    return { ...workerQuery(query, key, backing), exclusive_ack: this.cfg.prepare_notice };
   }
 
   /** Worker job state → entry. */
@@ -857,13 +858,13 @@ export class Singer implements VoiceFloor, SpeechPause {
     entry: SongEntry,
     key: number,
   ): Promise<{ outcome: "rejected" | "too_late"; detail: string } | null> {
-    const same = this.list.findOpen(entry.query, key, entry.harmony);
+    const same = this.list.findOpen(entry.query, key, entry.backing);
     if (same !== null && same !== entry) {
       return { outcome: "rejected", detail: `#${same.no} 已經是同一首歌(key ${key})` };
     }
     let job: WorkerJob;
     try {
-      job = await this.worker.submit(this.#query(entry.query, key, entry.harmony));
+      job = await this.worker.submit(this.#query(entry.query, key, entry.backing));
     } catch (error) {
       return { outcome: "rejected", detail: `問不到歌曲工作站:${errorMessage(error)}` };
     }
@@ -1090,7 +1091,7 @@ export class Singer implements VoiceFloor, SpeechPause {
 
   async #resubmit(entry: SongEntry, signal?: AbortSignal): Promise<void> {
     const job = await this.worker.submit(
-      this.#query(entry.query, entry.key, entry.harmony),
+      this.#query(entry.query, entry.key, entry.backing),
       signal,
     );
     entry.job = job.id;

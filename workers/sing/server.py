@@ -1,6 +1,6 @@
 """Miyoria song worker: song requests → AI covers in her voice (docs/protocols/voice-link.md, 「歌曲 Worker」).
 
-    POST   /jobs                {query | url | path, title?, artist?, pitch?, key?, harmony?, force?, exclusive_ack?}
+    POST   /jobs                {query | url | path, title?, artist?, pitch?, key?, backing?, force?, exclusive_ack?}
                                 -> {"job"}
     POST   /jobs/{id}/exclusive -> {"job"}                 go ahead and take the GPU (see exclusive.py)
     POST   /gpu/context         {in_voice, listeners, live, urgent: [job id]} who would notice her
@@ -23,25 +23,30 @@ Pipeline per job (one job at a time; models load per stage and are freed after i
               when its checkpoint is there; the instrumental is the song minus the vocals) or a Demucs
               model (htdemucs, the fallback); skipped for library folders that already have both stems,
               and for sources separated before
-    lead      Mel-Band RoFormer (leadsplit.py; SING_LEAD_MODEL) splits the vocal stem into the lead
-              voice and the backing voices (harmonies, doubles, ad-libs), stored beside the stems
-              (lead.wav, backing.wav; cached with them; a song separated before it existed is split
-              from its cached vocals). Off with SING_LEAD_SPLIT=0 or without the model file (the
+    lead      a karaoke RoFormer (leadsplit.py; SING_LEAD_MODEL, default becruily & Frazer's
+              BS-RoFormer reading the whole song) takes the lead voice out; the rest of the vocal stem
+              is the backing voices (harmonies, doubles, ad-libs). Stored beside the stems (lead.wav,
+              backing.wav; cached with them, per model: stems.json; a song separated before it existed
+              is split from its cached stems). Off with SING_LEAD_SPLIT=0 or without the model file (the
               stage is skipped and the next two work on the whole vocal stem, as before); a split that
               fails (not out of VRAM: that goes to the CPU) falls back to that as well, ``lead_split`` in
               the song's meta says which.
-    convert   SING_VOICE: YingMusic-SVC (default; Seed-VC's architecture fine-tuned for singing) or the Seed-VC
-              singing model (F0-conditioned, 44.1 kHz) with her reference voice, of the lead only, then (``+rvc``,
-              default) her own RVC model re-sings it in Applio's environment (rvcpass.py: it keeps the words
-              and sounds more like her; a failed pass keeps the converted vocal). On a
+    convert   SING_VOICE, of the lead only: ``rvc`` (default) her own RVC model sings it in Applio's
+              environment (rvcpass.py), moved by the shift below; or YingMusic-SVC (Seed-VC's architecture
+              fine-tuned for singing) / the Seed-VC singing model (F0-conditioned, 44.1 kHz) with her
+              reference voice, then (``+rvc``) her RVC model re-sings that (a failed pass keeps the
+              converted vocal). With a clean lead RVC alone reads the words as well (2026-11-09). On a
               cleaned F0 contour (octave errors, spikes, dropouts: pitch.py); the pitch shift is
               ``pitch`` when given, else auto: the octave from the song's median and its top (95th
               percentile) against her range, and when the top is still over her ceiling the whole
               song goes down a few semitones (``auto_key``, SING_KEY_MIN..SING_KEY_MAX); plus
               ``key`` (whole-song transpose, which turns the auto key off)
-    mix       converted vocal at the original lead's level + instrumental, with the backing voices
-              added to it unless ``harmony`` is false (a song of its own, id ``-solo``; without a lead
-              split they stay in the converted vocal) (moved by the key with Rubber Band when ffmpeg has it), loudness-normalised to SING_TARGET_LUFS, peak ≤ -1 dBFS
+    mix       converted vocal at the original lead's level + instrumental, and the backing voices by
+              the request's ``backing`` (songs.BACKING_MODES, each a song of its own): ``keep``
+              (default) as recorded, in the instrumental; ``drop``; ``convert``: converted like the
+              lead (one more conversion), at their own level; ``acapella``: her lead alone, no
+              instrumental. Without a lead split the backing stays in the converted vocal and only
+              ``acapella`` changes anything (moved by the key with Rubber Band when ffmpeg has it), loudness-normalised to SING_TARGET_LUFS, peak ≤ -1 dBFS
     lyrics    lrclib.net synced LRC by title / artist / duration (best effort)
     video     (in parallel, from the download on) the link's video, video only, H.264 <= 1080p
               preferred, into video.mp4 for the stream to show while she sings; library entries
@@ -58,7 +63,7 @@ has the TTS / ASR workers of SING_OFFLOAD_URLS drop their models (exclusive.py: 
 and the job's ``exclusive`` field, waiting · offloading · active · reloading · done, tell Core).
 
 A finished song is cached under SING_DATA_DIR/<song id>; asking again (same query, link or file,
-the same pitch settings and harmony) answers at once with ``cached: true``.
+the same pitch settings and backing mode) answers at once with ``cached: true``.
 
 Environment
     SING_BACKEND           seed-vc | mock                         (default seed-vc)
@@ -74,14 +79,17 @@ Environment
     SING_VOCAL_MODEL       the vocal RoFormer's checkpoint (.ckpt; its .yaml beside it)
                            (default ../models/vocal-split/MelBandRoformer.ckpt, KimberleyJSN/melbandroformer)
     SING_VOCAL_OVERLAP     chunk overlap of the vocal RoFormer, 8 s chunks (default 2)
-    SING_LEAD_SPLIT        0 = no lead / backing split: Seed-VC converts the whole vocal stem (default 1: on
+    SING_LEAD_SPLIT        0 = no lead / backing split: the whole vocal stem is converted (default 1: on
                            when the model file is there)
     SING_LEAD_MODEL        the split's checkpoint (.ckpt; its .yaml beside it) (default
+                           ../models/lead-split/becruily-bs/bs_roformer_karaoke_frazer_becruily.ckpt, else
                            ../models/lead-split/mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt)
+    SING_LEAD_INPUT        mix | vocals: what the split reads    (default mix, the whole song)
+    SING_LEAD_FP16         0 = the split in fp32 on CUDA          (default 1: fp16)
     SING_LEAD_DEVICE       device of the split                    (default SING_SEPARATE_DEVICE; VRAM OOM → CPU)
-    SING_LEAD_OVERLAP      chunk overlap of the split, 8 s chunks (default 4; 2 on the CPU at most)
-    SING_VOICE             ying+rvc | ying | seedvc+rvc | seedvc  (default ying+rvc; a missing part is left out;
-                           cached songs made with another chain are made again from their stems)
+    SING_LEAD_OVERLAP      chunk overlap of the split, model-sized chunks (default 4; 2 on the CPU at most)
+    SING_VOICE             rvc | ying+rvc | ying | seedvc+rvc | seedvc (default rvc; a missing part is left
+                           out; cached songs made with another chain or lead split are made again)
     SING_YING_DIR          YingMusic-SVC checkout + ckpt/YingMusic-SVC-full.pt (default ../models/yingmusic-svc)
     SING_APPLIO_DIR / SING_RVC_MODEL / SING_RVC_INDEX / SING_RVC_PROTECT   the RVC pass (rvcpass.py)
     SING_DIFFUSION_STEPS   Seed-VC / YingMusic steps              (default 30)
@@ -152,7 +160,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -228,7 +236,8 @@ class MockBackend:
         self.convert_inputs: list[str] = []  # which stem each conversion read
         self.f0_inputs: list[str] = []
         self.mix_inputs: list[tuple[bool, list[str]]] = []  # (split, the files in the stem folder)
-        self.mix_harmony: list[bool] = []
+        self.mix_backing: list[str] = []
+        self.lead_sources: list[str | None] = []
         self.trims = 0
 
     def _wait(self) -> None:
@@ -307,9 +316,10 @@ class MockBackend:
         return os.environ.get("SING_LEAD_SPLIT", "1") != "0" and os.environ.get("SING_MOCK_LEAD_MODEL", "1") != "0"
 
     def split_lead(self, vocals_wav: Path, lead_out: Path, backing_out: Path, progress: Callable[[float], None],
-                   device: str | None = None) -> None:
+                   device: str | None = None, source_wav: Path | None = None) -> None:
         self._wait()
         self.lead_devices.append(device)
+        self.lead_sources.append(source_wav.name if source_wav is not None else None)
         if os.environ.get("SING_MOCK_LEAD_FAIL") == "1":
             raise RuntimeError("mock lead split failed")
         for _ in range(env_int("SING_MOCK_SEGMENTS", 0)):
@@ -356,10 +366,10 @@ class MockBackend:
         _write_wav(out_wav, _tone(self.seconds, 16_000, 440 * 2 ** (shift / 12)), 16_000)
 
     def mix(self, sdir: Path, converted: Path, key: int, out: Path, split: bool = False,
-            harmony: bool = True) -> dict[str, Any]:
+            backing: str = "keep", backing_conv: Path | None = None) -> dict[str, Any]:
         self._wait()
         self.mix_inputs.append((split, sorted(p.name for p in sdir.glob("*.wav"))))
-        self.mix_harmony.append(harmony)
+        self.mix_backing.append(backing if backing_conv is None or backing_conv.exists() else "convert:missing")
         mix = _tone(self.seconds, PLAY_RATE, 440)
         vocals = _tone(self.seconds, PLAY_RATE, 440, 0.2)
         _write_wav(out / "mix.wav", mix, PLAY_RATE)
@@ -424,14 +434,17 @@ class _RealAdapter:
         return self.b.f0_stats(x.mean(axis=1), sr)
 
     def mix(self, sdir: Path, converted: Path, key: int, out: Path, split: bool = False,
-            harmony: bool = True) -> dict[str, Any]:
-        """``split``: the lead was converted, the backing voices are beside it; they join the mix
-        when ``harmony`` (else her voice alone over the instrumental)."""
+            backing: str = "keep", backing_conv: Path | None = None) -> dict[str, Any]:
+        """``split``: the lead was converted, the backing voices are beside it; ``backing`` says
+        what becomes of them (songs.BACKING_MODES; ``backing_conv`` is the converted backing)."""
         from engine import mix_song
 
         return mix_song(sdir / ("lead.wav" if split else "vocals.wav"), converted, sdir / "instrumental.wav", key, out,
                         self.b, env_float("SING_TARGET_LUFS", -16.0),
-                        sdir / "backing.wav" if split and harmony else None)
+                        backing_wav=sdir / "backing.wav" if split and backing == "keep" else None,
+                        backing_conv=backing_conv if split and backing == "convert" else None,
+                        backing_src=sdir / "backing.wav" if split and backing == "convert" else None,
+                        instrumental=backing != "acapella")
 
     def lyrics(self, src: Source, duration: float | None) -> dict[str, Any] | None:
         if os.environ.get("SING_LYRICS", "1") == "0":
@@ -452,8 +465,8 @@ class JobRequest(BaseModel):
     artist: str | None = Field(None, max_length=120)
     pitch: int | None = Field(None, ge=-24, le=24)
     key: int = Field(0, ge=-12, le=12)
-    # Keep the song's own backing voices (harmonies, chorus) in the mix; False = her voice alone.
-    harmony: bool = True
+    # The song's own backing voices (harmonies, chorus): songs.BACKING_MODES.
+    backing: Literal["keep", "drop", "convert", "acapella"] = "keep"
     force: bool = False
     # Wait for POST /jobs/{id}/exclusive before taking the GPU (Core lets her speak first).
     exclusive_ack: bool = False
@@ -655,28 +668,59 @@ def _other_voice(meta: dict[str, Any], backend: Any) -> bool:
     # Its separator: the last part of the model name ("ying+rvc+melband", "seed-vc-f0-44k+htdemucs").
     sep = _separator_of(backend)
     made = str(engine.get("model") or "").rsplit("+", 1)[-1]
-    return sep is not None and bool(made) and made != sep
+    if sep is not None and made and made != sep:
+        return True
+    # Its lead split: a song whose lead came from another karaoke model is made again too.
+    tag = _lead_tag_of(backend)
+    used = (meta.get("lead_split") or {}).get("used", False)
+    return tag is not None and bool(used) and (engine.get("lead") or LEGACY_LEAD) != tag
 
 
 def _separator_of(backend: Any) -> str | None:
     return getattr(backend, "separator", None)
 
 
+def _lead_tag_of(backend: Any) -> str | None:
+    return getattr(backend, "lead_tag", None)
+
+
 STEMS_INFO = "stems.json"
+# What made lead stems recorded before the model was (leadsplit.LEGACY_TAG).
+LEGACY_LEAD = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956@vocals"
+
+
+def _stems_info(sdir: Path) -> dict[str, Any]:
+    try:
+        info = json.loads((sdir / STEMS_INFO).read_text(encoding="utf-8"))
+        return info if isinstance(info, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _stems_separator(sdir: Path) -> str:
     """The separator that made a source's cached vocals / instrumental. Stems from before this was
     recorded were all made by htdemucs."""
-    try:
-        return str(json.loads((sdir / STEMS_INFO).read_text(encoding="utf-8")).get("separator") or "htdemucs")
-    except (OSError, ValueError):
-        return "htdemucs"
+    return str(_stems_info(sdir).get("separator") or "htdemucs")
+
+
+def _stems_lead(sdir: Path) -> str:
+    """What made the cached lead.wav / backing.wav (leadsplit.tag)."""
+    return str(_stems_info(sdir).get("lead") or LEGACY_LEAD)
+
+
+def _write_stems_info(sdir: Path, **fields: str | None) -> None:
+    info = _stems_info(sdir)
+    info.update({k: v for k, v in fields.items() if v is not None})
+    if info:
+        (sdir / STEMS_INFO).write_text(json.dumps(info), encoding="utf-8")
 
 
 def _write_stems_separator(sdir: Path, separator: str | None) -> None:
     if separator is not None:
-        (sdir / STEMS_INFO).write_text(json.dumps({"separator": separator}), encoding="utf-8")
+        # New vocals: the lead split from the old ones goes with them.
+        info = {k: v for k, v in _stems_info(sdir).items() if k != "lead"}
+        info["separator"] = separator
+        (sdir / STEMS_INFO).write_text(json.dumps(info), encoding="utf-8")
 
 
 def _needs_video(meta: dict[str, Any], kind: str | None) -> bool:
@@ -997,12 +1041,15 @@ def _lead_stage(job: Job, sdir: Path, src: Source, timed: Callable[[str, Callabl
     if not b.lead_available():
         return {"used": False, "reason": "no_model"}
     lead_wav, backing_wav = sdir / "lead.wav", sdir / "backing.wav"
-    if lead_wav.exists() and backing_wav.exists():
+    tag = _lead_tag_of(b)
+    if lead_wav.exists() and backing_wav.exists() and (tag is None or _stems_lead(sdir) == tag):
         return {"used": True, "cached": True}
+    source = sdir / "source.wav"
 
     def split(device: str) -> None:
         b.split_lead(sdir / "vocals.wav", lead_wav, backing_wav, lambda f: _set(job, "lead", f),
-                     device="cpu" if device == "cpu" else None)
+                     device="cpu" if device == "cpu" else None,
+                     source_wav=source if source.exists() else None)
 
     try:
         timed("lead", lambda: _gpu_stage(job, "lead", sdir / "vocals.wav", src.duration_s, split))
@@ -1013,6 +1060,7 @@ def _lead_stage(job: Job, sdir: Path, src: Source, timed: Callable[[str, Callabl
         lead_wav.unlink(missing_ok=True)
         backing_wav.unlink(missing_ok=True)
         return {"used": False, "reason": "failed", "error": str(e)[:300]}
+    _write_stems_info(sdir, lead=tag)
     return {"used": True, "cached": False}
 
 
@@ -1038,7 +1086,7 @@ def _run_job(job: Job) -> None:
     if req.artist:
         src.artist = req.artist.strip()
     job.source = src.public()
-    sid = song_id(src.key, req.pitch, req.key, req.harmony)
+    sid = song_id(src.key, req.pitch, req.key, req.backing)
     job.song_id = sid
     sdir = store.source_dir(src.key)
     cached = None if req.force else store.meta(sid)
@@ -1120,9 +1168,26 @@ def _run_job(job: Job) -> None:
         return pitch
 
     pitch_info = timed("convert", convert)
+    backing_conv: Path | None = None
+    if req.backing == "convert" and lead["used"]:
+        backing_conv = out / "_converted_backing.wav"
+        backing_wav = sdir / "backing.wav"
+
+        def convert_backing_on_gpu(_device: str) -> None:
+            b.convert(backing_wav, backing_conv, pitch_info["vocal_shift"], converted_share, check, ConvertWork())
+
+        def convert_backing() -> None:
+            try:
+                _gpu_stage(job, "convert", backing_wav, src.duration_s, convert_backing_on_gpu)
+            finally:
+                _give_gpu_back(job)
+
+        timed("convert_backing", convert_backing)
     mixed = timed("mix", lambda: b.mix(sdir, converted, pitch_info["song_key"], out, lead["used"],
-                                          req.harmony))
+                                          req.backing, backing_conv))
     converted.unlink(missing_ok=True)
+    if backing_conv is not None:
+        backing_conv.unlink(missing_ok=True)
     duration = mixed.get("duration_s") or src.duration_s
     found = timed("lyrics", lambda: b.lyrics(src, duration))
     lyrics_meta: dict[str, Any] | None = None
@@ -1149,12 +1214,13 @@ def _run_job(job: Job) -> None:
         "pitch": pitch_info,
         "lead_split": lead,
         # Without a split the backing voices stay in the converted vocal: only a split can drop them.
-        "harmony": req.harmony or not lead["used"],
+        "backing": req.backing if lead["used"] or req.backing == "acapella" else "in_vocal",
         "lyrics": lyrics_meta,
         **video,
         "play": {"sample_rate": PLAY_RATE, "samples": mixed.get("samples"), "format": "s16le", "channels": 1},
         "mix": mixed,
         "engine": {"backend": b.name, "model": b.model_name, "device": b.device,
+                   "lead": _lead_tag_of(b) if lead["used"] else None,
                    "voice": getattr(b, "voice", None), "rvc_error": getattr(b, "rvc_error", None),
                    "diffusion_steps": env_int("SING_DIFFUSION_STEPS", 30)},
         "timings": timings,
@@ -1277,7 +1343,7 @@ async def submit(req: JobRequest) -> JSONResponse:
         key = None
         if req.query:
             key = state.store.query_source(req.query)
-        sid = song_id(key, req.pitch, req.key, req.harmony) if key else None
+        sid = song_id(key, req.pitch, req.key, req.backing) if key else None
         meta = state.store.meta(sid) if sid else None
         info = state.store.source_info(key or "") if meta is not None else None
         # (A song from before videos existed goes through the queue to get its video.)

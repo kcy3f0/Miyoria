@@ -13,7 +13,7 @@ import { type Capability, defineCapability } from "@miyoria/actions";
 import { type JsonObject, type Principal, safeName } from "@miyoria/types";
 import { z } from "zod";
 import type { SingPermissions } from "./config.js";
-import { songLabel } from "./setlist.js";
+import { BACKING_MODES, songLabel } from "./setlist.js";
 import type { Singer } from "./singer.js";
 
 const RequestArgs = z.object({
@@ -21,8 +21,8 @@ const RequestArgs = z.object({
   query: z.string().trim().min(1).max(300),
   /** Whole-song transposition in semitones. */
   key: z.number().int().min(-6).max(6).nullish(),
-  /** `false`: without the song's own harmonies / chorus (kept by default). */
-  harmony: z.boolean().nullish(),
+  /** What becomes of the song's own backing voices (kept as recorded by default). */
+  backing: z.enum(BACKING_MODES).nullish(),
   /** How to call the person who asked (shown in the list and to her later). */
   by: z.string().trim().min(1).max(64).nullish(),
   /** Commands only: use a ticket when the person is at the limit. */
@@ -76,9 +76,12 @@ export function singCapabilities(singer: Singer, perms: SingPermissions): Capabi
       properties: {
         query: { type: "string", description: "歌名 + 歌手,或 YouTube / bilibili 連結" },
         key: { type: "integer", description: "整首升降幾個半音(-6 到 6,通常省略)" },
-        harmony: {
-          type: "boolean",
-          description: "保留原曲的和聲、合唱(預設保留;有人要只聽你的聲音、不要和聲時才設 false)",
+        backing: {
+          type: "string",
+          enum: [...BACKING_MODES],
+          description:
+            "原曲的伴唱(和聲、合唱)怎麼處理,沒人提就省略:keep 保留原本的(預設)、drop 不要伴唱、" +
+            "convert 伴唱也用你的聲音唱、acapella 清唱(只有你的主唱,沒有伴奏)",
         },
         by: { type: "string", description: "點歌的人怎麼稱呼(可省略)" },
       },
@@ -90,7 +93,7 @@ export function singCapabilities(singer: Singer, perms: SingPermissions): Capabi
         {
           query: args.query,
           key: args.key ?? 0,
-          harmony: args.harmony ?? true,
+          backing: args.backing ?? "keep",
           requester: p.requester,
           requester_name: byOf(p, args.by),
           context: p.context,

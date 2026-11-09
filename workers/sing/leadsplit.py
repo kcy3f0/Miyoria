@@ -1,21 +1,25 @@
-"""Lead / backing vocal split: the stage after Demucs, so Seed-VC hears one voice.
+"""Lead / backing vocal split: the stage after the vocal separation, so the converter hears one voice.
 
 Demucs gives "the vocals", which in most songs is the lead with its harmonies, doubles and ad-libs
 all in one stem. Seed-VC's pitch detector (RMVPE) is trained on one voice at a time: where a second
 voice is as loud as the lead it reads that one, and the lead's own contour jumps by a third or an
 octave for as long as the harmony is the stronger (the "breaks" in a converted song). No decoder over
 RMVPE's output can undo that, since the lead's salience is simply not there. So the stem is split
-first: a Mel-Band RoFormer trained to take the lead voice out of the vocals (the aufr33 & viperx
-karaoke model) gives ``lead``, and ``backing = vocals - lead`` is whatever it took away.
+first: a karaoke RoFormer gives ``lead``, and ``backing = vocals - lead`` is whatever else sings.
 
-Seed-VC then converts only the lead (pitch statistics and the auto key come from it too); the
-backing goes back into the instrumental at its original level, so the song keeps its harmonies
-(as they were recorded, not in her voice).
+The model: becruily & Frazer's BS-RoFormer karaoke (2026-11-09: MVSep's lead/back leaderboard
+10.06-10.10 dB lead SDR) run on the whole song, as it was trained; the older aufr33 & viperx
+Mel-Band RoFormer run on the separated vocals scores 8.90 there and lost words in songs with loud
+harmonies (櫻ノ詩). Only the lead is converted (pitch statistics and the auto key come from it
+too); what happens to the backing is the request's ``backing`` (server.py).
 
 Model: ``SING_LEAD_MODEL`` is the checkpoint (``.ckpt``, a state dict), default
-``workers/models/lead-split/mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt``; its config is
-the ``.yaml`` of the same name beside it (or ``config.yaml``). Nothing downloads it: with no file the
-split is off and the pipeline is the plain one. ``SING_LEAD_SPLIT=0`` turns it off with the file there.
+``workers/models/lead-split/becruily-bs/bs_roformer_karaoke_frazer_becruily.ckpt`` when it is there,
+else the aufr33 & viperx one; its config is the ``.yaml`` of the same name beside it (or
+``config.yaml``), which also says the architecture (``freqs_per_bands``: BS-RoFormer, else
+Mel-Band). ``SING_LEAD_INPUT`` = ``mix`` (default) or ``vocals``: what the model reads. CUDA runs in
+fp16 unless ``SING_LEAD_FP16=0``. Nothing downloads the files: with none the split is off and the
+pipeline is the plain one. ``SING_LEAD_SPLIT=0`` turns it off with the files there.
 """
 
 from __future__ import annotations
@@ -25,8 +29,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 CKPT_NAME = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
+BS_CKPT = Path("becruily-bs") / "bs_roformer_karaoke_frazer_becruily.ckpt"
 HERE = Path(__file__).resolve().parent
 DEFAULT_DIR = HERE.parent / "models" / "lead-split"
+# What made lead stems recorded before the model was: the aufr33 & viperx model on the vocals.
+LEGACY_TAG = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956@vocals"
 
 
 def enabled(env: dict[str, str] | None = None) -> bool:
@@ -35,7 +42,19 @@ def enabled(env: dict[str, str] | None = None) -> bool:
 
 def model_path(env: dict[str, str] | None = None) -> Path:
     e = env if env is not None else os.environ
-    return Path(e.get("SING_LEAD_MODEL") or DEFAULT_DIR / CKPT_NAME)
+    if e.get("SING_LEAD_MODEL"):
+        return Path(e["SING_LEAD_MODEL"])
+    return DEFAULT_DIR / BS_CKPT if (DEFAULT_DIR / BS_CKPT).is_file() else DEFAULT_DIR / CKPT_NAME
+
+
+def reads_mix(env: dict[str, str] | None = None) -> bool:
+    """The model reads the whole song (default) rather than the separated vocals."""
+    return (env if env is not None else os.environ).get("SING_LEAD_INPUT", "mix") != "vocals"
+
+
+def tag(env: dict[str, str] | None = None) -> str:
+    """What makes a lead stem: the checkpoint and what it read (cached stems are kept per tag)."""
+    return f"{model_path(env).stem}@{'mix' if reads_mix(env) else 'vocals'}"
 
 
 def config_path(ckpt: Path) -> Path | None:
@@ -64,18 +83,26 @@ class LeadSplitter:
         if cfg_file is None:
             raise RuntimeError(f"no config (.yaml) beside {ckpt}")
         cfg = yaml.load(cfg_file.read_text("utf-8"), Loader=yaml.UnsafeLoader)
-        from melband import MelBandRoformer
-
         self.chunk = int(cfg["audio"]["chunk_size"])
         self.sr = int(cfg["audio"]["sample_rate"])
-        self.overlap = int(cfg.get("inference", {}).get("num_overlap", 4))
-        model = MelBandRoformer(**dict(cfg["model"]))
+        self.overlap = int((cfg.get("inference") or {}).get("num_overlap", 4))
+        kwargs = dict(cfg["model"])
+        if "freqs_per_bands" in kwargs:
+            from bsroformer import BSRoformer
+
+            kwargs["freqs_per_bands"] = tuple(kwargs["freqs_per_bands"])
+            model = BSRoformer(**kwargs)
+        else:
+            from melband import MelBandRoformer
+
+            model = MelBandRoformer(**kwargs)
         state = torch.load(str(ckpt), map_location="cpu", weights_only=True)
         if isinstance(state, dict) and "state_dict" in state:
             state = state["state_dict"]
         model.load_state_dict(state)
         self.model = model.to(device).eval()
         self.device = device
+        self.fp16 = str(device).startswith("cuda") and os.environ.get("SING_LEAD_FP16", "1") != "0"
         self.gate: Callable[[], None] | None = None
         self._hooked = False
 
@@ -116,7 +143,8 @@ class LeadSplitter:
         weight = torch.zeros(total)
         starts = list(range(0, total - chunk + 1, hop))
         self._hook()
-        with torch.no_grad():
+        amp = torch.autocast("cuda", dtype=torch.float16) if getattr(self, "fp16", False) else _nothing()
+        with torch.no_grad(), amp:
             for i, s in enumerate(starts):
                 part = wav[:, s:s + chunk].to(self.device)[None]
                 y = self.model(part)[0].float().cpu()
@@ -126,3 +154,11 @@ class LeadSplitter:
                     progress((i + 1) / len(starts))
         res = (out / weight.clamp(min=1e-6))[:, pad:pad + n]
         return res.numpy().T.copy()
+
+
+class _nothing:
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, *_: Any) -> None:
+        return None

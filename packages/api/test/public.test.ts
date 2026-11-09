@@ -110,7 +110,7 @@ function song(no: number, over: Partial<SongEntry> = {}): SongEntry {
     no,
     query: "SECRET-query",
     key: 0,
-    harmony: true,
+    backing: "keep",
     requester: discord(BOB),
     requester_name: "SECRET-requester",
     context: GUILD,

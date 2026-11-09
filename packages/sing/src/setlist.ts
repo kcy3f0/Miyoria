@@ -18,13 +18,28 @@ export type SongNo = number;
 
 export type SongState = "preparing" | "ready" | "playing" | "done" | "failed" | "cancelled";
 
+/**
+ * What becomes of the song's own backing voices (harmonies, chorus): kept as recorded (default),
+ * dropped, converted to her voice like the lead, or a cappella (her lead alone, no instrumental).
+ */
+export const BACKING_MODES = ["keep", "drop", "convert", "acapella"] as const;
+export type BackingMode = (typeof BACKING_MODES)[number];
+
+/** How each mode is said to people (list labels, command choices). */
+export const BACKING_LABELS: Record<BackingMode, string> = {
+  keep: "原曲伴唱",
+  drop: "不要伴唱",
+  convert: "伴唱也轉",
+  acapella: "清唱",
+};
+
 export interface SongEntry {
   no: SongNo;
   /** What was asked for (a name, maybe with the artist, or a link). Untrusted. */
   query: string;
   key: number;
-  /** The song's own backing voices (harmonies, chorus) stay in the mix; `false`: her voice alone. */
-  harmony: boolean;
+  /** What becomes of the song's own backing voices (`keep` unless asked). */
+  backing: BackingMode;
   requester: AccountRef | null;
   requester_name: string;
   /** Where it was asked for. */
@@ -63,7 +78,7 @@ export type NewSong = Pick<
   Partial<
     Pick<
       SongEntry,
-      "harmony" | "forced" | "queue_item" | "ticket_entry" | "dedication" | "dedication_entry"
+      "backing" | "forced" | "queue_item" | "ticket_entry" | "dedication" | "dedication_entry"
     >
   >;
 
@@ -82,8 +97,9 @@ export function dedicationNote(e: SongEntry): string {
 export function songLabel(e: SongEntry): string {
   const title = e.song?.title?.trim() || e.query;
   const artist = e.song?.artist?.trim();
-  const solo = e.harmony === false ? "(無和聲)" : "";
-  return `「${safeName(title, 60)}」${artist ? ` - ${safeName(artist, 40)}` : ""}${solo}`;
+  const mode =
+    e.backing === "keep" || e.backing === undefined ? "" : `(${BACKING_LABELS[e.backing]})`;
+  return `「${safeName(title, 60)}」${artist ? ` - ${safeName(artist, 40)}` : ""}${mode}`;
 }
 
 const AccountSchema = z.object({ platform: z.string(), id: z.string() });
@@ -99,7 +115,7 @@ const StoredEntrySchema = z.object({
   no: z.number().int().positive(),
   query: z.string().min(1),
   key: z.number().int().catch(0),
-  harmony: z.boolean().catch(true),
+  backing: z.enum(BACKING_MODES).catch("keep"),
   requester: AccountSchema.nullable().catch(null),
   requester_name: z.string().catch("觀眾"),
   context: ContextSchema.nullable().catch(null),
@@ -194,12 +210,12 @@ export class SetList {
     return this.#entries.find((e) => e.state === "playing") ?? null;
   }
 
-  /** The same song (by query, key and harmony) already open. */
-  findOpen(query: string, key: number, harmony = true): SongEntry | null {
+  /** The same song (by query, key and backing mode) already open. */
+  findOpen(query: string, key: number, backing: BackingMode = "keep"): SongEntry | null {
     const q = query.trim().toLowerCase();
     return (
       this.open().find(
-        (e) => e.key === key && e.harmony === harmony && e.query.trim().toLowerCase() === q,
+        (e) => e.key === key && e.backing === backing && e.query.trim().toLowerCase() === q,
       ) ?? null
     );
   }
@@ -232,7 +248,7 @@ export class SetList {
       no: this.#next++,
       query: song.query,
       key: song.key,
-      harmony: song.harmony ?? true,
+      backing: song.backing ?? "keep",
       requester,
       requester_name: song.requester_name,
       context: song.context,

@@ -7,8 +7,8 @@ it loses almost nothing), so the chain "YingMusic, then RVC" gets YingMusic's wo
 (2026-11-09 tests: docs/design/backlog.md, 唱歌轉換).
 
 RVC runs in Applio's own environment (its venv, ``core.py infer``) as a subprocess: its torch and
-dependencies differ from this worker's. Pitch is not moved here (the vocal is already in key),
-retrieval is off (``index_rate 0``: the index holds speech, which blurs the words).
+dependencies differ from this worker's. After YingMusic / Seed-VC the pitch is not moved (the vocal
+is already in key); alone (SING_VOICE=rvc) it moves the song's lead by the job's shift. Retrieval is off (``index_rate 0``: the index holds speech, which blurs the words).
 
 Environment: ``SING_APPLIO_DIR`` (default ``../models/applio``), ``SING_RVC_MODEL`` (the ``.pth``),
 ``SING_RVC_INDEX`` (default the ``.index`` beside the model, optional), ``SING_RVC_PROTECT``
@@ -58,14 +58,14 @@ def available(env: dict[str, str] | None = None) -> bool:
     return (root / "core.py").is_file() and python_path(env).is_file() and model_path(env).is_file()
 
 
-def command(in_wav: Path, out_wav: Path, env: dict[str, str] | None = None) -> list[str]:
+def command(in_wav: Path, out_wav: Path, env: dict[str, str] | None = None, pitch: int = 0) -> list[str]:
     e = env if env is not None else os.environ
     # Absolute: Applio runs in its own folder.
     cmd = [
         str(python_path(e).resolve()), "core.py", "infer",
         "--input-path", str(Path(in_wav).resolve()), "--output-path", str(Path(out_wav).resolve()),
         "--pth-path", str(model_path(e).resolve()),
-        "--pitch", "0", "--f0-method", "rmvpe", "--index-rate", "0",
+        "--pitch", str(int(pitch)), "--f0-method", "rmvpe", "--index-rate", "0",
         "--protect", e.get("SING_RVC_PROTECT", "0.33"),
         "--embedder-model", "contentvec", "--export-format", "WAV",
     ]
@@ -75,7 +75,7 @@ def command(in_wav: Path, out_wav: Path, env: dict[str, str] | None = None) -> l
     return cmd
 
 
-def run(in_wav: Path, out_wav: Path, env: dict[str, str] | None = None) -> Path:
+def run(in_wav: Path, out_wav: Path, env: dict[str, str] | None = None, pitch: int = 0) -> Path:
     """Converts ``in_wav`` into ``out_wav`` (Applio writes it at the model's rate). Raises
     ``RuntimeError`` when Applio fails or writes nothing."""
     e = dict(os.environ if env is None else env)
@@ -84,7 +84,7 @@ def run(in_wav: Path, out_wav: Path, env: dict[str, str] | None = None) -> Path:
     child_env.pop("APPLIO_F0_FILE", None)  # the local test hook: never from here
     out_wav.unlink(missing_ok=True)
     try:
-        r = subprocess.run(command(in_wav, out_wav, e), cwd=str(root), env=child_env, capture_output=True,
+        r = subprocess.run(command(in_wav, out_wav, e, pitch), cwd=str(root), env=child_env, capture_output=True,
                            text=True, encoding="utf-8", errors="replace",
                            timeout=float(e.get("SING_RVC_TIMEOUT_S", "600")))
     except subprocess.TimeoutExpired as err:

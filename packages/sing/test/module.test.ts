@@ -43,6 +43,8 @@ import {
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  BACKING_LABELS,
+  backingOf,
   type GpuContext,
   SETLIST_KEY,
   SingerKey,
@@ -1188,5 +1190,23 @@ describe("workerQuery", () => {
       url: "https://www.youtube.com/watch?v=PHhHFN3SlcA",
       key: 0,
     });
+  });
+
+  it("sends the backing mode only when it is not the default", () => {
+    expect(workerQuery("Song", 0, "keep")).toEqual({ query: "Song", key: 0 });
+    expect(workerQuery("Song", 0, "acapella")).toEqual({
+      query: "Song",
+      key: 0,
+      backing: "acapella",
+    });
+  });
+});
+
+describe("backingOf", () => {
+  it("reads a command's choice by its label or its name, and keeps the backing otherwise", () => {
+    expect(backingOf(BACKING_LABELS.convert)).toBe("convert");
+    expect(backingOf("drop")).toBe("drop");
+    expect(backingOf(null)).toBe("keep");
+    expect(backingOf("loud")).toBe("keep");
   });
 });
