@@ -15,6 +15,20 @@ export const WebConfigSchema = z.object({
     .string()
     .regex(/^[a-z]{2}-[a-z]{2,3}$/)
     .default("tw-tzh"),
+  /**
+   * A SearXNG on loopback (`deploy/searxng`), asked first: it asks several engines and keeps
+   * answering when one of them challenges. Null: DuckDuckGo only.
+   */
+  searxng_url: z.string().url().nullable().default(null),
+  /** SearXNG `language`. */
+  searxng_language: z.string().min(2).max(20).default("zh-TW"),
+  /**
+   * Shortest gap between two DuckDuckGo searches: it challenges the third of a quick burst
+   * (2026-11-09: two passed, the next six were challenged). Searches wait their turn.
+   */
+  ddg_gap_ms: z.number().int().min(0).max(60_000).default(4000),
+  /** After a challenge DuckDuckGo is left alone this long, so a block is not prolonged. */
+  ddg_cooldown_s: z.number().int().min(0).max(86_400).default(600),
   /** Results `web_search` returns when she does not say (she may ask for 1..8). */
   search_results: z.number().int().min(1).max(8).default(5),
   /** Characters of page text `web_read` keeps. */

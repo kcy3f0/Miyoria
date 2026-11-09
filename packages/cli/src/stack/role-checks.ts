@@ -315,6 +315,34 @@ export async function roleChecks(input: DeepInput): Promise<Finding[]> {
     }
   }
 
+  // Her web search backend (deploy/searxng): without it she falls back to DuckDuckGo alone.
+  if (stack.core && deps.connect) {
+    const modules = config.section("modules");
+    const web = isJsonObject(modules) ? modules.web : undefined;
+    const raw = isJsonObject(web) && typeof web.searxng_url === "string" ? web.searxng_url : null;
+    let url: URL | null = null;
+    try {
+      url = raw === null ? null : new URL(raw);
+    } catch {
+      out.push(
+        fail("SearXNG", `[modules.web] searxng_url 不是網址:${raw}`, [
+          "改成 http://127.0.0.1:8888",
+        ]),
+      );
+    }
+    if (url !== null) {
+      const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+      const up = await deps.connect(url.hostname, port, 3000);
+      out.push(
+        up
+          ? ok("SearXNG", `${url.host} 連得到`)
+          : warn("SearXNG", `${url.host} 連不到,她的搜尋只剩 DuckDuckGo(容易被擋)`, [
+              "啟動 Docker Desktop,然後 `docker compose -f deploy/searxng/compose.yaml up -d`",
+            ]),
+      );
+    }
+  }
+
   if (machine) out.push(...(await addressChecks(input, services)));
   return out;
 }

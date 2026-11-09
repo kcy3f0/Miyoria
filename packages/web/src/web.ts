@@ -1,5 +1,6 @@
-// What `web_search` and `web_read` do, without the gate: DuckDuckGo, the guarded page reader,
-// the caches and the rate limits. Results are formatted as untrusted data blocks for her.
+// What `web_search` and `web_read` do, without the gate: SearXNG on loopback when there is one,
+// DuckDuckGo (paced) otherwise or when it fails, the guarded page reader, the caches and the rate
+// limits. Results are formatted as untrusted data blocks for her.
 
 import { type Clock, dataBlock } from "@miyoria/types";
 import type { WebConfig } from "./config.js";
@@ -15,9 +16,15 @@ const SEARCH_BODY_LIMIT = 1_500_000;
 export interface WebDeps extends GuardDeps {
   config: WebConfig;
   clock: Clock;
-  /** Replaces the global `fetch` (tests). Only DuckDuckGo is fetched through it. */
+  /** Replaces the global `fetch` (tests). Only the search backends are fetched through it. */
   fetch?: typeof fetch;
+  /** Waits between DuckDuckGo searches (tests pass one that does not). */
+  sleep?: (ms: number) => Promise<void>;
+  /** Why a search backend failed, for the log (she is only told it could not search). */
+  note?: (detail: string) => void;
 }
+
+const realSleep = (ms: number) => new Promise<void>((ok) => setTimeout(ok, ms));
 
 const clip = (text: string, max: number): string => {
   const chars = [...text];
@@ -46,6 +53,10 @@ export class WebService {
   readonly #readCache: TtlCache<ReadOutcome>;
   readonly #searches: Limits;
   readonly #reads: Limits;
+  /** DuckDuckGo searches go one at a time, `ddg_gap_ms` apart. */
+  #ddgQueue: Promise<unknown> = Promise.resolve();
+  #ddgLast = Number.NEGATIVE_INFINITY;
+  #ddgResting = 0;
 
   constructor(deps: WebDeps) {
     this.#d = deps;
@@ -86,10 +97,85 @@ export class WebService {
     if (!this.#searches.take(who, this.#now())) {
       throw new WebError("查太多次了,等一下再查。", "search rate limit");
     }
-    const hits = (await this.#duckDuckGo(q, signal)).slice(0, max);
+    const hits = (await this.#find(q, signal)).slice(0, max);
     const outcome: SearchOutcome = { hits, text: formatHits(q, hits, cfg.result_chars) };
     this.#searchCache.set(key, outcome, this.#now());
     return outcome;
+  }
+
+  /** SearXNG first; DuckDuckGo when there is none, it failed, or it found nothing. */
+  async #find(query: string, signal: AbortSignal): Promise<SearchHit[]> {
+    if (this.#d.config.searxng_url !== null) {
+      try {
+        const hits = await this.#searxng(query, signal);
+        if (hits.length > 0) return hits;
+      } catch (error) {
+        this.#d.note?.(error instanceof WebError ? error.reason : (error as Error).message);
+      }
+    }
+    try {
+      return await this.#paced(() => this.#duckDuckGo(query, signal));
+    } catch (error) {
+      if (error instanceof WebError) this.#d.note?.(error.reason);
+      throw error;
+    }
+  }
+
+  async #searxng(query: string, signal: AbortSignal): Promise<SearchHit[]> {
+    const cfg = this.#d.config;
+    const doFetch = this.#d.fetch ?? fetch;
+    const base = cfg.searxng_url ?? "";
+    const url = new URL("search", base.endsWith("/") ? base : `${base}/`);
+    url.searchParams.set("q", query);
+    url.searchParams.set("format", "json");
+    url.searchParams.set("language", cfg.searxng_language);
+    url.searchParams.set("safesearch", "1");
+    let response: Response;
+    try {
+      response = await doFetch(url, {
+        headers: { accept: "application/json" },
+        redirect: "error",
+        signal: AbortSignal.any([signal, AbortSignal.timeout(cfg.timeout_ms)]),
+      });
+    } catch (error) {
+      throw new WebError(SEARCH_DOWN, `searxng request failed: ${(error as Error).message}`);
+    }
+    if (response.status !== 200) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new WebError(SEARCH_DOWN, `searxng status ${response.status}`);
+    }
+    let body: unknown;
+    try {
+      body = JSON.parse(await readText(response, SEARCH_BODY_LIMIT));
+    } catch (error) {
+      throw new WebError(SEARCH_DOWN, `searxng body failed: ${(error as Error).message}`);
+    }
+    return searxngHits(body);
+  }
+
+  /** Runs a DuckDuckGo search in its turn, `ddg_gap_ms` after the last; none while it rests. */
+  #paced<T>(run: () => Promise<T>): Promise<T> {
+    const cfg = this.#d.config;
+    const sleep = this.#d.sleep ?? realSleep;
+    const go = async (): Promise<T> => {
+      if (this.#now() < this.#ddgResting) {
+        throw new WebError(SEARCH_DOWN, "duckduckgo resting after a challenge");
+      }
+      const wait = this.#ddgLast + cfg.ddg_gap_ms - this.#now();
+      if (wait > 0) await sleep(wait);
+      this.#ddgLast = this.#now();
+      try {
+        return await run();
+      } catch (error) {
+        if (error instanceof WebError && error.reason === "duckduckgo challenge") {
+          this.#ddgResting = this.#now() + cfg.ddg_cooldown_s * 1000;
+        }
+        throw error;
+      }
+    };
+    const next = this.#ddgQueue.then(go, go);
+    this.#ddgQueue = next.catch(() => undefined);
+    return next;
   }
 
   async #duckDuckGo(query: string, signal: AbortSignal): Promise<SearchHit[]> {
@@ -113,7 +199,11 @@ export class WebService {
     }
     if (response.status !== 200) {
       await response.body?.cancel().catch(() => undefined);
-      throw new WebError(SEARCH_DOWN, `duckduckgo status ${response.status}`);
+      // 202 is how it challenges (with the anomaly page), the same "no" as one inside a 200.
+      throw new WebError(
+        SEARCH_DOWN,
+        response.status === 202 ? "duckduckgo challenge" : `duckduckgo status ${response.status}`,
+      );
     }
     let html: string;
     try {
@@ -157,6 +247,26 @@ export class WebService {
     this.#readCache.set(key, out, this.#now());
     return out;
   }
+}
+
+/** SearXNG's JSON `results` as hits: http(s) links only, each once. */
+export function searxngHits(body: unknown): SearchHit[] {
+  const results = (body as { results?: unknown } | null)?.results;
+  if (!Array.isArray(results)) return [];
+  const seen = new Set<string>();
+  const hits: SearchHit[] = [];
+  for (const r of results) {
+    if (r === null || typeof r !== "object") continue;
+    const { url, title, content } = r as Record<string, unknown>;
+    if (typeof url !== "string" || !/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    seen.add(url);
+    hits.push({
+      url,
+      title: typeof title === "string" ? title.trim() : "",
+      snippet: typeof content === "string" ? content.trim() : "",
+    });
+  }
+  return hits;
 }
 
 /** The body as text, stopping after about `limit` bytes. */

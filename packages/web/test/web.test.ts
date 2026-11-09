@@ -17,6 +17,8 @@ function rig(
   pages: Parameters<typeof fakeTransport>[0] = {},
 ) {
   const sent: Sent[] = [];
+  const waits: number[] = [];
+  const notes: string[] = [];
   const clock = { at: 1_000_000 };
   const fetchFake = (async (url: string | URL | Request, init?: RequestInit) => {
     sent.push({ url: String(url), init: init ?? {} });
@@ -27,10 +29,15 @@ function rig(
     config: WebConfigSchema.parse(over),
     clock: { now: () => clock.at },
     fetch: fetchFake,
+    sleep: async (ms) => {
+      waits.push(ms);
+      clock.at += ms;
+    },
+    note: (detail) => notes.push(detail),
     resolve: resolver(),
     transport,
   });
-  return { web, sent, clock, transport };
+  return { web, sent, clock, transport, waits, notes };
 }
 
 const signal = () => new AbortController().signal;
@@ -108,6 +115,96 @@ describe("web_search", () => {
         message: SEARCH_DOWN,
       });
     }
+  });
+
+  const SEARXNG = "http://127.0.0.1:8888";
+  const searxngJson = () =>
+    new Response(
+      JSON.stringify({
+        results: [
+          { url: "https://kkbox.com/song/1", title: " 我喜歡你 ", content: "喔愛 什麼是愛" },
+          { url: "https://kkbox.com/song/1", title: "dup", content: "" },
+          { url: "javascript:alert(1)", title: "bad", content: "" },
+          {
+            url: "https://streetvoice.com/x",
+            title: "街聲",
+            content: "Now I just want hold you tight",
+          },
+        ],
+        unresponsive_engines: [["duckduckgo", "CAPTCHA"]],
+      }),
+      { status: 200 },
+    );
+
+  it("asks SearXNG first when there is one, and keeps http links once each", async () => {
+    const r = rig({ searxng_url: SEARXNG }, searxngJson);
+    const out = await r.web.search(ALICE, "芒果醬 我喜歡你 歌詞", 5, signal());
+    expect(r.sent).toHaveLength(1);
+    const url = new URL(r.sent[0]?.url ?? "");
+    expect(url.origin + url.pathname).toBe(`${SEARXNG}/search`);
+    expect(url.searchParams.get("format")).toBe("json");
+    expect(url.searchParams.get("language")).toBe("zh-TW");
+    expect(out.hits).toEqual([
+      { url: "https://kkbox.com/song/1", title: "我喜歡你", snippet: "喔愛 什麼是愛" },
+      {
+        url: "https://streetvoice.com/x",
+        title: "街聲",
+        snippet: "Now I just want hold you tight",
+      },
+    ]);
+  });
+
+  it("falls back to DuckDuckGo when SearXNG fails or finds nothing, and logs why", async () => {
+    for (const searx of [
+      () => new Response("", { status: 502 }),
+      () => new Response(JSON.stringify({ results: [] }), { status: 200 }),
+    ]) {
+      let n = 0;
+      const answers = [searx, () => new Response(fixture("ddg-results.html"), { status: 200 })];
+      const paired = rig(
+        { searxng_url: SEARXNG },
+        () => (answers[n++] ?? answers[1])?.() as Response,
+      );
+      const out = await paired.web.search(ALICE, "q", 5, signal());
+      expect(paired.sent.map((s) => new URL(s.url).host)).toEqual([
+        "127.0.0.1:8888",
+        "html.duckduckgo.com",
+      ]);
+      expect(out.hits.length).toBeGreaterThan(0);
+    }
+    const down = rig({ searxng_url: SEARXNG }, () => {
+      throw new Error("ECONNREFUSED");
+    });
+    await expect(down.web.search(ALICE, "q", 5, signal())).rejects.toMatchObject({
+      message: SEARCH_DOWN,
+    });
+    expect(down.notes[0]).toContain("searxng request failed");
+    expect(down.notes[1]).toContain("duckduckgo");
+  });
+
+  it("spaces DuckDuckGo searches apart, and leaves it alone for a while after a challenge", async () => {
+    const r = rig({ ddg_gap_ms: 4000, ddg_cooldown_s: 600 });
+    await r.web.search(ALICE, "one", 5, signal());
+    await r.web.search(ALICE, "two", 5, signal());
+    expect(r.waits).toEqual([4000]);
+
+    let challenged = true;
+    const c = rig({ ddg_cooldown_s: 600 }, () =>
+      challenged
+        ? new Response("", { status: 202 })
+        : new Response(fixture("ddg-results.html"), { status: 200 }),
+    );
+    await expect(c.web.search(ALICE, "a", 5, signal())).rejects.toMatchObject({
+      reason: "duckduckgo challenge",
+    });
+    challenged = false;
+    await expect(c.web.search(ALICE, "b", 5, signal())).rejects.toMatchObject({
+      reason: "duckduckgo resting after a challenge",
+    });
+    expect(c.sent).toHaveLength(1);
+    c.clock.at += 600_000;
+    await expect(c.web.search(ALICE, "c", 5, signal())).resolves.toMatchObject({});
+    expect(c.sent).toHaveLength(2);
   });
 
   it("says plainly when nothing was found", async () => {

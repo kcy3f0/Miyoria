@@ -1,0 +1,22 @@
+# Her web search backend: SearXNG on loopback only, asked by `[modules.web]` (searxng_url).
+#   docker compose -f deploy/searxng/compose.yaml up -d
+# `miyoria start` brings it up on a machine with the core role. See README.md.
+name: miyoria-searxng
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: miyoria-searxng
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${SEARXNG_PORT:-8888}:8080"
+    environment:
+      SEARXNG_BASE_URL: "http://127.0.0.1:${SEARXNG_PORT:-8888}/"
+      # Only signs its own image-proxy links; nothing leaves loopback. deploy/searxng/.env may set one.
+      SEARXNG_SECRET: "${SEARXNG_SECRET:-miyoria-local-only}"
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    logging:
+      driver: json-file
+      options: { max-size: "1m", max-file: "1" }

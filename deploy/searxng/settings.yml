@@ -1,0 +1,40 @@
+# SearXNG for her `web_search`: one caller (the Core), on loopback, JSON answers.
+# Everything not set here is SearXNG's default (use_default_settings).
+use_default_settings: true
+
+general:
+  instance_name: "miyoria-search"
+
+search:
+  safe_search: 1
+  default_lang: "zh-TW"
+  # JSON is what the Core reads; HTML stays for a person checking it in a browser.
+  formats: [html, json]
+
+server:
+  # The Core is the only client, on loopback: SearXNG's bot limiter (made for public instances) is off.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+outgoing:
+  request_timeout: 4.0
+  max_request_timeout: 8.0
+
+# The general engines asked for each search. When one answers with a CAPTCHA, SearXNG suspends it
+# for a while and the others still answer.
+engines:
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: brave
+    disabled: false
+  - name: startpage
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: wikipedia
+    disabled: false

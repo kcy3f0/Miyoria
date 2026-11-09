@@ -46,6 +46,7 @@ function rig(
     config: WebConfigSchema.parse({}),
     clock: { now: () => clock.at },
     fetch: (async () => answer()) as typeof fetch,
+    sleep: async () => undefined,
     resolve: resolver(),
     transport: fakeTransport({
       "https://example.com/post": () => html(fixture("page.html")),
