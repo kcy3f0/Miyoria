@@ -368,7 +368,11 @@ export function focusMessage(history: readonly HistoryEntry[]): string | null {
     const n = numbered ? `[${i + 1}] ` : "";
     return `${n}${safeName(e.author)}${e.spoken ? SPOKEN_TAG : ""}${replyTagOf(e, byId, true)} ${verb}:${text}`;
   });
-  const pick = numbered ? `\n${REPLY_PICK_RULE}` : current.length > 1 ? `\n${PICK_SOME_RULE}` : "";
+  const pick = numbered
+    ? `\n${REPLY_PICK_RULE}`
+    : current.length > 1
+      ? `\n${ONE_THOUGHT_RULE}`
+      : "";
   return `${FOCUS_HEAD}\n${lines.join("\n")}${pick}`;
 }
 
@@ -386,6 +390,9 @@ export function severalPeople(entries: readonly { account: AccountRef }[]): bool
 /** Several messages at once are not a list to work through. */
 export const PICK_SOME_RULE =
   "以上是最近的多則訊息,不需要每則都回,挑你最想回的一兩件就好,其他可以不理。";
+
+/** One person's messages in a row are usually one thought split over several lines. */
+export const ONE_THOUGHT_RULE = "這幾則是同一個人連續說的,當成一件事整體回覆。";
 
 /** How she says which numbered message a reply answers. */
 export const REPLY_PICK_RULE = `${PICK_SOME_RULE}好幾個人同時說話時一次回一個人,每段開頭寫 [回覆 編號]。`;

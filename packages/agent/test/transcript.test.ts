@@ -16,6 +16,7 @@ import { mainRules } from "../src/mainline/prompt.js";
 import {
   focusMessage,
   MAX_REPLY_EXCERPT,
+  ONE_THOUGHT_RULE,
   PICK_SOME_RULE,
   REPLY_PICK_RULE,
   replyTag,
@@ -216,14 +217,19 @@ describe("transcript", () => {
     );
   });
 
-  it("several messages at once come with leave to answer only some of them", () => {
+  it("several people get leave to answer only some, one person's run is one thought", () => {
     const line = (author: string, text: string) => ({
       ...entry(author, text, false),
       current: true,
     });
     const samePerson = focusMessage([line("Owen", "一"), line("Owen", "二")]);
-    expect(samePerson).toContain(PICK_SOME_RULE);
+    expect(samePerson).toContain(ONE_THOUGHT_RULE);
+    expect(samePerson).not.toContain(PICK_SOME_RULE);
+    expect(samePerson).not.toContain("挑你最想回的一兩件");
     expect(samePerson).not.toContain("[回覆 編號]");
+    const threeInARow = focusMessage([line("Owen", "一"), line("Owen", "二"), line("Owen", "三")]);
+    expect(threeInARow).toContain(ONE_THOUGHT_RULE);
+    expect(threeInARow).not.toContain("挑你最想回的一兩件");
     const severalPeople = focusMessage([line("Owen", "一"), line("阿明", "二")]);
     expect(severalPeople).toContain(REPLY_PICK_RULE);
     expect(REPLY_PICK_RULE).toContain(PICK_SOME_RULE);
