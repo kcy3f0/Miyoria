@@ -16,13 +16,6 @@ export const WebConfigSchema = z.object({
     .regex(/^[a-z]{2}-[a-z]{2,3}$/)
     .default("tw-tzh"),
   /**
-   * A SearXNG on loopback (`deploy/searxng`), asked first: it asks several engines and keeps
-   * answering when one of them challenges. Null: DuckDuckGo only.
-   */
-  searxng_url: z.string().url().nullable().default(null),
-  /** SearXNG `language`. */
-  searxng_language: z.string().min(2).max(20).default("zh-TW"),
-  /**
    * Shortest gap between two DuckDuckGo searches: it challenges the third of a quick burst
    * (2026-11-09: two passed, the next six were challenged). Searches wait their turn.
    */

@@ -725,7 +725,6 @@ max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不
 # DuckDuckGo 要求驗證或擋下來時她只會說現在查不到,不會繞過。讀網頁只讀 http / https,
 # 內部網路、localhost 和私有位址一律不讀(轉址的每一站都重新檢查)。
 # [modules.web]
-# searxng_url = "http://127.0.0.1:8888"  # 先問本機的 SearXNG(deploy/searxng),失敗再用 DuckDuckGo;不設就只用 DuckDuckGo
 # ddg_gap_ms = 4000             # 兩次 DuckDuckGo 搜尋至少隔多久(連查會被擋)
 # ddg_cooldown_s = 600           # DuckDuckGo 擋過一次後休息多久
 # region = "tw-tzh"              # DuckDuckGo 的 kl(地區與語言)

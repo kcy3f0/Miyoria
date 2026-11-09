@@ -1,6 +1,6 @@
-// What `web_search` and `web_read` do, without the gate: SearXNG on loopback when there is one,
-// DuckDuckGo (paced) otherwise or when it fails, the guarded page reader, the caches and the rate
-// limits. Results are formatted as untrusted data blocks for her.
+// What `web_search` and `web_read` do, without the gate: DuckDuckGo (paced, so a burst is not
+// challenged), the guarded page reader, the caches and the rate limits. Results are formatted as
+// untrusted data blocks for her.
 
 import { type Clock, dataBlock } from "@miyoria/types";
 import type { WebConfig } from "./config.js";
@@ -16,11 +16,11 @@ const SEARCH_BODY_LIMIT = 1_500_000;
 export interface WebDeps extends GuardDeps {
   config: WebConfig;
   clock: Clock;
-  /** Replaces the global `fetch` (tests). Only the search backends are fetched through it. */
+  /** Replaces the global `fetch` (tests). Only DuckDuckGo is fetched through it. */
   fetch?: typeof fetch;
   /** Waits between DuckDuckGo searches (tests pass one that does not). */
   sleep?: (ms: number) => Promise<void>;
-  /** Why a search backend failed, for the log (she is only told it could not search). */
+  /** Why a search failed, for the log (she is only told it could not search). */
   note?: (detail: string) => void;
 }
 
@@ -103,54 +103,14 @@ export class WebService {
     return outcome;
   }
 
-  /** SearXNG first; DuckDuckGo when there is none, it failed, or it found nothing. */
+  /** DuckDuckGo, paced; why it failed goes to the log. */
   async #find(query: string, signal: AbortSignal): Promise<SearchHit[]> {
-    if (this.#d.config.searxng_url !== null) {
-      try {
-        const hits = await this.#searxng(query, signal);
-        if (hits.length > 0) return hits;
-      } catch (error) {
-        this.#d.note?.(error instanceof WebError ? error.reason : (error as Error).message);
-      }
-    }
     try {
       return await this.#paced(() => this.#duckDuckGo(query, signal));
     } catch (error) {
       if (error instanceof WebError) this.#d.note?.(error.reason);
       throw error;
     }
-  }
-
-  async #searxng(query: string, signal: AbortSignal): Promise<SearchHit[]> {
-    const cfg = this.#d.config;
-    const doFetch = this.#d.fetch ?? fetch;
-    const base = cfg.searxng_url ?? "";
-    const url = new URL("search", base.endsWith("/") ? base : `${base}/`);
-    url.searchParams.set("q", query);
-    url.searchParams.set("format", "json");
-    url.searchParams.set("language", cfg.searxng_language);
-    url.searchParams.set("safesearch", "1");
-    let response: Response;
-    try {
-      response = await doFetch(url, {
-        headers: { accept: "application/json" },
-        redirect: "error",
-        signal: AbortSignal.any([signal, AbortSignal.timeout(cfg.timeout_ms)]),
-      });
-    } catch (error) {
-      throw new WebError(SEARCH_DOWN, `searxng request failed: ${(error as Error).message}`);
-    }
-    if (response.status !== 200) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new WebError(SEARCH_DOWN, `searxng status ${response.status}`);
-    }
-    let body: unknown;
-    try {
-      body = JSON.parse(await readText(response, SEARCH_BODY_LIMIT));
-    } catch (error) {
-      throw new WebError(SEARCH_DOWN, `searxng body failed: ${(error as Error).message}`);
-    }
-    return searxngHits(body);
   }
 
   /** Runs a DuckDuckGo search in its turn, `ddg_gap_ms` after the last; none while it rests. */
@@ -247,26 +207,6 @@ export class WebService {
     this.#readCache.set(key, out, this.#now());
     return out;
   }
-}
-
-/** SearXNG's JSON `results` as hits: http(s) links only, each once. */
-export function searxngHits(body: unknown): SearchHit[] {
-  const results = (body as { results?: unknown } | null)?.results;
-  if (!Array.isArray(results)) return [];
-  const seen = new Set<string>();
-  const hits: SearchHit[] = [];
-  for (const r of results) {
-    if (r === null || typeof r !== "object") continue;
-    const { url, title, content } = r as Record<string, unknown>;
-    if (typeof url !== "string" || !/^https?:\/\//i.test(url) || seen.has(url)) continue;
-    seen.add(url);
-    hits.push({
-      url,
-      title: typeof title === "string" ? title.trim() : "",
-      snippet: typeof content === "string" ? content.trim() : "",
-    });
-  }
-  return hits;
 }
 
 /** The body as text, stopping after about `limit` bytes. */

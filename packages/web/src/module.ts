@@ -5,8 +5,7 @@ import { webCapabilities } from "./tools.js";
 import { WebService } from "./web.js";
 
 /**
- * Module `web`: her `web_search` (SearXNG on loopback when configured, DuckDuckGo's HTML endpoint
- * otherwise or as the fallback) and `web_read` (one public page as
+ * Module `web`: her `web_search` (DuckDuckGo's HTML endpoint) and `web_read` (one public page as
  * text) as capabilities `web.search` / `web.read`, permission `tools.web`. Page fetches go through
  * the SSRF guard (net.ts); results reach her as untrusted data (web.ts). Enabled unless
  * `[modules.web] enabled = false`. Registers in the `ActuatorRegistry`; nothing else needs it.
@@ -25,7 +24,7 @@ export class WebModule implements Module {
     const web = new WebService({
       config,
       clock: ctx.clock,
-      note: (detail) => ctx.log.warn({ detail }, "a web search backend failed"),
+      note: (detail) => ctx.log.warn({ detail }, "a web search failed"),
     });
     const actuators = actuatorsFor(ctx);
     const off = webCapabilities(web).map((capability) => actuators.register(capability));
