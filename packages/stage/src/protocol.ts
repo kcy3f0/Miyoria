@@ -66,6 +66,9 @@ export const SCREEN_NAME_MAX = 32;
 export const SCREEN_TEXT_MAX = 200;
 export const SCREEN_SONG_MAX = 128;
 
+/** Most beats a `beat` message carries (as `MAX_BEATS` in `@miyoria/types`). */
+export const BEATS_MAX = 2_000;
+
 /** `song_video` actions. */
 export type SongVideoAction = "play" | "stop";
 export const SongVideoActionSchema = z.enum(["play", "stop"]);
@@ -238,6 +241,12 @@ export type CoreMessage =
       offset_ms?: number;
       scene?: string;
     }
+  /**
+   * The beat of the song she sings, so she sways and nods with it: `times_ms` (sorted, from the
+   * start of the song) with the song `offset_ms` into it at the moment the message was sent.
+   * Empty `times_ms` stops it. An older node ignores it.
+   */
+  | { type: "beat"; song: string; bpm: number; times_ms: number[]; offset_ms: number }
   /** A line of status for the overlay (`""` clears it), e.g. 「準備歌曲中…」. */
   | { type: "notice"; text: string }
   /** What she is doing now, for the overlay's activity line. */
@@ -320,6 +329,13 @@ const CoreMessageSchema = z.discriminatedUnion("type", [
       .string()
       .nullish()
       .transform((v) => (v?.trim() ? v.trim() : undefined)),
+  }),
+  z.object({
+    type: z.literal("beat"),
+    song: z.string().max(128),
+    bpm: z.number().min(0).max(400),
+    times_ms: z.array(z.number().min(0).max(86_400_000)).max(BEATS_MAX),
+    offset_ms: z.number().min(0).max(86_400_000),
   }),
   z.object({ type: z.literal("notice"), text: z.string().max(200) }),
   z.object({

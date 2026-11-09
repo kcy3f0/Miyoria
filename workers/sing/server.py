@@ -1287,6 +1287,10 @@ def _run_job(job: Job) -> None:
     heard = next((p for p in (sdir / "lead.wav", sdir / "vocals.wav") if p.exists()), None)
     found = timed("lyrics", lambda: b.lyrics(src, duration, heard))
     lyrics_meta = _lyrics_meta(found, out)
+    from beats import beat_meta
+
+    # her sway and nods follow the beat of what is actually played
+    beats = timed("beats", lambda: beat_meta(out / "play_mix.pcm", PLAY_RATE))
     video = _attach_video(job, src, sdir, out, timings)
     timings["total_s"] = round(time.perf_counter() - t_job, 2)
     g = job.gpu
@@ -1304,6 +1308,7 @@ def _run_job(job: Job) -> None:
         "backing": req.backing if lead["used"] or req.backing == "acapella" else "in_vocal",
         "lyrics": lyrics_meta,
         "lyrics_input": lyrics_input,
+        "beats": beats,
         **video,
         "play": {"sample_rate": PLAY_RATE, "samples": mixed.get("samples"), "format": "s16le", "channels": 1},
         "mix": mixed,

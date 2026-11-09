@@ -225,6 +225,8 @@ export class StageLinkModule implements Module {
       if (status && !nodeUp) {
         const resume = forwarder.resumeSongVideo();
         if (resume) link.send(resume);
+        const beat = forwarder.resumeBeat();
+        if (beat) link.send(beat);
         const resting = forwarder.resumeResting();
         if (resting) link.send(resting);
         const current = activity.resume(ctx.clock.now());

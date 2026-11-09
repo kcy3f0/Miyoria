@@ -184,6 +184,14 @@ export class AvatarLoop {
     this.#motion.setTarget(target);
   }
 
+  /**
+   * The beat of the song she sings (`times_ms` from its start, `offset_ms` into it now), applied
+   * `latency_ms` later like her mouth; empty `times_ms` stops it.
+   */
+  beat(times: readonly number[], offsetMs: number): void {
+    this.#later(() => this.#motion.setBeat(times, offsetMs));
+  }
+
   #send(commands: VtsCommand[]): void {
     const fade = this.#config.vts.expression_fade;
     for (const cmd of commands) {

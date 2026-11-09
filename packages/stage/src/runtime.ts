@@ -345,6 +345,9 @@ class Stage {
         this.#overlay.activity(activity);
         return;
       }
+      case "beat":
+        this.#avatar?.beat(msg.times_ms, msg.offset_ms);
+        return;
       case "song_video":
         if (msg.action === "play") this.#songVideo?.play(msg);
         else this.#songVideo?.stop(msg.song);
