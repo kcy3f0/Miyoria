@@ -37,6 +37,8 @@
 
 ## 2. 部署型態
 
+> 三台電腦分工(直播機、Bot 服務機、GPU 推論機)的設定、安裝和啟動指令見根目錄 README「多台電腦」和 `workers/README.md`「快速安裝」:`miyoria init` 選角色並寫好位址,`miyoria install` / `doctor` / `start` 依角色運作。`[machine]` 的 `roles` 決定這台電腦跑哪些服務,`[machine.hosts]` 是別台電腦連進來用的位址;`[stack.workers.<名稱>]` 仍可逐欄位覆蓋 worker 的 venv、埠和環境變數。
+
 ### A. All-in-one(一台機器全包)
 
 開發或自己小規模使用。全部跑在直播機(Windows)上。
@@ -249,7 +251,7 @@ tts = { venv = "workers/.venv-tts-faster", port = 8002 }
 sing = { venv = "workers/.venv-sing", port = 8005, offload = ["tts", "asr"] }
 ```
 
-每個 worker 的欄位:`venv`(預設 `workers/.venv-<名字>`)、`port`(asr 8001、tts 8002、sing 8005 有預設)、`host`、`dir`(`workers/` 底下的資料夾,預設同名)、`entry`(預設 `server.py`)、`env`、`offload`、`vram_mb`(顯存估計,預設 asr qwen3 0.6B 約 1500、tts 約 5000、sing 約 7500)、`start_timeout_secs`。`[speech.asr.*]`、`[speech.tts.*]`、`[modules.sing]` 的 `url` 要指到同一個 port,`doctor --deep` 會比對。
+每個 worker 的欄位:`venv`(預設 `workers/.venv-<名字>`)、`port`(asr、tts、sing、turn 有預設:沒有 `[machine]` 時 asr 8001、tts 8002、sing 8005、turn 8006;有 `[machine]` 時 asr 8003)、`host`、`dir`(`workers/` 底下的資料夾,預設同名)、`entry`(預設 `server.py`)、`env`、`offload`、`vram_mb`(顯存估計,預設 asr qwen3 0.6B 約 1500、tts 約 5000、sing 約 7500)、`start_timeout_secs`。`[speech.asr.*]`、`[speech.tts.*]`、`[modules.sing]` 的 `url` 要指到同一個 port,`doctor --deep` 會比對。
 
 **`miyoria up`**
 

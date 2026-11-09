@@ -82,15 +82,31 @@ reflect = "high"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "C:/data"]
 # tools_allow = ["read_*"]
 
-# ---- 一個指令啟動(選用) ----------------------------------------------------
+# ---- 這台電腦跑什麼(`miyoria init` 會問,也可以直接改) ------------------------------
+# 服務分成三個角色,一台電腦可以跑一個、幾個或全部:
+#   broadcast = voice-node + stage                  直播機(OBS、VTube Studio、遊戲也在這台)
+#   core      = core + turn                         Bot 服務機(Discord bot、模組、資料庫、面板、Docker 沙箱)
+#   inference = asr + tts + sing                    GPU 推論機(三個要在同一台,sing 工作時 tts / asr 會讓出顯卡)
+# `miyoria install` 只安裝這些服務需要的;`miyoria start` 開這些服務的分頁;`miyoria doctor` 檢查缺什麼。
+# 沒有這一段的舊設定檔行為不變(`miyoria up` 讀 [stack])。
+# [machine]
+# roles = ["broadcast", "core", "inference"]   # 單機全部都跑;只跑一個角色就只寫那個
+# # services = ["core", "asr"]                 # 自訂:直接列服務(寫了就取代 roles)
+# [machine.hosts]                              # 多台電腦時填區網位址;全在同一台就都是 127.0.0.1
+# core = "127.0.0.1"                           # 跑 core 的電腦:core 綁這個位址,直播機連這個位址
+# inference = "127.0.0.1"                      # 跑 asr / tts / sing 的電腦:worker 綁這個位址,core 連這個位址
+
+# ---- 一個指令啟動(選用,背景執行、日誌寫檔) -------------------------------------------
 # `miyoria up` 依序啟動 worker、core,等每個服務通過健康檢查;`miyoria doctor --deep`
 # 用同一份設定檢查埠、建置、JDK 21、worker 設定和顯存。沒有這一段時 `up` 只啟動 core。
+# 有 [machine] 時服務由它決定,這裡只用來覆蓋 worker 的細節(venv、port、env ...)。
 # [stack]
 # voice_node = false         # true:另外啟動 apps/voice-node
 # stage = false              # true:另外啟動 miyoria stage
 # start_timeout_secs = 180   # 每個服務等健康檢查多久
 #
 # [stack.workers]            # 欄位:venv、port、host、dir、entry、env、offload、vram_mb、start_timeout_secs
+# # 有 [machine] 時下面這些就是預設值,不用寫;沒有 [machine] 才要自己寫
 # asr = { venv = "workers/.venv-asr-qwen", port = 8003, env = { ASR_BACKEND = "qwen3", ASR_QWEN_SIZE = "0.6B" } }
 # tts = { venv = "workers/.venv-tts-faster", port = 8002 }
 # # offload:sing 工作時先請這些 worker 卸下模型(自動設好 SING_OFFLOAD_URLS,沒有它做歌會爆顯存)
@@ -104,7 +120,7 @@ reflect = "high"
 # 本機 worker 見 workers/README.md;也可以換成雲端(kind = "openai")
 [speech.asr.local]
 kind = "http-worker"
-url = "${ASR_URL:-http://127.0.0.1:8001}"
+url = "${ASR_URL:-http://127.0.0.1:8003}"
 
 # workers/tts 預設用 faster-qwen3-tts(原生 Windows、真串流)
 # 另一個選項:WSL2 / Docker 上的 vLLM-Omni(見 workers/README.md 第 3 節)

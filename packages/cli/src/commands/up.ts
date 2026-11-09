@@ -20,6 +20,7 @@ import {
   startOrder,
   workerUrl,
 } from "../stack/config.js";
+import { isLoopback } from "../stack/roles.js";
 import {
   defaultRunner,
   type PortProbe,
@@ -114,6 +115,24 @@ function apiHealth(config: Config): { url: string; host: string; port: number } 
   return { url: `http://${host}:${parsed.port}`, host: parsed.host, port: parsed.port };
 }
 
+function stageOverlayBind(config: Config): string {
+  const stage = config.section("stage");
+  return isJsonObject(stage) && typeof stage.overlay_bind === "string"
+    ? stage.overlay_bind
+    : "127.0.0.1:7884";
+}
+
+/** Core's Voice Link address for the voice node, only when `[machine.hosts]` puts core elsewhere. */
+function voiceLinkUrl(config: Config, stack: Stack): string | null {
+  const host = stack.machine?.hosts.core;
+  if (host === undefined || isLoopback(host)) return null;
+  const modules = config.section("modules");
+  const link = isJsonObject(modules) ? modules["voice.link"] : undefined;
+  const bind = isJsonObject(link) && typeof link.bind === "string" ? link.bind : "127.0.0.1:7879";
+  const port = parseBind(bind)?.port ?? 7879;
+  return `ws://${host}:${port}/voice-link`;
+}
+
 /** What `up` would start, in order. No side effects. */
 export function buildPlan(input: PlanInput): ServiceSpec[] {
   const { config, configPath, stack, root } = input;
@@ -140,8 +159,12 @@ export function buildPlan(input: PlanInput): ServiceSpec[] {
     };
     const urls = offloadUrls(w, stack.workers);
     if (urls !== "") workerEnv.SING_OFFLOAD_URLS = urls;
-    Object.assign(workerEnv, w.env);
     const base = root as string;
+    // The voices folder is relative to the repo, not to wherever the worker's working directory is.
+    if (w.name === "tts" && stack.machine !== null) {
+      workerEnv.VOICES_DIR = join(base, "workers", "voices");
+    }
+    Object.assign(workerEnv, w.env);
     specs.push({
       name: w.name,
       kind: "worker",
@@ -154,7 +177,12 @@ export function buildPlan(input: PlanInput): ServiceSpec[] {
       url: workerUrl(w),
       timeoutMs: (w.startTimeoutSecs ?? stack.startTimeoutSecs) * 1000,
       envKeys: Object.keys(workerEnv).filter(
-        (k) => k in w.env || k === "SING_OFFLOAD_URLS" || k === "PORT",
+        (k) =>
+          k in w.env ||
+          k === "SING_OFFLOAD_URLS" ||
+          k === "PORT" ||
+          k === "VOICES_DIR" ||
+          k === "HOST",
       ),
       port: w.port,
       host: w.host,
@@ -171,7 +199,7 @@ export function buildPlan(input: PlanInput): ServiceSpec[] {
       name: "core",
       kind: "core",
       ...self("core"),
-      cwd: process.cwd(),
+      cwd: dirname(resolve(configPath)),
       env: { ...env },
       logFile: join(logs, "core.log"),
       health: api ? `${api.url}/api/health` : null,
@@ -184,36 +212,40 @@ export function buildPlan(input: PlanInput): ServiceSpec[] {
   }
   if (stack.voiceNode) {
     if (root === null) throw new UpError("voice node 要在原始碼資料夾裡用(apps/voice-node)");
+    // The node reads VOICE_LINK_URL from its own environment; when core is on another computer
+    // the address comes from `[machine.hosts]` (the node's .env still holds the token).
+    const link = voiceLinkUrl(config, stack);
     specs.push({
       name: "voice-node",
       kind: "voice-node",
       command: "pnpm",
       args: ["start"],
       cwd: join(root, "apps", "voice-node"),
-      env: { ...env },
+      env: link ? { ...env, VOICE_LINK_URL: link } : { ...env },
       logFile: join(logs, "voice-node.log"),
       health: null,
       url: null,
       timeoutMs: stack.startTimeoutSecs * 1000,
-      envKeys: [],
+      envKeys: link ? ["VOICE_LINK_URL"] : [],
       port: null,
       host: "127.0.0.1",
     });
   }
   if (stack.stage) {
+    const overlay = parseBind(stageOverlayBind(config)) ?? { host: "127.0.0.1", port: 7884 };
     specs.push({
       name: "stage",
       kind: "stage",
       ...self("stage"),
-      cwd: process.cwd(),
+      cwd: dirname(resolve(configPath)),
       env: { ...env },
       logFile: join(logs, "stage.log"),
       health: null,
-      url: "http://127.0.0.1:7884/overlay/",
+      url: `http://${overlay.host === "0.0.0.0" ? "127.0.0.1" : overlay.host}:${overlay.port}/overlay/`,
       timeoutMs: stack.startTimeoutSecs * 1000,
       envKeys: [],
-      port: null,
-      host: "127.0.0.1",
+      port: overlay.port,
+      host: overlay.host,
     });
   }
   return specs;

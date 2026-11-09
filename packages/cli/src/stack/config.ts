@@ -5,16 +5,55 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Config } from "@miyoria/kernel";
 import { z } from "zod";
+import {
+  isLoopback,
+  type Machine,
+  machineConfig,
+  type ServiceName,
+  WORKER_SERVICES,
+} from "./roles.js";
 
 /**
  * Ports the bundled workers listen on when `port` is not given. `turn` (end-of-turn: Smart Turn
  * and Silero on the CPU) is optional: it needs model files that are not downloaded for you.
  */
-const WORKER_DEFAULT_PORT: Record<string, number> = {
-  asr: 8001,
+export const WORKER_DEFAULT_PORT: Record<string, number> = {
+  asr: 8003,
   tts: 8002,
   sing: 8005,
   turn: 8006,
+};
+
+export const WORKER_PORTS = WORKER_DEFAULT_PORT;
+
+/** Ports of a `[stack.workers]` entry without `port` in a config that has no `[machine]`. */
+const LEGACY_PORT: Record<string, number> = { ...WORKER_DEFAULT_PORT, asr: 8001 };
+
+/**
+ * What a worker runs with when `[machine]` picks it and `[stack.workers.<name>]` says nothing
+ * (the setup that was verified on the 12 GB card: Qwen3-ASR 0.6B, faster-qwen3-tts, the sing worker
+ * handing the GPU over from tts and asr). `[stack.workers.<name>]` overrides field by field; its
+ * `env` is merged on top. `VOICES_DIR` is filled in when the plan is built (it needs the repo root).
+ */
+export interface WorkerDefault {
+  venv: string;
+  env: Record<string, string>;
+  offload: string[];
+}
+
+export const WORKER_DEFAULTS: Record<string, WorkerDefault> = {
+  asr: {
+    venv: "workers/.venv-asr-qwen",
+    env: { ASR_BACKEND: "qwen3", ASR_QWEN_SIZE: "0.6B" },
+    offload: [],
+  },
+  tts: {
+    venv: "workers/.venv-tts-faster",
+    env: { TTS_DEFAULT_VOICE: "deepseek-chan" },
+    offload: [],
+  },
+  sing: { venv: "workers/.venv-sing", env: {}, offload: ["tts", "asr"] },
+  turn: { venv: "workers/.venv-turn", env: {}, offload: [] },
 };
 
 const WorkerSchema = z
@@ -22,7 +61,8 @@ const WorkerSchema = z
     /** Virtualenv folder, relative to the repo root (default `workers/.venv-<name>`). */
     venv: z.string().optional(),
     port: z.number().int().min(1).max(65535).optional(),
-    host: z.string().default("127.0.0.1"),
+    /** Address to listen on (default: loopback; the inference machine's address when it serves others). */
+    host: z.string().optional(),
     /** Folder under `workers/` holding the server (default: the worker's name). */
     dir: z.string().optional(),
     entry: z.string().default("server.py"),
@@ -60,6 +100,8 @@ export interface Worker {
 }
 
 export interface Stack {
+  /** `[machine]`, or `null` for an old config that only has `[stack]`. */
+  machine: Machine | null;
   core: boolean;
   voiceNode: boolean;
   stage: boolean;
@@ -67,28 +109,50 @@ export interface Stack {
   workers: Worker[];
 }
 
-export function stackConfig(config: Config): Stack {
+/**
+ * The services to run. With `[machine]` they come from its roles (or hand-picked services); an
+ * explicit `services` list (the `start` command's targets) replaces that. Without `[machine]` and
+ * without a list the old `[stack]` keys decide: core on, voice_node / stage off, workers as written.
+ */
+export function stackConfig(config: Config, services?: readonly string[]): Stack {
   const raw = config.get("stack", StackSchema);
-  const workers = Object.entries(raw.workers).map(([name, w]): Worker => {
-    const port = w.port ?? WORKER_DEFAULT_PORT[name];
+  const machine = machineConfig(config);
+  const selected: readonly string[] | null = services ?? machine?.services ?? null;
+
+  const names =
+    selected === null
+      ? Object.keys(raw.workers)
+      : WORKER_SERVICES.filter((n) => selected.includes(n));
+  // A worker's listen address: the inference machine's own address when it serves other computers.
+  const serves = machine !== null && !isLoopback(machine.hosts.inference);
+  const defaultHost = serves ? machine.hosts.inference : "127.0.0.1";
+
+  const workers = names.map((name): Worker => {
+    const w = raw.workers[name];
+    const d = WORKER_DEFAULTS[name];
+    const port = w?.port ?? (selected === null ? LEGACY_PORT[name] : WORKER_DEFAULT_PORT[name]);
     if (port === undefined) throw new Error(`[stack.workers.${name}] 要設定 port`);
     return {
       name,
-      venv: w.venv ?? `workers/.venv-${name}`,
+      venv: w?.venv ?? (selected === null ? undefined : d?.venv) ?? `workers/.venv-${name}`,
       port,
-      host: w.host,
-      dir: w.dir ?? name,
-      entry: w.entry,
-      env: w.env,
-      offload: w.offload,
-      vramMb: w.vram_mb ?? null,
-      startTimeoutSecs: w.start_timeout_secs ?? null,
+      host: w?.host ?? (selected === null ? "127.0.0.1" : defaultHost),
+      dir: w?.dir ?? name,
+      entry: w?.entry ?? "server.py",
+      env: { ...(selected === null ? {} : (d?.env ?? {})), ...(w?.env ?? {}) },
+      offload:
+        w?.offload ??
+        (selected === null ? [] : (d?.offload ?? []).filter((n) => names.includes(n))),
+      vramMb: w?.vram_mb ?? null,
+      startTimeoutSecs: w?.start_timeout_secs ?? null,
     };
   });
+  const has = (s: ServiceName) => (selected === null ? null : selected.includes(s));
   return {
-    core: raw.core,
-    voiceNode: raw.voice_node,
-    stage: raw.stage,
+    machine,
+    core: has("core") ?? raw.core,
+    voiceNode: has("voice-node") ?? raw.voice_node,
+    stage: has("stage") ?? raw.stage,
     startTimeoutSecs: raw.start_timeout_secs,
     workers,
   };

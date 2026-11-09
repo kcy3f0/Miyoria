@@ -2,7 +2,7 @@
 // reservations. Tests replace them; nothing here changes system settings.
 
 import { type SpawnOptions, spawn } from "node:child_process";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 
 export interface RunResult {
   code: number | null;
@@ -164,4 +164,18 @@ export function tailLines(text: string, count: number): string[] {
     .split(/\r?\n/)
     .filter((l) => l.trim() !== "")
     .slice(-count);
+}
+
+/** Whether a TCP connection to host:port succeeds within the timeout. */
+export function tcpConnect(host: string, port: number, timeoutMs = 3000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host, port });
+    const done = (result: boolean) => {
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(timeoutMs, () => done(false));
+    socket.once("connect", () => done(true));
+    socket.once("error", () => done(false));
+  });
 }

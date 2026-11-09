@@ -52,6 +52,8 @@ export interface DeepDeps {
   tmpdir: string;
   /** Version of this CLI, compared with the running core's. */
   version: string;
+  /** Whether something accepts TCP connections at host:port (cross-machine checks). */
+  connect?: (host: string, port: number, timeoutMs: number) => Promise<boolean>;
 }
 
 export interface DeepInput {
@@ -62,14 +64,14 @@ export interface DeepInput {
   deps: DeepDeps;
 }
 
-const ok = (what: string, detail: string): Finding => ({ level: "ok", what, detail });
-const warn = (what: string, detail: string, fix?: string[]): Finding => ({
+export const ok = (what: string, detail: string): Finding => ({ level: "ok", what, detail });
+export const warn = (what: string, detail: string, fix?: string[]): Finding => ({
   level: "warn",
   what,
   detail,
   fix,
 });
-const fail = (what: string, detail: string, fix?: string[]): Finding => ({
+export const fail = (what: string, detail: string, fix?: string[]): Finding => ({
   level: "fail",
   what,
   detail,
@@ -231,7 +233,9 @@ const DEFAULT_TURN_URL = "http://127.0.0.1:8006";
  * URLs in the config that point at a worker: `[speech.asr.*]`, `[speech.tts.*]`, `[modules.sing]`
  * and `turn_url` of `[modules.voice]` (only while Smart Turn or Silero is what the voice module uses).
  */
-function configuredWorkerUrls(config: Config): Array<{ worker: string; key: string; url: string }> {
+export function configuredWorkerUrls(
+  config: Config,
+): Array<{ worker: string; key: string; url: string }> {
   const out: Array<{ worker: string; key: string; url: string }> = [];
   for (const kind of ["asr", "tts"] as const) {
     const providers = config.section(`speech.${kind}`);

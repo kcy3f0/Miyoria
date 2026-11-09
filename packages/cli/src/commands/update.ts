@@ -132,7 +132,7 @@ async function install(root: string, deps: UpdateDeps, force: boolean, dryRun: b
 }
 
 /** Builds one target; a Vite build goes to `<dist>.next` and replaces `dist` only on success. */
-async function buildTarget(t: BuildTarget, deps: UpdateDeps): Promise<boolean> {
+export async function buildTarget(t: BuildTarget, deps: UpdateDeps): Promise<boolean> {
   const next = t.swapDir ? `${t.swapDir}.next` : null;
   const args = next ? [...t.args, "--outDir", basename(next), "--emptyOutDir"] : t.args;
   note(`建置 ${t.label}…`);

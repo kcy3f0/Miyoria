@@ -25,6 +25,24 @@
 - **面板 / 點歌時選分離器或轉換器**:現在只能用環境變數(`SING_SEPARATOR_MODEL`、轉換器設定)。
 - **Applio、訓練資料佔的空間**:`workers/models/applio`(含 Rigel、48k 預訓練和各版本訓練存檔)、`data/rvc-train-songs`、`data/rvc-test`,沒用到的可以清。
 
+### 多台電腦(角色分機)還沒做的
+
+三個角色(直播機、Bot 服務機、GPU 推論機)分到不同電腦時,`miyoria init / install / start / doctor` 已經能設定、啟動和檢查,但下面這些還不行或還沒決定:
+
+- **歌曲影片是本機路徑**:Core 把唱歌的影片當成檔案路徑交給 stage(`packages/sing/src/player.ts` 的 `songVideoPath`),路徑是推論機上的;stage 在直播機時開不到檔案。要傳檔案、掛網路磁碟或改成 stage 從 worker 的 `/songs/{id}/files/video.mp4` 下載。
+- **Minecraft 擴充在 Core 那台開遊戲**:擴充(`extensions/minecraft`)用 Prism Launcher 開遊戲,開的是 Core 所在的電腦,不是直播機。要改成由直播機上的節點開遊戲。
+- **自動重啟**:`miyoria start` 只開分頁,服務死了不會拉起來(分頁會停在錯誤訊息上)。要不要加重啟、怎麼避免重啟打斷開著的 Go Live 和唱到一半的歌,還沒決定。
+- **沒有 `miyoria stop`**:停止就是關分頁或在分頁裡按 Ctrl+C。要不要加指令、怎麼避免誤停直播,還沒決定。
+- **角色名稱還沒定案**:`broadcast`、`core`、`inference` 和它們的中文名稱都在 `packages/cli/src/stack/roles.ts` 一個地方,改名只要改那裡和文件。
+- **推論機只能有一台**:`[machine.hosts] inference` 是一個位址,asr、tts、sing 要在同一台(sing 做歌時要它們讓出顯卡)。sing 的卸載網址是 worker 的 host + port。
+- **LAN 上的 worker 沒有認證**:推論機的 worker 綁在區網位址,同網段的人都連得到;目前靠防火牆。Miyoria 不會替你改防火牆,`doctor` 只會檢查連不連得到。要不要幫 worker 加 token,還沒決定。
+- **voice node 的重複啟動只靠分頁偵測**:voice node 沒有埠可以問,`start` 靠「那個分頁的 `cmd.exe` 還在」判斷;手動在別的終端機開的 voice node 偵測不到。
+- **`install` 不下載模型**:turn 的兩個 onnx(約 11 MB,`workers/README.md` 第 10 節有 curl)、sing 的 RVC / 分離模型、Seed-VC 原始碼、她的聲音參考音都只列在清單裡由人放;turn 的可以做成自動下載。Qwen3-ASR 和 Qwen3-TTS 的權重會在第一次啟動時自己下載(數 GB)。
+- **`install` 不管 Docker、JDK、Minecraft mod**:Docker Desktop(檔案沙箱)要自己裝,`doctor` 只在沙箱啟用時檢查;mod jar 仍用 `miyoria update`。
+- **`start` 只支援 Windows**:分頁靠 Windows Terminal(沒有就開一般的 console 視窗);其他系統用 `miyoria up`(背景執行,日誌寫檔)。
+- **`up` 和 `start` 兩套**:`up` 在背景執行、Ctrl+C 一起停;`start` 開分頁。兩個都讀 `[machine]`,要不要合併成一個,還沒決定。
+- **`[stack]` 的舊寫法**:設了 `[machine]` 之後,`[stack]` 的 `core` / `voice_node` / `stage` 不再有作用,只有 `[stack.workers.<name>]` 還會覆蓋 worker 的細節。確認沒人用舊寫法後可以拿掉。
+
 ## 等 owner 決定
 
 - 貨幣系統 §9 的問題已先用建議值上線,隨時可改:[economy.md](economy.md) §9.1。

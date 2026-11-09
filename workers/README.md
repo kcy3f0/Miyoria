@@ -28,6 +28,39 @@ ASR / TTS 的輸出入都是「原始模型文字」:繁簡轉換(OpenCC `s2tw`)
 
 ---
 
+## 快速安裝:`miyoria install` 和 `miyoria start`
+
+在 Miyoria 的原始碼資料夾裡,先用 `miyoria init` 選這台電腦跑哪些服務(`[machine]`,見根目錄 README「多台電腦」),再:
+
+```bash
+miyoria install --dry-run     # 先看會做什麼
+miyoria install               # 只裝這台電腦需要的:每個 worker 建 venv、先裝 CUDA 版 torch、再裝 requirements
+miyoria doctor                # 缺什麼會一項一項列出來
+miyoria start                 # 每個 worker 開一個 Windows Terminal 分頁;asr、tts 先,sing 後
+```
+
+`install` 對 worker 做的事,等於下面各節手動的步驟(`python -m venv`、`pip install torch --index-url …/cu128`、`pip install -r …`);已經裝好的步驟會跳過。`install` **不會**下載或放置下面這些,要自己處理(`install` 和 `doctor` 都會列出缺哪些):
+
+| 服務 | 要自己放的 | 說明 |
+|---|---|---|
+| tts | `workers/voices/<聲音>/ref.wav` + `ref.txt` | 你的聲音參考音,不進 git(第 4 節) |
+| sing | `workers/models/applio/`(她的 RVC 模型)、`models/lead-split/becruily-bs/`、`models/vocal-split/`、`models/seed-vc/` | 第 9 節;沒有的部分會退回或略過,`doctor` 以警告列出 |
+| sing | ffmpeg 在 PATH 上 | `winget install Gyan.FFmpeg` |
+| turn | `workers/models/smart-turn/…onnx`、`workers/models/silero-vad/silero_vad.onnx` | 第 10 節有 curl 指令,約 11 MB;沒有它 worker 照跑,她退回「安靜多久就算講完」 |
+
+第一次啟動時會自動下載、不用處理:Qwen3-ASR(約 2 GB,asr)、Qwen3-TTS(約 4–5 GB,tts,並捕捉 CUDA graph,要等幾分鐘)、sing 的第一首歌(約 2 GB)。
+
+`miyoria start` 在 `[machine]` 底下用的設定(都可以用 `[stack.workers.<名稱>]` 逐欄位覆蓋):
+
+| worker | venv | 埠 | 環境變數 |
+|---|---|---|---|
+| asr | `workers/.venv-asr-qwen` | 8003 | `ASR_BACKEND=qwen3`、`ASR_QWEN_SIZE=0.6B`(不設 `ASR_MODEL`) |
+| tts | `workers/.venv-tts-faster` | 8002 | `VOICES_DIR`=`workers/voices` 的絕對路徑、`TTS_DEFAULT_VOICE=deepseek-chan` |
+| sing | `workers/.venv-sing` | 8005 | `SING_OFFLOAD_URLS`=tts 和 asr 的網址(由 `offload = ["tts", "asr"]` 自動產生) |
+| turn | `workers/.venv-turn` | 8006 | |
+
+(上面「環境」一節表格裡 asr 的預設埠 8001 是 `asr/server.py` 自己的預設;`start` 一律用 `PORT` 指定成 8003。)asr、tts、sing 要在同一台電腦,因為 sing 做歌時會請 tts、asr 讓出顯卡。推論機在別台電腦時,把 `[machine.hosts] inference` 設成它的區網位址:worker 會綁在那個位址(不再是 127.0.0.1),Core 那台的 `ASR_URL` / `TTS_URL` / `[modules.sing] url` 由 `miyoria init` 寫好。worker 沒有認證,請用防火牆只放行 Core 那台。
+
 ## 0. 先用 fake worker 跑通整條線(不需要 GPU)
 
 ```bash
