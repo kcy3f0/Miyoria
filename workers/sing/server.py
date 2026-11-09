@@ -19,8 +19,10 @@
 Pipeline per job (one job at a time; models load per stage and are freed after it):
     resolve   library match / yt-dlp search (``ytsearch1:``) / link (allowed hosts only), ≤ SING_MAX_SECONDS
     download  bestaudio → 44.1 kHz stereo WAV (ffmpeg)
-    separate  Demucs (SING_SEPARATOR_MODEL, default htdemucs) → vocals + instrumental; skipped for
-              library folders that already have both stems, and for sources separated before
+    separate  vocals + instrumental: Kim's Mel-Band RoFormer (SING_SEPARATOR_MODEL=melband, the default
+              when its checkpoint is there; the instrumental is the song minus the vocals) or a Demucs
+              model (htdemucs, the fallback); skipped for library folders that already have both stems,
+              and for sources separated before
     lead      Mel-Band RoFormer (leadsplit.py; SING_LEAD_MODEL) splits the vocal stem into the lead
               voice and the backing voices (harmonies, doubles, ad-libs), stored beside the stems
               (lead.wav, backing.wav; cached with them; a song separated before it existed is split
@@ -63,7 +65,11 @@ Environment
     SING_SEEDVC_DIR        Seed-VC checkout                       (default ../models/seed-vc)
     SING_DEVICE            cuda | cpu                             (default cuda when available)
     SING_SEPARATE_DEVICE   device of the separator                (default SING_DEVICE; VRAM OOM → CPU)
-    SING_SEPARATOR_MODEL   Demucs model                           (default htdemucs; htdemucs_ft = better, 4x slower)
+    SING_SEPARATOR_MODEL   melband | a Demucs model               (default melband when SING_VOCAL_MODEL is there,
+                           else htdemucs; htdemucs_ft = better Demucs, 4x slower)
+    SING_VOCAL_MODEL       the vocal RoFormer's checkpoint (.ckpt; its .yaml beside it)
+                           (default ../models/vocal-split/MelBandRoformer.ckpt, KimberleyJSN/melbandroformer)
+    SING_VOCAL_OVERLAP     chunk overlap of the vocal RoFormer, 8 s chunks (default 2)
     SING_LEAD_SPLIT        0 = no lead / backing split: Seed-VC converts the whole vocal stem (default 1: on
                            when the model file is there)
     SING_LEAD_MODEL        the split's checkpoint (.ckpt; its .yaml beside it) (default

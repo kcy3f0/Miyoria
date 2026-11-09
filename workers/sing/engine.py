@@ -29,8 +29,29 @@ import device_memory  # noqa: E402
 
 log = logging.getLogger("miyoria.sing.engine")
 
-SR = 44_100  # Demucs htdemucs and the Seed-VC singing model both run at 44.1 kHz
+SR = 44_100  # the separators (Mel-Band RoFormer, Demucs) and the Seed-VC singing model run at 44.1 kHz
 Progress = Callable[[float], None]
+
+# The vocal separator: Kim's Mel-Band RoFormer (KimberleyJSN/melbandroformer, MIT), the same
+# architecture as the lead split (leadsplit.py runs it), cleaner vocals than Demucs htdemucs.
+VOCAL_CKPT = "MelBandRoformer.ckpt"
+MELBAND = "melband"
+
+
+def vocal_model_path(env: dict[str, str] | None = None) -> Path:
+    e = env if env is not None else os.environ
+    return Path(e.get("SING_VOCAL_MODEL") or Path(__file__).resolve().parent.parent / "models" / "vocal-split" / VOCAL_CKPT)
+
+
+def default_separator(env: dict[str, str] | None = None) -> str:
+    """SING_SEPARATOR_MODEL, else the RoFormer when its checkpoint and config are there, else htdemucs."""
+    import leadsplit
+
+    e = env if env is not None else os.environ
+    if e.get("SING_SEPARATOR_MODEL"):
+        return e["SING_SEPARATOR_MODEL"]
+    ckpt = vocal_model_path(e)
+    return MELBAND if ckpt.is_file() and leadsplit.config_path(ckpt) is not None else "htdemucs"
 
 
 class JobError(Exception):
@@ -272,7 +293,9 @@ class RealBackend:
         self.store = store
         self.device = os.environ.get("SING_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
         self._cuda = str(self.device).startswith("cuda") and torch.cuda.is_available()
-        self.separator = os.environ.get("SING_SEPARATOR_MODEL", "htdemucs")
+        self.separator = default_separator()
+        self.vocal_model = vocal_model_path()
+        self.vocal_overlap = env_int("SING_VOCAL_OVERLAP", 2)
         self.separate_device = os.environ.get("SING_SEPARATE_DEVICE", self.device)
         self.steps = env_int("SING_DIFFUSION_STEPS", 30)
         self.cfg_rate = env_float("SING_CFG_RATE", 0.7)
@@ -290,7 +313,7 @@ class RealBackend:
             raise RuntimeError("reference voice not found (set SING_REF to a file, a list or a folder)")
         self.model_name = f"seed-vc-f0-44k+{self.separator}"
         self._vc: Any = None
-        self._demucs: Any = None
+        self._demucs: Any = None  # the vocal separator, whichever it is
         self._lead: Any = None
         self.gate: Callable[[], None] | None = None  # sharing the GPU: runs before every step
         self._ref: Any = None
@@ -446,7 +469,7 @@ class RealBackend:
         else:
             ffmpeg_to_wav(p, sdir / "source.wav", max_s=self.max_s)
 
-    # ── separation (Demucs) ──────────────────────────────────────────────
+    # ── separation (Mel-Band RoFormer, or a Demucs model) ────────────────
 
     def separate(self, source_wav: Path, vocals_out: Path, inst_out: Path, progress: Progress,
                  device: str | None = None) -> None:
@@ -455,23 +478,27 @@ class RealBackend:
         try:
             if device == "cpu":
                 with leave_cores_free():
-                    self._separate_on("cpu", source_wav, vocals_out, inst_out)
+                    self._separate_on("cpu", source_wav, vocals_out, inst_out, progress)
             else:
-                self._separate_on(on, source_wav, vocals_out, inst_out)
+                self._separate_on(on, source_wav, vocals_out, inst_out, progress)
         except Exception as e:
             if not is_oom(e) or on == "cpu":
                 raise
             log.warning("separation ran out of VRAM; retrying on the CPU")
             self._demucs = None
             free_cuda()
-            self._separate_on("cpu", source_wav, vocals_out, inst_out)
+            self._separate_on("cpu", source_wav, vocals_out, inst_out, progress)
         finally:
             if not self.keep:
                 self._demucs = None
             free_cuda()
         progress(1.0)
 
-    def _separate_on(self, device: str, source_wav: Path, vocals_out: Path, inst_out: Path) -> None:
+    def _separate_on(self, device: str, source_wav: Path, vocals_out: Path, inst_out: Path,
+                     progress: Progress | None = None) -> None:
+        if self.separator == MELBAND:
+            self._separate_melband(device, source_wav, vocals_out, inst_out, progress)
+            return
         import torch
         from demucs.apply import apply_model
         from demucs.pretrained import get_model
@@ -498,6 +525,28 @@ class RealBackend:
         inst = out.sum(0) - vocals
         write_wav(vocals_out, vocals.T.numpy(), sr)
         write_wav(inst_out, inst.T.numpy(), sr)
+
+    def _separate_melband(self, device: str, source_wav: Path, vocals_out: Path, inst_out: Path,
+                          progress: Progress | None) -> None:
+        """The vocals with Kim's Mel-Band RoFormer (the lead split's runner, another checkpoint); the
+        instrumental is what is left (``source - vocals``), so the two add up to the song."""
+        import leadsplit
+
+        if self._demucs is not None and getattr(self._demucs, "device", None) != device:
+            self._demucs = None
+        if self._demucs is None:
+            self._demucs = leadsplit.LeadSplitter(self.vocal_model, device)
+        splitter = self._demucs
+        splitter.gate = self.gate
+        x, sr = read_audio(source_wav)
+        if x.shape[1] == 1:
+            x = x.repeat(2, axis=1)
+        if sr != splitter.sr:
+            raise JobError(f"source is {sr} Hz, the separator wants {splitter.sr}")
+        vocals = splitter.lead(x, sr, progress, overlap=min(self.vocal_overlap, 2) if device == "cpu" else self.vocal_overlap)
+        n = min(len(vocals), len(x))
+        write_wav(vocals_out, vocals[:n], sr)
+        write_wav(inst_out, x[:n] - vocals[:n], sr)
 
     # ── lead / backing split (Mel-Band RoFormer, leadsplit.py) ───────────
 

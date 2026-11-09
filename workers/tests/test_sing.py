@@ -861,3 +861,44 @@ def test_the_backing_joins_the_instrumental_at_its_own_level(tmp_path):
     # Same scale as the 220 Hz instrument it was recorded with: 0.1 against 0.2, whatever the mix gain.
     assert level(inst_split, 330) / level(inst_split, 220) == pytest.approx(0.5, rel=0.1)
     assert (split / "mix.wav").exists() and (split / "play_mix.pcm").exists()
+
+
+def test_the_vocal_separator_is_the_roformer_when_its_files_are_there(tmp_path):
+    import engine
+
+    ckpt = tmp_path / "v.ckpt"
+    env = {"SING_VOCAL_MODEL": str(ckpt)}
+    assert engine.vocal_model_path(env) == ckpt
+    assert engine.vocal_model_path({}).name == engine.VOCAL_CKPT
+    assert engine.default_separator(env) == "htdemucs"  # no file
+    ckpt.write_bytes(b"x")
+    assert engine.default_separator(env) == "htdemucs"  # no config
+    (tmp_path / "v.yaml").write_text("audio: {}", "utf-8")
+    assert engine.default_separator(env) == engine.MELBAND
+    assert engine.default_separator({**env, "SING_SEPARATOR_MODEL": "htdemucs_ft"}) == "htdemucs_ft"
+
+
+def test_the_roformer_separation_leaves_the_rest_as_the_instrumental(tmp_path):
+    import numpy as np
+    import soundfile as sf
+    import engine
+
+    class Half:  # stands in for the RoFormer runner: "the vocals" are half the song
+        device, sr, gate = "cpu", 44100, None
+
+        def lead(self, x, sr, progress=None, overlap=None):
+            if progress:
+                progress(1.0)
+            return x * 0.5
+
+    b = object.__new__(engine.RealBackend)
+    b.separator, b._demucs, b.gate, b.vocal_overlap, b.keep, b.separate_device = engine.MELBAND, Half(), None, 2, True, "cpu"
+    x = (np.random.default_rng(1).standard_normal((44100, 2)) * 0.1).astype("float32")
+    sf.write(tmp_path / "source.wav", x, 44100, subtype="FLOAT")
+    seen: list[float] = []
+    b._separate_on("cpu", tmp_path / "source.wav", tmp_path / "vocals.wav", tmp_path / "inst.wav", seen.append)
+    v, _ = sf.read(tmp_path / "vocals.wav", dtype="float32")
+    i, _ = sf.read(tmp_path / "inst.wav", dtype="float32")
+    assert np.allclose(v + i, x, atol=1e-3)
+    assert np.allclose(v, x * 0.5, atol=1e-3)
+    assert seen and seen[-1] == 1.0

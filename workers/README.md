@@ -6,7 +6,7 @@
 |---|---|---|---|
 | `asr/` | `POST /asr`、`GET /health`、`GET /busy` | 8001 | `ASR_BACKEND=sensevoice`(sherpa-onnx,CPU,附情緒 / 事件標記)或 `qwen3`(Qwen3-ASR,GPU) |
 | `tts/` | `POST /tts`、`GET /health`、`GET /busy`、`GET /voices`、`POST /voices/reload` | 8002 | Qwen3-TTS,聲音由 `VOICES_DIR` 註冊;後端 `faster-qwen3-tts`(真串流,推薦)或官方 `qwen-tts`(句子級,備案) |
-| `sing/` | `POST /jobs`、`GET /jobs/{id}`、`GET /songs`、`GET /songs/{id}/files/{name}`、`GET /library`、`GET /health` | 8005 | 點歌翻唱:yt-dlp / 本機歌庫 → Demucs 人聲分離 → Seed-VC 歌聲轉換(她的聲音)→ 混音 + lrclib 歌詞;見第 9 節 |
+| `sing/` | `POST /jobs`、`GET /jobs/{id}`、`GET /songs`、`GET /songs/{id}/files/{name}`、`GET /library`、`GET /health` | 8005 | 點歌翻唱:yt-dlp / 本機歌庫 → RoFormer 人聲分離 → Seed-VC 歌聲轉換(她的聲音)→ 混音 + lrclib 歌詞;見第 9 節 |
 | `turn/` | `POST /turn`、`WS /vad`、`GET /health` | 8006 | 判斷講完:Smart Turn v3 + Silero VAD,CPU、不需要 PyTorch;見第 10 節 |
 | `fake/` | 兩個端點都有 | 8000 | 不需要 GPU 的假 worker(固定文字 / 正弦波「聲音」),用來做端對端測試 |
 | `tests/` | pytest | | 契約測試(預設打 fake,也可以打真的 worker) |
@@ -166,7 +166,7 @@ ASR_BACKEND=qwen3 docker compose up --build            # 換成 Qwen3-ASR(也可
 | TTS Qwen3-TTS-1.7B-Base(bf16) | 約 4–5 GB | 約 5–7 GB | 長句 / 同時多個請求會再多 |
 | TTS Qwen3-TTS-0.6B-Base | 約 2 GB | 約 3–4 GB | 品質要實測 |
 | `design_voice.py`(1.7B VoiceDesign) | 約 4–5 GB | 約 5–7 GB | **只在挑聲音時跑**;跑之前先停 TTS worker |
-| 唱歌 `sing/`(Demucs htdemucs + Seed-VC 44 kHz 歌聲模型) | 約 1 GB | **實測峰值約 3.2 GB**,只在做歌時 | 一次一首、每階段用完就釋放,閒置時 0;分離 OOM 時自動改用 CPU |
+| 唱歌 `sing/`(Mel-Band RoFormer 人聲 + 主唱分離 + Seed-VC 44 kHz 歌聲模型) | 約 1 GB | **實測峰值約 3.2 GB**,只在做歌時 | 一次一首、每階段用完就釋放,閒置時 0;分離 OOM 時自動改用 CPU |
 
 DECISIONS 的預算:遊戲 + OBS baseline + ASR + TTS ≤ 約 11 GB。1.7B TTS + Qwen3-ASR-0.6B 大約 8–10 GB,遊戲很吃 VRAM 時改用 SenseVoice(CPU)或 TTS 0.6B。
 
@@ -438,7 +438,7 @@ curl -sS -X POST http://127.0.0.1:8001/asr -F "audio=@out.wav" -F "language=zh"
 **流程**(一次一首;模型每個階段載入、用完就釋放 VRAM,所以平常不佔 GPU):
 
 1. **找歌**:`query` 先比對本機歌庫(`data/songs/library/`,檔名 `歌手 - 歌名.mp3`;或一個資料夾放 `vocals.*` + `instrumental.*`,已經分好就不用再分離),沒有就用 yt-dlp `ytsearch1:` 搜 YouTube;`url` 只接受 `SING_URL_HOSTS` 的網域。最長 `SING_MAX_SECONDS`(480 秒)。
-2. **分離**:Demucs `htdemucs`(`SING_SEPARATOR_MODEL=htdemucs_ft` 比較乾淨、慢 4 倍)→ 人聲 + 伴奏;同一個來源只分一次(`data/songs/_sources/`)。
+2. **分離**:Kim 的 Mel-Band RoFormer(`workers/models/vocal-split/MelBandRoformer.ckpt` + 同名 `.yaml`,[KimberleyJSN/melbandroformer](https://huggingface.co/KimberleyJSN/melbandroformer),MIT;設定檔取自 MSST 的 `config_vocals_mel_band_roformer_kj.yaml`)→ 人聲,伴奏 = 原曲 − 人聲;檔案不在就退回 Demucs `htdemucs`(`SING_SEPARATOR_MODEL` 可以指定 `htdemucs` / `htdemucs_ft`)。同一個來源只分一次(`data/songs/_sources/`)。
 3. **轉換**:Seed-VC 的歌聲模型(F0 條件、44.1 kHz、Whisper-small 內容編碼、BigVGAN v2 44 kHz、RMVPE 音高),參考音是 `voices/deepseek-chan/ref.wav`(`SING_REF` 也可以用 `;` 列多個檔案或給資料夾,串成最多 25 秒)。轉換前先清 F0(`pitch.py`:補 ≤ 40 ms 的掉格、折回短暫的八度跳動、濾掉尖刺;`SING_F0_CLEAN=0` 關掉)。自動挑音高:看歌的人聲中位數**和最高音**(第 95 百分位),對她的中位數(說話 + `SING_TARGET_OFFSET`)和上限(`SING_MAX_NOTE`,或說話 + `SING_CEILING_OFFSET`),選八度(-12 / 0 / +12);最高音還是超過上限就整首往下轉(最多 `SING_KEY_MIN` −5,伴奏用 ffmpeg Rubber Band 一起移),低太多就往上一點(最多 `SING_KEY_MAX` +3);`pitch` 可以直接指定人聲移調,`key` 是整首轉調(伴奏一起移,這時只自動挑八度)。原人聲靜音的地方,轉換後的人聲會被閘掉(去掉轉換的雜音)。
 4. **混音**:轉換後的人聲恢復成原人聲的響度,加上伴奏,整體正規化到 `SING_TARGET_LUFS`(-16),峰值 ≤ -1 dBFS。輸出 `mix.wav`、`vocals.wav`、`instrumental.wav`,以及 Core 串流用的 48 kHz 單聲道 `play_mix.pcm` / `play_vocals.pcm`(人聲那條給嘴型用)。
 5. **歌詞**:lrclib.net 依歌名 / 歌手 / 長度找同步 LRC(找不到就沒有字幕)。
