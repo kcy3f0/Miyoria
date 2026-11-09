@@ -142,6 +142,33 @@ export interface MessageLike {
   embeds?: readonly EmbedLike[] | null;
   reference?: ReferenceLike | null;
   messageSnapshots?: Values<SnapshotLike> | null;
+  /** Components V2 (her cards): their text displays are read when there is no content. */
+  components?: readonly unknown[] | null;
+}
+
+/** Longest text read from a message's components. */
+export const MAX_COMPONENT_CHARS = 600;
+
+/**
+ * The text of a message's components (Components V2 text displays, in order), as her cards carry
+ * it: a reply to a card is a reply to what the card says. discord.js component objects are read
+ * through `toJSON()`; raw API objects as they are.
+ */
+export function componentsText(components: readonly unknown[] | null | undefined): string {
+  const out: string[] = [];
+  const walk = (node: unknown, depth: number): void => {
+    if (depth > 6 || typeof node !== "object" || node === null) return;
+    const raw =
+      typeof (node as { toJSON?: unknown }).toJSON === "function"
+        ? (node as { toJSON(): unknown }).toJSON()
+        : node;
+    if (typeof raw !== "object" || raw === null) return;
+    const r = raw as { content?: unknown; components?: unknown; accessory?: unknown };
+    if (typeof r.content === "string" && r.content.trim() !== "") out.push(r.content.trim());
+    if (Array.isArray(r.components)) for (const child of r.components) walk(child, depth + 1);
+  };
+  for (const c of components ?? []) walk(c, 0);
+  return clip(out.join("\n"), MAX_COMPONENT_CHARS);
 }
 
 /** Reference type of a forward (`MessageReferenceType.Forward`). */
@@ -277,7 +304,10 @@ export function incomingMessage(
       display_name: displayName(msg.author, msg.member?.nickname ?? null),
       is_bot: msg.author.bot ?? false,
     },
-    text: resolveMentions(msg.content, mentionNames(msg.mentions)),
+    text: resolveMentions(
+      msg.content.trim() === "" ? componentsText(msg.components) : msg.content,
+      mentionNames(msg.mentions),
+    ),
     mentions_self: mentionsSelf,
     reply_to_self: repliedAuthorId !== null && selfIds.has(repliedAuthorId),
     attachments: attachments(msg.attachments),
@@ -314,6 +344,7 @@ export function hasContent(msg: MessageLike): boolean {
   };
   return (
     msg.content.trim() !== "" ||
+    componentsText(msg.components) !== "" ||
     any(msg.attachments) ||
     any(msg.stickers) ||
     (msg.embeds?.length ?? 0) > 0 ||

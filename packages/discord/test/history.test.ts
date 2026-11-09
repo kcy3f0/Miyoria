@@ -96,6 +96,29 @@ describe("DiscordHistory", () => {
     expect(await history.recent(ctx, { before: null, limit: 0 })).toEqual([]);
   });
 
+  test("a_reply_to_her_card_reads_what_the_card_says", async () => {
+    // A slash command's answer (Components V2, no content), as her cards and receipts are.
+    const card = fetched("8", 8000, {
+      type: MessageType.ChatInputCommand,
+      author: { id: "7", username: "miyo", bot: true },
+      content: "",
+      components: [
+        {
+          type: 17,
+          components: [
+            { type: 10, content: "## 收據" },
+            { toJSON: () => ({ type: 10, content: "Owen 付了 30 魚幣" }) },
+          ],
+        },
+      ],
+    });
+    const history = new DiscordHistory(client([card]), new Set(["7"]));
+    const parent = await history.fetch({ context: ctx, id: "8" });
+    expect(parent?.text).toBe("## 收據\nOwen 付了 30 魚幣");
+    // Not in a channel's recent lines: those stay what people wrote.
+    expect(await history.recent(ctx, { before: null, limit: 5 })).toEqual([]);
+  });
+
   test("an_aborted_signal_stops_the_read", async () => {
     const history = new DiscordHistory(client([fetched("5", 5000)]), new Set());
     const controller = new AbortController();
