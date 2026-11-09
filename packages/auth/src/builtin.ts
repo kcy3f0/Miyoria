@@ -131,8 +131,13 @@ export const LEGACY_BUILTIN_GRANTS: Readonly<Record<string, readonly (readonly s
   restricted: [V1_PRIVACY],
 };
 
-const sameList = (a: readonly string[], b: readonly string[]) =>
-  a.length === b.length && a.every((x, i) => x === b[i]);
+/** The same nodes, in any order: a store may hand them back sorted differently than they were seeded. */
+const sameList = (a: readonly string[], b: readonly string[]) => {
+  if (a.length !== b.length) return false;
+  const x = [...a].sort();
+  const y = [...b].sort();
+  return x.every((n, i) => n === y[i]);
+};
 
 /**
  * What to do with a stored role named like a built-in one: `current` (nothing to do),

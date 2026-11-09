@@ -65,6 +65,15 @@ describe("built-in roles", () => {
     }
   });
 
+  test("a_stored_role_in_another_order_is_still_recognised", () => {
+    // Seen live: an unedited user role from before tools.web, its nodes in a different order.
+    const current = builtinRoles().find((r) => r.name === USER) as RoleDefinition;
+    const old = [...(LEGACY_BUILTIN_GRANTS[USER]?.at(-1) ?? [])].reverse();
+    expect(builtinStatus({ ...current, grants: old })).toBe("upgrade");
+    expect(builtinStatus({ ...current, grants: [...current.grants].reverse() })).toBe("current");
+    expect(builtinStatus({ ...current, grants: [...old, "extra.node"] })).toBe("edited");
+  });
+
   test("builtin_nodes", () => {
     const roles = builtinRoles();
     const get = (n: string) => roles.find((r) => r.name === n) as RoleDefinition;
