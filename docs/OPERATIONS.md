@@ -297,6 +297,8 @@ Stage 要直接碰 VTube Studio / OBS / 遊戲,所以原生在直播機執行,�
 
 管理面板是靜態檔,由 Core 提供(`[modules.api] panel_dir`,`MIYORIA_PANEL_DIR` 可覆寫):npm 套件與 Docker 映像檔都已內含;從原始碼跑時先 `pnpm --filter @miyoria/panel build`(或 `pnpm build:web`,輸出 `apps/panel/dist`,Core 預設就讀這裡)。開發時 `pnpm --filter @miyoria/panel dev`(Vite,`http://localhost:5178`,`/api` 轉給 `MIYORIA_CORE_URL`,預設 `http://127.0.0.1:7878`)。
 
+**連結預覽**:Discord、Slack、X 這類爬蟲不跑 JavaScript,所以 Core 送出 `index.html` 時按路由改寫 `<!-- meta:start -->` 到 `<!-- meta:end -->` 之間的標籤(標題、描述、`og:*`、Twitter card,`packages/api/src/meta.ts`)。`/card/<編號>` 的標籤帶那張卡的名字、稱呼、編號和框(都是卡片頁本來就顯示的),`og:image` 指到 `/og/card/<編號>.png?v=<卡片資料的雜湊>`:1200×630 的 PNG,左邊是和面板同一份繪圖(`packages/card-face`)用 resvg 畫出來的卡,右邊是名字、稱呼、編號,不需要瀏覽器。圖按編號加資料版本留在記憶體(最近 64 張),卡的資料變了(換框、作廢)網址的 `v` 就變,上游快取不會吃到舊圖。編號不存在、格式不對、已作廢或讀不到時給站台預設標籤和 `/og/default.png`,不含任何人的資料。網址的 origin 取 `X-Forwarded-Host` / `X-Forwarded-Proto`,沒有就用 `Host`(隧道要把原本的 Host 傳進來)。畫圖用系統字型(Windows 的微軟正黑體,Linux 要裝 Noto Sans CJK);立繪讀 `panel_dir` 裡的 `card-<pose>.local.webp`,沒有就畫不含立繪的卡。
+
 面板有七頁(側欄可收合,`Ctrl/⌘ + B`;`Ctrl/⌘ + K` 開搜尋,可跳到頁面、人、子系統):
 
 | 頁 | 內容 |

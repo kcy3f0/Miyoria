@@ -2,7 +2,10 @@
 // against every route, what a response may hold, and the limits. Internal fields in the fixtures
 // are poisoned with `SECRET`, so a field that leaks fails the tests whichever route it leaks from.
 
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ActuatorRegistry, ActuatorRegistryKey, defineCapability } from "@miyoria/actions";
 import { AuthService, AuthServiceKey } from "@miyoria/auth";
 import { EconomyConfigSchema, EconomyKey, EconomyService } from "@miyoria/economy";
@@ -59,7 +62,9 @@ import { z } from "zod";
 import { CARD_POSES, CARDS_PER_DAY, normalizeSerial } from "../src/card.js";
 import { ActiveProfileKey, ApiModule } from "../src/index.js";
 import { acceptableQuery, affinityBand, familiarityBand, trustBand } from "../src/member.js";
+import { cardMeta, injectMeta } from "../src/meta.js";
 import { Monitor } from "../src/monitor.js";
+import { cardVersion } from "../src/og.js";
 import {
   clientKey,
   PUBLIC_DAYS,
@@ -72,6 +77,7 @@ import {
 import { routes } from "../src/server.js";
 import { Sessions } from "../src/session.js";
 import { ApiState } from "../src/state.js";
+import type { IssuedCard } from "../src/types.js";
 import { listenFetchable, type RawResponse, raw } from "./support/http.js";
 import { TestStore } from "./support/stores.js";
 
@@ -260,7 +266,7 @@ class Watcher implements Module {
   }
 }
 
-async function rig(publicConfig: Record<string, JsonValue> = {}): Promise<Rig> {
+async function rig(publicConfig: Record<string, JsonValue> = {}, panelDir = ""): Promise<Rig> {
   const discordUrl = await fakeDiscord();
   const sup = new Supervisor();
   const store = new TestStore();
@@ -478,7 +484,7 @@ async function rig(publicConfig: Record<string, JsonValue> = {}): Promise<Rig> {
     {
       bind: "127.0.0.1:0",
       token: TOKEN,
-      panel_dir: "",
+      panel_dir: panelDir,
       discord_oauth: {
         client_id: "cid",
         client_secret: "secret",
@@ -644,6 +650,8 @@ describe("the route table", () => {
       "GET /api/public/card/:serial",
       "GET /api/public/songs",
       "GET /api/public/status",
+      "GET /og/card/:file",
+      "GET /og/default.png",
       "POST /api/auth/logout",
     ]);
     expect(
@@ -2684,5 +2692,152 @@ describe("between people, the sponsor board and fortune slips", () => {
         price: 10,
       });
     });
+  });
+});
+
+describe("link previews", () => {
+  const PAGE = `<!doctype html><html><head><meta charset="UTF-8" />
+    <!-- meta:start -->
+    <title>Miyoria</title>
+    <meta property="og:title" content="static" />
+    <!-- meta:end -->
+  </head><body><div id="root"></div></body></html>`;
+  const BLANK: IssuedCard = {
+    serial: "MYR-0000-0000-0000",
+    issued_at: "2026-01-01T00:00:00.000Z",
+    name: "A",
+    avatar_url: null,
+    number: 1,
+    call_name: null,
+    relationship: "朋友",
+    affinity: null,
+    trust: null,
+    familiarity: null,
+    public_feeling: null,
+    line: null,
+    stamp: null,
+    fields: [],
+    pose: "calm",
+    frame: null,
+    foil: false,
+    voided_at: null,
+  };
+  const BOT = { "user-agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)" };
+  const SHOWN = {
+    "x-forwarded-host": "miyoria.example.test",
+    "x-forwarded-proto": "https",
+    "cf-connecting-ip": "203.0.113.30",
+  };
+
+  async function preview() {
+    const dir = await mkdtemp(join(tmpdir(), "myr-panel-"));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    await writeFile(join(dir, "index.html"), PAGE);
+    const r = await rig({}, dir);
+    return r;
+  }
+  const meta = (html: string, name: string): string | null =>
+    new RegExp(`<meta (?:property|name)="${name}" content="([^"]*)"`).exec(html)?.[1] ?? null;
+  const png = async (url: string, headers: Record<string, string> = {}) => {
+    const res = await fetch(url, { headers: { ...BOT, ...SHOWN, ...headers } });
+    return { res, bytes: Buffer.from(await res.arrayBuffer()) };
+  };
+
+  it("gives every page its title, description and the site's picture", async () => {
+    const r = await preview();
+    const { text, headers } = await r.get("/", undefined, { ...BOT, ...SHOWN });
+    expect(headers.get("content-type")).toContain("text/html");
+    expect(text).toContain("<title>Miyoria</title>");
+    expect(text).not.toContain("static");
+    expect(meta(text, "og:title")).toBe("Miyoria");
+    expect(meta(text, "og:site_name")).toBe("Miyoria");
+    expect(meta(text, "og:url")).toBe("https://miyoria.example.test/");
+    expect(meta(text, "og:image")).toBe("https://miyoria.example.test/og/default.png");
+    expect(meta(text, "og:description")).toContain("AI VTuber");
+    expect(meta(text, "twitter:card")).toBe("summary_large_image");
+    const me = (await r.get("/me", undefined, { ...BOT, ...SHOWN })).text;
+    expect(meta(me, "og:title")).toBe("我的頁面 · Miyoria");
+    expect(me).toContain('content="noindex, nofollow"');
+  });
+
+  it("serves the site's picture as a PNG", async () => {
+    const r = await preview();
+    const { res, bytes } = await png(`${r.base}/og/default.png`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect([...bytes.subarray(1, 4)]).toEqual([0x50, 0x4e, 0x47]);
+    expect(bytes.readUInt32BE(16)).toBe(1200);
+    expect(bytes.readUInt32BE(20)).toBe(630);
+  });
+
+  it("puts the card on its own page's tags, with a picture of the card", async () => {
+    const r = await preview();
+    const cookie = await r.login("alice");
+    const card = (await r.post("/api/member/card", cookie, {})).body as {
+      serial: string;
+      name: string;
+      relationship: string;
+      public_feeling: string;
+    };
+    const { text } = await r.get(`/card/${card.serial}`, undefined, { ...BOT, ...SHOWN });
+    expect(meta(text, "og:title")).toBe(`${card.name} 的會員卡 · Miyoria`);
+    expect(meta(text, "og:description")).toContain(card.serial);
+    expect(meta(text, "og:description")).toContain(card.relationship);
+    expect(meta(text, "og:url")).toBe(`https://miyoria.example.test/card/${card.serial}`);
+    expect(meta(text, "twitter:card")).toBe("summary_large_image");
+    const image = meta(text, "og:image") ?? "";
+    expect(image).toMatch(
+      /^https:[/][/]miyoria[.]example[.]test[/]og[/]card[/]MYR-[0-9A-Z-]+[.]png[?]v=[0-9a-f]{10}$/,
+    );
+    expect(image).toContain(card.serial);
+    expect(meta(text, "twitter:image")).toBe(image);
+    expect(text).not.toContain("SECRET");
+    const path = new URL(image).pathname + new URL(image).search;
+    const { res, bytes } = await png(`${r.base}${path}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(res.headers.get("cache-control")).toContain("immutable");
+    expect(bytes.readUInt32BE(16)).toBe(1200);
+    expect(bytes.readUInt32BE(20)).toBe(630);
+    // An old version of the link still gets the card, but may not be kept for long.
+    const stale = await png(`${r.base}/og/card/${card.serial}.png?v=0000000000`);
+    expect(stale.res.status).toBe(200);
+    expect(stale.res.headers.get("cache-control")).not.toContain("immutable");
+    expect(stale.bytes.equals(bytes)).toBe(true);
+  });
+
+  it("changes the picture's address when the card's data changes", () => {
+    const base = BLANK;
+    expect(cardVersion(base)).toBe(cardVersion({ ...base }));
+    expect(cardVersion(base)).not.toBe(cardVersion({ ...base, frame: "gold" }));
+    expect(cardVersion(base)).not.toBe(
+      cardVersion({ ...base, voided_at: "2026-01-02T00:00:00.000Z" }),
+    );
+  });
+
+  it("shows nothing of anybody for an unknown or malformed serial", async () => {
+    const r = await preview();
+    for (const serial of ["MYR-0000-0000-0000", "not-a-card", "MYR-1234"]) {
+      const { text } = await r.get(`/card/${serial}`, undefined, { ...BOT, ...SHOWN });
+      expect(meta(text, "og:title")).toBe("會員卡 · Miyoria");
+      expect(meta(text, "og:image")).toBe("https://miyoria.example.test/og/default.png");
+      expect(text).not.toContain("MYR-0000");
+      const picture = await png(`${r.base}/og/card/${serial}.png`);
+      expect(picture.res.status).toBe(200);
+      expect(picture.bytes.readUInt32BE(16)).toBe(1200);
+    }
+  });
+
+  it("escapes what a card's name says in the tags", () => {
+    const tags = injectMeta(
+      PAGE,
+      cardMeta(
+        { ...BLANK, name: '"><script>x</script>' },
+        "https://a.test",
+        "https://a.test/i.png",
+      ),
+    );
+    expect(tags).not.toContain("<script>");
+    expect(tags).toContain("&lt;script&gt;");
   });
 });

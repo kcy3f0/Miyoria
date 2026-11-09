@@ -10,7 +10,12 @@ const core = process.env.MIYORIA_CORE_URL ?? "http://127.0.0.1:7878";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
-    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+      // The card's drawing is shared with the Core (it renders the link preview); no build step in between.
+      "@miyoria/card-face": fileURLToPath(new URL("../../packages/card-face/src/index.tsx", import.meta.url)),
+    },
+    dedupe: ["react", "react-dom"],
   },
   // Served by the Core at the root of its own origin. Absolute asset URLs: with clean addresses a
   // page opened directly at a nested path (/card/<serial>, a QR code on a phone) would look for

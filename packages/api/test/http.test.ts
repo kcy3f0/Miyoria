@@ -196,9 +196,10 @@ describe("http", () => {
     }
 
     const index = await raw(base, "GET", "/index.html");
-    const modified = index.headers.get("last-modified") ?? "";
-    expect(modified).not.toBe("");
-    const cached = await raw(base, "GET", "/", { headers: { "if-modified-since": modified } });
+    // The page is rewritten per route, so it revalidates on what was sent, not on the file's date.
+    const tag = index.headers.get("etag") ?? "";
+    expect(tag).not.toBe("");
+    const cached = await raw(base, "GET", "/index.html", { headers: { "if-none-match": tag } });
     expect(cached.status).toBe(304);
     expect(cached.headers.get("cache-control")).toBe("no-cache");
 

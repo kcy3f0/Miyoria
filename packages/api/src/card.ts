@@ -566,3 +566,21 @@ export function cardCheckRoutes(state: ApiState): Route[] {
     },
   ];
 }
+
+/**
+ * The card behind a serial for a page that is open to anyone (the link preview): `null` for a
+ * malformed, unknown, voided or unreadable one, so nothing of it leaves.
+ */
+export async function publicCard(state: ApiState, input: string): Promise<IssuedCard | null> {
+  const serial = normalizeSerial(input);
+  const store = state.optional(MemberCardStoreKey);
+  if (serial === null || !store) return null;
+  try {
+    const found = await store.bySerial(state.profile(), serial);
+    const card = found && isJsonObject(found.snapshot) ? issuedCard(found) : null;
+    return card && card.voided_at === null ? card : null;
+  } catch (error) {
+    log.warn({ error: errorMessage(error) }, "cannot read a card for its preview");
+    return null;
+  }
+}

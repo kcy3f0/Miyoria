@@ -66,6 +66,7 @@
     {
       "includes": [
         "apps/panel/**",
+        "packages/card-face/**",
         "apps/overlay/**",
         "apps/voice-node/**",
         "packages/sdk/**",
