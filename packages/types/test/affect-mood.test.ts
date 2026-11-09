@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Drives } from "../src/index.js";
 import {
   affinityLevel,
+  affinityStep,
   circadianEnergy,
   deriveMood,
   emotionsLine,
@@ -13,6 +14,7 @@ import {
   renderAffectMood,
   renderPeople,
   renderPersonLine,
+  stanceStale,
   toTimestamp,
 } from "../src/index.js";
 
@@ -161,19 +163,24 @@ describe("the relationship label scale", () => {
 });
 
 describe("affinityLevel", () => {
-  it("is one level per 5 points, truncated toward zero, within -20..20", () => {
+  it("is the affinity as a whole number, truncated toward zero, within -100..100", () => {
     expect(affinityLevel(0)).toBe(0);
-    expect(affinityLevel(4.9)).toBe(0);
-    expect(affinityLevel(-4.9)).toBe(0);
-    expect(Object.is(affinityLevel(-2), 0)).toBe(true);
-    expect(affinityLevel(5)).toBe(1);
-    expect(affinityLevel(39)).toBe(7);
-    expect(affinityLevel(45)).toBe(9);
-    expect(affinityLevel(-5)).toBe(-1);
-    expect(affinityLevel(-60)).toBe(-12);
-    expect(affinityLevel(100)).toBe(20);
-    expect(affinityLevel(-100)).toBe(-20);
-    expect(affinityLevel(250)).toBe(20);
+    expect(affinityLevel(4.9)).toBe(4);
+    expect(Object.is(affinityLevel(-0.5), 0)).toBe(true);
+    expect(affinityLevel(45)).toBe(45);
+    expect(affinityLevel(-60.7)).toBe(-60);
+    expect(affinityLevel(250)).toBe(100);
+    expect(affinityLevel(-250)).toBe(-100);
     expect(affinityLevel(Number.NaN)).toBe(0);
+  });
+
+  it("re-deciding the stance comes every 5 levels", () => {
+    expect(affinityStep(4)).toBe(0);
+    expect(affinityStep(5)).toBe(1);
+    expect(Object.is(affinityStep(-4), 0)).toBe(true);
+    expect(affinityStep(-5)).toBe(-1);
+    expect(stanceStale(60, 64)).toBe(false);
+    expect(stanceStale(64, 65)).toBe(true);
+    expect(stanceStale(66, 61)).toBe(true);
   });
 });

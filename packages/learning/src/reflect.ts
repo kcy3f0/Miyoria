@@ -28,6 +28,7 @@ import {
 import {
   type AccountRef,
   AffectStateKey,
+  affinityStep,
   type BondChange,
   type Clock,
   type ContextKey,
@@ -60,6 +61,7 @@ import {
   SelfStateKey,
   safeName,
   splitNames,
+  stanceStale,
   toTimestamp,
 } from "@miyoria/types";
 import { z } from "zod";
@@ -539,10 +541,12 @@ export class Reflector {
         const mine = stance === "" ? "" : `;你的相處方式:${short(stance, MAX_STANCE)}`;
         const moved =
           stance === ""
-            ? c.level >= 2 || c.level <= -2
+            ? affinityStep(c.level) !== 0
               ? `;還沒決定相處方式(好感 Lv.${c.level})`
               : ""
-            : c.stance_level !== null && c.stance_level !== undefined && c.stance_level !== c.level
+            : c.stance_level !== null &&
+                c.stance_level !== undefined &&
+                stanceStale(c.stance_level, c.level)
               ? `;好感等級變了(Lv.${c.stance_level}→Lv.${c.level})`
               : "";
         return [

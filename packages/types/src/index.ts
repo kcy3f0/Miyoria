@@ -469,6 +469,7 @@ export {
   AFFECT_EVENT_TOPIC,
   AFFINITY_LEVEL_MAX,
   AFFINITY_LEVEL_MIN,
+  AFFINITY_LEVEL_STEP,
   type AffectBiases,
   type AffectEvent,
   type AffectEventKind,
@@ -483,6 +484,7 @@ export {
   type AppraisalStrength,
   type AppraisedPromise,
   affinityLevel,
+  affinityStep,
   type BondChange,
   MOOD_CHANGED_TOPIC,
   type PersonCard,
@@ -490,6 +492,7 @@ export {
   type RelationshipLabel,
   type RelationshipNumbers,
   relationshipLabel,
+  stanceStale,
 } from "./affect.js";
 export {
   AFFECT_BOND_TOPIC,

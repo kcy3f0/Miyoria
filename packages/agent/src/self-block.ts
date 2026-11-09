@@ -23,6 +23,7 @@ import {
   type AffectSnapshot,
   type AffectState,
   type Attitude,
+  affinityStep,
   type ContextKey,
   EMOTION_LABELS,
   type EmotionReading,
@@ -43,6 +44,7 @@ import {
   type SelfState,
   type ShownEmotion,
   safeName,
+  stanceStale,
 } from "@miyoria/types";
 import type { SelfBlock } from "./compiler.js";
 import { herStatusHint, shownHint, unansweredHint } from "./signals.js";
@@ -337,11 +339,11 @@ const MAX_STANCE = 60;
  */
 function stanceCue(level: number, written: number | null): string {
   if (written !== null) {
-    return written === level
-      ? ""
-      : `好感變了(Lv.${written}→Lv.${level}),你可以自己決定對他有沒有不一樣`;
+    return stanceStale(written, level)
+      ? `好感變了(Lv.${written}→Lv.${level}),你可以自己決定對他有沒有不一樣`
+      : "";
   }
-  return level >= 2 || level <= -2 ? `你還沒決定怎麼對他(Lv.${level}),可以自己決定` : "";
+  return affinityStep(level) !== 0 ? `你還沒決定怎麼對他(Lv.${level}),可以自己決定` : "";
 }
 
 /** One line about `p`, or `null` when nothing is known about them. */

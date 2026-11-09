@@ -293,10 +293,10 @@ AIRI 本身也沒有情緒系統、記憶只是「全部塞進 system prompt」,
 
 **細分的好感等級與她自己的相處方式(stance)**
 
-粗標籤(陌生人 … 摯友)太粗,所以另有 `affinityLevel(affinity)`:每 5 點一級(`Math.trunc(a / 5)`,-20..20,-4..4 都是 Lv.0)。**每一級代表什麼行為不寫死,由她自己決定**:
+粗標籤(陌生人 … 摯友)太粗,所以另有 `affinityLevel(affinity)`:好感本身取整數就是等級(`Math.trunc(a)`,-100..100,一點一級);每 5 級是一段(`affinityStep`),跨到另一段時她可以重新決定相處方式(`stanceStale`)。**每一級代表什麼行為不寫死,由她自己決定**:
 
 - `PersonCard` 多了 `level`、`stance`(她用自己的口氣寫的一句話,≤ 60 字,例如傲嬌多一點還少一點、會不會鬧他、坦不坦率)、`stance_level`(寫下 stance 當時的等級)。`stance` / `stance_level` 存在 `feelingsBook` 紀錄的 extras,不需要 migration;只有 Reflect 能寫(`BondChange.stance`),寫入時過濾 per-call 代碼(名字可以),並記下當時的等級。
-- 她的人物行(`personLine`)顯示「好感 Lv.N」和「你的相處方式」;等級跟 `stance_level` 不同,或還沒有 stance 但等級 ≥ 2 或 ≤ -2 時,加一句提示讓她自己決定要不要換個方式,對話中就能調整。
+- 她的人物行(`personLine`)顯示「好感 Lv.N」和「你的相處方式」;等級跟 `stance_level` 不在同一段(差了一個 5 級的段),或還沒有 stance 但等級 ≥ 5 或 ≤ -5 時,加一句提示讓她自己決定要不要換個方式,對話中就能調整。
 - Reflect 對等級變了的人請她寫新的 stance(可以維持原本的相處方式,由她決定),走原本的 `bonds` 流程與每日上限。
 - persona 的「距離感」只是預設;人物卡上她自己的 stance 優先。
 - 跟 `feeling` 一樣只進 prompt:等級與 stance 不出現在任何公開 API 或會員頁,使用者看到的仍是文字區間。

@@ -165,19 +165,30 @@ export function relationshipLabel(rel: RelationshipNumbers): RelationshipLabel {
 }
 
 /** Lowest and highest `affinityLevel()`. */
-export const AFFINITY_LEVEL_MIN = -20;
-export const AFFINITY_LEVEL_MAX = 20;
+export const AFFINITY_LEVEL_MIN = -100;
+export const AFFINITY_LEVEL_MAX = 100;
+/** Levels per step: crossing into another step is when she may re-decide her stance. */
+export const AFFINITY_LEVEL_STEP = 5;
 
 /**
- * Finer step of affinity for her own per-person stance: one level per 5 points, truncated
- * toward zero, so -4..4 is level 0, 5..9 is 1, 95..100 is 19..20 and -5..-9 is -1. Always a
- * whole number in -20..20; a non-finite input is level 0. What a level means is hers to decide
- * (`PersonCard.stance`), nothing here prescribes behaviour.
+ * Her level with someone: the affinity itself as a whole number (truncated toward zero),
+ * -100..100, one level per point. A non-finite input is level 0. What a level means is hers to
+ * decide (`PersonCard.stance`), nothing here prescribes behaviour.
  */
 export function affinityLevel(affinity: number): number {
   if (!Number.isFinite(affinity)) return 0;
-  const level = Math.trunc(affinity / 5) + 0; // `+ 0`: no negative zero
+  const level = Math.trunc(affinity) + 0; // `+ 0`: no negative zero
   return Math.min(Math.max(level, AFFINITY_LEVEL_MIN), AFFINITY_LEVEL_MAX);
+}
+
+/** The step of `level` (every `AFFINITY_LEVEL_STEP` levels: 0..4 is 0, 5..9 is 1, -5..-9 is -1). */
+export function affinityStep(level: number): number {
+  return Math.trunc(level / AFFINITY_LEVEL_STEP) + 0;
+}
+
+/** Whether the level moved into another step since her stance was written at `written`. */
+export function stanceStale(written: number, level: number): boolean {
+  return affinityStep(written) !== affinityStep(level);
 }
 
 /**
@@ -209,7 +220,7 @@ export interface PersonCard {
    */
   public_feeling?: string | null;
   label: RelationshipLabel;
-  /** `affinityLevel(affinity)`: -20..20, one per 5 affinity points. Prompt-only, never shown to people. */
+  /** `affinityLevel(affinity)`: -100..100, one per affinity point. Prompt-only, never shown to people. */
   level: number;
   /**
    * How she acts with them now, one short line in her own words (dere/tsun, teasing, honesty).

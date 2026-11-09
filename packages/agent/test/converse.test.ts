@@ -440,22 +440,22 @@ describe("self and people renderers", () => {
           emotions: {},
           feeling: "",
           label: "好朋友",
-          level: 9,
+          level: 45,
           ...over,
         }),
       }) as unknown as AffectState;
     // Written at this level: the stance, no cue.
     expect(
-      peopleBody(present, { affect: withCard({ stance: "會鬧他,偶爾坦率", stance_level: 9 }) }),
-    ).toBe("- Owen:好朋友(好感 Lv.9);你的相處方式:會鬧他,偶爾坦率");
+      peopleBody(present, { affect: withCard({ stance: "會鬧他,偶爾坦率", stance_level: 47 }) }),
+    ).toBe("- Owen:好朋友(好感 Lv.45);你的相處方式:會鬧他,偶爾坦率");
     // The level moved: the cue says it is her call.
-    expect(peopleBody(present, { affect: withCard({ stance: "會鬧他", stance_level: 7 }) })).toBe(
-      "- Owen:好朋友(好感 Lv.9);你的相處方式:會鬧他;好感變了(Lv.7→Lv.9),你可以自己決定對他有沒有不一樣",
+    expect(peopleBody(present, { affect: withCard({ stance: "會鬧他", stance_level: 38 }) })).toBe(
+      "- Owen:好朋友(好感 Lv.45);你的相處方式:會鬧他;好感變了(Lv.38→Lv.45),你可以自己決定對他有沒有不一樣",
     );
     // No stance yet: a cue only far from neutral.
-    expect(peopleBody(present, { affect: withCard({}) })).toContain("你還沒決定怎麼對他(Lv.9)");
-    expect(peopleBody(present, { affect: withCard({ level: 1 }) })).toBe(
-      "- Owen:好朋友(好感 Lv.1)",
+    expect(peopleBody(present, { affect: withCard({}) })).toContain("你還沒決定怎麼對他(Lv.45)");
+    expect(peopleBody(present, { affect: withCard({ level: 4 }) })).toBe(
+      "- Owen:好朋友(好感 Lv.4)",
     );
     expect(peopleBody(present, { affect: withCard({ level: -3 }) })).toContain("Lv.-3");
   });
