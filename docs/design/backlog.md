@@ -96,6 +96,9 @@
 - **好感等級的「相處方式」還沒看過她實際寫什麼**:要等她下一次反省;面板的 `PersonCard` 型別沒加 `level` / `stance`(面板不顯示,API 有帶)。
 - **她會把整串 context key 當頻道 ID**:語音加入已修(`d0f5eac`);其他吃頻道 ID 的工具還沒檢查會不會一樣。
 - **Core 記錄裡反覆出現的錯誤**:對話摘要 `notes` 超過 2500 字被拒(`fold failed`)、每日反省 `insights` / `lessons` 超過上限(`reflection failed`)、`accept_food` 沒有人跟她說話時被擋(`she claimed without doing`)。
+- **歌詞:QQ 音樂沒接、簡繁 / 羅馬拼音只靠 LLM**:現在的來源是 lrclib 和網易雲(非官方介面,可能被擋或改版);沒做 QQ 音樂(要簽章)、也沒本地的簡繁轉換(OpenCC)和日文假名 / 羅馬拼音互轉,這些只靠 LLM 給的別名。LLM 不認得的歌(同人曲、很冷門的原創)還是找不到。
+- **歌詞對不上時間(整段偏移)沒修**:同步 LRC 只檢查「整體長度對得上」,影片開頭有長片頭 / 對話時,字幕會整段偏;沒有用 ASR 對時間去校正偏移。
+- **歌詞 ASR 抽查的門檻只用兩首實測**:正確歌詞 1.00、別首歌 0.28,門檻 0.35 / 0.6 是照這個抓的;日文漢字和 ASR 輸出的寫法不同時可能誤拒,等累積更多歌再調。
 - **MelBand karaoke 模型的原始授權**沒確認。
 - **becruily BS-RoFormer karaoke 的授權**:HF 上沒標(`becruily/bs-roformer-karaoke`);現在是唱歌預設的主唱模型,只在本機跑、沒散布。
 - **「伴唱也轉」(`backing=convert`)**沒實測:伴唱常是好幾個聲音疊在一起,RVC 的 RMVPE 只抓一條音高,可能轉得很怪。

@@ -165,6 +165,22 @@ def allowed_url(url: str) -> bool:
 # ── audio helpers (numpy) ────────────────────────────────────────────────────
 
 
+def lyrics_extra(info: dict[str, Any], raw_title: str) -> dict[str, Any]:
+    """What the lyrics lookup wants of a yt-dlp info dict: the title, the music metadata, the description."""
+    ex: dict[str, Any] = {"raw_title": raw_title}
+    for key, name in (("track", "track"), ("alt_title", "alt_title")):
+        if info.get(key):
+            ex[name] = str(info[key])
+    meta_artist = info.get("artist") or info.get("creator")
+    if meta_artist:
+        ex["meta_artist"] = str(meta_artist).split(",")[0].strip()
+    if info.get("description"):
+        ex["description"] = str(info["description"])[:1500]
+    if info.get("tags"):
+        ex["tags"] = [str(t) for t in info["tags"]][:15]
+    return ex
+
+
 def ydl_options(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """yt-dlp options for resolving and downloading, ``extra`` on top."""
     # Its cache lives with the songs (SING_YTDLP_CACHE): when it cannot write to its default
@@ -397,8 +413,18 @@ class RealBackend:
             duration_s=float(info["duration"]) if info.get("duration") else None,
             url=info.get("webpage_url") or info.get("original_url"),
             uploader=info.get("uploader") or info.get("channel"),
-            extra={"raw_title": raw_title},
+            extra=lyrics_extra(info, raw_title),
         )
+
+    def fetch_hints(self, url: str) -> dict[str, Any]:
+        """The lyrics lookup's view of a link (yt-dlp metadata only, nothing downloaded), for old songs."""
+        from lyrics import hints_of
+
+        with self._ydl() as ydl:
+            info = ydl.extract_info(url, download=False)
+        if info and info.get("entries"):
+            info = next((e for e in info["entries"] if e), None)
+        return hints_of(self._source_of(info, "youtube")) if info else {}
 
     def resolve_search(self, query: str) -> Source:
         with self._ydl() as ydl:
