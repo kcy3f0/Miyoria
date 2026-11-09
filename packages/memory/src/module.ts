@@ -23,6 +23,7 @@ import {
 } from "@miyoria/store";
 import { type ToolRegistry, ToolRegistryKey } from "@miyoria/tools";
 import {
+  type AccountRef,
   CONVERSATION_FOLDED_TOPIC,
   type ContextKey,
   contextKeyString,
@@ -48,6 +49,14 @@ import {
 } from "./config.js";
 import { CONTRIBUTOR_KEY, MemoryContributor } from "./contributor.js";
 import { Curator } from "./curate.js";
+import {
+  DateBook,
+  DateGreeter,
+  FORGET_DATE,
+  ForgetDateTool,
+  REMEMBER_DATE,
+  RememberDateTool,
+} from "./dates.js";
 import { buildEmbedder, type Embedder } from "./embed.js";
 import { MemoryEngine, MemoryEngineKey } from "./engine.js";
 import { PersonNotes } from "./person-note.js";
@@ -144,6 +153,9 @@ export class MemoryModule implements Module {
     ctx.provide(FollowupSourceKey, engine);
     ctx.provide(MemoryCuratorKey, new Curator(engine));
     ctx.provide(PersonNoteWriterKey, new PersonNotes(engine));
+    const book = new DateBook(settings, this.profile);
+    this.#installer.book = book;
+    const greeter = new DateGreeter(book, engine, people, () => config.dates);
     this.#installer.install(ctx, engine);
     ctx.log.info({ embedder: embedder.name }, "memory started");
 
@@ -156,7 +168,14 @@ export class MemoryModule implements Module {
       CONVERSATION_FOLDED_TOPIC,
     ]);
     const installer = this.#installer;
-    ctx.spawn("consolidate", (signal) => consolidationLoop(ctx, engine, installer, sub, signal));
+    const seen = (account: AccountRef, context: ContextKey, nowMs: number): void => {
+      greeter.seen(account, context, nowMs).catch((error: unknown) => {
+        ctx.log.warn({ error: errorMessage(error) }, "cannot check today's dates");
+      });
+    };
+    ctx.spawn("consolidate", (signal) =>
+      consolidationLoop(ctx, engine, installer, sub, signal, seen),
+    );
     if (config.forgetting.enabled) {
       ctx.spawn("forget", (signal) => maintenanceLoop(ctx, engine, signal));
     }
@@ -182,6 +201,8 @@ export class MemoryModule implements Module {
 class Installer {
   #contributors: PromptContributors | null = null;
   #tools: ToolRegistry | null = null;
+  /** The dates book of `remember_date` / `forget_date` (set at start). */
+  book: DateBook | null = null;
   readonly #commands = new MemoryCommands();
 
   install(ctx: ModuleContext, engine: MemoryEngine): void {
@@ -195,14 +216,14 @@ class Installer {
     }
     const tools = services.get(ToolRegistryKey);
     if (tools && tools !== this.#tools) {
-      if (this.#tools) {
-        this.#tools.unregister(REMEMBER);
-        this.#tools.unregister(RECALL);
-        this.#tools = null;
-      }
+      if (this.#tools) this.#unregisterTools(this.#tools);
       try {
         tools.register(new RememberTool(engine, ctx.clock));
         tools.register(new RecallTool(engine, ctx.clock));
+        if (this.book !== null) {
+          tools.register(new RememberDateTool(this.book, engine, ctx.clock));
+          tools.register(new ForgetDateTool(this.book, engine));
+        }
         this.#tools = tools;
       } catch (error) {
         ctx.log.warn({ error: errorMessage(error) }, "could not register memory tools");
@@ -214,14 +235,18 @@ class Installer {
     }
   }
 
+  #unregisterTools(tools: ToolRegistry): void {
+    tools.unregister(REMEMBER);
+    tools.unregister(RECALL);
+    tools.unregister(REMEMBER_DATE);
+    tools.unregister(FORGET_DATE);
+    this.#tools = null;
+  }
+
   uninstall(): void {
     this.#contributors?.unregister(CONTRIBUTOR_KEY);
     this.#contributors = null;
-    if (this.#tools) {
-      this.#tools.unregister(REMEMBER);
-      this.#tools.unregister(RECALL);
-      this.#tools = null;
-    }
+    if (this.#tools) this.#unregisterTools(this.#tools);
     this.#commands.uninstall();
   }
 }
@@ -314,6 +339,8 @@ async function consolidationLoop(
   installer: Installer,
   sub: Subscription,
   signal: AbortSignal,
+  /** Someone spoke (birthdays and other dates of theirs are checked). */
+  seen: (account: AccountRef, context: ContextKey, nowMs: number) => void = () => undefined,
 ): Promise<void> {
   const config = engine.config;
   const tracker = new ActivityTracker();
@@ -340,9 +367,13 @@ async function consolidationLoop(
       if (env === null) return;
       const nowMs = ctx.clock.now();
       if (env.event.type === "platform_message_created") {
-        tracker.message(env.event.data.id.context, nowMs);
+        const data = env.event.data;
+        tracker.message(data.id.context, nowMs);
+        if (!data.author.is_bot) seen(data.author.account, data.id.context, nowMs);
       } else if (env.event.type === "voice_utterance") {
-        tracker.message(env.event.data.context, nowMs);
+        const data = env.event.data;
+        tracker.message(data.context, nowMs);
+        if (!data.speaker.is_bot) seen(data.speaker.account, data.context, nowMs);
       } else if (
         env.event.type === "custom" &&
         env.event.data.topic === CONVERSATION_FOLDED_TOPIC &&

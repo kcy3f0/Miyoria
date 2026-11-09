@@ -120,6 +120,19 @@ export const EvidenceConfigSchema = z.object({
 export type EvidenceConfig = z.output<typeof EvidenceConfigSchema>;
 
 /**
+ * `[modules.memory.dates]`: birthdays and other dates people tell her (`remember_date`), and the
+ * day she met them; on the day, the first time they speak she gets a followup to bring it up.
+ */
+export const DatesConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Her calendar's offset from UTC (minutes; 480 = Taiwan). */
+  utc_offset_minutes: z.number().int().min(-840).max(840).default(480),
+  /** The yearly day she first met someone counts too (from the first anniversary on). */
+  met_anniversary: z.boolean().default(true),
+});
+export type DatesConfig = z.output<typeof DatesConfigSchema>;
+
+/**
  * `[modules.memory]`.
  *
  * ```toml
@@ -204,6 +217,7 @@ export const MemoryConfigSchema = z.object({
    * against one with evidence. They stay usable, just never as sure as a memory with a source.
    */
   unknown_origin_factor: z.number().min(0).max(1).default(0.8),
+  dates: DatesConfigSchema.prefault({}),
 });
 export type MemoryConfig = z.output<typeof MemoryConfigSchema>;
 

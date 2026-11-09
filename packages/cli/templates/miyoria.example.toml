@@ -649,6 +649,10 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # min_overlap = 0.25             # 撐腰的那句話至少要含這個比例的事實關鍵詞(0~1)
 # max_events = 24                # 一筆記憶最多記幾個來源事件
 # match_window_secs = 10         # 把聊天行對回 EventLog 事件時,前後容許的秒數
+# [modules.memory.dates]          # 生日和紀念日:對方告訴她(remember_date),當天對方第一次說話時她會想起來、找機會祝賀
+# enabled = true
+# utc_offset_minutes = 480       # 她的日曆用的時區(480 = 台灣)
+# met_anniversary = true         # 認識滿一年、兩年…那天也算
 # /me memory forget 刪掉關於你的、你告訴她的、從你說的話整理出來的記憶;
 # 聊天紀錄和事件紀錄不動(用 /admin memory wipe 清除),對你的好感與印象(關係資料)也不動。
 

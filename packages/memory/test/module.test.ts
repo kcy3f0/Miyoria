@@ -164,7 +164,7 @@ describe("module", () => {
     expect(h.sup.services.get(MemoryEngineKey)).toBeInstanceOf(MemoryEngine);
     expect(h.contributors.all()).toHaveLength(1);
     expect(h.contributors.all()[0]?.key).toBe("memory");
-    expect(h.tools.names()).toEqual(["recall", "remember"]);
+    expect(h.tools.names()).toEqual(["forget_date", "recall", "remember", "remember_date"]);
     const reg = h.sup.services.require(CommandRegistryKey);
     for (const path of PATHS) {
       const spec = reg.get(path.split(" "));

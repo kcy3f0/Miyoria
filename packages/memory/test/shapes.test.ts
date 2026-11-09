@@ -63,6 +63,7 @@ describe("shapes", () => {
       },
       evidence: { min_overlap: 0.25, max_events: 24, match_window_secs: 10 },
       unknown_origin_factor: 0.8,
+      dates: { enabled: true, utc_offset_minutes: 480, met_anniversary: true },
     });
     // Nested sections keep their other defaults.
     expect(memoryConfig({ weights: { vector: 1 } }).weights.text).toBe(0.25);
