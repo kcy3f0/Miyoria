@@ -21,8 +21,9 @@ Pipeline per job (one job at a time; models load per stage and are freed after i
     download  bestaudio → 44.1 kHz stereo WAV (ffmpeg)
     separate  vocals + instrumental: Kim's Mel-Band RoFormer (SING_SEPARATOR_MODEL=melband, the default
               when its checkpoint is there; the instrumental is the song minus the vocals) or a Demucs
-              model (htdemucs, the fallback); skipped for library folders that already have both stems,
-              and for sources separated before
+              model (htdemucs, the fallback); only when the request needs them apart (``backing``
+              ``drop`` / ``convert``) or the lead cannot come from the song itself; skipped for library
+              folders that already have both stems, and for sources separated before
     lead      a karaoke RoFormer (leadsplit.py; SING_LEAD_MODEL, default becruily & Frazer's
               BS-RoFormer reading the whole song) takes the lead voice out; the rest of the vocal stem
               is the backing voices (harmonies, doubles, ad-libs). Stored beside the stems (lead.wav,
@@ -87,7 +88,7 @@ Environment
     SING_LEAD_INPUT        mix | vocals: what the split reads    (default mix, the whole song)
     SING_LEAD_FP16         0 = the split in fp32 on CUDA          (default 1: fp16)
     SING_LEAD_DEVICE       device of the split                    (default SING_SEPARATE_DEVICE; VRAM OOM → CPU)
-    SING_LEAD_OVERLAP      chunk overlap of the split, model-sized chunks (default 4; 2 on the CPU at most)
+    SING_LEAD_OVERLAP      chunk overlap of the split, model-sized chunks (default 2; 2 on the CPU at most)
     SING_VOICE             rvc | ying+rvc | ying | seedvc+rvc | seedvc (default rvc; a missing part is left
                            out; cached songs made with another chain or lead split are made again)
     SING_YING_DIR          YingMusic-SVC checkout + ckpt/YingMusic-SVC-full.pt (default ../models/yingmusic-svc)
@@ -316,7 +317,8 @@ class MockBackend:
         return os.environ.get("SING_LEAD_SPLIT", "1") != "0" and os.environ.get("SING_MOCK_LEAD_MODEL", "1") != "0"
 
     def split_lead(self, vocals_wav: Path, lead_out: Path, backing_out: Path, progress: Callable[[float], None],
-                   device: str | None = None, source_wav: Path | None = None) -> None:
+                   device: str | None = None, source_wav: Path | None = None,
+                   rest_out: Path | None = None) -> None:
         self._wait()
         self.lead_devices.append(device)
         self.lead_sources.append(source_wav.name if source_wav is not None else None)
@@ -325,8 +327,17 @@ class MockBackend:
         for _ in range(env_int("SING_MOCK_SEGMENTS", 0)):
             self._step()
         _write_wav(lead_out, _tone(self.seconds, 16_000, 440, 0.2), 16_000)
-        _write_wav(backing_out, _tone(self.seconds, 16_000, 330, 0.1), 16_000)
+        self.complete_stems(lead_out.parent)
         progress(1.0)
+
+    def complete_stems(self, sdir: Path) -> None:
+        if (sdir / "vocals.wav").exists() and not (sdir / "backing.wav").exists():
+            _write_wav(sdir / "backing.wav", _tone(self.seconds, 16_000, 330, 0.1), 16_000)
+        if (sdir / "source.wav").exists() and not (sdir / "rest.wav").exists():
+            _write_wav(sdir / "rest.wav", _tone(self.seconds, 16_000, 220, 0.1), 16_000)
+
+    def lead_reads_mix(self) -> bool:
+        return True
 
     def median_f0(self, path: Path) -> float | None:
         return env_float("SING_MOCK_F0_HZ", 440.0)
@@ -439,9 +450,13 @@ class _RealAdapter:
         what becomes of them (songs.BACKING_MODES; ``backing_conv`` is the converted backing)."""
         from engine import mix_song
 
-        return mix_song(sdir / ("lead.wav" if split else "vocals.wav"), converted, sdir / "instrumental.wav", key, out,
+        # Kept backing (or none at all): everything but the lead in one, when the split left it.
+        rest = sdir / "rest.wav"
+        use_rest = split and backing in ("keep", "acapella") and rest.exists()
+        return mix_song(sdir / ("lead.wav" if split else "vocals.wav"), converted,
+                        rest if use_rest else sdir / "instrumental.wav", key, out,
                         self.b, env_float("SING_TARGET_LUFS", -16.0),
-                        backing_wav=sdir / "backing.wav" if split and backing == "keep" else None,
+                        backing_wav=sdir / "backing.wav" if split and backing == "keep" and not use_rest else None,
                         backing_conv=backing_conv if split and backing == "convert" else None,
                         backing_src=sdir / "backing.wav" if split and backing == "convert" else None,
                         instrumental=backing != "acapella")
@@ -674,6 +689,20 @@ def _other_voice(meta: dict[str, Any], backend: Any) -> bool:
     tag = _lead_tag_of(backend)
     used = (meta.get("lead_split") or {}).get("used", False)
     return tag is not None and bool(used) and (engine.get("lead") or LEGACY_LEAD) != tag
+
+
+def _needs_stems(req: JobRequest, backend: Any) -> bool:
+    """Whether this request needs the separated vocals and instrumental (see ``_run_job``)."""
+    if req.backing in ("drop", "convert") or os.environ.get("SING_LEAD_SPLIT", "1") == "0":
+        return True
+    if not backend.lead_available():
+        return True
+    return not _lead_reads_mix(backend)
+
+
+def _lead_reads_mix(backend: Any) -> bool:
+    reads_mix = getattr(backend, "lead_reads_mix", None)
+    return bool(reads_mix()) if callable(reads_mix) else True
 
 
 def _separator_of(backend: Any) -> str | None:
@@ -1040,25 +1069,27 @@ def _lead_stage(job: Job, sdir: Path, src: Source, timed: Callable[[str, Callabl
         return {"used": False, "reason": "off"}
     if not b.lead_available():
         return {"used": False, "reason": "no_model"}
-    lead_wav, backing_wav = sdir / "lead.wav", sdir / "backing.wav"
+    lead_wav, backing_wav, rest_wav = sdir / "lead.wav", sdir / "backing.wav", sdir / "rest.wav"
     tag = _lead_tag_of(b)
-    if lead_wav.exists() and backing_wav.exists() and (tag is None or _stems_lead(sdir) == tag):
+    if lead_wav.exists() and (tag is None or _stems_lead(sdir) == tag):
+        b.complete_stems(sdir)  # what this request needs that an earlier one did not
         return {"used": True, "cached": True}
     source = sdir / "source.wav"
 
     def split(device: str) -> None:
         b.split_lead(sdir / "vocals.wav", lead_wav, backing_wav, lambda f: _set(job, "lead", f),
                      device="cpu" if device == "cpu" else None,
-                     source_wav=source if source.exists() else None)
+                     source_wav=source if source.exists() else None, rest_out=rest_wav)
 
+    sized = source if source.exists() else sdir / "vocals.wav"
     try:
-        timed("lead", lambda: _gpu_stage(job, "lead", sdir / "vocals.wav", src.duration_s, split))
+        timed("lead", lambda: _gpu_stage(job, "lead", sized, src.duration_s, split))
     except (Cancelled, Suspended):
         raise
     except Exception as e:
         log.warning("job %s: the lead split failed, converting the whole vocal stem: %s", job.id, e)
-        lead_wav.unlink(missing_ok=True)
-        backing_wav.unlink(missing_ok=True)
+        for f in (lead_wav, backing_wav, rest_wav):
+            f.unlink(missing_ok=True)
         return {"used": False, "reason": "failed", "error": str(e)[:300]}
     _write_stems_info(sdir, lead=tag)
     return {"used": True, "cached": False}
@@ -1109,27 +1140,47 @@ def _run_job(job: Job) -> None:
         for old in list(sdir.glob("video.*")):
             old.unlink(missing_ok=True)
     _start_video(job, src, sdir)
+    given_stems = src.kind == "library" and src.split  # a library folder with its own stems
+    if req.force:
+        derived = ["lead.wav", "backing.wav", "rest.wav", STEMS_INFO]
+        if not given_stems:
+            derived += ["vocals.wav", "instrumental.wav"]
+        for stale in derived:
+            (sdir / stale).unlink(missing_ok=True)
     have_stems = (sdir / "vocals.wav").exists() and (sdir / "instrumental.wav").exists()
     sep = _separator_of(b)
-    if have_stems and sep is not None and not (src.kind == "library" and src.split) and _stems_separator(sdir) != sep:
+    if have_stems and sep is not None and not given_stems and _stems_separator(sdir) != sep:
         have_stems = False  # made by another separator: separate again with this one
-    if not have_stems or req.force:
-        for stale in ("lead.wav", "backing.wav"):  # of the stems that are about to be made again
-            (sdir / stale).unlink(missing_ok=True)
-        if src.kind == "library":
+        (sdir / "backing.wav").unlink(missing_ok=True)  # vocals - lead, of the old vocals
+    if src.kind == "library":
+        if req.force or not ((sdir / "source.wav").exists() or (given_stems and have_stems)):
             timed("download", lambda: b.fetch_library(src, sdir))
-        elif not (sdir / "source.wav").exists() or req.force:
-            timed("download", lambda: b.fetch(src, sdir / "source.wav", lambda f: _set(job, "download", f)))
-        if not (src.kind == "library" and src.split):
+            have_stems = have_stems or given_stems
+    elif req.force or not (sdir / "source.wav").exists():
+        timed("download", lambda: b.fetch(src, sdir / "source.wav", lambda f: _set(job, "download", f)))
 
-            def separate(device: str) -> None:
-                b.separate(sdir / "source.wav", sdir / "vocals.wav", sdir / "instrumental.wav",
-                           lambda f: _set(job, "separate", f), device="cpu" if device == "cpu" else None)
+    def separate_stage() -> None:
+        # New vocals: what was taken from the old ones goes (a lead read from the vocals, too).
+        (sdir / "backing.wav").unlink(missing_ok=True)
+        if not _lead_reads_mix(b):
+            (sdir / "lead.wav").unlink(missing_ok=True)
 
-            timed("separate", lambda: _gpu_stage(job, "separate", sdir / "source.wav", src.duration_s, separate))
-            _write_stems_separator(sdir, _separator_of(b))
+        def separate(device: str) -> None:
+            b.separate(sdir / "source.wav", sdir / "vocals.wav", sdir / "instrumental.wav",
+                       lambda f: _set(job, "separate", f), device="cpu" if device == "cpu" else None)
 
+        timed("separate", lambda: _gpu_stage(job, "separate", sdir / "source.wav", src.duration_s, separate))
+        _write_stems_separator(sdir, _separator_of(b))
+
+    # The vocals and instrumental apart are needed only to drop or convert the backing voices, or
+    # when the lead comes from the vocals. Otherwise the lead comes from the song itself and the
+    # rest of the song is everything else, so the separation (the stage that needs the most
+    # VRAM) is skipped: the mix is the same to the sample.
+    if not have_stems and not given_stems and _needs_stems(req, b):
+        separate_stage()
     lead = _lead_stage(job, sdir, src, timed)
+    if not lead["used"] and not (sdir / "vocals.wav").exists():
+        separate_stage()  # no lead after all: the plain pipeline converts the vocals
     vocal = sdir / ("lead.wav" if lead["used"] else "vocals.wav")
 
     out = store.song_dir(sid)

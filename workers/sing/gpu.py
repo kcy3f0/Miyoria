@@ -181,7 +181,7 @@ class Profile:
     def need(self, stage: str, prior_mb: int) -> tuple[int, bool]:
         """(peak VRAM of the stage, whether it was measured here)."""
         peaks = self._seen(stage).get("peaks_mb") or []
-        return (max(peaks), True) if peaks else (prior_mb, False)
+        return (typical_peak(peaks), True) if peaks else (prior_mb, False)
 
     def step(self, stage: str) -> float | None:
         return self._seen(stage).get("step_s")
@@ -246,11 +246,20 @@ class Profile:
 
     def public(self) -> dict[str, Any]:
         d = self._known()
-        stages = {name: {"peak_mb": max(s["peaks_mb"]) if s.get("peaks_mb") else None, "step_s": s.get("step_s"),
+        stages = {name: {"peak_mb": typical_peak(s["peaks_mb"]) if s.get("peaks_mb") else None, "step_s": s.get("step_s"),
                          "rate": s.get("rate"), "samples": s.get("samples", 0)}
                   for name, s in d.get("stages", {}).items()}
         return {"device": self._key, "stages": stages, "headroom_mb": d.get("headroom_mb"),
                 "freed_mb": d.get("freed_mb"), "reload_s": d.get("reload_s"), "spills": len(d.get("spills") or [])}
+
+
+def typical_peak(peaks: list[int]) -> int:
+    """The highest of the recent peaks that is no more than twice their median: a run that once
+    took far more (on 11-09 an fp32 separation's 9.1 GB among fp16 runs of 2.1 to 2.3 GB) does not
+    send every later one to the CPU. A real rise shows in more than one run and is kept."""
+    ordered = sorted(peaks)
+    median = ordered[len(ordered) // 2]
+    return max(p for p in ordered if p <= 2 * median)
 
 
 # ── what can be measured ─────────────────────────────────────────────────────

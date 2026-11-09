@@ -673,25 +673,34 @@ def _job(sing, query: str, **kw) -> dict:
     return done
 
 
-def test_the_lead_is_split_after_the_vocals_and_is_all_that_is_converted(sing):
+def test_the_lead_comes_from_the_song_and_is_all_that_is_converted(sing):
     if not is_mock():
         pytest.skip("reads the mock backend's log")
     b = _sing_server().state.backend
     n = len(b.convert_inputs)
     done = _job(sing, "lead stage order")
     song = done["song"]
-    assert list(song["timings"])[:6] == ["resolve_s", "download_s", "separate_s", "lead_s", "convert_s", "mix_s"]
+    # The backing kept as recorded: no vocal separation, the lead straight from the song.
+    assert list(song["timings"])[:5] == ["resolve_s", "download_s", "lead_s", "convert_s", "mix_s"]
     assert song["lead_split"] == {"used": True, "cached": False}
-    # The karaoke model reads the whole song when it is there (it was trained on mixes).
+    # The karaoke model reads the whole song (it was trained on mixes).
     assert b.lead_sources[-1] == "source.wav"
-    # Seed-VC reads the lead, and so do the F0 statistics behind the auto key.
+    # The converter reads the lead, and so do the F0 statistics behind the auto key.
     assert b.convert_inputs[n:] == ["lead.wav"]
     assert b.f0_inputs[-1] == "lead.wav"
-    # The mix gets the split, so it takes the lead's level and puts the backing in the instrumental.
+    # The mix gets the lead and the rest of the song (song - lead), nothing separated.
     split, files = b.mix_inputs[-1]
-    assert split is True and {"lead.wav", "backing.wav", "vocals.wav", "instrumental.wav"} <= set(files)
+    assert split is True and {"lead.wav", "rest.wav"} <= set(files) and "vocals.wav" not in files
     key = song["source"]["key"]
-    assert (_stems(key) / "lead.wav").exists() and (_stems(key) / "backing.wav").exists()
+    assert (_stems(key) / "lead.wav").exists() and (_stems(key) / "rest.wav").exists()
+
+    # Dropping the backing needs it apart: the vocals are separated now, the lead is reused and
+    # the backing (vocals - lead) is taken from them.
+    dropped = _job(sing, "lead stage order", backing="drop")["song"]
+    assert list(dropped["timings"])[:3] == ["resolve_s", "separate_s", "convert_s"]
+    assert dropped["lead_split"] == {"used": True, "cached": True}
+    split, files = b.mix_inputs[-1]
+    assert {"lead.wav", "backing.wav", "vocals.wav", "instrumental.wav"} <= set(files)
 
 
 def test_the_backing_is_kept_by_default_and_each_mode_is_a_song_of_its_own(sing):
@@ -1067,3 +1076,40 @@ def test_stems_and_songs_of_another_separator_are_made_again(tmp_path):
     assert server._stems_separator(tmp_path) == "melband"
     server._write_stems_separator(tmp_path / "x", None)  # the mock backend: nothing written
     assert not (tmp_path / "x").exists()
+
+
+def test_one_outlying_peak_does_not_set_the_vram_estimate():
+    import gpu
+
+    # 11-09: one fp32 separation among fp16 runs sent every later one to the CPU.
+    assert gpu.typical_peak([2349, 2222, 2222, 9136, 2100]) == 2349
+    assert gpu.typical_peak([3000]) == 3000
+    assert gpu.typical_peak([2000, 4100, 4200]) == 4200  # a real rise shows in more than one run
+
+
+def test_the_split_from_the_song_alone_leaves_the_rest_of_it(tmp_path):
+    import numpy as np
+    import soundfile as sf
+    import engine
+
+    class Half:  # the karaoke model: "the lead" is half the song
+        device, sr, gate = "cpu", 44100, None
+
+        def lead(self, x, sr, progress=None, overlap=None):
+            return x * 0.5
+
+    b = object.__new__(engine.RealBackend)
+    b._lead, b.gate, b.lead_overlap, b.keep, b.lead_device = Half(), None, 2, True, "cpu"
+    x = (np.random.default_rng(3).standard_normal((44100, 2)) * 0.1).astype("float32")
+    sf.write(tmp_path / "source.wav", x, 44100, subtype="FLOAT")
+    b._split_on("cpu", tmp_path / "vocals.wav", tmp_path / "lead.wav", tmp_path / "backing.wav", lambda f: None,
+                tmp_path / "source.wav", tmp_path / "rest.wav")
+    lead, _ = sf.read(tmp_path / "lead.wav", dtype="float32")
+    rest, _ = sf.read(tmp_path / "rest.wav", dtype="float32")
+    assert np.allclose(lead + rest, x, atol=1e-4)
+    assert not (tmp_path / "backing.wav").exists()  # no vocals, no backing
+    # Separated later: the backing comes from the vocals by subtraction, the lead is kept.
+    sf.write(tmp_path / "vocals.wav", x * 0.8, 44100, subtype="FLOAT")
+    b.complete_stems(tmp_path)
+    backing, _ = sf.read(tmp_path / "backing.wav", dtype="float32")
+    assert np.allclose(backing, x * 0.3, atol=1e-4)

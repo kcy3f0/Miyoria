@@ -347,7 +347,9 @@ class RealBackend:
         self.ref_paths = ref_paths(os.environ.get("SING_REF") or str(here.parent / "voices" / "deepseek-chan" / "ref.wav"))
         self.f0_clean = os.environ.get("SING_F0_CLEAN", "1") != "0"
         self.lead_device = os.environ.get("SING_LEAD_DEVICE", self.separate_device)
-        self.lead_overlap = env_int("SING_LEAD_OVERLAP", 4)
+        # 2 (each sample read twice): the karaoke model scores the same at 2 as at 8 on MVSep's
+        # leaderboard (10.77 / 10.79 dB) and runs twice as fast as at 4.
+        self.lead_overlap = env_int("SING_LEAD_OVERLAP", 2)
         if not (self.seedvc_dir / "modules").exists():
             raise RuntimeError(f"Seed-VC not found at {self.seedvc_dir} (set SING_SEEDVC_DIR)")
         if not self.ref_paths:
@@ -605,25 +607,28 @@ class RealBackend:
         return leadsplit.available()
 
     def split_lead(self, vocals_wav: Path, lead_out: Path, backing_out: Path, progress: Progress,
-                   device: str | None = None, source_wav: Path | None = None) -> None:
-        """The lead voice into ``lead_out``, the rest of the separated vocals into ``backing_out``
-        (``vocals - lead``, so the two add up to the stem). The model reads the whole song
-        (``source_wav``) when leadsplit says so and it is there, else the vocals. ``device``: where
-        gpu.py placed this run."""
+                   device: str | None = None, source_wav: Path | None = None,
+                   rest_out: Path | None = None) -> None:
+        """The lead voice into ``lead_out``; when the separated vocals are there, the rest of them
+        into ``backing_out`` (``vocals - lead``); when the song is, everything but the lead into
+        ``rest_out`` (``song - lead``: instrumental and backing voices in one). The model reads the
+        whole song (``source_wav``) when leadsplit says so and it is there, else the vocals.
+        ``device``: where gpu.py placed this run."""
         on = device or self.lead_device
+        args = (vocals_wav, lead_out, backing_out, progress, source_wav, rest_out)
         try:
             if device == "cpu":
                 with leave_cores_free():
-                    self._split_on("cpu", vocals_wav, lead_out, backing_out, progress, source_wav)
+                    self._split_on("cpu", *args)
             else:
-                self._split_on(on, vocals_wav, lead_out, backing_out, progress, source_wav)
+                self._split_on(on, *args)
         except Exception as e:
             if not is_oom(e) or on == "cpu":
                 raise
             log.warning("lead split ran out of VRAM; retrying on the CPU")
             self._lead = None
             free_cuda()
-            self._split_on("cpu", vocals_wav, lead_out, backing_out, progress, source_wav)
+            self._split_on("cpu", *args)
         finally:
             if not self.keep:
                 self._lead = None
@@ -631,7 +636,7 @@ class RealBackend:
         progress(1.0)
 
     def _split_on(self, device: str, vocals_wav: Path, lead_out: Path, backing_out: Path, progress: Progress,
-                  source_wav: Path | None = None) -> None:
+                  source_wav: Path | None = None, rest_out: Path | None = None) -> None:
         import leadsplit
 
         if self._lead is not None and self._lead.device != device:
@@ -640,18 +645,33 @@ class RealBackend:
             self._lead = leadsplit.LeadSplitter(leadsplit.model_path(), device)
         splitter = self._lead
         splitter.gate = self.gate
-        x, sr = read_audio(vocals_wav)
-        src = x
-        if leadsplit.reads_mix() and source_wav is not None and Path(source_wav).exists():
-            src, ssr = read_audio(source_wav)
-            if ssr != sr:
-                raise RuntimeError(f"the song is at {ssr} Hz, its vocals at {sr}")
-        lead = splitter.lead(src, sr, progress, overlap=min(self.lead_overlap, 2) if device == "cpu" else self.lead_overlap)
-        n = min(len(lead), len(x))
-        if x.shape[1] == 1:
-            x = x.repeat(2, axis=1)
-        write_wav(lead_out, lead[:n], sr)
-        write_wav(backing_out, x[:n] - lead[:n], sr)
+        vocals = read_audio(vocals_wav) if Path(vocals_wav).exists() else None
+        song = read_audio(source_wav) if source_wav is not None and Path(source_wav).exists() else None
+        src = song if leadsplit.reads_mix() and song is not None else vocals
+        if src is None:
+            raise RuntimeError("nothing to split: neither the song nor its vocals are there")
+        x, sr = src
+        lead = splitter.lead(x, sr, progress, overlap=min(self.lead_overlap, 2) if device == "cpu" else self.lead_overlap)
+        write_wav(lead_out, lead, sr)
+        _write_differences(lead, sr, vocals, backing_out, song, rest_out)
+
+    def complete_stems(self, sdir: Path) -> None:
+        """A cached lead: the backing (vocals - lead) and the rest (song - lead) it is missing,
+        by subtraction, from whichever of the vocals and the song are there."""
+        backing, rest = sdir / "backing.wav", sdir / "rest.wav"
+        vocals, song = sdir / "vocals.wav", sdir / "source.wav"
+        want_backing = vocals.exists() and not backing.exists()
+        want_rest = song.exists() and not rest.exists()
+        if not (want_backing or want_rest):
+            return
+        lead, sr = read_audio(sdir / "lead.wav")
+        _write_differences(lead, sr, read_audio(vocals) if want_backing else None, backing,
+                           read_audio(song) if want_rest else None, rest)
+
+    def lead_reads_mix(self) -> bool:
+        import leadsplit
+
+        return leadsplit.reads_mix()
 
     def _gate_separator(self, model: Any) -> None:
         """Before every segment the separator looks at `self.gate` (a bag of models has several)."""
@@ -1000,6 +1020,22 @@ def mix_song(vocals_src: Path, vocals_conv: Path, inst_wav: Path, key: int, out_
         "samples": samples,
         "duration_s": round(samples / PLAY_RATE, 2),
     }
+
+
+def _write_differences(lead, sr: int, vocals: tuple[Any, int] | None, backing_out: Path,
+                       song: tuple[Any, int] | None, rest_out: Path | None) -> None:
+    """``vocals - lead`` into ``backing_out`` and ``song - lead`` into ``rest_out``, for whichever
+    is given (stereo, cut to the shorter)."""
+    for pair, out in ((vocals, backing_out), (song, rest_out)):
+        if pair is None or out is None:
+            continue
+        x, xsr = pair
+        if xsr != sr:
+            raise RuntimeError(f"{out.name}: the stems are at {xsr} Hz, the lead at {sr}")
+        if x.shape[1] == 1:
+            x = x.repeat(2, axis=1)
+        n = min(len(lead), len(x))
+        write_wav(out, x[:n] - lead[:n], sr)
 
 
 def copy_if_missing(src: Path, dst: Path) -> None:
