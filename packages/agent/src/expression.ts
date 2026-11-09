@@ -22,6 +22,18 @@ const VOICE_CLOSE = "</voice>";
 /** Longest `<voice>` span (UTF-16 units) the parser waits for its closing tag. */
 const MAX_VOICE_LEN = 600;
 const MAX_EMOTION_LEN = 32;
+/**
+ * `<emo:thinking>` (or `think`, `thought`) is an emotion name she may use, and a model that
+ * thinks aloud reads it as a thinking block: `<emo:thinking>the plan</emo:thinking>the reply`.
+ * Text up to such a closing tag is her reasoning and is never shown (2026-11-09, five times in
+ * the log). The parser waits this many UTF-16 units for the closing tag before it gives up and
+ * takes the tag as the emotion it names.
+ */
+const MAX_THINK_LEN = 1200;
+const THINK_OPEN = /^<emo:(thinking|think|thought)(?: [0-9.]+)?>/;
+/** A closing emotion tag never says anything: `</emo:thinking>`. */
+const EMO_CLOSE = /^<\/emo:[a-z0-9_-]{1,32}>/;
+const EMO_CLOSE_PARTIAL = /^<\/(?:e(?:m(?:o(?::[a-z0-9_-]{0,32})?)?)?)?$/;
 export const DEFAULT_PAUSE_MS = 300;
 export const MAX_PAUSE_MS = 10_000;
 
@@ -92,6 +104,35 @@ export class ExpressionParser {
           return out;
         }
         // Too long to be a spoken line: plain text.
+      }
+      const rest = lower.slice(start);
+      const closing = EMO_CLOSE.exec(rest);
+      if (closing !== null) {
+        // What came before it in this stretch was written inside a block that ends here.
+        text = "";
+        pos = start + closing[0].length;
+        continue;
+      }
+      if (!eof && EMO_CLOSE_PARTIAL.test(rest)) {
+        flush();
+        this.#held = input.slice(start);
+        return out;
+      }
+      const thinking = THINK_OPEN.exec(rest);
+      if (thinking !== null) {
+        const from = start + thinking[0].length;
+        const close = lower.indexOf(`</emo:${thinking[1]}>`, from);
+        if (close !== -1) {
+          flush();
+          pos = close + thinking[1]!.length + 7;
+          continue;
+        }
+        if (!eof && input.length - from <= MAX_THINK_LEN) {
+          flush();
+          this.#held = input.slice(start);
+          return out;
+        }
+        // No closing tag in sight: the emotion it names.
       }
       const scan = scanTag(input.slice(start));
       if (scan.kind === "tag") {

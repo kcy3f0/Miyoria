@@ -205,3 +205,43 @@ describe("markup the model imitates", () => {
     }
   });
 });
+
+// 2026-11-09: `thinking` is one of her emotion names and the model used it as a thinking block:
+// `<emo:thinking>the plan</emo:thinking>the reply` printed the plan and the closing tag.
+describe("an emotion tag used as a thinking block", () => {
+  const PLAN = "話題都跟我沒關係，插一句幫他把話講清楚就好，一句收。";
+  const REPLY = "不是「做不到」，是他講的是「換模型」。";
+
+  it("what is between the opening and the closing tag is not shown", () => {
+    const e = Expression.parse(`<emo:thinking>${PLAN}</emo:thinking>${REPLY}`);
+    expect(e.text).toBe(REPLY);
+  });
+
+  it("even when the tags and the plan arrive in small chunks", () => {
+    const whole = `<emo:thinking>${PLAN}</emo:thinking><emo:smug>${REPLY}`;
+    const chunks = [...whole].reduce<string[]>((acc, c, i) => {
+      if (i % 3 === 0) acc.push("");
+      acc[acc.length - 1] += c;
+      return acc;
+    }, []);
+    const segments = parseChunks(chunks);
+    expect(segments).toEqual([emo("smug"), text(REPLY)]);
+  });
+
+  it("an emotion she really means, with no closing tag, is still the emotion", () => {
+    expect(parseChunks(["<emo:thinking>嗯……讓我想想。"])).toEqual([
+      emo("thinking"),
+      text("嗯……讓我想想。"),
+    ]);
+  });
+
+  it("a closing emotion tag is never shown, and takes the text before it in that stretch", () => {
+    expect(Expression.parse(`${PLAN}</emo:smug>${REPLY}`).text).toBe(REPLY);
+    expect(Expression.parse(`<emo:smug>${REPLY}</emo:smug>`).text).toBe("");
+    expect(Expression.parse(`好的</emo:`).text).toBe("好的</emo:");
+  });
+
+  it("other angle brackets stay text", () => {
+    expect(Expression.parse("a </b> c").text).toBe("a </b> c");
+  });
+});
