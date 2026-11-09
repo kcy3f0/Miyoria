@@ -56,7 +56,12 @@ export const CLAIMS: readonly Claim[] = [
   {
     tool: "voice_leave",
     request: "leave_voice",
-    ...said("離開語音了|退出語音了|游走了|先下語音", "離開語音|下語音|退出語音"),
+    // 2026-11-09: 「那我先出去喔,要叫我再回來」 left her in the channel (asked to leave so the
+    // others could talk): leaving in plain words counts, not only "語音".
+    ...said(
+      "離開語音了|退出語音了|游走了|先下語音|我(?:就|先)?(?:出去|離開|退出|下線)了|我先走了",
+      "離開語音|下語音|退出語音|出去|離開|退出|下線|走人|閃人",
+    ),
     holds: (s) => !s.inVoice,
   },
   {
