@@ -10,9 +10,9 @@ import type { AddressInfo } from "node:net";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Browser, chromium, type Page } from "playwright-core";
-import type { PoseSpec } from "./studio.js";
+import type { ParameterInfo, PoseSpec } from "./studio.js";
 
-export type { PoseSpec };
+export type { ParameterInfo, PoseSpec };
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -96,6 +96,13 @@ export class CardStudio {
     const next = this.#queue.then(run, run);
     this.#queue = next.catch(() => undefined);
     return next;
+  }
+
+  /** The model's parameters and their ranges. */
+  async parameters(model: string): Promise<ParameterInfo[]> {
+    await this.start();
+    const page = this.#page as Page;
+    return page.evaluate((url) => window.studio.parameters(url), `${this.#origin}/model/${model}`);
   }
 
   async stop(): Promise<void> {

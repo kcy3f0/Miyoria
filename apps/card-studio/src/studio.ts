@@ -147,8 +147,35 @@ async function render(spec: PoseSpec): Promise<string> {
 
 declare global {
   interface Window {
-    studio: { render: (spec: PoseSpec) => Promise<string>; ready: true };
+    studio: {
+      render: (spec: PoseSpec) => Promise<string>;
+      parameters: (model: string) => Promise<ParameterInfo[]>;
+      ready: true;
+    };
   }
 }
 
-window.studio = { render, ready: true };
+/** One of the model's parameters, with the range a pose may use. */
+export interface ParameterInfo {
+  id: string;
+  min: number;
+  max: number;
+  default: number;
+}
+
+/** Every parameter of the model, for choosing poses. */
+async function parameters(url: string): Promise<ParameterInfo[]> {
+  const m = (await model(url)).getModel();
+  const out: ParameterInfo[] = [];
+  for (let i = 0; i < m.getParameterCount(); i++) {
+    out.push({
+      id: m.getParameterId(i).getString().s,
+      min: m.getParameterMinimumValue(i),
+      max: m.getParameterMaximumValue(i),
+      default: m.getParameterDefaultValue(i),
+    });
+  }
+  return out;
+}
+
+window.studio = { render, parameters, ready: true };
