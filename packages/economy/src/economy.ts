@@ -63,6 +63,7 @@ import { Purse } from "./purse.js";
 import { MAX_SCREEN_CHARS, screenEvent, screenText, screenWait, waitMinutes } from "./screen.js";
 import { otherName, sendCoins } from "./transfer.js";
 import {
+  type AdjustResult,
   type BoardLine,
   type BountyView,
   type CheckinResult,
@@ -82,12 +83,11 @@ import {
   type GoalView,
   type Hunger,
   type LedgerLine,
+  MAX_ADJUST,
+  MAX_ADJUST_NOTE_CHARS,
   PAID_ITEMS,
   type PaidItem,
   type PledgeResult,
-  type AdjustResult,
-  MAX_ADJUST,
-  MAX_ADJUST_NOTE_CHARS,
   type Purchase,
   SCREEN_TOPIC,
   type ShopItem,

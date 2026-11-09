@@ -205,6 +205,33 @@ export class DiscordSink implements PlatformSink, ReplySink {
     return { context, id: first as string };
   }
 
+  /** `ReplySink`: a command-style card (Components V2, no pings) into `context`. */
+  async sendCard(
+    context: ContextKey,
+    reply: CommandReply,
+    signal?: AbortSignal,
+  ): Promise<MessageRef> {
+    if (context.platform !== PLATFORM) {
+      throw new DiscordSendError(`context \`${contextKeyString(context)}\` is not on Discord`);
+    }
+    const channel = channelOf(context);
+    let first: string | null = null;
+    for (const payload of renderReply(reply, false)) {
+      const sent = await inContext(`sending a card to ${contextKeyString(context)}`, () =>
+        this.#rest.post(Routes.channelMessages(channel), {
+          body: {
+            components: payload.components,
+            flags: payload.flags,
+            allowed_mentions: { parse: [] },
+          },
+          signal,
+        }),
+      );
+      first ??= messageId(sent);
+    }
+    return { context, id: first as string };
+  }
+
   /** `"<server> / <channel>"` (just the channel name in DMs); `null` when Discord won't say. */
   async describe(context: ContextKey, signal?: AbortSignal): Promise<string | null> {
     const get = this.#rest.get?.bind(this.#rest);

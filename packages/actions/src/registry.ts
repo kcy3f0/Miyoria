@@ -469,7 +469,7 @@ export class ActuatorRegistry implements ActuatorExecutor {
               route,
               task,
             });
-      outcome = { status: "done", decision, result };
+      outcome = { status: "done", decision, result: this.#postReceipt(request, result) };
     } catch (error) {
       if (options.signal?.aborted) throw error;
       log.warn(
@@ -1007,6 +1007,25 @@ export class ActuatorRegistry implements ActuatorExecutor {
       log.warn({ err: errorMessage(error) }, "cannot describe the request for the card");
       return null;
     }
+  }
+
+  /**
+   * A result with a receipt, of her turn in a chat or voice context: the card goes up there
+   * (not awaited: the tool answer does not wait for Discord) and she is told it did.
+   */
+  #postReceipt(request: ActionRequest, result: ActionResult): ActionResult {
+    const card = result.receipt;
+    const context = request.principal.context;
+    if (!card || context === null || request.principal.kind === "command") return result;
+    const sink = this.#services.get(ReplySinkKey);
+    if (!sink?.sendCard || sink.platform !== context.platform) return result;
+    sink.sendCard(context, { ...card, ephemeral: false }).catch((error: unknown) => {
+      log.warn({ err: errorMessage(error) }, "could not post a receipt card");
+    });
+    return {
+      ...result,
+      text: `${result.text}(頻道上已經貼出一張收據卡片寫了金額和餘額,大家看得到,你不用再唸數字,照你的個性反應就好)`,
+    };
   }
 
   /** Sends the approval card to every reachable owner and waits for the first answer. */

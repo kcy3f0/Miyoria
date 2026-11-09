@@ -2,7 +2,7 @@
 // schema and an executor. Every caller (her tools, slash commands, the panel, the game
 // director) goes through `ActuatorRegistry.invoke`, which runs the gate first.
 
-import type { ReplyFile } from "@miyoria/commands";
+import type { CommandReply, ReplyFile } from "@miyoria/commands";
 import type { ServiceLookup } from "@miyoria/kernel";
 import type {
   AccountRef,
@@ -81,6 +81,12 @@ export interface ExecContext {
 export interface ActionResult {
   text: string;
   data: JsonValue;
+  /**
+   * A card for everyone where the request came from (what moved in coins, a receipt): posted by
+   * the executor when she acted in a chat or voice turn, and she is told it is there so she
+   * reacts instead of reading the numbers out. Command replies show their own text instead.
+   */
+  receipt?: CommandReply;
 }
 
 /**

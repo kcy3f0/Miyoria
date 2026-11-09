@@ -54,6 +54,7 @@ import {
   MAX_FEED_COUNT,
   STRANGER,
 } from "./economy.js";
+import { receipt, someone } from "./receipt.js";
 import { EconomyError, FEED_ITEMS, type FeedItem, type ShopItem } from "./types.js";
 
 const GiveArgs = z.object({
@@ -146,7 +147,15 @@ export function giveCapability(economy: EconomyService, services: Lookup): Capab
         };
       }
       const less = given < args.amount ? `(今天的上限只剩這些)` : "";
-      return { text: `送了 ${given} ${currency}給 ${args.to}${less}。`, data: { given } };
+      return {
+        text: `送了 ${given} ${currency}給 ${args.to}${less}。`,
+        data: { given },
+        receipt: receipt(
+          "🎁 送出",
+          `${someone(account)} 拿到 ${given} ${currency}`,
+          args.reason ?? null,
+        ),
+      };
     },
   }) as Capability;
 }
@@ -351,6 +360,15 @@ export function acceptFoodCapability(economy: EconomyService, offers: VoiceOffer
         balance: r.balance,
         again,
       },
+      ...(again
+        ? {}
+        : {
+            receipt: receipt(
+              "🍚 收下了",
+              `${someone(who.account)} 餵了${label}`,
+              `−${r.charged} ${cur} · 剩 ${r.balance}${less ? " · 吃不下的沒扣" : ""}`,
+            ),
+          }),
     };
   }
 
@@ -475,6 +493,11 @@ export function checkinCapability(economy: EconomyService): Capability {
         return {
           text: `簽到好了:對方拿到 ${r.gained} ${cur},連續第 ${r.streak} 天,現在有 ${r.balance}。`,
           data: { checked_in: true, gained: r.gained, streak: r.streak, balance: r.balance },
+          receipt: receipt(
+            "📅 簽到",
+            `${someone(who.account)} 拿到 ${r.gained} ${cur}`,
+            `連續第 ${r.streak} 天 · 現在有 ${r.balance}`,
+          ),
         };
       } catch (error) {
         if (!(error instanceof EconomyError)) throw error;
@@ -728,6 +751,13 @@ export function makeDealCapability(economy: EconomyService, deals: VoiceDeals): 
         prepaid: req.prepaid,
         due_in_s: c.deal_timeout_s,
       },
+      receipt: receipt(
+        "🤝 約定",
+        `${someone(who.account)}:${req.task} → ${label}`,
+        req.prepaid
+          ? `先付 ${r.value} ${cur}(託管,做完才給她)· ${timeout} 分鐘內有效`
+          : `做完再付 ${r.value} ${cur} · ${timeout} 分鐘內有效`,
+      ),
     };
   }
 
@@ -869,6 +899,11 @@ export function dealDoneCapability(economy: EconomyService): Capability {
           return {
             text: `託管的${label}給你了(對方先付的),你吃了。約定完成。`,
             data: { done: true, state: "released", value: r.deal.value },
+            receipt: receipt(
+              "🤝 約定完成",
+              `${someone(who.account)} 先付的${label}給她了`,
+              `${r.deal.value} ${cur}`,
+            ),
           };
         }
         return {

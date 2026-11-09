@@ -17,6 +17,11 @@ export interface ReplySink {
   readonly platform: PlatformId;
   /** Sends `reply` (rendered like a command reply, never pinging anyone) as a DM to `account`. */
   sendDirect(account: AccountRef, reply: CommandReply, signal?: AbortSignal): Promise<MessageRef>;
+  /**
+   * Sends `reply` (rendered like a command reply, never pinging anyone) into `context` (a channel,
+   * a thread, a voice channel's text chat): the receipt cards of her actions.
+   */
+  sendCard?(context: ContextKey, reply: CommandReply, signal?: AbortSignal): Promise<MessageRef>;
 }
 
 export const ReplySinkKey = serviceKey<ReplySink>("ReplySink");

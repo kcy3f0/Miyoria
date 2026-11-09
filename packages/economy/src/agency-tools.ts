@@ -11,6 +11,7 @@ import {
   defineCapability,
   type ExecContext,
 } from "@miyoria/actions";
+import type { CommandReply } from "@miyoria/commands";
 import type { AccountRef, ContextKey, JsonObject } from "@miyoria/types";
 import { z } from "zod";
 import { NO_BOUNTY } from "./bounties.js";
@@ -18,6 +19,7 @@ import { DealRefusal } from "./deals.js";
 import type { EconomyService } from "./economy.js";
 import { MAX_PROMISE_CHARS, MAX_TITLE_CHARS, NO_GOAL, OPEN_GOAL } from "./goals.js";
 import { EXPRESSION_WORD } from "./purse.js";
+import { receipt, someone } from "./receipt.js";
 import { EconomyError, GIFT_EXPRESSIONS } from "./types.js";
 
 const PERMISSION = "economy.agency";
@@ -79,10 +81,9 @@ function whereOf(ctx: ExecContext): ContextKey | null {
 }
 
 /** Runs `fn`; her own refusals become an answer she can put in words. */
-async function answering(
-  what: string,
-  fn: () => Promise<{ text: string; data: JsonObject }>,
-): Promise<{ text: string; data: JsonObject }> {
+type Answer = { text: string; data: JsonObject; receipt?: CommandReply };
+
+async function answering(what: string, fn: () => Promise<Answer>): Promise<Answer> {
   try {
     return await fn();
   } catch (error) {
@@ -141,6 +142,11 @@ export function treatCapability(economy: EconomyService): Capability {
         return {
           text: `請了對方 ${given} ${cur}${less},你的錢包剩 ${left}。`,
           data: { done: true, given, left },
+          receipt: receipt(
+            "🍬 請客",
+            `她從自己的錢包請了 ${someone(account)} ${given} ${cur}`,
+            `她的錢包剩 ${left}`,
+          ),
         };
       });
     },
@@ -190,6 +196,11 @@ export function buyForSelfCapability(economy: EconomyService): Capability {
         return {
           text: `買了「${EXPRESSION_WORD[expression]}」給自己,花 ${paid} ${cur},錢包剩 ${left}。`,
           data: { done: true, paid, left },
+          receipt: receipt(
+            "✨ 買了表情",
+            `她用自己的錢買了「${EXPRESSION_WORD[expression]}」`,
+            `−${paid} ${cur} · 她的錢包剩 ${left}`,
+          ),
         };
       });
     },
@@ -322,6 +333,11 @@ export function postBountyCapability(economy: EconomyService): Capability {
         return {
           text: `懸賞貼出去了[${id}]:${b.task},獎金 ${b.reward} ${cur}(已從你的錢包扣下放著)。`,
           data: { done: true, bounty: id, reward: b.reward },
+          receipt: receipt(
+            "📌 懸賞",
+            b.task,
+            `獎金 ${b.reward} ${cur}(從她的錢包扣下放著)· 代號 ${id}`,
+          ),
         };
       });
     },
@@ -359,6 +375,10 @@ export function awardBountyCapability(economy: EconomyService): Capability {
         return {
           text: `付了懸賞「${r.bounty.task}」的 ${r.paid} ${cur}給對方。`,
           data: { done: true, paid: r.paid },
+          receipt: receipt(
+            "🏆 懸賞完成",
+            `${someone(account)} 拿到「${r.bounty.task}」的 ${r.paid} ${cur}`,
+          ),
         };
       });
     },
