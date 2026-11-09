@@ -151,6 +151,15 @@ export const GameConfigSchema = z.object({
   failure_guard_secs: z.number().default(45),
   /** The low-level move / mine actions the failure guard withholds. */
   guarded_actions: z.array(z.string()).default(["goto", "mine", "look", "attack"]),
+  /**
+   * One goal (an action with its arguments, `obtain {"item":"bread"}`) that failed this many times
+   * in a row is withheld for `repeat_guard_secs`, so she gets what is missing or picks another goal
+   * instead of asking again in other words (2026-11-08: `obtain bread` 35 times). An answer that
+   * says the goal cannot be done as asked (`invalid`, e.g. no recipe) withholds it for the rest of
+   * the session at once. 0 turns it off.
+   */
+  repeat_failure_limit: z.number().int().nonnegative().default(2),
+  repeat_guard_secs: z.number().nonnegative().default(600),
   /** Largest mood change the model may ask for per decision. */
   max_llm_nudge: z.number().default(0.1),
   permissions: GamePermissionsSchema.prefault({}),

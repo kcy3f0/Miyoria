@@ -75,8 +75,15 @@ export {
   activeGuard,
   afterSuccess,
   type FailureGuard,
+  FINAL_CODES,
+  firstNudge,
+  type GoalRepeats,
+  goalHeld,
+  goalRepeatNote,
   guardAfter,
   guardNote,
+  newGoalRepeats,
+  noteGoal,
   withheld,
 } from "./guard.js";
 export { LIVE_TOPICS, LiveState } from "./live.js";

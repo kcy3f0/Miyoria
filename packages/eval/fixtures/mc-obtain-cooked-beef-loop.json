@@ -414,6 +414,6 @@
     }
   ],
   "status": "xfail",
-  "reason": "the failure guard withholds only goto, mine, look and attack: obtain is not guarded, and nothing treats an invalid-parameter answer as final",
+  "reason": "since 2026-11-10 an invalid answer withholds the goal for the session and two failures in a row for 10 minutes, but this trace also fails `obtain cooked_beef` without an invalid detail, so it runs again after a hold",
   "flips_with": "game: task loop (same error code twice means another method or goal), or `obtain` in guarded_actions"
 }

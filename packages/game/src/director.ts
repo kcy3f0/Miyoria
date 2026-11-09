@@ -64,8 +64,14 @@ import {
   activeGuard,
   afterSuccess,
   type FailureGuard,
+  firstNudge,
+  type GoalRepeats,
+  goalHeld,
+  goalRepeatNote,
   guardAfter,
   guardNote,
+  newGoalRepeats,
+  noteGoal,
   withheld,
 } from "./guard.js";
 import { type About, eventKey, goalKey, isNoted, matchesEvent, Narration } from "./narration.js";
@@ -276,6 +282,8 @@ interface Session {
   lastComment: number | null;
   /** Low-level actions withheld after a failure (see guard.ts). */
   guard: FailureGuard | null;
+  /** Goals that failed in a row, and the ones withheld for it (see guard.ts). */
+  repeats: GoalRepeats;
   tasks: Map<TaskId, Track>;
 }
 
@@ -852,6 +860,7 @@ export class Director {
       trigger: { text: ["剛開始玩"], important: true },
       lastComment: null,
       guard: null,
+      repeats: newGoalRepeats(),
       tasks: new Map(),
     };
     this.#publishSession("started", this.#session);
@@ -1068,6 +1077,7 @@ export class Director {
     if (end.type === "done") {
       if (!this.#cfg.instant_actions.includes(action.name)) {
         s.guard = afterSuccess(s.guard, action.name, now);
+        noteGoal(s.repeats, this.#cfg, action.display(), null, now);
       }
       if (ofGoal && g && !goalLocked(g.source)) {
         this.#finishGoal({ type: "reached", code: "done", detail: text });
@@ -1101,6 +1111,13 @@ export class Director {
       default: {
         if (!this.#cfg.instant_actions.includes(action.name)) {
           s.guard = guardAfter(this.#cfg, firstLine(text, 80), now) ?? s.guard;
+          noteGoal(
+            s.repeats,
+            this.#cfg,
+            action.display(),
+            { code: end.code, why: firstLine(text, 60) },
+            now,
+          );
         }
         if (!ofGoal || !g) {
           this.#trigger("上一個動作失敗了", false);
@@ -1462,7 +1479,10 @@ export class Director {
       lastAction: s.lastAction,
       backlog: s.backlog.map((q) => `${q.text}(${q.requester})`),
       recent: [...s.recent],
-      withheld: guardNote(s.guard, now),
+      withheld:
+        [guardNote(s.guard, now), goalRepeatNote(s.repeats, now)]
+          .filter((line) => line !== null)
+          .join("\n") || null,
       said: this.#narration.lines(),
     };
     return (signal) => decide(input, signal);
@@ -1579,6 +1599,16 @@ export class Director {
           this.#trigger("動作被擋下了,換個方法或目標", false);
         }
       }
+      const repeated =
+        verdict.type === "keep" ? null : goalHeld(cur.repeats, decision.action.display(), now);
+      if (repeated !== null) {
+        // The same goal again after it kept failing: she has to get what is missing or move on.
+        verdict = { type: "keep", why: `withheld: failed again and again: ${repeated}` };
+        cur.lastAction = `${decision.action.display()} → 暫時不行:這個目標一直失敗(${repeated}),先弄到缺的東西或換個目標`;
+        if (firstNudge(cur.repeats, decision.action.display())) {
+          this.#trigger("這個目標一直失敗,換個做法或目標", false);
+        }
+      }
     }
     const trace: DirectorThoughtBody = {
       game: cur.game,
@@ -1645,7 +1675,16 @@ export class Director {
       s.tasks.delete(id);
       s.lastAction = `${action.display()} → 失敗(${result.code}):${firstLine(result.error, 120)}`;
       log.debug({ action: action.display(), code: result.code }, "game task not started");
-      if (!instant) s.guard = guardAfter(this.#cfg, firstLine(result.error, 80), now) ?? s.guard;
+      if (!instant) {
+        s.guard = guardAfter(this.#cfg, firstLine(result.error, 80), now) ?? s.guard;
+        noteGoal(
+          s.repeats,
+          this.#cfg,
+          action.display(),
+          { code: result.code, why: firstLine(result.error, 60) },
+          now,
+        );
+      }
       const g = s.goal;
       if (verdict.type === "step" && !instant && g) {
         g.attempts += 1;

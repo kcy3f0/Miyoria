@@ -74,17 +74,13 @@ describe("what the code under test does today", () => {
     return f;
   };
 
-  it("the failure guard never withholds obtain, so the retries run", () => {
+  it("the guard withholds obtain bread after it failed twice, but it comes back later", () => {
     const fixture = byId("mc-obtain-bread-loop");
-    const out = SUBJECTS.guard.run(fixture, { attempt: 0, live: false });
-    const blocked = new Set(
-      ofType(out, "game_step")
-        .filter((s) => s.blocked)
-        .map((s) => s.action),
-    );
-    expect(blocked.has("obtain")).toBe(false);
-    // It does hold the low-level actions after a failure.
-    expect([...blocked].every((a) => ["goto", "mine", "look", "attack"].includes(a))).toBe(true);
+    const out = ofType(SUBJECTS.guard.run(fixture, { attempt: 0, live: false }), "game_step");
+    const bread = out.filter((s) => s.action === "obtain" && s.target === "bread");
+    expect(bread.some((s) => s.blocked)).toBe(true);
+    // Not for good: a hold lasts 10 minutes and the night is longer.
+    expect(bread.filter((s) => !s.blocked && s.failed).length).toBeGreaterThan(2);
   });
 
   it("the owner's rule, once written, denies every start she made on her own", () => {

@@ -414,6 +414,6 @@
     }
   ],
   "status": "xfail",
-  "reason": "the failure guard withholds only goto, mine, look and attack: obtain is not guarded, so every retry of `obtain bread` runs",
+  "reason": "since 2026-11-10 a goal that failed twice in a row is withheld for 10 minutes (and an invalid one for the session), but `obtain bread` comes back after each hold ends: the trace has no success of it in the whole night",
   "flips_with": "game: task loop (same error code twice means another method or goal), or `obtain` in guarded_actions"
 }
