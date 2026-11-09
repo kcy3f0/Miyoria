@@ -25,6 +25,7 @@ import { memoryRoutes } from "./memory.js";
 import { metricsRoutes } from "./metrics.js";
 import { mindRoutes } from "./mind.js";
 import * as oauth from "./oauth.js";
+import { ogRoutes, rewriteHtml } from "./og.js";
 import { opsRoutes } from "./ops.js";
 import { servePanel } from "./panel.js";
 import { peopleRoutes } from "./people.js";
@@ -144,6 +145,7 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...publicRoutes(state),
     ...publicViewRoutes(state),
     ...cardCheckRoutes(state),
+    ...ogRoutes(state),
     ...boardRoutes(state),
     ...memberRoutes(state),
     ...walletRoutes(state),
@@ -248,7 +250,11 @@ export function createApp(state: ApiState, options: AppOptions = {}): Hono<ApiEn
   app.notFound((c) => {
     const path = new URL(c.req.url).pathname;
     const isApi = path === "/api" || path.startsWith("/api/");
-    if (state.panelDir !== null && !isApi) return servePanel(state.panelDir, c.req.raw);
+    if (state.panelDir !== null && !isApi) {
+      return servePanel(state.panelDir, c.req.raw, (html, request) =>
+        rewriteHtml(state, html, request),
+      );
+    }
     return ApiError.notFound(NO_SUCH_ENDPOINT).toResponse();
   });
   app.onError((error) => toResponse(error));

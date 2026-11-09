@@ -770,7 +770,7 @@ describe("foil cards", () => {
   it("draws the foil layer only on a foil card", () => {
     const draw = (foil: boolean) => {
       const { container, unmount } = render(
-        <CardFace card={{ ...CARD, foil }} art={null} avatar={null} colors={{ primary: "#f29dc4", secondary: "#7355e8" }} />,
+        <CardFace card={{ ...CARD, foil }} art={null} avatar={null} colors={{ primary: "#f29dc4", secondary: "#7355e8" }} verifyUrl="https://x.test/card/1" />,
       );
       const markup = container.innerHTML;
       unmount();
@@ -790,6 +790,7 @@ describe("card frames", () => {
           art={null}
           avatar={null}
           colors={{ primary: "#f29dc4", secondary: "#7355e8" }}
+          verifyUrl="https://x.test/card/1"
         />,
       );
       const markup = container.innerHTML;

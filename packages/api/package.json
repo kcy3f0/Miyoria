@@ -22,10 +22,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@miyoria/actions": "workspace:*",
     "@hono/node-server": "^2.1.5",
+    "@miyoria/actions": "workspace:*",
     "@miyoria/agent": "workspace:*",
     "@miyoria/auth": "workspace:*",
+    "@miyoria/card-face": "workspace:*",
     "@miyoria/economy": "workspace:*",
     "@miyoria/ext-host": "workspace:*",
     "@miyoria/kernel": "workspace:*",
@@ -40,7 +41,9 @@
     "@miyoria/store": "workspace:*",
     "@miyoria/tools": "workspace:*",
     "@miyoria/types": "workspace:*",
+    "@resvg/resvg-js": "^2.6.2",
     "hono": "^4.13.16",
+    "sharp": "^0.35.5",
     "zod": "^4.6.7"
   },
   "devDependencies": {
