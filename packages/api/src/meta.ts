@@ -35,6 +35,9 @@ export interface PageMeta {
 export const DEFAULT_IMAGE_PATH = "/og/default.png";
 export const OG_WIDTH = 1200;
 export const OG_HEIGHT = 630;
+/** A card's own picture is the card, at its 630×880 ratio. */
+export const CARD_IMAGE_WIDTH = 1000;
+export const CARD_IMAGE_HEIGHT = Math.round((CARD_IMAGE_WIDTH * 880) / 630);
 
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -175,8 +178,8 @@ export function cardMeta(card: IssuedCard, origin: string, imageUrl: string): Pa
     url: `${origin}/card/${encodeURIComponent(card.serial)}`,
     image: imageUrl,
     imageAlt: words.alt,
-    imageWidth: OG_WIDTH,
-    imageHeight: OG_HEIGHT,
+    imageWidth: CARD_IMAGE_WIDTH,
+    imageHeight: CARD_IMAGE_HEIGHT,
     index: false,
   };
 }
