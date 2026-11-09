@@ -64,6 +64,8 @@ export interface SelfSources {
   goals?: readonly Goal[] | null;
   /** Handles of the people present (goals about them are relevant). */
   present?: readonly string[];
+  /** The people present here, by person (a cause about one of them may be repeated here). */
+  presentPeople?: readonly PersonId[];
   // Fallbacks.
   mood?: Mood | null;
   self?: SelfState | null;
@@ -170,10 +172,23 @@ export function moodBlock(src: SelfSources): string {
 
 const MAX_CAUSE = 80;
 
+/** What the self module stores for a cause it was not told: the emotion's own name. */
+const UNTOLD_CAUSES: ReadonlySet<string> = new Set([
+  ...Object.keys(EMOTION_LABELS),
+  ...Object.values(EMOTION_LABELS),
+  ...Object.values(PERSON_EMOTION_LABELS),
+]);
+
 /**
  * What stirred her strongest emotion, for the `feeling` data block: a cause may quote people, so
- * it never goes in `moodBlock`. Empty when there is none, or only the emotion's own name (what
- * the self module stores for a cause it was not told).
+ * it never goes in `moodBlock`. A reading does not say where it happened and a cause can come
+ * from a DM, so it is repeated only with the person it is about present (in their own DM they
+ * are). Empty otherwise, or when the cause is only the emotion's name: the mood block already
+ * names the emotion.
+ *
+ * `person === null` is not safe either: an appraisal's `toward` can be null (or a name nobody
+ * knows) while its `cause` is the model's own sentence about whatever conversation it read, a
+ * private one included.
  */
 export function feelingCauseBody(src: SelfSources): string {
   return safely(() => {
@@ -181,7 +196,9 @@ export function feelingCauseBody(src: SelfSources): string {
     const top = snap !== null ? snap.top[0] : src.self?.emotions()[0];
     if (top === undefined) return "";
     const cause = short(top.cause, MAX_CAUSE);
-    return cause === "" || cause === top.name ? "" : `讓你${feltWord(top)}的事:${cause}`;
+    if (cause === "" || UNTOLD_CAUSES.has(cause)) return "";
+    if (top.person === null || !src.presentPeople?.includes(top.person)) return "";
+    return `讓你${feltWord(top)}的事:${cause}`;
   });
 }
 

@@ -1353,7 +1353,13 @@ class Turn {
     if (people !== "") {
       blocks.push(ownBlock("people", this.voice ? VOICE_PRESENT_TITLE : PRESENT_TITLE, people, 0));
     }
-    const feeling = feelingCauseBody({ context: this.key, now: this.#now, affect, self });
+    const feeling = feelingCauseBody({
+      context: this.key,
+      now: this.#now,
+      affect,
+      self,
+      presentPeople: present.flatMap((p) => (p.person === null ? [] : [p.person])),
+    });
     if (feeling !== "") blocks.push(ownBlock("feeling", FEELING_TITLE, feeling, 1));
     const hint = this.initiative?.hint.trim() ?? "";
     if (this.initiative !== null && hint !== "") {
