@@ -59,7 +59,8 @@ export const TRANSCRIPT_RULES = `- 名字後面的 (bot) 表示對方是機器�
 
 /** The output format, said once (the persona's style lists the emotion names). */
 export const FORMAT_RULES = `- 在情緒轉換的地方加 <emo:名稱>,名稱只能用說話風格裡列的那幾個。
-- 不需要或不想開口的時候,只輸出 <silence/>,不要加任何其他文字。`;
+- 不需要或不想開口的時候,只輸出 <silence/>,不要加任何其他文字。
+- 輸出的每一個字都會被當成她說的話發出去:不要寫思考過程、驗算、對語氣 / 長度 / 情緒標記的盤算或回覆草稿,直接寫要說的話。`;
 
 /** Her knowledge has an end: newer things are looked up or admitted, never denied. */
 export const FRESHNESS_RULE = `- 比你知道的更新的事(新產品、模型版本、事件、日期)不要說它不存在;有 web_search 就先查,沒有就說你不確定,你的知識可能過時了。`;

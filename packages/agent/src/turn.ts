@@ -121,6 +121,7 @@ import { fileParts, selectFiles } from "./files.js";
 import { type FocusSelection, focusVerb, type TurnFocusInit } from "./focus.js";
 import { voiceScope } from "./handle.js";
 import { awaitBackfill, fetchAround, quotedParent, replyParents } from "./history.js";
+import { looksLikeReasoning, ReplyScreen } from "./leak.js";
 import { ceilingFor, levelHint } from "./levels.js";
 import type { HeldLine } from "./mainline/gate.js";
 import type { Run } from "./mainline/hands.js";
@@ -531,6 +532,8 @@ class Speech {
     // Links taken out may leave double spaces behind.
     const text = safe.text.replace(/[ \t]{2,}/g, " ");
     if (!isSpeakable(text)) return;
+    // Her reasoning is no sentence to say (leak.ts).
+    if (looksLikeReasoning(text)) return;
     // The filtered line is said as it is: there is nothing to translate.
     const said = (safe.spoken ?? (safe.blocked === null ? "" : text)).trim();
     const line = { text, spoken: said === "" ? null : said, emotion, blocked };
@@ -1575,13 +1578,18 @@ class Turn {
     // ("好，我寫寫看，等我一下") goes out at once, so a slow tool never leaves the person waiting
     // in silence.
     const early: string[] = [];
+    // Her reasoning is no reply (leak.ts).
+    type Line = { text: string; blocked: string | null; n: number | null };
+    const screen = new ReplyScreen<Line>();
     const send = async (raw: string) => {
       for (const part of splitByReplyMarks(raw)) {
         const mark = takeReplyMark(part);
         const safe = this.#safe(cleanReply(mark.text, names));
         const text = this.#linkMentions(safe.text);
-        if (text !== "") {
-          early.push(await this.#sendText(sink, text, direct, priority, safe.blocked, mark.n));
+        if (text === "") continue;
+        const { send: now } = screen.push({ text, blocked: safe.blocked, n: mark.n });
+        for (const item of now) {
+          early.push(await this.#sendText(sink, item.text, direct, priority, item.blocked, item.n));
         }
       }
     };
@@ -1600,11 +1608,18 @@ class Turn {
       this.signal.removeEventListener("abort", stopTyping);
       await typingLoop;
     }
+    const flush = async () => {
+      for (const item of screen.flush()) {
+        early.push(await this.#sendText(sink, item.text, direct, priority, item.blocked, item.n));
+      }
+    };
     if (expression.isSilent()) {
+      await flush();
       if (early.length === 0) this.agent.log.debug({ turn: this.turn }, "she chose silence");
       return early.join("\n");
     }
     await send(segments.rest(expression));
+    await flush();
     return early.join("\n");
   }
 
@@ -1831,6 +1846,12 @@ class Turn {
       ? Promise.resolve()
       : this.#keepTyping(sink, lane, priority, typing.signal);
     const early: string[] = [];
+    // Her reasoning is no reply (leak.ts).
+    type Line = { text: string; blocked: string | null; n: number | null };
+    const screen = new ReplyScreen<Line>();
+    const out = async (item: Line) => {
+      early.push(await this.#sendText(sink, item.text, direct, priority, item.blocked, item.n));
+    };
     const send = async (raw: string) => {
       for (const part of splitByReplyMarks(raw)) {
         if (main.claim.muted) return;
@@ -1839,12 +1860,22 @@ class Turn {
         const text = this.#linkMentions(safe.text);
         if (text === "") continue;
         main.sent(text);
-        early.push(await this.#sendText(sink, text, direct, priority, safe.blocked, mark.n));
+        const was = screen.dropped;
+        const { send: now, retracted } = screen.push({ text, blocked: safe.blocked, n: mark.n });
+        if (retracted) main.said.pop();
+        if (screen.dropped && !was) {
+          this.agent.log.warn(
+            { turn: this.turn },
+            "her reasoning was written as the reply: dropped",
+          );
+        }
+        for (const item of now) await out(item);
       }
     };
     const segments = new TextSegments(send, (text) => main.holdsText(text));
     try {
       await this.#mainCall(main, router, messages, tools, priority, null, segments, send);
+      if (!main.claim.muted) for (const item of screen.flush()) await out(item);
       this.#save();
     } finally {
       typing.abort();
