@@ -30,7 +30,10 @@ Pipeline per job (one job at a time; models load per stage and are freed after i
               stage is skipped and the next two work on the whole vocal stem, as before); a split that
               fails (not out of VRAM: that goes to the CPU) falls back to that as well, ``lead_split`` in
               the song's meta says which.
-    convert   Seed-VC singing model (F0-conditioned, 44.1 kHz) with her reference voice, of the lead only, on a
+    convert   SING_VOICE: YingMusic-SVC (default; Seed-VC's architecture fine-tuned for singing) or the Seed-VC
+              singing model (F0-conditioned, 44.1 kHz) with her reference voice, of the lead only, then (``+rvc``,
+              default) her own RVC model re-sings it in Applio's environment (rvcpass.py: it keeps the words
+              and sounds more like her; a failed pass keeps the converted vocal). On a
               cleaned F0 contour (octave errors, spikes, dropouts: pitch.py); the pitch shift is
               ``pitch`` when given, else auto: the octave from the song's median and its top (95th
               percentile) against her range, and when the top is still over her ceiling the whole
@@ -76,7 +79,11 @@ Environment
                            ../models/lead-split/mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt)
     SING_LEAD_DEVICE       device of the split                    (default SING_SEPARATE_DEVICE; VRAM OOM → CPU)
     SING_LEAD_OVERLAP      chunk overlap of the split, 8 s chunks (default 4; 2 on the CPU at most)
-    SING_DIFFUSION_STEPS   Seed-VC steps                          (default 30)
+    SING_VOICE             ying+rvc | ying | seedvc+rvc | seedvc  (default ying+rvc; a missing part is left out;
+                           cached songs made with another chain are made again from their stems)
+    SING_YING_DIR          YingMusic-SVC checkout + ckpt/YingMusic-SVC-full.pt (default ../models/yingmusic-svc)
+    SING_APPLIO_DIR / SING_RVC_MODEL / SING_RVC_INDEX / SING_RVC_PROTECT   the RVC pass (rvcpass.py)
+    SING_DIFFUSION_STEPS   Seed-VC / YingMusic steps              (default 30)
     SING_CFG_RATE          Seed-VC inference cfg rate             (default 0.7)
     SING_TARGET_OFFSET     her singing median vs her speaking median, semitones (default 2)
     SING_MAX_NOTE          her ceiling: a note (A5) or Hz          (default: speech median + SING_CEILING_OFFSET)
@@ -626,6 +633,15 @@ def _video_on() -> bool:
     return os.environ.get("SING_VIDEO", "1") != "0"
 
 
+def _other_voice(meta: dict[str, Any], backend: Any) -> bool:
+    """A cached song made with another voice chain (SING_VOICE) than the worker's now: it is made
+    again (from the cached stems). Songs from before the chain was recorded were Seed-VC alone."""
+    voice = getattr(backend, "voice", None)
+    if voice is None:
+        return False
+    return (meta.get("engine") or {}).get("voice", "seedvc") != voice
+
+
 def _needs_video(meta: dict[str, Any], kind: str | None) -> bool:
     """A cached song made before videos existed (no ``has_video`` at all) whose source has one."""
     return _video_on() and "has_video" not in meta and (kind in VIDEO_KINDS or kind == "library")
@@ -989,6 +1005,8 @@ def _run_job(job: Job) -> None:
     job.song_id = sid
     sdir = store.source_dir(src.key)
     cached = None if req.force else store.meta(sid)
+    if cached is not None and _other_voice(cached, state.backend):
+        cached = None
     if cached is not None:
         job.cached = True
         if _needs_video(cached, src.kind):
@@ -1093,6 +1111,7 @@ def _run_job(job: Job) -> None:
         "play": {"sample_rate": PLAY_RATE, "samples": mixed.get("samples"), "format": "s16le", "channels": 1},
         "mix": mixed,
         "engine": {"backend": b.name, "model": b.model_name, "device": b.device,
+                   "voice": getattr(b, "voice", None), "rvc_error": getattr(b, "rvc_error", None),
                    "diffusion_steps": env_int("SING_DIFFUSION_STEPS", 30)},
         "timings": timings,
         "peak_vram_mb": (g.peak_allocated_mb if g is not None else None) or _peak_vram_mb(),
@@ -1218,7 +1237,7 @@ async def submit(req: JobRequest) -> JSONResponse:
         meta = state.store.meta(sid) if sid else None
         info = state.store.source_info(key or "") if meta is not None else None
         # (A song from before videos existed goes through the queue to get its video.)
-        if meta is not None and not _needs_video(meta, (info or {}).get("kind")):
+        if meta is not None and not _needs_video(meta, (info or {}).get("kind")) and not _other_voice(meta, state.backend):
             job.state, job.stage, job.progress, job.cached = "done", "done", 1.0, True
             job.song_id, job.source, job.finished_at = sid, info, now_iso()
     with state.lock:

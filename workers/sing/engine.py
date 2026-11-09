@@ -43,6 +43,41 @@ def vocal_model_path(env: dict[str, str] | None = None) -> Path:
     return Path(e.get("SING_VOCAL_MODEL") or Path(__file__).resolve().parent.parent / "models" / "vocal-split" / VOCAL_CKPT)
 
 
+VOICE_CHAINS = ("ying+rvc", "ying", "seedvc+rvc", "seedvc")
+YING_CKPT = Path("ckpt") / "YingMusic-SVC-full.pt"
+YING_CONFIG = Path("configs") / "YingMusic-SVC.yml"
+
+
+def ying_dir(env: dict[str, str] | None = None) -> Path:
+    e = env if env is not None else os.environ
+    return Path(e.get("SING_YING_DIR") or Path(__file__).resolve().parent.parent / "models" / "yingmusic-svc")
+
+
+def ying_available(env: dict[str, str] | None = None) -> bool:
+    root = ying_dir(env)
+    return (root / "modules").is_dir() and (root / YING_CKPT).is_file() and (root / YING_CONFIG).is_file()
+
+
+def voice_chain(env: dict[str, str] | None = None) -> str:
+    """How her voice is made: SING_VOICE (``ying+rvc`` default, ``ying``, ``seedvc+rvc``, ``seedvc``).
+    A part whose files are missing is left out (no YingMusic: Seed-VC; no RVC model: no pass)."""
+    import rvcpass
+
+    e = env if env is not None else os.environ
+    want = (e.get("SING_VOICE") or "ying+rvc").strip().lower()
+    if want not in VOICE_CHAINS:
+        log.warning("SING_VOICE=%r is none of %s; using ying+rvc", want, "|".join(VOICE_CHAINS))
+        want = "ying+rvc"
+    base, _, rvc = want.partition("+")
+    if base == "ying" and not ying_available(e):
+        log.warning("YingMusic-SVC not found at %s; converting with Seed-VC", ying_dir(e))
+        base = "seedvc"
+    if rvc and not rvcpass.available(e):
+        log.warning("RVC model or Applio not found (%s); no RVC pass", rvcpass.model_path(e))
+        rvc = ""
+    return f"{base}+{rvc}" if rvc else base
+
+
 def default_separator(env: dict[str, str] | None = None) -> str:
     """SING_SEPARATOR_MODEL, else the RoFormer when its checkpoint and config are there, else htdemucs."""
     import leadsplit
@@ -311,7 +346,11 @@ class RealBackend:
             raise RuntimeError(f"Seed-VC not found at {self.seedvc_dir} (set SING_SEEDVC_DIR)")
         if not self.ref_paths:
             raise RuntimeError("reference voice not found (set SING_REF to a file, a list or a folder)")
-        self.model_name = f"seed-vc-f0-44k+{self.separator}"
+        self.voice = voice_chain()
+        self.ying_dir = ying_dir()
+        self.rvc = self.voice.endswith("+rvc")
+        self.rvc_error: str | None = None
+        self.model_name = f"{self.voice}+{self.separator}"
         self._vc: Any = None
         self._demucs: Any = None  # the vocal separator, whichever it is
         self._lead: Any = None
@@ -668,11 +707,19 @@ class RealBackend:
 
     def _load_vc(self) -> Any:
         if self._vc is None:
-            if str(self.seedvc_dir) not in sys.path:
-                sys.path.insert(0, str(self.seedvc_dir))
+            # Both repositories ship a top-level `modules` package: only the chosen one goes on the
+            # path (the chain is fixed for the life of the process).
+            ying = self.voice.startswith("ying")
+            code = self.ying_dir if ying else self.seedvc_dir
+            if str(code) not in sys.path:
+                sys.path.insert(0, str(code))
             from seedvc_runtime import SeedVcSinger
 
-            self._vc = SeedVcSinger(self.seedvc_dir, self.device)
+            if ying:
+                self._vc = SeedVcSinger(self.ying_dir, self.device, ckpt=self.ying_dir / YING_CKPT,
+                                        config=self.ying_dir / YING_CONFIG, cache=self.seedvc_dir / "checkpoints")
+            else:
+                self._vc = SeedVcSinger(self.seedvc_dir, self.device)
         return self._vc
 
     def median_f0(self, mono, sr: int) -> float | None:
@@ -708,7 +755,6 @@ class RealBackend:
             y = vc.convert(x.mean(axis=1), sr, ref, rsr, shift, self.steps, self.cfg_rate,
                            progress, cancelled, clean=self.f0_clean, work=work)
             y = vocal_gate(x.mean(axis=1), y)
-            write_wav(out_wav, y, SR)
         finally:
             # The model is in a reference cycle (its step hook), so only the collector in `unload`
             # frees it, and only if nothing here still points at it: on 11-07 an idle worker held
@@ -716,6 +762,38 @@ class RealBackend:
             vc = None
             if not self.keep:
                 self.unload()
+        self.rvc_error = None
+        if getattr(self, "rvc", False):
+            if cancelled():
+                raise Cancelled()
+            try:
+                y = self._rvc_pass(x.mean(axis=1), y, out_wav.parent)
+            except Exception as e:  # the converted vocal stands on its own
+                self.rvc_error = str(e)
+                log.warning("RVC pass failed, keeping the converted vocal: %s", e)
+        write_wav(out_wav, y, SR)
+
+    def _rvc_pass(self, source_mono, converted, workdir: Path):
+        """Her RVC model re-sings the converted vocal (rvcpass.py); back at SR, the source's length,
+        gated like the conversion."""
+        import librosa
+        import numpy as np
+        import rvcpass
+
+        tmp_in, tmp_out = workdir / "rvc_in.wav", workdir / "rvc_out.wav"
+        try:
+            write_wav(tmp_in, converted, SR)
+            rvcpass.run(tmp_in, tmp_out)
+            y, rsr = read_audio(tmp_out)
+            y = y.mean(axis=1)
+            if rsr != SR:
+                y = librosa.resample(y, orig_sr=rsr, target_sr=SR)
+            n = len(converted)
+            y = np.pad(y, (0, max(0, n - len(y))))[:n].astype(np.float32)
+            return vocal_gate(source_mono, y)
+        finally:
+            tmp_in.unlink(missing_ok=True)
+            tmp_out.unlink(missing_ok=True)
 
     def unload(self) -> None:
         self._vc = None

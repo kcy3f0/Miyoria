@@ -902,3 +902,91 @@ def test_the_roformer_separation_leaves_the_rest_as_the_instrumental(tmp_path):
     assert np.allclose(v + i, x, atol=1e-3)
     assert np.allclose(v, x * 0.5, atol=1e-3)
     assert seen and seen[-1] == 1.0
+
+
+def test_the_voice_chain_leaves_out_what_is_missing(tmp_path):
+    import engine
+
+    ying = tmp_path / "ying"
+    applio = tmp_path / "applio"
+    env = {"SING_YING_DIR": str(ying), "SING_APPLIO_DIR": str(applio)}
+    assert engine.voice_chain(env) == "seedvc"  # neither is there
+    (ying / "modules").mkdir(parents=True)
+    (ying / "ckpt").mkdir()
+    (ying / "configs").mkdir()
+    (ying / engine.YING_CKPT).write_bytes(b"x")
+    (ying / engine.YING_CONFIG).write_text("model_params: {}", "utf-8")
+    assert engine.voice_chain(env) == "ying"
+    (applio / "venv" / "Scripts").mkdir(parents=True)
+    (applio / "venv" / "Scripts" / "python.exe").write_bytes(b"")
+    (applio / "core.py").write_text("", "utf-8")
+    model = applio / "logs" / "m" / "m.pth"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"x")
+    env["SING_RVC_MODEL"] = str(model)
+    assert engine.voice_chain(env) == "ying+rvc"
+    assert engine.voice_chain({**env, "SING_VOICE": "seedvc"}) == "seedvc"
+    assert engine.voice_chain({**env, "SING_VOICE": "seedvc+rvc"}) == "seedvc+rvc"
+    assert engine.voice_chain({**env, "SING_VOICE": "nonsense"}) == "ying+rvc"
+
+
+def test_the_rvc_pass_command_keeps_pitch_and_turns_retrieval_off(tmp_path):
+    import rvcpass
+
+    model = tmp_path / "logs" / "m" / "m.pth"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"x")
+    env = {"SING_APPLIO_DIR": str(tmp_path), "SING_RVC_MODEL": str(model)}
+    assert rvcpass.index_path(env) is None
+    cmd = rvcpass.command(tmp_path / "in.wav", tmp_path / "out.wav", env)
+    assert cmd[1:3] == ["core.py", "infer"]
+    assert cmd[cmd.index("--pitch") + 1] == "0"
+    assert cmd[cmd.index("--index-rate") + 1] == "0"
+    assert "--index-path" not in cmd
+    (model.parent / "m.index").write_bytes(b"x")
+    assert "--index-path" in rvcpass.command(tmp_path / "in.wav", tmp_path / "out.wav", env)
+
+
+def test_a_failed_rvc_pass_keeps_the_converted_vocal(tmp_path, monkeypatch):
+    import numpy as np
+    import soundfile as sf
+    import engine
+
+    class Vc:
+        step_gate = None
+
+        def convert(self, mono, sr, ref, rsr, shift, steps, cfg, progress, cancelled, clean=True, work=None):
+            return mono * 0.5
+
+    b = object.__new__(engine.RealBackend)
+    b._vc, b.keep, b.gate, b.steps, b.cfg_rate, b.f0_clean, b.rvc = Vc(), True, None, 30, 0.7, True, True
+    b._ref = (np.zeros(44100, dtype="float32"), 44100)
+    monkeypatch.setattr(engine, "vocal_gate", lambda src, y: y)
+    x = (np.random.default_rng(2).standard_normal((44100, 2)) * 0.1).astype("float32")
+    sf.write(tmp_path / "lead.wav", x, 44100, subtype="FLOAT")
+
+    def boom(self, src, y, workdir):
+        raise RuntimeError("applio broke")
+
+    monkeypatch.setattr(engine.RealBackend, "_rvc_pass", boom)
+    b.convert(tmp_path / "lead.wav", tmp_path / "out.wav", 0, lambda f: None, lambda: False)
+    y, _ = sf.read(tmp_path / "out.wav", dtype="float32")
+    assert np.allclose(y, x.mean(axis=1) * 0.5, atol=1e-3)
+    assert b.rvc_error == "applio broke"
+
+    monkeypatch.setattr(engine.RealBackend, "_rvc_pass", lambda self, src, y, workdir: y * 0.0 + 0.25)
+    b.convert(tmp_path / "lead.wav", tmp_path / "out.wav", 0, lambda f: None, lambda: False)
+    y, _ = sf.read(tmp_path / "out.wav", dtype="float32")
+    assert np.allclose(y, 0.25, atol=1e-3) and b.rvc_error is None
+
+
+def test_a_song_made_with_another_voice_chain_is_made_again():
+    import server
+
+    class B:
+        voice = "ying+rvc"
+
+    assert server._other_voice({"engine": {"voice": "ying+rvc"}}, B()) is False
+    assert server._other_voice({"engine": {"voice": "seedvc"}}, B()) is True
+    assert server._other_voice({"engine": {}}, B()) is True  # before the chain was recorded: Seed-VC
+    assert server._other_voice({}, object()) is False  # the mock backend has no chain

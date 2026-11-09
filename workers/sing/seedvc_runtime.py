@@ -1,4 +1,5 @@
-"""Seed-VC singing voice conversion (F0-conditioned 44.1 kHz model, Whisper-small content encoder,
+"""Seed-VC singing voice conversion, also running YingMusic-SVC (Seed-VC fine-tuned for singing, with a
+style residual; GiantAILab/YingMusic-SVC, MIT) from its own checkout. Seed-VC: F0-conditioned 44.1 kHz model, Whisper content encoder,
 BigVGAN v2 44 kHz vocoder, RMVPE pitch), adapted from Seed-VC's ``inference.py`` (GPL-3.0, not
 vendored: the repo is downloaded next to the worker, see ``SING_SEEDVC_DIR``).
 
@@ -34,7 +35,13 @@ DIT_CONFIG = "config_dit_mel_seed_uvit_whisper_base_f0_44k.yml"
 
 
 class SeedVcSinger:
-    def __init__(self, root: Path, device: str) -> None:
+    """Seed-VC's singing model, or a model built on it with the same code layout: YingMusic-SVC
+    (``ckpt`` + ``config`` given; its ``modules`` package must be the one on ``sys.path``). A model
+    whose length regulator uses a style residual (YingMusic) gets it passed to the decoder too.
+    ``cache``: where the shared helpers (CAMPPlus, RMVPE) are cached, default ``<root>/checkpoints``."""
+
+    def __init__(self, root: Path, device: str, ckpt: Path | None = None, config: Path | None = None,
+                 cache: Path | None = None) -> None:
         from modules.audio import mel_spectrogram
         from modules.bigvgan import bigvgan
         from modules.campplus.DTDNN import CAMPPlus
@@ -43,10 +50,11 @@ class SeedVcSinger:
         from transformers import AutoFeatureExtractor, WhisperModel
 
         self.device = torch.device(device)
-        cache = str(root / "checkpoints")
-        ckpt = hf_hub_download(DIT_REPO, DIT_FILE, cache_dir=cache)
-        cfg_path = hf_hub_download(DIT_REPO, DIT_CONFIG, cache_dir=cache)
+        cache = str(cache or root / "checkpoints")
+        ckpt = str(ckpt) if ckpt is not None else hf_hub_download(DIT_REPO, DIT_FILE, cache_dir=cache)
+        cfg_path = str(config) if config is not None else hf_hub_download(DIT_REPO, DIT_CONFIG, cache_dir=cache)
         config = yaml.safe_load(open(cfg_path, "r", encoding="utf-8"))
+        self.style_residual = bool(config["model_params"].get("length_regulator", {}).get("use_style_residual", False))
         params = recursive_munch(config["model_params"])
         params.dit_type = "DiT"
         model = build_model(params, stage="DiT")
@@ -178,8 +186,15 @@ class SeedVcSinger:
         if shift:
             shifted[f0_alt > 1] = f0_alt[f0_alt > 1] * (2 ** (shift / 12))
 
-        cond, *_ = self.model.length_regulator(s_alt, ylens=target_lengths, n_quantizers=3, f0=shifted)
-        prompt, *_ = self.model.length_regulator(s_ori, ylens=target2_lengths, n_quantizers=3, f0=f0_ori)
+        style_cond = style_prompt = None
+        if self.style_residual:
+            cond, *_, style_cond = self.model.length_regulator(s_alt, ylens=target_lengths, n_quantizers=3, f0=shifted,
+                                                               style=style2, return_style_residual=True)
+            prompt, *_, style_prompt = self.model.length_regulator(s_ori, ylens=target2_lengths, n_quantizers=3,
+                                                                   f0=f0_ori, style=style2, return_style_residual=True)
+        else:
+            cond, *_ = self.model.length_regulator(s_alt, ylens=target_lengths, n_quantizers=3, f0=shifted)
+            prompt, *_ = self.model.length_regulator(s_ori, ylens=target2_lengths, n_quantizers=3, f0=f0_ori)
 
         window = self.sr // self.hop * 30 - mel2.size(2)
         overlap_frames = 16
@@ -194,9 +209,12 @@ class SeedVcSinger:
             chunk = cond[:, done: done + window]
             last = done + window >= total
             cat = torch.cat([prompt, chunk], dim=1)
+            extra = {}
+            if style_cond is not None and style_prompt is not None:
+                extra["style_r"] = torch.cat([style_prompt, style_cond[:, done: done + window]], dim=1)
             with torch.autocast(device_type=dev.type, dtype=torch.float16, enabled=dev.type == "cuda"):
                 vc = self.model.cfm.inference(cat, torch.LongTensor([cat.size(1)]).to(dev), mel2, style2, None,
-                                              work.steps or steps, inference_cfg_rate=cfg_rate)
+                                              work.steps or steps, inference_cfg_rate=cfg_rate, **extra)
                 vc = vc[:, :, mel2.size(-1):]
             wave = self.vocoder(vc.float()).squeeze().float().cpu().numpy()
             if prev is None:
