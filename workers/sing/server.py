@@ -1,6 +1,6 @@
 """Miyoria song worker: song requests → AI covers in her voice (docs/protocols/voice-link.md, 「歌曲 Worker」).
 
-    POST   /jobs                {query | url | path, title?, artist?, pitch?, key?, force?, exclusive_ack?}
+    POST   /jobs                {query | url | path, title?, artist?, pitch?, key?, harmony?, force?, exclusive_ack?}
                                 -> {"job"}
     POST   /jobs/{id}/exclusive -> {"job"}                 go ahead and take the GPU (see exclusive.py)
     POST   /gpu/context         {in_voice, listeners, live, urgent: [job id]} who would notice her
@@ -40,7 +40,8 @@ Pipeline per job (one job at a time; models load per stage and are freed after i
               song goes down a few semitones (``auto_key``, SING_KEY_MIN..SING_KEY_MAX); plus
               ``key`` (whole-song transpose, which turns the auto key off)
     mix       converted vocal at the original lead's level + instrumental, with the backing voices
-              added to it (moved by the key with Rubber Band when ffmpeg has it), loudness-normalised to SING_TARGET_LUFS, peak ≤ -1 dBFS
+              added to it unless ``harmony`` is false (a song of its own, id ``-solo``; without a lead
+              split they stay in the converted vocal) (moved by the key with Rubber Band when ffmpeg has it), loudness-normalised to SING_TARGET_LUFS, peak ≤ -1 dBFS
     lyrics    lrclib.net synced LRC by title / artist / duration (best effort)
     video     (in parallel, from the download on) the link's video, video only, H.264 <= 1080p
               preferred, into video.mp4 for the stream to show while she sings; library entries
@@ -56,8 +57,8 @@ waits for room (stage ``gpu_wait``), moves to the CPU, or, as the last resort an
 has the TTS / ASR workers of SING_OFFLOAD_URLS drop their models (exclusive.py: stage ``exclusive``
 and the job's ``exclusive`` field, waiting · offloading · active · reloading · done, tell Core).
 
-A finished song is cached under SING_DATA_DIR/<song id>; asking again (same query, link or file
-and the same pitch settings) answers at once with ``cached: true``.
+A finished song is cached under SING_DATA_DIR/<song id>; asking again (same query, link or file,
+the same pitch settings and harmony) answers at once with ``cached: true``.
 
 Environment
     SING_BACKEND           seed-vc | mock                         (default seed-vc)
@@ -227,6 +228,7 @@ class MockBackend:
         self.convert_inputs: list[str] = []  # which stem each conversion read
         self.f0_inputs: list[str] = []
         self.mix_inputs: list[tuple[bool, list[str]]] = []  # (split, the files in the stem folder)
+        self.mix_harmony: list[bool] = []
         self.trims = 0
 
     def _wait(self) -> None:
@@ -353,9 +355,11 @@ class MockBackend:
             progress((i + 1) / steps)
         _write_wav(out_wav, _tone(self.seconds, 16_000, 440 * 2 ** (shift / 12)), 16_000)
 
-    def mix(self, sdir: Path, converted: Path, key: int, out: Path, split: bool = False) -> dict[str, Any]:
+    def mix(self, sdir: Path, converted: Path, key: int, out: Path, split: bool = False,
+            harmony: bool = True) -> dict[str, Any]:
         self._wait()
         self.mix_inputs.append((split, sorted(p.name for p in sdir.glob("*.wav"))))
+        self.mix_harmony.append(harmony)
         mix = _tone(self.seconds, PLAY_RATE, 440)
         vocals = _tone(self.seconds, PLAY_RATE, 440, 0.2)
         _write_wav(out / "mix.wav", mix, PLAY_RATE)
@@ -419,11 +423,15 @@ class _RealAdapter:
         x, sr = read_audio(path)
         return self.b.f0_stats(x.mean(axis=1), sr)
 
-    def mix(self, sdir: Path, converted: Path, key: int, out: Path, split: bool = False) -> dict[str, Any]:
+    def mix(self, sdir: Path, converted: Path, key: int, out: Path, split: bool = False,
+            harmony: bool = True) -> dict[str, Any]:
+        """``split``: the lead was converted, the backing voices are beside it; they join the mix
+        when ``harmony`` (else her voice alone over the instrumental)."""
         from engine import mix_song
 
         return mix_song(sdir / ("lead.wav" if split else "vocals.wav"), converted, sdir / "instrumental.wav", key, out,
-                        self.b, env_float("SING_TARGET_LUFS", -16.0), sdir / "backing.wav" if split else None)
+                        self.b, env_float("SING_TARGET_LUFS", -16.0),
+                        sdir / "backing.wav" if split and harmony else None)
 
     def lyrics(self, src: Source, duration: float | None) -> dict[str, Any] | None:
         if os.environ.get("SING_LYRICS", "1") == "0":
@@ -444,6 +452,8 @@ class JobRequest(BaseModel):
     artist: str | None = Field(None, max_length=120)
     pitch: int | None = Field(None, ge=-24, le=24)
     key: int = Field(0, ge=-12, le=12)
+    # Keep the song's own backing voices (harmonies, chorus) in the mix; False = her voice alone.
+    harmony: bool = True
     force: bool = False
     # Wait for POST /jobs/{id}/exclusive before taking the GPU (Core lets her speak first).
     exclusive_ack: bool = False
@@ -1028,7 +1038,7 @@ def _run_job(job: Job) -> None:
     if req.artist:
         src.artist = req.artist.strip()
     job.source = src.public()
-    sid = song_id(src.key, req.pitch, req.key)
+    sid = song_id(src.key, req.pitch, req.key, req.harmony)
     job.song_id = sid
     sdir = store.source_dir(src.key)
     cached = None if req.force else store.meta(sid)
@@ -1110,7 +1120,8 @@ def _run_job(job: Job) -> None:
         return pitch
 
     pitch_info = timed("convert", convert)
-    mixed = timed("mix", lambda: b.mix(sdir, converted, pitch_info["song_key"], out, lead["used"]))
+    mixed = timed("mix", lambda: b.mix(sdir, converted, pitch_info["song_key"], out, lead["used"],
+                                          req.harmony))
     converted.unlink(missing_ok=True)
     duration = mixed.get("duration_s") or src.duration_s
     found = timed("lyrics", lambda: b.lyrics(src, duration))
@@ -1137,6 +1148,8 @@ def _run_job(job: Job) -> None:
         "source": src.public(),
         "pitch": pitch_info,
         "lead_split": lead,
+        # Without a split the backing voices stay in the converted vocal: only a split can drop them.
+        "harmony": req.harmony or not lead["used"],
         "lyrics": lyrics_meta,
         **video,
         "play": {"sample_rate": PLAY_RATE, "samples": mixed.get("samples"), "format": "s16le", "channels": 1},
@@ -1264,7 +1277,7 @@ async def submit(req: JobRequest) -> JSONResponse:
         key = None
         if req.query:
             key = state.store.query_source(req.query)
-        sid = song_id(key, req.pitch, req.key) if key else None
+        sid = song_id(key, req.pitch, req.key, req.harmony) if key else None
         meta = state.store.meta(sid) if sid else None
         info = state.store.source_info(key or "") if meta is not None else None
         # (A song from before videos existed goes through the queue to get its video.)

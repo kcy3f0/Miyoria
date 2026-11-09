@@ -63,13 +63,16 @@ def normalize_query(q: str) -> str:
     return re.sub(r"\s+", " ", q).strip()
 
 
-def song_id(source_key: str, pitch: int | None, key: int) -> str:
-    """``<source_key>`` for auto pitch in the original key, else with ``-p<n>`` / ``-k<n>``."""
+def song_id(source_key: str, pitch: int | None, key: int, harmony: bool = True) -> str:
+    """``<source_key>`` for auto pitch in the original key with the harmonies, else with
+    ``-p<n>`` / ``-k<n>`` / ``-solo`` (her voice without the song's backing voices)."""
     sid = source_key
     if pitch is not None:
         sid += f"-p{pitch:+d}"
     if key:
         sid += f"-k{key:+d}"
+    if not harmony:
+        sid += "-solo"
     return safe_id(sid, 96)
 
 

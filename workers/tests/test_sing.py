@@ -692,6 +692,20 @@ def test_the_lead_is_split_after_the_vocals_and_is_all_that_is_converted(sing):
     assert (_stems(key) / "lead.wav").exists() and (_stems(key) / "backing.wav").exists()
 
 
+def test_harmony_is_kept_by_default_and_a_song_without_it_is_a_song_of_its_own(sing):
+    if not is_mock():
+        pytest.skip("reads the mock backend's log")
+    b = _sing_server().state.backend
+    with_it = _job(sing, "harmony switch")["song"]
+    assert b.mix_harmony[-1] is True and with_it["harmony"] is True
+    solo = _job(sing, "harmony switch", harmony=False)
+    assert solo["cached"] is False and b.mix_harmony[-1] is False
+    assert solo["song"]["id"] == with_it["id"] + "-solo" and solo["song"]["harmony"] is False
+    # Each is cached on its own.
+    assert _job(sing, "harmony switch", harmony=False)["cached"] is True
+    assert _job(sing, "harmony switch")["song"]["id"] == with_it["id"]
+
+
 def test_the_split_is_off_with_its_switch_and_the_pipeline_is_the_old_one(sing, monkeypatch):
     if not is_mock():
         pytest.skip("reads the mock backend's log")
