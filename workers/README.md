@@ -39,14 +39,21 @@ miyoria doctor                # 缺什麼會一項一項列出來
 miyoria start                 # 每個 worker 開一個 Windows Terminal 分頁;asr、tts 先,sing 後
 ```
 
-`install` 對 worker 做的事,等於下面各節手動的步驟(`python -m venv`、`pip install torch --index-url …/cu128`、`pip install -r …`);已經裝好的步驟會跳過。`install` **不會**下載或放置下面這些,要自己處理(`install` 和 `doctor` 都會列出缺哪些):
+`install` 會先列出「缺什麼、各約多大」,**問一次**(`--yes` 直接做,給無人值守用),再動手。它會裝:
+
+- pnpm(用 corepack)、node 套件、需要的 build;
+- Python 3.11–3.13(Windows 用 winget、macOS 用 brew)、ffmpeg(sing 要用);
+- 每個 worker 的 venv:先裝 CUDA 版 torch、再裝 requirements(等於下面各節手動的步驟);
+- turn 的兩個小模型(smart-turn 約 9 MB、silero-vad 約 2 MB),只從官方來源(huggingface.co、raw.githubusercontent.com),可續傳,已存在的檔不會覆蓋。
+
+已經有的 venv、模型和設定值一律跳過、不覆蓋;第二次執行什麼都不會裝。Linux 上 `install` **不會跑 sudo**,只印出 `sudo apt install …` / `dnf` 指令給你貼。
+
+`install` 只檢查、說明,**不會**裝:NVIDIA 驅動 / CUDA、Docker Desktop、OBS、VTube Studio、Minecraft / Prism(要管理員權限或授權條款)。也不會下載或放置下面這些,要自己處理(`install` 和 `doctor` 都會列出缺哪些):
 
 | 服務 | 要自己放的 | 說明 |
 |---|---|---|
 | tts | `workers/voices/<聲音>/ref.wav` + `ref.txt` | 你的聲音參考音,不進 git(第 4 節) |
 | sing | `workers/models/applio/`(她的 RVC 模型)、`models/lead-split/becruily-bs/`、`models/vocal-split/`、`models/seed-vc/` | 第 9 節;沒有的部分會退回或略過,`doctor` 以警告列出 |
-| sing | ffmpeg 在 PATH 上 | `winget install Gyan.FFmpeg` |
-| turn | `workers/models/smart-turn/…onnx`、`workers/models/silero-vad/silero_vad.onnx` | 第 10 節有 curl 指令,約 11 MB;沒有它 worker 照跑,她退回「安靜多久就算講完」 |
 
 第一次啟動時會自動下載、不用處理:Qwen3-ASR(約 2 GB,asr)、Qwen3-TTS(約 4–5 GB,tts,並捕捉 CUDA graph,要等幾分鐘)、sing 的第一首歌(約 2 GB)。
 
