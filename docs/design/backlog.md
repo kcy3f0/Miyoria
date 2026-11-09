@@ -14,6 +14,7 @@
 | RVC 唱歌的咬字 | 2026-11-09 測完:RVC 轉她自己的說話幾乎不掉字(7.9%,原音 5.3%),轉別人的歌聲就糊(《雪は何色》對真歌詞 45%,原唱 27%)。試過 48k 頻寬擴展、加 YingMusic 產的歌聲資料、Rigel 底模(含日文和歌聲)、檢索率 0、protect、第 1–40 epoch,都沒有明顯改善;原因是 ContentVec 聽不清日文歌聲加上她只有說話資料。目前最好的是 YingMusic → RVC 串接(38.7%)。試驗在 `data/rvc-test/`、`data/rvc-train-songs/` | [backlog 本節下方](#唱歌轉換還沒做的) |
 
 ### 唱歌轉換還沒做的
+- **主唱分離的三模型平均**(2026-11-09 決定先不做,維持 becruily 單一模型):Gabox IS(`GaboxR67/MelBandRoformers` 的 `bsroformers/bs_karaoke_gabox_IS.ckpt`,動畫歌為主)+ becruily + anvuew 三個 BS-RoFormer 平均,MVSep 主唱 SDR 10.43(becruily 單獨 10.06–10.10),切主唱時間約 3 倍。更高分的(Play da Segunda 11.08、MVSep 124 bands 10.79、tf-frazer)都沒公開。
 
 - **分離掉字的段落改用人聲版**:主唱分離在和聲大的段落會切掉字(《雪は何色》1:10–1:30)。只在那些段落改用「沒分離和聲的人聲」當內容、音高仍讀主唱,其他段落照舊;逐段判斷可以用 ASR 比對主唱和人聲。整首都換反而變差(和聲會混進字)。
 - **翻唱的混音處理鏈**:現在只調音量和響度;參考 dsh-cover-pipeline 加 EQ、壓縮、去齒音、混響、母帶限制。
