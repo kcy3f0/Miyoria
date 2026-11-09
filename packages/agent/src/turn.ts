@@ -1746,6 +1746,7 @@ class Turn {
       recent: main.main.recent(this.key, m.recent_lines),
       actions: [...line.hands.recent(ACTING_ALONE, 2), ...line.hands.recent(this.key, 3)],
       speaksIn: this.voice ? speaksIn : null,
+      now,
     });
     const selection = this.plan.selection;
     const verbs = selection === null ? new Map<string, string>() : focusVerbs(selection);

@@ -56,7 +56,7 @@ import {
   WAIT_LINES,
   waitLine,
 } from "../src/mainline/main.js";
-import { resultData } from "../src/mainline/prompt.js";
+import { resultData, tailSection } from "../src/mainline/prompt.js";
 import {
   channel,
   done,
@@ -1585,6 +1585,40 @@ describe("the hands merge repeats", () => {
     // Her own doing names nobody.
     fail(h, undefined);
     expect(resultData(h.takeResults(where))).toContain("stream_start 失敗:stage");
+  });
+
+  it("what she did lately says whose it was and how long ago", () => {
+    // 2026-11-09 21:33: someone else's refused feed from 13 minutes before was taken as the answer.
+    const { hands: h } = hands();
+    const asked = {
+      author: { account: { platform: "test", id: "w" }, display_name: "When You See It" },
+      text: "@Miyoria 餵你一碗",
+    };
+    const job = h.begin({
+      turn: newId(),
+      context: where,
+      tool: "accept_food",
+      args: {},
+      report: "turn",
+      depth: 0,
+      requester: asked,
+      cause: null,
+    });
+    h.answered(job, { ok: true, text: "沒有收下,原因(not_enough):魚幣不夠", data: null });
+    const tail = tailSection({
+      head: "",
+      kind: "addressed",
+      muted: false,
+      notes: [],
+      state: [],
+      tasks: [],
+      recent: [],
+      actions: h.recent(where, 3),
+      speaksIn: null,
+      now: job.at + 13 * 60_000,
+    });
+    expect(tail).toContain("accept_food(When You See It 問的「@Miyoria 餵你一碗」),13 分鐘前:完成");
+    expect(tail).toContain("結果只算那個人、那時候");
   });
 
   it("a long answer reminds her it is gone next turn unless she keeps it; a short one does not", () => {

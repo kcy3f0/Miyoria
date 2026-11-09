@@ -196,6 +196,14 @@ export interface StateInput {
   recent: readonly Delivery[];
   actions: readonly Job[];
   speaksIn: string | null;
+  /** Epoch ms now, for how long ago each action was. */
+  now?: number;
+}
+
+/** 「剛剛」 or 「N 分鐘前」. */
+function ago(ms: number): string {
+  const mins = Math.floor(ms / 60_000);
+  return mins < 1 ? "剛剛" : mins < 60 ? `${mins} 分鐘前` : `${Math.floor(mins / 60)} 小時前`;
 }
 
 const STATE_OF_JOB: Record<Job["state"], string> = {
@@ -215,13 +223,18 @@ export function tailSection(s: StateInput): string {
   if (s.tasks.length > 0) lines.push(`# 手上的任務\n${s.tasks.map((t) => `- ${t}`).join("\n")}`);
   if (s.actions.length > 0) {
     // What came back, not only that it did: a refused feed is 「完成」 too (2026-11-08 15:33).
+    // Whose and when: on 2026-11-09 a refused feed of one person's, 13 minutes old, was taken as
+    // the answer to someone else's, and she turned them away without asking the tool.
     const done = s.actions.map((j) => {
       const detail = neutralize(j.detail).trim();
       const what =
         detail === "" ? "" : `(${detail.length > 40 ? `${detail.slice(0, 40)}…` : detail})`;
-      return `- ${j.tool}:${STATE_OF_JOB[j.state]}${what}`;
+      const when = s.now === undefined ? "" : `,${ago(s.now - j.at)}`;
+      return `- ${j.tool}${askedBy(j.requester)}${when}:${STATE_OF_JOB[j.state]}${what}`;
     });
-    lines.push(`# 你剛才做的事\n${done.join("\n")}`);
+    lines.push(
+      `# 你剛才做的事(結果只算那個人、那時候;現在有人要你做,就再呼叫一次工具)\n${done.join("\n")}`,
+    );
   }
   if (s.recent.length > 0) {
     const said = s.recent.map((d) => `- ${d.said}`);
