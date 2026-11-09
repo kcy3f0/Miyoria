@@ -14,7 +14,7 @@ export const BUDGET_TOPIC = "llm.budget";
  * What she says (at most once per context per notice interval) when the LLM budget is
  * exhausted. Constant: no model is involved.
  */
-export const EXHAUSTED_LINE = "今天的能量用完了,伺服器繁忙中。明天再陪你們聊。";
+export const EXHAUSTED_LINE = "今天的能量用完了……伺服器繁忙,明天再陪你們聊。";
 
 /**
  * State of the LLM budget as reported on `llm.budget`.
