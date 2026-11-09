@@ -20,6 +20,12 @@ export const MAX_NOTES = 5;
 /** Characters per note. */
 export const MAX_NOTE_CHARS = 600;
 export const DEFAULT_NOTE_MINUTES = 30;
+/** A tool result at least this long gets the keep_note reminder. */
+export const LONG_RESULT_CHARS = 300;
+export const KEEP_HINT =
+  "\n(這些結果下一回合就看不到了;這段對話之後還會用到的,用 keep_note 用自己的話記下重點)";
+/** Her note tools: instant, and nothing to tell her about afterwards. */
+export const NOTE_TOOLS: ReadonlySet<string> = new Set(["keep_note", "drop_note"]);
 export const MAX_NOTE_MINUTES = 180;
 
 export interface WorkingNote {

@@ -149,6 +149,7 @@ import {
 } from "./mainline/prompt.js";
 import { linkMentions, type MentionTarget } from "./mentions.js";
 import { agentTurns } from "./metrics.js";
+import { KEEP_HINT, LONG_RESULT_CHARS } from "./notes.js";
 import {
   afterFold,
   buildMessages,
@@ -191,10 +192,6 @@ import { contextId, fixed, guard, TimeoutError, timeout } from "./util.js";
 import { imageParts, selectImages } from "./vision.js";
 
 const TYPING_TTL_MS = 10_000;
-/** A tool result at least this long gets the keep_note reminder (notes.ts). */
-const LONG_RESULT_CHARS = 300;
-const KEEP_HINT =
-  "\n(這些結果下一回合就看不到了;這段對話之後還會用到的,用 keep_note 用自己的話記下重點)";
 /** History lines shown to the `fast` model. */
 const CHECK_HISTORY = 12;
 /** History lines before the input sent to prompt contributors. */

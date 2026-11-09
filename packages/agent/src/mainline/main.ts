@@ -65,6 +65,7 @@ import {
 import type { Claim } from "../claims.js";
 import type { MainLineConfig } from "../config.js";
 import { voiceScope } from "../handle.js";
+import { NOTE_TOOLS } from "../notes.js";
 import type { Agent } from "../runtime.js";
 import type { ToolScope } from "../tool-scope.js";
 import { ReactTool } from "../tools.js";
@@ -836,7 +837,12 @@ export class MainTurn {
       tool: action.tool,
       args,
       // A muted turn has nobody waiting: what came of it is in her next prompt, not a turn.
-      report: action.tool === ReactTool.NAME ? "none" : this.claim.muted ? "prompt" : "turn",
+      report:
+        action.tool === ReactTool.NAME || NOTE_TOOLS.has(action.tool)
+          ? "none"
+          : this.claim.muted
+            ? "prompt"
+            : "turn",
       depth: this.claim.chain?.depth ?? 0,
       requester,
       cause: this.#decision,

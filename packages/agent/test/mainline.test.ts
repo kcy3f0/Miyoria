@@ -1557,6 +1557,26 @@ describe("the hands merge repeats", () => {
     expect(resultData(h.takeResults(where))).toContain("stream_start 失敗:stage");
   });
 
+  it("a long answer reminds her it is gone next turn unless she keeps it; a short one does not", () => {
+    const { hands: h } = hands();
+    const search = (text: string) => {
+      const job = h.begin({
+        turn: newId(),
+        context: where,
+        tool: "web_search",
+        args: { query: "芒果醬 我喜歡你 歌詞" },
+        report: "turn",
+        depth: 0,
+        requester: undefined,
+        cause: null,
+      });
+      h.answered(job, { ok: true, text, data: null });
+      return resultData(h.takeResults(where)) ?? "";
+    };
+    expect(search(`喔愛 什麼是愛 ${"歌詞".repeat(200)}`)).toContain("keep_note");
+    expect(search("沒有找到")).not.toContain("keep_note");
+  });
+
   it("a result stays unsaid until a turn that showed it concludes", () => {
     const { hands: h } = hands();
     fail(h, { who: "Alice" }, "她吃飽了,吃不下");
