@@ -119,18 +119,64 @@ async function toPng(svg: string): Promise<Buffer> {
   return resvg.render().asPng();
 }
 
-/** The backdrop both pictures share: the panel's dark with its two glows. */
-const BACKDROP = `<defs>
-<linearGradient id="og-bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#141829"/><stop offset="1" stop-color="#0b0d12"/></linearGradient>
-<radialGradient id="og-a"><stop offset="0" stop-color="${COLORS.secondary}" stop-opacity="0.42"/><stop offset="1" stop-color="${COLORS.secondary}" stop-opacity="0"/></radialGradient>
-<radialGradient id="og-b"><stop offset="0" stop-color="${COLORS.primary}" stop-opacity="0.26"/><stop offset="1" stop-color="${COLORS.primary}" stop-opacity="0"/></radialGradient>
-<filter id="og-shadow" x="-20%" y="-10%" width="140%" height="130%"><feGaussianBlur stdDeviation="18"/></filter>
-</defs>
-<rect width="${OG_WIDTH}" height="${OG_HEIGHT}" fill="url(#og-bg)"/>
-<circle cx="1010" cy="120" r="470" fill="url(#og-a)"/>
-<circle cx="120" cy="560" r="420" fill="url(#og-b)"/>`;
+// The pictures borrow the panel's own look (`apps/panel/DESIGN.md`): a flat `--background`, a
+// header strip like the public site's dock with the mark and her name, hairlines instead of boxes,
+// strips of facts (label over value), one accent (`--primary`) and no glow or shadow. Words stay
+// large enough to read when a client shows the picture 400 px wide.
 
-/** `1200×630`: the card on the left at its own ratio, what the page says about it on the right. */
+const BASE = "#0b0d12";
+const DOCK = 72;
+const LINE = "rgba(255,255,255,0.11)";
+const MUTED = "#b3b1bc";
+const TEXT = "#f1f0f4";
+const PAD_X = 64;
+
+/** The header strip: the crescent over its baseline, and her name. */
+function dock(): string {
+  return `<rect width="${OG_WIDTH}" height="${DOCK}" fill="#090a0f"/>
+<rect y="${DOCK - 1}" width="${OG_WIDTH}" height="1" fill="${LINE}"/>
+<g transform="translate(${PAD_X} ${(DOCK - 36) / 2}) scale(1.5)" fill="none">
+<path d="M15.5 3.5a8 8 0 1 0 5 14.2A6.5 6.5 0 0 1 15.5 3.5Z" fill="${COLORS.primary}" opacity="0.9"/>
+<path d="M3 21h18" stroke="${COLORS.primary}" stroke-width="1.75" stroke-linecap="round" opacity="0.55"/>
+</g>
+<text x="${PAD_X + 52}" y="${DOCK / 2 + 8}" font-size="24" font-weight="600" fill="${TEXT}">Miyoria</text>`;
+}
+
+interface Fact {
+  label: string;
+  value: string;
+  /** Drawn in the accent colour: the one thing on the picture that is hers to say. */
+  accent?: boolean;
+  mono?: boolean;
+}
+
+/** Label over value, a hairline above each: the panel's strip of facts. */
+function facts(rows: readonly Fact[], x: number, y: number, width: number, big = false): string {
+  const step = big ? 124 : 86;
+  const value = big ? 52 : 32;
+  return rows
+    .map((row, i) => {
+      const top = y + i * step;
+      const fill = row.accent ? COLORS.primary : TEXT;
+      const font = row.mono ? ' font-family="Consolas, monospace"' : "";
+      return `<rect x="${x}" y="${top}" width="${width}" height="1" fill="${LINE}"/>
+<text x="${x}" y="${top + (big ? 40 : 30)}" font-size="${big ? 24 : 20}" fill="${MUTED}">${esc(row.label)}</text>
+<text x="${x}" y="${top + (big ? 98 : 66)}" font-size="${value}" font-weight="600" fill="${fill}"${font}>${esc(row.value)}</text>`;
+    })
+    .join("\n");
+}
+
+const frame = (inner: string): string =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${OG_WIDTH}" height="${OG_HEIGHT}" viewBox="0 0 ${OG_WIDTH} ${OG_HEIGHT}" font-family="${FONT_FAMILY}, sans-serif">
+<rect width="${OG_WIDTH}" height="${OG_HEIGHT}" fill="${BASE}"/>
+${inner}
+${dock()}
+</svg>`;
+
+/**
+ * `1200×630`: the card at its own ratio is the picture; what its page says about it sits beside it
+ * as a strip of facts.
+ */
 export async function renderCardImage(card: IssuedCard, panelDir: string | null): Promise<Buffer> {
   const [art, avatar] = await Promise.all([
     poseArt(panelDir, card.pose),
@@ -143,45 +189,50 @@ export async function renderCardImage(card: IssuedCard, panelDir: string | null)
     colors: COLORS,
     verifyUrl: `https://miyoria.invalid/card/${card.serial}`,
   });
-  // The card keeps its 630×880: 30 px above and below leave 570, so it is 408 wide.
-  const h = 570;
+  // The card keeps its 630×880 ratio between the header and the bottom edge, 28 px clear of both.
+  const gap = 28;
+  const h = OG_HEIGHT - DOCK - gap * 2;
   const w = Math.round((h * 630) / 880);
-  const x = 96;
-  const y = 30;
-  const title = card.relationship ?? "初次見面";
-  const no = `No.${String(card.number).padStart(3, "0")}`;
-  const tx = x + w + 80;
+  const x = PAD_X;
+  const y = DOCK + gap;
   const body = inner.replace(/^<svg[^>]*>/, "").replace(/<\/svg>$/, "");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${OG_WIDTH}" height="${OG_HEIGHT}" viewBox="0 0 ${OG_WIDTH} ${OG_HEIGHT}" font-family="${FONT_FAMILY}, sans-serif">
-${BACKDROP}
-<rect x="${x + 6}" y="${y + 22}" width="${w}" height="${h}" rx="17" fill="#000000" opacity="0.6" filter="url(#og-shadow)"/>
+  const tx = x + w + 72;
+  const no = `No.${String(card.number).padStart(3, "0")}${card.foil ? " · 閃卡" : ""}`;
+  const rows: Fact[] = [
+    {
+      label: card.relationship === null ? "她還不認識你" : "她眼中的你",
+      value: card.relationship ?? "初次見面",
+      accent: true,
+    },
+    { label: "卡號", value: no },
+    { label: "編號", value: card.serial, mono: true },
+  ];
+  return toPng(
+    frame(`<text x="${tx}" y="${DOCK + 150}" font-size="64" font-weight="700" fill="${TEXT}">${esc(clip(card.name, 11))}</text>
+${facts(rows, tx, DOCK + 206, OG_WIDTH - tx - PAD_X)}
 <svg x="${x}" y="${y}" width="${w}" height="${h}" viewBox="0 0 630 880" font-family="${FONT_FAMILY}, sans-serif">${body}</svg>
-<text x="${tx}" y="150" font-size="22" font-weight="600" letter-spacing="9" fill="#ffffff" opacity="0.85">MIYORIA</text>
-<text x="${tx}" y="250" font-size="64" font-weight="700" fill="#ffffff">${esc(clip(card.name, 11))}</text>
-<text x="${tx}" y="322" font-size="40" font-weight="600" fill="${COLORS.primary}">${esc(title)}</text>
-<text x="${tx}" y="400" font-size="26" fill="#ffffff" opacity="0.7">${esc(no)}${card.foil ? " · 閃卡" : ""}</text>
-<text x="${tx}" y="440" font-size="22" fill="#ffffff" opacity="0.5" font-family="Consolas, monospace">${esc(card.serial)}</text>
-</svg>`;
-  return toPng(svg);
+<rect x="${x - 0.5}" y="${y - 0.5}" width="${w + 1}" height="${h + 1}" rx="${(26 * h) / 880}" fill="none" stroke="${LINE}"/>`),
+  );
 }
 
-/** The site's own picture: her wordmark and the dark of the panel, with her calm picture if the folder has it. */
+/** The site's own picture: the public site's header, her name, a strip of facts and her picture. */
 export async function renderDefaultImage(panelDir: string | null): Promise<Buffer> {
   const art = await poseArt(panelDir, "calm");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${OG_WIDTH}" height="${OG_HEIGHT}" viewBox="0 0 ${OG_WIDTH} ${OG_HEIGHT}" font-family="${FONT_FAMILY}, sans-serif">
-${BACKDROP}
-${
-  art
-    ? `<image href="${art}" x="660" y="-20" width="520" height="693" preserveAspectRatio="xMidYMin slice"/>
-<defs><linearGradient id="og-l" x1="0" x2="1"><stop offset="0" stop-color="#0b0d12"/><stop offset="1" stop-color="#0b0d12" stop-opacity="0"/></linearGradient><linearGradient id="og-r" x1="1" x2="0"><stop offset="0" stop-color="#0b0d12"/><stop offset="1" stop-color="#0b0d12" stop-opacity="0"/></linearGradient></defs>
-<rect x="640" width="200" height="${OG_HEIGHT}" fill="url(#og-l)"/><rect x="1000" width="200" height="${OG_HEIGHT}" fill="url(#og-r)"/>`
-    : ""
-}
-<text x="96" y="250" font-size="30" font-weight="600" letter-spacing="12" fill="#ffffff" opacity="0.7">AI VTUBER</text>
-<text x="92" y="380" font-size="124" font-weight="700" fill="#ffffff" letter-spacing="2">Miyoria</text>
-<text x="96" y="452" font-size="32" fill="${COLORS.primary}">住在 Discord 和直播裡的她</text>
-</svg>`;
-  return toPng(svg);
+  const artX = 700;
+  const rows: Fact[] = [
+    { label: "她是", value: "AI VTuber" },
+    { label: "她在", value: "Discord、直播" },
+    { label: "她發", value: "會員卡", accent: true },
+  ];
+  const picture = art
+    ? `<image href="${art}" x="${artX}" y="${DOCK}" width="${OG_WIDTH - artX}" height="${OG_HEIGHT - DOCK}" preserveAspectRatio="xMidYMin slice"/>
+<rect x="${artX}" y="${DOCK}" width="${OG_WIDTH - artX}" height="${OG_HEIGHT - DOCK}" fill="${BASE}" opacity="0.2"/>
+<rect x="${artX}" y="${DOCK}" width="1" height="${OG_HEIGHT - DOCK}" fill="${LINE}"/>`
+    : "";
+  return toPng(
+    frame(`${picture}
+${facts(rows, PAD_X, DOCK + 96, artX - PAD_X * 2, true)}`),
+  );
 }
 
 // ---- cache ----------------------------------------------------------------------------------
