@@ -31,6 +31,27 @@ npx miyoria stage obs-setup   # builds her OBS scenes and sources (add --dry-run
 
 Her data lives in `data/miyoria.db` (SQLite through `node:sqlite`, so there is no database to install). `npx miyoria config` changes settings one at a time. `miyoria status`, `miyoria decisions` (why she spoke or stayed quiet) and `miyoria events 'agent.*'` let you watch a running Core. `npx miyoria --help` lists everything.
 
+## 快速開始:從全新的 clone 到「bot 在我的伺服器上線並回話」
+
+需要:Node.js 24(其餘 pnpm、Python、ffmpeg 由 `miyoria install` 補)、一個 Discord bot token(Developer Portal → Bot,打開 Message Content Intent;預設還要 Presence 和 Server Members Intent,不想開就之後 `miyoria config set modules."platform.discord.bot".presence_intents false`)、一組 LLM API key(DeepSeek 或任何 OpenAI 相容的服務)。**不需要顯卡**:語音辨識 / 合成、唱歌、VTube Studio、OBS、Minecraft 都是選用,預設全部關著,只有文字聊天。
+
+```bash
+git clone <這個 repo> && cd Miyoria
+node scripts/setup.mjs        # 確認 pnpm(沒有就用 corepack 啟用)、pnpm install、然後開 miyoria init
+```
+
+`miyoria init` 只問必要的:LLM 的 key、Discord token、這台電腦跑什麼(預設「只有 core」= 文字聊天,不用 GPU)。結束時會問要不要現在安裝這台電腦缺的東西,列出清單和大小、只問一次。之後:
+
+```bash
+pnpm dev doctor               # 檢查 Node、pnpm、LLM、Discord、資料庫,以及選的角色缺什麼
+pnpm dev start                # 在 Windows Terminal 分頁啟動(其他系統:pnpm dev core)
+pnpm dev chat                 # 或先在終端機跟她聊天,不需要 Discord
+```
+
+要加語音、唱歌或直播時,重新執行 `miyoria init` 改角色(`inference` = ASR / TTS / 唱歌,要 NVIDIA 顯卡;`broadcast` = voice node + stage),再 `miyoria install`。
+
+哪些只有 Windows:`miyoria start` 的分頁(其他系統用 `miyoria up` 或 `miyoria core`)、`winget` 自動安裝(macOS 用 Homebrew;Linux 會印出 apt / dnf 指令,不替你跑 sudo)、直播機的 OBS / VTube Studio / voice node 的 Go Live(官方只在 Windows 測過)。`miyoria install` 不會裝、只會檢查並說明:NVIDIA 驅動 / CUDA、Docker Desktop、OBS、VTube Studio、Minecraft / Prism Launcher。針對這台電腦的workaround(防毒軟體鎖住 esbuild 暫存檔、WinNAT 保留埠)不是預設步驟,只在出問題時由 `miyoria doctor --deep` 提示。
+
 ## 多台電腦:角色、安裝和啟動
 
 服務分成三個角色,每台電腦只跑你選的那些(名稱集中在 `packages/cli/src/stack/roles.ts`,之後要改只改那裡):

@@ -126,10 +126,19 @@ export function machineConfig(config: Config): Machine | null {
   if (!isJsonObject(section)) return null;
   const raw = MachineSchema.parse(section);
   const custom = raw.services !== undefined;
+  // The end-of-turn worker is only worth running when the voice module is set to use it.
   const services = custom
     ? SERVICE_ORDER.filter((s) => (raw.services as string[]).includes(s))
-    : servicesOfRoles(raw.roles);
+    : servicesOfRoles(raw.roles).filter((s) => s !== "turn" || turnWanted(config));
   return { roles: raw.roles, services, hosts: raw.hosts, custom };
+}
+
+/** `[modules.voice]` uses Smart Turn or Silero, so `workers/turn` is needed. */
+export function turnWanted(config: Config): boolean {
+  const voice = config.module("voice").config;
+  return (
+    isJsonObject(voice) && (voice.turn_engine === "smart-turn" || voice.vad_engine === "silero")
+  );
 }
 
 export function isLoopback(host: string): boolean {

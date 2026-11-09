@@ -143,6 +143,16 @@ export const COMMANDS: CommandSpec = {
         const inferenceHost = str(ctx, "inference-host");
         await init.run(ctx.config, p, {
           yes: ctx.yes,
+          ...(isInteractive()
+            ? {
+                offerInstall: () =>
+                  install.run(
+                    ctx.config,
+                    { targets: [] },
+                    install.defaultInstallDeps(async (m) => interactivePrompter().confirm(m, true)),
+                  ),
+              }
+            : {}),
           machine: {
             ask: isInteractive(),
             ...(roles !== undefined ? { roles } : {}),

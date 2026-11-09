@@ -93,6 +93,11 @@ export interface BuildTarget {
    * so a failed build (a locked temp file) never leaves an empty `dist`.
    */
   swapDir?: string;
+  /**
+   * Arguments for a second try when the first build fails (the Vite build without the minifier,
+   * for antivirus that locks esbuild's temp files). A fallback, not the default.
+   */
+  fallbackArgs?: string[];
   /** Config section naming this target (extension id); missing outputs only fail when set up. */
   configured?: boolean;
 }
@@ -219,7 +224,8 @@ export function buildTargets(root: string, configDir: string, config: Config): B
       outputs: [join(dir, "dist")],
       marker: join(dir, "dist", "index.html"),
       command: "pnpm",
-      args: ["--filter", `@miyoria/${app}`, "exec", "vite", "build", ...SAFE_VITE_ARGS],
+      args: ["--filter", `@miyoria/${app}`, "exec", "vite", "build"],
+      fallbackArgs: ["--filter", `@miyoria/${app}`, "exec", "vite", "build", ...SAFE_VITE_ARGS],
       swapDir: join(dir, "dist"),
     });
   }

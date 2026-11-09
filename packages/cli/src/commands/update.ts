@@ -134,9 +134,17 @@ async function install(root: string, deps: UpdateDeps, force: boolean, dryRun: b
 /** Builds one target; a Vite build goes to `<dist>.next` and replaces `dist` only on success. */
 export async function buildTarget(t: BuildTarget, deps: UpdateDeps): Promise<boolean> {
   const next = t.swapDir ? `${t.swapDir}.next` : null;
-  const args = next ? [...t.args, "--outDir", basename(next), "--emptyOutDir"] : t.args;
+  const withOut = (a: string[]) => (next ? [...a, "--outDir", basename(next), "--emptyOutDir"] : a);
   note(`建置 ${t.label}…`);
-  const r = await deps.run(t.command, args, { cwd: t.cwd, timeoutMs: BUILD_TIMEOUT_MS });
+  let r = await deps.run(t.command, withOut(t.args), { cwd: t.cwd, timeoutMs: BUILD_TIMEOUT_MS });
+  if (r.code !== 0 && t.fallbackArgs) {
+    // Antivirus holding esbuild's temp file is the usual cause; the retry skips the minifier.
+    warn(`${t.label} 建置失敗;改用不壓縮的建置再試一次(防毒軟體鎖住 esbuild 暫存檔時常見)`);
+    r = await deps.run(t.command, withOut(t.fallbackArgs), {
+      cwd: t.cwd,
+      timeoutMs: BUILD_TIMEOUT_MS,
+    });
+  }
   if (r.code !== 0) {
     fail(`${t.label} 建置失敗${r.timedOut ? "(逾時)" : ""};輸出沒有被動到`);
     for (const l of failureTail(r.stdout, r.stderr)) println(l);

@@ -72,7 +72,7 @@ export function currentMachine(ws: Workspace): {
 }
 
 const PRESETS = [
-  { label: "全部都在這台電腦(單機)", roles: ROLE_NAMES as readonly Role[] },
+  { label: "全部都在這台電腦(單機;要 NVIDIA 顯卡和模型)", roles: ROLE_NAMES as readonly Role[] },
   ...ROLE_NAMES.map((r) => ({
     label: `只有${ROLES[r].label}(${r}):${ROLES[r].help}`,
     roles: [r] as readonly Role[],
@@ -93,7 +93,7 @@ async function pickServices(
     const roles = onlyRoles ? rolesCovered(services) : [];
     return { services, roles, custom: !onlyRoles };
   }
-  let initial = 0;
+  let initial = 2; // a new install starts with text chat only: no GPU, no models
   if (now.services !== null) {
     const same = PRESETS.findIndex(
       (x) => servicesOfRoles(x.roles).join() === now.services?.join() && !now.custom,

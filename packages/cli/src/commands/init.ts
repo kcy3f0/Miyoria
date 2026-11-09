@@ -23,6 +23,8 @@ export interface InitOptions {
    * config keeps whatever it has (old configs have no `[machine]` and behave as before).
    */
   machine?: MachinePreset & { ask: boolean };
+  /** Runs `install` for this computer's services; offered after the files are written (interactive only). */
+  offerInstall?: () => Promise<void>;
   /** Command prefix shown in the next steps (default `miyoria`, or `npx miyoria` under npx). */
   command?: string;
 }
@@ -109,6 +111,12 @@ export async function run(
       p.warn(
         "還沒有設定 LLM API key:之後用 `miyoria config` → LLM 填入(或重新執行 `miyoria init`)",
       );
+    }
+  }
+
+  if (picked && options.offerInstall && (changes !== null || ws.tomlExists)) {
+    if (await p.confirm("現在檢查這台電腦缺什麼,並安裝(會先列出清單和大小再問一次)?", true)) {
+      await options.offerInstall();
     }
   }
 

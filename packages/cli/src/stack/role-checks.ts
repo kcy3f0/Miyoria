@@ -188,6 +188,55 @@ export async function roleChecks(input: DeepInput): Promise<Finding[]> {
   if (services.length === 0) return out;
   const python = (w: Worker) => (root ? pythonPath(join(root, w.venv), deps.platform) : null);
 
+  // Tools the services need before anything is installed.
+  if (stack.core || stack.voiceNode || stack.stage) {
+    const major = Number(process.versions.node.split(".")[0]);
+    out.push(
+      major >= 24
+        ? ok("Node.js", process.versions.node)
+        : fail("Node.js", `${process.versions.node},要 24 以上`, ["從 nodejs.org 安裝 Node 24"]),
+    );
+    const pnpm = await deps.run("pnpm", ["--version"], { timeoutMs: 15_000 });
+    out.push(
+      pnpm.missing || pnpm.code !== 0
+        ? fail("pnpm", "找不到", ["執行 `node scripts/setup.mjs`,或 `corepack enable`"])
+        : ok("pnpm", pnpm.stdout.trim()),
+    );
+  }
+  if (stack.workers.length > 0) {
+    let found = "";
+    for (const c of [["py", "-3"], ["python3"], ["python"]] as const) {
+      const [cmd, ...pre] = c;
+      const r = await deps.run(cmd, [...pre, "--version"], { timeoutMs: 15_000 });
+      if (!r.missing && r.code === 0) {
+        found = `${r.stdout}${r.stderr}`.trim();
+        break;
+      }
+    }
+    out.push(
+      /Python 3\.(11|12|13)(\.|$)/.test(found) ||
+        stack.workers.every((w) => root && existsSync(python(w) ?? ""))
+        ? ok("Python", found || "venv 都已建好")
+        : warn("Python", found ? `${found};worker 要 3.11–3.13` : "找不到 Python", [
+            "執行 `miyoria install`(Windows:winget、macOS:brew;Linux 會印出 apt 指令)",
+          ]),
+    );
+    if (stack.workers.some((w) => ["asr", "tts", "sing"].includes(w.name))) {
+      const smi = await deps.run("nvidia-smi", ["-L"], { timeoutMs: 15_000 });
+      out.push(
+        smi.missing || smi.code !== 0
+          ? warn(
+              "NVIDIA 顯卡",
+              "沒偵測到 nvidia-smi:asr、tts、sing 要 NVIDIA 顯卡和驅動(不會自動安裝)",
+              [
+                "沒有顯卡就只跑 core(文字聊天);或把語音換成雲端 provider([speech.asr.*] / [speech.tts.*])",
+              ],
+            )
+          : ok("NVIDIA 顯卡", smi.stdout.split("\n")[0] ?? ""),
+      );
+    }
+  }
+
   // Node packages: everything but the inference machine.
   const needsNode = stack.core || stack.voiceNode || stack.stage;
   if (needsNode && root) {

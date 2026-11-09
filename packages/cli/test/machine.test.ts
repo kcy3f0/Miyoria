@@ -62,7 +62,7 @@ function repo(toml: string): string {
   return write("miyoria.toml", toml);
 }
 
-const ALL = `[machine]\nroles = ["broadcast", "core", "inference"]\n`;
+const ALL = `[machine]\nroles = ["broadcast", "core", "inference"]\n[modules.voice]\nvad_engine = "silero"\n`;
 const cfg = (toml: string) => Config.fromToml(toml, NOENV);
 
 function deps(over: Partial<DeepDeps> = {}): DeepDeps {
@@ -107,7 +107,15 @@ describe("roles", () => {
     const m = machineConfig(
       cfg(`[machine]\nroles = ["core"]\n[machine.hosts]\ncore = "192.168.1.10"\n`),
     );
-    expect(m?.services).toEqual(["turn", "core"]);
+    expect(m?.services).toEqual(["core"]); // turn only when the voice module uses it
+    const withTurn = machineConfig(
+      cfg(`[machine]
+roles = ["core"]
+[modules.voice]
+turn_engine = "smart-turn"
+`),
+    );
+    expect(withTurn?.services).toEqual(["turn", "core"]);
     expect(m?.hosts).toEqual({ core: "192.168.1.10", inference: "127.0.0.1" });
     const custom = machineConfig(cfg(`[machine]\nservices = ["tts", "asr"]\n`));
     expect(custom?.custom).toBe(true);
@@ -434,8 +442,7 @@ describe("miyoria install", () => {
       { run, platform: "win32", confirm: async () => true },
     );
     const text = out.join("\n");
-    expect(text).toContain("不需要");
-    expect(text).toContain("會建立 venv");
+    expect(text).toContain("建立 workers/.venv-asr-qwen");
     expect(text).toContain("requirements-qwen3.txt");
     expect(calls.some((c) => c.includes("pnpm"))).toBe(false);
     expect(text).toContain("workers/voices/deepseek-chan/ref.wav");
@@ -463,7 +470,7 @@ describe("role checks", () => {
   }
 
   it("lists_the_files_that_are_downloaded_by_hand", () => {
-    const s = stackConfig(cfg(`[machine]\nroles = ["inference", "broadcast", "core"]\n`));
+    const s = stackConfig(cfg(ALL));
     const items = manualItems(s).map((m) => `${m.service}:${m.path}`);
     expect(items).toContain("tts:workers/voices/deepseek-chan/ref.wav");
     expect(items).toContain("voice-node:apps/voice-node/.env");
@@ -530,7 +537,7 @@ describe("init: which services run here", () => {
 
   it("writes_roles_and_loopback_hosts_for_a_single_pc", async () => {
     const ws = workspace();
-    await machineStep(new Scripted([Enter]), ws);
+    await machineStep(new Scripted([Pick(0), Enter, Enter]), ws);
     expect(ws.item("machine.roles")).toEqual(["broadcast", "core", "inference"]);
     expect(ws.item("machine.hosts.core")).toBe("127.0.0.1");
     expect(ws.effective("stage.core_url")).toBe("ws://127.0.0.1:7882/stage-link");

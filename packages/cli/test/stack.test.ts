@@ -612,7 +612,7 @@ describe("update", () => {
     expect(out.join("")).toContain("與原始碼一致");
   });
 
-  it("rebuilds_only_the_stale_panel_with_the_antivirus_safe_vite_flags_and_swaps_dist", async () => {
+  it("rebuilds_only_the_stale_panel_with_a_plain_vite_build_and_swaps_dist", async () => {
     const config = repo();
     write("apps/panel/src/main.tsx", "changed", 5);
     const { d, calls } = deps((c) => {
@@ -623,11 +623,28 @@ describe("update", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.command).toBe("pnpm");
     expect(calls[0]?.args.join(" ")).toBe(
-      "--filter @miyoria/panel exec vite build --minify false --target esnext --outDir dist.next --emptyOutDir",
+      "--filter @miyoria/panel exec vite build --outDir dist.next --emptyOutDir",
     );
     expect(readFileSync(join(dir, "apps/panel/dist/index.html"), "utf8")).toBe("NEW");
     expect(existsSync(join(dir, "apps/panel/dist.next"))).toBe(false);
     expect(existsSync(join(dir, "apps/panel/dist.prev"))).toBe(false);
+  });
+
+  it("retries_the_panel_without_the_minifier_when_the_plain_build_fails", async () => {
+    const config = repo();
+    write("apps/panel/src/main.tsx", "changed", 5);
+    const { d, calls } = deps((c) => {
+      if (!c.args.includes("vite")) return undefined;
+      if (c.args.includes("--minify")) {
+        write("apps/panel/dist.next/index.html", "NEW");
+        return undefined;
+      }
+      return { ...NONE, code: 1, stderr: "esbuild: Access is denied" };
+    });
+    await update.run(config, { noPull: true }, d);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.args.join(" ")).toContain("--minify false --target esnext");
+    expect(readFileSync(join(dir, "apps/panel/dist/index.html"), "utf8")).toBe("NEW");
   });
 
   it("keeps_the_old_dist_when_the_build_fails", async () => {
