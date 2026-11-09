@@ -441,6 +441,311 @@ def test_guess_artist_title(raw, uploader, expected):
     assert guess_artist_title(raw, uploader) == expected
 
 
+# ── lyrics search: queries, matching, checks, the language model (network mocked) ────────────────────
+
+
+def _lrc(n: int = 12, step: float = 18.0) -> str:
+    return "\n".join(f"[{int(i * step) // 60:02d}:{(i * step) % 60:05.2f}]line number {i} of the song" for i in range(n))
+
+
+def _lrclib_item(track, artist, duration, lrc=None, plain=None):
+    return {"trackName": track, "artistName": artist, "duration": duration, "syncedLyrics": lrc, "plainLyrics": plain}
+
+
+class FakeNet:
+    """lrclib search + NetEase + a language model, over a dict of songs: no network."""
+
+    def __init__(self, lrclib=(), netease=(), llm=None):
+        self.lrclib = list(lrclib)
+        self.netease = list(netease)  # (id, name, artist, seconds, lrc)
+        self.calls: list[tuple[str, dict]] = []
+        self.llm = llm  # [{"title","artist","alt_titles"}]
+        self.llm_calls = 0
+
+    def http_json(self, method, url, *, params=None, data=None, timeout=8.0):
+        from lyrics import norm
+
+        self.calls.append((url, params or data or {}))
+        if "lrclib" in url:
+            q = norm(" ".join((params or {}).values()))
+            return [i for i in self.lrclib if norm(i["trackName"]) in q]
+        if url.endswith("/api/search/get/web"):
+            q = norm(data["s"])
+            hits = [n for n in self.netease if norm(n[1]) in q]
+            return {"result": {"songs": [{"id": n[0], "name": n[1], "artists": [{"name": n[2]}], "duration": n[3] * 1000}
+                                         for n in hits]}}
+        if url.endswith("/api/song/lyric"):
+            n = next((n for n in self.netease if n[0] == params["id"]), None)
+            return {"lrc": {"lyric": n[4]}} if n else {"nolyric": True}
+        return None
+
+    def chat(self, cfg, messages, timeout):
+        import json
+
+        self.llm_calls += 1
+        return json.dumps({"is_song": bool(self.llm), "songs": self.llm or []})
+
+
+@pytest.fixture
+def net(monkeypatch):
+    import lyrics
+    import lyricsllm
+
+    def make(**kw):
+        n = FakeNet(**kw)
+        monkeypatch.setattr(lyrics, "http_json", n.http_json)
+        monkeypatch.setattr(lyricsllm, "chat", n.chat)
+        return n
+
+    return make
+
+
+def _queries(hints):
+    from lyrics import direct_queries
+
+    return [(q.title, q.artist) for q in direct_queries(hints)]
+
+
+def test_direct_queries_read_the_title_both_ways_and_the_metadata_first():
+    qs = _queries({"raw_title": "【MV】ヨルシカ「又三郎」(Official Video) feat. X", "title": "又三郎", "artist": "ヨルシカ",
+                   "track": "Matasaburo", "meta_artist": "Yorushika", "uploader": "ヨルシカ / n-buna Official"})
+    assert qs[0] == ("Matasaburo", "Yorushika")  # yt-dlp's own music metadata first
+    assert ("又三郎", "ヨルシカ") in qs
+    qs = _queries({"raw_title": "プロポーズ / 可不", "title": "可不", "artist": "プロポーズ"})
+    assert ("可不", "プロポーズ") in qs and ("プロポーズ", "可不") in qs  # swapped, as the title read it
+
+
+def test_direct_queries_strip_noise_and_use_brackets_and_channel():
+    qs = _queries({"raw_title": "Sakura no Uta 歌ってみた cover by Someone", "title": "Sakura no Uta", "artist": None,
+                   "uploader": "Someone Channel"})
+    assert ("Sakura no Uta", None) in qs
+    assert not any("歌ってみた" in t for t, _ in qs)
+    qs = _queries({"raw_title": "夜に駆ける 中字 | YOASOBI", "title": "夜に駆ける", "artist": "YOASOBI", "uploader": "YOASOBI Official"})
+    assert ("夜に駆ける", "YOASOBI") in qs
+    qs = _queries({"raw_title": "ヨルシカ「又三郎」MV", "title": "又三郎", "artist": None})
+    assert ("又三郎", "ヨルシカ") in qs  # 「」 is the title, the rest the artist
+
+
+def test_name_similarity_ignores_script_case_and_punctuation():
+    from lyrics import sim
+
+    assert sim("Bad Apple!!", "bad apple") == 1.0
+    assert sim("ロストワンの号哭", "ロストワンの号哭 (feat. Kagamine Rin)") > 0.7
+    assert sim("ヨルシカ", "よるしか") == 1.0  # katakana ~ hiragana
+    assert sim("abc", "xyz") < 0.3 and sim("", "x") == 0.0
+
+
+def test_clean_lrc_drops_credit_lines_and_stray_json():
+    from lyrics import clean_lrc, parse_lrc
+
+    raw = '[00:00.000] 作词 : 某人\n[00:01.000] 作曲 : 某人\n{"t":0,"c":[{"tx":"x"}]}\n[00:12.50]first line\n[00:20.00]second'
+    assert [ln["text"] for ln in parse_lrc(clean_lrc(raw))] == ["first line", "second"]
+
+
+def test_lrc_fit_needs_the_lyrics_to_span_the_song():
+    from lyrics import lrc_fit, parse_lrc
+
+    lines = parse_lrc(_lrc(12, 18.0))  # last line at 198 s
+    assert lrc_fit(lines, 210)["ok"] is True
+    assert lrc_fit(lines, 400)["ok"] is False  # the lyrics end at half the song
+    assert lrc_fit(lines, 150)["ok"] is False  # and they run past it
+    assert lrc_fit(parse_lrc(_lrc(3)), 100)["ok"] is False
+    assert lrc_fit(lines, None)["ok"] is True
+
+
+def test_find_lyrics_direct_hit_reports_where_from_and_how_sure(net):
+    from lyrics import find_lyrics
+
+    n = net(lrclib=[_lrclib_item("又三郎", "ヨルシカ", 230, _lrc(12, 19.0))])
+    r = find_lyrics({"raw_title": "ヨルシカ - 又三郎 (MV)", "title": "又三郎", "artist": "ヨルシカ"}, 230.4, llm=None)
+    assert r["provider"] == "lrclib" and r["synced"] and r["how"] == "title"
+    assert r["confidence"] > 0.9 and r["checks"]["duration_diff_s"] < 1 and r["checks"]["fit"]["ok"]
+    assert r["llm"] is None and n.llm_calls == 0
+
+
+def test_find_lyrics_finds_swapped_title_and_artist(net):
+    from lyrics import find_lyrics
+
+    net(lrclib=[_lrclib_item("プロポーズ", "内緒のピアス", 233, _lrc(12, 19.0))])
+    # the resolver read "プロポーズ / 可不" backwards, and 可不 (the singer) is no artist in the database
+    r = find_lyrics({"raw_title": "プロポーズ / 可不", "title": "可不", "artist": "プロポーズ"}, 233.1, llm=None)
+    assert r and r["track"] == "プロポーズ"
+
+
+def test_find_lyrics_rejects_a_wrong_length_instead_of_showing_wrong_lyrics(net):
+    from lyrics import find_lyrics
+
+    net(lrclib=[_lrclib_item("Song", "Artist", 120, _lrc(12, 10.0))])
+    assert find_lyrics({"title": "Song", "artist": "Artist"}, 300, llm=None) is None  # 3 + minutes vs 2
+
+
+def test_find_lyrics_rejects_synced_lyrics_that_do_not_span_the_audio(net):
+    from lyrics import find_lyrics
+
+    # the database says 230 s too, but the lines stop at 60 s: a different edit of the song
+    net(lrclib=[_lrclib_item("Song", "Artist", 230, _lrc(4, 15.0))])
+    assert find_lyrics({"title": "Song", "artist": "Artist"}, 230, llm=None) is None
+
+
+def test_find_lyrics_falls_back_to_the_language_model(net):
+    import lyricsllm
+    from lyrics import find_lyrics
+
+    n = net(lrclib=[_lrclib_item("又三郎", "ヨルシカ", 226, _lrc(12, 18.0))],
+            llm=[{"title": "又三郎", "artist": "ヨルシカ", "alt_titles": ["Matasaburo"]}])
+    hints = {"key": "yt-x", "raw_title": "Matasaburo (cover by Minato Yukina)", "title": "Matasaburo cover",
+             "artist": "Dannis", "uploader": "Dannis", "description": "cover of Yorushika"}
+    propose = lyricsllm.make_proposer({"base_url": "x", "api_key": "", "model": "m"}, None)
+    r = find_lyrics(hints, 226.5, llm=propose)
+    assert r["how"] == "llm" and r["track"] == "又三郎" and r["confidence"] > 0.9
+    assert r["llm"]["songs"][0]["artist"] == "ヨルシカ" and n.llm_calls == 1
+
+
+def test_language_model_is_skipped_when_the_direct_lookup_is_sure(net):
+    import lyricsllm
+    from lyrics import find_lyrics
+
+    n = net(lrclib=[_lrclib_item("Song", "Artist", 200, _lrc(12, 16.0))], llm=[{"title": "x", "artist": "y"}])
+    r = find_lyrics({"title": "Song", "artist": "Artist"}, 200, llm=lyricsllm.make_proposer({"base_url": "x", "model": "m"}, None))
+    assert r["how"] == "title" and n.llm_calls == 0
+
+
+def test_language_model_failure_and_nonsense_leave_no_lyrics(net):
+    import lyricsllm
+    from lyrics import find_lyrics
+
+    net()
+    boom = lambda hints, tried: (_ for _ in ()).throw(RuntimeError("down"))  # noqa: E731
+    assert find_lyrics({"title": "Nothing", "artist": "Nobody"}, 200, llm=boom) is None
+    n = net(llm=[])  # "I do not know that song"
+    assert find_lyrics({"title": "Nothing"}, 200,
+                       llm=lyricsllm.make_proposer({"base_url": "x", "model": "m"}, None)) is None
+    assert n.llm_calls == 1  # and it does not keep asking
+
+
+def test_find_lyrics_uses_netease_and_drops_its_credit_lines(net):
+    from lyrics import find_lyrics
+
+    lrc = "[00:00.00]作词 : A\n[00:01.00]作曲 : B\n" + _lrc(12, 19.0)
+    net(netease=[(7, "夜に駆ける", "YOASOBI", 261, lrc)])
+    r = find_lyrics({"title": "夜に駆ける", "artist": "YOASOBI"}, 261, llm=None)
+    assert r["provider"] == "netease" and r["synced"] and "作词" not in r["lrc"]
+
+
+def test_plain_lyrics_are_a_fallback_and_never_fully_confident(net):
+    from lyrics import find_lyrics
+
+    net(lrclib=[_lrclib_item("Song", "Artist", 200, None, "la la la\nla la")])
+    r = find_lyrics({"title": "Song", "artist": "Artist"}, 200, llm=None)
+    assert r["synced"] is False and r["plain"] and r["lrc"] is None and r["confidence"] <= 0.7
+    net(lrclib=[_lrclib_item("Song", "Artist", 200, _lrc(12, 16.0), "la"), _lrclib_item("Song", "Artist", 200, None, "la")])
+    assert find_lyrics({"title": "Song", "artist": "Artist"}, 200, llm=None)["synced"] is True
+
+
+def test_asr_spot_check_rejects_lyrics_the_singer_does_not_sing(net, monkeypatch, tmp_path):
+    import lyrics
+
+    net(lrclib=[_lrclib_item("Song", "Artist", 200, _lrc(12, 16.0))])
+    audio = tmp_path / "lead.wav"
+    audio.write_bytes(b"x")
+    monkeypatch.setattr(lyrics, "_clip", lambda *a: b"wav")
+    heard = {"text": "完全に違う言葉を歌っている"}
+    monkeypatch.setattr(lyrics, "asr_text", lambda wav, url, timeout: heard["text"])
+    hints = {"title": "Song", "artist": None}
+    assert lyrics.find_lyrics(hints, 200, llm=None, audio=audio, asr_url="http://asr", asr_mode="1") is None
+    heard["text"] = "line number 3 of the song"
+    r = lyrics.find_lyrics(hints, 200, llm=None, audio=audio, asr_url="http://asr", asr_mode="1")
+    assert r["checks"]["asr"]["ok"] is True
+    # ASR away: no verdict, no rejection
+    monkeypatch.setattr(lyrics, "asr_text", lambda wav, url, timeout: None)
+    assert lyrics.find_lyrics(hints, 200, llm=None, audio=audio, asr_url="http://asr", asr_mode="1") is not None
+
+
+def test_coverage_of_a_line():
+    from lyrics import coverage
+
+    assert coverage("line number 3", "Line number 3!") == 1.0
+    assert coverage("line number 3", "") == 0.0
+    assert coverage("あいうえおかきくけこ", "さしすせそたちつてと") < 0.2
+
+
+def test_llm_config_follows_core_and_its_provider_kind(tmp_path, monkeypatch):
+    import lyricsllm
+
+    (tmp_path / "profiles" / "p").mkdir(parents=True)
+    (tmp_path / "profiles" / "p" / "profile.toml").write_text('[llm.purposes]\nfast = ["go:model-fast"]\n', "utf-8")
+    (tmp_path / "miyoria.toml").write_text(
+        '[core]\nprofile = "p"\n[llm.providers.go]\nkind = "opencode"\nbase_url = "https://x.test/v1"\n'
+        'api_key = "${LYRICS_TEST_KEY:-fallback}"\n[llm.purposes]\nchat = ["other:chat-model"]\n', "utf-8")
+    monkeypatch.delenv("SING_LYRICS_LLM_URL", raising=False)
+    monkeypatch.delenv("SING_LYRICS_LLM", raising=False)
+    monkeypatch.delenv("MIYORIA_CONFIG", raising=False)
+    monkeypatch.setenv("LYRICS_TEST_KEY", "k1")
+    cfg = lyricsllm.load_config(tmp_path)
+    assert cfg["model"] == "model-fast" and cfg["base_url"] == "https://x.test/v1" and cfg["api_key"] == "k1"
+    assert cfg["headers"] == {"x-opencode-session": "miyoria-sing-lyrics"} and cfg["body"]["thinking"]["type"] == "disabled"
+    monkeypatch.setenv("SING_LYRICS_LLM_URL", "http://127.0.0.1:1/v1")
+    monkeypatch.setenv("SING_LYRICS_LLM_MODEL", "mine")
+    assert lyricsllm.load_config(tmp_path)["model"] == "mine"  # the worker's own setting wins
+    monkeypatch.setenv("SING_LYRICS_LLM", "0")
+    assert lyricsllm.load_config(tmp_path) is None
+    monkeypatch.delenv("SING_LYRICS_LLM")
+    monkeypatch.delenv("SING_LYRICS_LLM_URL")
+    assert lyricsllm.load_config(tmp_path / "nowhere") is None
+
+
+def test_llm_answer_parsing_and_cache(tmp_path):
+    import lyricsllm
+
+    text = '<think>hm</think>```json\n{"is_song": true, "songs": [{"title": "A", "artist": "B", "alt_titles": ["a"]}, {"x": 1}]}\n```'
+    assert [s["title"] for s in lyricsllm.parse_songs(text)] == ["A"]
+    assert lyricsllm.parse_songs('{"is_song": false, "songs": [{"title": "A"}]}') == []
+    assert lyricsllm.parse_songs("no idea") == []
+    calls = []
+
+    def chat(cfg, messages, timeout):
+        calls.append(messages[-1]["content"])
+        return '{"songs": [{"title": "A", "artist": "B"}]}'
+
+    propose = lyricsllm.make_proposer({"base_url": "x", "model": "m"}, tmp_path, chat_fn=chat)
+    hints = {"key": "yt-abc", "raw_title": "A (cover)", "description": "d" * 5000}
+    assert propose(hints, [])[0].artist == "B" and propose(hints, [])[0].title == "A"
+    assert len(calls) == 1 and len(calls[0]) < 1500  # cached by source key, and the prompt is bounded
+    from lyrics import Query
+
+    propose(hints, [Query("A", "B", "title")])  # a second round says what failed, and is not cached
+    assert len(calls) == 2 and "not found" in calls[1]
+
+
+def test_refetch_endpoint_updates_one_songs_lyrics_only(sing):
+    if not is_mock():
+        pytest.skip("mock")
+    job = sing.post("/jobs", json={"query": "lyrics refetch song"}).json()["job"]
+    song = wait(sing, job["id"])["song"]
+    assert song["lyrics"]["how"] == "mock" and song["lyrics"]["confidence"] == 1.0
+    assert song["lyrics_input"]["title"] == "lyrics refetch song"
+    before = sing.get(f"/songs/{song['id']}/files/play_mix.pcm").content
+    r = sing.post(f"/songs/{song['id']}/lyrics", json={"title": "Another Title", "artist": "Someone"})
+    assert r.status_code == 200 and r.json()["found"] is True and r.json()["previous"]["provider"] == "mock"
+    again = sing.get(f"/songs/{song['id']}").json()["song"]
+    assert again["lyrics"]["track"] == "Another Title" and again["lyrics"]["synced"] is True
+    assert again["lyrics_input"]["track"] == "Another Title"
+    assert sing.get(f"/songs/{song['id']}/files/lyrics.lrc").text.startswith("[00:00.00]mock line 1")
+    assert sing.get(f"/songs/{song['id']}/files/play_mix.pcm").content == before  # the audio is untouched
+    assert sing.post("/songs/nosuchsong/lyrics").status_code == 404
+
+
+def test_refetch_without_a_result_keeps_what_the_song_has(sing, monkeypatch):
+    if not is_mock():
+        pytest.skip("mock")
+    job = sing.post("/jobs", json={"query": "lyrics keep song"}).json()["job"]
+    song = wait(sing, job["id"])["song"]
+    monkeypatch.setenv("SING_LYRICS", "0")
+    r = sing.post(f"/songs/{song['id']}/lyrics").json()
+    assert r["found"] is False and r["kept"] is True
+    assert sing.get(f"/songs/{song['id']}").json()["song"]["lyrics"]["provider"] == "mock"
+
+
 # ── pitch: F0 cleanup and the auto key ───────────────────────────────────────
 
 

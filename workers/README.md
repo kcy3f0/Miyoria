@@ -6,7 +6,7 @@
 |---|---|---|---|
 | `asr/` | `POST /asr`、`GET /health`、`GET /busy` | 8001 | `ASR_BACKEND=sensevoice`(sherpa-onnx,CPU,附情緒 / 事件標記)或 `qwen3`(Qwen3-ASR,GPU) |
 | `tts/` | `POST /tts`、`GET /health`、`GET /busy`、`GET /voices`、`POST /voices/reload` | 8002 | Qwen3-TTS,聲音由 `VOICES_DIR` 註冊;後端 `faster-qwen3-tts`(真串流,推薦)或官方 `qwen-tts`(句子級,備案) |
-| `sing/` | `POST /jobs`、`GET /jobs/{id}`、`GET /songs`、`GET /songs/{id}/files/{name}`、`GET /library`、`GET /health` | 8005 | 點歌翻唱:yt-dlp / 本機歌庫 → RoFormer 人聲分離 → BS-RoFormer 切主唱 → 她的 RVC 模型轉主唱(可選先過 YingMusic / Seed-VC)→ 依伴唱模式混音 + lrclib 歌詞;見第 9 節 |
+| `sing/` | `POST /jobs`、`GET /jobs/{id}`、`GET /songs`、`GET /songs/{id}/files/{name}`、`POST /songs/{id}/lyrics`、`GET /library`、`GET /health` | 8005 | 點歌翻唱:yt-dlp / 本機歌庫 → RoFormer 人聲分離 → BS-RoFormer 切主唱 → 她的 RVC 模型轉主唱(可選先過 YingMusic / Seed-VC)→ 依伴唱模式混音 + 同步歌詞(lrclib / 網易雲,找不到再問 LLM);見第 9 節 |
 | `turn/` | `POST /turn`、`WS /vad`、`GET /health` | 8006 | 判斷講完:Smart Turn v3 + Silero VAD,CPU、不需要 PyTorch;見第 10 節 |
 | `fake/` | 兩個端點都有 | 8000 | 不需要 GPU 的假 worker(固定文字 / 正弦波「聲音」),用來做端對端測試 |
 | `tests/` | pytest | | 契約測試(預設打 fake,也可以打真的 worker) |
@@ -15,7 +15,7 @@
 workers/
 ├── asr/   server.py  tags.py  compare_names.py  requirements*.txt  Dockerfile
 ├── tts/   server.py  text_split.py  design_voice.py  requirements.txt  requirements-faster.txt  Dockerfile
-├── sing/  server.py  engine.py  exclusive.py  yielding.py  seedvc_runtime.py  songs.py  lyrics.py  requirements.txt
+├── sing/  server.py  engine.py  exclusive.py  yielding.py  seedvc_runtime.py  songs.py  lyrics.py  lyricsllm.py  requirements.txt
 ├── turn/  server.py  models.py  features.py  calibrate.py  requirements.txt
 ├── fake/  fake_server.py  requirements.txt
 ├── tests/ conftest.py  test_contract.py  test_text_split.py  test_asr_tags.py  test_tts_backends.py  test_sing.py
@@ -481,8 +481,31 @@ curl -sS -X POST http://127.0.0.1:8001/asr -F "audio=@out.wav" -F "language=zh"
 2. **分離**:Kim 的 Mel-Band RoFormer(`workers/models/vocal-split/MelBandRoformer.ckpt` + 同名 `.yaml`,[KimberleyJSN/melbandroformer](https://huggingface.co/KimberleyJSN/melbandroformer),MIT;設定檔取自 MSST 的 `config_vocals_mel_band_roformer_kj.yaml`)→ 人聲,伴奏 = 原曲 − 人聲;檔案不在就退回 Demucs `htdemucs`(`SING_SEPARATOR_MODEL` 可以指定 `htdemucs` / `htdemucs_ft`)。同一個來源只分一次(`data/songs/_sources/`)。**只有需要把伴奏和伴唱分開時才分離**(`backing` 是 `drop` / `convert`,或主唱模型不能直接讀原曲):保留伴唱(預設)和清唱時,主唱直接從原曲切,其餘部分 = 原曲 − 主唱(`rest.wav`),混出來的結果跟分離後再相加一模一樣,卻省掉最吃 VRAM 的這一步。GPU 排程估每一步要多少 VRAM 時,用最近幾次峰值中不超過中位數兩倍的最大值,單次異常值不會把之後每首都推到 CPU。
 3. **轉換**:只轉主唱。主唱由 becruily & Frazer 的 BS-RoFormer karaoke 模型(`models/lead-split/becruily-bs/`,HF `becruily/bs-roformer-karaoke`,未標授權)直接從整首歌切出來(`leadsplit.py`;舊的 aufr33 & viperx MelBand 從分離好的人聲切,咬字會被吃掉,MVSep 主唱 SDR 8.90 對 10.1)。`SING_VOICE` 決定怎麼轉(預設 `rvc`):她自己的 RVC 模型(Applio,`rvcpass.py`,預設 `models/applio/logs/miyoria-deepseek-48k/…_40e_11000s.pth`,檢索率 0)直接唱主唱;`ying+rvc` / `seedvc+rvc` 先用 YingMusic-SVC(`workers/models/yingmusic-svc`,GiantAILab/YingMusic-SVC,MIT)或 Seed-VC 轉一次再給 RVC。2026-11-09 換了主唱模型以後,RVC 單獨轉的咬字已經跟先過 YingMusic 差不多,所以預設只用 RVC。`SING_VOICE=seedvc` 回到原本只用 Seed-VC;缺檔案的部分會自動略過;用別的轉換鏈做過的快取歌,再點時會用現在的轉換鏈重轉(分離好的音軌沿用)。Seed-VC 本身:F0 條件、44.1 kHz、Whisper-small 內容編碼、BigVGAN v2 44 kHz、RMVPE 音高,參考音是 `voices/deepseek-chan/ref.wav`(`SING_REF` 也可以用 `;` 列多個檔案或給資料夾,串成最多 25 秒)。轉換前先清 F0(`pitch.py`:補 ≤ 40 ms 的掉格、折回短暫的八度跳動、濾掉尖刺;`SING_F0_CLEAN=0` 關掉)。自動挑音高:看歌的人聲中位數**和最高音**(第 95 百分位),對她的中位數(說話 + `SING_TARGET_OFFSET`)和上限(`SING_MAX_NOTE`,或說話 + `SING_CEILING_OFFSET`),選八度(-12 / 0 / +12);最高音還是超過上限就整首往下轉(最多 `SING_KEY_MIN` −5,伴奏用 ffmpeg Rubber Band 一起移),低太多就往上一點(最多 `SING_KEY_MAX` +3);`pitch` 可以直接指定人聲移調,`key` 是整首轉調(伴奏一起移,這時只自動挑八度)。原人聲靜音的地方,轉換後的人聲會被閘掉(去掉轉換的雜音)。
 4. **混音**:轉換後的人聲恢復成原人聲的響度,加上伴奏;原曲的伴唱(和聲、合唱)依點歌的 `backing` 處理,每種是快取裡各自的一首歌:`keep` 保留原本的伴唱(預設)、`drop` 不要伴唱、`convert` 伴唱也轉成她的聲音(多轉一次,疊在一起的和聲 RMVPE 抓不準,可能會怪)、`acapella` 清唱(只有她的主唱、沒有伴奏)。整體正規化到 `SING_TARGET_LUFS`(-16),峰值 ≤ -1 dBFS。輸出 `mix.wav`、`vocals.wav`、`instrumental.wav`,以及 Core 串流用的 48 kHz 單聲道 `play_mix.pcm` / `play_vocals.pcm`(人聲那條給嘴型用)。
-5. **歌詞**:lrclib.net 依歌名 / 歌手 / 長度找同步 LRC(找不到就沒有字幕)。
+5. **歌詞**:找同步 LRC(Core 唱歌時一行一行當字幕送出,所以時間要準);找不到就沒有字幕,不會放錯的詞。做法見下面「歌詞怎麼找」。
 6. **影片**(跟 2–5 平行,從下載那一步開始):影片網站的來源另外抓**只有畫面**的影片(H.264 ≤ `SING_VIDEO_MAX_HEIGHT` 優先,其次其他編碼轉封裝成 mp4,不超過 `SING_VIDEO_MAX_MB`),存成 `video.mp4`,唱歌時直播畫面放它(靜音)。本機歌庫:資料夾裡的 `video.*`,或跟音檔同名的影片檔(`歌手 - 歌名.mp4`)。歌要等影片好才算做好;影片失敗或音訊好了之後 `SING_VIDEO_WAIT_S` 秒還沒好就不等(`meta.json` `has_video: false` + `video_error`)。SoundCloud 這種沒有影片的連結會直接略過。這功能之前做好的歌,再點一次會只補抓影片。
+
+**歌詞怎麼找**(`lyrics.py`、`lyricsllm.py`;全部有逾時、有上限、失敗就當沒找到):
+
+1. **直接找**:先用影片自己的音樂資訊(yt-dlp 的 `track` / `artist` / `alt_title`,YouTube Music 的上傳才有),再用標題的各種讀法:去掉 `【】`、`「」`、`(Official Video)`、`MV`、`歌ってみた`、`cover`、`中字`、`feat.`、`by …`、OP / ED 標記,依 ` - ` / ` / ` / `｜` 拆成「歌手 - 歌名」**兩種順序都試**(標題常把歌手和歌名放反),`「歌名」` 括號裡的字、頻道名當歌手。每個讀法分別問 lrclib 的搜尋(歌名 + 歌手,再用自由文字)和網易雲的搜尋。
+2. **算信心**:每個候選依歌名相似度(0.4,正規化:全形半形、大小寫、片假名 / 平假名、標點不算)、歌手相似度(0.2,沒歌手時不算)、長度差(0.4,3 秒內滿分、20 秒歸零)打分;歌名相似度低於 0.5、信心低於 0.6、或長度差超過 15 秒的不要。有同步 LRC 的優先於純文字(純文字信心上限 0.7)。
+3. **問 LLM**:沒有候選、或最好的信心還不到 0.72 時,把影片標題、頻道、描述、tags、長度丟給模型,請它說這首**原曲**的歌名、歌手、語言和別的寫法(羅馬拼音、簡繁、英文名),再拿這些重找;翻唱、卡拉 OK 版、字幕版都能對回原曲。最多問 2 次(第二次會告訴它哪些已經找過沒有),答案依來源 key 快取在 `data/songs/_lyrics/<key>.json`。LLM 用 Core 設定的那一個:`miyoria.toml` 的 `[llm]`,先看目前 profile 的 `[llm.purposes]`、再看全域的,用途 `fast`、沒有就 `chat` 的第一個 `provider:model`;OpenCode 的 session header 和 DeepSeek 的 `thinking: disabled` 跟 Core 一樣處理。也可以用 `SING_LYRICS_LLM_*` 給歌詞專用的模型。模型說不知道就不找,不會硬編歌名。
+4. **確認對得上**:同步 LRC 的最後一句要落在歌長的 55%~103%(否則是別的版本,拒絕);信心不到 0.85 的,再從**主唱音軌**(`lead.wav`,轉換前的原唱)切 3 句丟給 ASR(Qwen3-ASR,`:8003`)聽,對不上歌詞(字元涵蓋率 < 0.35)就拒絕,對得上(≥ 0.6)信心 +0.1;ASR 不在或離線就沒有這一步。實測(2026-11-09):對的歌詞 1.00,別首歌的歌詞 0.28。
+
+結果寫進歌的 `meta.json`:`lyrics` 除了播放用的 `synced` / `lines` / `plain`,還有 `provider`(`lrclib` / `netease`)、`how`(怎麼找到的:`metadata` / `title` / `llm`)、`track` / `artist`(對到的歌)、`confidence`(0..1)、`checks`(歌名 / 歌手相似度、長度差、LRC 涵蓋、ASR 抽查、被拒絕的原因)、`llm`(模型說的歌)、`tried`(試了幾個讀法)、`fetched_at`;`lyrics_input` 是當時用的輸入(原標題、描述、頻道、音樂資訊),重找時要用。
+
+**重找一首歌的歌詞**(不重做音訊;任何已快取的歌都可以,舊的歌會重新讀連結的資訊):
+
+```bash
+curl -X POST http://127.0.0.1:8005/songs/yt-KTZ-y85Erus/lyrics
+curl -X POST http://127.0.0.1:8005/songs/yt-KTZ-y85Erus/lyrics -H "content-type: application/json" -d '{"title":"又三郎","artist":"ヨルシカ","fresh":true}'
+```
+
+`title` / `artist` 是 owner 自己認定的歌,會最先試;`fresh` 讓 LLM 重問而不是用快取。找到就換掉 `meta.json` 的 `lyrics` 和 `lyrics.lrc`(回傳舊的來源,方便比較),找不到就保留原本的,不會清掉。這一步最久等 `SING_LYRICS_BUDGET_S` 秒,不佔工作佇列。Core 下一次播這首歌就會拿到新的歌詞。
+
+**歌詞來源與條款**:
+- **lrclib.net**:開放 API,不用帳號和金鑰,官方鼓勵第三方程式使用(請帶 User-Agent,已帶);歌詞是使用者上傳的,版權歸原權利人。
+- **網易雲音樂**(`music.163.com` 的公開搜尋 / 歌詞網址):**非官方**介面,不用帳號,但沒有公開的使用條款,可能隨時改版或擋掉;只拿來做直播字幕,存在那首歌的本機快取裡,不對外散布。不放心就 `SING_LYRICS_NETEASE=0`。
+- QQ 音樂、Musixmatch 沒用:前者的介面要簽章,後者的免費 API 只給 30% 歌詞而且需要金鑰、條款限制多。
 
 做好的歌快取在 `data/songs/<id>/`(`meta.json` 有來源、音高、歌詞、各階段耗時與 VRAM 峰值);同一個查詢 / 連結 / 檔案 + 同樣的音高設定再點一次是馬上好。`data/` 是本機資料:下載的歌、模型權重、參考音都不要提交。
 
@@ -541,6 +564,11 @@ curl -s http://127.0.0.1:8005/jobs/<id>          # state / stage / progress;done
 | `SING_MAX_SECONDS` | 480 | 最長的歌 |
 | `SING_URL_HOSTS` | YouTube、SoundCloud、Bilibili、Niconico | 連結允許的網域(逗號分隔,子網域也算) |
 | `SING_LIBRARY_FIRST` / `SING_LYRICS` / `SING_KEEP_MODELS` | 1 / 1 / 0 | 先比對本機歌庫 / 抓歌詞 / 模型留在 VRAM |
+| `SING_LYRICS_LLM` | 1 | 規則找不到時問 LLM 這是哪首歌(0 = 關);用 Core 設定的模型,見「歌詞怎麼找」 |
+| `SING_LYRICS_LLM_URL` / `_KEY` / `_MODEL` | (空) | 歌詞專用的 LLM(OpenAI 相容的 base url、金鑰、模型 id;URL 和 MODEL 都有才用),沒設就讀 `miyoria.toml` |
+| `SING_LYRICS_LLM_TIMEOUT_S` / `SING_LYRICS_BUDGET_S` | 20 / 45 | 一次 LLM 呼叫最久 / 一首歌找歌詞最久(超過就用手上最好的,沒有就沒有) |
+| `SING_LYRICS_NETEASE` | 1 | 也查網易雲音樂的公開歌詞介面(0 = 只用 lrclib) |
+| `SING_LYRICS_ASR` / `SING_LYRICS_ASR_URL` | auto / `http://127.0.0.1:8003` | 用 ASR 聽主唱抽查歌詞:`auto` = 只查信心不到 0.85 的、`1` = 都查、`0` = 不查;ASR 離線(offload)時略過 |
 | `SING_VIDEO` / `SING_VIDEO_MAX_HEIGHT` / `SING_VIDEO_MAX_MB` / `SING_VIDEO_WAIT_S` | 1 / 1080 / 300 / 120 | 抓原曲影片 / 最高解析度 / 最大檔案 / 音訊好了之後最多再等幾秒 |
 | `HOST` / `PORT` | `127.0.0.1` / `8005` | 只聽本機 |
 

@@ -10,6 +10,8 @@
     DELETE /jobs/{id}           -> {"job"}                 cancels a queued or running job
     GET    /songs               -> {"songs": [meta...]}    cached covers, newest first
     GET    /songs/{id}          -> {"song": meta}
+    POST   /songs/{id}/lyrics   {title?, artist?, fresh?} -> look the lyrics up again (no new audio)
+    POST   /songs/{id}/lyrics   {title?, artist?, fresh?} -> look the lyrics up again (no new audio)
     GET    /songs/{id}/files/{name}   mix.wav · vocals.wav · instrumental.wav · lyrics.lrc ·
                                       play_mix.pcm · play_vocals.pcm (s16le mono 48 kHz) · meta.json ·
                                       video.mp4 (library: video.<ext>) when ``has_video``
@@ -48,7 +50,7 @@ Pipeline per job (one job at a time; models load per stage and are freed after i
               lead (one more conversion), at their own level; ``acapella``: her lead alone, no
               instrumental. Without a lead split the backing stays in the converted vocal and only
               ``acapella`` changes anything (moved by the key with Rubber Band when ffmpeg has it), loudness-normalised to SING_TARGET_LUFS, peak ≤ -1 dBFS
-    lyrics    lrclib.net synced LRC by title / artist / duration (best effort)
+    lyrics    synced LRC from lrclib.net / NetEase: title readings, the video metadata, a language model when those fail; checked against the audio (lyrics.py)
     video     (in parallel, from the download on) the link's video, video only, H.264 <= 1080p
               preferred, into video.mp4 for the stream to show while she sings; library entries
               use a video next to the audio. The song is ready once both are done; a video that
@@ -390,12 +392,16 @@ class MockBackend:
         (out / "play_vocals.pcm").write_bytes(vocals.tobytes())
         return {"vocal_gain": 1.0, "lufs": -16.0, "samples": len(mix), "duration_s": round(len(mix) / PLAY_RATE, 2)}
 
-    def lyrics(self, src: Source, duration: float | None) -> dict[str, Any] | None:
+    def lyrics(self, src: Source, duration: float | None, audio: Path | None = None,
+               fresh: bool = False) -> dict[str, Any] | None:
         if os.environ.get("SING_LYRICS", "1") == "0":
             return None
         lines = [f"[00:{i:02d}.00]mock line {i + 1}" for i in range(max(1, int(self.seconds)))]
         return {"provider": "mock", "synced": True, "lrc": "\n".join(lines), "plain": None,
-                "track": src.title, "artist": src.artist}
+                "track": src.title, "artist": src.artist, "how": "mock", "confidence": 1.0}
+
+    def lyrics_hints(self, url: str) -> dict[str, Any]:
+        return {}
 
     def unload(self) -> None:
         return None
@@ -461,12 +467,17 @@ class _RealAdapter:
                         backing_src=sdir / "backing.wav" if split and backing == "convert" else None,
                         instrumental=backing != "acapella")
 
-    def lyrics(self, src: Source, duration: float | None) -> dict[str, Any] | None:
+    def lyrics(self, src: Source, duration: float | None, audio: Path | None = None,
+               fresh: bool = False) -> dict[str, Any] | None:
+        """Lyrics for the song (lyrics.py: title readings, lrclib / NetEase, the language model, the checks)."""
         if os.environ.get("SING_LYRICS", "1") == "0":
             return None
-        from lyrics import lookup
+        from lyrics import hints_of, search
 
-        return lookup(src.title, src.artist, duration)
+        return search(hints_of(src), duration, cache_dir=self.b.store.root / "_lyrics", audio=audio, fresh=fresh)
+
+    def lyrics_hints(self, url: str) -> dict[str, Any]:
+        return self.b.fetch_hints(url)
 
 
 # ── jobs ─────────────────────────────────────────────────────────────────────
@@ -1095,6 +1106,31 @@ def _lead_stage(job: Job, sdir: Path, src: Source, timed: Callable[[str, Callabl
     return {"used": True, "cached": False}
 
 
+def _lyrics_meta(found: dict[str, Any] | None, out: Path) -> dict[str, Any] | None:
+    """The song meta's ``lyrics`` for a lookup result, and ``lyrics.lrc`` written into ``out``.
+
+    Besides what the player reads (``synced``, ``lines``, ``plain``) it says where the lyrics came from
+    (``provider``, ``how``: metadata | title | llm), the song they were matched to (``track``, ``artist``),
+    how sure the match is (``confidence`` 0..1, ``checks``) and when (``fetched_at``).
+    """
+    if not found:
+        return None
+    from lyrics import parse_lrc
+
+    lines = parse_lrc(found["lrc"]) if found.get("lrc") else []
+    lrc = out / "lyrics.lrc"
+    if found.get("lrc"):
+        lrc.write_text(found["lrc"], "utf-8")
+    else:
+        lrc.unlink(missing_ok=True)
+    return {"provider": found["provider"], "synced": bool(lines), "track": found.get("track"),
+            "artist": found.get("artist"), "lines": lines,
+            "plain": None if lines else (found.get("plain") or "")[:4000],
+            "how": found.get("how"), "confidence": found.get("confidence"), "matched": found.get("matched"),
+            "checks": found.get("checks"), "llm": found.get("llm"), "tried": found.get("tried"),
+            "fetched_at": now_iso()}
+
+
 def _run_job(job: Job) -> None:
     store, b, req = state.store, state.backend, job.request
     check = job.cancel.is_set
@@ -1240,17 +1276,13 @@ def _run_job(job: Job) -> None:
     if backing_conv is not None:
         backing_conv.unlink(missing_ok=True)
     duration = mixed.get("duration_s") or src.duration_s
-    found = timed("lyrics", lambda: b.lyrics(src, duration))
-    lyrics_meta: dict[str, Any] | None = None
-    if found:
-        from lyrics import parse_lrc
+    from lyrics import hints_of
 
-        lines = parse_lrc(found["lrc"]) if found.get("lrc") else []
-        if found.get("lrc"):
-            (out / "lyrics.lrc").write_text(found["lrc"], "utf-8")
-        lyrics_meta = {"provider": found["provider"], "synced": bool(lines), "track": found.get("track"),
-                       "artist": found.get("artist"), "lines": lines,
-                       "plain": None if lines else (found.get("plain") or "")[:4000]}
+    lyrics_input = hints_of(src)
+    # the lead vocal (the original singer, before conversion) is what the ASR spot check listens to
+    heard = next((p for p in (sdir / "lead.wav", sdir / "vocals.wav") if p.exists()), None)
+    found = timed("lyrics", lambda: b.lyrics(src, duration, heard))
+    lyrics_meta = _lyrics_meta(found, out)
     video = _attach_video(job, src, sdir, out, timings)
     timings["total_s"] = round(time.perf_counter() - t_job, 2)
     g = job.gpu
@@ -1267,6 +1299,7 @@ def _run_job(job: Job) -> None:
         # Without a split the backing voices stay in the converted vocal: only a split can drop them.
         "backing": req.backing if lead["used"] or req.backing == "acapella" else "in_vocal",
         "lyrics": lyrics_meta,
+        "lyrics_input": lyrics_input,
         **video,
         "play": {"sample_rate": PLAY_RATE, "samples": mixed.get("samples"), "format": "s16le", "channels": 1},
         "mix": mixed,
@@ -1457,6 +1490,62 @@ async def get_song(sid: str) -> JSONResponse:
     if meta is None:
         return _error(404, f"no song {sid}")
     return JSONResponse({"song": meta})
+
+
+class LyricsRequest(BaseModel):
+    title: str | None = Field(None, max_length=200)  # the owner's own reading of the song, tried first
+    artist: str | None = Field(None, max_length=200)
+    fresh: bool = False  # ask the language model again instead of using its cached answer
+
+
+@app.post("/songs/{sid}/lyrics")
+def refetch_lyrics(sid: str, req: LyricsRequest | None = None) -> JSONResponse:
+    """Look the lyrics of a cached song up again, without touching its audio.
+
+    Uses the lookup input kept in the song's meta (``lyrics_input``; for a song made before that, the
+    link's metadata is read again), then ``title`` / ``artist`` of the request as extra hints. A new result
+    replaces ``lyrics`` in the meta and ``lyrics.lrc``; no result leaves what the song has. Blocks up to
+    SING_LYRICS_BUDGET_S (45) seconds; the job queue is not involved.
+    """
+    req = req or LyricsRequest()
+    sid = safe_id(sid, 96)
+    meta = state.store.meta(sid)
+    if meta is None:
+        return _error(404, f"no song {sid}")
+    b = state.backend
+    src_info = meta.get("source") or {}
+    hints: dict[str, Any] = dict(meta.get("lyrics_input") or {})
+    if not hints.get("raw_title") and src_info.get("url"):
+        try:
+            hints = {**b.lyrics_hints(src_info["url"]), **hints}
+        except Exception as e:
+            log.info("lyrics hints for %s: %s", sid, e)
+    hints.setdefault("key", src_info.get("key") or sid)
+    hints.setdefault("title", meta.get("title") or src_info.get("title"))
+    hints.setdefault("artist", meta.get("artist") or src_info.get("artist"))
+    hints.setdefault("uploader", src_info.get("uploader"))
+    if req.title:
+        hints["title"], hints["track"] = req.title, req.title
+        hints["artist"], hints["meta_artist"] = req.artist, req.artist
+    src = Source(key=hints["key"], kind=str(src_info.get("kind") or "url"), title=str(hints.get("title") or ""),
+                 artist=hints.get("artist"), duration_s=meta.get("duration_s"), url=src_info.get("url"),
+                 uploader=hints.get("uploader"),
+                 extra={k: hints[k] for k in ("raw_title", "track", "meta_artist", "alt_title", "description", "tags")
+                        if k in hints})
+    sdir = state.store.song_dir(sid)
+    heard = next((p for p in (sdir / "lead.wav", sdir / "vocals.wav", state.store.source_dir(hints["key"]) / "lead.wav")
+                  if p.exists()), None)
+    found = b.lyrics(src, meta.get("duration_s"), heard, req.fresh)
+    old = meta.get("lyrics")
+    if not found:
+        return JSONResponse({"found": False, "kept": bool(old), "lyrics": old and {k: v for k, v in old.items() if k != "lines"}})
+    meta["lyrics"] = _lyrics_meta(found, sdir)
+    meta["lyrics_input"] = {k: v for k, v in hints.items() if v}
+    state.store.write_meta(sid, meta)
+    return JSONResponse({"found": True, "previous": {"provider": (old or {}).get("provider"),
+                                                     "track": (old or {}).get("track")},
+                         "lyrics": {k: v for k, v in meta["lyrics"].items() if k != "lines"},
+                         "lines": len(meta["lyrics"]["lines"])})
 
 
 @app.get("/songs/{sid}/files/{name}")
