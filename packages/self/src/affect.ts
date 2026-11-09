@@ -23,6 +23,7 @@ import {
   type AppliedAppraisal,
   type AppraisalStrength,
   type Attitude,
+  affinityLevel,
   type BondChange,
   type DriveName,
   deriveMood,
@@ -55,6 +56,7 @@ import {
   type RuleContext,
   socialEffects,
 } from "./events.js";
+import { cleanStance } from "./feelings.js";
 import type { SelfService } from "./state.js";
 
 /** At most this many appraisals count per call (the Appraise call outputs at most 3). */
@@ -475,6 +477,9 @@ export class AffectService implements AffectState, MoodSignals {
       feeling: feeling?.text ?? "",
       public_feeling: rec?.extras.public_feeling ?? null,
       label: relationshipLabel({ affinity, familiarity }),
+      level: affinityLevel(affinity),
+      stance: rec?.extras.stance ?? null,
+      stance_level: rec?.extras.stance_level ?? null,
       owner: att?.owner ?? snap?.owner ?? false,
       blocked: att?.blocked ?? snap?.blocked ?? false,
       last_seen: heart?.last_seen ?? null,
@@ -557,6 +562,15 @@ export class AffectService implements AffectState, MoodSignals {
         if (change.public_feeling === null) x.public_feeling = null;
         else if (change.public_feeling !== undefined && by === "reflect") {
           x.public_feeling = change.public_feeling;
+        }
+        // Only Reflect writes her stance, at the level the card has once this change lands.
+        if (change.stance !== undefined && by === "reflect") {
+          const line = cleanStance(change.stance);
+          if (line !== "") {
+            x.stance = line;
+            const base = self.attitudeOf(person)?.affinity ?? x.snapshot?.affinity ?? 0;
+            x.stance_level = affinityLevel(clampTo(base + done.affinity, -100, 100));
+          }
         }
         if (x.snapshot) {
           x.snapshot.affinity = clampTo(x.snapshot.affinity + done.affinity, -100, 100);

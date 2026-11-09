@@ -33,6 +33,7 @@ export function card(handle: string, person: PersonId, p: Partial<PersonCard> = 
     emotions: {},
     feeling: "",
     label: "朋友",
+    level: 6,
     owner: false,
     blocked: false,
     last_seen: null,

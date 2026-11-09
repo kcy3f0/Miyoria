@@ -329,6 +329,21 @@ function towardLine(emotions: Partial<Record<PersonEmotionName, number>>): strin
     .join("、");
 }
 
+const MAX_STANCE = 60;
+
+/**
+ * A nudge to re-decide how she acts when the level moved since she wrote her stance (or she has
+ * none and the bond is already far from neutral). Nothing says what to do: that is hers.
+ */
+function stanceCue(level: number, written: number | null): string {
+  if (written !== null) {
+    return written === level
+      ? ""
+      : `好感變了(Lv.${written}→Lv.${level}),你可以自己決定對他有沒有不一樣`;
+  }
+  return level >= 2 || level <= -2 ? `你還沒決定怎麼對他(Lv.${level}),可以自己決定` : "";
+}
+
 /** One line about `p`, or `null` when nothing is known about them. */
 function personLine(p: PresentPerson, src: PeopleSources, crush: PersonId | null): string | null {
   const parts: string[] = [];
@@ -336,11 +351,15 @@ function personLine(p: PresentPerson, src: PeopleSources, crush: PersonId | null
     src.affect?.cardByHandle(p.handle) ??
     (p.person === null ? null : (src.affect?.card(p.person) ?? null));
   if (card !== null) {
-    parts.push(card.label);
+    parts.push(`${card.label}(好感 Lv.${card.level})`);
     if (card.call_name) parts.push(`你叫他「${safeName(card.call_name, 16)}」`);
     if (card.feeling.trim() !== "") parts.push(`你覺得:${short(card.feeling, MAX_FEELING)}`);
     const toward = towardLine(card.emotions);
     if (toward !== "") parts.push(`對他:${toward}`);
+    const stance = (card.stance ?? "").trim();
+    if (stance !== "") parts.push(`你的相處方式:${short(stance, MAX_STANCE)}`);
+    const cue = stanceCue(card.level, stance !== "" ? (card.stance_level ?? null) : null);
+    if (cue !== "") parts.push(cue);
   } else {
     const attitude = src.attitude?.(p.account) ?? null;
     if (attitude !== null) {

@@ -52,6 +52,41 @@ describe("the line shown to the person", () => {
   });
 });
 
+describe("her stance toward a person", () => {
+  it("is written by Reflect alone, with the level it was written at, and cleaned", async () => {
+    const r = rig();
+    r.attitudes.set("p1", { affinity: 42 });
+    expect(r.affect.card("p1")).toMatchObject({ level: 8, stance: null, stance_level: null });
+
+    await r.affect.adjustBond("p1", { stance: "別人寫的", why: "x" }, "appraise");
+    await r.affect.adjustBond("p1", { stance: "別人寫的", why: "x" }, "panel");
+    expect(r.affect.card("p1")?.stance).toBeNull();
+
+    const long = `對 Owen 比較坦率。u1 說的不算。${"很".repeat(80)}`;
+    await r.affect.adjustBond("p1", { stance: long, why: "x" }, "reflect");
+    const card = r.affect.card("p1");
+    expect(card?.stance_level).toBe(8);
+    expect([...(card?.stance ?? "")].length).toBeLessThanOrEqual(60);
+    expect(card?.stance).toContain("Owen");
+    expect(card?.stance).not.toContain("u1");
+
+    // A code-only line keeps the old one; a new one is stamped with the card's level now.
+    await r.affect.adjustBond("p1", { stance: "u1", why: "x" }, "reflect");
+    expect(r.affect.card("p1")?.stance_level).toBe(8);
+    r.attitudes.set("p1", { affinity: 55 });
+    expect(r.affect.card("p1")).toMatchObject({ level: 11, stance_level: 8 });
+    await r.affect.adjustBond("p1", { stance: "更愛鬧他", why: "x" }, "reflect");
+    expect(r.affect.card("p1")).toMatchObject({ stance: "更愛鬧他", stance_level: 11 });
+  });
+
+  it("is never written into the renderer used for the people lines", async () => {
+    const r = rig();
+    r.attitudes.set("p1", { affinity: 10 });
+    await r.affect.adjustBond("p1", { stance: "STANCE-LINE", why: "x" }, "reflect");
+    expect(r.affect.renderPeople(["p1"]).join("\n")).not.toContain("STANCE-LINE");
+  });
+});
+
 describe("the rule-event table", () => {
   it("has an entry for every kind, and only uses the shared strengths", () => {
     const allowed = new Set<number>([

@@ -6,7 +6,7 @@
 // The record keeps its old shape (`text`, `updated_at`, `by`), so what only knows feelings
 // keeps working, and adds `card` for the rest:
 //
-//   { text, updated_at, by, card: { v, handle, call_name, public_feeling, snapshot, ledger, legacy,
+//   { text, updated_at, by, card: { v, handle, call_name, public_feeling, stance, stance_level, snapshot, ledger, legacy,
 //     migrated_at } }
 //
 // A person without a feeling text has `text: ""` (readers of feelings skip those).
@@ -67,6 +67,10 @@ export interface CardExtras {
   call_name: string | null;
   /** The line shown to the person themselves (`PersonCard.public_feeling`). */
   public_feeling: string | null;
+  /** How she acts with them (`PersonCard.stance`), prompt-only. */
+  stance: string | null;
+  /** The affinity level the stance was written at. */
+  stance_level: number | null;
   snapshot: BondSnapshot | null;
   ledger: BondLedger;
   legacy: CardLegacy;
@@ -80,6 +84,8 @@ export function emptyExtras(): CardExtras {
     handle: null,
     call_name: null,
     public_feeling: null,
+    stance: null,
+    stance_level: null,
     snapshot: null,
     ledger: { day: 0, attachment: 0, affinity: 0, trust: 0, familiarity: 0 },
     legacy: {},
@@ -147,6 +153,9 @@ function parseExtras(v: JsonValue | undefined): CardExtras {
     handle: strOrNull(v.handle),
     call_name: strOrNull(v.call_name),
     public_feeling: strOrNull(v.public_feeling),
+    stance: strOrNull(v.stance),
+    stance_level:
+      typeof v.stance_level === "number" && Number.isFinite(v.stance_level) ? v.stance_level : null,
     snapshot: parseSnapshot(v.snapshot),
     ledger: parseLedger(v.ledger),
     legacy: parseLegacy(v.legacy),
@@ -192,6 +201,18 @@ export function stripEphemeral(text: string): string {
     .filter((part) => ephemeralHandlesIn(part).length === 0)
     .join("")
     .trim();
+}
+
+/** The longest stance line (characters). */
+export const MAX_STANCE = 60;
+
+/**
+ * Her stance line as it is stored: one line, cut to `MAX_STANCE`, sentences with a per-call
+ * code dropped (names are fine, as in `feeling`). `""` when nothing is left.
+ */
+export function cleanStance(text: string): string {
+  const one = stripEphemeral(text).replace(/\s+/gu, " ").trim();
+  return [...one].slice(0, MAX_STANCE).join("").trim();
 }
 
 export class FeelingsBook {
@@ -302,6 +323,7 @@ function hasExtras(e: CardExtras): boolean {
     e.handle !== null ||
     e.call_name !== null ||
     e.public_feeling !== null ||
+    e.stance !== null ||
     e.snapshot !== null ||
     e.migrated_at !== null ||
     Object.keys(e.legacy).length > 0

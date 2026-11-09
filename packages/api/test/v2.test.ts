@@ -165,6 +165,7 @@ const CARD: PersonCard = {
   emotions: { missing: 0.6 },
   feeling: "有點在意他",
   label: "好朋友",
+  level: 12,
   owner: true,
   blocked: false,
   last_seen: AT,

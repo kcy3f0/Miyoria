@@ -182,6 +182,7 @@ function card(person: PersonId, handle: string, over: Partial<PersonCard> = {}):
     feeling: `SECRET-feeling ${handle} 跟 Bob 比起來`,
     public_feeling: null,
     label: "好朋友",
+    level: 12,
     owner: false,
     blocked: false,
     last_seen: AT,

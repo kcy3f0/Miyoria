@@ -164,6 +164,22 @@ export function relationshipLabel(rel: RelationshipNumbers): RelationshipLabel {
   return "認識";
 }
 
+/** Lowest and highest `affinityLevel()`. */
+export const AFFINITY_LEVEL_MIN = -20;
+export const AFFINITY_LEVEL_MAX = 20;
+
+/**
+ * Finer step of affinity for her own per-person stance: one level per 5 points, truncated
+ * toward zero, so -4..4 is level 0, 5..9 is 1, 95..100 is 19..20 and -5..-9 is -1. Always a
+ * whole number in -20..20; a non-finite input is level 0. What a level means is hers to decide
+ * (`PersonCard.stance`), nothing here prescribes behaviour.
+ */
+export function affinityLevel(affinity: number): number {
+  if (!Number.isFinite(affinity)) return 0;
+  const level = Math.trunc(affinity / 5) + 0; // `+ 0`: no negative zero
+  return Math.min(Math.max(level, AFFINITY_LEVEL_MIN), AFFINITY_LEVEL_MAX);
+}
+
 /**
  * One card per person: replaces affinity / trust / notes (social), feelings / hearts / romance
  * / emotions toward people (self), the knowledge person card and per-person lessons as the
@@ -193,6 +209,15 @@ export interface PersonCard {
    */
   public_feeling?: string | null;
   label: RelationshipLabel;
+  /** `affinityLevel(affinity)`: -20..20, one per 5 affinity points. Prompt-only, never shown to people. */
+  level: number;
+  /**
+   * How she acts with them now, one short line in her own words (dere/tsun, teasing, honesty).
+   * Written by her (Reflect); prompt-only like `feeling`. `null` or absent: none yet.
+   */
+  stance?: string | null;
+  /** The `level` the stance was written at (`null` or absent: no stance). */
+  stance_level?: number | null;
   owner: boolean;
   blocked: boolean;
   last_seen: Timestamp | null;
@@ -210,6 +235,11 @@ export interface BondChange {
   feeling?: string;
   /** Replaces the line shown to the person (`null` clears it); already filtered by the writer. */
   public_feeling?: string | null;
+  /**
+   * Replaces her stance toward them (one short line; Reflect only). It is stored with the level
+   * the card has at that moment.
+   */
+  stance?: string;
   why: string;
 }
 

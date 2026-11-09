@@ -297,6 +297,7 @@ function affect(snapshot: Partial<AffectSnapshot>): AffectState {
             emotions: { missing: 0.5 },
             feeling: "最近很少見到他,有點在意",
             label: "好朋友",
+            level: 10,
             owner: true,
             blocked: false,
             last_seen: null,
@@ -423,6 +424,42 @@ describe("self and people renderers", () => {
     expect(selfBlocks({ context: tctx(), now, self: broken }).map((b) => b.key)).toEqual([]);
   });
 
+  it("people_line_carries_her_stance_and_a_cue_when_the_level_moves", () => {
+    const present = [{ account: tacc("Owen"), handle: "Owen", person: "p1", speaker: true }];
+    const withCard = (over: Record<string, unknown>) =>
+      ({
+        snapshot: () => undefined,
+        cardByHandle: () => ({
+          person: "p1",
+          handle: "Owen",
+          call_name: null,
+          affinity: 45,
+          trust: 50,
+          familiarity: 40,
+          attachment: 0,
+          emotions: {},
+          feeling: "",
+          label: "好朋友",
+          level: 9,
+          ...over,
+        }),
+      }) as unknown as AffectState;
+    // Written at this level: the stance, no cue.
+    expect(
+      peopleBody(present, { affect: withCard({ stance: "會鬧他,偶爾坦率", stance_level: 9 }) }),
+    ).toBe("- Owen:好朋友(好感 Lv.9);你的相處方式:會鬧他,偶爾坦率");
+    // The level moved: the cue says it is her call.
+    expect(peopleBody(present, { affect: withCard({ stance: "會鬧他", stance_level: 7 }) })).toBe(
+      "- Owen:好朋友(好感 Lv.9);你的相處方式:會鬧他;好感變了(Lv.7→Lv.9),你可以自己決定對他有沒有不一樣",
+    );
+    // No stance yet: a cue only far from neutral.
+    expect(peopleBody(present, { affect: withCard({}) })).toContain("你還沒決定怎麼對他(Lv.9)");
+    expect(peopleBody(present, { affect: withCard({ level: 1 }) })).toBe(
+      "- Owen:好朋友(好感 Lv.1)",
+    );
+    expect(peopleBody(present, { affect: withCard({ level: -3 }) })).toContain("Lv.-3");
+  });
+
   it("people_get_one_line_each_on_one_scale", () => {
     const present = [
       { account: tacc("阿明"), handle: "阿明", person: "p2", speaker: false },
@@ -430,7 +467,7 @@ describe("self and people renderers", () => {
       { account: tacc("貓"), handle: "貓", person: null, speaker: false },
     ];
     expect(peopleBody(present, { affect: affect({}) })).toBe(
-      "- Owen:好朋友;你叫他「歐文」;你覺得:最近很少見到他,有點在意;對他:想念\n其他:阿明、貓",
+      "- Owen:好朋友(好感 Lv.10);你叫他「歐文」;你覺得:最近很少見到他,有點在意;對他:想念;你還沒決定怎麼對他(Lv.10),可以自己決定\n其他:阿明、貓",
     );
     const attitudes: Record<string, Attitude> = {
       阿明: {

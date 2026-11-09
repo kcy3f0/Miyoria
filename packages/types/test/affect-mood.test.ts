@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Drives } from "../src/index.js";
 import {
+  affinityLevel,
   circadianEnergy,
   deriveMood,
   emotionsLine,
@@ -156,5 +157,23 @@ describe("the relationship label scale", () => {
   it.each(grid)("affinity %s, familiarity %s: %s", (affinity, familiarity, label) => {
     expect(relationshipLabel({ affinity, familiarity })).toBe(label);
     expect(RELATIONSHIP_LABELS).toContain(label);
+  });
+});
+
+describe("affinityLevel", () => {
+  it("is one level per 5 points, truncated toward zero, within -20..20", () => {
+    expect(affinityLevel(0)).toBe(0);
+    expect(affinityLevel(4.9)).toBe(0);
+    expect(affinityLevel(-4.9)).toBe(0);
+    expect(Object.is(affinityLevel(-2), 0)).toBe(true);
+    expect(affinityLevel(5)).toBe(1);
+    expect(affinityLevel(39)).toBe(7);
+    expect(affinityLevel(45)).toBe(9);
+    expect(affinityLevel(-5)).toBe(-1);
+    expect(affinityLevel(-60)).toBe(-12);
+    expect(affinityLevel(100)).toBe(20);
+    expect(affinityLevel(-100)).toBe(-20);
+    expect(affinityLevel(250)).toBe(20);
+    expect(affinityLevel(Number.NaN)).toBe(0);
   });
 });

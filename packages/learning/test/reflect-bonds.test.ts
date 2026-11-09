@@ -27,6 +27,7 @@ import {
   FeedbackTracker,
   LessonStore,
   MAX_PUBLIC_FEELING,
+  MAX_STANCE,
   Reflector,
   reflectConfig,
 } from "../src/index.js";
@@ -64,6 +65,7 @@ function card(handle: string, person: PersonId, attachment: number): PersonCard 
     emotions: {},
     feeling: "有點在意",
     label: "朋友",
+    level: 6,
     owner: false,
     blocked: false,
     last_seen: null,
@@ -170,7 +172,7 @@ describe("Reflect (v2)", () => {
     expect(ephemeralHandlesIn(system.replace(DRAFT_FORMAT, ""))).toEqual([]);
     // Her person cards (the ones she cares about) are in the data.
     expect(String(request?.messages[1]?.content)).toContain(
-      "Owen:朋友,在意 0.40;你對他的感覺:有點在意",
+      "Owen:朋友,好感 Lv.6,在意 0.40;你對他的感覺:有點在意;還沒決定相處方式(好感 Lv.6)",
     );
   });
 
@@ -222,6 +224,34 @@ describe("Reflect (v2)", () => {
     vi.advanceTimersByTime(24 * 60 * 60_000);
     await reflector.reflect("light", null);
     expect(affect.bonds).toHaveLength(4);
+  });
+
+  describe("stance", () => {
+    it("is written through adjustBond, cut to length", async () => {
+      const reply = JSON.stringify({
+        summary: "x",
+        bonds: [
+          { person: "Owen", stance: `這次對他坦率一點。${"啊".repeat(80)}`, why: "好感變了" },
+        ],
+      });
+      const { affect, reflector } = setup(reply, reply);
+      await reflector.reflect("daily", null);
+      const stance = affect.bonds[0]?.change.stance ?? "";
+      expect(stance.startsWith("這次對他坦率一點")).toBe(true);
+      expect([...stance].length).toBeLessThanOrEqual(MAX_STANCE);
+      expect(affect.bonds[0]?.by).toBe("reflect");
+    });
+
+    it("a bad value changes nothing and does not cost the reflection", async () => {
+      const reply = JSON.stringify({
+        summary: "x",
+        bonds: [{ person: "Owen", stance: 5, affinity: 1, why: "x" }],
+      });
+      const { affect, reflector } = setup(reply, reply);
+      const run = await reflector.reflect("daily", null);
+      expect(run?.error).toBeNull();
+      expect(affect.bonds[0]?.change.stance).toBeUndefined();
+    });
   });
 
   describe("public_feeling", () => {

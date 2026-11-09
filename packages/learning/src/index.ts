@@ -92,6 +92,7 @@ export {
 } from "./modules.js";
 export {
   MAX_PUBLIC_FEELING,
+  MAX_STANCE,
   parseContextString,
   REFLECT_STATE_KEY,
   type ReflectDeps,
