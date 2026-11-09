@@ -205,6 +205,9 @@ export class SceneDirector implements StreamCurtain, SceneRule {
       this.#manualUntil = this.#now() + this.#config.manual_hold_ms;
       log.debug({ scene }, "scene switched by someone else; holding");
     }
+    // A node that connects late (a song started before it was there, 2026-11-08) gets the scene
+    // that cannot wait now, not at the next change.
+    if (first && this.desired()?.urgent === true) this.#schedule(true);
   }
 
   /** A game session started or stopped (`game`: its id, for a scene of its own). */

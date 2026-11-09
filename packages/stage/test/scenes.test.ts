@@ -367,6 +367,21 @@ describe("scene director", () => {
     t.director.stop();
   });
 
+  it("a stage that connects late still gets the sing scene", async () => {
+    const t = await rig({ roles: { sing: "Camera" } });
+    t.allow.value = false;
+    t.director.onStatus(null); // the node is gone
+    t.director.onSong(true);
+    await ms(100);
+    expect(t.switches).toEqual([]);
+    t.allow.value = true;
+    t.show("Just Chatting");
+    await ms(100);
+    expect(t.switches).toEqual(["sing"]);
+    expect(t.scene()).toBe("Camera");
+    t.director.stop();
+  });
+
   it("does nothing at boot and follows a game session", async () => {
     const t = await rig();
     await ms(60_000);
