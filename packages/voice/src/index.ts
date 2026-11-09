@@ -109,6 +109,7 @@ export {
   echoesHint,
   isHallucination,
   isPunctuationOnly,
+  stripEmoji,
   stripTags,
   toTraditional,
 } from "./text.js";

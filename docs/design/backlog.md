@@ -7,7 +7,6 @@
 | 項目 | 狀態 | 詳細 |
 |---|---|---|
 | Minecraft 幾乎不能玩(任務迴圈、技能庫、狀態快照、食物動作、生存反射) | 調查做一半暫停,原因還沒對照程式碼確認 | [minecraft-findings.md](minecraft-findings.md) |
-| 伺服器 emoji 表(她適時使用自訂 emoji,每個附一句意思) | 設計好,沒做 | [server-emoji.md](server-emoji.md) |
 | 自我修復、自我改進(失敗後換方法、改動要過評測才留下、在沙箱寫修正開 PR) | owner 說先不做;沙箱要先有 Docker | 本文件 §4 |
 | 經濟系統:點歌券、她自己的錢包、她的訊息上附「餵她」按鈕 | 刻意不做 | [economy.md](economy.md) §9.1 |
 | 檔案附件的後續:音檔(轉文字)、掃描或中日韓字型的 PDF(要 OCR 或帶套件的沙箱映像)、舊版 .doc/.xls/.ppt、壓縮檔、一次傳很多檔、讓她把讀過的檔案記進筆記 | 第一版只做文字/程式碼/csv/json/pdf(純文字層、簡單字型)/docx/xlsx/pptx | [file-attachments.md](file-attachments.md) §6 |

@@ -1,6 +1,8 @@
-# 伺服器 emoji 表(暫緩)
+# 伺服器 emoji 表
 
-狀態:**暫緩**(2026-11-08 owner 決定先記錄不做)。
+狀態:**已實作**(2026-11-10)。程式在 `packages/discord/src/emoji.ts`(表、送出轉換、頻率限制、提示詞區塊)、`emoji-describe.ts`(看圖寫意思)、`packages/voice/src/text.ts` 的 `stripEmoji`(語音不念)。設定見 `miyoria.example.toml` 的 `[modules."platform.discord.bot".emoji]`。和下面原設計的差別:清單是每回合的資料區塊(不放在固定提示詞,主線固定提示詞已貼著 4000 token 上限),也沒有用 `message_log` 排最常用的,改成有意思的排前面、最多 `max_listed` 個。還沒在真的 Discord 跑過。
+
+(2026-11-08 owner 決定先記錄不做,2026-11-10 改為要做。)
 
 ## 現況
 

@@ -177,6 +177,18 @@ ambient_channels = []
 # 沒開就設成 false,否則 Discord 會拒絕連線
 presence_intents = true
 
+# 伺服器自訂 emoji(docs/design/server-emoji.md):她看得到每個 emoji 的意思、寫 :名字: 就會送出那個 emoji。
+# 沒寫意思的 emoji,如果聊天模型看得懂圖,會自己看一次圖寫一句(存起來,只看一次)。
+# 頻率:一則最多 per_message 個;她在同一個頻道最近 window_messages 則裡最多 max_in_window 則有;同一個不連續用。
+# [modules."platform.discord.bot".emoji]
+# enabled = true
+# auto_describe = true
+# max_listed = 40
+# per_message = 1
+# window_messages = 3
+# max_in_window = 1
+# descriptions = { fanfan = "一碗白飯,討飯用" }
+
 # Admin API:CLI(`miyoria module ...`)和之後的管理面板用。token 由 `miyoria init` 產生
 [modules.api]
 bind = "127.0.0.1:7878"

@@ -19,6 +19,7 @@ import {
   NodeMessageSchema,
   Segmenter,
   type Stoppable,
+  stripEmoji,
   stripTags,
   TAG_PLAYBACK,
   toTraditional,
@@ -328,6 +329,13 @@ describe("text", () => {
     expect(stripTags("<3 你")).toBe("<3 你");
     expect(stripTags("<emo:smug")).toBe("<emo:smug");
     expect(stripTags("<<emo:sad>>")).toBe("< >");
+  });
+
+  it("strips_emoji_and_server_emoji_shortcodes", () => {
+    expect(stripEmoji("好餓 🍚 :fanfan: 給我")).toBe("好餓 給我");
+    expect(stripEmoji("讚👍🏻!❤️")).toBe("讚 !");
+    expect(stripEmoji("👨‍👩‍👧")).toBe("");
+    expect(stripEmoji("現在 12:30:45")).toBe("現在 12:30:45");
   });
 });
 
