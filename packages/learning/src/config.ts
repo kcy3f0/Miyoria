@@ -94,6 +94,19 @@ export const KnowledgeConfigSchema = z.object({
 export type KnowledgeConfig = z.output<typeof KnowledgeConfigSchema>;
 
 /**
+ * `[modules.reflect.diary]`: after the daily reflection she writes a short diary entry and posts
+ * it to `channel` (`discord:<guild>:<channel>`; empty = no diary).
+ */
+export const DiaryConfigSchema = z.object({
+  channel: z.string().default(""),
+  /** Longest entry (characters). */
+  max_chars: z.number().int().min(40).max(1500).default(300),
+  /** A line put above every entry (empty = none), e.g. `📔 今天的日記`. */
+  heading: z.string().max(60).default(""),
+});
+export type DiaryConfig = z.output<typeof DiaryConfigSchema>;
+
+/**
  * `[modules.reflect]`: feedback signals, lessons and her reflections.
  *
  * ```toml
@@ -150,6 +163,7 @@ export const ReflectConfigSchema = z.object({
   feedback_days: count().default(14),
   /** Characters of lessons in a turn's prompt. */
   prompt_chars: count().default(600),
+  diary: DiaryConfigSchema.prefault({}),
 });
 export type ReflectConfig = z.output<typeof ReflectConfigSchema>;
 
