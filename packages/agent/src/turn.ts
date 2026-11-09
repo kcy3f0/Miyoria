@@ -149,6 +149,7 @@ import {
 } from "./mainline/prompt.js";
 import { linkMentions, type MentionTarget } from "./mentions.js";
 import { agentTurns } from "./metrics.js";
+import { prohibitionOf } from "./prohibition.js";
 import {
   afterFold,
   buildMessages,
@@ -243,6 +244,7 @@ export async function runTurn(
   try {
     try {
       text = await t.respond();
+      await t.keepRules();
       outcome = t.outcome(text);
     } catch (error) {
       if (signal.aborted) return;
@@ -1093,6 +1095,49 @@ class Turn {
    * The message her tools act for: the latest one that @-mentions her or replies to her, else
    * the latest one. Someone chatting right after a request must not become its requester.
    */
+  /**
+   * A plain "don't play <game>" in this turn that she did not write down herself is written for
+   * her (prohibition.ts), as the person who said it; the directive service decides whether it
+   * counts. Never throws.
+   */
+  async keepRules(): Promise<void> {
+    if (this.#succeeded.has("directive_add")) return;
+    const directives = this.agent.ctx.services.get(DirectivesKey);
+    if (!directives) return;
+    for (const input of this.inputs) {
+      if (input.author.is_bot || this.agent.isSelf(input.author.account)) continue;
+      const found = prohibitionOf(input.text);
+      if (found === null) continue;
+      try {
+        const change = await directives.add({
+          by: {
+            type: "account",
+            subject: {
+              account: input.author.account,
+              context: this.key,
+              platform_roles: [],
+              is_guild_admin: false,
+            },
+            askers: [],
+          },
+          text: found.text,
+          effect: "deny",
+          scope: { activity: found.activity },
+          minutes: found.minutes,
+          source_event: `msg:${input.id.id}`,
+        });
+        this.agent.log.info(
+          { turn: this.turn, activity: found.activity, status: change.status },
+          "wrote down a prohibition she did not",
+        );
+      } catch (error) {
+        this.agent.log.warn(
+          { turn: this.turn, error: errorMessage(error) },
+          "could not write a rule",
+        );
+      }
+    }
+  }
   #requester(): IncomingMessage | undefined {
     const pool = this.#focused;
     return (

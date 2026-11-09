@@ -71,7 +71,7 @@
 
 ## 已知但還沒修
 
-- **主人規則沒寫進去**:你說過「不要玩 Minecraft」,但規則表是空的,她之後又自己開了 7 次(事故評測 `mc-owner-rule-never-written`)。
+- **主人規則沒寫進去**(2026-11-10 加了保險):回合裡有人明說「不要玩 <她有的遊戲>」而她這回合沒自己呼叫 `directive_add` 時,回合結束前用說這句話的人的身分替她寫一條 deny(`packages/agent/src/prohibition.ts`、`turn.ts` 的 `keepRules`;規則服務照樣判斷這個人能不能立規則;「先 / 今天」是 6 小時)。只認得 Minecraft、osu 和幾個別名;事故評測 `mc-owner-rule-never-written` 要重新錄才會翻成通過。
 - **她把自己的盤算講出來**(2026-11-10 先用規則擋):送出前把「第三人稱講對方 + 對自己下指令」的那一行拿掉(`packages/agent/src/leak.ts` 的 `isSelfTalk`,只拿掉那行、其他照送,有「你」的不算)。還沒做事故評測題、也還沒看真實頻率;規則抓不到的說法要再補。
 - **抓被回覆的訊息為什麼會失敗**:2026-11-08 14:19、14:22 兩次回覆都沒帶到被回覆的那句。已改成先用 Discord 隨回覆送來的引用內容、抓到再換成完整的,失敗會記 `could not fetch reply parents` 警告;原本為什麼抓不到(逾時、權限或 Discord 錯誤)還沒查,重啟後看警告。
   - 2026-11-10:找到一個會讓它抓不到的情況並修掉:被回覆的是她自己的卡片(斜線指令的回覆、收據,Components V2、`content` 是空的)時,以前算「沒內容」直接丟掉;現在讀卡片上的文字(`componentsText`),指令回覆也算可以回覆的訊息。抓取失敗改記 warning(`cannot fetch the replied-to message`,帶頻道和錯誤),拿到但沒內容記 info 和訊息類型。14:19 那兩次是不是這個原因還沒對照。
