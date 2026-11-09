@@ -2605,7 +2605,10 @@ class Turn {
       source: "tool",
       context: this.key,
     });
-    return verdict?.note ? `${verdict.note}\n${text}` : text;
+    // Flooding is something people do: lyrics repeating 「我喜歡你」 are no flood (2026-11-09), and
+    // she was told the song she looked up was spam. Only what a tool's text says can earn a note.
+    if (!verdict?.note || verdict.flags.every((f) => f === "flood")) return text;
+    return `${verdict.note}\n${text}`;
   }
 
   /**

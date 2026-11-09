@@ -49,7 +49,13 @@ import { z } from "zod";
 import { MainLineConfigSchema } from "../src/config.js";
 import { STARTED_LINE } from "../src/mainline/gate.js";
 import { Hands, type Job } from "../src/mainline/hands.js";
-import { FALLBACK_LINES, heardPart, sentences } from "../src/mainline/main.js";
+import {
+  FALLBACK_LINES,
+  heardPart,
+  sentences,
+  WAIT_LINES,
+  waitLine,
+} from "../src/mainline/main.js";
 import { resultData } from "../src/mainline/prompt.js";
 import {
   channel,
@@ -323,7 +329,31 @@ describe("one call", () => {
     const h = await rig(llm, { tools: [tool], config: { tool_timeout_ms: 20_000 } });
     h.say(mention(channel("c"), "Alice", "查一下"));
     await wait(1500);
-    expect(h.sink.texts()).toEqual(["等我一下。"]);
+    const said = h.sink.texts();
+    expect(said).toHaveLength(1);
+    expect(WAIT_LINES[""]).toContain(said[0]);
+  });
+
+  it("a result turn that only keeps a note is called back to say it, with no wait line", async () => {
+    // 2026-11-09 21:06: the lyrics came back, she kept them as a note and said nothing; the code
+    // filled in 「等我一下。」 and nothing called her back, so the answer never came.
+    const slow = new Probe("slow", null, 2000);
+    const llm = new Scripted([
+      reply("我查一下", ["slow", "{}"]),
+      reply("", ["keep_note", '{"text":"歌詞:喔愛 什麼是愛"}']),
+      reply("查到了,下一句是「我對你的感情」"),
+    ]);
+    const h = await rig(llm, { tools: [slow], config: { tool_timeout_ms: 20_000 } });
+    h.say(mention(channel("c"), "Alice", "查歌詞"));
+    await wait(10_000);
+    expect(h.sink.texts()).toEqual(["我查一下", "查到了,下一句是「我對你的感情」"]);
+    expect(JSON.stringify(llm.requests[2]?.messages)).toContain("keep_note 完成");
+  });
+
+  it("the wait line fits what she does, and is not always the same words", () => {
+    expect(WAIT_LINES.web_search).toContain(waitLine(["web_search"], () => 0));
+    expect(waitLine(["web_search"], () => 0)).not.toBe(waitLine(["web_search"], () => 0.99));
+    expect(WAIT_LINES[""]).toContain(waitLine(["stream_start"]));
   });
 
   it("the prompt has the layout of §10.4", async () => {

@@ -93,8 +93,25 @@ export const FALLBACK_LINES = [
 export const FALLBACK_RESULT_LINE = "事情有結果了,等我一下再跟你說。";
 /** The same when something cannot wait and she has no words for it. */
 export const FALLBACK_URGENT_LINE = "哇,等一下!";
-/** An output that acts but says nothing, when someone waits for her. */
-export const WAIT_LINE = "等我一下。";
+/**
+ * Lines for an output that acts but says nothing, when someone waits for her: by what she does,
+ * one picked at random so it is not the same words every time ("" for anything else).
+ */
+export const WAIT_LINES: Readonly<Record<string, readonly string[]>> = {
+  web_search: ["我查一下。", "等等,我查查看。", "我找找看。"],
+  web_read: ["我看一下那頁。", "等我讀一下。"],
+  "": ["等我一下。", "稍等喔。", "好,等我一下。"],
+};
+
+/** A wait line for `tools` (the first slow one decides). */
+export function waitLine(tools: readonly string[], random: () => number = Math.random): string {
+  const lines = WAIT_LINES[tools.find((t) => WAIT_LINES[t] !== undefined) ?? ""] ?? [];
+  const pick = lines[Math.min(lines.length - 1, Math.floor(random() * lines.length))];
+  return pick ?? "等我一下。";
+}
+
+/** Tools that are done the moment they are called: nothing to wait for. */
+const INSTANT_TOOLS: ReadonlySet<string> = new Set([ReactTool.NAME, ...NOTE_TOOLS]);
 
 const ACTIVITY_TOPICS = [ACTIVITY_DONE_TOPIC, ACTIVITY_FAILED_TOPIC];
 const TURNS_REMEMBERED = 512;
@@ -687,11 +704,18 @@ export class MainTurn {
     if (settled.started) {
       release.unshift({ text: STARTED_LINE, spoken: null, emotion: null });
     } else if (release.length === 0 && this.said.length === 0 && tools.length > 0 && this.#owes()) {
-      release.push({ text: WAIT_LINE, spoken: null, emotion: null });
+      const slow = tools.filter((t) => !INSTANT_TOOLS.has(t));
+      if (slow.length > 0) release.push({ text: waitLine(slow), spoken: null, emotion: null });
+      // Only a note, and not a word for whoever waits (2026-11-09 21:06: she kept the lyrics and
+      // said nothing more): the note's answer calls her back to say it.
+      else this.#notedQuietly = true;
     }
     for (const line of settled.parked) this.#main.hands.park(this.context, line);
     return { release, remind: null };
   }
+
+  /** This output only kept or dropped a note and said nothing to someone waiting. */
+  #notedQuietly = false;
 
   #owes(): boolean {
     return !this.claim.muted && !spendsBudget(this.claim.kind);
@@ -838,7 +862,7 @@ export class MainTurn {
       args,
       // A muted turn has nobody waiting: what came of it is in her next prompt, not a turn.
       report:
-        action.tool === ReactTool.NAME || NOTE_TOOLS.has(action.tool)
+        action.tool === ReactTool.NAME || (NOTE_TOOLS.has(action.tool) && !this.#notedQuietly)
           ? "none"
           : this.claim.muted
             ? "prompt"
