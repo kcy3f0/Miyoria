@@ -460,6 +460,13 @@ max_images = 3             # 每回合最多幾張
 max_image_bytes = 5000000  # 單張上限
 # detail = "auto"          # auto | low | high(low 最便宜)
 
+# 別人傳來的檔案(文字、程式碼、markdown、csv、json、pdf、docx、xlsx、pptx):在沙箱裡開、
+# 當資料給她看,見 docs/design/file-attachments.md。要有 tools.file(member 以上預設有)。
+# 沙箱沒開或 Docker 不能用時,她只會說現在沒辦法安全地打開檔案,不會在沙箱外處理。
+[modules.agent.files]
+enabled = true
+max_files = 2              # 每回合最多讀幾個檔案
+
 # prompt 編譯器:每一段參考資料有自己的字數上限(超過就留整行、標「還有幾行略過」),
 # 其他模組附上的段落加起來不超過 max_context_chars(超過時公平分配,不是後面的直接被砍)
 [modules.agent.prompt]
@@ -683,6 +690,16 @@ max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不
 # limits = { memory_mb = 256, cpus = 1, pids_limit = 128 }
 # pool_size = 0                  # 預設 0 = 關;設 1 以上:每種語言先開好幾個等著的容器(每個只跑一次就丟),一般執行不用等容器啟動
 # sessions = { max = 3, idle_minutes = 15, lifetime_minutes = 120, disk_mb = 256 }  # 她的工作階段(同名的執行共用 /work)
+# [modules.sandbox.files]        # 別人傳給她的檔案(需要沙箱 enabled = true 和 Docker)
+# enabled = true
+# max_bytes = 2500000            # 檔案上限(下載時也會量,不信任平台回報的大小)
+# max_chars = 6000               # 抽出的文字她最多拿到幾字(超過截斷並標示)
+# timeout_ms = 20000             # 沙箱裡抽取的時間上限
+# download_timeout_ms = 8000
+# allowed_hosts = ["cdn.discordapp.com", "media.discordapp.net"]   # 只從這些主機、只用 HTTPS 下載
+# per_person = 4                 # 每個人在 window_s 秒內最多讓她讀幾個
+# global = 12                    # 所有人加起來
+# window_s = 600
 # 跑程式的次數上限在 [modules.actions.limits."code.run"](預設每天 30 次、冷卻 20 秒)
 
 # ---- 上網查資料 --------------------------------------------------------------

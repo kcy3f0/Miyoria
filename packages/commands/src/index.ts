@@ -55,6 +55,7 @@ export {
   builtinRole,
   builtinRoleGrants,
   DIRECTIVE_MODERATE,
+  FILE_READ,
   granted,
   isAdminNode,
   matches,

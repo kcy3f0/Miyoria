@@ -64,6 +64,13 @@ export {
   newEnvelope,
 } from "./event.js";
 export {
+  type FileDeclineCode,
+  type FileOutcome,
+  type FileReader,
+  FileReaderKey,
+  type FileRequest,
+} from "./files.js";
+export {
   type ActionId,
   type EventId,
   isUlid,

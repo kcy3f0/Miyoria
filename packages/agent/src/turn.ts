@@ -56,6 +56,7 @@ import {
   contextKeyString as contextKeyDisplay,
   DirectivesKey,
   dataBlock,
+  FileReaderKey,
   type FloorClaimKind,
   GoalAgendaKey,
   type IncomingMessage,
@@ -116,6 +117,7 @@ import { AMBIENT_MODES, typingRefreshMs } from "./config.js";
 import { gather } from "./contributors.js";
 import type { TurnFlags } from "./coordinator.js";
 import { Expression, ExpressionParser, type Segment } from "./expression.js";
+import { fileParts, selectFiles } from "./files.js";
 import { type FocusSelection, focusVerb, type TurnFocusInit } from "./focus.js";
 import { voiceScope } from "./handle.js";
 import { awaitBackfill, fetchAround, quotedParent, replyParents } from "./history.js";
@@ -940,10 +942,16 @@ class Turn {
       this.#publishDecision(notice, score, reasons);
       return notice ? await this.#sayExhausted(direct) : "";
     }
-    const [extras, images] = await Promise.all([this.#extras(), this.#lookAround()]);
+    const [extras, looked, files] = await Promise.all([
+      this.#extras(),
+      this.#lookAround(),
+      this.#readFiles(),
+    ]);
     reasons.push(...extras.reasons);
-    const seen = images.filter((p) => p.type === "image_url").length;
+    const seen = looked.filter((p) => p.type === "image_url").length;
     if (seen > 0) reasons.push(`looking at ${seen} image(s)`);
+    if (files.length > 0) reasons.push(`reading ${files.length} file(s)`);
+    const images = [...files, ...looked];
     this.#publishDecision(true, score, reasons);
     return await this.#generate(direct, names, extras, images);
   }
@@ -1020,6 +1028,24 @@ class Turn {
     if (candidates.length === 0) return [];
     const loaded = await this.agent.images.load(candidates, vision, this.signal);
     return imageParts(loaded, vision.detail);
+  }
+
+  /**
+   * The files of the messages she answers, read in the sandbox (files.ts). Best effort: a
+   * failure only costs the file.
+   */
+  async #readFiles(): Promise<ContentPart[]> {
+    const cfg = this.agent.config.files;
+    const services = this.agent.ctx.services;
+    const reader = services.get(FileReaderKey);
+    if (!cfg.enabled || cfg.max_files === 0 || reader === undefined || this.inputs.length === 0) {
+      return [];
+    }
+    const picked = selectFiles(this.inputs, reader, services.get(AuthorizerKey), cfg);
+    if (picked.length === 0) return [];
+    return await fileParts(picked, reader, this.signal, (name, error) =>
+      this.agent.log.warn({ file: name, error }, "could not read file"),
+    );
   }
 
   #publishDecision(respond: boolean, score: number, reasons: string[]): void {

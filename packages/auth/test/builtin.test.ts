@@ -50,19 +50,32 @@ describe("built-in roles", () => {
     expect(allows(get(USER), "tools.sandbox.x")).toBe(false);
   });
 
-  test("a_stored_role_from_before_tools_web_is_upgraded", () => {
+  test("a_stored_role_from_before_tools_web_and_tools_file_is_upgraded", () => {
     for (const name of [ADMIN, MODERATOR, TRUSTED, USER]) {
       const current = builtinRoles().find((r) => r.name === name) as RoleDefinition;
       const legacy = LEGACY_BUILTIN_GRANTS[name] ?? [];
       expect(legacy.length, name).toBeGreaterThan(0);
       for (const old of legacy) {
-        expect(old, name).not.toContain("tools.web");
+        expect(old, name).not.toContain("tools.file");
         expect(builtinStatus({ ...current, grants: [...old] }), name).toBe("upgrade");
       }
-      // The latest legacy list is today's grants without tools.web, in the same order.
-      expect(legacy.at(-1), name).toEqual(current.grants.filter((g) => g !== "tools.web"));
+      // Before the file node (the latest), and before the web node (the one before it).
+      expect(legacy.at(-1), name).toEqual(current.grants.filter((g) => g !== "tools.file"));
+      expect(legacy.at(-2), name).toEqual(
+        current.grants.filter((g) => g !== "tools.web" && g !== "tools.file"),
+      );
       expect(builtinStatus(current), name).toBe("current");
     }
+  });
+
+  test("members_may_send_files", () => {
+    const roles = builtinRoles();
+    const get = (n: string) => roles.find((r) => r.name === n) as RoleDefinition;
+    for (const name of [ADMIN, MODERATOR, TRUSTED, USER]) {
+      expect(allows(get(name), "tools.file"), name).toBe(true);
+    }
+    expect(allows(get(RESTRICTED), "tools.file")).toBe(false);
+    expect(allows(get(BLOCKED), "tools.file")).toBe(false);
   });
 
   test("a_stored_role_in_another_order_is_still_recognised", () => {

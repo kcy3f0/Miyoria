@@ -232,6 +232,17 @@ export const VisionConfigSchema = z.object({
 export type VisionConfig = z.output<typeof VisionConfigSchema>;
 
 /**
+ * `[modules.agent.files]`: files people send her (not images). Reading, limits per person and
+ * the size caps belong to the sandbox (`[modules.sandbox.files]`); this only picks the files.
+ */
+export const FilesConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Files per turn. */
+  max_files: z.number().int().nonnegative().default(2),
+});
+export type FilesConfig = z.output<typeof FilesConfigSchema>;
+
+/**
  * `[modules.agent.prompt]`: the prompt compiler (docs/design/v2-architecture.md §3.5). Every
  * data section has its own budget (characters of its body); over it a section is cut to whole
  * lines (or characters), and when the contributed sections together exceed
@@ -397,6 +408,7 @@ export const AgentConfigSchema = z.object({
   voice: VoiceConfigSchema.prefault({}),
   history: HistoryConfigSchema.prefault({}),
   vision: VisionConfigSchema.prefault({}),
+  files: FilesConfigSchema.prefault({}),
   prompt: PromptConfigSchema.prefault({}),
 });
 export type AgentConfig = z.output<typeof AgentConfigSchema>;

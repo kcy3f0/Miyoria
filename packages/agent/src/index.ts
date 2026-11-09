@@ -78,6 +78,8 @@ export {
   DEPRECATED_AGENT_KEYS,
   defaultAgentConfig,
   deprecatedAgentKeys,
+  type FilesConfig,
+  FilesConfigSchema,
   type HistoryConfig,
   HistoryConfigSchema,
   MainLineConfigSchema,
@@ -103,6 +105,7 @@ export {
   MAX_PAUSE_MS,
   type Segment,
 } from "./expression.js";
+export { type FileCandidate, fileParts, selectFiles } from "./files.js";
 export {
   type CallKind,
   callKind,

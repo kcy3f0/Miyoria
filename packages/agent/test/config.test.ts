@@ -164,6 +164,7 @@ describe("config", () => {
         reply_context_after: 3,
         timeout_ms: 3000,
       },
+      files: { enabled: true, max_files: 2 },
       vision: {
         enabled: true,
         max_images: 3,
