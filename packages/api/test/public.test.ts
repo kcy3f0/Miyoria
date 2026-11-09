@@ -2797,8 +2797,8 @@ describe("link previews", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
     expect(res.headers.get("cache-control")).toContain("immutable");
-    expect(bytes.readUInt32BE(16)).toBe(1200);
-    expect(bytes.readUInt32BE(20)).toBe(630);
+    expect(bytes.readUInt32BE(16)).toBe(1000);
+    expect(bytes.readUInt32BE(20)).toBe(1397);
     // An old version of the link still gets the card, but may not be kept for long.
     const stale = await png(`${r.base}/og/card/${card.serial}.png?v=0000000000`);
     expect(stale.res.status).toBe(200);

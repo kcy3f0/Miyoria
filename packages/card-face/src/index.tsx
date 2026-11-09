@@ -41,6 +41,9 @@ const FONT =
   '"Geist Variable", "PingFang TC", "Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans TC", sans-serif';
 const MONO = '"Geist Mono", ui-monospace, Consolas, monospace';
 
+/** Punctuation that never starts a line: it hangs past the measure instead (「…。」 kept whole). */
+const CLOSING = /[」』）)】〉》。,，、．.!！?？:：;；…~～]/;
+
 /** CJK runs about one em per character, Latin about half: enough to break lines by hand. */
 function wrap(text: string, em: number, lines: number): string[] {
   const out: string[] = [];
@@ -48,7 +51,7 @@ function wrap(text: string, em: number, lines: number): string[] {
   let width = 0;
   for (const ch of text.replace(/\s+/g, " ").trim()) {
     const w = /[\u0000-ɏ]/.test(ch) ? 0.55 : 1;
-    if (width + w > em) {
+    if (width + w > em && !(CLOSING.test(ch) && width <= em + 1)) {
       out.push(line);
       line = "";
       width = 0;

@@ -18,7 +18,15 @@ import { errorMessage, getLogger } from "@miyoria/kernel";
 import { Resvg } from "@resvg/resvg-js";
 import sharp from "sharp";
 import { publicCard } from "./card.js";
-import { cardMeta, injectMeta, OG_HEIGHT, OG_WIDTH, originOf, pageMeta } from "./meta.js";
+import {
+  CARD_IMAGE_WIDTH,
+  cardMeta,
+  injectMeta,
+  OG_HEIGHT,
+  OG_WIDTH,
+  originOf,
+  pageMeta,
+} from "./meta.js";
 import { clientKey, tooMany } from "./public.js";
 import { param, type Route } from "./route.js";
 import type { ApiContext, ApiState } from "./state.js";
@@ -27,7 +35,7 @@ import type { IssuedCard } from "./types.js";
 const log = getLogger("api.og");
 
 /** Bump to draw every cached image again after the layout changes. */
-const RENDER_VERSION = "1";
+const RENDER_VERSION = "2";
 const COLORS = { primary: "#f29dc4", secondary: "#7355e8" };
 const CACHED_IMAGES = 64;
 const AVATAR_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
@@ -56,17 +64,27 @@ const toDataUrl = (type: string, bytes: Uint8Array): string =>
 
 const arts = new Map<string, string | null>();
 
-/** Her picture on a card, as a data URL; `null` without the panel folder or the file. */
-async function poseArt(dir: string | null, pose: string): Promise<string | null> {
+/**
+ * Her picture as a data URL, `width` wide: a JPEG on black for the card (whose top is black), or a
+ * PNG that keeps its clear background with `clear`. `null` without the panel folder or the file.
+ */
+async function poseArt(
+  dir: string | null,
+  pose: string,
+  width = 900,
+  clear = false,
+): Promise<string | null> {
   const name = pose.replace(/[^a-z0-9-]/g, "");
   if (dir === null || name === "") return null;
-  const key = `${dir}\0${name}`;
+  const key = `${dir}|${name}|${width}|${clear}`;
   if (arts.has(key)) return arts.get(key) ?? null;
   let art: string | null = null;
   try {
     const file = await readFile(join(dir, `card-${name}.local.webp`));
-    const jpeg = await sharp(file).resize({ width: 560 }).jpeg({ quality: 86 }).toBuffer();
-    art = toDataUrl("image/jpeg", jpeg);
+    const sized = sharp(file).resize({ width });
+    art = clear
+      ? toDataUrl(PNG, await sized.png().toBuffer())
+      : toDataUrl("image/jpeg", await sized.jpeg({ quality: 88 }).toBuffer());
   } catch {
     // No renders on this machine: the card is drawn without her.
   }
@@ -94,94 +112,118 @@ async function avatarArt(url: string | null): Promise<string | null> {
 
 // ---- drawing --------------------------------------------------------------------------------
 
-const esc = (s: string): string =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-
-/** Cuts `text` to about `em` ems (CJK one each, Latin about half), with an ellipsis. */
-function clip(text: string, em: number): string {
-  let width = 0;
-  let out = "";
-  for (const ch of text.replace(/\s+/g, " ").trim()) {
-    const w = (ch.codePointAt(0) ?? 0) < 0x250 ? 0.55 : 1;
-    if (width + w > em) return `${out.slice(0, -1)}…`;
-    out += ch;
-    width += w;
-  }
-  return out;
-}
-
-async function toPng(svg: string): Promise<Buffer> {
+/** The SVG as a PNG of the given width, on a background, or clear when it is null. */
+async function toPng(svg: string, width: number, background: string | null): Promise<Buffer> {
   const resvg = new Resvg(svg, {
-    fitTo: { mode: "width", value: OG_WIDTH },
-    background: "#0b0d12",
+    fitTo: { mode: "width", value: width },
+    ...(background === null ? {} : { background }),
     font: { loadSystemFonts: true, defaultFontFamily: FONT_FAMILY },
   });
   return resvg.render().asPng();
 }
-
-/** The backdrop both pictures share: the panel's dark with its two glows. */
-const BACKDROP = `<defs>
-<linearGradient id="og-bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#141829"/><stop offset="1" stop-color="#0b0d12"/></linearGradient>
-<radialGradient id="og-a"><stop offset="0" stop-color="${COLORS.secondary}" stop-opacity="0.42"/><stop offset="1" stop-color="${COLORS.secondary}" stop-opacity="0"/></radialGradient>
-<radialGradient id="og-b"><stop offset="0" stop-color="${COLORS.primary}" stop-opacity="0.26"/><stop offset="1" stop-color="${COLORS.primary}" stop-opacity="0"/></radialGradient>
-<filter id="og-shadow" x="-20%" y="-10%" width="140%" height="130%"><feGaussianBlur stdDeviation="18"/></filter>
-</defs>
-<rect width="${OG_WIDTH}" height="${OG_HEIGHT}" fill="url(#og-bg)"/>
-<circle cx="1010" cy="120" r="470" fill="url(#og-a)"/>
-<circle cx="120" cy="560" r="420" fill="url(#og-b)"/>`;
-
-/** `1200×630`: the card on the left at its own ratio, what the page says about it on the right. */
+/**
+ * The card as the whole picture, at its own 630×880 ratio and clear around its rounded corners.
+ * `og:image:width` and `height` say the same size (`CARD_IMAGE_WIDTH`, `CARD_IMAGE_HEIGHT`).
+ */
 export async function renderCardImage(card: IssuedCard, panelDir: string | null): Promise<Buffer> {
   const [art, avatar] = await Promise.all([
-    poseArt(panelDir, card.pose),
+    poseArt(panelDir, card.pose, CARD_IMAGE_WIDTH),
     avatarArt(card.avatar_url),
   ]);
-  const inner = renderCardSvg({
+  const svg = renderCardSvg({
     card,
     art,
     avatar,
     colors: COLORS,
     verifyUrl: `https://miyoria.invalid/card/${card.serial}`,
   });
-  // The card keeps its 630×880: 30 px above and below leave 570, so it is 408 wide.
-  const h = 570;
-  const w = Math.round((h * 630) / 880);
-  const x = 96;
-  const y = 30;
-  const title = card.relationship ?? "初次見面";
-  const no = `No.${String(card.number).padStart(3, "0")}`;
-  const tx = x + w + 80;
-  const body = inner.replace(/^<svg[^>]*>/, "").replace(/<\/svg>$/, "");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${OG_WIDTH}" height="${OG_HEIGHT}" viewBox="0 0 ${OG_WIDTH} ${OG_HEIGHT}" font-family="${FONT_FAMILY}, sans-serif">
-${BACKDROP}
-<rect x="${x + 6}" y="${y + 22}" width="${w}" height="${h}" rx="17" fill="#000000" opacity="0.6" filter="url(#og-shadow)"/>
-<svg x="${x}" y="${y}" width="${w}" height="${h}" viewBox="0 0 630 880" font-family="${FONT_FAMILY}, sans-serif">${body}</svg>
-<text x="${tx}" y="150" font-size="22" font-weight="600" letter-spacing="9" fill="#ffffff" opacity="0.85">MIYORIA</text>
-<text x="${tx}" y="250" font-size="64" font-weight="700" fill="#ffffff">${esc(clip(card.name, 11))}</text>
-<text x="${tx}" y="322" font-size="40" font-weight="600" fill="${COLORS.primary}">${esc(title)}</text>
-<text x="${tx}" y="400" font-size="26" fill="#ffffff" opacity="0.7">${esc(no)}${card.foil ? " · 閃卡" : ""}</text>
-<text x="${tx}" y="440" font-size="22" fill="#ffffff" opacity="0.5" font-family="Consolas, monospace">${esc(card.serial)}</text>
-</svg>`;
-  return toPng(svg);
+  return toPng(svg, CARD_IMAGE_WIDTH, null);
 }
 
-/** The site's own picture: her wordmark and the dark of the panel, with her calm picture if the folder has it. */
-export async function renderDefaultImage(panelDir: string | null): Promise<Buffer> {
-  const art = await poseArt(panelDir, "calm");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${OG_WIDTH}" height="${OG_HEIGHT}" viewBox="0 0 ${OG_WIDTH} ${OG_HEIGHT}" font-family="${FONT_FAMILY}, sans-serif">
-${BACKDROP}
-${
-  art
-    ? `<image href="${art}" x="660" y="-20" width="520" height="693" preserveAspectRatio="xMidYMin slice"/>
-<defs><linearGradient id="og-l" x1="0" x2="1"><stop offset="0" stop-color="#0b0d12"/><stop offset="1" stop-color="#0b0d12" stop-opacity="0"/></linearGradient><linearGradient id="og-r" x1="1" x2="0"><stop offset="0" stop-color="#0b0d12"/><stop offset="1" stop-color="#0b0d12" stop-opacity="0"/></linearGradient></defs>
-<rect x="640" width="200" height="${OG_HEIGHT}" fill="url(#og-l)"/><rect x="1000" width="200" height="${OG_HEIGHT}" fill="url(#og-r)"/>`
-    : ""
+// The site's picture is her in front of frosted glass, and the glass is made of her own picture: the
+// panel's backdrop is game art, fine on the owner's screen but not in a preview anyone can fetch.
+// resvg has no `backdrop-filter`, so the frost is made with sharp: her picture spread over the whole
+// preview and blurred is the light behind, blurred more where the glass is. The glass is flush with
+// the left edge like the panel's frame (`apps/panel/DESIGN.md`, `.glass-dock`), and she stands over
+// its edge so it reads as glass and not as a box.
+
+const BASE = "#0b0d12";
+const TEXT = "#f1f0f4";
+const MUTED = "#dedce4";
+const LATIN = "Segoe UI";
+/** What shows where her picture is clear: a night blue near her hair, so the glass has light to frost. */
+const NIGHT = "#161c3a";
+/** Where the glass ends. */
+const GLASS_W = 664;
+
+/** Her picture over the whole preview, blurred by `sigma` and dimmed; `null` without it. */
+async function hazeArt(
+  dir: string | null,
+  pose: string,
+  sigma: number,
+  bright: number,
+): Promise<string | null> {
+  if (dir === null) return null;
+  try {
+    const file = await readFile(join(dir, `card-${pose}.local.webp`));
+    const jpeg = await sharp(file)
+      .resize({ width: 1800 })
+      .extract({ left: 40, top: 200, width: OG_WIDTH, height: OG_HEIGHT })
+      .flatten({ background: NIGHT })
+      .blur(sigma)
+      .modulate({ brightness: bright, saturation: 1.25 })
+      .jpeg({ quality: 88 })
+      .toBuffer();
+    return toDataUrl("image/jpeg", jpeg);
+  } catch {
+    return null;
+  }
 }
-<text x="96" y="250" font-size="30" font-weight="600" letter-spacing="12" fill="#ffffff" opacity="0.7">AI VTUBER</text>
-<text x="92" y="380" font-size="124" font-weight="700" fill="#ffffff" letter-spacing="2">Miyoria</text>
-<text x="96" y="452" font-size="32" fill="${COLORS.primary}">住在 Discord 和直播裡的她</text>
+
+/** The panel's 暮色 gradient, for a machine without her pictures. */
+const DUSK = `<defs><linearGradient id="og-dusk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1b1b33"/><stop offset="0.55" stop-color="#2a2140"/><stop offset="1" stop-color="#3a2438"/></linearGradient></defs>
+<rect width="${OG_WIDTH}" height="${OG_HEIGHT}" fill="url(#og-dusk)"/>`;
+
+/** The site's own picture: her name on the glass, and her standing over its edge. */
+export async function renderDefaultImage(panelDir: string | null): Promise<Buffer> {
+  const pose = "smile";
+  const [art, back, frost] = await Promise.all([
+    poseArt(panelDir, pose, 760, true),
+    hazeArt(panelDir, pose, 30, 0.52),
+    hazeArt(panelDir, pose, 70, 0.5),
+  ]);
+  const W = OG_WIDTH;
+  const H = OG_HEIGHT;
+  const artW = 760;
+  const artX = W - artW + 70;
+  const artY = 18;
+  const x = 76;
+  const glass = `<defs><clipPath id="og-glass"><rect width="${GLASS_W}" height="${H}"/></clipPath>
+<linearGradient id="og-wash" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#090a10" stop-opacity="0.5"/><stop offset="1" stop-color="#090a10" stop-opacity="0.22"/></linearGradient>
+<linearGradient id="og-lip" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity="0.09"/><stop offset="1" stop-color="#ffffff" stop-opacity="0.03"/></linearGradient></defs>
+<g clip-path="url(#og-glass)">
+${frost ? `<image href="${frost}" width="${W}" height="${H}"/>` : ""}
+<rect width="${GLASS_W}" height="${H}" fill="url(#og-wash)"/>
+<rect width="${GLASS_W}" height="${H}" fill="url(#og-lip)"/>
+</g>
+<rect x="${GLASS_W - 1}" width="1" height="${H}" fill="#ffffff" fill-opacity="0.22"/>`;
+  const her = art
+    ? `<image href="${art}" x="${artX}" y="${artY}" width="${artW}" height="${(artW * 4) / 3}"/>`
+    : "";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+<rect width="${W}" height="${H}" fill="${BASE}"/>
+${back ? `<image href="${back}" width="${W}" height="${H}"/>` : DUSK}
+${glass}
+${her}
+<g transform="translate(${x - 4} 70) scale(2.25)" fill="none">
+<path d="M15.5 3.5a8 8 0 1 0 5 14.2A6.5 6.5 0 0 1 15.5 3.5Z" fill="${COLORS.primary}"/>
+</g>
+<text x="${x - 6}" y="388" font-family="${LATIN}" font-size="128" font-weight="600" letter-spacing="-3" fill="${TEXT}">Miyoria</text>
+<text x="${x}" y="452" font-family="${FONT_FAMILY}" font-size="34" fill="${MUTED}">住在 Discord 和直播裡的 AI VTuber</text>
+<rect x="${x}" y="514" width="40" height="3" rx="1.5" fill="${COLORS.primary}"/>
+<text x="${x + 56}" y="524" font-family="${FONT_FAMILY}" font-size="24" fill="${MUTED}" fill-opacity="0.8">聊天・唱歌・直播</text>
 </svg>`;
-  return toPng(svg);
+  return toPng(svg, W, BASE);
 }
 
 // ---- cache ----------------------------------------------------------------------------------
