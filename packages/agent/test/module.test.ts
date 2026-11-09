@@ -83,7 +83,7 @@ describe("agent module", () => {
     expect(requests[0]?.reasoning_purpose).toBe("chat_text");
     expect(requests[0]?.reasoning).toBe("off");
     expect(requests[0]?.thinking).toBe(false);
-    expect(requests[0]?.tools?.map((t) => t.name)).toEqual(["react"]);
+    expect(requests[0]?.tools?.map((t) => t.name)).toEqual(["drop_note", "keep_note", "react"]);
 
     expect(h.sink.sent()).toEqual([["現在都中午了好嗎……早啦。", "direct"]]);
     // It quotes the message that called her.
@@ -518,7 +518,12 @@ describe("agent module", () => {
     expect(results[1]?.[1]).toContain("not valid JSON");
     expect(results[2]?.[0]).toBe("call_2");
     expect(results[2]?.[1]).toContain("emoji");
-    expect(requests[0]?.tools?.map((t) => t.name)).toEqual(["probe", "react"]);
+    expect(requests[0]?.tools?.map((t) => t.name)).toEqual([
+      "drop_note",
+      "keep_note",
+      "probe",
+      "react",
+    ]);
   });
 
   it("tool_permissions_follow_the_triggering_users", async () => {
@@ -612,8 +617,13 @@ describe("agent module", () => {
     h.say(incoming(channel("c"), "Owen", "再一次"));
     await wait(3000);
     const requests = mock.requests();
-    expect(requests[0]?.tools?.map((t) => t.name)).toEqual(["later", "react"]);
-    expect(requests[1]?.tools?.map((t) => t.name)).toEqual(["react"]);
+    expect(requests[0]?.tools?.map((t) => t.name)).toEqual([
+      "drop_note",
+      "keep_note",
+      "later",
+      "react",
+    ]);
+    expect(requests[1]?.tools?.map((t) => t.name)).toEqual(["drop_note", "keep_note", "react"]);
   });
 
   it("runtime_overrides_are_applied_and_persisted", async () => {

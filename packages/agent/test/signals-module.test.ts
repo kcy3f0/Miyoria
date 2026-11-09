@@ -88,7 +88,14 @@ describe("tool registry", () => {
     // before start.
     expect(h.sup.services.require(ToolRegistryKey)).toBe(appTools);
     // `channel_activeness` is her capability tool (the gate decides when it is called).
-    expect(appTools.names()).toEqual(["app_tool", "channel_activeness", "early", "react"]);
+    expect(appTools.names()).toEqual([
+      "app_tool",
+      "channel_activeness",
+      "drop_note",
+      "early",
+      "keep_note",
+      "react",
+    ]);
 
     // Tools registered on the app's registry later are offered too.
     appTools.register(new Probe("later"));
@@ -97,7 +104,9 @@ describe("tool registry", () => {
     expect(mock.requests()[0]?.tools?.map((t) => t.name)).toEqual([
       "app_tool",
       "channel_activeness",
+      "drop_note",
       "early",
+      "keep_note",
       "later",
       "react",
     ]);
@@ -110,7 +119,11 @@ describe("tool registry", () => {
 
   it("provides_its_own_registry_without_one_from_the_app", async () => {
     const h = await Harness.create("always", noCheck(), new MockProvider("chat").reply("好"));
-    expect(h.sup.services.require(ToolRegistryKey).names()).toEqual(["react"]);
+    expect(h.sup.services.require(ToolRegistryKey).names()).toEqual([
+      "drop_note",
+      "keep_note",
+      "react",
+    ]);
   });
 });
 

@@ -186,11 +186,15 @@ import {
   SentenceSplitter,
 } from "./speech.js";
 import { offeredIn, scopeOfHer, scopeOfSnapshot, type ToolScope } from "./tool-scope.js";
-import { ReactTool } from "./tools.js";
+import { KeepNoteTool, ReactTool } from "./tools.js";
 import { contextId, fixed, guard, TimeoutError, timeout } from "./util.js";
 import { imageParts, selectImages } from "./vision.js";
 
 const TYPING_TTL_MS = 10_000;
+/** A tool result at least this long gets the keep_note reminder (notes.ts). */
+const LONG_RESULT_CHARS = 300;
+const KEEP_HINT =
+  "\n(這些結果下一回合就看不到了;這段對話之後還會用到的,用 keep_note 用自己的話記下重點)";
 /** History lines shown to the `fast` model. */
 const CHECK_HISTORY = 12;
 /** History lines before the input sent to prompt contributors. */
@@ -2440,7 +2444,12 @@ class Turn {
   async #runTool(call: ToolCall, priority: Priority): Promise<string> {
     const [ok, full] = await this.#tryTool(call, priority);
     if (ok) this.#succeeded.add(call.name);
-    const result = truncate(full, this.agent.config.max_tool_result_chars);
+    let result = truncate(full, this.agent.config.max_tool_result_chars);
+    // A long result (a search, lyrics, a page) is gone next turn unless she keeps what matters.
+    if (ok && result.length >= LONG_RESULT_CHARS && call.name !== KeepNoteTool.NAME) {
+      const offered = this.#toolSpecs().some((t) => t.name === KeepNoteTool.NAME);
+      if (offered) result += KEEP_HINT;
+    }
     this.agent.log.debug({ turn: this.turn, tool: call.name, ok, result }, "tool call");
     this.signal.throwIfAborted();
     this.agent.ctx.publish(

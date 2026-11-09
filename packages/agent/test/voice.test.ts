@@ -230,7 +230,10 @@ describe("voice", () => {
     // Spoken replies start right away: no reasoning (`[llm.reasoning] chat_voice`).
     expect(requests[0]?.reasoning_purpose).toBe("chat_voice");
     expect(requests[0]?.thinking).toBe(false);
-    expect(requests[0]?.tools, "no `react` in voice").toEqual([]);
+    expect(
+      requests[0]?.tools?.map((t) => t.name),
+      "no `react` in voice: only the working notes",
+    ).toEqual(["drop_note", "keep_note"]);
 
     expect(h.sink.speeches()).toEqual([
       ["考完啦?", "happy"],

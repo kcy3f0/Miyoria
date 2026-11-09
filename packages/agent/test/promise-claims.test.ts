@@ -22,13 +22,17 @@ describe("leaving voice in plain words", () => {
   // 2026-11-09: asked to leave so the others could talk, she said so and stayed.
   const LEAVE = new Set(["voice_leave"]);
   it("is a claim when she says she is going and does not", () => {
-    expect(unbackedClaim("算了,好啦……那我先出去喔,要叫我再回來。", LEAVE, BARE)?.tool).toBe("voice_leave");
+    expect(unbackedClaim("算了,好啦……那我先出去喔,要叫我再回來。", LEAVE, BARE)?.tool).toBe(
+      "voice_leave",
+    );
     expect(unbackedClaim("好,我先走了。", LEAVE, BARE)?.tool).toBe("voice_leave");
     expect(unbackedClaim("我離開語音了。", LEAVE, BARE)?.tool).toBe("voice_leave");
   });
   it("is not one when she refuses, or when the tool did it", () => {
     expect(unbackedClaim("我才不要出去。", LEAVE, BARE)).toBeNull();
-    expect(unbackedClaim("那我先出去喔。", LEAVE, { ...BARE, tools: new Set(["voice_leave"]) })).toBeNull();
+    expect(
+      unbackedClaim("那我先出去喔。", LEAVE, { ...BARE, tools: new Set(["voice_leave"]) }),
+    ).toBeNull();
     expect(unbackedClaim("那我先出去喔。", new Set(["voice_join"]), BARE)).toBeNull(); // not in voice: no tool
   });
 });

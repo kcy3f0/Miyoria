@@ -7,6 +7,7 @@ import {
   ImpulseHostKey,
   IntentSinkKey,
   MouthKey,
+  PromptContributorsKey,
   ProposalBoardKey,
   pipelineOf,
   SelfStateKey,
@@ -28,9 +29,10 @@ import {
   type VoiceRooms,
 } from "./handle.js";
 import { AgentIntents } from "./intents.js";
+import { WorkingNotes } from "./notes.js";
 import { PersonaHandle, PersonaHandleKey } from "./persona.js";
 import { Agent } from "./runtime.js";
-import { ReactTool } from "./tools.js";
+import { DropNoteTool, KeepNoteTool, ReactTool } from "./tools.js";
 import { TimeoutError, timeout } from "./util.js";
 import type { FetchLike } from "./vision.js";
 
@@ -168,6 +170,14 @@ export class AgentModule implements Module {
     if (!own) ctx.log.info("using the app's tool registry");
     this.#tools = tools;
     tools.register(new ReactTool(ctx));
+    // What she keeps from a turn's tool results for the rest of the conversation (notes.ts).
+    const notes = new WorkingNotes(() => ctx.clock.now());
+    tools.register(new KeepNoteTool(notes));
+    tools.register(new DropNoteTool(notes));
+    const contributors = ctx.services.get(PromptContributorsKey);
+    const contributor = notes.contributor();
+    contributors?.register(contributor);
+    this.#unregister.push(() => contributors?.unregister(contributor.key));
     const actuators = actuatorsFor(ctx);
     this.#unregister.push(
       actuators.register(
@@ -216,6 +226,8 @@ export class AgentModule implements Module {
     this.#agent?.mainline?.stop();
     this.#agent = null;
     this.#tools.unregister(ReactTool.NAME);
+    this.#tools.unregister(KeepNoteTool.NAME);
+    this.#tools.unregister(DropNoteTool.NAME);
     for (const unregister of this.#unregister.splice(0)) unregister();
   }
 }

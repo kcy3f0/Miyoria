@@ -1244,7 +1244,13 @@ describe("the owner's rules (§9, §10.4)", () => {
     await wait(2000);
     const request = llm.requests[0];
     expect(String(request?.messages[1]?.content)).toContain("不要玩 Minecraft");
-    expect(request?.tools?.map((t) => t.name)).toEqual(["react", "thing", "commit"]);
+    expect(request?.tools?.map((t) => t.name)).toEqual([
+      "drop_note",
+      "keep_note",
+      "react",
+      "thing",
+      "commit",
+    ]);
     const viewers = request?.messages.filter((m) => String(m.content).includes("觀眾想看唱歌"));
     expect(viewers?.map((m) => m.role)).toEqual(["user"]);
   });

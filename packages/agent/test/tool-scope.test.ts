@@ -162,7 +162,7 @@ describe("tool scope", () => {
     h.say(mention(channel("c"), "Owen", "在嗎"));
     await wait(3000);
     const offered = (chat.requests()[0]?.tools ?? []).map((s) => s.name);
-    expect(offered).toEqual(["game_start", "react", "voice_join"]);
+    expect(offered).toEqual(["drop_note", "game_start", "keep_note", "react", "voice_join"]);
 
     manager.current = snapshot(PLAYING, {
       type: "in",
@@ -173,9 +173,11 @@ describe("tool scope", () => {
     await wait(3000);
     const playing = (chat.requests()[1]?.tools ?? []).map((s) => s.name);
     expect(playing).toEqual([
+      "drop_note",
       "game_goal",
       "game_start",
       "game_stop",
+      "keep_note",
       "react",
       "voice_join",
       "voice_leave",
