@@ -31,8 +31,13 @@ still online take the card when that is allowed, else release everything and wai
 her voice already offline, cut the remaining diffusion steps once, then give her voice back and wait
 (offloading did not help, so this job does not try it again). Separation restarts on the CPU.
 
-``SING_GPU_POLICY`` overrides all of this: ``share`` never touches her voice, ``wait`` never touches
-it and never runs without room, ``offload`` always takes the card (the old behaviour).
+``SING_GPU_POLICY`` picks the policy. ``yield`` (the default since 2026-11-09, the owner's call: a
+song should not wait for minutes, or run for a quarter of an hour on the CPU, to spare her a short
+silence): a stage that fits shares the card as above; one that does not takes her voice offline for
+it at once (bounded windows while people listen, a gap after each), and only Demucs' separation
+(``CPU_FALLBACK``) goes to the CPU instead. ``auto`` is the order above (her voice first); ``share``
+never touches her voice, ``wait`` never touches it and never runs without room, ``offload`` always
+takes the card (the old behaviour).
 """
 
 from __future__ import annotations
@@ -53,7 +58,7 @@ from engine import env_float, env_int
 
 log = logging.getLogger("miyoria.sing.gpu")
 
-POLICIES = ("auto", "share", "offload", "wait")
+POLICIES = ("yield", "auto", "share", "offload", "wait")
 PROFILE_FILE = "_gpu-profile.json"
 PROFILE_VERSION = 1
 PEAKS_KEPT = 5  # a peak grows with the length of the song: the highest of the last few runs
@@ -66,6 +71,11 @@ RATE_PRIORS = {"separate": 0.05, "lead": 0.25, "convert": 0.3}  # seconds of wor
 # Stages that can run on the CPU instead, so they never take her voice's card: one that does not fit
 # is done there (a spill in one sends the rest of the job's such stages to the CPU as well).
 CPU_STAGES = ("separate", "lead")
+# Under ``yield``, the stages that go to the CPU when the card has no room instead of taking her
+# voice's place: only where the CPU is not far slower (Demucs' separation; server.py adds it). The
+# RoFormers are about 20 times slower there: on 2026-11-09 a 23 s lead split ran for over 15
+# minutes on the CPU. ``SING_CPU_FALLBACK`` (comma list) sets it.
+CPU_FALLBACK: set[str] = {s.strip() for s in os.environ.get("SING_CPU_FALLBACK", "").split(",") if s.strip()}
 
 
 def policy_from_env(env: Mapping[str, str] = os.environ) -> tuple[str, str]:
@@ -75,11 +85,11 @@ def policy_from_env(env: Mapping[str, str] = os.environ) -> tuple[str, str]:
     if raw in POLICIES:
         return raw, "SING_GPU_POLICY"
     if raw:
-        log.warning("SING_GPU_POLICY=%r is none of %s; using auto", raw, "|".join(POLICIES))
+        log.warning("SING_GPU_POLICY=%r is none of %s; using yield", raw, "|".join(POLICIES))
     legacy = env.get("SING_GPU_SHARE", "").strip()
     if legacy:
         return ("auto" if legacy == "1" else "offload"), "SING_GPU_SHARE"
-    return "auto", "default"
+    return "yield", "default"
 
 
 @dataclass(frozen=True)
@@ -414,6 +424,7 @@ class Facts:
     window: bool = False  # her voice is offline for this job
     offload_useless: bool = False  # a window was tried and it still spilled
     cpu_only: bool = False  # separation spilled
+    cpu_fallback: bool = False  # under ``yield``, this stage goes to the CPU when there is no room
     crowded_mb: int | None = None  # the room at the last spill or OOM
 
 
@@ -463,6 +474,16 @@ def decide(f: Facts) -> Decision:
         return Decision("share", "unknown_card", "讀不到顯示卡,也沒有語音可以讓,直接跑")
 
     can = f.speech_loaded and not f.offload_useless
+    if f.policy == "yield":
+        if f.cpu_fallback and (not can or f.gap_s > 0):
+            return Decision("cpu", "no_room_cpu", f"顯示卡放不下({have}),分離改用 CPU,語音不受影響")
+        if f.gap_s > 0 and can:
+            return Decision("wait", "gap", f"她剛回來,先讓她說話,{f.gap_s:.0f} 秒後才能再用整張卡")
+        if can:
+            code, why = ("urgent", "這首現在就要,") if f.urgent else ("no_room", "")
+            return Decision("offload", code,
+                            f"{why}顯示卡放不下({have}),語音暫時離線,最多 {limits.silence_max_s:.0f} 秒")
+        return Decision("wait", "no_room", f"顯示卡放不下({have}),語音讓出來也沒用,等空間")
     helps = can and (f.freed_mb is None or room is None or room + f.freed_mb >= want)
     small = f.total_mb is not None and f.total_mb < want
 
@@ -612,6 +633,7 @@ class GpuJob:
             urgent=self.urgent(), waited_s=waited, waited_total_s=self.waited_total_s + waited,
             silence_est_s=self.silence_estimate(stage), gap_s=max(0.0, m.gap_until - now), window=self.window,
             offload_useless=self.offload_useless, cpu_only=self.cpu_only and stage in CPU_STAGES,
+            cpu_fallback=stage in CPU_FALLBACK,
             crowded_mb=self.crowded_mb,
         )
 
@@ -804,7 +826,7 @@ class GpuJob:
             return self._do(Action("reduce", "spill_reduce", f"設定不動語音,溢出時剩下的改成 {limits.steps_min} 步(音質稍差)"))
         gap = self.machine.gap_until - self.clock()
         loaded = self.speech.read().loaded
-        if self.policy == "auto" and loaded and not self.offload_useless and gap <= 0 and (
+        if self.policy in ("auto", "yield") and loaded and not self.offload_useless and gap <= 0 and (
                 self.urgent() or self.people() is False):
             return self._do(Action("offload", "spill_offload", "溢出了,這時候可以請語音讓出來"))
         self.crowded_mb = room

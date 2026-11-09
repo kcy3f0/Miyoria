@@ -117,9 +117,9 @@ def test_the_owners_policy_overrides():
 
 
 def test_policy_and_the_old_switch():
-    assert policy_from_env({}) == ("auto", "default")
+    assert policy_from_env({}) == ("yield", "default")
     assert policy_from_env({"SING_GPU_POLICY": "WAIT"}) == ("wait", "SING_GPU_POLICY")
-    assert policy_from_env({"SING_GPU_POLICY": "nope"}) == ("auto", "default")
+    assert policy_from_env({"SING_GPU_POLICY": "nope"}) == ("yield", "default")
     assert policy_from_env({"SING_GPU_SHARE": "1"}) == ("auto", "SING_GPU_SHARE")
     assert policy_from_env({"SING_GPU_SHARE": "0"}) == ("offload", "SING_GPU_SHARE")
     assert policy_from_env({"SING_GPU_POLICY": "share", "SING_GPU_SHARE": "0"})[0] == "share"
@@ -244,6 +244,8 @@ class SimCard:
         monkeypatch.setattr(server.state, "offload_post", self.post, raising=False)
         monkeypatch.setattr(server.state, "busy_get", self.get, raising=False)
         monkeypatch.setenv("SING_OFFLOAD_URLS", "http://tts,http://asr")
+        # These scenarios are the voice-first policy's; ``yield`` has its own tests below.
+        monkeypatch.setenv("SING_GPU_POLICY", os.environ.get("SING_GPU_POLICY", "auto"))
         monkeypatch.setenv("SING_GPU_CHECK_S", "0.01")
         monkeypatch.setenv("SING_MOCK_STEPS", os.environ.get("SING_MOCK_STEPS", "8"))
         monkeypatch.delenv("SING_GPU_POLICY", raising=False)
@@ -737,3 +739,17 @@ def test_the_lead_split_is_placed_like_the_separation_and_never_takes_her_voice_
     assert decide(facts(stage="lead")).mode == "cpu"  # a crowded 12 GB card on stream: the CPU does it
     assert decide(facts(stage="lead", total_mb=24 * GB, free_mb=15000, headroom_mb=2949)).code == "fits"
     assert decide(facts(stage="lead", cpu_only=True)).code == "spill_cpu"
+
+
+def test_yield_takes_her_voice_offline_when_a_stage_does_not_fit():
+    # 2026-11-09: the owner would rather she goes quiet for a moment than a song waits for minutes.
+    assert decide(facts(policy="yield", free_mb=9000)).code == "fits"
+    full = decide(facts(policy="yield", free_mb=2500, urgent=False))
+    assert full.mode == "offload" and full.code == "no_room"
+    assert decide(facts(policy="yield", urgent=True)).code == "urgent"
+    # The RoFormer stages do not go to the CPU (20 times slower there); Demucs' separation does.
+    assert decide(facts(policy="yield", stage="lead")).mode == "offload"
+    assert decide(facts(policy="yield", stage="separate", cpu_fallback=True, speech_loaded=False)).mode == "cpu"
+    # Right after her voice came back she gets her gap; with nothing to offload it waits.
+    assert decide(facts(policy="yield", gap_s=5.0)).code == "gap"
+    assert decide(facts(policy="yield", speech_loaded=False)).mode == "wait"

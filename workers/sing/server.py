@@ -173,7 +173,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engine import Cancelled, ConvertWork, JobError, Suspended, allowed_url, env_float, env_int, is_oom  # noqa: E402
 from exclusive import Exclusive, http_post, parse_urls  # noqa: E402
-from gpu import CPU_STAGES, Action, Audience, GpuJob, Limits, Machine, Profile  # noqa: E402
+from gpu import CPU_FALLBACK, CPU_STAGES, Action, Audience, GpuJob, Limits, Machine, Profile  # noqa: E402
 from yielding import SpeechYield, http_get  # noqa: E402
 from songs import (  # noqa: E402
     PLAY_RATE,
@@ -406,9 +406,13 @@ def make_backend(store: Store) -> Any:
     if name == "mock":
         return MockBackend(store)
     if name in ("seed-vc", "seedvc", "real"):
-        from engine import RealBackend
+        from engine import MELBAND, RealBackend
 
-        return _RealAdapter(RealBackend(store))
+        real = RealBackend(store)
+        # Demucs' separation is only a little slower on the CPU: it goes there when the card is full.
+        if real.separator != MELBAND and "SING_CPU_FALLBACK" not in os.environ:
+            CPU_FALLBACK.add("separate")
+        return _RealAdapter(real)
     raise RuntimeError(f"unknown SING_BACKEND={name!r} (expected seed-vc | mock)")
 
 
