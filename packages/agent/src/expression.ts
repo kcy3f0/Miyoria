@@ -135,7 +135,7 @@ export class ExpressionParser {
         const close = lower.indexOf(`</emo:${thinking[1]}>`, from);
         if (close !== -1) {
           flush();
-          pos = close + thinking[1]!.length + 7;
+          pos = close + (thinking[1] ?? "").length + 7;
           continue;
         }
         if (!eof && input.length - from <= MAX_THINK_LEN) {

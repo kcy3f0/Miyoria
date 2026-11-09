@@ -473,9 +473,9 @@ describe("reflection writes only stable names", () => {
     ]);
     for (const l of all) expect(ephemeralHandlesIn(l.text)).toEqual([]);
     // Only the lessons that are about how much she talks carry a `talk`.
-    const talk = Object.fromEntries(all.map((l) => [l.text, l.talk]));
-    expect(talk["別一直重複同一個梗"]).toBeNull();
-    expect(talk["這裡可以更活潑一點"]).toBe(0.6);
+    const talk = new Map(all.map((l) => [l.text, l.talk]));
+    expect(talk.get("別一直重複同一個梗")).toBeNull();
+    expect(talk.get("這裡可以更活潑一點")).toBe(0.6);
     // ...and it is scoped to the place she named by its full string.
     expect(all.find((l) => l.text.includes("活潑"))?.scope).toBe("discord:g1:c1");
   });
