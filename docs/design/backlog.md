@@ -36,12 +36,20 @@
 - **角色名稱還沒定案**:`broadcast`、`core`、`inference` 和它們的中文名稱都在 `packages/cli/src/stack/roles.ts` 一個地方,改名只要改那裡和文件。
 - **推論機只能有一台**:`[machine.hosts] inference` 是一個位址,asr、tts、sing 要在同一台(sing 做歌時要它們讓出顯卡)。sing 的卸載網址是 worker 的 host + port。
 - **LAN 上的 worker 沒有認證**:推論機的 worker 綁在區網位址,同網段的人都連得到;目前靠防火牆。Miyoria 不會替你改防火牆,`doctor` 只會檢查連不連得到。要不要幫 worker 加 token,還沒決定。
-- **voice node 的重複啟動只靠分頁偵測**:voice node 沒有埠可以問,`start` 靠「那個分頁的 `cmd.exe` 還在」判斷;手動在別的終端機開的 voice node 偵測不到。
-- **`install` 不下載模型**:turn 的兩個 onnx(約 11 MB,`workers/README.md` 第 10 節有 curl)、sing 的 RVC / 分離模型、Seed-VC 原始碼、她的聲音參考音都只列在清單裡由人放;turn 的可以做成自動下載。Qwen3-ASR 和 Qwen3-TTS 的權重會在第一次啟動時自己下載(數 GB)。
+- **voice node 的重複啟動偵測靠行程清單**:voice node 沒有埠,`start` 看行程清單裡有沒有 node / cmd 的命令列含 `apps/voice-node`(不管是誰啟動的),讀不到清單就當作「可能在跑」、不啟動。只在 Windows 有效;從別的資料夾(例如複製出去的 `dist`)跑的偵測不到。更穩的做法是 voice node 自己持有鎖檔,或 Core 的管理 API 回報 voice.link 有沒有節點連著(現在要驗證登入,`start` 沒有 token),都還沒做。`up` 也沒有這個檢查。
+- **`install` 只下載 turn 的兩個小模型**:smart-turn 和 silero-vad(約 11 MB)由 `install` 從官方來源下載;sing 的 RVC / 分離模型、Seed-VC 原始碼、她的聲音參考音沒有文件化的下載網址,仍由人放。Qwen3-ASR 和 Qwen3-TTS 的權重會在第一次啟動時自己下載(數 GB)。
 - **`install` 不管 Docker、JDK、Minecraft mod**:Docker Desktop(檔案沙箱)要自己裝,`doctor` 只在沙箱啟用時檢查;mod jar 仍用 `miyoria update`。
 - **`start` 只支援 Windows**:分頁靠 Windows Terminal(沒有就開一般的 console 視窗);其他系統用 `miyoria up`(背景執行,日誌寫檔)。
 - **`up` 和 `start` 兩套**:`up` 在背景執行、Ctrl+C 一起停;`start` 開分頁。兩個都讀 `[machine]`,要不要合併成一個,還沒決定。
 - **`[stack]` 的舊寫法**:設了 `[machine]` 之後,`[stack]` 的 `core` / `voice_node` / `stage` 不再有作用,只有 `[stack.workers.<name>]` 還會覆蓋 worker 的細節。確認沒人用舊寫法後可以拿掉。
+- **新手要自己放 TTS 的聲音參考音**:預設角色 `deepseek-chan` 的聲音檔 `workers/voices/deepseek-chan/ref.wav`(加 `ref.txt`)不在 repo 裡,tts 沒有它就不能用;sing 的 `reference` 預設也指到這個檔。要不要附一個授權乾淨的範例聲音、或讓 `init` 問聲音名稱,還沒決定。
+- **`install` 沒用 uv**:venv 和 pip 用系統的 Python。uv 比較快,但 torch 要指定 CUDA 的 `--index-url`,uv 的 index 規則不同,沒有驗證過,所以沒採用。
+- **這一輪的新功能只在乾跑和單元測試驗證過**:
+  - 真的開 Windows Terminal 分頁(`wt -w miyoria new-tab …`):只測過產生的引數和 `.cmd`,沒有在乾淨的機器上實際開過;
+  - 真的建 venv、pip 安裝、下載模型:只測過計畫和假的下載,沒有真的裝;
+  - 跨電腦執行:三個角色分到不同電腦,沒有實際跑過;
+  - Linux / macOS:`install` 的套件管理員對應和印出的 apt / dnf 指令只用假的指令執行器測過,`start` 在這些系統上只會提示改用 `miyoria up`;
+  - Core 在「沒有任何 worker」時用預設的本機 ASR / TTS 網址能不能乾淨開機(純文字聊天),沒有實測。
 
 ## 等 owner 決定
 

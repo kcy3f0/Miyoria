@@ -95,6 +95,29 @@ export async function tabRunning(run: Runner, script: string): Promise<boolean> 
   return Number.parseInt(result.stdout.trim(), 10) > 0;
 }
 
+/**
+ * Whether a node or cmd process has `folder` in its command line, whoever started it (a tab of
+ * ours, `pnpm start` typed by hand, a shortcut). Slashes and case are ignored. `unknown` when the
+ * process list could not be read: the caller must treat that as "maybe running".
+ */
+export async function runningFrom(run: Runner, folder: string): Promise<"yes" | "no" | "unknown"> {
+  const needle = folder.replace(/\//g, "\\").toLowerCase().replace(/'/g, "''");
+  const result = await run(
+    "powershell",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `@(Get-CimInstance Win32_Process -Filter "Name='node.exe' or Name='cmd.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Replace('/', '').ToLower().Contains('${needle}') }).Count`,
+    ],
+    { timeoutMs: 15_000 },
+  );
+  if (result.missing || result.code !== 0) return "unknown";
+  const count = Number.parseInt(result.stdout.trim(), 10);
+  if (Number.isNaN(count)) return "unknown";
+  return count > 0 ? "yes" : "no";
+}
+
 export async function hasWindowsTerminal(run: Runner): Promise<boolean> {
   const r = await run("where", ["wt"], { timeoutMs: 5000 });
   return !r.missing && r.code === 0;

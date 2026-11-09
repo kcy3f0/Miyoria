@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Config } from "@miyoria/kernel";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { exampleConfig, exampleEnv } from "../src/assets.js";
 import { parseArgs } from "../src/cli.js";
 import { run as initRun } from "../src/commands/init.js";
@@ -29,6 +29,17 @@ import type { Runner, RunResult } from "../src/stack/system.js";
 import { type Output, setOutput } from "../src/ui.js";
 import { Workspace } from "../src/workspace.js";
 import { Enter, Pick, Scripted, Text, Yes } from "./scripted.js";
+
+// Folders the tests declare to have no source checkout above them, wherever the temp folder is
+// (a TMP inside the repo would otherwise find the repo's own `pnpm-workspace.yaml`).
+const noSource = vi.hoisted(() => new Set<string>());
+vi.mock("../src/stack/config.js", async (original) => {
+  const real = await original<typeof import("../src/stack/config.js")>();
+  return {
+    ...real,
+    repoRoot: (configPath: string) => (noSource.has(configPath) ? null : real.repoRoot(configPath)),
+  };
+});
 
 const NOENV = () => undefined;
 const OK: RunResult = { code: 0, stdout: "", stderr: "", missing: false, timedOut: false };
@@ -297,7 +308,15 @@ describe("launch scripts", () => {
 describe("miyoria start", () => {
   /** What the fakes saw. */
   function harness(
-    opts: { healthy?: string[]; ports?: Record<number, "in-use" | "denied">; tabs?: string[] } = {},
+    opts: {
+      healthy?: string[];
+      ports?: Record<number, "in-use" | "denied">;
+      tabs?: string[];
+      /** What the process list says about the voice node: running, not running, unreadable. */
+      voiceNode?: "yes" | "no" | "unknown";
+      /** Health URLs that answer 200 with a body that is not ours. */
+      foreign?: string[];
+    } = {},
   ) {
     const opened: string[] = [];
     const healthy = new Set(opts.healthy ?? []);
@@ -305,6 +324,10 @@ describe("miyoria start", () => {
     const run: Runner = async (command, args) => {
       if (command === "powershell") {
         const text = args.join(" ");
+        if (text.includes("node.exe")) {
+          const v = opts.voiceNode ?? "no";
+          return v === "unknown" ? { ...OK, code: 1 } : { ...OK, stdout: v === "yes" ? "2" : "0" };
+        }
         return {
           ...OK,
           stdout: (opts.tabs ?? []).some((n) => text.includes(`${n}.cmd`)) ? "1" : "0",
@@ -316,7 +339,8 @@ describe("miyoria start", () => {
       fetchImpl: (async (url: string) => {
         const ok = healthy.has(url) || opened.some((n) => url.includes(PORTS[n] ?? "no"));
         if (!ok) throw new Error("down");
-        return { ok: true } as Response;
+        const ours = !(opts.foreign ?? []).includes(url);
+        return { ok: true, json: async () => (ours ? { status: "ok" } : { hello: 1 }) } as Response;
       }) as typeof fetch,
       probe: async (port) => opts.ports?.[port] ?? "free",
       run,
@@ -374,6 +398,35 @@ describe("miyoria start", () => {
       /被 Windows 保留/,
     );
     expect(b.opened).toEqual(["asr"]);
+  });
+
+  it("never_starts_a_second_voice_node_and_says_why", async () => {
+    const configPath = repo(`[machine]\nroles = ["broadcast"]\n`);
+    const running = harness({ voiceNode: "yes", ports: { 7884: "in-use" } });
+    await start.run(configPath, { targets: [], noCheck: true }, running.d);
+    expect(running.opened).toEqual([]);
+    expect(out.join("\n")).toContain("不會再開第二個");
+    out.length = 0;
+    const unknown = harness({ voiceNode: "unknown", ports: { 7884: "in-use" } });
+    await start.run(configPath, { targets: [], noCheck: true }, unknown.d);
+    expect(unknown.opened).toEqual([]);
+    expect(out.join("\n")).toContain("無法確認");
+    const none = harness({ voiceNode: "no", ports: { 7884: "in-use" } });
+    await start.run(configPath, { targets: ["voice-node"], noCheck: true, noWait: true }, none.d);
+    expect(none.opened).toEqual(["voice-node"]);
+  });
+
+  it("does_not_take_another_programs_200_for_a_healthy_service", async () => {
+    const configPath = repo(`[machine]\nroles = ["inference"]\n`);
+    const h = harness({
+      healthy: ["http://127.0.0.1:8003/health"],
+      foreign: ["http://127.0.0.1:8003/health"],
+      ports: { 8003: "in-use" },
+    });
+    await expect(start.run(configPath, { targets: [], noCheck: true }, h.d)).rejects.toThrow(
+      /被別的程式佔用/,
+    );
+    expect(h.opened).toEqual([]);
   });
 
   it("opens_nothing_on_a_dry_run", async () => {
@@ -452,7 +505,7 @@ describe("miyoria install", () => {
     const configPath = join(dir, "x", "miyoria.toml");
     mkdirSync(dirname(configPath), { recursive: true });
     writeFileSync(configPath, ALL);
-    // no pnpm-workspace.yaml above (the temp folder is outside the repo)
+    noSource.add(configPath);
     await expect(
       install.run(
         configPath,
