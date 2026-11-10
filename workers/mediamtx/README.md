@@ -4,7 +4,7 @@ OBS 推一路 RTMP 給 MediaMTX,Discord Go Live(voice node 拉 RTMP)和網頁現
 
 ```
 OBS ──RTMP──▶ 127.0.0.1:1935/live/miyoria ─┬─▶ voice node(golive_listen = false,拉流)
-                                           └─▶ LL-HLS 127.0.0.1:8888 ─▶ Core /api/public/live/video/ ─▶ /live
+                                           └─▶ LL-HLS 127.0.0.1:8888 ─▶ Core /api/public/live/video/ ─▶ /watch
 ```
 
 全部只綁 127.0.0.1;外面只能經過 Core 拿到影像,Core 決定開不開。
@@ -50,9 +50,11 @@ $env:MTX_HLSCDNSECRET = (Select-String -Path ..\..\.env -Pattern '^MIYORIA_HLS_S
    [modules.live.video]
    enabled = true
    secret = "${MIYORIA_HLS_SECRET}"
+   # head / face / body:她在畫面上的位置(0..1 的 [x0, y0, x1, y1]),點到哪裡算摸頭、戳臉、碰身體;
+   # 預設值是估的,照 OBS 裡她的位置改
    ```
 4. 重開 Core 和 voice node,重新 build 面板和 overlay。
-5. OBS 開始推流:網頁 `/live` 出現畫面。之後要 Discord Go Live 照舊用 `/voice golive start`。
+5. OBS 開始推流:網頁 `/watch` 出現畫面(`/live` 是管理面板的直播頁)。之後要 Discord Go Live 照舊用 `/voice golive start`。
 
 ## 頻寬
 
