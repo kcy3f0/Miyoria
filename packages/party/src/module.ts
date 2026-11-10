@@ -201,14 +201,24 @@ export class PartyModule implements Module {
         const u = event.data;
         if (u.speaker.is_bot) return;
         const speaker = { account: u.speaker.account, name: u.speaker.display_name };
-        this.#heard(ctx, table, u.context, speaker, u.text, u.id, "voice");
+        this.#heard(
+          ctx,
+          table,
+          u.context,
+          speaker,
+          u.text,
+          u.id,
+          "voice",
+          `voice:utterance:${u.id}`,
+        );
         return;
       }
       case "platform_message_created": {
         const m = event.data;
         if (m.author.is_bot || table.session(m.id.context) === null) return;
         const speaker = { account: m.author.account, name: m.author.display_name };
-        this.#heard(ctx, table, m.id.context, speaker, incomingText(m), m.id.id, "chat");
+        const origin = `msg:${m.id.context.platform}:${m.id.id}`;
+        this.#heard(ctx, table, m.id.context, speaker, incomingText(m), m.id.id, "chat", origin);
         return;
       }
       case "custom":
@@ -232,6 +242,7 @@ export class PartyModule implements Module {
     text: string,
     id: string,
     source: "voice" | "chat",
+    origin: string,
   ): void {
     if (table.session(context) === null || table.isSelf(speaker.account)) return;
     const verdict = inspectInput(ctx.services, {
@@ -242,7 +253,7 @@ export class PartyModule implements Module {
       context,
     });
     if (holdsBack(verdict)) return;
-    table.input(context, speaker, text);
+    table.input(context, speaker, text, origin);
   }
 
   /** She went off to sing, play a game or browse: games end. */

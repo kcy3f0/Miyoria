@@ -46,9 +46,15 @@ export interface PartyNote {
   session: string;
   game: GameId;
   context: ContextKey;
-  /** `party:<session>:<what>`: the same thing always has the same key. */
+  /**
+   * `party:<session>:<what>`: the same thing always has the same key. A note she may react to
+   * that a person's line caused (the verdict on an answer, the end it brought) carries the key
+   * of that line instead (`answers`), so what answers it is one thing, not two.
+   */
   key: string;
   revision: number;
+  /** The key of the line this note is the game's answer to (the same as `key`), else `null`. */
+  answers: string | null;
   summary: string;
   speak: boolean;
   untrusted: boolean;
@@ -136,6 +142,8 @@ export class Session implements Host {
   readonly #revisions = new Map<string, number>();
   readonly #controller = new AbortController();
   #ended: EndReason | null = null;
+  /** The attention key of the line being handled right now, while its game is working on it. */
+  #answering: string | null = null;
   /** What `begin` said, for the tool that started it. */
   opening = "";
 
@@ -228,19 +236,37 @@ export class Session implements Host {
 
   note(key: string, summary: string, options: NoteOptions = {}): void {
     if (this.#ended !== null && key !== "end") return;
-    const revision = (this.#revisions.get(key) ?? 0) + 1;
-    this.#revisions.set(key, revision);
+    const speak = options.speak ?? true;
+    // Her reply to a spoken answer is a turn of the main line already (it answers whoever
+    // spoke just after her). The verdict about that answer shares the answer's key, so the
+    // delivery ledger sees one thing: once she answered the line, the verdict is not claimed
+    // again (and she is not made to say it twice).
+    const answers = speak ? this.#answering : null;
+    const revision = answers === null ? (this.#revisions.get(key) ?? 0) + 1 : 1;
+    if (answers === null) this.#revisions.set(key, revision);
     this.#table.output.note({
       session: this.id,
       game: this.game.id,
       context: this.context,
-      key: `party:${this.id}:${key}`,
+      key: answers ?? `party:${this.id}:${key}`,
+      answers,
       revision,
       summary,
-      speak: options.speak ?? true,
+      speak,
       untrusted: options.untrusted ?? false,
       person: options.person?.account ?? null,
     });
+  }
+
+  /** Runs `fn` with every note it makes answering the line whose key is `key`. */
+  answering<T>(key: string | null, fn: () => T): T {
+    const before = this.#answering;
+    this.#answering = key;
+    try {
+      return fn();
+    } finally {
+      this.#answering = before;
+    }
   }
 
   setTimer(name: string, ms: number): void {
@@ -435,23 +461,26 @@ export class Table {
 
   /**
    * A player's line in `context` (speech, or the voice channel's chat). Someone asking to stop
-   * ends the game; anything else goes to the game.
+   * ends the game; anything else goes to the game. `origin`: the attention key the main line
+   * answers that line under (`voice:utterance:<id>`, `msg:<platform>:<id>`), when known.
    */
-  input(context: ContextKey, speaker: Speaker, text: string): void {
+  input(context: ContextKey, speaker: Speaker, text: string, origin: string | null = null): void {
     if (this.isSelf(speaker.account)) return;
     const session = this.session(context);
     if (!session || session.ended !== null) return;
     const player = session.player(speaker, true);
     session.touch();
-    if (asksToStop(text)) {
-      session.note("stop", `${safeName(player.name, 24)} 說不想玩了,遊戲先結束。`, {
-        person: player,
-        speak: false,
-      });
-      session.end("stop");
-      return;
-    }
-    if (session.game.input(player, text)) player.active = true;
+    session.answering(origin, () => {
+      if (asksToStop(text)) {
+        session.note("stop", `${safeName(player.name, 24)} 說不想玩了,遊戲先結束。`, {
+          person: player,
+          speak: false,
+        });
+        session.end("stop");
+        return;
+      }
+      if (session.game.input(player, text)) player.active = true;
+    });
   }
 
   /** Ends the game in `context`; `false` when there is none. */
@@ -519,6 +548,7 @@ export class Table {
           game: session.game.id,
           context: session.context,
           key: `party:${session.id}:rewards`,
+          answers: null,
           revision: 1,
           summary: `「${session.game.title}」的魚幣發好了:${paid}。`,
           speak: false,
