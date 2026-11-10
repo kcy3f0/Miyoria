@@ -48,8 +48,8 @@ import { ConversationConfigSchema, KnowledgeConfigSchema, ReflectConfigSchema } 
 import { ConversationEngine, FEEDBACK_TOPIC } from "./conversation.js";
 import { FeedbackTracker } from "./feedback.js";
 import { KnowledgeStore } from "./knowledge.js";
-import { recapAgeNote } from "./recap-age.js";
 import { LessonStore } from "./lessons.js";
+import { recapAgeNote } from "./recap-age.js";
 import { Reflector } from "./reflect.js";
 import { KNOWLEDGE_TOOL, KnowledgeTool } from "./tool.js";
 
