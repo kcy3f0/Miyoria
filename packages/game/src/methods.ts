@@ -196,7 +196,7 @@ export class MethodGuard {
         } else if (change.fresh.length > 0) {
           hold.changed = true;
         }
-      } else if (change.progressed !== null) {
+      } else if (change.progressed !== null || gained.length > 0) {
         this.#release(hold);
       }
     }

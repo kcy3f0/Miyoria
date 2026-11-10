@@ -20,7 +20,10 @@ import {
   contextKeyString,
   customEvent,
   type DirectorThoughtBody,
+  type DrivenWork,
+  dataBlock,
   type Envelope,
+  escapeData,
   gameTaskOwner,
   type JsonObject,
   type JsonValue,
@@ -42,6 +45,8 @@ import {
   type Timestamp,
   toTimestamp,
   v2Event,
+  WorkEndedError,
+  WorkLaneKey,
 } from "@miyoria/types";
 import { GAME_ACT } from "./actions.js";
 import type { GameConfig } from "./config.js";
@@ -75,7 +80,8 @@ import {
 } from "./guard.js";
 import { MethodGuard, methodKey, normalizeItem } from "./methods.js";
 import { type About, eventKey, goalKey, isNoted, matchesEvent, Narration } from "./narration.js";
-import { AttemptRecord, type AttemptResult } from "./record.js";
+import { type Attempt, AttemptRecord, type AttemptResult, attemptLine } from "./record.js";
+import { SkillShelf } from "./skill-store.js";
 import { SKILL_TOPIC, type Skill, SkillBook } from "./skills.js";
 import {
   budgetFor,
@@ -277,6 +283,8 @@ interface Track {
 
 /** Tasks tracked at once (old ones are forgotten; their events are then ignored). */
 const MAX_TRACKED = 32;
+/** A learned skill is kept this long after the last one (one write for a burst). */
+const SAVE_SKILLS_MS = 2_000;
 /**
  * How long a line that must be said waits for a free moment. Longer than the Arbiter's retry, or
  * it would expire the moment she is talking; a result someone waits for outlasts a song.
@@ -316,6 +324,10 @@ interface Session {
   /** The goal a survival goal interrupted; it comes back when that ends. */
   suspended: Goal | null;
   tasks: Map<TaskId, Track>;
+  /** The work-lane task its decisions are steps of (`director_lane`), once opened. */
+  work: DrivenWork | null;
+  /** The lane said no more (its day is spent): one-shot decisions for the rest of the session. */
+  laneOff: boolean;
 }
 
 /** The decision trace: the thought plus what she saw and what was on hold (§11.2 item 9). */
@@ -428,6 +440,22 @@ interface DecideInput {
   attempts: string[];
   held: string[];
   skills: string[];
+  /** The session's work-lane task, when decisions are its steps (`director_lane`). */
+  work: DrivenWork | null;
+}
+
+/** Characters of the game state a decision keeps in its task's transcript. */
+const KEPT_OBSERVATION_CHARS = 300;
+
+/**
+ * What a decision's transcript keeps of what it saw: the trigger, the goal, the last action and
+ * the start of the game state. The record, the holds and the skills are in every prompt anew.
+ */
+export function keptPrompt(p: PromptParts): string {
+  const lines = [`觸發:${escapeData(p.trigger)}`, `目前目標:${escapeData(p.goal ?? "沒有")}`];
+  if (p.lastAction !== null) lines.push(`上一個動作:${escapeData(p.lastAction)}`);
+  lines.push(`遊戲狀態(開頭):${escapeData(firstChars(p.observation, KEPT_OBSERVATION_CHARS))}`);
+  return dataBlock("game", "那時看到的", lines.join("\n"));
 }
 
 async function decide(input: DecideInput, signal: AbortSignal): Promise<Done> {
@@ -482,6 +510,32 @@ async function ask(
     skills: input.skills,
   };
   const { system, user } = prompts(parts);
+  const work = input.work;
+  if (work !== null && !work.ended) {
+    // A step of the session's work-lane task (§11.2 item 1): it sees its earlier decisions and
+    // what came of each, not only this moment.
+    try {
+      const text = await work.step(
+        {
+          system,
+          user,
+          kept: keptPrompt(parts),
+          purpose: cfg.purpose,
+          json: true,
+          reasoning: cfg.reasoning,
+          temperature: cfg.temperature,
+          max_tokens: cfg.max_tokens,
+          session: sessionId(input.persona.profile, `game-${input.game}`),
+          timeout_ms: cfg.llm_timeout_secs * 1000,
+        },
+        signal,
+      );
+      return parseDecision(text);
+    } catch (error) {
+      // The lane's budget is spent (or the task ended): the one-shot decision, as before.
+      if (!(error instanceof WorkEndedError)) throw error;
+    }
+  }
   const request: ChatRequest = {
     messages: [
       { role: "system", content: system, name: null, tool_calls: [], tool_call_id: null },
@@ -526,6 +580,11 @@ export class Director {
   #pendingGoal: { text: string; by: string } | null = null;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #closed = false;
+  /** Where her skills are kept across restarts (§11.2 item 8). */
+  readonly #shelf: SkillShelf;
+  /** Games whose kept skills were read (once per run). */
+  readonly #loaded = new Set<string>();
+  #saveTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     cfg: GameConfig,
@@ -540,6 +599,71 @@ export class Director {
     this.#persona = persona;
     this.#view = view;
     this.#actuators = actuators;
+    this.#shelf = new SkillShelf({
+      actuators,
+      lane: () => ctx.services.get(WorkLaneKey) ?? null,
+      context: () => this.#session?.context ?? null,
+      now: () => this.#now(),
+    });
+  }
+
+  // ----- what she keeps -----
+
+  /** Reads the skills kept for `game` (once per run): she knows what she managed before. */
+  #loadSkills(game: string): void {
+    if (!this.#cfg.keep_skills || this.#loaded.has(game)) return;
+    this.#loaded.add(game);
+    void this.#shelf.load(game).then(
+      (skills) => {
+        for (const skill of skills) this.#skills.restore(skill);
+        if (skills.length > 0) log.info({ game, count: skills.length }, "skills she kept");
+      },
+      (error: unknown) => log.debug({ game, err: errorMessage(error) }, "no kept skills"),
+    );
+  }
+
+  /** Keeps `game`'s skills soon (one write for a burst of goals). */
+  #saveSkills(game: string): void {
+    if (!this.#cfg.keep_skills || this.#saveTimer !== null) return;
+    this.#saveTimer = setTimeout(() => {
+      this.#saveTimer = null;
+      void this.#shelf.save(game, this.#skills.forGame(game)).then(
+        (where) => log.debug({ game, where }, "skills kept"),
+        (error: unknown) => log.warn({ game, err: errorMessage(error) }, "could not keep skills"),
+      );
+    }, SAVE_SKILLS_MS);
+  }
+
+  /**
+   * The session's work-lane task (§11.2 item 1), opened at its first decision; `null` when the
+   * lane is off, not there, or said no more for this session.
+   */
+  #workTask(s: Session): DrivenWork | null {
+    if (!this.#cfg.director_lane || s.laneOff) return null;
+    if (s.work !== null) {
+      if (!s.work.ended) return s.work;
+      s.work = null;
+      s.laneOff = true;
+      return null;
+    }
+    const lane = this.#ctx.services.get(WorkLaneKey);
+    if (!lane) return null;
+    try {
+      s.work = lane.open({
+        owner: gameTaskOwner(s.game),
+        goal: `玩 ${s.gameName}`,
+        keep_steps: this.#cfg.director_steps,
+      });
+    } catch (error) {
+      log.warn({ err: errorMessage(error) }, "could not open the director's work task");
+      s.laneOff = true;
+    }
+    return s.work;
+  }
+
+  /** What came of something she tried, for the next step of the session's task. */
+  #told(s: Session, line: string): void {
+    if (s.work !== null && !s.work.ended) s.work.result(line);
   }
 
   get closed(): boolean {
@@ -548,7 +672,17 @@ export class Director {
 
   /** Stops all background activity (module stop). */
   close(): void {
+    if (this.#saveTimer !== null) {
+      // What she learned last is kept before the module goes.
+      clearTimeout(this.#saveTimer);
+      this.#saveTimer = null;
+      const game = this.#session?.game;
+      if (game !== undefined) {
+        void this.#shelf.save(game, this.#skills.forGame(game)).catch(() => undefined);
+      }
+    }
     if (!this.#closed && this.#session) {
+      this.#session.work?.end("stopped", "遊戲模組停了");
       this.#cancelGoalTask(this.#session);
       try {
         this.#publishSession("stopped", this.#session);
@@ -929,8 +1063,11 @@ export class Director {
       survival: null,
       suspended: null,
       tasks: new Map(),
+      work: null,
+      laneOff: false,
     };
     this.#publishSession("started", this.#session);
+    this.#loadSkills(game);
     let text = `她開始玩 ${name} 了，實況會在${where}進行。`;
     const pending = this.#pendingGoal;
     this.#pendingGoal = null;
@@ -965,6 +1102,7 @@ export class Director {
     this.#generation += 1;
     this.#pendingGoal = null;
     log.warn({ game: s.game, code, reason }, "game session ended by itself");
+    s.work?.end("stopped", `遊戲斷了(${code})`);
     this.#publishSession("stopped", s, { code, reason });
     this.#cancelWork();
   }
@@ -986,6 +1124,7 @@ export class Director {
     this.#pendingGoal = null;
     if (!s) throw new GameError("她目前沒有在玩遊戲。");
     this.#cancelGoalTask(s);
+    s.work?.end("done", "不玩了");
     this.#session = null;
     this.#generation += 1;
     log.info({ game: s.game }, "game session stopped");
@@ -1179,6 +1318,10 @@ export class Director {
       }
       s.guard = afterSuccess(s.guard, action.name, now);
       s.methods.progressed(track.method);
+      // She got somewhere: a hold this may help (what it said was missing) can come back.
+      if (outcome?.inventory) s.methods.seen(outcome.inventory, track.method);
+      else
+        s.methods.changed({ gained: outcome?.gained ?? {}, fresh: [], progressed: track.method });
       if (!ofGoal || !g) return;
       const inventory = outcome?.inventory ?? null;
       if (g.want !== null) {
@@ -1253,7 +1396,7 @@ export class Director {
     code: string | null,
     detail: string,
   ): void {
-    s.record.add({
+    const attempt: Attempt = {
       at: this.#now(),
       action: track.action.display(),
       method: track.method,
@@ -1261,7 +1404,10 @@ export class Director {
       result,
       code: result === "no_progress" ? "no_progress" : code,
       detail,
-    });
+    };
+    s.record.add(attempt);
+    // What came of what she tried, in the transcript of the session's task.
+    this.#told(s, attemptLine(attempt, attempt.at).replace(/^\[[^\]]*\] /, ""));
   }
 
   /** Whether goal `g` may start another task (its step budget). */
@@ -1529,6 +1675,7 @@ export class Director {
     };
     if (this.#skills.learn(skill)) {
       this.#ctx.publish(customEvent(SKILL_TOPIC, skill as unknown as JsonValue));
+      this.#saveSkills(s.game);
     }
   }
 
@@ -1707,6 +1854,7 @@ export class Director {
       attempts: s.record.lines(now),
       held: s.methods.lines(now),
       skills: this.#skills.lines(s.game, s.goal?.want?.item ?? null),
+      work: this.#workTask(s),
     };
     return (signal) => decide(input, signal);
   }
@@ -1790,6 +1938,8 @@ export class Director {
       s.busy = observation.value.task !== null;
       s.summary = observation.value.summary.trim();
       inventory = inventoryOf(observation.value.state);
+      // Whatever got it there (a step, a reflex picking things up), what is new counts.
+      s.methods.seen(inventory);
     } else {
       log.warn({ error: observation.error }, "observing the game failed");
       if (!this.#executor(s.game)) {
@@ -1916,6 +2066,7 @@ export class Director {
     if (hold === null) return verdict;
     const what = hold.method === method ? "這個做法" : "這個目標";
     s.lastAction = `${action.display()} → 暫時不行:${what}一直失敗(${hold.code}:${firstLine(hold.why, 60)}),換別的做法或目標`;
+    this.#told(s, `${action.display()} 沒有執行:${what}一直失敗,情況沒變之前不會再試`);
     if (!hold.nudged) {
       hold.nudged = true;
       this.#trigger(`${action.display()} 被暫停了,換個做法或目標`, false);

@@ -80,6 +80,8 @@ import {
 export const TASK_PREFIX = "agent:work:task:";
 /** Settings key of today's token count. */
 export const DAY_KEY = "agent:work:day";
+/** Settings key prefix of what owners keep (`<owner>:<key>`). */
+export const KEPT_PREFIX = "agent:work:kept:";
 
 /** Why a task a restart cut ended, as she is told. */
 export const RESTART_REASON = "被重啟打斷了,沒做完";
@@ -738,6 +740,21 @@ export class WorkLaneService implements WorkLane {
       dayLeft: () => this.#dayLeft(),
       finish: (end, detail) => this.#finish(task, end, detail),
     });
+  }
+
+  // ---- what owners keep ---------------------------------------------------------------------------
+
+  async keep(owner: string, key: string, value: JsonValue | null): Promise<void> {
+    const store = this.#d.store();
+    if (store === null) return;
+    const profile = this.#d.profile();
+    await this.#writes.run(() => store.set(profile, `${KEPT_PREFIX}${owner}:${key}`, value));
+  }
+
+  async kept(owner: string, key: string): Promise<JsonValue | null> {
+    const store = this.#d.store();
+    if (store === null) return null;
+    return await store.get(this.#d.profile(), `${KEPT_PREFIX}${owner}:${key}`);
   }
 
   // ---- restart ----------------------------------------------------------------------------------

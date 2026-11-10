@@ -18,6 +18,7 @@
 //   when to think and what each step does; the lane keeps the transcript (what it saw, what it
 //   tried, what came of it), counts the tokens and shows the task.
 
+import type { JsonValue } from "./json.js";
 import type { ContextKey } from "./platform.js";
 import type { ReasoningLevel } from "./reasoning.js";
 import { serviceKey } from "./service-key.js";
@@ -141,6 +142,13 @@ export interface WorkLane {
   tasks(): WorkTaskView[];
   /** Opens a task its owner drives (it never queues: the owner already decided to work). */
   open(spec: DrivenWorkSpec): DrivenWork;
+  /**
+   * What an owner learned and keeps across restarts (the director's skills when her skill store
+   * is not running), in the settings store; `null` removes it. Resolves once it is written.
+   */
+  keep(owner: string, key: string, value: JsonValue | null): Promise<void>;
+  /** What `keep` kept, or `null`. */
+  kept(owner: string, key: string): Promise<JsonValue | null>;
 }
 
 export const WorkLaneKey = serviceKey<WorkLane>("WorkLane");
