@@ -16,6 +16,7 @@ import {
   LifeLogKey,
   NotebookKey,
   type NotebookPage,
+  PartyOverviewKey,
   type Reminder,
   ReminderDeskKey,
   SkillShelfKey,
@@ -243,6 +244,22 @@ describe("economy 2.0", () => {
     const h = await harness();
     h.sup.services.provide("economy", Economy2Key, {} as never);
     expect((await h.get("/api/economy2/health")).status).toBe(503);
+  });
+});
+
+describe("party games", () => {
+  it("is a 503 naming the module when it is off, and the snapshot when it is on", async () => {
+    const h = await harness();
+    expect((await raw(h.base, "GET", "/api/party")).status).toBe(401);
+    const off = await h.get("/api/party");
+    expect(off.status).toBe(503);
+    expect(JSON.stringify(off.body)).toContain("party module");
+    // On, with nothing running: an empty snapshot, not an error.
+    const snapshot = { sessions: [], recent: [] };
+    h.sup.services.provide("party", PartyOverviewKey, { snapshot: () => snapshot });
+    const on = await h.get("/api/party");
+    expect(on.status).toBe(200);
+    expect(on.body).toEqual(snapshot);
   });
 });
 

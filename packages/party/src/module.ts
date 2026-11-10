@@ -21,6 +21,7 @@ import {
   isJsonObject,
   type JsonValue,
   newImpulse,
+  PartyOverviewKey,
   PartyRewardsKey,
   PartyStatusKey,
   type PromptContributors,
@@ -164,6 +165,8 @@ export class PartyModule implements Module {
     const prompts = services.get(PromptContributorsKey) ?? null;
     prompts?.register(new PartyPrompt(table));
     ctx.provide(PartyTableKey, table);
+    // The admin panel's read-only look: its absence means the module is off, not that no game runs.
+    ctx.provide(PartyOverviewKey, { snapshot: () => table.snapshot() });
     // What the main line asks before it offers the game's tools and tells her the program judges.
     ctx.provide(PartyStatusKey, {
       running: (context) => {
