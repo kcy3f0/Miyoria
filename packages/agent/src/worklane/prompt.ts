@@ -37,7 +37,10 @@ export function systemPrompt(input: {
   maxMinutes: number;
   rules: readonly string[];
 }): string {
-  const persona = input.persona.trim() === "" ? "" : `\n\n你的人設(只用來決定偏好和判斷):\n${input.persona.trim()}`;
+  const persona =
+    input.persona.trim() === ""
+      ? ""
+      : `\n\n你的人設(只用來決定偏好和判斷):\n${input.persona.trim()}`;
   const rules =
     input.rules.length === 0
       ? ""
@@ -155,7 +158,8 @@ export function report(input: {
   const lines = [`任務「${cut(input.goal, 60)}」${END_LABEL[input.end]}`];
   const result = input.result?.trim() ?? "";
   if (result !== "") {
-    const label = input.end === "done" ? "結論" : input.end === "out_of_budget" ? "目前的成果" : "原因";
+    const label =
+      input.end === "done" ? "結論" : input.end === "out_of_budget" ? "目前的成果" : "原因";
     lines.push(`${label}:${cut(result, input.resultChars)}`);
   }
   const did = [...new Set(input.did)];

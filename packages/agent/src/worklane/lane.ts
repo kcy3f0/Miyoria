@@ -44,9 +44,9 @@ import {
   type ProfileId,
   type TaskEvent,
   type TaskFailureCode,
+  type TurnId,
   taskTopic,
   toTimestamp,
-  type TurnId,
   WORK_OWNER,
   WORK_PURPOSE,
   type WorkEnd,
@@ -437,7 +437,10 @@ export class WorkLaneService implements WorkLane {
         if (task.stop !== null) {
           result = STOPPED_CALL;
         } else if (!this.#allowed(task, call.name)) {
-          this.#d.log.warn({ task: task.id, tool: call.name }, "a work task called a tool it may not");
+          this.#d.log.warn(
+            { task: task.id, tool: call.name },
+            "a work task called a tool it may not",
+          );
           result = NOT_ALLOWED;
         } else if (ran >= cfg.calls_per_step) {
           result = TOO_MANY_CALLS;
@@ -501,7 +504,8 @@ export class WorkLaneService implements WorkLane {
     }
     task.did.push(didLine(call.name, args, ok));
     const verdict = inspectInput(this.#d.services, { text, source: "tool", context });
-    const note = verdict?.note && !verdict.flags.every((f) => f === "flood") ? `${verdict.note}\n` : "";
+    const note =
+      verdict?.note && !verdict.flags.every((f) => f === "flood") ? `${verdict.note}\n` : "";
     return toolResult(call.name, clip(`${note}${neutralize(text)}`, this.#cfg.tool_result_chars));
   }
 

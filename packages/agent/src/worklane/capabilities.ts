@@ -112,9 +112,7 @@ export function workCapabilities(deps: WorkCapabilityDeps): Capability[] {
       if (!outcome.ok) throw new CapabilityError(outcome.why);
       const id = shortId(outcome.id);
       const where =
-        outcome.state === "running"
-          ? "開始做了"
-          : `前面還有 ${outcome.ahead + 1} 件,輪到就開始`;
+        outcome.state === "running" ? "開始做了" : `前面還有 ${outcome.ahead + 1} 件,輪到就開始`;
       const who = requesterOf(principal) === null ? "" : ",做完會回來告訴你";
       return {
         text: `交給工作車道了(任務 ${id}),${where}${who};還沒做完,不要說做好了。能用:${tools.join("、") || "沒有工具"}`,

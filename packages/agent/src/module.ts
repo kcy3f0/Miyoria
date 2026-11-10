@@ -39,10 +39,10 @@ import {
   type VoiceRooms,
 } from "./handle.js";
 import { AgentIntents } from "./intents.js";
+import { ACTING_ALONE } from "./mainline/main.js";
 import { WorkingNotes } from "./notes.js";
 import { PersonaHandle, PersonaHandleKey } from "./persona.js";
 import { Agent } from "./runtime.js";
-import { ACTING_ALONE } from "./mainline/main.js";
 import { DropNoteTool, KeepNoteTool, ReactTool } from "./tools.js";
 import { TimeoutError, timeout } from "./util.js";
 import type { FetchLike } from "./vision.js";
