@@ -173,8 +173,10 @@ describe("protocol", () => {
 
 describe("config", () => {
   it("defaults_match_legacy", () => {
-    const { scenes, ...legacy } = StageLinkConfigSchema.parse({});
+    // The scene director and the highlights are sections of their own, not legacy fields.
+    const { scenes, highlights, ...legacy } = StageLinkConfigSchema.parse({});
     expect(scenes).toMatchObject({ director: true, classify_purpose: "fast", roles: {} });
+    expect(highlights).toMatchObject({ enabled: true, song_finished: true, cooldown_secs: 90 });
     expect(legacy).toStrictEqual({
       bind: "127.0.0.1:7882",
       token: "",
@@ -221,6 +223,7 @@ describe("config", () => {
       song_video_dir: "data/songs",
       song_video_lead_ms: 0,
       song_video_resync_ms: 300,
+      replay_buffer: true,
     });
     expect(c.lipsync).toStrictEqual(defaultLipSyncConfig());
     expect(c.lipsync.bind).toBe("127.0.0.1:7883");
