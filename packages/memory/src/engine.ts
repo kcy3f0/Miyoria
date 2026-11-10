@@ -1281,7 +1281,7 @@ export class MemoryEngine implements FollowupSource {
     }
     // In a DM "問他" is the one person there.
     const partner = dmPartner === null ? null : (speakers[0]?.person ?? null);
-    let known: FollowupLike[] | null = null;
+    let asked: FollowupLike[] | null = null;
     for (const f of x.followups) {
       if (repairHandleText(f.about) === null) {
         report.skipped += 1;
@@ -1309,8 +1309,8 @@ export class MemoryEngine implements FollowupSource {
       }
       // Reworded, the same question is not a new one: one still open holds it, and one asked or
       // answered lately means it was asked.
-      known ??= await this.#followups();
-      const twin = this.#twin(known, subjects, f.about, context, allNames, now);
+      asked ??= await this.#followups();
+      const twin = this.#twin(asked, subjects, f.about, context, allNames, now);
       if (twin !== null) {
         if (twin.done) report.skipped += 1;
         else report.reinforced += 1;
@@ -1330,7 +1330,7 @@ export class MemoryEngine implements FollowupSource {
         source_events: refsOf(supporting(f.about, lines, evidence, names)),
       });
       // Said twice in one answer is still one question.
-      known.unshift({
+      asked.unshift({
         subjects,
         content: f.about,
         done: false,
