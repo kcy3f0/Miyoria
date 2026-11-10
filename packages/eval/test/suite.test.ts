@@ -6,8 +6,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  failureCode,
   FIXTURE_DIR,
+  failureCode,
   formatScorecard,
   loadFixtures,
   ofType,
