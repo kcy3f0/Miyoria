@@ -107,23 +107,47 @@ export const AMBIENT = "沒有人直接叫你。只有在你真的想插話時�
  * each sentence carries its spoken line, written first so it can go to TTS right away.
  */
 export function speaksRule(language: string): string {
-  const example = /japanese|日/i.test(language)
-    ? "例如:<voice>えっ、本当に?</voice>欸,真的嗎?<voice>じゃあ一緒に行こう!</voice>那一起去吧!"
-    : `例如:<voice>(這句的 ${language})</voice>欸,真的嗎?`;
+  const name = languageName(language);
   return [
-    `- 你的聲音是用 ${language} 念出來的,字幕和紀錄顯示你寫的中文。`,
-    `每一句先寫 <voice>…</voice>,裡面是這句要念的 ${language},寫完馬上接同一句的中文,意思一樣。`,
-    `中文那句一定要寫(不要只寫 <voice>),<voice> 裡只放念得出來的 ${language},`,
-    `遊戲用語和專有名詞也寫成 ${language} 的說法;<emo:…> 寫在 <voice> 前面。${example}`,
+    `- 你的聲音是用${name}念出來的,字幕和紀錄顯示你寫的中文。`,
+    `每一句先寫 <voice>…</voice>,裡面是這句要念的${name},寫完馬上接同一句的中文,意思一樣。`,
+    `中文那句一定要寫(不要只寫 <voice>),<voice> 裡只放念得出來的${name},`,
+    `遊戲用語和專有名詞也寫成${name}的說法;<emo:…> 寫在 <voice> 前面。例如:${spokenExample(language)}`,
   ].join("");
+}
+
+/** `Japanese` (the setting) as the prompt says it: a Chinese sentence with no English word in it. */
+export function languageName(language: string): string {
+  const known: readonly [RegExp, string][] = [
+    [/japanese|日/i, "日文"],
+    [/english|英/i, "英文"],
+    [/korean|韓/i, "韓文"],
+    [/cantonese|粵/i, "粵語"],
+  ];
+  return known.find(([re]) => re.test(language))?.[1] ?? language;
+}
+
+/**
+ * Lines in the spoken format, for `language`; `short`: only the first, a bare exclamation that
+ * fits any moment (the tail's: 「じゃあ一緒に行こう!」 there was a sentence she could say back to
+ * a question it does not answer).
+ */
+function spokenExample(language: string, short = false): string {
+  if (!/japanese|日/i.test(language)) {
+    return `<voice>(這句的${languageName(language)})</voice>欸,真的嗎?`;
+  }
+  const first = "<voice>えっ、本当に?</voice>欸,真的嗎?";
+  return short ? first : `${first}<voice>じゃあ一緒に行こう!</voice>那一起去吧!`;
 }
 
 /**
  * `speaksRule` once more at the end of the prompt: it sits far above the history, where her
- * own lines show only their subtitles, and half her replies went without `<voice>`.
+ * own lines show only their subtitles, and half her replies went without `<voice>`. With the
+ * example again: the example dialogues before the history are plain text, and a format shown is
+ * followed better than one only named.
  */
 export function speaksReminder(language: string): string {
-  return `- 這回合是用說的:每一句都先寫 <voice>…</voice>(${language}),再接同一句的中文,一句都不能漏。歷史訊息裡你說過的話只留字幕,那個格式不要照抄。`;
+  return `- 這回合是用說的:每一句都先寫 <voice>…</voice>(${languageName(language)}),再接同一句的中文,一句都不能漏。歷史訊息和範例對話只有中文,那個格式不要照抄,要像這樣:${spokenExample(language, true)}`;
 }
 
 export const INITIATIVE = "現在沒有人在跟你說話,是你自己想主動開啟話題。";
@@ -366,7 +390,7 @@ export const BOT_TAG = "(bot)";
 /** Name tag of a spoken line. */
 export const SPOKEN_TAG = "(語音)";
 /** Heading of the block that repeats the message(s) the turn answers (its focus). */
-export const FOCUS_HEAD = "# 要回的訊息(前面的對話、筆記和記憶只是背景)";
+export const FOCUS_HEAD = "# 要回的訊息(前面的對話、筆記和記憶用來接住這句,不用另開話題)";
 /** At most this many focus messages are repeated (the newest). */
 const MAX_FOCUS = 5;
 /** Title of the data block that holds what the input defence flagged. */

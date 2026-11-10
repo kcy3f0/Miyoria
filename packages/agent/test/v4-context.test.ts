@@ -264,7 +264,8 @@ describe("the slow part and the turn's data (§4.1)", () => {
     expect(order.every((n) => n >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     // The turn's data after the history, each of §5's readers within its own budget.
-    const data = at(request, "剛才");
+    // The block's text: the rules name 「剛才」 too.
+    const data = at(request, "剛才:唱");
     expect(data).toBeGreaterThan(history);
     expect(at(request, "別處")).toBe(data);
     expect(at(request, "Alice 喜歡貓")).toBe(data);
@@ -276,7 +277,8 @@ describe("the slow part and the turn's data (§4.1)", () => {
     expect(at(request, "幫 Alice 查天氣")).toBe(data);
     // What changes every turn is never in a system message.
     for (const m of request?.messages ?? []) {
-      if (m.role === "system") expect(text(m)).not.toContain("今天的你");
+      // (The block's text: the rules name the block 「今天的你」.)
+      if (m.role === "system") expect(text(m)).not.toContain("今天到 ");
     }
     // Retrieval reads the lines before 「好啊」 and who she is talking with.
     expect(world.queries[0]?.text).toContain("好啊");

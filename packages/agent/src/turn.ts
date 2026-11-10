@@ -2143,7 +2143,10 @@ class Turn {
   #mainExamples(): string | null {
     const chars = this.agent.config.mainline.examples_chars;
     if (chars <= 0) return null;
-    const dialogues = exampleDialogues(this.agent.persona.examples());
+    // In voice, a dialogue with code in it shows a line that cannot be read aloud.
+    const dialogues = exampleDialogues(this.agent.persona.examples()).filter(
+      (d) => !this.voice || !d.includes("`"),
+    );
     const seed = stableHash(`${contextId(this.key)}:${this.session.startedAt}`);
     const picked = rotatedExamples(dialogues, seed, chars);
     return picked.length === 0 ? null : dataBlock("examples", EXAMPLES_TITLE, picked.join("\n\n"));

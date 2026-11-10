@@ -161,7 +161,8 @@ export function moodBlock(src: SelfSources): string {
     if (hunger < FULL_BELOW) lines.push("你吃飽了,現在吃不下;有人要餵你也會被擋。");
     else if (snap !== null && hunger >= STRONG_DRIVE) lines.push(`你現在${WANTS.hunger}。`);
   }
-  if (shown) lines.push(shownHint(shown));
+  const hint = shown ? shownHint(shown) : "";
+  if (hint !== "") lines.push(hint);
   if (src.crushHere) {
     lines.push("你偷偷喜歡的人在場(「在場的人」裡標著)。這是你的祕密,你不想讓任何人知道。");
   }
@@ -299,16 +300,21 @@ export function ledgerBlock(src: SelfSources): string {
   const lines: string[] = [];
   const l = view.limits;
   const offset = src.utcOffsetMinutes ?? -new Date(src.now).getTimezoneOffset();
-  const parts = [
-    `今天你自己開了 ${l.initiatives_today} 次話題${l.initiative_cap === null ? "" : `(上限 ${l.initiative_cap})`}`,
-  ];
+  // 「今天你自己開了 0 次話題(上限 12)」 on every turn somebody talked to her was a number with
+  // nothing to do about it: the count is said once she has started something.
+  const parts =
+    l.initiatives_today > 0
+      ? [
+          `今天你自己開了 ${l.initiatives_today} 次話題${l.initiative_cap === null ? "" : `(上限 ${l.initiative_cap})`}`,
+        ]
+      : [];
   if (l.unanswered_streak > 0) parts.push(`最近連續 ${l.unanswered_streak} 次沒人接`);
   if (l.next_initiative_at !== null) {
     parts.push(`下次可以自己開口:${clock(Date.parse(l.next_initiative_at), offset)} 之後`);
   }
   if (l.quiet_hours?.active) parts.push("現在是安靜時段");
   if (l.paused) parts.push("主人暫停了你的自主行動");
-  lines.push(`${parts.join(";")}。`);
+  if (parts.length > 0) lines.push(`${parts.join(";")}。`);
   for (const b of l.blocked.slice(0, 3)) {
     lines.push(`- ${short(b.capability, 30)} 暫時不行:${short(b.reason, 50)}`);
   }
