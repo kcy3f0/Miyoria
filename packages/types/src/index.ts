@@ -862,3 +862,22 @@ export {
   wishGrams,
   wishHolder,
 } from "./wish.js";
+export {
+  type DrivenStep,
+  type DrivenWork,
+  type DrivenWorkSpec,
+  isWorkEnd,
+  WORK_ENDS,
+  WORK_LIST,
+  WORK_OWNER,
+  WORK_PURPOSE,
+  WORK_START,
+  WORK_STEER,
+  type WorkEnd,
+  WorkEndedError,
+  type WorkLane,
+  WorkLaneKey,
+  type WorkMessage,
+  type WorkState,
+  type WorkTaskView,
+} from "./worklane.js";

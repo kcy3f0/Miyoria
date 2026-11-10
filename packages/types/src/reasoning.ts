@@ -41,6 +41,8 @@ export const REASONING_PURPOSES = [
   "review",
   /** Conversation folding, memory curation. */
   "summarizer",
+  /** A task of the work lane: many steps with tools, off the Floor (v4 §4.3, §4.4). */
+  "work",
 ] as const;
 
 export type ReasoningPurpose = (typeof REASONING_PURPOSES)[number];
@@ -59,6 +61,8 @@ export const DEFAULT_REASONING: Readonly<Record<ReasoningPurpose, ReasoningLevel
   reflect: "high",
   review: "medium",
   summarizer: "off",
+  // §4.3: the same model, thinking hard; §4.4 puts the work lane at medium to high.
+  work: "high",
 };
 
 /** The level for `purpose` from a `[llm.reasoning]` table, else the default, else `off`. */
