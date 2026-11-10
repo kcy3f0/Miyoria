@@ -10,8 +10,11 @@
 //
 // Everything that changes from turn to turn comes after the history. V3 had the data before it, so
 // the history was never part of the provider's prefix cache and every line of it was paid in full
-// each turn; now the prefix up to the newest history line is byte for byte the last turn's, and the
-// history can be long. `historyWindow` keeps its first line in place for many turns.
+// each turn; now the prefix up to the newest history line is normally the last turn's, and the
+// history can be long. `historyWindow` keeps its first line in place for many turns. It is not a
+// promise of identical bytes: the session edits entries in place afterwards (a flag, a fetched
+// reply chain, a sentence of hers cut off or never delivered), and the edited line and all after it
+// read differently next turn. That costs one cache miss, never correctness.
 //
 // What she is doing sits at the end because she follows the history otherwise (11-07: she insisted
 // she was in voice). Every part has a budget, and with `prompt_tokens` set `fitHistory` gives up
@@ -326,8 +329,11 @@ const AROUND_CHARS = 120;
  * the last turn showed; `null`: from the oldest). While it fits the budget nothing moves and the
  * next turn's prompt only grows at its end. Over the budget it is cut back to `trim` of the budget
  * at once, and further to the first line her conversation notes do not cover (`fold`, all but the
- * newest `keep`). A sliding window would have moved the first line every turn, and with it every
- * byte of the prefix cache. The lines she answers (`current`) are never cut. Returns the new start.
+ * newest `keep`). A sliding window would have moved the first line every turn, and with it the
+ * whole cached prefix. The lines she answers (`current`) are always shown, and never cut: a turn
+ * that trimmed past a message still waiting for its own turn (a result turn with nothing to
+ * answer) would otherwise leave that turn with no line and no focus block. Shown from before the
+ * start only for them, the window keeps its start. Returns the new start.
  */
 export function historyWindow(
   entries: readonly HistoryEntry[],
@@ -336,8 +342,17 @@ export function historyWindow(
   fold: number | null = null,
   keep = 0,
 ): { shown: HistoryEntry[]; start: number | null } {
-  const from = start === null ? 0 : entries.findIndex((e) => e.ts >= start);
-  const shown = from < 0 ? [] : entries.slice(from);
+  const atStart = start === null ? 0 : entries.findIndex((e) => e.ts >= start);
+  const answered = entries.findIndex((e) => e.current === true);
+  const from =
+    answered >= 0 && (atStart < 0 || answered < atStart)
+      ? answered
+      : atStart < 0
+        ? entries.length
+        : atStart;
+  const shown = entries.slice(from);
+  // Back before the start only for what she answers: the next turn returns to the stable start.
+  const keepStart = from !== atStart && start !== null;
   const costs = shown.map((e) => entryCost(e, budget.entryChars));
   const fits = (at: number, share: number) => {
     const lines = shown.length - at;
@@ -347,7 +362,7 @@ export function historyWindow(
       (budget.chars <= 0 || chars <= Math.floor(budget.chars * share))
     );
   };
-  if (fits(0, 1)) return { shown, start: shown[0]?.ts ?? start };
+  if (fits(0, 1)) return { shown, start: keepStart ? start : (shown[0]?.ts ?? start) };
   let cut = 0;
   while (cut < shown.length && !fits(cut, budget.trim)) cut++;
   if (fold !== null) {
@@ -357,7 +372,7 @@ export function historyWindow(
   const current = shown.findIndex((e) => e.current === true);
   if (current >= 0) cut = Math.min(cut, current);
   const kept = shown.slice(cut);
-  return { shown: kept, start: kept[0]?.ts ?? start };
+  return { shown: kept, start: keepStart && cut === 0 ? start : (kept[0]?.ts ?? start) };
 }
 
 /** The dialogues of the example files: every `## ` section is one. */

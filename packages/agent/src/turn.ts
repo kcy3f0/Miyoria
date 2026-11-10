@@ -69,6 +69,7 @@ import {
   MindKey,
   ModerationKey,
   type Notice,
+  neutralize,
   newAction,
   type Participant,
   PlatformSinksKey,
@@ -127,10 +128,15 @@ import type { HeldLine } from "./mainline/gate.js";
 import type { Run } from "./mainline/hands.js";
 import {
   asksSeriously,
+  CUT_OFF,
   handedOver,
+  handOver,
   higher,
+  NOT_OFFERED,
+  OUT_OF_TIME,
   QUESTION_PURPOSE,
   STILL_RUNNING,
+  TOO_MANY,
   TOOL_STEP_PURPOSE,
 } from "./mainline/loop.js";
 import {
@@ -1812,8 +1818,9 @@ class Turn {
     const verbs = selection === null ? new Map<string, string>() : focusVerbs(selection);
     const folded = services.get(ConversationStatesKey)?.get(this.key) ?? null;
     const fold = folded?.folded_up_to ?? null;
-    // The history starts where the last turn's did, and only grows (`historyWindow`): the prefix up
-    // to its newest line is the last turn's prefix, which the provider has cached.
+    // The history starts where the last turn's did, and only grows (`historyWindow`): unless the
+    // session edited a line since, the prefix up to the newest line is the last turn's, which the
+    // provider has cached (an edited line costs a cache miss, nothing else).
     const window = historyWindow(
       markCurrent(
         this.session.history().filter((e) => !this.#hidden(e)),
@@ -2059,107 +2066,149 @@ class Turn {
     /** Calls of earlier rounds that are the hands' (and `commit`): they go with the output. */
     const later: ToolCall[] = [];
     let rounds = 0;
-    for (;;) {
-      const request: ChatRequest = {
-        messages: [...messages],
-        tools,
-        temperature: cfg.temperature,
-        max_tokens: cfg.max_tokens,
-        reasoning_purpose: this.#reasoningPurpose(),
-        session: this.#llmSession(),
-      };
-      const level = this.#mainReasoning(main, router, request, rounds > 0);
-      this.#level ??= level;
-      segments?.step();
-      let step: Step;
-      let fellBack = false;
-      try {
-        // In voice the person waits in silence: a correction starts soon or not at all.
-        const deadline = before !== null && this.voice ? VOICE_CORRECTION_MS : null;
-        step = await this.#mainStream(main, router, request, speech, segments, deadline, level);
-      } catch (error) {
-        if (before === null || this.signal.aborted) throw error;
-        this.agent.log.warn(
-          { turn: this.turn, error: errorMessage(error) },
-          "the corrective call failed; the first answer stands",
-        );
-        step = before;
-        fellBack = true;
-      }
-      before = null;
-      const { expression, raw, calls } = step;
-      if (speech?.stopped()) {
-        this.agent.log.debug({ turn: this.turn }, "speech interrupted, generation stopped");
+    // All the loop's tools of the turn together: the turn holds the Floor while they run.
+    const budget = this.voice ? main.config.voice_loop_budget_ms : main.config.loop_budget_ms;
+    const started = this.#now;
+    const left = () => budget - (this.#now - started);
+    const run = (tool: string, id: string, args: string, signal: AbortSignal) =>
+      this.#hand({ id, name: tool, arguments: args }, priority, signal);
+    /** A round of tools ran: leaving now must not lose what it did or handed over. */
+    let looped = false;
+    let concluded = false;
+    const leave = (why: "failed" | "stopped") => {
+      if (concluded || !looped) return;
+      concluded = true;
+      const output = turnOutput(new Expression(), handOver(later), main.said);
+      main.leave({ ...output, say: [...main.said] }, run, this.#requester(), why);
+    };
+    try {
+      for (;;) {
+        const request: ChatRequest = {
+          messages: [...messages],
+          tools,
+          temperature: cfg.temperature,
+          max_tokens: cfg.max_tokens,
+          reasoning_purpose: this.#reasoningPurpose(),
+          session: this.#llmSession(),
+        };
+        const level = this.#mainReasoning(main, router, request, rounds > 0);
+        this.#level ??= level;
+        segments?.step();
+        let step: Step;
+        let fellBack = false;
+        try {
+          // In voice the person waits in silence: a correction starts soon or not at all.
+          const deadline = before !== null && this.voice ? VOICE_CORRECTION_MS : null;
+          step = await this.#mainStream(main, router, request, speech, segments, deadline, level);
+        } catch (error) {
+          if (before === null || this.signal.aborted) throw error;
+          this.agent.log.warn(
+            { turn: this.turn, error: errorMessage(error) },
+            "the corrective call failed; the first answer stands",
+          );
+          step = before;
+          fellBack = true;
+        }
+        before = null;
+        const { expression, raw, calls } = step;
+        if (speech?.stopped()) {
+          this.agent.log.debug({ turn: this.turn }, "speech interrupted, generation stopped");
+          leave("stopped");
+          return;
+        }
+        const now = fellBack ? [] : calls.filter((c) => loop.has(c.name));
+        if (now.length > 0 && rounds < cfg.max_tool_steps && left() > 0) {
+          looped = true;
+          await this.#roundEnded(main, expression, now, speech, segments, send, between);
+          messages.push(assistantMessage(raw, calls));
+          let ran = 0;
+          for (const call of calls) {
+            let result: string;
+            if (!main.isOffered(call.name)) {
+              this.agent.log.warn(
+                { turn: this.turn, tool: call.name },
+                "a tool not on offer was called",
+              );
+              result = NOT_OFFERED;
+            } else if (!loop.has(call.name)) {
+              later.push(call);
+              result = handedOver(call.name);
+            } else if (speech?.stopped() || this.signal.aborted) {
+              // A barge-in does not abort the turn: the rest of the round must not run behind it.
+              result = CUT_OFF;
+            } else if (ran >= main.config.loop_calls) {
+              result = TOO_MANY;
+            } else if (left() <= 0) {
+              result = OUT_OF_TIME;
+            } else {
+              ran += 1;
+              result = await this.#inTurn(main, call, offered, priority, left());
+            }
+            messages.push(toolResultMessage(call.id, result));
+          }
+          rounds += 1;
+          main.round();
+          this.signal.throwIfAborted();
+          if (speech?.stopped()) {
+            leave("stopped");
+            return;
+          }
+          continue;
+        }
+        if (segments !== null && !expression.isSilent() && !fellBack) {
+          for (const text of sentences(segments.rest(expression))) {
+            main.gate.hold({ text, spoken: null, emotion: null });
+          }
+        }
+        // A tool written as a tag runs nothing (it may be words she was talked into). She is asked
+        // once, in the same turn, to call it or not claim it; the lines she said stand.
+        prompt ??= promptText(initial);
+        const called = calls.map((c) => c.name);
+        const written = fellBack
+          ? []
+          : toolsWrittenAsText(expression.tools, offered, called, prompt);
+        main.wrote(written);
+        const depth = main.claim.chain?.depth ?? 0;
+        if (
+          written.length > 0 &&
+          calls.length === 0 &&
+          depth < cfg.max_tool_steps &&
+          main.takeCorrection()
+        ) {
+          this.agent.log.info(
+            { turn: this.turn, tools: written },
+            "asking her to call what she wrote",
+          );
+          before = step;
+          messages.push(assistantMessage(raw, []));
+          messages.push(userMessage(toolTextReminder(written)));
+          continue;
+        }
+        // Calls of the loop past the last round go to the hands too: a result turn tells her.
+        const output = turnOutput(expression, handOver([...later, ...calls]), main.said);
+        const outcome = main.finish(output);
+        if (outcome.remind !== null) {
+          messages.push(assistantMessage(raw, []));
+          messages.push(userMessage(claimReminder(outcome.remind.tool)));
+          continue;
+        }
+        for (const line of main.releasable(outcome.release)) {
+          if (speech !== null) {
+            main.said.push({ text: line.text, voice: line.spoken, emotion: line.emotion });
+            await speech.release(line);
+          } else await send?.(line.text);
+        }
+        // A model that gave nothing at all is no decision to be quiet.
+        if (main.owed && main.said.length === 0 && !output.silence && output.actions.length === 0) {
+          throw new TurnError("the model returned nothing");
+        }
+        concluded = true;
+        main.conclude({ ...output, say: [...main.said] }, run, this.#requester());
         return;
       }
-      const now = fellBack ? [] : calls.filter((c) => loop.has(c.name));
-      if (now.length > 0 && rounds < cfg.max_tool_steps) {
-        await this.#roundEnded(main, expression, now, speech, segments, send, between);
-        messages.push(assistantMessage(raw, calls));
-        for (const call of calls) {
-          if (!loop.has(call.name)) later.push(call);
-          const result = loop.has(call.name)
-            ? await this.#inTurn(main, call, offered, priority)
-            : handedOver(call.name);
-          messages.push(toolResultMessage(call.id, result));
-        }
-        rounds += 1;
-        main.round();
-        if (speech?.stopped()) return;
-        continue;
-      }
-      if (segments !== null && !expression.isSilent() && !fellBack) {
-        for (const text of sentences(segments.rest(expression))) {
-          main.gate.hold({ text, spoken: null, emotion: null });
-        }
-      }
-      // A tool written as a tag runs nothing (it may be words she was talked into). She is asked
-      // once, in the same turn, to call it or not claim it; the lines she said stand.
-      prompt ??= promptText(initial);
-      const called = calls.map((c) => c.name);
-      const written = fellBack ? [] : toolsWrittenAsText(expression.tools, offered, called, prompt);
-      main.wrote(written);
-      const depth = main.claim.chain?.depth ?? 0;
-      if (
-        written.length > 0 &&
-        calls.length === 0 &&
-        depth < cfg.max_tool_steps &&
-        main.takeCorrection()
-      ) {
-        this.agent.log.info(
-          { turn: this.turn, tools: written },
-          "asking her to call what she wrote",
-        );
-        before = step;
-        messages.push(assistantMessage(raw, []));
-        messages.push(userMessage(toolTextReminder(written)));
-        continue;
-      }
-      // Calls of the loop past the last round go to the hands too: a result turn tells her.
-      const output = turnOutput(expression, [...later, ...calls], main.said);
-      const outcome = main.finish(output);
-      if (outcome.remind !== null) {
-        messages.push(assistantMessage(raw, []));
-        messages.push(userMessage(claimReminder(outcome.remind.tool)));
-        continue;
-      }
-      for (const line of outcome.release) {
-        if (speech !== null) {
-          main.said.push({ text: line.text, voice: line.spoken, emotion: line.emotion });
-          await speech.release(line);
-        } else await send?.(line.text);
-      }
-      // A model that gave nothing at all is no decision to be quiet.
-      if (main.owed && main.said.length === 0 && !output.silence && output.actions.length === 0) {
-        throw new TurnError("the model returned nothing");
-      }
-      main.conclude(
-        { ...output, say: [...main.said] },
-        (tool, id, args, signal) =>
-          this.#hand({ id, name: tool, arguments: args }, priority, signal),
-        this.#requester(),
-      );
-      return;
+    } catch (error) {
+      leave(this.signal.aborted ? "stopped" : "failed");
+      throw error;
     }
   }
 
@@ -2194,21 +2243,27 @@ class Turn {
     await speech.release(line);
   }
 
-  /** A call of the loop, run now: what goes back to her in the same chain. */
+  /**
+   * A call of the loop, run now within `leftMs` of the turn's time for tools: what goes back to her
+   * in the same chain. What a tool brought back is outside content (a page, a search, someone's
+   * note): it goes back as data, like the results the hands report.
+   */
   async #inTurn(
     main: MainTurn,
     call: ToolCall,
     offered: ReadonlySet<string>,
     priority: Priority,
+    leftMs: number,
   ): Promise<string> {
+    const limit = Math.max(1, Math.min(this.agent.config.tool_timeout_ms, leftMs));
     const { run, accepted } = await main.inTurn(
       call.name,
       call.arguments,
-      () => this.#hand(call, priority, this.signal),
+      () => this.#hand(call, priority, this.signal, limit),
       this.#requester(),
     );
     if (run.ok) this.#succeeded.add(call.name);
-    let text = run.text;
+    let text = dataBlock("tool", `${call.name} 的結果`, neutralize(run.text));
     if (run.ok && accepted) text = `${text}\n${STILL_RUNNING}`;
     // Read in this turn, gone in the next unless she keeps what matters.
     if (
@@ -2223,11 +2278,22 @@ class Turn {
   }
 
   /** One action, in the hands: it may outlive this turn. */
-  async #hand(call: ToolCall, priority: Priority, signal: AbortSignal): Promise<Run> {
+  async #hand(
+    call: ToolCall,
+    priority: Priority,
+    signal: AbortSignal,
+    limitMs?: number,
+  ): Promise<Run> {
     let data: JsonValue = null;
-    const [ok, full] = await this.#tryTool(call, priority, signal, (d) => {
-      data = d;
-    });
+    const [ok, full] = await this.#tryTool(
+      call,
+      priority,
+      signal,
+      (d) => {
+        data = d;
+      },
+      limitMs,
+    );
     const text = truncate(full, this.agent.config.max_tool_result_chars);
     this.agent.ctx.publish(
       {
@@ -2728,7 +2794,14 @@ class Turn {
     priority: Priority,
     turnSignal: AbortSignal = this.signal,
     report: ((data: JsonValue) => void) | null = null,
+    limitMs: number = this.agent.config.tool_timeout_ms,
   ): Promise<[boolean, string]> {
+    // The main line runs only what this turn offered: the Directives' filter is not just a list
+    // shown to the model (a name it wrote anyway used to reach the hands and run).
+    if (this.#main !== null && !this.#main.isOffered(call.name)) {
+      this.agent.log.warn({ turn: this.turn, tool: call.name }, "a tool not on offer was called");
+      return [false, `error: ${NOT_OFFERED}`];
+    }
     const tool = this.#tool(call.name);
     if (!tool) return [false, `error: unknown tool \`${call.name}\``];
     const node = tool.permission ?? null;
@@ -2761,7 +2834,7 @@ class Turn {
     }
     const me = this.agent.selfAccount(this.key.platform);
     try {
-      const out = await timeout(this.agent.config.tool_timeout_ms, turnSignal, (signal) => {
+      const out = await timeout(limitMs, turnSignal, (signal) => {
         const ctx: ToolContext = last
           ? {
               turn: this.turn,

@@ -325,6 +325,15 @@ export const MainLineConfigSchema = z.object({
   examples_chars: z.number().int().nonnegative().default(2000),
   /** Tools that run inside the turn (`LOOP_TOOLS`); the rest go to the hands. */
   loop_tools: z.array(z.string()).default([...LOOP_TOOLS]),
+  /** Calls of the loop run per round; more in one response are refused (she hears so). */
+  loop_calls: z.number().int().positive().default(4),
+  /**
+   * All the loop's tools of one turn together, in text: the turn holds the Floor meanwhile. Spent,
+   * a call of the loop is not run and further calls go to the hands.
+   */
+  loop_budget_ms: z.number().int().positive().default(30_000),
+  /** The same in voice, where someone waits in silence. */
+  voice_loop_budget_ms: z.number().int().positive().default(12_000),
   /** Lines of "最近講過" in the tail. */
   recent_lines: z.number().int().nonnegative().default(4),
   /** Untrusted working-context entries in the data part. */

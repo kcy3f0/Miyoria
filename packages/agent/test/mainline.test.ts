@@ -50,7 +50,7 @@ import { z } from "zod";
 import { MainLineConfigSchema } from "../src/config.js";
 import { STARTED_LINE } from "../src/mainline/gate.js";
 import { Hands, type Job } from "../src/mainline/hands.js";
-import { HANDED_OVER } from "../src/mainline/loop.js";
+import { HANDED_OVER, NOT_OFFERED, OUT_OF_TIME } from "../src/mainline/loop.js";
 import {
   FALLBACK_LINES,
   heardPart,
@@ -1806,7 +1806,7 @@ describe("stage 1 of v4: the prompt keeps its prefix (§4.1)", () => {
     return json.slice(0, json.lastIndexOf('","name":'));
   }
 
-  it("two turns in a row read the same bytes up to the first new history line", async () => {
+  it("with no line edited in between, two turns in a row share their prompt up to the newest line", async () => {
     const slow = new Probe("slow", null, 3000);
     const llm = new Scripted([
       reply("我查一下", ["slow", "{}"]),
@@ -1892,7 +1892,8 @@ describe("stage 1 of v4: the tool loop inside a turn (§4.2)", () => {
     const asked = second.find((m) => m.role === "assistant" && (m.tool_calls?.length ?? 0) > 0);
     expect(asked?.tool_calls?.[0]?.name).toBe("web_search");
     const answer = second.find((m) => m.role === "tool");
-    expect(answer?.content).toBe("done");
+    // What the tool brought back is data, as the hands' results are.
+    expect(answer?.content).toBe("⟦資料 來源=tool 標題=web_search_的結果⟧\ndone\n⟦/資料⟧");
     expect(answer?.tool_call_id).toBe(asked?.tool_calls?.[0]?.id);
     // Logged like any action, and the turn's decision names it.
     expect(results(h)).toContainEqual(
@@ -1952,7 +1953,8 @@ describe("stage 1 of v4: the tool loop inside a turn (§4.2)", () => {
     await wait(1000);
     const second = llm.requests[1]?.messages ?? [];
     const handed = second.filter((m) => m.role === "tool").map((m) => m.content);
-    expect(handed).toEqual(["done", HANDED_OVER]);
+    expect(handed[0]).toContain("⟦資料");
+    expect(handed[1]).toBe(HANDED_OVER);
     await wait(10_000);
     expect(sing.calls).toHaveLength(1);
     expect(h.sink.texts()).toEqual(["我查一下歌詞", "找到了,我開始唱", "唱完了"]);
@@ -2026,5 +2028,134 @@ describe("stage 1 of v4: the tool loop inside a turn (§4.2)", () => {
     await wait(5000);
     expect(llm.requests[2]?.reasoning_purpose).toBe("chat_question");
     expect(llm.requests[2]?.reasoning).toBe("medium");
+  });
+});
+
+describe("stage 1 of v4: every way out of the tool loop (review of 2026-11-10)", () => {
+  const tool = (name: string, delay = 0) => new Probe(name, null, delay);
+  const toolMessages = (request: ChatRequest | undefined) =>
+    (request?.messages ?? []).filter((m) => m.role === "tool").map((m) => String(m.content));
+
+  it("the call after the tools fails: what they found comes back in a result turn", async () => {
+    const llm = new Scripted([
+      reply("我查一下", ["web_search", "{}"]),
+      "fail",
+      reply("查到了,明天是晴天"),
+    ]);
+    const h = await rig(llm, { tools: [tool("web_search")] });
+    h.say(mention(channel("c"), "Alice", "明天天氣怎樣"));
+    await wait(10_000);
+    expect(llm.requests).toHaveLength(3);
+    expect(JSON.stringify(llm.requests[2]?.messages)).toContain("web_search 完成");
+    expect(h.sink.texts()).toEqual(["我查一下", "查到了,明天是晴天"]);
+  });
+
+  it("the call after the tools fails: what she was told went to the hands goes there", async () => {
+    const sing = tool("sing_start");
+    const llm = new Scripted([
+      reply("我查一下歌詞", ["web_search", "{}"], ["sing_start", "{}"]),
+      "fail",
+      reply("<silence/>"),
+    ]);
+    const h = await rig(llm, { tools: [tool("web_search"), sing] });
+    h.say(mention(channel("c"), "Alice", "唱首歌"));
+    await wait(10_000);
+    expect(sing.calls).toHaveLength(1);
+  });
+
+  it("cut off after a round of tools: her promise is still kept", async () => {
+    const llm = new Scripted([
+      reply("我查一下。", ["web_search", "{}"], ["commit", '{"what":"晚點唱歌給你聽"}']),
+      reply("查到了。"),
+    ]);
+    const h = await rig(llm, { tools: [tool("web_search", 2000)], body: new Body() });
+    joinVoice(h);
+    await wait(10);
+    utter(h, "DeepSeek 明天天氣怎樣");
+    await wait(1000);
+    const first = h.sink.speakActions()[0] as Action;
+    playback(h, first, "started");
+    playback(h, first, "interrupted");
+    await wait(5000);
+    expect(JSON.stringify(log(h))).toContain("晚點唱歌給你聽");
+    expect(h.sink.speeches().map(([t]) => t)).not.toContain("查到了。");
+  });
+
+  it("cut off in the middle of a round: the rest of its tools do not run", async () => {
+    const search = tool("web_search", 2000);
+    const llm = new Scripted([
+      reply("我查兩個。", ["web_search", '{"q":"a"}'], ["web_search", '{"q":"b"}']),
+      reply("查到了。"),
+    ]);
+    const h = await rig(llm, { tools: [search], body: new Body() });
+    joinVoice(h);
+    await wait(10);
+    utter(h, "DeepSeek 查兩個");
+    await wait(1000);
+    const first = h.sink.speakActions()[0] as Action;
+    playback(h, first, "started");
+    playback(h, first, "interrupted");
+    await wait(10_000);
+    expect(search.calls).toHaveLength(1);
+  });
+
+  it("the loop's tools of a turn share one time budget", async () => {
+    const search = tool("web_search", 1000);
+    const llm = new Scripted([
+      reply("我查兩個", ["web_search", '{"q":"a"}'], ["web_search", '{"q":"b"}']),
+      reply("查到一個"),
+    ]);
+    const h = await rig(llm, { tools: [search], config: { mainline: { loop_budget_ms: 800 } } });
+    h.say(mention(channel("c"), "Alice", "查兩個"));
+    await wait(10_000);
+    expect(search.calls).toHaveLength(1);
+    const answers = toolMessages(llm.requests[1]);
+    expect(answers[0]).toContain("timed out");
+    expect(answers[1]).toBe(OUT_OF_TIME);
+  });
+
+  it("a call made again in a later response goes to the hands once", async () => {
+    const join = tool("voice_join");
+    const llm = new Scripted([
+      reply("我查一下", ["web_search", "{}"], ["voice_join", "{}"]),
+      reply("好,我進去", ["voice_join", "{}"]),
+      reply("<silence/>"),
+    ]);
+    const h = await rig(llm, { tools: [tool("web_search"), join] });
+    h.say(mention(channel("c"), "Alice", "查一下然後進語音"));
+    await wait(10_000);
+    expect(join.calls).toHaveLength(1);
+  });
+
+  it("a line the gate held in two rounds goes out once", async () => {
+    const llm = new Scripted([reply("搞定了。", ["web_search", "{}"]), reply("搞定了。")]);
+    const h = await rig(llm, { tools: [tool("web_search")] });
+    h.say(mention(channel("c"), "Alice", "幫我弄"));
+    await wait(5000);
+    expect(h.sink.texts()).toEqual(["搞定了。"]);
+  });
+
+  it("a tool the owner's rules took off the list does not run, in the loop or in the hands", async () => {
+    const sing = tool("sing_start");
+    const llm = new Scripted([
+      reply("我查一下", ["web_search", "{}"], ["sing_start", "{}"]),
+      reply("好,我唱", ["sing_start", "{}"]),
+      reply("不能唱欸"),
+    ]);
+    const h = await rig(llm, {
+      tools: [tool("web_search"), sing],
+      provide: (services) =>
+        services.provide("app", DirectivesKey, {
+          inject: () => ["不准唱歌"],
+          filterTools: (tools: { name: string }[]) => tools.filter((t) => t.name !== "sing_start"),
+          wishes: () => [],
+        } as unknown as Directives),
+    });
+    h.say(mention(channel("c"), "Alice", "唱首歌"));
+    await wait(10_000);
+    expect(sing.calls).toHaveLength(0);
+    expect(toolMessages(llm.requests[1])[1]).toBe(NOT_OFFERED);
+    // The hands refuse it too, and she hears why.
+    expect(JSON.stringify(llm.requests[2]?.messages)).toContain("這個工具現在不能用");
   });
 });

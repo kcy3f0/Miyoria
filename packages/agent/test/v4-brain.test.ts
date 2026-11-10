@@ -74,6 +74,15 @@ describe("the history window (§4.1)", () => {
     const w = historyWindow(entries, null, budget);
     expect(w.shown[0]?.ts).toBe(1002);
   });
+
+  it("shows a message she answers from before the start, and keeps the start", () => {
+    // A result turn trimmed past a message that was still waiting for its own turn.
+    const entries = lines(10).map((e, i) => (i === 2 ? { ...e, current: true } : e));
+    const w = historyWindow(entries, 1005, { ...budget, lines: 20 });
+    expect(w.shown[0]?.ts).toBe(1002);
+    expect(w.shown.some((e) => e.current === true)).toBe(true);
+    expect(w.start).toBe(1005);
+  });
 });
 
 describe("the layout of the main prompt (§4.1)", () => {
@@ -160,6 +169,14 @@ describe("helpers of the tool loop and the reasoning tiers", () => {
     expect(withoutRepeats("<emo:happy>我查一下!", ["我查一下"])).toBe("");
     expect(withoutRepeats("好啊。", ["好啊,我查一下。"])).toBe("好啊。");
     expect(withoutRepeats("查到了。", [])).toBe("查到了。");
+  });
+
+  it("compares whole sentences and never touches a code block", () => {
+    // A sentence inside a longer one is not a repeat of it.
+    expect(withoutRepeats("我查一下。", ["好,我查一下。"])).toBe("我查一下。");
+    // A corrected program repeats most of its lines.
+    const code = "```\nfor i in range(3):\n    print(i)\n```";
+    expect(withoutRepeats(`改好了:\n${code}`, [`這樣寫:\n${code}`])).toBe(`改好了:\n${code}`);
   });
 
   it("a real question is long enough and asks", () => {

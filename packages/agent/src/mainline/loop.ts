@@ -11,6 +11,7 @@
 // goes through `#tryTool` (whose permission it is), every line still through the gate, the ledger
 // and moderation, and the decision of the turn is still logged once, with every tool it used.
 
+import type { ToolCall } from "@miyoria/llm";
 import { REASONING_LEVELS, type ReasoningLevel } from "@miyoria/types";
 import { charCount } from "../util.js";
 import { COMMIT_TOOL } from "./output.js";
@@ -31,6 +32,30 @@ export const HANDED_OVER = "交出去了,還沒完成;結果回來會再叫你�
 export const COMMITTED = "記下了,到期會提醒你。";
 /** Said after a loop tool that only got something started. */
 export const STILL_RUNNING = "(受理了,還沒完成;結果回來會再叫你)";
+
+/** What a call of a tool that was not on offer answers (the Directives' filter, her state). */
+export const NOT_OFFERED = "這個工具現在不能用。";
+/** What a call of the loop past `loop_calls` in one response answers. */
+export const TOO_MANY = "這一輪叫太多工具了,這個沒有執行;還需要的話下一輪再叫。";
+/** What a call of the loop answers once the turn's time for tools is spent. */
+export const OUT_OF_TIME = "這回合查東西的時間用完了,這個沒有執行。";
+/** What a call of the loop answers when she was cut off before it ran. */
+export const CUT_OFF = "你被打斷了,這個沒有執行。";
+
+/**
+ * The calls that go to the hands, each once: a call she makes again in a later response (round
+ * one `voice_join`, the last response `voice_join` again) would join twice. Promises are told apart
+ * by what they say.
+ */
+export function handOver(calls: readonly ToolCall[]): ToolCall[] {
+  const seen = new Set<string>();
+  return calls.filter((c) => {
+    const key = c.name === COMMIT_TOOL ? `${c.name}:${c.arguments}` : c.name;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 /** The tool message for a call of this round that is not the loop's. */
 export function handedOver(tool: string): string {
@@ -62,25 +87,68 @@ function plain(text: string): string {
     .toLowerCase();
 }
 
-/** Shorter than this, only the same sentence counts as a repeat (「好啊」 may be said twice). */
-const REPEAT_CHARS = 4;
+/** The sentences of `texts`, as compared for repeats (code blocks left out). */
+function plainSentences(texts: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const text of texts) {
+    for (const part of prose(text)) {
+      if (part.code) continue;
+      for (const s of sentences(part.text)) {
+        const p = plain(s);
+        if (p !== "") out.add(p);
+      }
+    }
+  }
+  return out;
+}
+
+/** `text` cut into prose and code blocks (an unclosed block runs to the end). */
+function prose(text: string): { text: string; code: boolean }[] {
+  return text
+    .split(/(```[\s\S]*?(?:```|$))/)
+    .filter((t) => t !== "")
+    .map((t) => ({ text: t, code: t.startsWith("```") }));
+}
 
 /**
  * `text` without the sentences she already said in an earlier round of the turn (`earlier`). The
  * model sees its own words in the transcript and still starts the next round with 「我查一下」
- * again; people would read or hear it twice.
+ * again; people would read or hear it twice. Only a whole sentence that is the same counts, and a
+ * code block is never touched: a corrected program repeats most of its lines on purpose.
  */
 export function withoutRepeats(text: string, earlier: readonly string[]): string {
-  const said = earlier.map(plain).filter((s) => s !== "");
-  if (said.length === 0) return text;
-  const all = said.join("\n");
-  const parts = sentences(text);
-  if (parts.length === 0) return text;
-  return parts
-    .filter((s) => {
-      const p = plain(s);
-      if (p === "") return true;
-      return !(said.includes(p) || ([...p].length >= REPEAT_CHARS && all.includes(p)));
-    })
+  const said = plainSentences(earlier);
+  if (said.size === 0) return text;
+  return prose(text)
+    .map((part) =>
+      part.code
+        ? part.text
+        : sentences(part.text)
+            .filter((s) => {
+              const p = plain(s);
+              return p === "" || !said.has(p);
+            })
+            .join(""),
+    )
     .join("");
+}
+
+/**
+ * Of `lines` (what the gate held, released at the end of the turn), the ones that are not the
+ * same sentence again: as one another, or as what she already said (`said`). Lines held in two
+ * rounds of the loop come out together, and 「記下來了」 would go out twice.
+ */
+export function freshLines<T extends { text: string }>(
+  lines: readonly T[],
+  said: readonly string[],
+): T[] {
+  const seen = plainSentences(said);
+  const out: T[] = [];
+  for (const line of lines) {
+    const left = withoutRepeats(line.text, [...seen]);
+    if (left.trim() === "") continue;
+    for (const p of plainSentences([line.text])) seen.add(p);
+    out.push(left === line.text ? line : { ...line, text: left });
+  }
+  return out;
 }
