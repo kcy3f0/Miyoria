@@ -50,6 +50,7 @@ import {
   AffectStateKey,
   ArbiterKey,
   AuthorizerKey,
+  accountRefString,
   type CompiledBlock,
   type ContextKey,
   ConversationStatesKey,
@@ -76,10 +77,12 @@ import {
   PartyStatusKey,
   type PersonId,
   PersonProfilesKey,
+  type PinnedContext,
   PlatformSinksKey,
   Principals,
   type Priority,
   type PromptBlock,
+  type PromptContributors,
   PromptContributorsKey,
   type PromptRequest,
   type PromptSection,
@@ -101,6 +104,10 @@ import {
   timestampMs,
   toTimestamp,
   VoiceSinkKey,
+  type VoiceTurnMark,
+  type VoiceTurnMarks,
+  type VoiceTurnStages,
+  VoiceTurnsKey,
   voiceLane,
   WorkingContextKey,
   WorldStateKey,
@@ -126,7 +133,14 @@ import {
 import { budgetBlocks, budgetSelf, contributedData, savedPrompt } from "./compiler.js";
 import type { AttentionConfig, ChannelMode } from "./config.js";
 import { AMBIENT_MODES, typingRefreshMs } from "./config.js";
-import { gather } from "./contributors.js";
+import {
+  type Gathered,
+  gather,
+  mergeGathered,
+  readWarm,
+  WarmContext,
+  type WarmRead,
+} from "./contributors.js";
 import type { TurnFlags } from "./coordinator.js";
 import { Expression, ExpressionParser, type Segment } from "./expression.js";
 import { fileParts, selectFiles } from "./files.js";
@@ -281,6 +295,29 @@ interface Kept {
 
 /** Kept per session: a forgotten session forgets it too. */
 const KEPT = new WeakMap<Session, Kept>();
+
+/** What a voice turn reads without waiting (contributors.ts), per voice session. */
+const WARM = new WeakMap<Session, WarmContext>();
+
+/** What is read in the background for later voice turns may take this long (nobody waits). */
+const WARM_LOAD_MS = 10_000;
+
+/** A voice turn's view of what is kept warm: for whom, and how it may wait. */
+interface VoiceWarm {
+  kept: WarmContext;
+  /** The people here: a value made for other people is not used. */
+  key: string;
+  read: WarmRead;
+}
+
+function warmOf(session: Session): WarmContext {
+  let warm = WARM.get(session);
+  if (warm === undefined) {
+    warm = new WarmContext();
+    WARM.set(session, warm);
+  }
+  return warm;
+}
 
 function keptOf(session: Session): Kept {
   let kept = KEPT.get(session);
@@ -904,6 +941,8 @@ class Turn {
   #traceAfter: TraceAnchor | null = null;
   /** When her last text message of this turn went out (clock ms): the pace of the next. */
   #lastTextAt: number | null = null;
+  /** Voice: where the turn's time went, for `VoiceTurns.mark` and its outcome's `voice_stages`. */
+  readonly #marks: VoiceTurnMarks = {};
 
   constructor(
     readonly agent: Agent,
@@ -968,6 +1007,95 @@ class Turn {
   /** Generation is over, however it went. */
   ended(): void {
     this.#main?.ended();
+    // Whatever she says now is on its way (or nothing is): no filler for this turn any more.
+    if (this.voice) this.agent.ctx.services.get(VoiceTurnsKey)?.settle(this.turn);
+  }
+
+  // ---- voice latency (v4 §7.5) ------------------------------------------------------------------
+
+  /** Voice: the turn reached `mark` (the first time counts); the voice module hears of it. */
+  #mark(mark: VoiceTurnMark): void {
+    if (!this.voice || this.#marks[mark] !== undefined) return;
+    const at = this.#now;
+    this.#marks[mark] = at;
+    // What a turn that started early and is dropped cost (coordinator.ts).
+    if (mark === "request") this.flags.requestedAt = at;
+    this.agent.ctx.services.get(VoiceTurnsKey)?.mark(this.turn, this.plan.focus.focus, mark, at);
+  }
+
+  /**
+   * A voice turn that started before the wait after the utterance was over (`TurnFlags.hold`)
+   * says, does and concludes nothing until the coordinator confirms it; someone going on drops it
+   * meanwhile (its signal aborts).
+   */
+  async #confirmed(): Promise<void> {
+    const hold = this.flags.hold;
+    if (hold === undefined || hold === null) return;
+    await guard(hold, this.signal);
+    this.#mark("confirmed");
+  }
+
+  /**
+   * She will answer someone who called her in voice: the voice module may fill the silence before
+   * her first sentence with a short sound of hers (not before a turn started early is confirmed).
+   */
+  #expectAnswer(direct: boolean): void {
+    if (!this.voice || !direct || this.inputs.length === 0) return;
+    const turns = this.agent.ctx.services.get(VoiceTurnsKey);
+    if (turns === undefined) return;
+    const startedAt = this.#marks.started ?? this.#now;
+    const expect = () => {
+      if (!this.signal.aborted) turns.expect(this.key, this.turn, startedAt);
+    };
+    const hold = this.flags.hold;
+    if (hold === undefined || hold === null) expect();
+    else hold.then(expect, () => undefined);
+  }
+
+  /**
+   * Where a voice turn's time went, from the person's last sound (the newest focus utterance's
+   * end) to her first sentence; the known parts add up to `latency_ms`. `null` outside voice or
+   * without input.
+   */
+  #voiceStages(last: IncomingMessage | undefined): VoiceTurnStages | null {
+    if (!this.voice || last === undefined) return null;
+    const m = this.#marks;
+    const released =
+      m.first_token === undefined ? undefined : Math.max(m.first_token, m.confirmed ?? 0);
+    const points = [
+      timestampMs(last.ts),
+      this.flags.heardAt,
+      m.started,
+      m.decided,
+      m.context,
+      m.request,
+      m.first_token,
+      released,
+      this.#firstOutputAt ?? undefined,
+    ];
+    // Made non-decreasing, so no part is negative and the known ones add up.
+    let floor = Number.NEGATIVE_INFINITY;
+    const t = points.map((v) => {
+      if (v === undefined || v === null) return null;
+      floor = Math.max(floor, v);
+      return floor;
+    });
+    const span = (i: number): number | null => {
+      const a = t[i];
+      const b = t[i + 1];
+      return a === null || a === undefined || b === null || b === undefined ? null : b - a;
+    };
+    return {
+      heard_ms: span(0),
+      wait_ms: span(1),
+      decide_ms: span(2),
+      context_ms: span(3),
+      prompt_ms: span(4),
+      first_token_ms: span(5),
+      held_ms: span(6),
+      first_sentence_ms: span(7),
+      speculative: this.flags.hold !== undefined && this.flags.hold !== null,
+    };
   }
 
   /**
@@ -977,6 +1105,12 @@ class Turn {
   async fallback(): Promise<string> {
     const main = this.#main;
     if (main === null || !main.owed || this.#parts > 0 || main.claim.muted) return "";
+    // A voice turn started early that failed says nothing before it is confirmed (or dropped).
+    try {
+      await this.#confirmed();
+    } catch {
+      return "";
+    }
     if (!main.main.takeFallback(this.key)) return "";
     const lines =
       main.claim.kind === "result"
@@ -1037,14 +1171,17 @@ class Turn {
     return { type: "silence" };
   }
 
-  outcomeRecord(outcome: TurnOutcome): TurnOutcomeRecord {
+  outcomeRecord(outcome: TurnOutcome): TurnOutcomeRecord & { voice_stages?: VoiceTurnStages } {
     const f = this.plan.focus;
     const last = this.#focused.at(-1);
     const latency =
       this.#firstOutputAt === null || last === undefined
         ? null
         : Math.max(this.#firstOutputAt - timestampMs(last.ts), 0);
+    // Voice: the same latency split by where it went (the decision log keeps it per turn).
+    const stages = this.#voiceStages(last);
     return {
+      ...(stages === null ? {} : { voice_stages: stages }),
       turn: this.turn,
       context: this.key,
       reason: f.reason,
@@ -1082,6 +1219,7 @@ class Turn {
 
   /** Returns the text she sent or said (empty if she stayed quiet). */
   async respond(): Promise<string> {
+    this.#mark("started");
     const names = this.agent.persona.names();
     const budget = this.agent.handle.llmBudget();
     // A cold session's earlier messages (bounded by `history.timeout_ms` from their fetch).
@@ -1102,18 +1240,23 @@ class Turn {
     }
     const { respond, direct, score, reasons } = decision;
     if (!respond) {
+      // Voice, started early: the person may still go on, and then this turn never was.
+      await this.#confirmed();
       this.#publishDecision(false, score, reasons);
       this.#main?.silent(reasons.at(-1) ?? "");
       return "";
     }
     const refused = this.#main?.take() ?? null;
     if (refused !== null) {
+      await this.#confirmed();
       reasons.push(`floor: ${refused}`);
       this.#publishDecision(false, score, reasons);
       this.#main?.silent(refused);
       return "";
     }
+    this.#mark("decided");
     if (budget === "exhausted") {
+      await this.#confirmed();
       const notice = this.agent.takeBudgetNotice(this.key);
       reasons.push(
         notice
@@ -1123,11 +1266,13 @@ class Turn {
       this.#publishDecision(notice, score, reasons);
       return notice ? await this.#sayExhausted(direct) : "";
     }
+    this.#expectAnswer(direct);
     const [extras, looked, files] = await Promise.all([
       this.#extras(),
       this.#lookAround(),
       this.#readFiles(),
     ]);
+    this.#mark("context");
     reasons.push(...extras.reasons);
     const seen = looked.filter((p) => p.type === "image_url").length;
     if (seen > 0) reasons.push(`looking at ${seen} image(s)`);
@@ -1545,22 +1690,34 @@ class Turn {
     // The main line reads memory through its layers (`#mainMemory`), not the V2 contributor.
     const skip =
       this.#main !== null && services.has(MemoryRetrievalKey) ? [MEMORY_CONTRIBUTOR] : [];
+    // Voice: what does not depend on her line is read warm, the rest waited for briefly (§7.5).
+    const warm = this.#warm(present);
     const gathering =
       registry && registry.all().length > 0
-        ? gather(registry, request, cfg.contributor_timeout_ms, this.signal, skip)
+        ? warm === null
+          ? gather(registry, request, cfg.contributor_timeout_ms, this.signal, skip)
+          : this.#gatherVoice(registry, request, skip, warm)
         : null;
     gathering?.catch(() => undefined);
-    const skills = this.#main !== null ? this.#mainSkills() : null;
+    const skills = this.#main !== null ? this.#mainSkills(warm) : null;
     skills?.catch(() => undefined);
     let people: string | null | undefined;
     if (this.#main !== null) {
       // With person profiles, the people present are one slow block of theirs instead of the
       // agent's people line and the pinned people section (v4 §5.6).
       const profiled = services.has(PersonProfilesKey);
-      const retrieved = await this.#mainMemory(extras, present, request, profiled);
-      if (profiled) {
-        const crushOf = crushHere ? (crush?.person ?? null) : null;
-        people = await this.#mainPeople(extras, present, retrieved, crushOf);
+      const crushOf = crushHere ? (crush?.person ?? null) : null;
+      if (warm !== null) {
+        // Side by side: the profiles cannot leave out what this turn's retrieval brings, but
+        // they no longer wait for it (two 800 ms waits in a row before, 2026-11-10).
+        const [, read] = await Promise.all([
+          this.#mainMemory(extras, present, request, profiled, warm),
+          profiled ? this.#mainPeople(extras, present, [], crushOf, warm) : undefined,
+        ]);
+        people = read;
+      } else {
+        const retrieved = await this.#mainMemory(extras, present, request, profiled);
+        if (profiled) people = await this.#mainPeople(extras, present, retrieved, crushOf);
       }
     }
     const own = selfBlocks({
@@ -1702,11 +1859,78 @@ class Turn {
     extras.compiled.push(...slow.compiled);
   }
 
+  /**
+   * Voice with `warm_context`: the values kept for this channel, for the people here (a value
+   * made for other listeners is never shown to these).
+   */
+  #warm(present: readonly PresentPerson[]): VoiceWarm | null {
+    const v = this.agent.config.voice;
+    if (!this.voice || !v.warm_context) return null;
+    return {
+      kept: warmOf(this.session),
+      key: present
+        .map((p) => accountRefString(p.account))
+        .sort()
+        .join(","),
+      read: {
+        now: () => this.#now,
+        maxAgeMs: v.warm_max_age_ms,
+        waitMs: v.live_context_ms,
+        signal: this.signal,
+      },
+    };
+  }
+
+  /**
+   * Voice: the contributors of `warm_contributors` as they were last read (and read again in the
+   * background for the next turn), the others asked now and given `live_context_ms`.
+   */
+  async #gatherVoice(
+    registry: PromptContributors,
+    request: PromptRequest,
+    skip: readonly string[],
+    warm: VoiceWarm,
+  ): Promise<Gathered> {
+    const v = this.agent.config.voice;
+    const keys = registry
+      .all()
+      .map((c) => c.key)
+      .filter((k) => !skip.includes(k));
+    const kept = keys.filter((k) => v.warm_contributors.includes(k));
+    const live = keys.filter((k) => !kept.includes(k));
+    // The refresh outlives the turn: the next one reads it, and nobody waits for it.
+    const background = this.agent.ctx.signal;
+    const limit = Math.max(this.agent.config.contributor_timeout_ms, WARM_LOAD_MS);
+    const [warmed, asked] = await Promise.all([
+      kept.length === 0
+        ? undefined
+        : readWarm(warm.kept.contributors, warm.key, warm.read, () =>
+            gather(registry, request, limit, background, [...skip, ...live]),
+          ),
+      live.length === 0
+        ? undefined
+        : gather(registry, request, v.live_context_ms, this.signal, [...skip, ...kept]),
+    ]);
+    const out = mergeGathered(warmed, asked);
+    if (warmed === undefined) out.skipped.push(...kept.map((k) => `${k} (warming up)`));
+    return out;
+  }
+
   /** Her skills, a name and a line each (`SkillIndex`); `null` when none or too slow. */
-  async #mainSkills(): Promise<string | null> {
+  async #mainSkills(warm: VoiceWarm | null = null): Promise<string | null> {
     const index = this.agent.ctx.services.get(SkillIndexKey);
     const chars = this.agent.config.mainline.skills_chars;
     if (index === undefined || chars <= 0) return null;
+    if (warm !== null) {
+      // Voice: the index as it was last read; it changes when she learns a skill.
+      const limit = Math.max(this.agent.config.contributor_timeout_ms, WARM_LOAD_MS);
+      const background = this.agent.ctx.signal;
+      const text = await readWarm(warm.kept.skills, `skills:${chars}`, warm.read, async () => {
+        const read = await timeout(limit, background, () => index.index(chars));
+        return read.trim() === "" ? null : read;
+      });
+      return text ?? null;
+    }
     try {
       const text = await timeout(this.agent.config.contributor_timeout_ms, this.signal, () =>
         index.index(chars),
@@ -1757,6 +1981,7 @@ class Turn {
     present: readonly PresentPerson[],
     retrieved: readonly RetrievedMemory[],
     crush: PersonId | null,
+    warm: VoiceWarm | null = null,
   ): Promise<string | null | undefined> {
     const profiles = this.agent.ctx.services.get(PersonProfilesKey);
     const m = this.agent.config.mainline;
@@ -1775,7 +2000,7 @@ class Turn {
     const key = `${here}|${talking.join(",")}`;
     const cached = kept.slow.get("people", key, now, m.people_refresh_mins * 60_000);
     if (cached !== undefined) return cached;
-    try {
+    const render = async (signal: AbortSignal, limit: number): Promise<string | null> => {
       const where = {
         context: this.key,
         present: persons,
@@ -1784,8 +2009,8 @@ class Turn {
         now: toTimestamp(now),
       };
       const exclude = retrieved.flatMap((r) => [r.id, r.content]);
-      const body = await timeout(this.agent.config.contributor_timeout_ms, this.signal, (signal) =>
-        profiles.render(where, m.people_chars, { exclude }, signal),
+      const body = await timeout(limit, signal, (s) =>
+        profiles.render(where, m.people_chars, { exclude }, s),
       );
       const handle = present.find((p) => crush !== null && p.person === crush)?.handle;
       const lines = [body.trim(), handle === undefined ? "" : `- ${safeName(handle)}:你偷偷喜歡他`];
@@ -1793,6 +2018,19 @@ class Turn {
       const out = text === "" ? null : text;
       kept.slow.set("people", key, now, out);
       return out;
+    };
+    if (warm !== null) {
+      // Voice: rendered in the background for the next turn when it is not ready in time; this
+      // turn has the people line meanwhile.
+      const limit = Math.max(this.agent.config.contributor_timeout_ms, WARM_LOAD_MS);
+      const read = await readWarm(warm.kept.people, key, { ...warm.read, maxAgeMs: 0 }, () =>
+        render(this.agent.ctx.signal, limit),
+      );
+      if (read === undefined) extras.reasons.push("person profiles: still being written");
+      return read;
+    }
+    try {
+      return await render(this.signal, this.agent.config.contributor_timeout_ms);
     } catch (error) {
       if (this.signal.aborted) throw error;
       extras.reasons.push(`person profiles skipped: ${errorMessage(error)}`);
@@ -2067,9 +2305,8 @@ class Turn {
     present: readonly PresentPerson[],
     request: PromptRequest,
     profiled: boolean,
+    warm: VoiceWarm | null = null,
   ): Promise<RetrievedMemory[]> {
-    const services = this.agent.ctx.services;
-    const m = this.agent.config.mainline;
     const limit = this.agent.config.contributor_timeout_ms;
     const now = toTimestamp(this.#now);
     const where = {
@@ -2079,25 +2316,62 @@ class Turn {
       now,
     };
     const pinned = this.#main?.main.pinned() ?? null;
-    if (pinned !== null) {
-      try {
-        const read = await timeout(limit, this.signal, () => pinned.pinned(where));
-        for (const section of read.sections) {
-          // The profiles say what the pinned people section said, once (v4 §5.6).
-          const shown = section.key === "commitments" || (section.key === "people" && !profiled);
-          if (shown) {
-            const body = section.lines.join("\n");
-            extras.own.push(dataBlock(`pinned.${section.key}`, section.title, body));
-          }
+    // The pinned sections and the retrieval run side by side: they waited for each other before
+    // (up to 800 ms each, 2026-11-10). In voice the pinned ones come warm (they depend on who is
+    // here, not on the line) and the retrieval for the line gets `live_context_ms`.
+    const reading =
+      pinned === null
+        ? Promise.resolve(undefined)
+        : warm === null
+          ? timeout(limit, this.signal, () => pinned.pinned(where))
+          : readWarm(warm.kept.pinned, warm.key, warm.read, () =>
+              timeout(Math.max(limit, WARM_LOAD_MS), this.agent.ctx.signal, () =>
+                pinned.pinned(where),
+              ),
+            );
+    reading.catch(() => undefined);
+    const retrieving = this.#retrieve(
+      extras,
+      present,
+      request,
+      where,
+      warm === null ? limit : this.agent.config.voice.live_context_ms,
+    );
+    try {
+      const read = await reading;
+      for (const section of read?.sections ?? []) {
+        // The profiles say what the pinned people section said, once (v4 §5.6).
+        const shown = section.key === "commitments" || (section.key === "people" && !profiled);
+        if (shown) {
+          const body = section.lines.join("\n");
+          extras.own.push(dataBlock(`pinned.${section.key}`, section.title, body));
         }
-      } catch (error) {
-        if (this.signal.aborted) throw error;
-        extras.reasons.push(`pinned memory skipped: ${errorMessage(error)}`);
       }
+      if (pinned !== null && read === undefined) {
+        extras.reasons.push("pinned memory skipped: not ready");
+      }
+    } catch (error) {
+      if (this.signal.aborted) throw error;
+      extras.reasons.push(`pinned memory skipped: ${errorMessage(error)}`);
     }
-    const retrieval = services.get(MemoryRetrievalKey);
+    const [memories, block] = await retrieving;
+    if (block !== null) extras.own.push(block);
+    return memories;
+  }
+
+  /** What memory finds for the line she answers, and its data block (`null`: none). */
+  async #retrieve(
+    extras: Extras,
+    present: readonly PresentPerson[],
+    request: PromptRequest,
+    where: PinnedContext,
+    limit: number,
+  ): Promise<[RetrievedMemory[], string | null]> {
+    const m = this.agent.config.mainline;
+    const now = where.now;
+    const retrieval = this.agent.ctx.services.get(MemoryRetrievalKey);
     const text = request.query;
-    if (!retrieval || text.trim() === "") return [];
+    if (!retrieval || text.trim() === "") return [[], null];
     try {
       // v4 §5.4: the lines before the one she answers and who she talks with find memories too,
       // so a reply like 「好啊」 still brings back what the talk is about.
@@ -2112,15 +2386,14 @@ class Turn {
         retrieval.retrieve(query, signal),
       );
       const body = retrieval.format(memories, now);
-      if (body.trim() !== "") {
-        const room = Math.floor(m.data_chars / 2);
-        extras.own.push(dataBlock("memory", "你記得的事", truncate(body, room)));
-      }
-      return memories;
+      const room = Math.floor(m.data_chars / 2);
+      const block =
+        body.trim() === "" ? null : dataBlock("memory", "你記得的事", truncate(body, room));
+      return [memories, block];
     } catch (error) {
       if (this.signal.aborted) throw error;
       extras.reasons.push(`memories skipped: ${errorMessage(error)}`);
-      return [];
+      return [[], null];
     }
   }
 
@@ -3043,6 +3316,7 @@ class Turn {
     onFirst: (() => void) | null = null,
   ): Promise<Step> {
     const offeredTools = (request.tools?.length ?? 0) > 0;
+    this.#mark("request");
     const stream = await guard(
       withLlmTag({ module: "agent", turn: this.turn, label: "reply" }, () =>
         router.stream("chat", request, signal),
@@ -3056,10 +3330,17 @@ class Turn {
     let raw = "";
     const calls: ToolCall[] = [];
     let finished = false;
+    let first = true;
     try {
       for (;;) {
         const next: IteratorResult<StreamEvent> = await guard(iterator.next(), signal);
         onFirst?.();
+        if (first) {
+          first = false;
+          this.#mark("first_token");
+          // A voice turn started early: nothing it wrote is said or done before it is confirmed.
+          await this.#confirmed();
+        }
         if (next.done) {
           finished = true;
           break;

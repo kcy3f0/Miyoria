@@ -20,7 +20,11 @@
 //
 // In voice channels the debounce is shorter (shorter still when someone calls her, and when a
 // model judged the speaker done there is little left to wait for), but it is extended (up to
-// `voice.max_debounce_ms`) while someone is speaking.
+// `voice.max_debounce_ms`) while someone is speaking. It counts from the person's last sound, not
+// from the transcript: the voice node's silence and ASR were already part of the same wait. When
+// someone calls her and part of it is left, her turn starts at once and holds its output until
+// the wait is over; anything new before that drops it and the merged turn starts over (bounded by
+// `voice.speculate_max_per_min`, counted in `miyoria_agent_voice_speculation_*`).
 //
 // An initiative request starts a turn without input, but only when the context is quiet: no
 // turn in flight, no debounce pending, no speech of hers still queued. While the Arbiter runs
@@ -41,7 +45,7 @@
 // cuts in as far as the Floor's interrupt level says (§7.3): `wrap_up` finishes the sentence that
 // is playing and drops the rest, `cut_short` and `interrupt` stop that sentence too.
 
-import { errorMessage } from "@miyoria/kernel";
+import { errorMessage, metrics } from "@miyoria/kernel";
 import {
   ActionSinkKey,
   type ContextKey,
@@ -55,6 +59,7 @@ import {
   type TurnCancelCause,
   type TurnId,
   type TurnReason,
+  timestampMs,
   toTimestamp,
 } from "@miyoria/types";
 import { answersHer, asideOf, directReason, isQuestion } from "./attention.js";
@@ -65,6 +70,27 @@ import type { Agent, Inbox, Initiative, Input, IntentTurn } from "./runtime.js";
 import type { Session } from "./session.js";
 import { runTurn, type TurnPlan } from "./turn.js";
 import { contextId } from "./util.js";
+
+/** Topic of latency measurements (the `voice` package's `LATENCY_TOPIC`). */
+const VOICE_LATENCY_TOPIC = "voice.latency";
+const MINUTE_MS = 60_000;
+/** How long a dropped early start is given to let go of the Floor before the merged turn. */
+const DROP_WAIT_MS = 1_000;
+
+/** Voice turns that started before the wait was over, by what came of them. */
+export const speculations = metrics.counter("miyoria_agent_voice_speculation_total", {
+  help: "Voice turns started before the wait after an utterance was over; result is confirmed or dropped.",
+  labels: ["result"],
+});
+
+/** What dropped early starts cost: the turn's time, and the model's time of those that asked it. */
+export const speculationWaste = metrics.counter(
+  "miyoria_agent_voice_speculation_wasted_seconds_total",
+  {
+    help: "Time spent by voice turns that started early and were dropped; part is turn or model.",
+    labels: ["part"],
+  },
+);
 
 /** Shared between a turn and its coordinator. */
 export interface TurnFlags {
@@ -79,6 +105,15 @@ export interface TurnFlags {
   interrupted: boolean;
   /** Voice: she gave way to a claim on the Floor; submit no further sentences. */
   yielded?: boolean;
+  /**
+   * Voice: the turn started before the wait after the utterance was over (`voice.speculate`). It
+   * says, does and concludes nothing until this resolves; the person going on drops it instead.
+   */
+  hold?: Promise<void> | null;
+  /** Voice: when the newest of its utterances reached the coordinator (clock ms). */
+  heardAt?: number;
+  /** Voice: when its model call went out (clock ms), set by the turn. */
+  requestedAt?: number;
 }
 
 interface Running {
@@ -91,6 +126,8 @@ interface Running {
   plan: TurnPlan;
   /** She started it herself (initiative, intent): it has no focus. */
   selfStarted: boolean;
+  /** Voice: started before the wait was over and not confirmed yet (`#confirm` lets it speak). */
+  early: { confirm: () => void; startedAt: number } | null;
 }
 
 /** A finished voice turn whose speech is queued but has not started playing. */
@@ -191,17 +228,17 @@ export class Coordinator {
     let waiting: IntentTurn | null = null;
     /** The last line was a question nobody answered yet: look again at `at` (v4 §7.2). */
     let recheck: { msg: IncomingMessage; at: number } | null = null;
+    /** Voice: when the newest input of the window arrived. */
+    let heardAt: number | null = null;
+    /** Voice: when early starts were dropped in the last minute (`speculate_max_per_min`). */
+    const dropped: number[] = [];
     for (;;) {
       // Voice contexts live until she leaves the channel.
       const idle =
         pending.length === 0 && running === null && waiting === null && recheck === null && !voice;
-      const wake = await this.#next(
-        signal,
-        running,
-        running === null ? window : null,
-        idle,
-        recheck?.at ?? null,
-      );
+      // A turn that started early still waits for the end of the window to speak.
+      const timed = running === null || running.early !== null ? window : null;
+      const wake = await this.#next(signal, running, timed, idle, recheck?.at ?? null);
       const now = this.#now;
       switch (wake.type) {
         case "stop": {
@@ -222,6 +259,12 @@ export class Coordinator {
               // Whatever was said since, the question that stood alone does not any more.
               const at = this.#recheckAt(msg, kind);
               recheck = at === null ? null : { msg, at };
+              // Voice: they went on while her turn ran ahead of the wait. It is dropped, its
+              // input is merged with this, as the wait would have done.
+              if (running?.early && !running.done) {
+                pending = [...(await this.#drop(running, dropped)), ...pending];
+                running = null;
+              }
               if (running && !running.flags.committed && !running.done) {
                 const r = running;
                 const disposition = inputDisposition({
@@ -252,11 +295,32 @@ export class Coordinator {
               // Her speech that is written but not played yet is played as is (§3.9).
               pending.push(msg);
               let wait = voice && callsHer(kind) ? cfg.voice.direct_debounce_ms : debounce;
+              // Voice: the wait counts from their last sound. The node's silence and ASR were
+              // part of it (about a second, 2026-11-07 to 11-10), and waiting it again after the
+              // transcript asked the same question twice.
+              let from = now;
               if (voice && msg.turn_complete === true) {
                 wait = Math.min(wait, cfg.voice.turn_debounce_ms);
+              } else if (voice && cfg.voice.debounce_from_speech_end) {
+                from = Math.min(now, timestampMs(msg.ts));
               }
               const opened: number = window?.opened ?? now;
-              window = { opened, deadline: Math.min(now + wait, opened + maxDebounce), wait };
+              window = {
+                opened,
+                deadline: Math.min(Math.max(from + wait, now), opened + maxDebounce),
+                wait,
+              };
+              if (voice) heardAt = now;
+              // Someone called her and part of the wait is left: her turn starts now and speaks
+              // once the wait is over.
+              if (
+                running === null &&
+                unplayed === null &&
+                this.#mayStartEarly(pending, window, dropped)
+              ) {
+                running = this.#startEarly(pending, signal, restarts, heardAt);
+                pending = [];
+              }
               break;
             }
             case "typing":
@@ -333,9 +397,16 @@ export class Coordinator {
             }
           }
           window = null;
+          // Voice: the turn that started early may speak now.
+          if (running?.early) {
+            this.#confirm(running);
+            restarts = 0;
+            break;
+          }
           const inputs = pending;
           pending = [];
-          running = this.#start(inputs, null, signal, null, restarts);
+          const heard = voice && heardAt !== null ? { heardAt, hold: null } : null;
+          running = this.#start(inputs, null, signal, null, restarts, false, heard);
           restarts = 0;
           break;
         }
@@ -353,6 +424,8 @@ export class Coordinator {
         case "turn_done": {
           const r = running as Running;
           running = null;
+          // An early start that ended on its own (it failed) took the window's input with it.
+          if (r.early !== null) window = null;
           const flags = r.flags;
           if (voice && flags.queued && !flags.committed && !flags.interrupted) {
             unplayed = { turn: r.turn, inputs: r.inputs, since: now };
@@ -597,6 +670,7 @@ export class Coordinator {
     intent: IntentTurn | null = null,
     restarts = 0,
     stood = false,
+    heard: { heardAt: number; hold: Promise<void> | null } | null = null,
   ): Running {
     const turn = intent?.turn ?? newId();
     this.#agent.ctx.publish(
@@ -606,7 +680,12 @@ export class Coordinator {
     const plan = this.#plan(turn, inputs, initiative, restarts);
     if (stood) plan.stood = true;
     this.#agent.focusBoard.start(plan.focus);
-    const flags: TurnFlags = { committed: false, queued: false, interrupted: false };
+    const flags: TurnFlags = {
+      committed: false,
+      queued: false,
+      interrupted: false,
+      ...(heard === null ? {} : { heardAt: heard.heardAt, hold: heard.hold }),
+    };
     const controller = new AbortController();
     if (signal.aborted) controller.abort(signal.reason);
     const running: Running = {
@@ -618,6 +697,7 @@ export class Coordinator {
       done: false,
       plan,
       selfStarted: inputs.length === 0,
+      early: null,
     };
     running.promise = runTurn(
       this.#agent,
@@ -638,6 +718,118 @@ export class Coordinator {
         running.done = true;
       });
     return running;
+  }
+
+  // ---- voice: starting before the wait is over (v4 §7.5 item 4) --------------------------------
+
+  /**
+   * Whether `pending` starts its turn now rather than at the end of `window`: someone called her
+   * (she nearly always answers then: 1489 of 1491, 2026-11-07 to 11-10), part of the wait is left,
+   * nobody is talking, the LLM budget is fine and fewer than `speculate_max_per_min` early starts
+   * were dropped in the last minute.
+   */
+  #mayStartEarly(pending: readonly IncomingMessage[], window: Window, dropped: number[]): boolean {
+    const cfg = this.#agent.config.voice;
+    const now = this.#now;
+    if (!this.#voice || !cfg.speculate || window.deadline <= now) return false;
+    if (this.#session.someoneSpeaking() || this.#agent.handle.llmBudget() !== "ok") return false;
+    // She holds the mic (her own line plays or waits): giving way and barge-in stay as they are.
+    if ((this.#agent.mainline?.floor()?.holder(this.#key) ?? null) !== null) return false;
+    while (dropped.length > 0 && (dropped[0] as number) <= now - MINUTE_MS) dropped.shift();
+    if (dropped.length >= cfg.speculate_max_per_min) return false;
+    return pending.some((m) => this.#callKind(m) !== null);
+  }
+
+  /** Starts `inputs` now; it says nothing until `#confirm` (or `#drop` ends it). */
+  #startEarly(
+    inputs: IncomingMessage[],
+    signal: AbortSignal,
+    restarts: number,
+    heardAt: number | null,
+  ): Running {
+    let confirm: () => void = () => undefined;
+    const hold = new Promise<void>((resolve) => {
+      confirm = resolve;
+    });
+    const running = this.#start(inputs, null, signal, null, restarts, false, {
+      heardAt: heardAt ?? this.#now,
+      hold,
+    });
+    running.early = { confirm, startedAt: this.#now };
+    return running;
+  }
+
+  /** The wait is over and nobody went on: the turn that started early may speak. */
+  #confirm(running: Running): void {
+    const early = running.early;
+    if (early === null) return;
+    running.early = null;
+    early.confirm();
+    speculations.inc({ result: "confirmed" });
+    this.#speculation(running, "confirmed", this.#now - early.startedAt);
+  }
+
+  /**
+   * They went on before the wait was over: the turn that started early is dropped (what it did is
+   * counted, nothing of it was said or concluded) and its input goes back to the window.
+   */
+  async #drop(running: Running, dropped: number[]): Promise<IncomingMessage[]> {
+    const early = running.early;
+    running.early = null;
+    running.controller.abort();
+    await this.#cancel(running.turn);
+    // It lets go of the Floor and of the line it answered when it ends: the merged turn must not
+    // find them held. It ends at once (everything it waits on follows the signal).
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      running.promise,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, DROP_WAIT_MS);
+      }),
+    ]);
+    clearTimeout(timer);
+    this.#agent.focusBoard.end(running.turn);
+    this.#agent.ctx.publish(
+      { type: "agent_turn_completed", data: { turn: running.turn, context: this.#key, text: "" } },
+      { turn: running.turn },
+    );
+    const now = this.#now;
+    dropped.push(now);
+    const wasted = early === null ? 0 : now - early.startedAt;
+    speculations.inc({ result: "dropped" });
+    speculationWaste.inc({ part: "turn" }, wasted / 1000);
+    const requested = running.flags.requestedAt;
+    if (requested !== undefined) speculationWaste.inc({ part: "model" }, (now - requested) / 1000);
+    this.#agent.log.debug(
+      { turn: running.turn, context: contextId(this.#key), wasted_ms: wasted },
+      "they went on: the turn that started early is dropped",
+    );
+    this.#speculation(running, "dropped", wasted);
+    return running.inputs;
+  }
+
+  /** `voice.latency`, stage `speculation`: what an early start came to and what it cost. */
+  #speculation(running: Running, result: "confirmed" | "dropped", ms: number): void {
+    const requested = running.flags.requestedAt;
+    this.#agent.ctx.publish(
+      {
+        type: "custom",
+        data: {
+          topic: VOICE_LATENCY_TOPIC,
+          payload: {
+            stage: "speculation",
+            context: { ...this.#key },
+            turn: running.turn,
+            result,
+            // From the early start to this; `model`: it asked the model (a dropped one paid for
+            // its prompt and what was streamed until it was cut).
+            ms,
+            model: requested !== undefined,
+          },
+        },
+      },
+      { turn: running.turn },
+    );
   }
 
   /**
