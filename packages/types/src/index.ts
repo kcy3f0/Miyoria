@@ -669,6 +669,16 @@ export {
   type SafeLine,
   safeOutgoing,
 } from "./moderation.js";
+export {
+  type ClipOutcome,
+  type PartyAward,
+  type PartyRewardRequest,
+  type PartyRewards,
+  PartyRewardsKey,
+  type SongClipInfo,
+  type SongClips,
+  SongClipsKey,
+} from "./party.js";
 export { CORE_CHARS, CORE_SENTENCES, characterCore } from "./persona-core.js";
 export {
   type Desire,
