@@ -7,7 +7,7 @@ import {
   type ModuleContext,
 } from "@miyoria/kernel";
 import { SandboxKey } from "@miyoria/sandbox";
-import { serviceKey } from "@miyoria/types";
+import { SkillIndexKey, serviceKey } from "@miyoria/types";
 import { skillCapabilities } from "./capabilities.js";
 import { SkillsConfigSchema } from "./config.js";
 import { SkillStore } from "./store.js";
@@ -42,6 +42,8 @@ export class SkillsModule implements Module {
     this.#idle = null;
     const store = new SkillStore(workspace, ctx.config(SkillsConfigSchema));
     ctx.provide(SkillStoreKey, store);
+    // The same store under the key the main line reads its prompt index from.
+    ctx.provide(SkillIndexKey, store);
     const registry = actuatorsFor(ctx);
     for (const capability of skillCapabilities(store)) {
       this.#unregister.push(

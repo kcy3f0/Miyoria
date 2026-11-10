@@ -22,6 +22,7 @@ import {
   type JsonValue,
   newImpulse,
   PartyRewardsKey,
+  PartyStatusKey,
   type PromptContributors,
   PromptContributorsKey,
   pipelineOf,
@@ -163,6 +164,15 @@ export class PartyModule implements Module {
     const prompts = services.get(PromptContributorsKey) ?? null;
     prompts?.register(new PartyPrompt(table));
     ctx.provide(PartyTableKey, table);
+    // What the main line asks before it offers the game's tools and tells her the program judges.
+    ctx.provide(PartyStatusKey, {
+      running: (context) => {
+        const session = table.session(context);
+        return session === null || session.ended !== null
+          ? null
+          : { game: session.game.id, title: session.game.title };
+      },
+    });
 
     const events = ctx.subscribe([
       "platform.ready",
