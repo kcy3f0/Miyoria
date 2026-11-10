@@ -38,7 +38,8 @@ describe("派對遊戲 (read back from the event log)", () => {
     expect(isRunning(sessions[0] as never, now)).toBe(true);
     expect(isRunning(sessions[1] as never, now)).toBe(false);
     // Cut off without an end note: not counted as running forever.
-    expect(isRunning({ ...(sessions[0] as never), lastAt: ago(2 * 3_600_000) }, now)).toBe(false);
+    const stale = { ...(sessions[0] as object), lastAt: ago(2 * 3_600_000) };
+    expect(isRunning(stale as never, now)).toBe(false);
   });
 
   it("ignores lines that are not party notes", () => {
