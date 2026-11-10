@@ -35,6 +35,7 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 | `notice` | `text` | overlay 的一行狀態(`""` 清掉)。她的語音因為要做歌暫停時是「準備歌曲中…」(來自 `speech.pause`)。新的 overlay 改用 `activity` 顯示這段時間,`notice` 留給舊版 Stage / overlay;新 overlay 只在沒有 `activity` 時才把它顯示在活動膠囊裡 |
 | `clip` | `reason`, `id?` | 存一段精華:Stage 叫 OBS 存 replay buffer(直播最後幾十秒,長度和資料夾在 OBS 設定),在檔案旁邊寫 `<檔名>.json`(`reason`、`at`)。成功時回 `status`,並另外送 `clip_saved`;OBS 沒存到(replay buffer 沒開)回 `error`。Core 在直播中、唱完歌 / 她情緒很強 / 聊天室突然很多訊息時送(`[modules."stage.link".highlights]`) |
 | `activity` | `kind`, `label`, `detail`, `progress`, `elapsed_ms`, `duration_ms` | 她現在在做什麼(overlay 左下的活動膠囊,見下面「活動」)。`kind`:`thinking` / `synthesizing` / `song_prepare` / `singing`,`null` = 隱藏(其他欄位為空);`label` 是短的中文狀態(≤ 40);`detail` 是歌名(已跳脫、≤ 49 字)或 `null`;`progress` 0..1 或 `null`(不確定);唱歌時 `elapsed_ms`(送出時唱到哪)與 `duration_ms`(歌多長),進度由收到的一方自己的時鐘推進 |
+| `touch` | `x`, `y`(0..1,畫面左上為原點), `part`(`head` / `face` / `body` / `screen`) | 觀眾在網站摸了直播畫面(`live.touch`)。overlay 在 (x·寬, y·高) 畫手印和愛心(每秒最多送 8 個、不重送給新連線);頭 / 臉 / 身體讓她小小反應(`[stage.touch]`,`screen` 不反應),見 `miyoria.example.toml` 的 stage 區 |
 | `status_request` | `id?` | 要一份最新的 `status` |
 | `ping` / `pong` | | |
 

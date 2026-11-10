@@ -238,6 +238,12 @@ export type CoreMessage =
       song: string | null;
     }
   /**
+   * A viewer touched the stream on the website (`live.touch`): `x`, `y` 0..1 on the picture
+   * (origin top-left), `part` what it landed on. The overlay draws it; she reacts to head, face
+   * and body.
+   */
+  | { type: "touch"; x: number; y: number; part: "head" | "face" | "body" | "screen" }
+  /**
    * The song she sings has a video: `play` shows `path` (a file in the song worker's cache on
    * the streaming PC) in the media source, muted, `offset_ms` into the song at the moment the
    * message was sent, in `scene` when the scene director switches to a `sing` scene (else the
@@ -324,6 +330,12 @@ const CoreMessageSchema = z.discriminatedUnion("type", [
     name: z.string().max(SCREEN_NAME_MAX),
     text: z.string().max(SCREEN_TEXT_MAX),
     song: z.string().max(SCREEN_SONG_MAX).nullable(),
+  }),
+  z.object({
+    type: z.literal("touch"),
+    x: z.number().min(0).max(1),
+    y: z.number().min(0).max(1),
+    part: z.enum(["head", "face", "body", "screen"]),
   }),
   z.object({
     type: z.literal("song_video"),

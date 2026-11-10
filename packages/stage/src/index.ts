@@ -244,6 +244,18 @@ export {
 } from "./runtime.js";
 export { SongVideo, type SongVideoDeps, type SongVideoPlay, songVideoFile } from "./song-video.js";
 export {
+  parseTouch,
+  TOUCH_OVERLAY_PER_S,
+  TOUCH_PARTS,
+  TOUCH_TOPIC,
+  type Touch,
+  type TouchConfig,
+  TouchConfigSchema,
+  type TouchPart,
+  TouchReaction,
+  TouchThrottle,
+} from "./touch.js";
+export {
   API_NAME,
   API_VERSION,
   ApiError,

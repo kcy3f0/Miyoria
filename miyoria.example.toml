@@ -1238,6 +1238,11 @@ enabled = true                 # VTube Studio:設定 → 開啟 API(port 8001)
 # [stage.lipsync]
 # latency_ms = 180             # 嘴型延後多久(觀眾比播放器晚聽到聲音);嘴比聲音早就加大,晚就調小
 # [stage.emotion] resting_strength = 0.6:沒有情緒標記時,臉往她表現出來的情緒靠多少(感受強度乘上這個)
+# 觀眾在網站摸她(Core 的 live.touch → overlay 畫手印 + 她小小反應,頭/臉/身體各一套,screen 不反應):
+# [stage.touch] enabled = true、cooldown_ms = 1500(兩次反應的最短間隔,連摸只會延長)、hold_ms = 900、max_ms = 5000
+# [stage.touch.head] face_z = 8, face_y = -3, eye_smile = 0.8   # 角度加在 FaceAngleX/Y/Z、MiyoriaBodyZ;eye_smile 是 MiyoriaEyeSmile 的峰值
+# [stage.touch.face] face_x = 3, face_y = 6, face_z = -5, eye_smile = 0.5, expression = "blush"   # expression 預設 off;借用 [gift_expression] 的檔案
+# [stage.touch.body] face_z = 3, body_z = 6, eye_smile = 0.3
 # 眨眼、動作、情緒漸變、手勢:[stage.blink] / [stage.motion] / [stage.emotion] / [stage.gesture],見 docs/protocols/stage-link.md
 
 [stage.obs]
