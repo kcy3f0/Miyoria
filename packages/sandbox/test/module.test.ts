@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   CODE_RUN,
   ProposedToolsKey,
+  SandboxConfigSchema,
   SandboxKey,
   SandboxModule,
   TOOL_PROPOSE,
@@ -159,5 +160,14 @@ describe("SandboxModule", () => {
     expect((error as { kind: string }).kind).toBe("unavailable");
     expect(runner.calledWith("ps")).toHaveLength(0);
     await sup.stopAll();
+  });
+});
+
+describe("result sizes", () => {
+  it("default to what fits the main line tool result (4000), long output going to a file", () => {
+    const config = SandboxConfigSchema.parse({});
+    expect(config.result_chars).toBe(3900);
+    expect(config.workspace.read_chars).toBe(3900);
+    expect(config.workspace.keep_outputs).toBeGreaterThan(0);
   });
 });

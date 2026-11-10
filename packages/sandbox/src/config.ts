@@ -139,9 +139,9 @@ export const SandboxWorkspaceSchema = z.object({
   max_file_kb: z.number().int().min(1).default(1024),
   /**
    * Characters of a file `workspace_read` returns at once (the rest is read with `offset`).
-   * Keep it below `[modules.agent] max_tool_result_chars` (1000), which cuts a tool result.
+   * Keep it below `[modules.agent] max_tool_result_chars` (4000), which cuts a tool result.
    */
-  read_chars: z.number().int().min(200).default(700),
+  read_chars: z.number().int().min(200).default(3900),
   /** Output files (`outputs/<run id>.txt`, full output of runs whose result was cut) kept. */
   keep_outputs: z.number().int().min(0).default(20),
 });
@@ -231,9 +231,9 @@ export const SandboxConfigSchema = z.object({
   max_proposed_tools: z.number().int().min(0).default(50),
   /**
    * Characters of a run's output (stdout + stderr, framed as untrusted data) she gets back from
-   * `code.run` and her own tools. Keep it below `[modules.agent] max_tool_result_chars` (1000).
+   * `code.run` and her own tools. Keep it below `[modules.agent] max_tool_result_chars` (4000).
    */
-  result_chars: z.number().int().min(200).default(900),
+  result_chars: z.number().int().min(200).default(3900),
   /**
    * Timeout of one call of an approved tool she wrote, in milliseconds. Such a call is an
    * ordinary tool call, so keep it below `[modules.agent] tool_timeout_ms` (10 000).

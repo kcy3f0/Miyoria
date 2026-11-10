@@ -128,7 +128,7 @@ describe("workspace tools", () => {
     h.gate.offerWorkspace();
     await workspace.write("long.txt", "a".repeat(7000));
     const first = await tool(h, "workspace_read").call(toolContext(), { path: "long.txt" });
-    expect(first).toContain("offset=700");
+    expect(first).toContain("offset=3900");
     const last = await tool(h, "workspace_read").call(toolContext(), {
       path: "long.txt",
       offset: 6500,

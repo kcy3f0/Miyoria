@@ -875,7 +875,7 @@ max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不
 # max_timeout_ms = 120000
 # max_concurrent = 2
 # keep_runs = 20                 # 保留最近幾次執行的輸出檔
-# result_chars = 900             # 程式輸出回給她的字數上限(低於 agent 的 max_tool_result_chars)
+# result_chars = 3900            # 程式輸出回給她的字數上限(低於 agent 的 max_tool_result_chars,預設 4000);太長的存成工作區檔案,回覆裡寫檔名
 # tool_timeout_ms = 8000         # 她寫的工具每次呼叫的時間上限(低於 agent 的 tool_timeout_ms)
 # images = { python = "python:3.12-slim", node = "node:24-slim" }  # 可釘 digest:...@sha256:<hash>
 # limits = { memory_mb = 256, cpus = 1, pids_limit = 128 }
@@ -898,7 +898,7 @@ max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不
 # max_mb = 64                    # 全部檔案加起來(MiB)
 # max_files = 500
 # max_file_kb = 1024             # 單一檔案(KiB)
-# read_chars = 700               # workspace_read 一次回幾字(其餘用 offset 分段讀;要低於 agent 的 max_tool_result_chars)
+# read_chars = 3900              # workspace_read 一次回幾字(其餘用 offset 分段讀;要低於 agent 的 max_tool_result_chars)
 # keep_outputs = 20              # 保留幾個輸出檔(太長被截掉的執行,完整輸出存成 outputs/<run id>.txt)
 # 網路:預設全關(allow = []),每次執行都是 --network none。列了主機,要求網路的執行才會拿到一個沒有對外路由的
 # Docker 網路,唯一的出口是一個 egress proxy 容器,它只放行這些主機的 80 / 443 埠,而且永遠不連私有位址。
@@ -915,7 +915,7 @@ max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不
 # max_skills = 50                # 最多幾個技能
 # max_body_chars = 6000          # 一個技能內文的字數上限(太長會拒絕,要她寫短一點)
 # max_description_chars = 140    # 一行描述的字數上限(一直放在索引裡)
-# read_chars = 700               # skill_read 一次回幾字(其餘用 offset 讀;要低於 agent 的 max_tool_result_chars)
+# read_chars = 3900              # skill_read 一次回幾字(其餘用 offset 讀;要低於 agent 的 max_tool_result_chars)
 # index_chars = 1500             # prompt 裡技能索引的字數
 
 # ---- 直播頁與派對遊戲 ----------------------------------------------------------

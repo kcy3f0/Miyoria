@@ -14,9 +14,9 @@ export const SkillsConfigSchema = z.object({
   max_description_chars: z.number().int().min(20).default(140),
   /**
    * Characters of a skill body `skill_read` returns at once (the rest is read with `offset`).
-   * Keep it below `[modules.agent] max_tool_result_chars` (1000), which cuts a tool result.
+   * Keep it below `[modules.agent] max_tool_result_chars` (4000), which cuts a tool result.
    */
-  read_chars: z.number().int().min(200).default(700),
+  read_chars: z.number().int().min(200).default(3900),
   /** Characters of the index of names and descriptions (`SkillStore.index`) for the prompt. */
   index_chars: z.number().int().min(200).default(1500),
 });
