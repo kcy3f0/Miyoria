@@ -65,9 +65,9 @@ describe("renderEmoji", () => {
     expect(renderEmoji("轉圈 :dance:", lookup, [], limits).text).toBe("轉圈 <a:dance:222>");
   });
 
-  test("leaves_existing_markup_and_times_alone", () => {
+  test("markup_she_writes_counts_as_used_and_times_stay", () => {
     const text = "已經有 <:fanfan:111> 了,現在 12:30:45";
-    expect(renderEmoji(text, lookup, [], limits)).toEqual({ text, used: [] });
+    expect(renderEmoji(text, lookup, [], limits)).toEqual({ text, used: ["fanfan"] });
   });
 
   test("one_per_message", () => {
