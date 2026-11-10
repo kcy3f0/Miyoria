@@ -36,6 +36,7 @@ export const MODULE_IDS: readonly string[] = [
   "stage.link",
   "web",
   "sandbox",
+  "party",
   "extensions",
   "platform.discord.bot",
   "recorder",

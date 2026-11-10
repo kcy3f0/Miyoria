@@ -756,6 +756,9 @@ importers:
       '@miyoria/moderation':
         specifier: workspace:*
         version: link:../moderation
+      '@miyoria/party':
+        specifier: workspace:*
+        version: link:../party
       '@miyoria/profile':
         specifier: workspace:*
         version: link:../profile
