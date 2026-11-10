@@ -388,10 +388,18 @@ export function describeAction(action: GameAction): string {
 /** `"oak_log/birch_log"` → `"橡木原木、樺木原木"`. */
 const names = (ids: string): string => ids.split("/").map(zh).join("、");
 
-/** `"stick x2, oak_planks+ x3"` (the mod's `missing_items` list) → `"木棒×2、橡木材(或同類)×3"`. */
+/**
+ * `"stick x2, oak_planks+ x3"` (the mod's `missing_items` list) → `"木棒 stick×2、橡木材 oak_planks(或同類)×3"`.
+ * The id stays next to the name: she can ask for it as it is, and the director's method guard
+ * reads what is missing from it, so a held recipe comes back once that is in her inventory.
+ */
 function missingList(list: string): string {
   return [...list.matchAll(/([a-z0-9_:]+)(\+?) x(\d+)/g)]
-    .map(([, item, similar, n]) => (item === "fuel" ? "燃料(煤炭、木炭、木材或原木)" : `${zh(item)}${similar ? "(或同類)" : ""}×${n}`))
+    .map(([, item, similar, n]) => {
+      if (item === "fuel") return "燃料(煤炭、木炭、木材或原木)";
+      const name = zh(item);
+      return `${name}${name === item ? "" : ` ${item}`}${similar ? "(或同類)" : ""}×${n}`;
+    })
     .join("、");
 }
 

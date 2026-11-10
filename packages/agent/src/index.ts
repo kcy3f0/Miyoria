@@ -98,6 +98,9 @@ export {
   type VoiceConfig,
   VoiceConfigSchema,
   voiceMaxDebounceMs,
+  WORK_TOOLS,
+  type WorkConfig,
+  WorkConfigSchema,
 } from "./config.js";
 export { Gathered, gather } from "./contributors.js";
 export {
@@ -271,3 +274,20 @@ export {
   type LoadedImage,
   selectImages,
 } from "./vision.js";
+export { allowance, talks } from "./worklane/allow.js";
+export {
+  WORK_LIST_TOOL,
+  WORK_START_TOOL,
+  WORK_STEER_TOOL,
+  workCapabilities,
+} from "./worklane/capabilities.js";
+export { ACTIVITY_TOOLS, asWork, WORK_ACTIVITIES, workBoard } from "./worklane/initiative.js";
+export {
+  type LaneDeps,
+  RESTART_REASON,
+  type StartOutcome,
+  type StartSpec,
+  type SteerSpec,
+  shortId,
+  WorkLaneService,
+} from "./worklane/lane.js";

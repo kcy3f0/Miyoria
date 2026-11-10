@@ -1,6 +1,6 @@
 import type { ContextKey } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
-import { MainLineConfigSchema } from "../src/config.js";
+import { MainLineConfigSchema, WorkConfigSchema } from "../src/config.js";
 import {
   AgentConfigSchema,
   activenessFor,
@@ -103,6 +103,7 @@ describe("config", () => {
       max_debounce_ms: 4000,
       history_after_fold: 25,
       mainline: MainLineConfigSchema.parse({}),
+      work: WorkConfigSchema.parse({}),
       history_limit: 240,
       prompt_history: 30,
       max_prompt_chars: 16_000,
@@ -121,7 +122,7 @@ describe("config", () => {
       tools_enabled: true,
       max_tool_steps: 3,
       tool_timeout_ms: 10_000,
-      max_tool_result_chars: 4000,
+      max_tool_result_chars: 12_500,
       temperature: null,
       max_tokens: null,
       session_idle_ms: 21_600_000,

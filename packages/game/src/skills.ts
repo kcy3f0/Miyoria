@@ -1,7 +1,7 @@
 // Skills (docs/design/v4-plan.md §11.2 item 8, §8.3): when a goal with a success condition is
 // reached, the methods that made progress on the way are kept as "how I got X", and the next
-// goal for X shows them to her. Kept by the director for as long as the module runs and
-// published on `SKILL_TOPIC` for a store that keeps them across restarts (§8.3, not built yet).
+// goal for X shows them to her. Published on `SKILL_TOPIC`, and kept across restarts by the
+// director (`skill-store.ts`: her skill store, else the settings store through the work lane).
 // Pure apart from the clock values passed in.
 
 /** Topic of a learned skill, `Skill`. */
@@ -42,6 +42,31 @@ export class SkillBook {
       this.#skills.splice(this.#skills.indexOf(old), 1);
     this.#skills.splice(MAX_SKILLS);
     return skill;
+  }
+
+  /**
+   * A skill kept from an earlier run: it goes behind what she learned since (older), and an
+   * identical one is not kept twice.
+   */
+  restore(skill: Skill): void {
+    if (skill.steps.length === 0) return;
+    const same = this.#skills.some(
+      (s) =>
+        s.game === skill.game &&
+        s.target === skill.target &&
+        s.steps.join("\n") === skill.steps.join("\n"),
+    );
+    if (same) return;
+    const forTarget = this.#skills.filter(
+      (s) => s.game === skill.game && s.target === skill.target,
+    );
+    if (forTarget.length >= PER_TARGET || this.#skills.length >= MAX_SKILLS) return;
+    this.#skills.push(skill);
+  }
+
+  /** Every skill of `game`, newest first (what is kept across restarts). */
+  forGame(game: string): Skill[] {
+    return this.#skills.filter((s) => s.game === game);
   }
 
   forTarget(game: string, target: string): Skill[] {

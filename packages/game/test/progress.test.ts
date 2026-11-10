@@ -365,7 +365,7 @@ describe("the method guard is keyed by item", () => {
     await vi.advanceTimersByTimeAsync(5);
     expect(h.llm.requests.length).toBeGreaterThan(0);
     expect(h.of(DECISION_TOPIC).at(-1)?.held).toEqual([
-      expect.stringContaining("obtain:bread(暫停 10 分鐘):precondition"),
+      expect.stringContaining("obtain:bread(等缺的東西拿到了再試):precondition"),
     ]);
     await h.stop();
   });

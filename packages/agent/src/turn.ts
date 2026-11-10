@@ -146,6 +146,8 @@ import {
   NOT_OFFERED,
   OUT_OF_TIME,
   QUESTION_PURPOSE,
+  ROUND_CUT,
+  ROUND_MIN_CHARS,
   STILL_RUNNING,
   TOO_MANY,
   TOOL_STEP_PURPOSE,
@@ -2512,6 +2514,8 @@ class Turn {
           await this.#roundEnded(main, expression, now, speech, segments, send, between);
           messages.push(assistantMessage(raw, calls));
           let ran = 0;
+          // A page is one result now: what a round adds together keeps the bound it had.
+          let roundLeft = main.config.loop_round_chars;
           for (const call of calls) {
             let result: string;
             if (!main.isOffered(call.name)) {
@@ -2532,7 +2536,8 @@ class Turn {
               result = OUT_OF_TIME;
             } else {
               ran += 1;
-              result = await this.#inTurn(main, call, offered, priority, left());
+              result = await this.#inTurn(main, call, offered, priority, left(), roundLeft);
+              roundLeft = Math.max(0, roundLeft - result.length);
             }
             messages.push(toolResultMessage(call.id, result));
           }
@@ -2645,6 +2650,7 @@ class Turn {
     offered: ReadonlySet<string>,
     priority: Priority,
     leftMs: number,
+    roundChars: number = Number.POSITIVE_INFINITY,
   ): Promise<string> {
     const limit = Math.max(1, Math.min(this.agent.config.tool_timeout_ms, leftMs));
     const { run, accepted } = await main.inTurn(
@@ -2655,7 +2661,10 @@ class Turn {
     );
     if (run.ok) this.#succeeded.add(call.name);
     this.#trace(call, run.ok, run.text);
-    let text = dataBlock("tool", `${call.name} 的結果`, neutralize(run.text));
+    // Cut before it is wrapped, so the block it goes back in stays whole.
+    const room = Math.max(ROUND_MIN_CHARS, roundChars);
+    const body = run.text.length > room ? `${truncate(run.text, room)}${ROUND_CUT}` : run.text;
+    let text = dataBlock("tool", `${call.name} 的結果`, neutralize(body));
     if (run.ok && accepted) text = `${text}\n${STILL_RUNNING}`;
     // Read in this turn, gone in the next unless she keeps what matters.
     if (
