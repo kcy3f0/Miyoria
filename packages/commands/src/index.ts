@@ -40,6 +40,7 @@ export {
 } from "./components.js";
 export { type ReplySink, ReplySinkKey, type UserResolver, UserResolverKey } from "./direct.js";
 export { HELP_NODE, registerHelp } from "./help.js";
+export { CARD_NODE, FORTUNE_NODE, registerKeepsakes } from "./keepsakes.js";
 export {
   MAX_MENUS_PER_TARGET,
   MENU_ROOT,

@@ -350,9 +350,13 @@ export function registerV2(registry: CommandRegistry, services: ServiceLookup): 
     (inv) => handler.quests(inv),
   );
   registry.register(
-    commandSpec("me draw", `花魚幣抽一次收藏（眼鏡、背景、手上的東西…），機率在 ${onDiscord("me album")}`, {
-      permission: WALLET_NODE,
-    }),
+    commandSpec(
+      "me draw",
+      `花魚幣抽一次收藏（眼鏡、背景、手上的東西…），機率在 ${onDiscord("me album")}`,
+      {
+        permission: WALLET_NODE,
+      },
+    ),
     (inv) => handler.draw(inv),
   );
   registry.register(

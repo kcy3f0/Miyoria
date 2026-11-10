@@ -25,7 +25,7 @@ import {
 import { errorMessage, getLogger, type ServiceLookup } from "@miyoria/kernel";
 import { newId } from "@miyoria/types";
 import { registerV2, unregisterV2 } from "./commands-v2.js";
-import { STRANGER, WALLET_NODE } from "./economy.js";
+import { MAX_LETTER_CHARS, STRANGER, WALLET_NODE } from "./economy.js";
 import { NO_RECEIVER } from "./transfer.js";
 import {
   type Economy,
@@ -47,6 +47,7 @@ export const PATHS = [
   "me give",
   "me board",
   "me screen",
+  "me letter",
   "me goals",
   "me pledge",
   "me bounties",
@@ -257,6 +258,18 @@ class Handler {
     });
   }
 
+  /** `/me letter`: a short letter to her (paid; the answer is only for the sender). */
+  letter(inv: Invocation): Promise<CommandReply> {
+    return this.#guard(async (economy) => {
+      const text = inv.str("text")?.trim() ?? "";
+      if (text === "") return notice("warn", "要寫什麼?");
+      const r = await economy.letter(inv.invoker, text, `discord:${newId()}`);
+      if (!r.accepted) return result(r.message);
+      const view = await economy.wallet(inv.invoker);
+      return result(`${r.message}，花了 ${r.charged} ${view.currency}，剩 ${r.balance}。`);
+    });
+  }
+
   /** `/me goals`: her open goal (and the last one that ended), with quick pledge buttons. */
   goals(inv: Invocation): Promise<CommandReply> {
     return this.#guard(async (economy) => {
@@ -433,6 +446,14 @@ function register(registry: CommandRegistry, handler: Handler): void {
       permission: WALLET_NODE,
     }),
     (inv) => handler.screen(inv),
+  );
+  registry.register(
+    commandSpec("me letter", `花魚幣寫一封信給她（${MAX_LETTER_CHARS} 字內，她有空會看）`, {
+      args: [argSpec("text", "信的內容", ArgKind.string)],
+      permission: WALLET_NODE,
+      ephemeral: true,
+    }),
+    (inv) => handler.letter(inv),
   );
   registry.register(
     commandSpec("me goals", "她現在的目標：要做什麼、湊到哪、你投了多少", {

@@ -49,6 +49,7 @@ import {
   DirectivesKey,
   type Envelope,
   type JsonValue,
+  KeepsakesKey,
   ModerationKey,
   newEnvelope,
   type PersonCard,
@@ -1626,6 +1627,29 @@ describe("cards she gives", () => {
     expect((await r.get("/api/member/card", bob)).body).toMatchObject({ latest: null, today: 0 });
   });
 
+  it("is given to a command through the Keepsakes service by the same rules", async () => {
+    const r = await rig();
+    const keepsakes = r.sup.services.require(KeepsakesKey);
+    const who = { account: discord(ALICE), name: "Alice", avatar_url: null };
+    const first = await keepsakes.issueCard(who, "k-1");
+    expect(first.ok && first.value.number).toBe(1);
+    const cookie = await r.login("alice");
+    // The member page sees what the command issued, and the other way round.
+    const page = (await r.get("/api/member/card", cookie)).body as { latest: Card; today: number };
+    expect(page.today).toBe(1);
+    expect(page.latest.serial).toBe(first.ok ? first.value.serial : "");
+    expect(await keepsakes.cardsToday(who.account)).toMatchObject({
+      today: 1,
+      per_day: CARDS_PER_DAY,
+    });
+    for (let i = 1; i < CARDS_PER_DAY; i++) await keepsakes.issueCard(who, `k-${i + 1}`);
+    expect(await keepsakes.issueCard(who, "k-last")).toEqual({
+      ok: false,
+      status: 429,
+      message: "今天的卡已經發完了,明天再來",
+    });
+  });
+
   it("runs out after five a day", async () => {
     const r = await rig();
     const cookie = await r.login("alice");
@@ -2610,6 +2634,29 @@ describe("between people, the sponsor board and fortune slips", () => {
       }
       expect(r.model.asked).toBe(asked);
       expect(await r.balance(ALICE)).toBe(20);
+    });
+
+    it("can be drawn from a command through the Keepsakes service, and the page shows the same slip", async () => {
+      const r = await socialRig();
+      await r.fund(ALICE, 30);
+      const keepsakes = r.sup.services.require(KeepsakesKey);
+      const who = { account: discord(ALICE), name: "Alice", avatar_url: null };
+      expect(await keepsakes.fortuneToday(who.account)).toEqual({ fortune: null, price: 10 });
+      const drawn = await keepsakes.drawFortune(who, "c-1");
+      expect(drawn).toMatchObject({ ok: true, charged: 10, balance: 20 });
+      const cookie = await r.login("alice");
+      expect((await r.get("/api/member/fortune", cookie)).body).toEqual({
+        fortune: drawn.ok ? drawn.value : null,
+        price: 10,
+      });
+      const again = await keepsakes.drawFortune(who, "c-2");
+      expect(again).toMatchObject({ ok: true, charged: 0, balance: 20 });
+      // Someone she does not know gets the same words as on the page.
+      const stranger = { account: discord("999"), name: "路人", avatar_url: null };
+      expect(await keepsakes.drawFortune(stranger, "c-3")).toMatchObject({
+        ok: false,
+        status: 403,
+      });
     });
 
     it("give the payment back when she cannot write, and a retry of that key buys nothing", async () => {

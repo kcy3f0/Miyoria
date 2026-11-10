@@ -11,7 +11,7 @@
 //   /voice    join · leave · mode · consent · golive start|stop|status
 //   /stream   start · stop · status · scene
 //   /me       i · profile · call · link · privacy · wallet · checkin · feed · give · board ·
-//             screen · goals · pledge · bounties · memory show|export|forget ·
+//             screen · letter · card · fortune · goals · pledge · bounties · memory show|export|forget ·
 //             play quests|draw|album|giveitem|predictions|bet|titles|commission|commissions|
 //             room|shop (regrouped for Discord, see `SLASH_REGROUP`)
 //   /queue    add · list · upvote · manage ... · vote start|end · song request|list|skip|stop
