@@ -263,7 +263,7 @@ function floorOf(ctx: ModuleContext, config: ArbiterConfig, clock: Clock): Floor
     humans: (context) => services.get(ImpulseHostKey)?.facts(context).humans ?? null,
     performing: (context) => {
       // Hosting a party game is a show too: it must not run out of lines halfway through a round.
-      if (services.get(PartyStatusKey)?.playing(context) === true) return true;
+      if ((services.get(PartyStatusKey)?.running(context) ?? null) !== null) return true;
       const manager = services.get(ActivityManagerKey);
       if (!manager) return false;
       const snapshot = manager.snapshot();

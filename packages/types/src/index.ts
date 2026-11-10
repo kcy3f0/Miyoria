@@ -695,7 +695,6 @@ export {
   type SongClips,
   SongClipsKey,
 } from "./party.js";
-export { type PartyStatus, PartyStatusKey } from "./party-status.js";
 export { CORE_CHARS, CORE_SENTENCES, characterCore } from "./persona-core.js";
 export {
   type Desire,
