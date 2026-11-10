@@ -420,8 +420,11 @@ export type FeedItem = "rice" | "big_bowl" | "dessert";
 export type GiftExpression = "heart" | "blush" | "squint";
 export type Hungry = "full" | "ok" | "hungry" | "starving";
 
+/** What earns coins: the first five from the Core's wallet, the others economy 2.0 added. */
+export type EarnReason = "checkin" | "talked" | "voice" | "song" | "her_gift" | "quest" | "play" | "achievement";
+
 export interface EarnLine {
-  reason: "checkin" | "talked" | "voice" | "song" | "her_gift";
+  reason: EarnReason;
   label: string;
   amount: number;
   earned_today: number;
@@ -2175,6 +2178,12 @@ export interface DirectorThoughtBody {
   verdict: string | null;
   commentary: string | null;
   busy: boolean | null;
+  /** What she saw when she decided (an older Core does not write it). */
+  observation?: string;
+  /** The goal's success condition: she holds at least `count` of `item`. */
+  want?: { item: string; count: number } | null;
+  /** Methods and goals on hold at the time, one line each: the ones that failed the same way twice. */
+  held?: string[];
 }
 
 export type ThoughtBody = MindThoughtBody | DirectorThoughtBody;
