@@ -64,12 +64,13 @@ export function unansweredHint(topics: readonly RaisedTopic[]): string {
 }
 
 /**
- * What she shows of her emotion (the `self` module's display rules), so her lines and her
- * `<emo:…>` tags follow it rather than what she really feels. Only fixed text: no names.
+ * What she shows of her emotion (the `self` module's display rules), as her state: what shows on
+ * her and whether she keeps the feeling to herself. How to act on it is the persona's, which says
+ * mood is a state and not a script (2026-11-10 rewrite). Only fixed text: no names.
  */
 export function shownHint(shown: ShownEmotion): string {
   const tag = /^[a-z_]{1,32}$/.test(shown.tag) ? shown.tag : "neutral";
   const style = neutralize(shown.style).replace(/\s+/g, " ").trim().slice(0, 80);
-  const hide = shown.masked ? ";不要直接說出感受,但可以從用詞、反應、做的事裡透出來" : "";
-  return `你現在表現出來的樣子:${style}。台詞和 <emo:…> 照這個走(多半是 <emo:${tag}>)${hide}`;
+  const hide = shown.masked ? ";心裡的感受你不想直接講出來" : "";
+  return `你現在外表的樣子:${style}(接近 <emo:${tag}>)${hide}`;
 }

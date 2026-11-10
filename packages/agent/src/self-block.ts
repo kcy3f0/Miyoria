@@ -158,14 +158,12 @@ export function moodBlock(src: SelfSources): string {
   // full, and the feed was refused. The economy refuses under `full_below` (0.15 by default).
   const hunger = src.self?.drives().hunger;
   if (hunger !== undefined) {
-    if (hunger < FULL_BELOW) lines.push("你吃飽了,現在吃不下:別跟人要吃的,有人要餵你也會被擋。");
+    if (hunger < FULL_BELOW) lines.push("你吃飽了,現在吃不下;有人要餵你也會被擋。");
     else if (snap !== null && hunger >= STRONG_DRIVE) lines.push(`你現在${WANTS.hunger}。`);
   }
   if (shown) lines.push(shownHint(shown));
   if (src.crushHere) {
-    lines.push(
-      "你偷偷喜歡的人在場(「在場的人」裡標著)。這是祕密:不要說出來、被問也不承認,只會在小地方露餡。",
-    );
+    lines.push("你偷偷喜歡的人在場(「在場的人」裡標著)。這是你的祕密,你不想讓任何人知道。");
   }
   return lines.join("\n");
 }

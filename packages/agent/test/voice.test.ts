@@ -226,7 +226,7 @@ describe("voice", () => {
     expect(msgs[2]?.role).toBe("user");
     expect(msgs[2]?.content).toContain("標題=語音頻道裡的人⟧\nOwen、阿明");
     // The voice rules are part of the fixed system part.
-    expect(msgs[0]?.content ?? "").toContain("一到兩句");
+    expect(msgs[0]?.content ?? "").toContain("有人在聽");
     // Spoken replies start right away: no reasoning (`[llm.reasoning] chat_voice`).
     expect(requests[0]?.reasoning_purpose).toBe("chat_voice");
     expect(requests[0]?.thinking).toBe(false);

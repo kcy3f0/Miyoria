@@ -322,7 +322,7 @@ export const MainLineConfigSchema = z.object({
    * Example dialogues, before the history (0: none). Which of them she sees turns over from one
    * session to the next and stays the same within one, so the prefix does too.
    */
-  examples_chars: z.number().int().nonnegative().default(1500),
+  examples_chars: z.number().int().nonnegative().default(2000),
   /** Tools that run inside the turn (`LOOP_TOOLS`); the rest go to the hands. */
   loop_tools: z.array(z.string()).default([...LOOP_TOOLS]),
   /** Lines of "最近講過" in the tail. */
