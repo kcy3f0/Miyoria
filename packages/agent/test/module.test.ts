@@ -473,6 +473,25 @@ describe("agent module", () => {
     expect(toolEvents[0]).toMatchObject({ tool: "react", ok: true });
   });
 
+  it("react_takes_several_emoji_in_one_call", async () => {
+    // "Can't she press more than one?": she can, one reaction per emoji, in order.
+    const mock = new MockProvider("chat")
+      .events([toolCall(0, "a", "react", '{"emojis":["💀","😭",":cry:","💀"]}'), done()])
+      .reply("<silence/>")
+      .events([toolCall(0, "b", "react", '{"emojis":["1","2","3","4","5","6"]}'), done()])
+      .reply("太多了啦");
+    const h = await Harness.create("always", noCheck(), mock);
+    const c = channel("c");
+    h.say(incoming(c, "Brian", "多按幾個"));
+    await wait(3000);
+    expect(h.sink.reactions().map(([, e]) => e)).toEqual(["💀", "😭", ":cry:"]);
+    h.say(incoming(c, "Brian", "按六個"));
+    await wait(3000);
+    expect(h.sink.reactions().length).toBe(3);
+    const results = (mock.requests()[3]?.messages ?? []).filter((m) => m.role === "tool");
+    expect(String(results.at(-1)?.content)).toContain("at most 5");
+  });
+
   it("text_beside_tool_calls_is_sent_once", async () => {
     const mock = new MockProvider("chat")
       .events([textDelta("好啦按給你。"), toolCall(0, "a", "react", '{"emoji":"👍"}'), done()])
