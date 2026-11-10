@@ -35,9 +35,11 @@ import type { DiscordConfig } from "./config.js";
 import { ambientChannel, messageAllowed } from "./gate.js";
 import { DiscordHistory, type HistoryClientLike } from "./history.js";
 import {
+  type ContextMenuInteractionLike,
   handleAutocomplete,
   handleCommandInteraction,
   handleComponentInteraction,
+  handleContextMenuInteraction,
   type InteractionEnv,
 } from "./interaction.js";
 import {
@@ -286,6 +288,13 @@ export class GatewayBridge {
     if (interaction.isChatInputCommand()) {
       const kind = await kindOfInteraction();
       await handleCommandInteraction(this.env(client), interaction, kind);
+    } else if (interaction.isContextMenuCommand()) {
+      const kind = await kindOfInteraction();
+      await handleContextMenuInteraction(
+        this.env(client),
+        interaction as unknown as ContextMenuInteractionLike,
+        kind,
+      );
     } else if (interaction.isAutocomplete()) {
       const kind = await kindOfInteraction();
       await handleAutocomplete(this.env(client), interaction, kind);
