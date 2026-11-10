@@ -1,0 +1,151 @@
+import type { DecisionRecord } from "@miyoria/store";
+import type { ContextKey, TurnOutcome, TurnOutcomeRecord, TurnReason } from "@miyoria/types";
+import { describe, expect, it } from "vitest";
+import { aggregateTurnMetrics, localDay, stopOfRefused } from "../src/metrics-turns.js";
+
+const TEXT: ContextKey = { platform: "discord", scope: "g", channel: "c", kind: "channel" };
+const VOICE: ContextKey = { platform: "discord", scope: "g", channel: "v", kind: "voice" };
+
+const NOW = new Date(2026, 10, 10, 15, 0, 0).getTime();
+/** `days` ago at noon, local. */
+const at = (daysAgo: number) => new Date(2026, 10, 10 - daysAgo, 12, 0, 0).toISOString();
+
+let n = 0;
+const outcome = (
+  reason: TurnReason,
+  result: TurnOutcome,
+  o: { daysAgo?: number; context?: ContextKey; latency?: number | null; turn?: string } = {},
+): TurnOutcomeRecord => ({
+  turn: o.turn ?? `t${++n}`,
+  context: o.context ?? TEXT,
+  reason,
+  outcome: result,
+  addressed_by: [],
+  focus: [],
+  restarts: 0,
+  reasoning: null,
+  latency_ms: o.latency ?? null,
+  at: at(o.daysAgo ?? 0),
+});
+
+const refused = (
+  reasons: string[],
+  o: { daysAgo?: number; context?: ContextKey } = {},
+): DecisionRecord => ({
+  id: `d${++n}`,
+  profile: "p" as never,
+  ts: at(o.daysAgo ?? 0),
+  trace: {
+    turn: `r${n}` as never,
+    context: o.context ?? TEXT,
+    respond: false,
+    score: 0.2,
+    reasons,
+  },
+});
+
+const SENT: TurnOutcome = { type: "sent", parts: 1 };
+const SILENCE: TurnOutcome = { type: "silence" };
+
+describe("aggregateTurnMetrics", () => {
+  it("counts follow-ups the gate refused as unanswered, split by why", () => {
+    const outcomes = [outcome("reply_to_her", SENT), outcome("reply_to_her", SENT)];
+    const decisions = [
+      refused(["replying to her: skips her quiet setting", "anti-spam: her share 0.50 > 0.15"]),
+      refused(["replying to her: skips her quiet setting", "score 0.40 < 0.45"]),
+      refused(["replying to her: skips her quiet setting", "p 0.10, roll 0.80"]),
+      refused(["replying to her: skips her quiet setting", "floor: song"]),
+    ];
+    const m = aggregateTurnMetrics(outcomes, decisions, { now: NOW, days: 3 });
+    expect(m.overall.followup).toEqual({ sent: 2, total: 6, rate: 2 / 6 });
+    expect(m.overall.followup_stopped).toEqual({
+      anti_spam: 1,
+      low_score: 1,
+      lost_roll: 1,
+      floor: 1,
+      passed_silent: 0,
+      other: 0,
+    });
+  });
+
+  it('tells a silence after "talking with her" from other silences', () => {
+    const talking = outcome("reply_to_her", SILENCE, { turn: "tt" });
+    const trace: DecisionRecord = {
+      id: "dd",
+      profile: "p" as never,
+      ts: at(0),
+      trace: {
+        turn: "tt" as never,
+        context: TEXT,
+        respond: true,
+        score: 0.4,
+        reasons: ["talking with her: hers to answer or pass"],
+      },
+    };
+    const plain = outcome("reply_to_her", SILENCE);
+    const m = aggregateTurnMetrics([talking, plain], [trace], { now: NOW, days: 1 });
+    expect(m.overall.followup_stopped.passed_silent).toBe(1);
+    expect(m.overall.followup_stopped.other).toBe(1);
+    // The decision of a turn that ran is not counted a second time.
+    expect(m.overall.turns).toBe(2);
+  });
+
+  it("separates ambient participation and addressed answers, and has no rate without samples", () => {
+    const outcomes = [
+      outcome("addressed", SENT),
+      outcome("addressed", SENT),
+      outcome("ambient", SENT),
+    ];
+    const decisions = [
+      refused(["talkativeness 0.30 (global)", "score 0.20 < 0.45"]),
+      refused(["direct: name"]),
+    ];
+    const m = aggregateTurnMetrics(outcomes, decisions, { now: NOW, days: 1 });
+    expect(m.overall.ambient).toEqual({ sent: 1, total: 2, rate: 0.5 });
+    expect(m.overall.addressed).toEqual({ sent: 2, total: 3, rate: 2 / 3 });
+    expect(m.overall.followup.rate).toBeNull();
+  });
+
+  it("measures voice latency of addressed voice turns and who started the voice turns", () => {
+    const outcomes = [
+      ...[1000, 2000, 3000, 4000, 10_000].map((ms) =>
+        outcome("addressed", SENT, { context: VOICE, latency: ms }),
+      ),
+      outcome("addressed", SENT, { context: TEXT, latency: 99_999 }),
+      outcome("initiative", SENT, { context: VOICE }),
+      outcome("initiative", SENT, { context: VOICE }),
+      outcome("reply_to_her", SENT, { context: VOICE }),
+    ];
+    const m = aggregateTurnMetrics(outcomes, [], { now: NOW, days: 1 });
+    expect(m.overall.voice_latency).toEqual({ p50_ms: 3000, p90_ms: 10_000, samples: 5 });
+    expect(m.overall.voice_origin).toEqual({ self_started: 2, answering: 6 });
+  });
+
+  it("groups by local day, fills empty days and drops what is older than the window", () => {
+    const outcomes = [
+      outcome("addressed", SENT, { daysAgo: 0 }),
+      outcome("addressed", SILENCE, { daysAgo: 2 }),
+      outcome("addressed", SENT, { daysAgo: 9 }),
+    ];
+    const m = aggregateTurnMetrics(outcomes, [], { now: NOW, days: 3 });
+    expect(m.daily.map((d) => d.day)).toEqual([
+      localDay(Date.parse(at(2))),
+      localDay(Date.parse(at(1))),
+      localDay(Date.parse(at(0))),
+    ]);
+    expect(m.daily.map((d) => d.turns)).toEqual([1, 0, 1]);
+    expect(m.daily[1]?.addressed.rate).toBeNull();
+    expect(m.overall.turns).toBe(2);
+    expect(m.overall.outcomes).toEqual({ sent: 1, silence: 1, cancelled: 0, error: 0 });
+  });
+});
+
+describe("stopOfRefused", () => {
+  it("reads the gate's own wording", () => {
+    expect(stopOfRefused(["anti-spam: her share 0.60 > 0.15"])).toBe("anti_spam");
+    expect(stopOfRefused(["score 0.10 < 0.45"])).toBe("low_score");
+    expect(stopOfRefused(["p 0.11, roll 0.90"])).toBe("lost_roll");
+    expect(stopOfRefused(["floor: held"])).toBe("floor");
+    expect(stopOfRefused(["someone is speaking"])).toBe("other");
+  });
+});

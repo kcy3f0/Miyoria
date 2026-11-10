@@ -23,6 +23,7 @@ import { llmCallRoutes } from "./llmcalls.js";
 import { memberRoutes } from "./member.js";
 import { memoryRoutes } from "./memory.js";
 import { metricsRoutes } from "./metrics.js";
+import { turnMetricsRoutes } from "./metrics-turns.js";
 import { mindRoutes } from "./mind.js";
 import * as oauth from "./oauth.js";
 import { ogRoutes, rewriteHtml } from "./og.js";
@@ -168,6 +169,7 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...bodyRoutes(state),
     ...affectRoutes(state),
     ...promptRoutes(state),
+    ...turnMetricsRoutes(state),
     ...learningRoutes(state),
     ...controlRoutes(state),
     ...llmCallRoutes(state),
