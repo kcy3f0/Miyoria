@@ -741,6 +741,9 @@ importers:
       '@miyoria/learning':
         specifier: workspace:*
         version: link:../learning
+      '@miyoria/live':
+        specifier: workspace:*
+        version: link:../live
       '@miyoria/llm':
         specifier: workspace:*
         version: link:../llm
@@ -1102,6 +1105,34 @@ importers:
       '@miyoria/self':
         specifier: workspace:*
         version: link:../self
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@24.19.2)(jsdom@26.1.0)(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.15))
+
+  packages/live:
+    dependencies:
+      '@miyoria/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@miyoria/stage':
+        specifier: workspace:*
+        version: link:../stage
+      '@miyoria/store':
+        specifier: workspace:*
+        version: link:../store
+      '@miyoria/types':
+        specifier: workspace:*
+        version: link:../types
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
