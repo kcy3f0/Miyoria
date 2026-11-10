@@ -20,8 +20,10 @@ import {
   DailyPostsKey,
   DIRECTIVE_CHANGED_TOPIC,
   dataBlock,
+  EventLogKey,
   GOAL_TOPIC,
   GoalAgendaKey,
+  isJsonObject,
   type JsonValue,
   LifeLogKey,
   MindKey,
@@ -31,6 +33,10 @@ import {
   SALIENT_TOPIC,
   type Thought,
   type ThoughtDigest,
+  toTimestamp,
+  WISH_SOURCE,
+  type WishBody,
+  WishesKey,
 } from "@miyoria/types";
 import { z } from "zod";
 import { DEPRECATED_MIND_KEYS, type MindConfig, MindConfigSchema } from "./config.js";
@@ -95,7 +101,17 @@ export class MindModule implements Module {
   readonly manifest = defineManifest(MindModule.ID, "Mind", {
     description: "Her Deliberate calls: Appraise, Plan, her goals and the impulses she acts on",
     requires: ["llm"],
-    optional: ["self", "world", "agent", "actions", "social", "memory", "activity", "arbiter"],
+    optional: [
+      "self",
+      "world",
+      "agent",
+      "actions",
+      "social",
+      "memory",
+      "activity",
+      "arbiter",
+      "facts",
+    ],
     configSchema: MindConfigSchema,
   });
   readonly #profile: ProfileId;
@@ -105,6 +121,7 @@ export class MindModule implements Module {
   #life: LifeBook | null = null;
   #reminders: ReminderBook | null = null;
   #unregister: (() => void) | null = null;
+  #stopWishes: (() => void) | null = null;
 
   constructor(profile: ProfileId, options: MindModuleOptions = {}) {
     this.#profile = profile;
@@ -152,6 +169,7 @@ export class MindModule implements Module {
       defaultDays: config.goal_default_days,
       publish: (goal) =>
         ctx.publish(customEvent(GOAL_TOPIC, JSON.parse(JSON.stringify(goal)) as JsonValue)),
+      wishes: () => ctx.services.get(WishesKey) ?? null,
     });
     if (store) {
       try {
@@ -167,6 +185,7 @@ export class MindModule implements Module {
     this.#goals = goals;
     ctx.provide(GoalAgendaKey, goals);
     const life = await this.#startLife(ctx, config, store);
+    await this.#followWishes(ctx, goals);
     const persona = this.#options.persona;
     const loop = new MindLoop({
       config,
@@ -246,6 +265,7 @@ export class MindModule implements Module {
             reminder: JSON.parse(JSON.stringify(reminder)) as JsonValue,
           }),
         ),
+      wishes: () => ctx.services.get(WishesKey) ?? null,
     });
     const desk = new DailyPostDesk({
       config: config.daily_posts,
@@ -288,7 +308,31 @@ export class MindModule implements Module {
     return life;
   }
 
+  /**
+   * A wish she asked, or one that was answered, closes here too: the goal holding it is done and
+   * a one-off timer for it is cancelled (the log is where the arbiter's wish book says so).
+   */
+  async #followWishes(ctx: ModuleContext, goals: GoalBook): Promise<void> {
+    const log = ctx.services.get(EventLogKey);
+    if (!log) return;
+    const clock = this.#options.clock ?? ctx.clock;
+    this.#stopWishes = await log.project(
+      {
+        apply: (event) => {
+          if (event.kind !== "decision" || event.source !== WISH_SOURCE) return;
+          if (!isJsonObject(event.body) || !isJsonObject(event.body.wish)) return;
+          const { wish } = event.body as unknown as WishBody;
+          goals.wished(wish);
+          this.#reminders?.wished(wish);
+        },
+      },
+      { since: toTimestamp(clock.now()) },
+    );
+  }
+
   async stop(): Promise<void> {
+    this.#stopWishes?.();
+    this.#stopWishes = null;
     this.#unregister?.();
     this.#unregister = null;
     await this.#journal?.settle();

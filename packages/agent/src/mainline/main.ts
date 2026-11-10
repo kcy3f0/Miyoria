@@ -36,6 +36,7 @@ import {
   FloorKey,
   floorRank,
   type Handle,
+  HandleDirectoryKey,
   type ImpulseAttention,
   isJsonObject,
   type JsonObject,
@@ -60,7 +61,11 @@ import {
   toTimestamp,
   VoiceFloorKey,
   voiceLane,
+  type Wish,
+  type Wishes,
+  WishesKey,
   WorkingContextKey,
+  wishHolder,
 } from "@miyoria/types";
 import type { Claim } from "../claims.js";
 import type { MainLineConfig } from "../config.js";
@@ -70,7 +75,7 @@ import type { Agent } from "../runtime.js";
 import type { ToolScope } from "../tool-scope.js";
 import { ReactTool } from "../tools.js";
 import { contextId } from "../util.js";
-import { CommitmentBook } from "./commitments.js";
+import { CommitmentBook, isTalkPromise } from "./commitments.js";
 import {
   type HeldLine,
   LineGate,
@@ -109,6 +114,29 @@ export function waitLine(tools: readonly string[], random: () => number = Math.r
   const lines = WAIT_LINES[tools.find((t) => WAIT_LINES[t] !== undefined) ?? ""] ?? [];
   const pick = lines[Math.min(lines.length - 1, Math.floor(random() * lines.length))];
   return pick ?? "等我一下。";
+}
+
+/** Tools that say something to one person: using one for a wish is asking it. */
+const TALK_TOOLS: ReadonlySet<string> = new Set(["message_dm", "message.dm"]);
+/** Tool calls of turns that raised a wish, remembered until they finish. */
+const WISH_CALLS = 256;
+
+/** What the Floor has beyond its service interface: the keys a turn is about (`FloorCore`). */
+interface Reserving {
+  repeated(attention: ImpulseAttention): boolean;
+  reserve(attention: ImpulseAttention, turn: TurnId | null): void;
+}
+
+function reserving(floor: Floor): (Floor & Reserving) | null {
+  const f = floor as Floor & Partial<Reserving>;
+  return typeof f.repeated === "function" && typeof f.reserve === "function"
+    ? (f as Floor & Reserving)
+    : null;
+}
+
+/** The key of what a claim is about, revision included. */
+function claimKey(attention: ImpulseAttention): string {
+  return `${attention.key}#${attention.revision ?? 1}`;
 }
 
 /** Tools that are done the moment they are called: nothing to wait for. */
@@ -194,6 +222,10 @@ export class MainLine implements Mouth {
   #pinned: PinnedMemory | null = null;
   /** Results of a voice channel a song holds, one per place: told once the song is over. */
   #afterSong: { context: ContextKey; job: Job }[] = [];
+  /** `action` event of a talking tool a wish turn called → the wish it raises. */
+  readonly #wishCalls = new Map<string, string>();
+  /** What a turn in flight is about (`key#revision`) → that turn: one turn per thing. */
+  readonly #live = new Map<string, TurnId>();
 
   constructor(agent: Agent) {
     this.#agent = agent;
@@ -201,7 +233,9 @@ export class MainLine implements Mouth {
     const now = () => agent.ctx.clock.now();
     const log = () => services.get(EventLogKey) ?? null;
     this.lines = new LineBook(() => services.get(DeliveryLedgerKey) ?? null, now);
-    this.commitments = new CommitmentBook(log, now, this.config.commitment_due_secs);
+    this.commitments = new CommitmentBook(log, now, this.config.commitment_due_secs, () =>
+      this.wishes(),
+    );
     this.proposals = new Proposals({ log, now, services });
     this.hands = new Hands({
       log,
@@ -209,8 +243,60 @@ export class MainLine implements Mouth {
       activity: () => services.get(ActivityManagerKey) ?? null,
       told: (context, job) => this.#told(context, job),
       release: (context, line) => this.#release(context, line),
-      finished: (tool, cause) => this.commitments.kept(tool, cause),
+      finished: (tool, cause) => {
+        this.commitments.kept(tool, cause);
+        this.#raised(cause);
+      },
     });
+  }
+
+  /** What she wants to ask whom (the arbiter's book), when it runs. */
+  wishes(): Wishes | null {
+    return this.#agent.ctx.services.get(WishesKey) ?? null;
+  }
+
+  /** The wish a claim was opened for: a due commitment, a timer or a proposal of hers. */
+  wishOf(claim: Pick<MainClaim, "attention" | "proposal">): Wish | null {
+    const wishes = this.wishes();
+    if (wishes === null) return null;
+    const key = claim.attention?.key ?? null;
+    return (
+      (key === null ? null : wishes.of(key)) ??
+      (claim.proposal === null ? null : wishes.of(wishHolder("proposal", claim.proposal.id)))
+    );
+  }
+
+  /** A talking tool of a wish turn: once it is done, she asked. */
+  noteWishCall(event: string | null, wish: string): void {
+    if (event === null) return;
+    this.#wishCalls.set(event, wish);
+    while (this.#wishCalls.size > WISH_CALLS) {
+      const oldest = this.#wishCalls.keys().next().value;
+      if (oldest === undefined) break;
+      this.#wishCalls.delete(oldest);
+    }
+  }
+
+  #raised(cause: string | null): void {
+    const wish = cause === null ? undefined : this.#wishCalls.get(cause);
+    if (cause === null || wish === undefined) return;
+    this.#wishCalls.delete(cause);
+    this.wishes()?.asked(wish);
+  }
+
+  /** The turn in flight about `attention`, if one is. */
+  liveTurn(attention: ImpulseAttention): TurnId | null {
+    return this.#live.get(claimKey(attention)) ?? null;
+  }
+
+  /** `turn` is about `attention` until it ends. */
+  goLive(attention: ImpulseAttention, turn: TurnId): void {
+    this.#live.set(claimKey(attention), turn);
+  }
+
+  /** `turn` is over: what it was about may be taken up again. */
+  leave(turn: TurnId): void {
+    for (const [key, t] of this.#live) if (t === turn) this.#live.delete(key);
   }
 
   get config(): MainLineConfig {
@@ -636,19 +722,69 @@ export class MainTurn {
 
   /** Takes the mic. Returns why not, when the Floor says no. */
   take(): string | null {
-    const floor = this.#main.floor();
-    if (floor === null) return null;
+    const main = this.#main;
+    // A wish that was asked and answered, or that they asked her to stop, opens nothing: the turn
+    // that hears "you already asked" cannot be a turn to ask it (2026-11-10, 12:12 to 12:49).
+    const wish = main.wishOf(this.claim);
+    if (wish?.state === "closed") return "這件事已經問完了,不要再提";
+    const attention = this.claim.attention;
+    // One turn per thing: a due commitment opened once by its observation and again by a retry
+    // of the Arbiter after a slow context must not ask twice (2026-11-10 11:07).
+    const other = attention === null ? null : main.liveTurn(attention);
+    if (other !== null && other !== this.turn && !this.#addressed()) {
+      return "另一個回合正在處理這件事";
+    }
+    const floor = main.floor();
+    if (floor === null) {
+      if (attention !== null) main.goLive(attention, this.turn);
+      return null;
+    }
     if (this.claim.kind === "ambient") {
       const refused = floor.refuses("ambient", this.context);
       if (refused !== null) return refused;
     }
+    const keys = this.#answersLine() ? reserving(floor) : null;
+    if (keys !== null && attention !== null) {
+      // What a person's line caused may have been claimed already (a party game's note of it).
+      // Someone who called her is answered unless something was already said to them.
+      const said = this.#addressed() ? this.#delivered(attention) : keys.repeated(attention);
+      if (said) return "這句話已經有人回了";
+    }
     floor.hold(this.turn, this.context, this.claim.kind);
     this.#held = true;
+    if (attention !== null) {
+      keys?.reserve(attention, this.turn);
+      main.goLive(attention, this.turn);
+    }
     return null;
+  }
+
+  /**
+   * Someone called her by name or @-mentioned her. A line that only follows what she said (a
+   * player's answer to her quiz question, `reply`) is not: that is the line a note may share.
+   */
+  #addressed(): boolean {
+    return this.claim.kind === "addressed";
+  }
+
+  /** The turn answers a person's line (its key is the line's: `msg:` or `voice:utterance:`). */
+  #answersLine(): boolean {
+    // A claim the Arbiter opened (a note of the line) has the key reserved for itself already.
+    const kind = this.claim.kind;
+    if (kind !== "addressed" && kind !== "reply" && kind !== "ambient") return false;
+    const key = this.claim.attention?.key ?? "";
+    return key.startsWith("msg:") || key.startsWith("voice:utterance:");
+  }
+
+  /** A line about `attention` reached someone. */
+  #delivered(attention: ImpulseAttention): boolean {
+    const last = this.#agent.ctx.services.get(DeliveryLedgerKey)?.delivered(attention.key) ?? null;
+    return last !== null && last.revision >= (attention.revision ?? 1);
   }
 
   /** Generation is over: the mic goes once the lines settled. */
   ended(): void {
+    this.#main.leave(this.turn);
     if (this.#held) this.#main.floor()?.turnEnded(this.turn);
   }
 
@@ -765,6 +901,7 @@ export class MainTurn {
       throw error;
     }
     hands.answered(job, result);
+    this.#raises(tool, job);
     const accepted = job.state === "accepted";
     if (accepted) job.report = this.claim.muted ? "prompt" : "turn";
     return { run: result, accepted };
@@ -794,6 +931,18 @@ export class MainTurn {
   ): void {
     this.conclude(output, run, requester);
     this.#main.hands.retell(this.#loopJobs, why === "failed" ? "turn" : "prompt");
+  }
+
+  /**
+   * A talking tool of a turn opened for a wish: once it is done she asked (`MainLine.#raised`).
+   * Called before the job ends for the output's tools, after it for the loop's.
+   */
+  #raises(tool: string, job: Job): void {
+    if (!TALK_TOOLS.has(tool)) return;
+    const wish = this.#main.wishOf(this.claim);
+    if (wish === null) return;
+    if (job.state === "done") this.#main.wishes()?.asked(wish.key);
+    else if (job.state === "running") this.#main.noteWishCall(job.event, wish.key);
   }
 
   /** Every tool of the turn: the loop's, then the output's. */
@@ -893,6 +1042,7 @@ export class MainTurn {
     const main = this.#main;
     main.hands.toldOf(this.#telling);
     const drafts = this.#commit(output);
+    const wish = main.wishOf(this.claim);
     const body: TurnDecision = {
       turn: this.turn,
       claim: this.claim.kind,
@@ -904,18 +1054,37 @@ export class MainTurn {
     };
     this.#decision = this.#log(body);
     for (const draft of drafts) {
-      main.commitments.add(draft, this.context, this.turn, this.#decision);
+      const person = wish?.person ?? this.#personIn(draft.what);
+      main.commitments.add(draft, this.context, this.turn, this.#decision, person);
     }
     for (const action of output.actions) this.#dispatch(action, run, requester);
     const tools = body.actions;
+    const talked = this.said.length > 0 || tools.some((t) => TALK_TOOLS.has(t));
+    // A turn opened for a wish that said something raised it: every store holding it closes.
+    if (wish !== null && this.said.length > 0) main.wishes()?.asked(wish.key);
     if (this.claim.proposal !== null) this.#settleProposal(this.claim.proposal, tools);
-    // Turn that came for an overdue commitment: she did it, or she said so herself.
-    if (this.#overdue.length > 0 && this.said.length > 0 && this.claim.attention !== null) {
-      const closing = this.#overdue.filter(
-        (c) => this.claim.attention?.key === `commitment:${c.id}` && !this.#keeps(c, tools),
-      );
-      main.commitments.admitted(closing, this.#decision);
+    // Turn that came for an overdue commitment: she did it, or she said so herself. A promise to
+    // say something is kept by saying it, in a line or by a message (2026-11-10: the DM of 11:07
+    // kept nothing, and the promise was "broken" at 11:37).
+    const due = this.#overdue.filter((c) => this.claim.attention?.key === `commitment:${c.id}`);
+    for (const c of due) {
+      if (this.#keeps(c, tools) || !talked) continue;
+      if (c.capability === null && (wish !== null || isTalkPromise(c.what))) {
+        main.commitments.said(c, this.#decision);
+      } else if (this.said.length > 0) main.commitments.admitted([c], this.#decision);
     }
+  }
+
+  /** The person a promise names, by the name she uses for them (`null`: nobody she knows). */
+  #personIn(what: string): Handle | null {
+    if (!isTalkPromise(what)) return null;
+    const handles = this.#agent.ctx.services.get(HandleDirectoryKey)?.list() ?? [];
+    let best: Handle | null = null;
+    for (const h of handles) {
+      if (h.handle.length < 2 || !what.includes(h.handle)) continue;
+      if (best === null || h.handle.length > best.length) best = h.handle;
+    }
+    return best;
   }
 
   #keeps(c: Commitment, tools: readonly string[]): boolean {
@@ -989,6 +1158,7 @@ export class MainTurn {
       requester,
       cause: this.#decision,
     });
+    this.#raises(action.tool, job);
     const work =
       action.tool === STEER_TOOL
         ? main.steer(job, isJsonObject(args) ? args : {}, this.#decision)
