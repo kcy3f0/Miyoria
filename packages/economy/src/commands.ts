@@ -24,6 +24,7 @@ import {
 } from "@miyoria/commands";
 import { errorMessage, getLogger, type ServiceLookup } from "@miyoria/kernel";
 import { newId } from "@miyoria/types";
+import { registerV2, unregisterV2 } from "./commands-v2.js";
 import { STRANGER, WALLET_NODE } from "./economy.js";
 import { NO_RECEIVER } from "./transfer.js";
 import {
@@ -343,6 +344,7 @@ function goalEnded(g: GoalView): string {
 
 function unregister(registry: CommandRegistry): void {
   for (const path of PATHS) registry.unregister(path);
+  unregisterV2(registry);
 }
 
 function register(registry: CommandRegistry, handler: Handler): void {
@@ -468,6 +470,7 @@ export class EconomyCommands {
     }
     try {
       register(registry, new Handler(services));
+      registerV2(registry, services);
       this.#installed = registry;
     } catch (error) {
       log.warn({ error: errorMessage(error) }, "could not register wallet commands");

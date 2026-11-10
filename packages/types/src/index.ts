@@ -671,6 +671,14 @@ export {
   safeOutgoing,
 } from "./moderation.js";
 export {
+  type Participation,
+  ParticipationKey,
+  PLAY_ACTIVITIES,
+  type PlayActivity,
+  type PlayAward,
+  type PlayStatus,
+} from "./participation.js";
+export {
   type ClipOutcome,
   type PartyAward,
   type PartyRewardRequest,
