@@ -306,7 +306,7 @@ export const EconomyConfigSchema = z.object({
   // ask a day, how many may wait for her at once, after how many days an untouched one is given
   // back, and the share of a delivered price she keeps (the rest leaves the economy).
   commission_prices: z
-    .record(z.enum(["poem", "name", "tool", "song", "voice"]), coins)
+    .partialRecord(z.enum(["poem", "name", "tool", "song", "voice"]), coins)
     .default({ poem: 40, name: 30, tool: 120, song: 80, voice: 60 }),
   commissions_per_day: coins.default(3),
   commissions_open: z.number().int().positive().default(10),

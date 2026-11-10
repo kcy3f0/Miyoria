@@ -183,6 +183,38 @@ export interface ResolveResult {
   refunded: boolean;
 }
 
+// ---- commissions -----------------------------------------------------------------------------
+
+export const COMMISSION_KINDS = ["poem", "name", "tool", "song", "voice"] as const;
+export type CommissionKind = (typeof COMMISSION_KINDS)[number];
+/** On the bus when someone commissions her: whatever does the work listens. */
+export const COMMISSION_TOPIC = "economy.commission";
+/** On the bus when she delivered or declined: whatever sends messages hands it to the person. */
+export const COMMISSION_DONE_TOPIC = "economy.commission.done";
+
+export interface CommissionView {
+  id: string;
+  kind: CommissionKind;
+  label: string;
+  brief: string;
+  price: number;
+  status: "open" | "delivered" | "declined" | "expired";
+  created_at: string;
+  due_at: string;
+  result: string | null;
+  note: string | null;
+}
+
+export interface CommissionResult {
+  id: string;
+  kind: CommissionKind;
+  label: string;
+  price: number;
+  balance: number;
+  /** The same key asked twice: nothing was charged again. */
+  duplicate: boolean;
+}
+
 export interface Economy2 {
   /** The currency's name (`魚幣`). */
   readonly currency: string;
@@ -236,6 +268,23 @@ export interface Economy2 {
   resolvePrediction(ref: string, option: string | number): Promise<ResolveResult>;
   /** Calls a prediction off: every stake is given back. */
   cancelPrediction(ref: string): Promise<ResolveResult>;
+  /** The kinds of commission on offer with their prices. */
+  commissionMenu(): { kind: CommissionKind; label: string; price: number }[];
+  /** Commissions her for one thing, charging the price (`EconomyError` 400/402/403/429). */
+  commission(
+    account: AccountRef,
+    kind: CommissionKind,
+    brief: string,
+    key: string,
+  ): Promise<CommissionResult>;
+  /** A person's own commissions, newest first. */
+  commissions(account: AccountRef): Promise<CommissionView[]>;
+  /** What is waiting for her, oldest first. */
+  commissionsWaiting(): Promise<CommissionView[]>;
+  /** Hands in the result; part of the price is hers. */
+  deliverCommission(ref: string, text: string): Promise<CommissionView>;
+  /** She will not do it: the price goes back. */
+  declineCommission(ref: string, why: string): Promise<CommissionView>;
 }
 
 export const Economy2Key = serviceKey<Economy2>("Economy2");

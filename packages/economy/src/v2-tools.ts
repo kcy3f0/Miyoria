@@ -13,7 +13,7 @@ import { QUESTS } from "./quests.js";
 import { receipt, someone } from "./receipt.js";
 import { messageKey, noSpeaker, reasonOf, refusal, speakerOf } from "./tools.js";
 import { EconomyError } from "./types.js";
-import type { PredictionView } from "./v2-types.js";
+import { COMMISSION_KINDS, type CommissionView, type PredictionView } from "./v2-types.js";
 
 const NOT_ON_OWN = "不要設 on_own。";
 const AGENCY = "economy.agency";
@@ -502,6 +502,173 @@ export function cancelPredictionCapability(economy: EconomyService): Capability 
   }) as Capability;
 }
 
+// ---- commissions -----------------------------------------------------------------------------
+
+const CommissionArgs = z.strictObject({
+  kind: z.enum(COMMISSION_KINDS),
+  brief: z.string().trim().min(1).max(200),
+});
+type CommissionArgs = z.output<typeof CommissionArgs>;
+
+/** `economy.commission` (tool `commission_her`): the speaker pays to ask her for one thing. */
+export function commissionCapability(economy: EconomyService): Capability {
+  const cur = economy.config.currency;
+  return defineCapability<CommissionArgs>({
+    name: "economy.commission",
+    summary: `讓說話的人付${cur}委託她做一件事`,
+    risk: "medium",
+    args: CommissionArgs,
+    permission: null,
+    limits: { per_day: 100, per_person_per_day: 10, cooldown_ms: 0 },
+    tool: {
+      name: "commission_her",
+      description:
+        `對方明確說要付${cur}委託你做某件事時用:kind 是 poem(寫一首詩)、name(取名字)、` +
+        "tool(寫個小工具)、song(唱指定的歌)、voice(錄一句語音);brief 是他想要的。" +
+        "錢先收著,你做完用 deliver_commission 交給他,不想做就 decline_commission,全額退回。" +
+        `只有文字頻道裡對方本人說了才用,不要勸他委託。${NOT_ON_OWN}`,
+      properties: {
+        kind: { type: "string", enum: [...COMMISSION_KINDS], description: "委託的種類" },
+        brief: { type: "string", maxLength: 200, description: "想請你做什麼" },
+      },
+      required: ["kind", "brief"],
+    },
+    check: (_args, principal) => noSpeaker(principal),
+    async execute(args, ctx) {
+      const who = speakerOf(ctx);
+      if (who.voice) {
+        return refusal(
+          "沒有委託",
+          "unconfirmed",
+          "語音裡可能聽錯,不能直接花錢;請對方在文字頻道用 /me commission",
+        );
+      }
+      return answering("沒有委託成", async (): Promise<Answer> => {
+        const r = await economy.v2.commission(
+          who.account,
+          args.kind,
+          args.brief,
+          messageKey(who.message.context, who.message.id),
+        );
+        return {
+          text: `收下了:[${r.id}]${r.label},${r.price} ${cur}先收著,現在有 ${r.balance}。做完用 deliver_commission 交給他,不想做就 decline_commission 退錢。`,
+          data: { done: true, id: r.id, kind: r.kind, price: r.price, balance: r.balance },
+          receipt: receipt(
+            "📝 委託",
+            `${someone(who.account)} 委託了她${r.label}`,
+            `−${r.price} ${cur} · 現在有 ${r.balance}`,
+          ),
+        };
+      });
+    },
+  }) as Capability;
+}
+
+const lineOf = (c: CommissionView) => `[${c.id}]${c.label}:「${c.brief}」(${c.price})`;
+
+/** `economy.list_commissions` (tool `list_commissions`): what is waiting for her. */
+export function listCommissionsCapability(economy: EconomyService): Capability {
+  return defineCapability<NoArgs>({
+    name: "economy.list_commissions",
+    summary: "看有哪些委託在等她",
+    risk: "low",
+    args: NoArgs,
+    permission: AGENCY,
+    limits: { per_day: 200, per_person_per_day: 200, cooldown_ms: 0 },
+    tool: {
+      name: "list_commissions",
+      description: `看有哪些人付了錢、在等你做的委託。${OWN}`,
+      properties: {},
+      required: [],
+    },
+    async execute() {
+      return answering("看不了委託", async (): Promise<Answer> => {
+        const list = await economy.v2.commissionsWaiting();
+        return {
+          text: list.length === 0 ? "沒有在等的委託。" : list.map(lineOf).join("\n"),
+          data: { count: list.length },
+        };
+      });
+    },
+  }) as Capability;
+}
+
+const DeliverArgs = z.strictObject({
+  commission: z.string().trim().min(1).max(32),
+  text: z.string().trim().min(1).max(1_500),
+});
+type DeliverArgs = z.output<typeof DeliverArgs>;
+
+/** `economy.deliver_commission` (tool `deliver_commission`): she hands in the result. */
+export function deliverCommissionCapability(economy: EconomyService): Capability {
+  const cur = economy.config.currency;
+  return defineCapability<DeliverArgs>({
+    name: "economy.deliver_commission",
+    summary: "把委託的成品交給委託的人",
+    risk: "medium",
+    args: DeliverArgs,
+    permission: AGENCY,
+    limits: { per_day: 50, per_person_per_day: 50, cooldown_ms: 0 },
+    tool: {
+      name: "deliver_commission",
+      description:
+        "委託做完了,把成品(文字)交出去:commission 是委託的代號,text 是成品,最多 1500 字。" +
+        `一部分${cur}會進你的錢包。${OWN}`,
+      properties: {
+        commission: { type: "string", description: "委託的代號" },
+        text: { type: "string", maxLength: 1_500, description: "成品" },
+      },
+      required: ["commission", "text"],
+    },
+    async execute(args) {
+      return answering("沒有交成", async (): Promise<Answer> => {
+        const r = await economy.v2.deliverCommission(args.commission, args.text);
+        return {
+          text: `交出去了:[${r.id}]${r.label}。`,
+          data: { done: true, id: r.id },
+          receipt: receipt("📝 委託完成", `她交出了「${r.label}」`, `${r.price} ${cur}`),
+        };
+      });
+    },
+  }) as Capability;
+}
+
+const DeclineArgs = z.strictObject({
+  commission: z.string().trim().min(1).max(32),
+  why: z.string().trim().max(100).default(""),
+});
+type DeclineArgs = z.output<typeof DeclineArgs>;
+
+/** `economy.decline_commission` (tool `decline_commission`): she will not do it. */
+export function declineCommissionCapability(economy: EconomyService): Capability {
+  return defineCapability<DeclineArgs>({
+    name: "economy.decline_commission",
+    summary: "不接一個委託,錢全額退回",
+    risk: "medium",
+    args: DeclineArgs,
+    permission: AGENCY,
+    limits: { per_day: 50, per_person_per_day: 50, cooldown_ms: 0 },
+    tool: {
+      name: "decline_commission",
+      description: `不想做、做不到的委託,婉拒並把錢全額退回。why 是一句理由(可不寫)。${OWN}`,
+      properties: {
+        commission: { type: "string", description: "委託的代號" },
+        why: { type: "string", maxLength: 100, description: "理由" },
+      },
+      required: ["commission"],
+    },
+    async execute(args) {
+      return answering("沒有婉拒", async (): Promise<Answer> => {
+        const r = await economy.v2.declineCommission(args.commission, args.why);
+        return {
+          text: `婉拒了,${r.price} ${economy.config.currency}退回去了。`,
+          data: { done: true, id: r.id },
+        };
+      });
+    },
+  }) as Capability;
+}
+
 /** Every tool of economy 2.0. */
 export function v2Capabilities(economy: EconomyService): Capability[] {
   return [
@@ -514,5 +681,9 @@ export function v2Capabilities(economy: EconomyService): Capability[] {
     openPredictionCapability(economy),
     resolvePredictionCapability(economy),
     cancelPredictionCapability(economy),
+    commissionCapability(economy),
+    listCommissionsCapability(economy),
+    deliverCommissionCapability(economy),
+    declineCommissionCapability(economy),
   ];
 }

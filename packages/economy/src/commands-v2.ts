@@ -18,7 +18,7 @@ import { newId } from "@miyoria/types";
 import { STRANGER, WALLET_NODE } from "./economy.js";
 import { NO_RECEIVER } from "./transfer.js";
 import { EconomyError } from "./types.js";
-import { type Economy2, Economy2Key } from "./v2-types.js";
+import { COMMISSION_KINDS, type CommissionKind, type Economy2, Economy2Key } from "./v2-types.js";
 
 const log = getLogger("economy.commands.v2");
 
@@ -30,6 +30,8 @@ export const V2_PATHS = [
   "me titles",
   "me predictions",
   "me bet",
+  "me commission",
+  "me commissions",
 ] as const;
 
 const UNAVAILABLE = "錢包現在打不開";
@@ -180,6 +182,59 @@ class Handler2 {
     });
   }
 
+  /** `/me commission`: pay to ask her for one thing. */
+  commission(inv: Invocation): Promise<CommandReply> {
+    return this.guard(async (e) => {
+      const kind = inv.str("kind")?.trim() ?? "";
+      const brief = inv.str("brief")?.trim() ?? "";
+      if (!COMMISSION_KINDS.includes(kind as CommissionKind) || brief === "") {
+        const menu = e.commissionMenu().map((m) => `${m.kind} ${m.label} ${m.price}`);
+        return notice(
+          "info",
+          `要選種類並寫清楚想要什麼。可以委託的：${menu.join("、") || "現在都不接"}`,
+        );
+      }
+      const r = await e.commission(
+        inv.invoker,
+        kind as CommissionKind,
+        brief,
+        `discord:${newId()}`,
+      );
+      return cardReply(
+        [
+          { type: "text", text: `委託她${r.label}，她收到了` },
+          {
+            type: "muted",
+            text: `花了 ${r.price} ${e.currency}，剩 ${r.balance}。她不想做會全額退回。`,
+          },
+        ],
+        { accent: "neutral", title: "委託" },
+      );
+    });
+  }
+
+  /** `/me commissions`: the person's own, with what she handed in. */
+  commissions(inv: Invocation): Promise<CommandReply> {
+    return this.guard(async (e) => {
+      const list = await e.commissions(inv.invoker);
+      if (list.length === 0) return notice("info", "還沒有委託過她");
+      const state = {
+        open: "等她做",
+        delivered: "完成了",
+        declined: "她沒接，退回了",
+        expired: "沒來得及，退回了",
+      };
+      const lines = list.map(
+        (c) =>
+          `**[${c.id}] ${c.label}**　${state[c.status]}\n「${c.brief}」${c.result ? `\n${c.result}` : ""}${c.note ? `\n（${c.note}）` : ""}`,
+      );
+      return cardReply([{ type: "text", text: lines.join("\n\n") }], {
+        accent: "neutral",
+        title: "你的委託",
+      });
+    });
+  }
+
   /** `/me titles`: the titles held and the achievements still ahead. */
   titles(inv: Invocation): Promise<CommandReply> {
     return this.guard(async (e) => {
@@ -256,6 +311,27 @@ export function registerV2(registry: CommandRegistry, services: ServiceLookup): 
       ephemeral: true,
     }),
     (inv) => handler.bet(inv),
+  );
+  registry.register(
+    commandSpec("me commission", "付魚幣委託她做一件事（她不做會全額退回）", {
+      args: [
+        argSpec(
+          "kind",
+          "poem 詩、name 取名、tool 小工具、song 唱歌、voice 一句語音",
+          ArgKind.string,
+        ),
+        argSpec("brief", "想請她做什麼", ArgKind.string),
+      ],
+      permission: WALLET_NODE,
+    }),
+    (inv) => handler.commission(inv),
+  );
+  registry.register(
+    commandSpec("me commissions", "你委託過她的事和她交的成品", {
+      permission: WALLET_NODE,
+      ephemeral: true,
+    }),
+    (inv) => handler.commissions(inv),
   );
   registry.register(
     commandSpec("me titles", "你的稱號和成就", { permission: WALLET_NODE, ephemeral: true }),
