@@ -1,5 +1,12 @@
 import type { DecisionLog, DecisionRecord } from "@miyoria/store";
-import type { ContextKey, TurnOutcome, TurnOutcomeRecord, TurnReason } from "@miyoria/types";
+import {
+  CORRECTION_KINDS,
+  type ContextKey,
+  type CountedOutcome,
+  type TurnOutcome,
+  type TurnOutcomeRecord,
+  type TurnReason,
+} from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import {
   aggregateTurnMetrics,
@@ -170,6 +177,41 @@ describe("aggregateTurnMetrics", () => {
     expect(m.daily[1]?.addressed.rate).toBeNull();
     expect(m.overall.turns).toBe(2);
     expect(m.overall.outcomes).toEqual({ sent: 1, silence: 1, cancelled: 0, error: 0 });
+  });
+
+  it("adds up the corrections of the measured turns, by kind and channel, per day", () => {
+    const counted = (
+      context: ContextKey,
+      corrections: CountedOutcome["corrections"],
+      daysAgo = 0,
+    ): CountedOutcome => ({ ...outcome("addressed", SENT, { context, daysAgo }), corrections });
+    const outcomes = [
+      counted(TEXT, { claim_reask: 1, claim_held: 2 }),
+      counted(TEXT, { claim_held: 1 }),
+      counted(TEXT, {}),
+      counted(VOICE, { wait_line: 1 }),
+      counted(TEXT, { leak_dropped: 3 }, 1),
+      // Never reached the model, or written before the count: not measured.
+      outcome("addressed", SENT),
+      // Malformed counts are left out, the turn is still measured.
+      { ...outcome("addressed", SENT), corrections: { nope: 3, claim_held: -1 } } as never,
+    ];
+    const m = aggregateTurnMetrics(outcomes, [refused(["score 0.1 < 0.45"])], {
+      now: NOW,
+      days: 2,
+    });
+    const c = m.overall.corrections;
+    expect(c.measured).toEqual({ voice: 1, text: 5 });
+    expect(c.kinds.claim_held.text).toEqual({ events: 3, turns: 2 });
+    expect(c.kinds.claim_reask.text).toEqual({ events: 1, turns: 1 });
+    expect(c.kinds.wait_line).toEqual({
+      voice: { events: 1, turns: 1 },
+      text: { events: 0, turns: 0 },
+    });
+    // Every kind is there, zeros included, so the panel's table never changes shape.
+    expect(Object.keys(c.kinds)).toEqual([...CORRECTION_KINDS]);
+    expect(m.daily.map((d) => d.corrections.kinds.leak_dropped.text.events)).toEqual([3, 0]);
+    expect(m.daily.map((d) => d.corrections.measured.text)).toEqual([1, 4]);
   });
 });
 
