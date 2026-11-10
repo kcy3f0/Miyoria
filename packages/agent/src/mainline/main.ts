@@ -762,13 +762,19 @@ export class MainTurn {
     return null;
   }
 
-  /** Someone called her by name, @-mentioned her or replied to her. */
+  /**
+   * Someone called her by name or @-mentioned her. A line that only follows what she said (a
+   * player's answer to her quiz question, `reply`) is not: that is the line a note may share.
+   */
   #addressed(): boolean {
-    return this.claim.kind === "addressed" || this.claim.kind === "reply";
+    return this.claim.kind === "addressed";
   }
 
   /** The turn answers a person's line (its key is the line's: `msg:` or `voice:utterance:`). */
   #answersLine(): boolean {
+    // A claim the Arbiter opened (a note of the line) has the key reserved for itself already.
+    const kind = this.claim.kind;
+    if (kind !== "addressed" && kind !== "reply" && kind !== "ambient") return false;
     const key = this.claim.attention?.key ?? "";
     return key.startsWith("msg:") || key.startsWith("voice:utterance:");
   }
