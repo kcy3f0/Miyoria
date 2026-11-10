@@ -110,7 +110,9 @@ export function peopleInPrompt(configured: boolean | null, profilesPresent: bool
 
 /**
  * `[modules.reflect.diary]`: after the daily reflection she writes a short diary entry and posts
- * it to `channel` (`discord:<guild>:<channel>`; empty = no diary).
+ * it to `channel` (`discord:<guild>:<channel>`; empty = no diary). With a channel, writing it is
+ * also something she can choose to do (capability `diary.write`, the "diary" row of her activity
+ * table), one entry per daily reflection.
  */
 export const DiaryConfigSchema = z.object({
   channel: z.string().default(""),
@@ -118,6 +120,11 @@ export const DiaryConfigSchema = z.object({
   max_chars: z.number().int().min(40).max(1500).default(300),
   /** A line put above every entry (empty = none), e.g. `📔 今天的日記`. */
   heading: z.string().max(60).default(""),
+  /**
+   * Write it right after the daily reflection. `false`: only when she chooses to (her activity
+   * table suggests it in the evening), from the latest reflection not written yet.
+   */
+  after_reflection: z.boolean().default(true),
 });
 export type DiaryConfig = z.output<typeof DiaryConfigSchema>;
 

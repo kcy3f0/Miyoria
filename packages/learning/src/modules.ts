@@ -1,7 +1,7 @@
 // The three modules: `conversation` (continuous compaction), `knowledge` (her documents) and
 // `reflect` (feedback signals, lessons, daily and light reflections).
 
-import { ActuatorRegistryKey } from "@miyoria/actions";
+import { ActuatorRegistryKey, actuatorsFor } from "@miyoria/actions";
 import {
   defineManifest,
   errorMessage,
@@ -38,6 +38,7 @@ import {
   type PersonId,
   PersonProfilesKey,
   PlatformSinksKey,
+  Principals,
   type ProfileId,
   PromptContributorsKey,
   type PromptRequest,
@@ -53,7 +54,7 @@ import {
   ReflectConfigSchema,
 } from "./config.js";
 import { ConversationEngine, FEEDBACK_TOPIC } from "./conversation.js";
-import { Diary } from "./diary.js";
+import { DIARY_CAPABILITY, Diary, diaryCapability } from "./diary.js";
 import { FeedbackTracker } from "./feedback.js";
 import { KnowledgeStore } from "./knowledge.js";
 import { LessonStore } from "./lessons.js";
@@ -554,7 +555,37 @@ export class ReflectModule implements Module {
       sinks: () => s.get(PlatformSinksKey),
       persona: () => (persona ? persona(s) : ""),
       name: this.options.name ?? "她",
+      store: settings,
+      profile: this.profile,
     });
+    await loadWithTimeout(ctx, "diary", () => diary.load());
+    // With a channel, writing it is hers to choose too (the "diary" row of her activity table);
+    // without one the capability is not there and the row stays skipped.
+    const actuators = actuatorsFor(ctx);
+    if (diary.where() !== null) {
+      const off = actuators.register(diaryCapability(diary, () => reflector.runs(5)));
+      const cleanup = this.#cleanup;
+      this.#cleanup = () => {
+        off();
+        cleanup?.();
+      };
+    }
+    /** The entry after a daily reflection, through the gate like any of her own actions. */
+    const writeDiary = async (): Promise<void> => {
+      if (diary.where() === null || !config.diary.after_reflection) return;
+      const outcome = await (s.get(ActuatorRegistryKey) ?? actuators).invoke({
+        principal: Principals.self(null),
+        capability: DIARY_CAPABILITY,
+        args: {},
+        why: "每日回顧之後寫日記",
+        turn: null,
+      });
+      if (outcome.status === "denied") {
+        ctx.log.info({ why: outcome.decision.reason }, "no diary entry after the reflection");
+      } else if (outcome.status === "failed") {
+        ctx.log.warn({ error: outcome.error }, "she could not write her diary");
+      }
+    };
     ctx.spawn("reflect", async (signal) => {
       while (!signal.aborted) {
         try {
@@ -574,7 +605,11 @@ export class ReflectModule implements Module {
         );
         if (run) {
           ctx.publish(customEvent("reflect.run", JSON.parse(JSON.stringify(run)) as JsonValue));
-          if (run.kind === "daily") void diary.write(run, signal);
+          if (run.kind === "daily") {
+            void writeDiary().catch((error: unknown) => {
+              ctx.log.warn({ error: errorMessage(error) }, "she could not write her diary");
+            });
+          }
           ctx.log.info(
             { kind: run.kind, error: run.error, lessons: run.lessons.length },
             "she reflected",

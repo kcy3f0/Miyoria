@@ -1,14 +1,17 @@
+import type { ExecContext } from "@miyoria/actions";
 import type { LlmRouter } from "@miyoria/llm";
+import type { SettingsStore } from "@miyoria/store";
 import {
   type ContextKey,
   type OutgoingMessage,
   type PlatformSink,
   PlatformSinks,
+  Principals,
   type ReflectionRun,
 } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import { reflectConfig } from "../src/config.js";
-import { Diary, diaryMaterial, diaryRules, fitEntry } from "../src/diary.js";
+import { Diary, diaryCapability, diaryMaterial, diaryRules, fitEntry } from "../src/diary.js";
 
 const run = (over: Partial<ReflectionRun> = {}): ReflectionRun => ({
   id: "r1",
@@ -91,6 +94,55 @@ describe("diary", () => {
     expect(await diary.write(run({ kind: "light", at: "2026-11-11T21:00:00.000Z" }))).toBeNull();
     expect(await diary.write(run({ error: "x", at: "2026-11-12T21:00:00.000Z" }))).toBeNull();
     expect(sent).toHaveLength(1);
+  });
+
+  it("is_something_she_chooses_to_do_once_per_reflection", async () => {
+    const { sinks, sent } = sinkThatRecords();
+    const saved = new Map<string, unknown>();
+    const store = {
+      get: async (_p: string, key: string) => saved.get(key) ?? null,
+      set: async (_p: string, key: string, value: unknown) => {
+        saved.set(key, value);
+      },
+    } as unknown as SettingsStore;
+    const deps = {
+      router: () => routerSaying("今天唱了好多歌。"),
+      sinks: () => sinks,
+      persona: () => "",
+      name: "Miyo",
+      store,
+      profile: "p",
+    };
+    const cfg = reflectConfig({ diary: { channel: "discord:1:2" } }).diary;
+    const diary = new Diary(cfg, deps);
+    // Newest first, as `Reflector.runs` gives them; a light one is no material.
+    let runs: ReflectionRun[] = [
+      run({ id: "r3", kind: "light", at: "2026-11-11T22:00:00.000Z" }),
+      run({ id: "r2", at: "2026-11-11T21:00:00.000Z" }),
+      run({ id: "r1" }),
+    ];
+    // The id the "diary" row of her activity table waits for (packages/mind life/activities.ts).
+    const cap = diaryCapability(diary, () => runs);
+    expect(cap.name).toBe("diary.write");
+    expect(cap.tool?.name).toBe("diary_write");
+    const principal = Principals.self(null);
+    expect(cap.check?.({}, principal)).toBeNull();
+    const ctx = { signal: new AbortController().signal } as unknown as ExecContext;
+    expect(await cap.execute({}, ctx)).toMatchObject({ data: { day: "2026-11-11" } });
+    expect(sent).toHaveLength(1);
+    // Written: refused before the gate lets it through, so a try is not counted as written.
+    expect(cap.check?.({}, principal)).toContain("已經寫過了");
+    await expect(cap.execute({}, ctx)).rejects.toThrow();
+    // A restart remembers the day.
+    const again = new Diary(cfg, deps);
+    await again.load();
+    expect(again.pending(runs)).toBeNull();
+    // The next reflection can be written.
+    runs = [run({ id: "r4", at: "2026-11-12T21:00:00.000Z" }), ...runs];
+    expect(again.pending(runs)?.id).toBe("r4");
+    // No channel: nothing to choose.
+    const off = diaryCapability(new Diary(reflectConfig().diary, deps), () => runs);
+    expect(off.check?.({}, principal)).toBe("日記頻道沒有設定");
   });
 
   it("material_rules_and_cutting", () => {
