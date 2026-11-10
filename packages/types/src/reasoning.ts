@@ -2,7 +2,7 @@
 // differs per purpose is whether it reasons and how deeply. Replaces the on/off
 // `[llm.thinking]` with `[llm.reasoning]` (`purpose = "off" | "low" | "medium" | "high"`).
 //
-// Reasoning purposes are finer than the router's model purposes (`[llm.purposes]`): the three
+// Reasoning purposes are finer than the router's model purposes (`[llm.purposes]`): the
 // `chat_*` purposes all use the `chat` model chain. Providers that only have an on/off switch
 // map `low` / `medium` / `high` to "on" and cap the reasoning length with `max_tokens`.
 
@@ -26,6 +26,10 @@ export const REASONING_PURPOSES = [
   "chat_text",
   /** Turns she starts herself that may use tools. */
   "chat_intent",
+  /** A call of the main line that reads what her tools brought back in the same turn (v4 §4.4). */
+  "chat_tools",
+  /** A text reply to someone who asked her something in earnest (v4 §4.4). */
+  "chat_question",
   /** Gray-zone checks, translation. */
   "fast",
   "appraise",
@@ -46,6 +50,8 @@ export const DEFAULT_REASONING: Readonly<Record<ReasoningPurpose, ReasoningLevel
   chat_voice: "off",
   chat_text: "off",
   chat_intent: "low",
+  chat_tools: "low",
+  chat_question: "low",
   fast: "off",
   appraise: "low",
   plan: "medium",
