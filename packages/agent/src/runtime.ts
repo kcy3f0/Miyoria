@@ -929,7 +929,7 @@ export class Agent {
       last_spoke_at: this.#existing(context)?.session.lastSelfAt() ?? null,
       humans:
         context.kind === "voice" && this.inVoice(context)
-          ? (this.#existing(context)?.session.voiceMembers().length ?? 0)
+          ? (this.#existing(context)?.session.listeners().length ?? 0)
           : null,
     };
   }

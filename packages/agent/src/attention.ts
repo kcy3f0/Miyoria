@@ -5,6 +5,8 @@
 // * the prefilter: the channel's mode, direct address (mention, reply, her name, a DM; in voice
 //   a question right after she spoke or a one-on-one), someone answering what she just said,
 //   and in voice someone still speaking (she does not join in over them);
+// * someone who goes on talking with her (`conversing`): under the main line that turn is the
+//   model's to answer or pass, with no score, share cap or dice in between;
 // * whether to join in: a cheap salience score × her talkativeness (`talkFactor`), under the
 //   share cap (her share of recent messages); in the gray zone the `fast` model is asked (in
 //   the turn itself).
@@ -19,10 +21,10 @@
 // interrupt scale) and every cooldown are gone: how often she starts something on her own is
 // the Arbiter's (`[modules.arbiter]`), and her feelings already moved her talkativeness.
 
-import { type IncomingMessage, timestampMs } from "@miyoria/types";
+import { type IncomingMessage, sameAccount, timestampMs } from "@miyoria/types";
 import type { Activeness, AttentionConfig, ChannelMode } from "./config.js";
 import { type Ceiling, cappedTalk } from "./levels.js";
-import type { Session } from "./session.js";
+import type { HistoryEntry, Session } from "./session.js";
 import {
   accountId,
   fixed,
@@ -138,6 +140,11 @@ export interface AttentionInput {
   now: number;
   /** Set for voice contexts. */
   voice: VoiceAttention | null;
+  /**
+   * The model may answer `<silence/>` (the main line): a turn that goes on talking with her
+   * (`conversing`) is left to it instead of the score and the share cap.
+   */
+  modelMayPass?: boolean;
 }
 
 /**
@@ -317,6 +324,17 @@ export function assess(input: AttentionInput): Assessment {
     reasons.push("someone is speaking");
     return done({ kind: "ignore" });
   }
+  // 2026-11-07 to 11-10: of 1,803 follow-ups she did not answer, the share cap stopped 1,489 (two
+  // people going back and forth put her near 0.5) and the level's minimum score 253. Whether a
+  // line is still meant for her is read off its words, so the model decides: it may pass.
+  if (
+    replying &&
+    input.modelMayPass === true &&
+    conversing(input.session, input.inputs, input.now)
+  ) {
+    reasons.push("talking with her: hers to answer or pass");
+    return done({ kind: "sample", probability: 1 });
+  }
   const share = input.session.selfShare(cfg.recent_window);
   const maxShare = Math.min(input.maxShare, ceiling?.maxShare ?? 1);
   if (share > maxShare) {
@@ -353,18 +371,54 @@ export function answersHer(
   inputs: readonly IncomingMessage[],
   now: number,
 ): boolean {
+  const her = earlier(session, inputs)
+    .reverse()
+    .slice(0, 3)
+    .find((e) => e.isSelf);
+  return her !== undefined && Math.trunc((now - her.ts) / 1000) < FOLLOW_UP_SECS;
+}
+
+/** A line this long after hers no longer follows it. */
+const FOLLOW_UP_SECS = 180;
+
+/** The history without `inputs` (which are already in it), oldest first. */
+function earlier(session: Session, inputs: readonly IncomingMessage[]): HistoryEntry[] {
   const ids = new Set(inputs.map((m) => m.id.id));
   const history = session.history();
   // Inputs without an id match in the history are its last entries (as recorded).
   const known = history.filter((e) => e.id !== null && ids.has(e.id)).length;
-  const rest = history
+  return history
     .slice(0, history.length - (inputs.length - known))
     .filter((e) => e.id === null || !ids.has(e.id));
-  const her = rest
-    .reverse()
-    .slice(0, 3)
-    .find((e) => e.isSelf);
-  return her !== undefined && Math.trunc((now - her.ts) / 1000) < 180;
+}
+
+/**
+ * This turn goes on talking with her, which is narrower than `answersHer`: her lines are the
+ * last thing said before it, or one other line came between and the speaker is the one her
+ * lines answered (who spoke right before them). A reply to someone else's message is not.
+ *
+ * Narrow on purpose: every such turn costs a call and may make her speak. Once two lines passed
+ * without her, the conversation went on without her and the score decides again.
+ */
+export function conversing(
+  session: Session,
+  inputs: readonly IncomingMessage[],
+  now: number,
+): boolean {
+  const speaker = inputs.at(-1)?.author.account;
+  if (speaker === undefined) return false;
+  if (inputs.some((m) => (m.reply_to ?? null) !== null && !m.reply_to_self)) return false;
+  const rest = earlier(session, inputs);
+  const last = rest.findLastIndex((e) => e.isSelf);
+  const her = rest[last];
+  if (her === undefined || last < rest.length - 2) return false;
+  if (Math.trunc((now - her.ts) / 1000) >= FOLLOW_UP_SECS) return false;
+  if (last === rest.length - 1) return true;
+  // Her reply may be several messages: who spoke before the first of them.
+  let first = last;
+  while (first > 0 && rest[first - 1]?.isSelf === true) first -= 1;
+  const answered = rest[first - 1];
+  return answered !== undefined && sameAccount(answered.account, speaker);
 }
 
 function salience(input: AttentionInput, direct: boolean, reasons: string[]): number {

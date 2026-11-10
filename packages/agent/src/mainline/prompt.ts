@@ -67,7 +67,8 @@ export function mainRules(voice: boolean, speaksIn: string | null): string {
 
 const ADDRESSING: Record<FloorClaimKind, string> = {
   addressed: "有人在叫你:回應「要回的訊息」裡那個人。其他訊息和記憶只是背景。",
-  reply: "有人在回你剛說的話:接著回應他。",
+  reply:
+    "有人接著你剛說的話講:是對你說的就接下去回他。明顯是在跟別人講,或這段話已經講完、沒什麼好接的,就 <silence/>。",
   result: "手上的事有結果了(見參考資料「結果」)。可以順口講一聲,沒什麼好說就 <silence/>。",
   urgent: "剛發生緊急的事(見參考資料「你想聊的事」):馬上用一句話反應。",
   notable: "剛發生一件事(見參考資料「你想聊的事」)。想講就簡短講,不想講就 <silence/>。",

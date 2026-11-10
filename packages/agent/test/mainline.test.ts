@@ -43,6 +43,7 @@ import {
   TurnSilencerKey,
   toTimestamp,
   VoiceFloorKey,
+  VoiceSinkKey,
 } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -64,6 +65,7 @@ import {
   incoming,
   mention,
   noCheck,
+  Paced,
   Probe,
   stopHarnesses,
   textDelta,
@@ -1657,5 +1659,120 @@ describe("the hands merge repeats", () => {
     vi.advanceTimersByTime(6 * 60_000);
     fail(h, undefined);
     expect(told).toHaveLength(2);
+  });
+});
+
+describe("stage 0 of v4: follow-ups, an empty room, sentences out sooner", () => {
+  it("someone who goes on talking with her is the model's to answer or pass", async () => {
+    const llm = new Scripted([reply("早啊"), reply("<silence/>")]);
+    const h = await rig(llm);
+    h.say(mention(channel("c"), "Alice", "早"));
+    await wait(2000);
+    h.traces();
+    h.say(incoming(channel("c"), "Alice", "我先去忙了"));
+    await wait(2000);
+    const trace = h.traces().at(-1);
+    expect(trace?.respond).toBe(true);
+    expect(trace?.reasons).toContain("talking with her: hers to answer or pass");
+    // She was told she may pass, and did: nothing but the first answer went out.
+    expect(JSON.stringify(llm.requests[1]?.messages)).toContain("沒什麼好接的,就 <silence/>");
+    expect(h.sink.texts()).toEqual(["早啊"]);
+  });
+
+  it("with nobody in the voice channel who can hear, a result is not said out loud", async () => {
+    const slow = new Probe("slow", null, 5000);
+    const llm = new Scripted([reply("我查一下。", ["slow", "{}"]), reply("查到了。")]);
+    const h = await rig(llm, {
+      tools: [slow],
+      body: new Body(),
+      config: { tool_timeout_ms: 20_000 },
+    });
+    joinVoice(h);
+    await wait(10);
+    utter(h, "DeepSeek 查一下");
+    await wait(1500);
+    const said = () => h.sink.speeches().map(([t]) => t);
+    expect(said()).toEqual(["我查一下。"]);
+    for (const a of h.sink.speakActions()) {
+      playback(h, a, "started");
+      playback(h, a, "finished");
+    }
+    // The one who asked put their headphones down.
+    h.publish({
+      type: "voice_participants",
+      data: {
+        context: VOICE,
+        participants: [
+          {
+            account: { platform: "test", id: "p0" },
+            display_name: "P0",
+            is_self: false,
+            muted: false,
+            deafened: true,
+          },
+        ],
+      },
+    });
+    await wait(15_000);
+    expect(llm.requests).toHaveLength(2);
+    expect(JSON.stringify(llm.requests[1]?.messages)).toContain("現在沒有人在聽");
+    expect(said()).toEqual(["我查一下。"]);
+  });
+
+  describe("in voice, heard in another language", () => {
+    const voiceSink = { speaksIn: "Japanese", speak: async () => "completed" as const };
+    const bilingual = (chat: ChatProvider, tools: Probe[] = []) =>
+      rig(chat, {
+        tools,
+        body: new Body(),
+        provide: (services) => services.provide("app", VoiceSinkKey, voiceSink),
+      });
+    const said = (h: Harness) => h.sink.speeches().map(([t]) => t);
+
+    it("a sentence is said when the next line begins, not when it is written out", async () => {
+      const paced = new Paced([
+        [
+          [0, textDelta("<voice>えっ、本当に?</voice>欸,真的嗎?")],
+          [0, textDelta("<voice>じゃあ")],
+          [2000, textDelta("行こう!</voice>那走吧!")],
+          [0, done()],
+        ],
+      ]);
+      const h = await bilingual(paced);
+      joinVoice(h);
+      await wait(10);
+      utter(h, "DeepSeek 我中樂透了");
+      await wait(1500);
+      // The second line is still being written.
+      expect(said(h)).toEqual(["欸,真的嗎?"]);
+      await wait(3000);
+      expect(said(h)).toEqual(["欸,真的嗎?", "那走吧!"]);
+    });
+
+    it("the last sentence does not wait for the tool call written after it", async () => {
+      const tool = new Probe("thing");
+      const paced = new Paced([
+        [
+          [0, textDelta("<voice>ちょっと待って。</voice>等我一下。")],
+          [0, toolCall(0, "c0", "thing", "")],
+          [2000, toolCall(0, null, null, "{}")],
+          [0, done()],
+        ],
+        [
+          [0, textDelta("<silence/>")],
+          [0, done()],
+        ],
+      ]);
+      const h = await bilingual(paced, [tool]);
+      joinVoice(h);
+      await wait(10);
+      utter(h, "DeepSeek 幫我弄");
+      await wait(1500);
+      expect(said(h)).toEqual(["等我一下。"]);
+      expect(tool.calls).toHaveLength(0);
+      await wait(3000);
+      expect(tool.calls).toHaveLength(1);
+      expect(said(h)).toEqual(["等我一下。"]);
+    });
   });
 });

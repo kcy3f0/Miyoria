@@ -6,7 +6,9 @@ import {
   type AttentionConfig,
   AttentionConfigSchema,
   assess,
+  CEILINGS,
   type ChannelMode,
+  conversing,
   decide,
   directReason,
   effectiveTalk,
@@ -134,6 +136,117 @@ describe("attention", () => {
     a = run(cfg, "normal", s, reply);
     expect(a.gate).toEqual({ kind: "ignore" });
     expect(a.reasons.some((r) => r.startsWith("anti-spam"))).toBe(true);
+  });
+
+  describe("someone who goes on talking with her", () => {
+    const quiet = (session: Session, inputs: IncomingMessage[], modelMayPass = true) =>
+      assess({
+        config: config({ llm_check: false }),
+        mode: "quiet",
+        activeness: "medium",
+        ceiling: CEILINGS.quiet,
+        names: NAMES,
+        interests: [],
+        maxShare: 0.3,
+        session,
+        inputs,
+        now: Date.now(),
+        voice: null,
+        modelMayPass,
+      });
+    const handedOver = (a: Assessment) =>
+      a.reasons.includes("talking with her: hers to answer or pass");
+    const said = (s: Session, who: string, text: string): IncomingMessage[] => {
+      const m = msg("channel", who, text);
+      m.id = { ...m.id, id: newId() };
+      s.recordMessage(m, false);
+      return [m];
+    };
+    /** `a` and she went back and forth: her share is far over the quiet level's 0.15. */
+    const backAndForth = (): Session => {
+      const s = sessionWith([]);
+      for (let i = 0; i < 4; i++) {
+        said(s, "a", `第 ${i} 句`);
+        s.recordOwn("Her", me, `回 ${i}`, newId(), Date.now());
+      }
+      return s;
+    };
+
+    it("is the model's to answer or pass, whatever her share and the level's score", () => {
+      const s = backAndForth();
+      const a = quiet(s, said(s, "a", "好啊"));
+      expect(a.gate, a.reasons.join("; ")).toEqual({ kind: "sample", probability: 1 });
+      expect(handedOver(a)).toBe(true);
+      expect(a.direct).toBe(false);
+    });
+
+    it("without a model that may pass, the share cap and the score decide as before", () => {
+      const s = backAndForth();
+      const a = quiet(s, said(s, "a", "好啊"), false);
+      expect(a.gate).toEqual({ kind: "ignore" });
+      expect(a.reasons.some((r) => r.startsWith("anti-spam"))).toBe(true);
+    });
+
+    it("someone else right after her line gets one look, and the next speaker none", () => {
+      const s = backAndForth();
+      const b = said(s, "b", "你們在聊什麼");
+      expect(conversing(s, b, Date.now())).toBe(true);
+      // She passed. `c` was never talking with her: two lines went by without her.
+      const c = said(s, "c", "不知道欸");
+      expect(conversing(s, c, Date.now())).toBe(false);
+      expect(handedOver(quiet(s, c))).toBe(false);
+    });
+
+    it("the one she answered may go on after one line of someone else", () => {
+      const s = backAndForth();
+      said(s, "b", "路過");
+      expect(conversing(s, said(s, "a", "所以呢"), Date.now())).toBe(true);
+    });
+
+    it("her answer in several messages still answers the same person", () => {
+      const s = sessionWith([]);
+      said(s, "a", "推薦一首歌");
+      s.recordOwn("Her", me, "這首", newId(), Date.now());
+      s.recordOwn("Her", me, "還有這首", newId(), Date.now());
+      said(s, "b", "喔");
+      expect(conversing(s, said(s, "a", "第二首不錯"), Date.now())).toBe(true);
+    });
+
+    it("a reply to someone else's message is not for her", () => {
+      const s = backAndForth();
+      const m = msg("channel", "a", "你說的對");
+      m.id = { ...m.id, id: newId() };
+      m.reply_to = { context: tctx("channel"), id: "someone-elses" };
+      s.recordMessage(m, false);
+      expect(conversing(s, [m], Date.now())).toBe(false);
+      expect(handedOver(quiet(s, [m]))).toBe(false);
+    });
+
+    it("a line long after hers starts over", () => {
+      const s = backAndForth();
+      const m = said(s, "a", "欸");
+      expect(conversing(s, m, Date.now() + 179_000)).toBe(true);
+      expect(conversing(s, m, Date.now() + 181_000)).toBe(false);
+    });
+
+    it("the owner's mention-only level still stands", () => {
+      const s = backAndForth();
+      const inputs = said(s, "a", "好啊");
+      const a = assess({
+        config: config({ llm_check: false }),
+        mode: "mention-only",
+        activeness: "medium",
+        names: NAMES,
+        interests: [],
+        maxShare: 0.3,
+        session: s,
+        inputs,
+        now: Date.now(),
+        voice: null,
+        modelMayPass: true,
+      });
+      expect(a.gate).toEqual({ kind: "ignore" });
+    });
   });
 
   it("interests_raise_salience", () => {

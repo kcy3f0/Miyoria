@@ -26,6 +26,7 @@ export {
   ambientScale,
   answersHer,
   assess,
+  conversing,
   decide,
   directReason,
   effectiveTalk,

@@ -338,6 +338,14 @@ export class Session {
     return this.#voiceMembers;
   }
 
+  /**
+   * The people in the voice channel who can hear her: not deafened. 2026-11-08: she finished a
+   * song in an empty channel and said out loud that nobody seemed to have heard it.
+   */
+  listeners(): readonly VoiceParticipant[] {
+    return this.#voiceMembers.filter((m) => !m.deafened);
+  }
+
   setSpeaking(account: AccountRef, speaking: boolean): void {
     const key = accountId(account);
     if (speaking) {

@@ -475,6 +475,21 @@ class Speech {
     if (rest !== null) await this.#sentence(rest);
   }
 
+  /**
+   * What was written so far is complete: the next `<voice>` line begins, or the tool calls do.
+   * The sentence of the open line is said now. It used to wait until the next line was written
+   * to its end, or for the end of the stream behind every tool argument, and all of that was
+   * silence in the channel.
+   */
+  async settle(): Promise<void> {
+    if (this.#pair !== null) {
+      if (this.#pair.text.trim() !== "") await this.#endPair();
+      return;
+    }
+    const done = this.#splitter.flushComplete();
+    if (done !== null) await this.#sentence(done);
+  }
+
   /** End of a response: an unclosed code block ends here too. */
   async finish(): Promise<void> {
     for (const piece of this.#fences.flush()) await this.#piece(piece);
@@ -778,11 +793,13 @@ class Turn {
       this.intent !== null
         ? { id: this.intent.intent.id, tool: this.intent.tool ?? null }
         : (i?.proposal ?? null);
+    // Nobody spoke and nobody in the voice channel can hear her: she may act, not talk.
+    const unheard = this.voice && this.inputs.length === 0 && this.session.listeners().length === 0;
     return {
       kind,
       attention: i?.attention ?? answers,
       cause: this.agent.mainline?.causeOf(first?.id.id) ?? null,
-      muted: this.intent?.muted === true,
+      muted: this.intent?.muted === true || unheard,
       proposal,
       chain: i?.chain ?? null,
     };
@@ -1179,6 +1196,7 @@ class Turn {
       inputs: this.inputs,
       now: this.#now,
       voice,
+      modelMayPass: this.#main !== null,
     });
     const reasons = assessment.reasons;
     if (mode !== configured) reasons.push(`llm budget ${budget}: as mention-only`);
@@ -2372,6 +2390,8 @@ class Turn {
         } else if (event.type === "reasoning_delta") {
           this.agent.log.debug({ turn: this.turn, reasoning: event.text }, "reasoning");
         } else if (event.type === "tool_call_delta") {
+          // Her words are written before her tool calls: the last sentence need not wait for them.
+          if (calls.length === 0 && speech !== null && !expression.silence) await speech.settle();
           while (calls.length <= event.index) calls.push({ id: "", name: "", arguments: "" });
           const call = calls[event.index] as ToolCall;
           if (event.id !== null) call.id = event.id;
@@ -2635,6 +2655,9 @@ class Turn {
         break;
       case "spoken":
         await out.voiceLine(segment.text);
+        break;
+      case "spoken_start":
+        await out.settle();
         break;
       case "silence":
       case "tool":
