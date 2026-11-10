@@ -12,6 +12,8 @@
 import type { AccountRef, Participation, PlayAward } from "@miyoria/types";
 import type { EconomyService } from "./economy.js";
 
+/** Activities that count as "a game" for the daily quest. */
+const GAME_PREFIX = "game_";
 const MAX_ROWS = 2_000;
 
 export class PlayDesk implements Participation {
@@ -47,6 +49,10 @@ export class PlayDesk implements Participation {
         ? { status: "paid", paid: paid.paid }
         : { status: paid.status, paid: 0 };
     });
+    // Taking part counts for the daily quest even when today's coins for play are all paid.
+    if ((done.status === "paid" || done.status === "capped") && activity.startsWith(GAME_PREFIX)) {
+      await this.e.v2.questDone(who, "play_game");
+    }
     return done;
   }
 }

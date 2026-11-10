@@ -1,7 +1,11 @@
 // Coins for taking part: what an activity pays, its keys, the two daily limits, and who earns.
 
+import type { JsonValue } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
-import { ALICE, ALICE_TWO, BOB, balance, CAROL, DAVE, DAY, rig } from "./rig.js";
+import { ALICE, ALICE_TWO, BOB, balance, rig as baseRig, CAROL, DAVE, DAY } from "./rig.js";
+
+/** Quests pay coins of their own when a game is played: keep them out of these sums. */
+const rig = (config: Record<string, JsonValue> = {}) => baseRig({ quest_reward: 0, ...config });
 
 describe("play awards", () => {
   it("pays what the activity is worth, once per key", async () => {

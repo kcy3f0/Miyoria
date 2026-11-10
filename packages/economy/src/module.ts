@@ -17,6 +17,8 @@ import { EconomyService } from "./economy.js";
 import { songPayments } from "./songs.js";
 import { giveCapability, speakerCapabilities } from "./tools.js";
 import { EconomyKey } from "./types.js";
+import { v2Capabilities } from "./v2-tools.js";
+import { Economy2Key } from "./v2-types.js";
 
 /** How often a finished voice window is paid when nobody speaks to end it. */
 const VOICE_TICK_MS = 30_000;
@@ -74,12 +76,14 @@ export class EconomyModule implements Module {
       giveCapability(economy, ctx.services),
       ...speakerCapabilities(economy, ctx.clock),
       ...agencyCapabilities(economy),
+      ...v2Capabilities(economy),
     ].map((capability) => actuators.register(capability));
     this.#unregister = () => {
       for (const f of off) f();
     };
     ctx.provide(EconomyKey, economy);
     ctx.provide(ParticipationKey, economy.v2.play);
+    ctx.provide(Economy2Key, economy.v2);
     if (!economy.docsAreDurable) {
       ctx.log.warn(
         "no store provides EconomyDocs: collection, bets, commissions and the room are kept in memory only",
