@@ -9,6 +9,7 @@ import { Collection } from "./collection.js";
 import { CommissionDesk } from "./commissions.js";
 import type { EconomyConfig, Rarity } from "./config.js";
 import type { EconomyService, Member } from "./economy.js";
+import { Health } from "./health.js";
 import { PlayDesk } from "./play.js";
 import { PredictionDesk } from "./predictions.js";
 import { QuestDesk } from "./quests.js";
@@ -24,6 +25,7 @@ import type {
   DrawResult,
   Economy2,
   GiveItemResult,
+  HealthView,
   OddsRow,
   PredictionView,
   QuestId,
@@ -85,6 +87,7 @@ export class V2 implements Economy2 {
   readonly commissionDesk: CommissionDesk;
   readonly roomDesk: RoomDesk;
   readonly shopDesk: ShopDesk;
+  readonly healthDesk: Health;
 
   constructor(readonly e: EconomyService) {
     this.play = new PlayDesk(e);
@@ -95,6 +98,7 @@ export class V2 implements Economy2 {
     this.commissionDesk = new CommissionDesk(e);
     this.roomDesk = new RoomDesk(e);
     this.shopDesk = new ShopDesk(e);
+    this.healthDesk = new Health(e);
   }
 
   get currency(): string {
@@ -243,5 +247,9 @@ export class V2 implements Economy2 {
 
   buyFromShop(account: AccountRef, item: string, key: string): Promise<ShopBuyResult> {
     return this.shopDesk.buy(account, item, key);
+  }
+
+  health(): Promise<HealthView> {
+    return this.healthDesk.view();
   }
 }

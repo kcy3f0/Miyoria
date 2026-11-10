@@ -264,6 +264,29 @@ export interface ShopBuyResult {
   duplicate: boolean;
 }
 
+// ---- health ----------------------------------------------------------------------------------
+
+export interface HealthDay {
+  /** The local day number. */
+  day: number;
+  /** When it starts. */
+  date: string;
+  issued: number;
+  recovered: number;
+  /** `recovered / issued`; `null` on a day nothing was issued. */
+  ratio: number | null;
+}
+
+export interface HealthView {
+  /** `false` when no store provides the ledger totals (then nothing is shown, not made up). */
+  available: boolean;
+  days: HealthDay[];
+  /** The last seven days together. */
+  week: { issued: number; recovered: number; ratio: number | null };
+  /** A sentence when the week recovered too little of what was issued, else `null`. */
+  warn: string | null;
+}
+
 export interface Economy2 {
   /** The currency's name (`魚幣`). */
   readonly currency: string;
@@ -342,6 +365,8 @@ export interface Economy2 {
   shop(account: AccountRef): Promise<ShopView>;
   /** Buys one thing off the shelf (`EconomyError` 402 short, 403 a stranger, 409 not on the shelf). */
   buyFromShop(account: AccountRef, item: string, key: string): Promise<ShopBuyResult>;
+  /** Coins issued against recovered per day, for the panel (admin only: it is about the whole economy). */
+  health(): Promise<HealthView>;
 }
 
 export const Economy2Key = serviceKey<Economy2>("Economy2");
