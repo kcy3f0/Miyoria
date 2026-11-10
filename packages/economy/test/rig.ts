@@ -8,7 +8,13 @@ import {
   CapabilityTool,
 } from "@miyoria/actions";
 import { getLogger, ServiceRegistry } from "@miyoria/kernel";
-import { CoinLedgerStoreKey, DealStoreKey, PeopleStoreKey, SqliteStore } from "@miyoria/store";
+import {
+  CoinLedgerStoreKey,
+  DealStoreKey,
+  LedgerStatsKey,
+  PeopleStoreKey,
+  SqliteStore,
+} from "@miyoria/store";
 import {
   type AccountRef,
   AffectStateKey,
@@ -62,9 +68,19 @@ afterEach(async () => {
   stores = [];
 });
 
-export async function rig(config: Record<string, JsonValue> = {}): Promise<Rig> {
-  const store = await SqliteStore.open(":memory:");
-  stores.push(store);
+export interface RigOptions {
+  /** Another service over a store an earlier rig opened: a restart. */
+  store?: SqliteStore;
+  /** Keep the documents and the ledger totals in the store itself (`rig.docs` is then unused). */
+  durable?: boolean;
+}
+
+export async function rig(
+  config: Record<string, JsonValue> = {},
+  options: RigOptions = {},
+): Promise<Rig> {
+  const store = options.store ?? (await SqliteStore.open(":memory:"));
+  if (!options.store) stores.push(store);
   const services = new ServiceRegistry();
   const k = "test";
   services.provide(k, CoinLedgerStoreKey, store.coins);
@@ -110,7 +126,8 @@ export async function rig(config: Record<string, JsonValue> = {}): Promise<Rig> 
   const dice = { values: [] as number[] };
   let n = 0;
   const docs = new MemoryDocs();
-  services.provide(k, EconomyDocsKey, docs);
+  services.provide(k, EconomyDocsKey, options.durable ? store.economyDocs : docs);
+  if (options.durable) services.provide(k, LedgerStatsKey, store.coins);
   const economy = new EconomyService({
     config: EconomyConfigSchema.parse(config),
     services,

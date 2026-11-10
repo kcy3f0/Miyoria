@@ -10,6 +10,7 @@ import { CommissionDesk } from "./commissions.js";
 import type { EconomyConfig, Rarity } from "./config.js";
 import type { EconomyService, Member } from "./economy.js";
 import { Health } from "./health.js";
+import { PartyRewardDesk } from "./party.js";
 import { PlayDesk } from "./play.js";
 import { PredictionDesk } from "./predictions.js";
 import { QuestDesk } from "./quests.js";
@@ -80,6 +81,8 @@ export function labelV2(r: CoinEntry, _config: EconomyConfig): string | null {
 
 export class V2 implements Economy2 {
   readonly play: PlayDesk;
+  /** What party games pay when one ends (party.ts). */
+  readonly party: PartyRewardDesk;
   readonly quest: QuestDesk;
   readonly collection: Collection;
   readonly achievement: AchievementDesk;
@@ -91,6 +94,7 @@ export class V2 implements Economy2 {
 
   constructor(readonly e: EconomyService) {
     this.play = new PlayDesk(e);
+    this.party = new PartyRewardDesk(e);
     this.quest = new QuestDesk(e);
     this.collection = new Collection(e);
     this.achievement = new AchievementDesk(e);
