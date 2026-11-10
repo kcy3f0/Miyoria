@@ -84,6 +84,41 @@ describe("評測 / 參與度", () => {
     expect(within(s).getByText("這段時間別人接她的話,她都回了,或沒有人接")).toBeInTheDocument();
   });
 
+  it("shows the corrections of her output by kind and channel, with the turns they were counted over", async () => {
+    const counted = (events: number, turns: number) => ({ events, turns });
+    const none = counted(0, 0);
+    const corrections = {
+      measured: { voice: 100, text: 900 },
+      kinds: {
+        claim_held: { voice: none, text: counted(5, 3) },
+        wait_line: { voice: counted(2, 2), text: counted(1, 1) },
+      },
+    };
+    const day = { ...busy, corrections };
+    core({ ...metrics(busy), overall: day, daily: metrics(busy).daily.map((d, i) => (i < 5 ? d : { ...d, corrections })) } as TurnMetrics);
+    renderRoute("/eval");
+    const s = await screen.findByRole("region", { name: "事後修正" });
+    expect(s).toHaveTextContent("1000");
+    expect(s).toHaveTextContent("語音 100 · 文字 900");
+    const kinds = within(s).getByRole("table", { name: "每一種修正" });
+    // Most frequent first; a share of the measured turns reads "fired on 0.3% of replies".
+    const rows = within(kinds).getAllByRole("row").slice(1);
+    expect(rows[0]).toHaveTextContent("說了做到的事,先扣住");
+    expect(rows[0]).toHaveTextContent("5次 · 3 回合");
+    expect(rows[0]).toHaveTextContent("0.3%");
+    expect(within(kinds).getByText("推理寫進回覆,擋下")).toBeInTheDocument();
+    // Per day, for the kind picked (the most frequent), with the day's measured turns beside it.
+    const daily = within(s).getByRole("table", { name: "說了做到的事,先扣住的每天次數" });
+    expect(within(daily).getAllByRole("row")[1]).toHaveTextContent("語音 100 · 文字 900");
+  });
+
+  it("an older Core that counts no corrections shows no block for them", async () => {
+    core(metrics(busy));
+    renderRoute("/eval");
+    await section();
+    expect(screen.queryByRole("region", { name: "事後修正" })).toBeNull();
+  });
+
   it("has an empty state and an error state", async () => {
     core(metrics(bucket()));
     const first = renderRoute("/eval");

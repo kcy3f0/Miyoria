@@ -130,6 +130,12 @@ describe("config", () => {
       contributor_timeout_ms: 800,
       max_context_chars: 4000,
       budget_notice_interval_ms: 3_600_000,
+      corrections: {
+        tool_text_reask: true,
+        promise_commit: true,
+        claims: true,
+        leak_screen: true,
+      },
       attention: {
         recent_window: 20,
         max_share_of_recent: null,

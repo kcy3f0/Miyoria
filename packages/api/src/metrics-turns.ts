@@ -6,9 +6,21 @@
 // wrote (`attention.ts`): "replying to her" marks a follow-up, "direct:" an addressed one,
 // `intent:` / `initiative:` her own. Whatever is none of these was ambient.
 // The aggregation is a pure function over records; the route only fetches and clamps.
+//
+// The after-the-fact corrections of her output (docs/design/v4-patches.md) come from the same
+// outcome rows: a turn that reached the model says which of them fired and how often
+// (`CountedOutcome.corrections`), so each one is counted beside the turns it was measured over.
 
 import { type DecisionLog, DecisionLogKey, type DecisionRecord } from "@miyoria/store";
-import { type ProfileId, type TurnOutcomeRecord, toTimestamp } from "@miyoria/types";
+import {
+  CORRECTION_KINDS,
+  type CorrectionCounts,
+  type CorrectionKind,
+  correctionsOf,
+  type ProfileId,
+  type TurnOutcomeRecord,
+  toTimestamp,
+} from "@miyoria/types";
 import { z } from "zod";
 import { ApiError } from "./errors.js";
 import { clampLimit, readQuery, usizeParam } from "./extract.js";
@@ -51,6 +63,28 @@ export interface StopReasons {
   other: number;
 }
 
+/** How often one correction fired in one channel: firings, and the turns it fired in. */
+export interface CorrectionCount {
+  events: number;
+  turns: number;
+}
+
+/** One correction, in voice and in text. */
+export interface CorrectionStat {
+  voice: CorrectionCount;
+  text: CorrectionCount;
+}
+
+export interface CorrectionsBucket {
+  /**
+   * Turns that reached the model and carry their corrections, by channel: what a share like
+   * "fired on 0.3% of replies" is counted over. Rows written before the count existed are not.
+   */
+  measured: { voice: number; text: number };
+  /** Every kind, zeros included. */
+  kinds: Record<CorrectionKind, CorrectionStat>;
+}
+
 export interface MetricsBucket {
   /** Turns counted (outcomes plus refused gate decisions). */
   turns: number;
@@ -68,6 +102,8 @@ export interface MetricsBucket {
   outcomes: { sent: number; silence: number; cancelled: number; error: number };
   /** Follow-ups that got no answer, by why. */
   followup_stopped: StopReasons;
+  /** What the code changed of her output after the model wrote it. */
+  corrections: CorrectionsBucket;
 }
 
 export interface MetricsDay extends MetricsBucket {
@@ -96,6 +132,8 @@ interface Row {
   outcome: "sent" | "silence" | "cancelled" | "error";
   latency: number | null;
   stop: keyof StopReasons;
+  /** `null`: the turn was not measured (it never reached the model, or predates the count). */
+  corrections: CorrectionCounts | null;
 }
 
 const has = (reasons: readonly string[], needle: string) => reasons.some((r) => r.includes(needle));
@@ -139,6 +177,30 @@ function ratio(sent: number, total: number): Ratio {
   return { sent, total, rate: total === 0 ? null : sent / total };
 }
 
+function corrections(rows: readonly Row[]): CorrectionsBucket {
+  const zero = (): CorrectionStat => ({
+    voice: { events: 0, turns: 0 },
+    text: { events: 0, turns: 0 },
+  });
+  const kinds = Object.fromEntries(CORRECTION_KINDS.map((k) => [k, zero()])) as Record<
+    CorrectionKind,
+    CorrectionStat
+  >;
+  const measured = { voice: 0, text: 0 };
+  for (const r of rows) {
+    if (r.corrections === null) continue;
+    const channel = r.voice ? "voice" : "text";
+    measured[channel] += 1;
+    for (const kind of CORRECTION_KINDS) {
+      const n = r.corrections[kind] ?? 0;
+      if (n <= 0) continue;
+      kinds[kind][channel].events += n;
+      kinds[kind][channel].turns += 1;
+    }
+  }
+  return { measured, kinds };
+}
+
 function bucket(rows: readonly Row[]): MetricsBucket {
   const count = (kind: Kind) => {
     const of = rows.filter((r) => r.kind === kind);
@@ -179,6 +241,7 @@ function bucket(rows: readonly Row[]): MetricsBucket {
     voice_origin: { self_started: selfStarted, answering },
     outcomes,
     followup_stopped: stopped,
+    corrections: corrections(rows),
   };
 }
 
@@ -216,6 +279,7 @@ export function aggregateTurnMetrics(
       voice: o.context.kind === "voice",
       outcome: type,
       latency: o.latency_ms,
+      corrections: correctionsOf(o),
       // A turn the gate refused has an outcome row too (`silence`), and its trace says which gate.
       stop:
         type !== "silence"
@@ -238,6 +302,7 @@ export function aggregateTurnMetrics(
       outcome: "silence",
       latency: null,
       stop: stopOfRefused(d.trace.reasons),
+      corrections: null,
     });
   }
 

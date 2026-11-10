@@ -916,3 +916,14 @@ export {
   type WorkState,
   type WorkTaskView,
 } from "./worklane.js";
+
+// ---- v4 §4.5: the after-the-fact corrections, counted ------------------------------------------
+
+export {
+  CORRECTION_KINDS,
+  type CorrectionCounts,
+  type CorrectionKind,
+  type CountedOutcome,
+  correctionsOf,
+  isCorrectionKind,
+} from "./corrections.js";

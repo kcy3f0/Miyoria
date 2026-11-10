@@ -54,6 +54,7 @@ import {
   type CompiledBlock,
   type ContextKey,
   ConversationStatesKey,
+  type CountedOutcome,
   contextKeyString as contextKeyDisplay,
   DirectivesKey,
   dataBlock,
@@ -98,7 +99,6 @@ import {
   sameAccount,
   type TurnId,
   type TurnOutcome,
-  type TurnOutcomeRecord,
   type TurnRetrievalQuery,
   textLane,
   timestampMs,
@@ -204,8 +204,8 @@ import {
   traceText,
 } from "./mainline/prompt.js";
 import { linkMentions, type MentionTarget } from "./mentions.js";
-import { agentTurns } from "./metrics.js";
-import { KEEP_HINT, LONG_RESULT_CHARS, NOTE_TOOLS } from "./notes.js";
+import { agentTurns, CorrectionTally } from "./metrics.js";
+import { KEEP_HINT, LONG_RESULT_CHARS, loopKeepHint, NOTE_TOOLS } from "./notes.js";
 import {
   afterFold,
   buildMessages,
@@ -247,7 +247,7 @@ import {
 } from "./speech.js";
 import { offeredIn, scopeOfHer, scopeOfSnapshot, type ToolScope } from "./tool-scope.js";
 import { KeepNoteTool, ReactTool } from "./tools.js";
-import { contextId, fixed, guard, TimeoutError, timeout } from "./util.js";
+import { charCount, contextId, fixed, guard, TimeoutError, timeout } from "./util.js";
 import { imageParts, selectImages } from "./vision.js";
 
 const TYPING_TTL_MS = 10_000;
@@ -943,6 +943,10 @@ class Turn {
   #lastTextAt: number | null = null;
   /** Voice: where the turn's time went, for `VoiceTurns.mark` and its outcome's `voice_stages`. */
   readonly #marks: VoiceTurnMarks = {};
+  /** What the code changed of her output in this turn (docs/design/v4-patches.md). */
+  readonly #tally: CorrectionTally;
+  /** The turn reached the model: its outcome carries the corrections, `{}` included. */
+  #generated = false;
 
   constructor(
     readonly agent: Agent,
@@ -960,8 +964,10 @@ class Turn {
   ) {
     this.voice = key.kind === "voice";
     this.social = agent.social();
+    this.#tally = new CorrectionTally(this.voice);
     const main = agent.mainline;
-    this.#main = main === null ? null : new MainTurn(main, agent, turn, key, this.#claim());
+    this.#main =
+      main === null ? null : new MainTurn(main, agent, turn, key, this.#claim(), this.#tally);
   }
 
   /** What the Floor knows this turn as. */
@@ -1121,7 +1127,9 @@ class Turn {
     const line =
       lines[Math.floor(this.agent.random.nextF32() * lines.length)] ?? FALLBACK_RESULT_LINE;
     try {
-      return await this.#canned(line, main.claim.kind === "addressed", null);
+      const said = await this.#canned(line, main.claim.kind === "addressed", null);
+      this.#tally.count("fallback_line");
+      return said;
     } catch (error) {
       this.agent.log.warn({ turn: this.turn, error: errorMessage(error) }, "no fixed line either");
       return "";
@@ -1171,7 +1179,7 @@ class Turn {
     return { type: "silence" };
   }
 
-  outcomeRecord(outcome: TurnOutcome): TurnOutcomeRecord & { voice_stages?: VoiceTurnStages } {
+  outcomeRecord(outcome: TurnOutcome): CountedOutcome & { voice_stages?: VoiceTurnStages } {
     const f = this.plan.focus;
     const last = this.#focused.at(-1);
     const latency =
@@ -1182,6 +1190,8 @@ class Turn {
     const stages = this.#voiceStages(last);
     return {
       ...(stages === null ? {} : { voice_stages: stages }),
+      // Only a turn that reached the model is measured: its counts, `{}` when nothing fired.
+      ...(this.#generated ? { corrections: this.#tally.counts() } : {}),
       turn: this.turn,
       context: this.key,
       reason: f.reason,
@@ -2133,6 +2143,7 @@ class Turn {
     extras: Extras,
     images: readonly ContentPart[],
   ): Promise<string> {
+    this.#generated = true;
     if (this.#main !== null)
       return await this.#speakMain(this.#main, direct, names, extras, images);
     const cfg = this.agent.config;
@@ -2241,24 +2252,27 @@ class Turn {
     const early: string[] = [];
     // Her reasoning is no reply (leak.ts).
     type Line = { text: string; blocked: string | null; n: number | null };
-    const screen = new ReplyScreen<Line>();
+    const screen = new ReplyScreen<Line>(cfg.corrections.leak_screen);
     const send = async (raw: string) => {
       for (const part of splitByReplyMarks(raw)) {
         const mark = takeReplyMark(part);
         const safe = this.#safe(cleanReply(mark.text, names));
         const text = this.#linkMentions(safe.text);
         if (text === "") continue;
+        const before = screen.droppedLines;
         const { send: now } = screen.push({ text, blocked: safe.blocked, n: mark.n });
+        this.#tally.count("leak_dropped", screen.droppedLines - before);
         for (const item of now) {
           early.push(await this.#sendText(sink, item.text, direct, priority, item.blocked, item.n));
         }
       }
     };
     const offered = new Set(this.#toolSpecs().map((t) => t.name));
-    const segments = new TextSegments(
-      send,
-      (text) => unbackedClaim(text, offered, this.#backing()) !== null,
-    );
+    const segments = new TextSegments(send, (text) => {
+      const hold = cfg.corrections.claims && unbackedClaim(text, offered, this.#backing()) !== null;
+      if (hold) this.#tally.count("claim_held");
+      return hold;
+    });
     const interim = async (e: Expression) => send(segments.rest(e));
     let expression: Expression;
     try {
@@ -2596,7 +2610,10 @@ class Turn {
     const early: string[] = [];
     // Her reasoning is no reply (leak.ts). Each response of the tool loop is judged on its own.
     type Line = { text: string; blocked: string | null; n: number | null };
-    let screen = new ReplyScreen<Line>();
+    const screening = cfg.corrections.leak_screen;
+    let screen = new ReplyScreen<Line>(screening);
+    let first: Line | null = null;
+    let leaked = 0;
     const out = async (item: Line) => {
       early.push(await this.#sendText(sink, item.text, direct, priority, item.blocked, item.n));
     };
@@ -2605,22 +2622,32 @@ class Turn {
         if (main.claim.muted) return;
         const mark = takeReplyMark(part);
         // What an earlier round of the tool loop already said is not sent twice.
-        mark.text = main.unrepeated(mark.text);
+        mark.text = main.cutRepeats(mark.text);
         if (mark.text.trim() === "") continue;
         const safe = this.#safe(cleanReply(mark.text, names));
         const text = this.#linkMentions(safe.text);
         if (text === "") continue;
+        // Noted as said before the screen decides: the first line it holds is still hers to say.
         main.sent(text);
-        const was = screen.dropped;
-        const { send: now, retracted } = screen.push({ text, blocked: safe.blocked, n: mark.n });
-        if (retracted) main.said.pop();
-        if (screen.dropped && !was) {
-          this.agent.log.warn(
-            { turn: this.turn },
-            "her reasoning was written as the reply: dropped",
-          );
-        }
-        for (const item of now) await out(item);
+        const was = screen.droppedLines;
+        const item = { text, blocked: safe.blocked, n: mark.n };
+        const { send: now, retracted } = screen.push(item);
+        if (screen.droppedLines > was) {
+          // Neither this line nor a first line it took back reached anyone: they are not what she
+          // said (2026-11-10 review: the dropped lines stayed in `said`, and a line of reasoning
+          // like 「我可以說:「我馬上進語音」」 could become a promise she made).
+          main.unsent(text);
+          if (retracted && first !== null) main.unsent(first.text);
+          this.#tally.count("leak_dropped", screen.droppedLines - was);
+          if (was === 0) {
+            this.agent.log.warn(
+              { turn: this.turn },
+              "her reasoning was written as the reply: dropped",
+            );
+          }
+          leaked += screen.droppedLines - was;
+        } else if (now.length === 0) first = item;
+        for (const sent of now) await out(sent);
       }
     };
     const segments = new TextSegments(send, (text) => main.holdsText(text));
@@ -2628,7 +2655,8 @@ class Turn {
     // before the tools run, and so the person sees 「我查一下」 while she looks.
     const between = async () => {
       if (!main.claim.muted) for (const item of screen.flush()) await out(item);
-      screen = new ReplyScreen<Line>();
+      screen = new ReplyScreen<Line>(screening);
+      first = null;
     };
     try {
       await this.#mainCall(main, router, messages, tools, priority, null, segments, send, between);
@@ -2639,7 +2667,35 @@ class Turn {
       this.signal.removeEventListener("abort", stopTyping);
       await typingLoop;
     }
+    if (leaked > 0) this.#leakEvidence(router);
     return early.join("\n");
+  }
+
+  /**
+   * Her reasoning was written as the reply (leak.ts). Why is not known yet (docs/design/backlog.md,
+   * docs/design/v4-patches.md): the call log that could tell is in memory only and gone with a
+   * restart. So what the provider said about this turn's calls goes to the log now, without any
+   * text: whether the request asked for thinking, whether the provider sent reasoning apart from
+   * the reply (its characters and tokens), which model answered and whether it was a fallback.
+   */
+  #leakEvidence(router: LlmRouter): void {
+    const log = (router as Partial<Pick<LlmRouter, "calls">>).calls;
+    if (log === undefined || typeof log.list !== "function") return;
+    const calls = log.list({ turn: this.turn, module: "agent" }, 8).items.map((c) => ({
+      id: c.id,
+      model: c.model,
+      reasoning: c.reasoning,
+      thinking: c.thinking,
+      reasoning_chars: c.reasoning_chars,
+      reasoning_tokens: c.usage?.reasoning_tokens ?? null,
+      text_chars: c.text_chars,
+      finish_reason: c.finish_reason,
+      fallbacks: c.fallbacks.length,
+    }));
+    this.agent.log.warn(
+      { turn: this.turn, calls },
+      "leaked reasoning: what the provider said about the calls of this turn",
+    );
   }
 
   /** Streams one response. A model that does not start in time counts as failed. */
@@ -2838,6 +2894,7 @@ class Turn {
         main.wrote(written);
         const depth = main.claim.chain?.depth ?? 0;
         if (
+          cfg.corrections.tool_text_reask &&
           written.length > 0 &&
           calls.length === 0 &&
           depth < cfg.max_tool_steps &&
@@ -2847,6 +2904,7 @@ class Turn {
             { turn: this.turn, tools: written },
             "asking her to call what she wrote",
           );
+          main.tally.count("tool_text_reask");
           before = step;
           messages.push(assistantMessage(raw, []));
           messages.push(userMessage(toolTextReminder(written)));
@@ -2854,7 +2912,11 @@ class Turn {
         }
         // Calls of the loop past the last round go to the hands too: a result turn tells her.
         const output = turnOutput(expression, handOver([...later, ...calls]), main.said);
-        const outcome = main.finish(output);
+        const fresh = new Set(calls.map((c) => c.name));
+        const outcome = main.finish(
+          output,
+          later.map((c) => c.name).filter((t) => !fresh.has(t)),
+        );
         if (outcome.remind !== null) {
           messages.push(assistantMessage(raw, []));
           messages.push(userMessage(claimReminder(outcome.remind.tool)));
@@ -2939,16 +3001,35 @@ class Turn {
     const body = run.text.length > room ? `${truncate(run.text, room)}${ROUND_CUT}` : run.text;
     let text = dataBlock("tool", `${call.name} 的結果`, neutralize(body));
     if (run.ok && accepted) text = `${text}\n${STILL_RUNNING}`;
-    // Read in this turn, gone in the next unless she keeps what matters.
+    // Read in this turn; the next keeps the head of it in the trace, unless she keeps more.
     if (
       run.ok &&
       text.length >= LONG_RESULT_CHARS &&
       !NOTE_TOOLS.has(call.name) &&
       offered.has(KeepNoteTool.NAME)
     ) {
-      text += KEEP_HINT;
+      const hint = loopKeepHint(charCount(run.text.trim()), accepted, this.#tracedChars());
+      if (hint !== null) {
+        text += hint;
+        main.tally.count("keep_hint");
+      }
     }
     return text;
+  }
+
+  /**
+   * How much of one result of the loop the trace keeps beside her reply (`null`: no trace is kept
+   * this turn). A turn's calls share `trace_chars`: once they are past it a call may be left out
+   * of the trace altogether, so that counts as no trace.
+   */
+  #tracedChars(): number | null {
+    const m = this.agent.config.mainline;
+    if (m.traces <= 0 || m.trace_chars <= 0 || this.#traceAfter === null) return null;
+    const used = this.#traced.reduce(
+      (n, c) => n + Math.min(charCount(c.result), m.trace_result_chars),
+      0,
+    );
+    return used > m.trace_chars ? null : m.trace_result_chars;
   }
 
   /**
@@ -3264,14 +3345,16 @@ class Turn {
       // not sent yet and the corrected reply replaces it.
       if (calls.length === 0 && offered && !reminded && step < cfg.max_tool_steps) {
         const names = new Set(tools.map((t) => t.name));
-        const claim = unbackedClaim(expression.text, names, this.#backing());
+        const flags = cfg.corrections;
+        const claim = flags.claims ? unbackedClaim(expression.text, names, this.#backing()) : null;
         // The same for a tool she wrote as a tag: it runs nothing, she is asked to call it.
         const written =
-          claim === null
+          claim === null && flags.tool_text_reask
             ? toolsWrittenAsText(expression.tools, names, [], promptText(initial))
             : [];
         if (claim || written.length > 0) {
           reminded = true;
+          this.#tally.count(claim ? "claim_reask" : "tool_text_reask");
           this.agent.log.info(
             { turn: this.turn, tool: claim?.tool ?? written.join(",") },
             "she claimed an action without doing it",
@@ -3434,7 +3517,10 @@ class Turn {
     // A long result (a search, lyrics, a page) is gone next turn unless she keeps what matters.
     if (ok && result.length >= LONG_RESULT_CHARS && call.name !== KeepNoteTool.NAME) {
       const offered = this.#toolSpecs().some((t) => t.name === KeepNoteTool.NAME);
-      if (offered) result += KEEP_HINT;
+      if (offered) {
+        result += KEEP_HINT;
+        this.#tally.count("keep_hint");
+      }
     }
     this.agent.log.debug({ turn: this.turn, tool: call.name, ok, result }, "tool call");
     this.signal.throwIfAborted();
@@ -3562,7 +3648,11 @@ class Turn {
         return [false, `error: arguments are not valid JSON: ${errorMessage(error)}`];
       }
     }
-    if (this.#main !== null) args = groundArgs(call.name, args, this.key);
+    if (this.#main !== null) {
+      const grounded = groundArgs(call.name, args, this.key);
+      if (JSON.stringify(grounded) !== JSON.stringify(args)) this.#tally.count("ground_args");
+      args = grounded;
+    }
     const last = this.#requester();
     if (!last && this.intent === null && this.#main === null) {
       return [false, "error: no triggering message"];
