@@ -19,6 +19,7 @@ import { factRoutes } from "./facts.js";
 import { fortuneRoutes } from "./fortune-routes.js";
 import { innerRoutes } from "./inner.js";
 import { learningRoutes } from "./learning.js";
+import { liveRoutes } from "./live.js";
 import { llmCallRoutes } from "./llmcalls.js";
 import { memberRoutes } from "./member.js";
 import { memoryRoutes } from "./memory.js";
@@ -172,6 +173,7 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...controlRoutes(state),
     ...llmCallRoutes(state),
     ...telemetryRoutes(state),
+    ...liveRoutes(state),
 
     ...metricsRoutes(state, { public: options.metricsPublic ?? false }),
   ];
