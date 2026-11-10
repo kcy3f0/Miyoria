@@ -8,7 +8,7 @@ import {
   type ModuleContext,
 } from "@miyoria/kernel";
 import { SongPaymentsKey } from "@miyoria/sing";
-import { type ProfileId, SONG_TOPIC } from "@miyoria/types";
+import { ParticipationKey, type ProfileId, SONG_TOPIC } from "@miyoria/types";
 import { agencyCapabilities } from "./agency-tools.js";
 import { EconomyCommands } from "./commands.js";
 import { EconomyConfigSchema } from "./config.js";
@@ -79,6 +79,12 @@ export class EconomyModule implements Module {
       for (const f of off) f();
     };
     ctx.provide(EconomyKey, economy);
+    ctx.provide(ParticipationKey, economy.v2.play);
+    if (!economy.docsAreDurable) {
+      ctx.log.warn(
+        "no store provides EconomyDocs: collection, bets, commissions and the room are kept in memory only",
+      );
+    }
     ctx.provide(SongPaymentsKey, songPayments(economy));
     const mount = () => {
       const registry = ctx.services.get(CommandRegistryKey);

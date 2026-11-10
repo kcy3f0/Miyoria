@@ -640,6 +640,14 @@ export {
   type SafeLine,
   safeOutgoing,
 } from "./moderation.js";
+export {
+  type Participation,
+  ParticipationKey,
+  PLAY_ACTIVITIES,
+  type PlayActivity,
+  type PlayAward,
+  type PlayStatus,
+} from "./participation.js";
 export { CORE_CHARS, CORE_SENTENCES, characterCore } from "./persona-core.js";
 export {
   type Desire,
