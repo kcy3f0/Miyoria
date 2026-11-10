@@ -64,6 +64,7 @@ import {
   type JsonValue,
   type LaneKey,
   LessonsKey,
+  LifeLogKey,
   MemoryRetrievalKey,
   type MessageRef,
   MindKey,
@@ -72,22 +73,30 @@ import {
   neutralize,
   newAction,
   type Participant,
+  PartyStatusKey,
+  type PersonId,
+  PersonProfilesKey,
   PlatformSinksKey,
   Principals,
   type Priority,
   type PromptBlock,
   PromptContributorsKey,
   type PromptRequest,
+  type PromptSection,
   type ReasoningLevel,
+  type RetrievedMemory,
   type SafeLine,
   type SavedPrompt,
   SelfStateKey,
+  SkillIndexKey,
   type SocialSignals,
+  safeName,
   safeOutgoing,
   sameAccount,
   type TurnId,
   type TurnOutcome,
   type TurnOutcomeRecord,
+  type TurnRetrievalQuery,
   textLane,
   timestampMs,
   toTimestamp,
@@ -169,8 +178,12 @@ import {
   proposalData,
   resultData,
   rotatedExamples,
+  SlowBlocks,
   stableHash,
+  ToolTraces,
+  type TraceCall,
   tailSection,
+  traceText,
 } from "./mainline/prompt.js";
 import { linkMentions, type MentionTarget } from "./mentions.js";
 import { agentTurns } from "./metrics.js";
@@ -196,7 +209,9 @@ import {
   situationPrompt,
   splitByReplyMarks,
   splitMessage,
+  type TraceAnchor,
   takeReplyMark,
+  traceAnchor,
   transcriptLine,
   VOICE_PRESENT_TITLE,
   whenAndWhere,
@@ -230,6 +245,47 @@ const MEMORY_CONTRIBUTOR = "memory";
 const UNLIMITED = Number.MAX_SAFE_INTEGER;
 /** History lines looked through for suspicious messages. */
 const FLAGGED_HISTORY = 12;
+/**
+ * Contributor sections the main line shows before the history (v4 §4.1): they change when she
+ * writes a page, not every turn. The rest of what contributors say is data of the turn.
+ */
+const SLOW_SECTIONS: ReadonlySet<string> = new Set(["notebook"]);
+/** Title of 「今天的她」 (v4 §6.2). */
+const LIFE_TITLE = "今天的你";
+const DAY_MS = 86_400_000;
+/**
+ * The party tools that act in a running game, with the game they are for (`null`: any). Offered
+ * only while `PartyStatus` says one runs here, and `party_start` only while none does (all of
+ * them only in voice: `NEEDS` of tool-scope.ts).
+ */
+const PARTY_MOVES: ReadonlyMap<string, string | null> = new Map([
+  ["party_host", null],
+  ["party_play", null],
+  ["party_ask", "soup"],
+]);
+const PARTY_START = "party_start";
+
+/** What a conversation keeps for the main line's prompt from one turn to the next. */
+interface Kept {
+  slow: SlowBlocks;
+  traces: ToolTraces;
+  /** The people she talked with since the people block was last written. */
+  talking: Set<PersonId>;
+  /** Who was here when the people block was last written. */
+  here: string;
+}
+
+/** Kept per session: a forgotten session forgets it too. */
+const KEPT = new WeakMap<Session, Kept>();
+
+function keptOf(session: Session): Kept {
+  let kept = KEPT.get(session);
+  if (kept === undefined) {
+    kept = { slow: new SlowBlocks(), traces: new ToolTraces(), talking: new Set(), here: "" };
+    KEPT.set(session, kept);
+  }
+  return kept;
+}
 
 export class TurnError extends Error {
   override readonly name = "TurnError";
@@ -298,6 +354,11 @@ interface Extras {
   own: string[];
   /** Contributor sections, rendered within their budgets. */
   sections: string[];
+  /**
+   * The main line's slow-changing data (skills, notebook index, 「今天的她」, the profiles of the
+   * people here), rendered: before the history (v4 §4.1).
+   */
+  slow: string[];
   /** What the compiler did with each block (for the saved prompt). */
   compiled: CompiledBlock[];
   /** For the decision trace. */
@@ -770,6 +831,10 @@ class Turn {
   readonly #main: MainTurn | null;
   /** The router says a fallback model is answering: its words are reviewed as such. */
   #fallback = false;
+  /** The calls of the tool loop in this turn, for the trace kept beside her reply (v4 §4.2). */
+  readonly #traced: TraceCall[] = [];
+  /** The line this turn's trace follows, once kept. */
+  #traceAfter: TraceAnchor | null = null;
 
   constructor(
     readonly agent: Agent,
@@ -1351,17 +1416,47 @@ class Turn {
    * intent) and the sections of prompt contributors, each within its budget.
    */
   async #extras(): Promise<Extras> {
-    const extras: Extras = { self: [], own: [], sections: [], compiled: [], reasons: [] };
+    const extras: Extras = {
+      self: [],
+      own: [],
+      sections: [],
+      slow: [],
+      compiled: [],
+      reasons: [],
+    };
     const cfg = this.agent.config;
     const services = this.agent.ctx.services;
     const about = this.#about();
     const present = this.#present(about);
-    if (this.#main !== null) await this.#mainMemory(extras, present, about);
+    const request = this.#promptRequest(about);
     const self = services.get(SelfStateKey) ?? null;
     const affect = services.get(AffectStateKey) ?? null;
     // Her secret crush (the `self` module's; with person cards, W4's affect owns it).
     const crush = affect === null ? (self?.crush?.() ?? null) : null;
     const crushHere = crush !== null && present.some((p) => p.person === crush.person);
+    // The contributors are asked while her memory is read: the two waits overlap.
+    const registry = services.get(PromptContributorsKey);
+    // The main line reads memory through its layers (`#mainMemory`), not the V2 contributor.
+    const skip =
+      this.#main !== null && services.has(MemoryRetrievalKey) ? [MEMORY_CONTRIBUTOR] : [];
+    const gathering =
+      registry && registry.all().length > 0
+        ? gather(registry, request, cfg.contributor_timeout_ms, this.signal, skip)
+        : null;
+    gathering?.catch(() => undefined);
+    const skills = this.#main !== null ? this.#mainSkills() : null;
+    skills?.catch(() => undefined);
+    let people: string | null | undefined;
+    if (this.#main !== null) {
+      // With person profiles, the people present are one slow block of theirs instead of the
+      // agent's people line and the pinned people section (v4 §5.6).
+      const profiled = services.has(PersonProfilesKey);
+      const retrieved = await this.#mainMemory(extras, present, request, profiled);
+      if (profiled) {
+        const crushOf = crushHere ? (crush?.person ?? null) : null;
+        people = await this.#mainPeople(extras, present, retrieved, crushOf);
+      }
+    }
     const own = selfBlocks({
       context: this.key,
       now: this.#now,
@@ -1385,13 +1480,16 @@ class Turn {
     extras.compiled.push(...selfBudget.compiled);
 
     const blocks: PromptBlock[] = [];
-    const people = peopleBody(
-      present,
-      { affect, attitude: (a) => this.social?.attitude(a) ?? null, self },
-      crushHere ? (crush?.person ?? null) : null,
-    );
-    if (people !== "") {
-      blocks.push(ownBlock("people", this.voice ? VOICE_PRESENT_TITLE : PRESENT_TITLE, people, 0));
+    // Without profiles (or when they failed), the people line of each turn, as before.
+    if (people === undefined) {
+      const body = peopleBody(
+        present,
+        { affect, attitude: (a) => this.social?.attitude(a) ?? null, self },
+        crushHere ? (crush?.person ?? null) : null,
+      );
+      if (body !== "") {
+        blocks.push(ownBlock("people", this.#peopleTitle(), body, 0));
+      }
     }
     const feeling = feelingCauseBody({
       context: this.key,
@@ -1416,23 +1514,29 @@ class Turn {
       budgets: cfg.prompt.budgets,
       defaultBudget: cfg.prompt.default_budget,
     });
-    extras.own = mine.blocks;
+    extras.own.push(...mine.blocks);
     extras.compiled.push(...mine.compiled);
 
-    const registry = services.get(PromptContributorsKey);
-    if (!registry || registry.all().length === 0) return extras;
-    const request = this.#promptRequest(about);
-    // The main line reads memory through its layers (`#mainMemory`), not the V2 contributor.
-    const skip =
-      this.#main !== null && services.has(MemoryRetrievalKey) ? [MEMORY_CONTRIBUTOR] : [];
-    const gathered = await gather(registry, request, cfg.contributor_timeout_ms, this.signal, skip);
-    extras.reasons = gathered.reasons();
-    const { data, superseded } = contributedData(gathered.sections);
+    const gathered = gathering === null ? null : await gathering;
+    const sections = gathered?.sections ?? [];
+    if (gathered !== null) extras.reasons.push(...gathered.reasons());
+    const { data, superseded } = contributedData(
+      this.#main === null ? sections : sections.filter((s) => !SLOW_SECTIONS.has(s.key)),
+    );
     if (superseded.length > 0)
       extras.reasons.push(`rendered by the agent: ${superseded.join(", ")}`);
+    const m = cfg.mainline;
     const contributed = budgetBlocks(data, {
-      total: this.#main === null ? cfg.max_context_chars : cfg.mainline.data_chars,
-      budgets: cfg.prompt.budgets,
+      total: this.#main === null ? cfg.max_context_chars : m.data_chars,
+      // §5's readers bring more than the default budget of a section.
+      budgets:
+        this.#main === null
+          ? cfg.prompt.budgets
+          : {
+              ...cfg.prompt.budgets,
+              just_now: m.just_now_chars,
+              elsewhere: m.elsewhere_chars,
+            },
       defaultBudget: cfg.prompt.default_budget,
     });
     extras.sections = contributed.blocks;
@@ -1441,7 +1545,153 @@ class Turn {
     if (cut.length > 0) {
       extras.reasons.push(`context budgeted: ${cut.map((b) => `${b.key} ${b.fate}`).join(", ")}`);
     }
+    if (this.#main !== null) {
+      const slow = sections.filter((s) => SLOW_SECTIONS.has(s.key));
+      this.#mainSlow(extras, slow, skills === null ? null : await skills, people ?? null);
+    }
     return extras;
+  }
+
+  /** The people block's title. */
+  #peopleTitle(): string {
+    return this.voice ? VOICE_PRESENT_TITLE : PRESENT_TITLE;
+  }
+
+  /**
+   * The slow part of the main line's data (v4 §4.1), the most stable first: her skills, her
+   * notebook's index, 「今天的她」, the people here. Each has a budget of its own, never a share
+   * of a pool that the turn's other data could change.
+   */
+  #mainSlow(
+    extras: Extras,
+    contributed: readonly PromptSection[],
+    skills: string | null,
+    people: string | null,
+  ): void {
+    const m = this.agent.config.mainline;
+    if (skills !== null && skills.trim() !== "") {
+      // The skill index comes as a data block; anything else is made one.
+      extras.slow.push(skills.includes("⟦資料") ? skills : dataBlock("skills", "你的技能", skills));
+    }
+    const sections: PromptSection[] = contributed.map((s, i) => ({ ...s, order: i }));
+    const life = this.#mainLife();
+    if (life !== null) {
+      sections.push({ key: "life", title: LIFE_TITLE, body: life, order: sections.length });
+    }
+    if (people !== null) {
+      sections.push({
+        key: "people",
+        title: this.#peopleTitle(),
+        body: people,
+        order: sections.length,
+      });
+    }
+    const { data } = contributedData(sections);
+    const slow = budgetBlocks(data, {
+      total: UNLIMITED,
+      budgets: { notebook: m.notebook_chars, life: m.life_chars, people: m.people_chars },
+      defaultBudget: m.notebook_chars,
+    });
+    extras.slow.push(...slow.blocks);
+    extras.compiled.push(...slow.compiled);
+  }
+
+  /** Her skills, a name and a line each (`SkillIndex`); `null` when none or too slow. */
+  async #mainSkills(): Promise<string | null> {
+    const index = this.agent.ctx.services.get(SkillIndexKey);
+    const chars = this.agent.config.mainline.skills_chars;
+    if (index === undefined || chars <= 0) return null;
+    try {
+      const text = await timeout(this.agent.config.contributor_timeout_ms, this.signal, () =>
+        index.index(chars),
+      );
+      return text.trim() === "" ? null : text;
+    } catch (error) {
+      if (this.signal.aborted) throw error;
+      this.agent.log.warn({ turn: this.turn, error: errorMessage(error) }, "no skill index");
+      return null;
+    }
+  }
+
+  /**
+   * 「今天的她」 (v4 §6.2, §8.1): what she did today, or the last days when nothing yet today. It
+   * is written again only when what she did changes, so the clock in it says up to when the list
+   * is complete, and the block keeps its place in the cached prefix between her activities.
+   */
+  #mainLife(): string | null {
+    const life = this.agent.ctx.services.get(LifeLogKey);
+    if (life === undefined || this.agent.config.mainline.life_chars <= 0) return null;
+    try {
+      const now = this.#now;
+      const today = life.today();
+      const scope = today.length > 0 ? "today" : "lately";
+      const entries = today.length > 0 ? today : life.entries(now - 3 * DAY_MS);
+      const key = `${scope}|${entries.map((e) => e.id).join(",")}`;
+      const slow = keptOf(this.session).slow;
+      const kept = slow.get("life", key, now, Infinity);
+      if (kept !== undefined) return kept;
+      const text = life.summary(scope);
+      const body = text === null || text.trim() === "" ? null : text;
+      slow.set("life", key, now, body);
+      return body;
+    } catch (error) {
+      this.agent.log.warn({ turn: this.turn, error: errorMessage(error) }, "no life log");
+      return null;
+    }
+  }
+
+  /**
+   * The profiles of the people here (`PersonProfiles`, v4 §5.6), what retrieval shows this turn
+   * left out. Kept as written while the same people are here and nobody new talked with her, for
+   * at most `people_refresh_mins` (§4.1: it sits before the history). `undefined`: no profiles
+   * this turn, the people line of the turn stands in.
+   */
+  async #mainPeople(
+    extras: Extras,
+    present: readonly PresentPerson[],
+    retrieved: readonly RetrievedMemory[],
+    crush: PersonId | null,
+  ): Promise<string | null | undefined> {
+    const profiles = this.agent.ctx.services.get(PersonProfilesKey);
+    const m = this.agent.config.mainline;
+    if (profiles === undefined) return undefined;
+    if (m.people_chars <= 0) return null;
+    const now = this.#now;
+    const persons = present.flatMap((p) => (p.person === null ? [] : [p.person]));
+    const kept = keptOf(this.session);
+    const here = `${this.voice ? "voice" : "text"}|${[...persons].sort().join(",")}|${crush ?? ""}`;
+    if (kept.here !== here) {
+      kept.here = here;
+      kept.talking = new Set();
+    }
+    for (const p of present) if (p.speaker && p.person !== null) kept.talking.add(p.person);
+    const talking = [...kept.talking].sort();
+    const key = `${here}|${talking.join(",")}`;
+    const cached = kept.slow.get("people", key, now, m.people_refresh_mins * 60_000);
+    if (cached !== undefined) return cached;
+    try {
+      const where = {
+        context: this.key,
+        present: persons,
+        talking_with: talking,
+        accounts: present.map((p) => p.account),
+        now: toTimestamp(now),
+      };
+      const exclude = retrieved.flatMap((r) => [r.id, r.content]);
+      const body = await timeout(this.agent.config.contributor_timeout_ms, this.signal, (signal) =>
+        profiles.render(where, m.people_chars, { exclude }, signal),
+      );
+      const handle = present.find((p) => crush !== null && p.person === crush)?.handle;
+      const lines = [body.trim(), handle === undefined ? "" : `- ${safeName(handle)}:你偷偷喜歡他`];
+      const text = lines.filter((l) => l !== "").join("\n");
+      const out = text === "" ? null : text;
+      kept.slow.set("people", key, now, out);
+      return out;
+    } catch (error) {
+      if (this.signal.aborted) throw error;
+      extras.reasons.push(`person profiles skipped: ${errorMessage(error)}`);
+      return undefined;
+    }
   }
 
   /** The example dialogues as one data block (`null`: none). */
@@ -1709,9 +1959,11 @@ class Turn {
   async #mainMemory(
     extras: Extras,
     present: readonly PresentPerson[],
-    about: AccountRef[],
-  ): Promise<void> {
+    request: PromptRequest,
+    profiled: boolean,
+  ): Promise<RetrievedMemory[]> {
     const services = this.agent.ctx.services;
+    const m = this.agent.config.mainline;
     const limit = this.agent.config.contributor_timeout_ms;
     const now = toTimestamp(this.#now);
     const where = {
@@ -1725,7 +1977,9 @@ class Turn {
       try {
         const read = await timeout(limit, this.signal, () => pinned.pinned(where));
         for (const section of read.sections) {
-          if (section.key === "commitments" || section.key === "people") {
+          // The profiles say what the pinned people section said, once (v4 §5.6).
+          const shown = section.key === "commitments" || (section.key === "people" && !profiled);
+          if (shown) {
             const body = section.lines.join("\n");
             extras.own.push(dataBlock(`pinned.${section.key}`, section.title, body));
           }
@@ -1736,23 +1990,46 @@ class Turn {
       }
     }
     const retrieval = services.get(MemoryRetrievalKey);
-    const text = this.#promptRequest(about).query;
-    if (retrieval && text.trim() !== "") {
-      try {
-        const lines = this.agent.config.mainline.memory_lines;
-        const memories = await timeout(limit, this.signal, (signal) =>
-          retrieval.retrieve({ ...where, text, ...(lines > 0 ? { limit: lines } : {}) }, signal),
-        );
-        const body = retrieval.format(memories, now);
-        if (body.trim() !== "") {
-          const room = Math.floor(this.agent.config.mainline.data_chars / 2);
-          extras.own.push(dataBlock("memory", "你記得的事", truncate(body, room)));
-        }
-      } catch (error) {
-        if (this.signal.aborted) throw error;
-        extras.reasons.push(`memories skipped: ${errorMessage(error)}`);
+    const text = request.query;
+    if (!retrieval || text.trim() === "") return [];
+    try {
+      // v4 §5.4: the lines before the one she answers and who she talks with find memories too,
+      // so a reply like 「好啊」 still brings back what the talk is about.
+      const query: TurnRetrievalQuery = {
+        ...where,
+        text,
+        recent: this.#linesBefore(m.memory_recent_lines),
+        talking_with: present.flatMap((p) => (p.speaker && p.person !== null ? [p.person] : [])),
+        ...(m.memory_lines > 0 ? { limit: m.memory_lines } : {}),
+      };
+      const memories = await timeout(limit, this.signal, (signal) =>
+        retrieval.retrieve(query, signal),
+      );
+      const body = retrieval.format(memories, now);
+      if (body.trim() !== "") {
+        const room = Math.floor(m.data_chars / 2);
+        extras.own.push(dataBlock("memory", "你記得的事", truncate(body, room)));
       }
+      return memories;
+    } catch (error) {
+      if (this.signal.aborted) throw error;
+      extras.reasons.push(`memories skipped: ${errorMessage(error)}`);
+      return [];
     }
+  }
+
+  /**
+   * The `n` lines before the newest one she answers, oldest first, as the transcript reads them:
+   * the other messages of the same turn count too (`PromptRequest.recent` stops before them).
+   */
+  #linesBefore(n: number): string[] {
+    if (n <= 0) return [];
+    const her = this.agent.persona.displayName();
+    const history = this.session.history().filter((e) => !this.#hidden(e));
+    const last = this.#focused.at(-1);
+    const end = last === undefined ? -1 : history.findIndex((e) => e.id === last.id.id);
+    const before = end < 0 ? history : history.slice(0, end);
+    return before.slice(-n).map((e) => transcriptLine(e, her));
   }
 
   /** The tools on offer: what she can do, how to promise and how to change a running task. */
@@ -1763,7 +2040,12 @@ class Turn {
     const steerable = main.main.tasks().length > 0;
     const allowed = this.agent.ctx.services.get(DirectivesKey);
     const specs = allowed?.filterTools(this.#toolSpecs(), this.key) ?? this.#toolSpecs();
-    return [...specs.map(slimTool), COMMIT_SPEC, ...(steerable ? [STEER_SPEC] : [])];
+    const limits = { description: cfg.mainline.tool_chars, argument: cfg.mainline.tool_arg_chars };
+    return [
+      ...specs.map((s) => slimTool(s, limits)),
+      COMMIT_SPEC,
+      ...(steerable ? [STEER_SPEC] : []),
+    ];
   }
 
   /** The prompt of §10.4. */
@@ -1813,6 +2095,7 @@ class Turn {
       actions: [...line.hands.recent(ACTING_ALONE, 2), ...line.hands.recent(this.key, 3)],
       speaksIn: this.voice ? speaksIn : null,
       now,
+      party: services.get(PartyStatusKey)?.running(this.key) ?? null,
     });
     const selection = this.plan.selection;
     const verbs = selection === null ? new Map<string, string>() : focusVerbs(selection);
@@ -1844,6 +2127,8 @@ class Turn {
       (id) => this.#shownAround(id),
     );
     this.#replyTargets = focusEntries(history);
+    // What her tools brought back in earlier turns, beside her lines (v4 §4.2).
+    const traces = [...keptOf(this.session).traces.list()];
     const build = (kept: readonly HistoryEntry[]) =>
       mainMessages({
         fixed: core === "" ? rules : `${core}\n\n${rules}`,
@@ -1853,7 +2138,7 @@ class Turn {
           now,
           offset,
         ),
-        slow: examples === null ? [] : [examples],
+        slow: [...(examples === null ? [] : [examples]), ...extras.slow],
         data,
         history: kept,
         tail,
@@ -1862,6 +2147,7 @@ class Turn {
           maxChars: m.history_chars * 2,
           maxEntryChars: m.entry_chars,
           gapMs: cfg.time_gap_ms,
+          traces,
         },
         images,
       });
@@ -2263,6 +2549,7 @@ class Turn {
       this.#requester(),
     );
     if (run.ok) this.#succeeded.add(call.name);
+    this.#trace(call, run.ok, run.text);
     let text = dataBlock("tool", `${call.name} 的結果`, neutralize(run.text));
     if (run.ok && accepted) text = `${text}\n${STILL_RUNNING}`;
     // Read in this turn, gone in the next unless she keeps what matters.
@@ -2275,6 +2562,24 @@ class Turn {
       text += KEEP_HINT;
     }
     return text;
+  }
+
+  /**
+   * Keeps what a call of the loop brought back, in a few lines beside her reply (v4 §4.2): the
+   * next turn knows what she looked up and what it said. Kept after every call, so it is complete
+   * before any later line of hers is recorded. Her notes are shown on their own: not traced.
+   */
+  #trace(call: ToolCall, ok: boolean, result: string): void {
+    if (NOTE_TOOLS.has(call.name)) return;
+    const m = this.agent.config.mainline;
+    if (m.traces <= 0) return;
+    this.#traced.push({ tool: call.name, args: call.arguments, ok, result });
+    const text = traceText(this.#traced, m.trace_chars, m.trace_result_chars);
+    if (text === null) return;
+    // After the line that is last now: what she said before the lookup, else what she answers.
+    this.#traceAfter ??= traceAnchor(this.session.history().filter((e) => !this.#hidden(e)));
+    if (this.#traceAfter === null) return;
+    keptOf(this.session).traces.put(this.turn, this.#traceAfter, text, m.traces);
   }
 
   /** One action, in the hands: it may outlive this turn. */
@@ -2754,8 +3059,19 @@ class Turn {
 
   /** The tools offered in this context now (`react` makes no sense in voice). */
   #offers(tool: Tool, scope: ToolScope | null): boolean {
-    if (this.voice && tool.spec.name === ReactTool.NAME) return false;
-    return offeredIn(tool, scope);
+    const name = tool.spec.name;
+    if (this.voice && name === ReactTool.NAME) return false;
+    if (!offeredIn(tool, scope)) return false;
+    // A game's moves only while one runs here, turtle soup's referee only for turtle soup, and
+    // no second game over a running one (one per channel).
+    const game = PARTY_MOVES.get(name);
+    const starts = name === PARTY_START;
+    if (game === undefined && !starts) return true;
+    const party = this.agent.ctx.services.get(PartyStatusKey);
+    if (party === undefined) return true;
+    const running = party.running(this.key);
+    if (starts) return running === null;
+    return running !== null && (game === null || running.game === game);
   }
 
   #toolSpecs(): ToolSpec[] {

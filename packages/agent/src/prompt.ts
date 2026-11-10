@@ -313,6 +313,43 @@ export interface TranscriptOptions {
   maxEntryChars: number;
   /** A gap longer than this between two entries gets a time-gap line. `0`: never. */
   gapMs: number;
+  /**
+   * Rendered blocks shown between the lines (the main line's tool traces, v4 §4.2), each right
+   * after the entry it was kept after; one whose entry is not shown is left out. They are not
+   * entries: attention never counts them as her lines.
+   */
+  traces?: readonly Trace[];
+}
+
+/**
+ * The entry a trace follows: the last line there was when it was kept, by what never changes of
+ * an entry (its time and author; its id comes later for her own lines, its text may be cut), and
+ * which of the entries alike it was. Clock times cannot place it: a platform's message times and
+ * the local clock disagree.
+ */
+export interface TraceAnchor {
+  ts: number;
+  author: string;
+  self: boolean;
+  /** 1 for the first entry with this time and author, 2 for the second, ... */
+  nth: number;
+}
+
+/** A rendered block shown after one entry of the transcript. */
+export interface Trace {
+  after: TraceAnchor;
+  text: string;
+}
+
+const anchorKey = (ts: number, author: string, self: boolean) => `${ts}|${self ? 1 : 0}|${author}`;
+
+/** The anchor of the last of `history` (`null`: empty). */
+export function traceAnchor(history: readonly HistoryEntry[]): TraceAnchor | null {
+  const last = history.at(-1);
+  if (last === undefined) return null;
+  const key = anchorKey(last.ts, last.author, last.isSelf);
+  const nth = history.filter((e) => anchorKey(e.ts, e.author, e.isSelf) === key).length;
+  return { ts: last.ts, author: last.author, self: last.isSelf, nth };
 }
 
 export const DEFAULT_TRANSCRIPT: TranscriptOptions = {
@@ -499,6 +536,10 @@ function transcriptBlocks(history: readonly HistoryEntry[], options: TranscriptO
   const byId = new Map<string, HistoryEntry>();
   for (const e of history) if (e.id !== null) byId.set(e.id, e);
   const blocks: Item[][] = [];
+  // A trace sits right after the line that was last when it was kept: every line added later
+  // comes after it, so the transcript up to it never changes once shown.
+  const traces = (options.traces ?? []).filter((t) => t.text.trim() !== "");
+  const seen = new Map<string, number>();
   let previous: HistoryEntry | null = null;
   for (const entry of history) {
     const block: Item[] = [];
@@ -532,6 +573,17 @@ function transcriptBlocks(history: readonly HistoryEntry[], options: TranscriptO
       : otherLine(entry, options.maxEntryChars, replyTagOf(entry, byId));
     block.push({ role: entry.isSelf ? "assistant" : "user", line });
     blocks.push(block);
+    if (traces.length > 0) {
+      const key = anchorKey(entry.ts, entry.author, entry.isSelf);
+      const nth = (seen.get(key) ?? 0) + 1;
+      seen.set(key, nth);
+      for (const t of traces) {
+        const a = t.after;
+        if (a.nth === nth && anchorKey(a.ts, a.author, a.self) === key) {
+          blocks.push([{ role: "user", line: t.text }]);
+        }
+      }
+    }
   }
   return blocks;
 }

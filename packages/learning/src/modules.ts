@@ -49,6 +49,7 @@ import { ConversationEngine, FEEDBACK_TOPIC } from "./conversation.js";
 import { FeedbackTracker } from "./feedback.js";
 import { KnowledgeStore } from "./knowledge.js";
 import { LessonStore } from "./lessons.js";
+import { recapAgeNote } from "./recap-age.js";
 import { Reflector } from "./reflect.js";
 import { KNOWLEDGE_TOOL, KnowledgeTool } from "./tool.js";
 
@@ -150,10 +151,15 @@ export class ConversationModule implements Module {
       key: CONVERSATION_CONTRIBUTOR,
       // From memory only: safe on the voice hot path.
       contribute: async (request: PromptRequest) => {
-        const body = engine.render(request.context, config.prompt_chars);
-        return body === null
-          ? []
-          : [{ key: CONVERSATION_CONTRIBUTOR, title: "這段對話的前情提要", body, order: 5 }];
+        const recap = engine.render(request.context, config.prompt_chars);
+        const state = engine.get(request.context);
+        if (recap === null || state === null) return [];
+        // A recap that fell behind says so (v4 §5.7): she reads it as of then, not as of now.
+        const age = recapAgeNote(state, request.now, {
+          offsetMinutes: config.utc_offset_minutes,
+        });
+        const body = age === "" ? recap : `${recap}\n${age}`;
+        return [{ key: CONVERSATION_CONTRIBUTOR, title: "這段對話的前情提要", body, order: 5 }];
       },
     });
     const sub = ctx.subscribe(["platform.message.created", "voice.utterance", "voice.playback"]);

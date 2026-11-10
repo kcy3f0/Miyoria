@@ -722,6 +722,13 @@ export {
   SELF_BLOCK_KEYS,
   type SelfBlockKey,
 } from "./prompt-block.js";
+export {
+  type PartyGameStatus,
+  type PartyStatus,
+  PartyStatusKey,
+  type SkillIndex,
+  SkillIndexKey,
+} from "./prompt-sources.js";
 export { type KnownName, mentionsAnother, type NameSplit, splitNames } from "./public-text.js";
 export {
   DEFAULT_REASONING,
