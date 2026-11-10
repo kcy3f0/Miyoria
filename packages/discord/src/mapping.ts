@@ -359,7 +359,17 @@ export function incomingMessage(
     embeds: embeds(msg.embeds),
     forwarded: forwarded(msg.messageSnapshots),
     ...otherMentions(msg.content, msg.mentions, selfIds),
+    ...(isCard(msg) ? { card: true } : {}),
   };
+}
+
+/**
+ * A card (Components V2): text in components and no plain content. Everything the system posts
+ * in her name (receipts, notices, panels, `ReplySink.sendCard`) is one; what she says is plain
+ * content (`DiscordSink.send`).
+ */
+export function isCard(msg: Pick<MessageLike, "content" | "components">): boolean {
+  return msg.content.trim() === "" && componentsText(msg.components) !== "";
 }
 
 /** The message `msg` replies to (not a forward). A reply across channels keeps its channel. */

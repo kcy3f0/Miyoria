@@ -62,7 +62,7 @@ import {
   timestampMs,
   toTimestamp,
 } from "@miyoria/types";
-import { answersHer, asideOf, directReason, isQuestion } from "./attention.js";
+import { answersHer, asideOf, directReason, followsHerLine, isQuestion } from "./attention.js";
 import { maxDebounceMs, voiceMaxDebounceMs } from "./config.js";
 import { type CallKind, callKind, callsHer, type FocusSelection, selectFocus } from "./focus.js";
 import { UNCAPPED_INITIATIVES } from "./levels.js";
@@ -641,7 +641,16 @@ export class Coordinator {
     let selection: FocusSelection | null = null;
     let reason: TurnReason;
     if (inputs.length > 0) {
-      const follows = answersHer(this.#session, inputs, this.#now);
+      // Only a line hers to take up is `reply_to_her`: someone else right after she answered one
+      // person is ambient (2026-11-10, `followsHerLine`), and never in `addressed`.
+      const roster = this.#voice ? this.#session.voiceMembers().map((m) => m.display_name) : [];
+      const follows = followsHerLine(
+        this.#session,
+        inputs,
+        this.#now,
+        this.#agent.persona.names(),
+        roster,
+      );
       selection = selectFocus(inputs, (m) => this.#callKind(m), follows);
       reason = selection.reason;
     } else {

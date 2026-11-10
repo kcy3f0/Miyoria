@@ -1156,6 +1156,20 @@ class Turn {
     });
   }
 
+  /**
+   * Whom her lines of this turn answer (`HistoryEntry.answering`): the people of its focus; nobody
+   * in a turn she started herself. Who goes on talking with her next is read off it (attention's
+   * `conversing`).
+   */
+  #answering(): AccountRef[] {
+    if (this.inputs.length === 0) return [];
+    const out: AccountRef[] = [];
+    for (const m of this.#focused) {
+      if (!out.some((a) => sameAccount(a, m.author.account))) out.push(m.author.account);
+    }
+    return out;
+  }
+
   /** The messages the reply answers (all inputs when nothing was selected). */
   get #focused(): readonly IncomingMessage[] {
     const focus = this.plan.selection?.focus ?? [];
@@ -3285,7 +3299,7 @@ class Turn {
         { ttl: cfg.reply_ttl_ms, turn: this.turn, blocked },
       );
       const id = action.id;
-      this.session.recordOwn(displayName, me, chunk, id, this.#now);
+      this.session.recordOwn(displayName, me, chunk, id, this.#now, this.#answering());
       this.agent.trackAction(id, this.session);
       try {
         await guard(sink.submit(action), this.signal);

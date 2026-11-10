@@ -86,11 +86,13 @@ describe("cancellation table", () => {
     await wait(15_000);
     expect(h.sink.cancelled).toEqual([]);
     expect(slow.calls).toBe(2);
-    // The first reply went out; the rest became the next turn (阿明 is its focus now).
+    // The first reply went out; the rest became the next turn (阿明 is its focus now). She
+    // answered Owen, so 阿明 speaking after her is not a reply to her (2026-11-10).
     expect(h.sink.texts()).toEqual(["reply 1", "reply 2"]);
     const focus = payloads<TurnFocus>(h.drain(), "agent.turn.focus");
     const second = focus.filter((f) => f.phase === "generating")[1];
-    expect(second?.reason).toBe("reply_to_her");
+    expect(second?.reason).toBe("ambient");
+    expect(second?.addressed_by).toEqual([]);
     expect(second?.background.length).toBe(1);
   });
 
