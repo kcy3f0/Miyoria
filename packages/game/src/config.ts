@@ -1,3 +1,4 @@
+import { REASONING_LEVELS } from "@miyoria/types";
 import { z } from "zod";
 
 /** Permission nodes of the `game` commands. */
@@ -44,8 +45,35 @@ export const GameConfigSchema = z.object({
    * executor ends the task with `timeout` when it runs out.
    */
   task_budget_secs: z.number().positive().default(240),
-  /** Failed tasks (or refused starts) before a requested goal counts as failed. */
+  /**
+   * Failed tasks (or refused starts, or tasks that ended without progress) before a goal counts
+   * as failed. Her own goals too: until 2026-11-08 one failure ended them, and four seconds later
+   * she proposed the same goal again.
+   */
   max_attempts: z.number().default(3),
+  /** Tasks one goal may start before it counts as failed (`timeout`): its step budget. */
+  max_goal_steps: z.number().int().positive().default(8),
+  /** Attempts (an action and how it ended) her record keeps and shows each decision. */
+  record_attempts: z.number().int().positive().default(10),
+  /**
+   * The same method (an action with its item, `obtain:bread`) failing this many times in a row
+   * with the same code is held for `method_hold_secs`; one `invalid` holds an item method for the
+   * rest of the session. A goal that runs out of attempts holds its item the same way. 0 turns it
+   * off.
+   */
+  method_repeat_limit: z.number().int().nonnegative().default(2),
+  method_hold_secs: z.number().nonnegative().default(600),
+  /**
+   * Survival goals the director starts by itself, when the adapter offers them: `night_action`
+   * when night falls (`night_started`), `death_action` `death_action_delay_secs` after she died
+   * (she respawns first). The goal she had waits and comes back when it ends. `null` turns one
+   * off.
+   */
+  night_action: z.string().nullable().default("shelter"),
+  death_action: z.string().nullable().default("recover"),
+  death_action_delay_secs: z.number().nonnegative().default(5),
+  /** Reasoning of the decision model (`null`: what `[llm.reasoning]` says for `purpose`). */
+  reasoning: z.enum(REASONING_LEVELS).nullable().default("low"),
   /** Minimum time between regular commentary requests. */
   commentary_min_secs: z.number().default(15),
   /** Minimum time between important ones that are still narration (an advancement, a creeper). */
@@ -97,25 +125,22 @@ export const GameConfigSchema = z.object({
   stream_context: ContextKeySchema.nullable().default(null),
   /** Request queue item kind consumed as goals. */
   queue_kind: z.string().default("game_goal"),
-  /** Actions that never replace the current goal. */
+  /**
+   * Actions that never replace the current goal and whose success is nobody's progress. `stop`
+   * is one: on 2026-11-08 it became a goal 64 times and counted as reached 19 times.
+   */
   instant_actions: z
     .array(z.string())
-    .default(["chat", "look", "attack", "use", "select", "place", "respawn"]),
+    .default(["chat", "look", "attack", "use", "select", "place", "respawn", "stop"]),
   /**
    * Game event types that trigger an early decision (a goal's task ending always does: its
-   * `game.<id>.task.done|failed` event, not one of these).
+   * `game.<id>.task.done|failed` event, not one of these). Not `hostile_near` or `reflex_end`:
+   * the reflexes deal with those, and on 2026-11-08 57 enemy sightings and 55 reflexes kept
+   * waking her to re-plan what was still running.
    */
   trigger_events: z
     .array(z.string())
-    .default([
-      "death",
-      "low_health",
-      "hostile_near",
-      "advancement",
-      "chat",
-      "connected",
-      "reflex_end",
-    ]),
+    .default(["death", "low_health", "advancement", "chat", "connected"]),
   /**
    * Event types meaning the game went away (`disconnected`): the session ends at once (the
    * scene switches back, the ActivityManager shows `failed(disconnected)`), it is not commentary.

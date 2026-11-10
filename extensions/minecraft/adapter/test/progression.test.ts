@@ -204,7 +204,7 @@ describe("guide", () => {
   it("rides along with the executor's goals", () => {
     const b = new BridgeClient({ endpoint: () => ({ url: "ws://127.0.0.1:1", token: "x" }) });
     const info = new MinecraftAdapter(b).describe();
-    for (const step of ["crafting_table", "wooden_pickaxe", "stone_pickaxe", "furnace", "raw_iron", "鐵鎬", "天黑前"]) {
+    for (const step of ["crafting_table", "wooden_pickaxe", "stone_pickaxe", "furnace", "raw_iron", "鐵鎬", "天黑時", "cooked_beef"]) {
       expect(info.guide, step).toContain(step);
     }
     const description = describeActions(info);

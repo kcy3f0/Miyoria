@@ -590,6 +590,7 @@ export {
   type TurnSilencer,
   TurnSilencerKey,
 } from "./emergency.js";
+export { type GameTaskOutcome, parseGameOutcome } from "./game-outcome.js";
 export {
   assignHandle,
   ephemeralHandlesIn,
