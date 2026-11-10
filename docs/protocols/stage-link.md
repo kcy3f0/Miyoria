@@ -114,7 +114,7 @@ golive_start_delay_ms = 3000   # 等 voice node 的 ffmpeg 綁好 RTMP listener 
 
 - 訂閱 `agent.emotion`、`agent.turn.completed`、`voice.playback`,依上面的規則轉送;另外用 `agent.turn.started`、`voice.synthesis`、`sing.prepare`、`sing.cue` 算出 `activity`。
 - 另外訂閱 `voice.golive`(`{guild, state, error?, reason?}`):`starting` 時在 `golive_start_delay_ms` 後叫 OBS 開始直播(最多重試 3 次),`stopped` / `failed` 時叫 OBS 停止。所以 Discord 的 `/golive start` 一個指令就能從推流到 OBS 全包;`golive_obs = false` 可以關掉,讓 OBS 自己控制。
-- 有 ActivityManager(module `activity`)時上面這段不跑:OBS 是開台(`ensure_live`)的第二個子步驟,`stage.stream` 過閘門、Go Live 真的 `live` 之後才按(`[modules.activity] obs`、`obs_start_delay_ms`、`obs_attempts`);直播機連著但 OBS 沒開就是「開台失敗:OBS 沒開」並把 Go Live 收回。Go Live 從別處開或自己斷掉時,它也會讓 OBS 跟著開 / 停。
+- 有 ActivityManager(module `activity`)時上面這段不跑:OBS 是開台(`ensure_live`)的第二個子步驟,`stage.stream` 過閘門、Go Live 真的 `live` 之後才按(`[modules.activity] obs`、`obs_start_delay_ms`、`obs_attempts`);直播機連著但 OBS 沒開就是「開台失敗:OBS 沒開」並把 Go Live 收回。Go Live 從別處開或自己斷掉時,它也會讓 OBS 跟著開 / 停。`[modules.activity] obs_hub = true`(OBS 推到 MediaMTX、voice node 用 `golive_listen = false` 去拉)時順序反過來:先開 OBS、串流起來後等 `obs_start_delay_ms` 再開 Go Live;關台、開台失敗收回、離開語音、Go Live 自己斷掉都不停 OBS(OBS 是網站的),只有 OBS 在播而沒有 Go Live 也不算她在直播。
 - 提供 `StageLink` 服務(`StageLinkKey`):`setScene`、`stream`、`hotkey`、`refreshStatus`、`gaze`、`status`、`subscribeStatus`。
 - 狀態變化發佈成 `custom` 事件(topic `stage.status`),payload `{connected, vts, obs, scene, streaming, scenes, hotkeys, overlay_url}`(斷線時只有 `{"connected": false}`)。
 - 有 `CommandRegistry` 時註冊指令:`stream start`、`stream stop`、`stream scene <name>`、`stream status`(權限節點 `stream.start` / `stream.stop` / `stream.scene` / `stream.status`)。
