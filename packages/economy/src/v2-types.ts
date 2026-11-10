@@ -240,6 +240,30 @@ export interface RoomFundResult {
   duplicate: boolean;
 }
 
+// ---- her shop --------------------------------------------------------------------------------
+
+export interface ShopView {
+  /** `false` for someone she does not know (the shelf is still shown). */
+  member: boolean;
+  /** When the shelf is restocked. */
+  renews_at: string;
+  items: {
+    id: string;
+    label: string;
+    kind: "title" | "collectible";
+    price: number;
+    /** A title: `true` once held; a collectible: how many copies. */
+    owned: boolean | number;
+  }[];
+}
+
+export interface ShopBuyResult {
+  item: { id: string; label: string; kind: "title" | "collectible" };
+  charged: number;
+  balance: number;
+  duplicate: boolean;
+}
+
 export interface Economy2 {
   /** The currency's name (`魚幣`). */
   readonly currency: string;
@@ -314,6 +338,10 @@ export interface Economy2 {
   room(): Promise<RoomView[]>;
   /** Puts coins into an item of her room (`EconomyError` 400/402/403/409/429). */
   fundRoom(account: AccountRef, item: string, amount: number, key: string): Promise<RoomFundResult>;
+  /** This week's shelf. */
+  shop(account: AccountRef): Promise<ShopView>;
+  /** Buys one thing off the shelf (`EconomyError` 402 short, 403 a stranger, 409 not on the shelf). */
+  buyFromShop(account: AccountRef, item: string, key: string): Promise<ShopBuyResult>;
 }
 
 export const Economy2Key = serviceKey<Economy2>("Economy2");

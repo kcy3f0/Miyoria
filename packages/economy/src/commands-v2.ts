@@ -33,6 +33,7 @@ export const V2_PATHS = [
   "me commission",
   "me commissions",
   "me room",
+  "me shop",
 ] as const;
 
 const UNAVAILABLE = "錢包現在打不開";
@@ -272,6 +273,38 @@ class Handler2 {
     });
   }
 
+  /** `/me shop`: this week's shelf; with `item`, buys it. */
+  shop(inv: Invocation): Promise<CommandReply> {
+    return this.guard(async (e) => {
+      const item = inv.str("item")?.trim() ?? "";
+      if (item !== "") {
+        const r = await e.buyFromShop(inv.invoker, item, `discord:${newId()}`);
+        return cardReply(
+          [
+            { type: "text", text: `買了「${r.item.label}」` },
+            { type: "muted", text: `花了 ${r.charged} ${e.currency}，剩 ${r.balance}` },
+          ],
+          { accent: "neutral", title: "她的小店" },
+        );
+      }
+      const v = await e.shop(inv.invoker);
+      const lines = v.items.map((i) => {
+        const have = i.owned === true || (typeof i.owned === "number" && i.owned > 0);
+        return `**${i.label}**（${i.kind === "title" ? "稱號" : "收藏"}）　${i.price} ${e.currency}${have ? "　已經有了" : ""}`;
+      });
+      return cardReply(
+        [
+          { type: "text", text: lines.join("\n") },
+          {
+            type: "muted",
+            text: `每個禮拜換一批，下次 <t:${Math.floor(Date.parse(v.renews_at) / 1000)}:R>。買東西不會改變她對你的感覺。用 /me shop 填 item 買。`,
+          },
+        ],
+        { accent: "neutral", title: "她的小店" },
+      );
+    });
+  }
+
   /** `/me titles`: the titles held and the achievements still ahead. */
   titles(inv: Invocation): Promise<CommandReply> {
     return this.guard(async (e) => {
@@ -381,6 +414,17 @@ export function registerV2(registry: CommandRegistry, services: ServiceLookup): 
       permission: WALLET_NODE,
     }),
     (inv) => handler.room(inv),
+  );
+  registry.register(
+    commandSpec("me shop", "她這個禮拜的小店，或買一樣東西", {
+      args: [
+        argSpec("item", "要買的東西（名字或代號），不填就只看", ArgKind.string, {
+          required: false,
+        }),
+      ],
+      permission: WALLET_NODE,
+    }),
+    (inv) => handler.shop(inv),
   );
   registry.register(
     commandSpec("me titles", "你的稱號和成就", { permission: WALLET_NODE, ephemeral: true }),

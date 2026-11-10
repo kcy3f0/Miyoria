@@ -273,7 +273,10 @@ export class AchievementDesk {
         unlocked_at: row?.ts ?? null,
       };
     });
-    const titles = [...list.filter((a) => a.unlocked_at !== null).map((a) => a.title)];
+    const titles = [
+      ...list.filter((a) => a.unlocked_at !== null).map((a) => a.title),
+      ...(await this.e.v2.shopDesk.titles(who)),
+    ];
     return { achievements: list, titles: [...new Set(titles)] };
   }
 }
