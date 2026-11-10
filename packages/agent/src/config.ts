@@ -334,6 +334,43 @@ export const MainLineConfigSchema = z.object({
   loop_budget_ms: z.number().int().positive().default(30_000),
   /** The same in voice, where someone waits in silence. */
   voice_loop_budget_ms: z.number().int().positive().default(12_000),
+  /** Lines before the one she answers that retrieval reads too (v4 §5.4: 「好啊」 finds nothing). */
+  memory_recent_lines: z.number().int().nonnegative().default(4),
+  /**
+   * The profiles of the people here (`PersonProfiles`), before the history (v4 §4.1, §5.6). They
+   * are written again only when who is here or who talks with her changes, or after
+   * `people_refresh_mins`: in between the block reads the same and the prefix stays cached.
+   */
+  people_chars: z.number().int().nonnegative().default(2400),
+  people_refresh_mins: z.number().nonnegative().default(30),
+  /**
+   * 「今天的她」 (`LifeLog.summary`, v4 §6.2), before the history: it changes when she has done
+   * something new, a few times a day, not every turn.
+   */
+  life_chars: z.number().int().nonnegative().default(800),
+  /** Her skills, a name and a line each (`SkillIndex`), before the history. */
+  skills_chars: z.number().int().nonnegative().default(800),
+  /** The index of her notebook (contributor `notebook`), before the history. */
+  notebook_chars: z.number().int().nonnegative().default(600),
+  /** What she did just now, across every place (contributor `just_now`), after the history. */
+  just_now_chars: z.number().int().nonnegative().default(1200),
+  /** What is going on in the other places she is in (contributor `elsewhere`), after it. */
+  elsewhere_chars: z.number().int().nonnegative().default(900),
+  /**
+   * What her tools of the loop brought back in a turn, a few lines kept beside her reply in the
+   * history (v4 §4.2), so the next turn knows what she looked up: all calls of a turn together,
+   * and one call's result.
+   */
+  trace_chars: z.number().int().nonnegative().default(600),
+  trace_result_chars: z.number().int().nonnegative().default(160),
+  /** Turns whose trace a conversation keeps (the window shows the ones beside its lines). */
+  traces: z.number().int().nonnegative().default(12),
+  /**
+   * A tool's description as offered, and one argument's (v4 §4.2: the full text again, the fixed
+   * prefix is cached). Longer ones are cut at a sentence.
+   */
+  tool_chars: z.number().int().nonnegative().default(600),
+  tool_arg_chars: z.number().int().nonnegative().default(200),
   /** Lines of "最近講過" in the tail. */
   recent_lines: z.number().int().nonnegative().default(4),
   /** Untrusted working-context entries in the data part. */
