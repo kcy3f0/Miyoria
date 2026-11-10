@@ -6,25 +6,22 @@
 // * `GET /api/skills/{name}`: one skill's body and the files beside it (scripts say whether they
 //   are approved to run).
 //
-// Skills are files of the workspace (`skills/<name>/SKILL.md`: a `description:` line, a blank line,
-// then the how-to), and the workspace is the sandbox module's, so both are read from there:
-// `@miyoria/skills` is not a dependency of the API. Without the sandbox module, or with its
-// workspace off, they are a 503 that says which. Everything shown is text a program or she may
-// have written: it is data for a person to read, never instructions.
+// The files are the sandbox module's workspace; the skills are read through `SkillShelfKey`, which
+// the skills module provides (so the file layout and the cleaning of a skill's text stay its
+// business). Without the sandbox module, or with its workspace off, the files are a 503 that says
+// which; without the skills module, so are the skills. Everything shown is text a program or she
+// may have written: it is data for a person to read, never instructions.
 
-import { checkName, SandboxKey, type WorkspaceApi } from "@miyoria/sandbox";
+import { SandboxKey, type WorkspaceApi } from "@miyoria/sandbox";
+import { type SkillShelf, SkillShelfKey, type SkillShelfPage } from "@miyoria/types";
 import { ApiError } from "./errors.js";
 import { json, param, type Route } from "./route.js";
 import type { ApiState } from "./state.js";
 
-export const SKILLS_DIR = "skills";
-export const SKILL_FILE = "SKILL.md";
-const DESCRIPTION_PREFIX = "description:";
-const NO_DESCRIPTION = "(沒有說明)";
 /** Most characters of one skill's body shown. */
 export const MAX_BODY_CHARS = 20_000;
-/** Most characters of the description. */
-const MAX_DESCRIPTION_CHARS = 300;
+/** Pages of a body read at most (a page is the store's `read_chars`). */
+const MAX_PAGES = 50;
 /** Most files listed in one answer. */
 const MAX_FILES = 2_000;
 
@@ -65,24 +62,6 @@ function workspace(state: ApiState): WorkspaceApi {
   return ws;
 }
 
-const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
-
-/** Splits `SKILL.md` into its description line and body, the way the skill store writes it. */
-export function parseSkill(raw: string): { description: string; body: string } {
-  const text = raw.replace(/\r\n?/g, "\n");
-  if (!text.startsWith(DESCRIPTION_PREFIX))
-    return { description: NO_DESCRIPTION, body: text.trim() };
-  const end = text.indexOf("\n");
-  const line = end === -1 ? text : text.slice(0, end);
-  const description = [...oneLine(line.slice(DESCRIPTION_PREFIX.length))]
-    .slice(0, MAX_DESCRIPTION_CHARS)
-    .join("");
-  return {
-    description: description === "" ? NO_DESCRIPTION : description,
-    body: (end === -1 ? "" : text.slice(end + 1)).trim(),
-  };
-}
-
 async function files(state: ApiState): Promise<Response> {
   const ws = workspace(state);
   const [listing, usage] = await Promise.all([ws.list(), ws.usage()]);
@@ -100,78 +79,50 @@ async function files(state: ApiState): Promise<Response> {
   return json(view);
 }
 
-/** Names of the skills that have a `SKILL.md`, sorted. */
-async function skillNames(ws: WorkspaceApi): Promise<string[]> {
-  const { entries } = await ws.list(SKILLS_DIR);
-  const names = new Set<string>();
-  for (const { path } of entries) {
-    const [, name, file, ...rest] = path.split("/");
-    if (name === undefined || file !== SKILL_FILE || rest.length > 0) continue;
-    try {
-      names.add(checkName(name));
-    } catch {
-      // A directory name the tools cannot address anyway.
-    }
-  }
-  return [...names].sort();
-}
-
-async function readSkill(ws: WorkspaceApi, name: string) {
-  const read = await ws.read(`${SKILLS_DIR}/${name}/${SKILL_FILE}`, {
-    maxChars: MAX_BODY_CHARS + MAX_DESCRIPTION_CHARS + 64,
-  });
-  const parsed = parseSkill(read.text);
-  const cut = [...parsed.body].length > MAX_BODY_CHARS || read.next_offset !== null;
-  return {
-    description: parsed.description,
-    body: [...parsed.body].slice(0, MAX_BODY_CHARS).join(""),
-    truncated: cut,
-  };
+function shelf(state: ApiState): SkillShelf {
+  return state.service(SkillShelfKey, "skills module (needs the sandbox workspace)");
 }
 
 async function skillList(state: ApiState): Promise<Response> {
-  const ws = workspace(state);
-  const names = await skillNames(ws);
-  const skills: SkillSummaryView[] = [];
-  for (const name of names) {
-    try {
-      skills.push({ name, description: (await readSkill(ws, name)).description });
-    } catch {
-      skills.push({ name, description: NO_DESCRIPTION });
-    }
-  }
-  return json({ skills });
+  const { skills } = await shelf(state).list();
+  return json({ skills: skills.map((s) => ({ name: s.name, description: s.description })) });
 }
 
 async function skillShow(state: ApiState, name: string): Promise<Response> {
-  const ws = workspace(state);
+  const skills = shelf(state);
+  const pages: string[] = [];
+  let first: SkillShelfPage | null = null;
+  let offset = 0;
+  let cut = false;
   try {
-    checkName(name);
-  } catch {
-    throw ApiError.notFound(`no skill \`${name.slice(0, 60)}\``);
-  }
-  let skill: Awaited<ReturnType<typeof readSkill>>;
-  try {
-    skill = await readSkill(ws, name);
+    for (let guard = 0; guard < MAX_PAGES; guard++) {
+      const page = await skills.read(name, offset);
+      first ??= page;
+      pages.push(page.text);
+      if (page.truncated) cut = true;
+      if (page.next_offset === null) break;
+      offset = page.next_offset;
+      if (offset >= MAX_BODY_CHARS) {
+        cut = true;
+        break;
+      }
+    }
   } catch (error) {
-    if ((error as { kind?: string }).kind === "not_found") {
-      throw ApiError.notFound(`no skill \`${name}\``);
+    const kind = (error as { kind?: string }).kind;
+    if (kind === "not_found" || kind === "invalid") {
+      throw ApiError.notFound(`no skill \`${name.slice(0, 60)}\``);
     }
     throw error;
   }
-  const dir = `${SKILLS_DIR}/${name}`;
-  const { entries } = await ws.list(dir);
-  const beside: SkillFileView[] = [];
-  for (const e of entries.sort((a, b) => a.path.localeCompare(b.path))) {
-    if (e.path === `${dir}/${SKILL_FILE}`) continue;
-    const script = /\.(py|mjs)$/.test(e.path)
-      ? (await ws.approvedScript(e.path)) !== null
-        ? "approved"
-        : "unapproved"
-      : null;
-    beside.push({ path: e.path, size: e.size, script });
-  }
-  const view: SkillView = { name, ...skill, files: beside };
+  if (first === null) throw ApiError.notFound(`no skill \`${name.slice(0, 60)}\``);
+  const body = [...pages.join("")].slice(0, MAX_BODY_CHARS).join("");
+  const view: SkillView = {
+    name,
+    description: first.description,
+    body,
+    truncated: cut || [...pages.join("")].length > MAX_BODY_CHARS,
+    files: first.files.map((f) => ({ path: f.path, size: f.size, script: f.script })),
+  };
   return json(view);
 }
 

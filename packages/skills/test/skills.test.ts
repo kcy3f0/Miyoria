@@ -6,7 +6,7 @@ import { ActuatorRegistry, ActuatorRegistryKey, type Capability } from "@miyoria
 import { Supervisor } from "@miyoria/kernel";
 import { PersistentWorkspace, type Sandbox, SandboxKey } from "@miyoria/sandbox";
 import { ToolRegistry } from "@miyoria/tools";
-import { DATA_CLOSE, DATA_OPEN } from "@miyoria/types";
+import { DATA_CLOSE, DATA_OPEN, SkillShelfKey } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   SKILL_DELETE,
@@ -274,6 +274,10 @@ describe("SkillsModule", () => {
     expect(tools.get("skill_write")).toBeDefined();
     const skills = sup.services.get(SkillStoreKey);
     await skills?.write("a", "做 A", "b");
+    // The admin API reads the same store through the port in `@miyoria/types`.
+    const shelf = sup.services.get(SkillShelfKey);
+    expect((await shelf?.list())?.skills).toEqual([{ name: "a", description: "做 A" }]);
+    expect((await shelf?.read("a"))?.text).toBe("b");
     expect((await registry.statusLines()).join("\n")).toContain("技能:a");
     await sup.stopAll();
     expect(registry.get(SKILL_WRITE)).toBeUndefined();
@@ -287,6 +291,7 @@ describe("SkillsModule", () => {
       await sup.startAll();
       expect(registry.get(SKILL_WRITE)).toBeUndefined();
       expect(sup.services.get(SkillStoreKey)).toBeUndefined();
+      expect(sup.services.get(SkillShelfKey)).toBeUndefined();
       await sup.stopAll();
     }
   });

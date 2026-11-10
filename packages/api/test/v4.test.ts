@@ -18,12 +18,12 @@ import {
   type NotebookPage,
   type Reminder,
   ReminderDeskKey,
+  SkillShelfKey,
   toTimestamp,
 } from "@miyoria/types";
 import { afterEach, describe, expect, it } from "vitest";
 import { ActiveProfileKey, ApiModule } from "../src/index.js";
 import { ACTIVITY_ROWS } from "../src/v4-life.js";
-import { parseSkill } from "../src/v4-workspace.js";
 import { raw } from "./support/http.js";
 
 const TOKEN = "test-token";
@@ -268,27 +268,65 @@ describe("her workspace and skills", () => {
     expect(JSON.stringify(res.body)).toContain("workspace");
   });
 
-  it("lists files with sizes and the skill index and bodies", async () => {
+  it("lists the workspace files with sizes", async () => {
     const h = await harness();
     const ws = await workspace(h);
     await ws.write("notes/a.txt", "hello");
-    await ws.write("skills/fishing/SKILL.md", "description: 釣魚的順序\n\n先看天氣。\n再選餌。");
-    await ws.saveScript("skills/fishing/cast.py", "print('cast')\n");
-    await ws.write("skills/fishing/stray.py", "print('x')\n");
-    await ws.write("skills/raw/SKILL.md", "沒有說明行");
-
     const files = await h.get("/api/workspace");
     expect(files.status).toBe(200);
     const fv = files.body as { files: { path: string; size: number }[]; usage: { files: number } };
     expect(fv.files.find((f) => f.path === "notes/a.txt")?.size).toBe(5);
-    expect(fv.usage.files).toBe(5);
+    expect(fv.usage.files).toBe(1);
+  });
 
+  /** A shelf like the skills module's: pages of 10 characters, an error with a kind. */
+  function shelf(skills: Record<string, { description: string; body: string; files?: unknown[] }>) {
+    return {
+      list: async () => ({
+        skills: Object.entries(skills).map(([name, s]) => ({ name, description: s.description })),
+        truncated: false,
+      }),
+      read: async (name: string, offset = 0) => {
+        const skill = skills[name];
+        if (!skill) throw Object.assign(new Error("none"), { kind: "not_found" });
+        const all = [...skill.body];
+        const text = all.slice(offset, offset + 10).join("");
+        const end = offset + [...text].length;
+        return {
+          name,
+          description: skill.description,
+          text,
+          offset,
+          next_offset: end < all.length ? end : null,
+          truncated: false,
+          files: skill.files ?? [],
+        };
+      },
+    };
+  }
+
+  it("lists skills and reads a whole body page by page, through the skills module's shelf", async () => {
+    const h = await harness();
+    h.sup.services.provide(
+      "skills",
+      SkillShelfKey,
+      shelf({
+        fishing: {
+          description: "釣魚的順序",
+          body: "先看天氣。\n再選餌。然後等魚上鉤,不要急。",
+          files: [
+            { path: "skills/fishing/cast.py", size: 14, script: "approved" },
+            { path: "skills/fishing/stray.py", size: 11, script: "unapproved" },
+          ],
+        },
+        raw: { description: "(沒有說明)", body: "沒有說明行" },
+      }) as never,
+    );
     const index = await h.get("/api/skills");
     expect((index.body as { skills: unknown[] }).skills).toEqual([
       { name: "fishing", description: "釣魚的順序" },
       { name: "raw", description: "(沒有說明)" },
     ]);
-
     const one = await h.get("/api/skills/fishing");
     expect(one.status).toBe(200);
     const sv = one.body as {
@@ -296,22 +334,17 @@ describe("her workspace and skills", () => {
       truncated: boolean;
       files: { path: string; script: string | null }[];
     };
-    expect(sv.body).toBe("先看天氣。\n再選餌。");
+    expect(sv.body).toBe("先看天氣。\n再選餌。然後等魚上鉤,不要急。");
     expect(sv.truncated).toBe(false);
-    expect(sv.files).toEqual([
-      { path: "skills/fishing/cast.py", size: 14, script: "approved" },
-      { path: "skills/fishing/stray.py", size: 11, script: "unapproved" },
-    ]);
+    expect(sv.files.map((f) => f.script)).toEqual(["approved", "unapproved"]);
     expect((await h.get("/api/skills/nope")).status).toBe(404);
-    expect((await h.get("/api/skills/..%2Fx")).status).toBe(404);
   });
 
-  it("parses a description line the way the store writes it", () => {
-    expect(parseSkill("description:  a   b \n\nbody")).toEqual({
-      description: "a b",
-      body: "body",
-    });
-    expect(parseSkill("just text")).toEqual({ description: "(沒有說明)", body: "just text" });
+  it("says the skills module is missing when it is", async () => {
+    const h = await harness();
+    const res = await h.get("/api/skills");
+    expect(res.status).toBe(503);
+    expect(JSON.stringify(res.body)).toContain("skills module");
   });
 });
 

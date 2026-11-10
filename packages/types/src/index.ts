@@ -783,6 +783,13 @@ export {
 } from "./recent-past.js";
 export { type SceneRule, type SceneRuleInput, SceneRuleKey } from "./scene-rule.js";
 export {
+  type SkillShelf,
+  type SkillShelfEntry,
+  type SkillShelfFile,
+  SkillShelfKey,
+  type SkillShelfPage,
+} from "./skill-shelf.js";
+export {
   isSteerOutcome,
   isTaskFailureCode,
   isTerminalTaskEvent,
