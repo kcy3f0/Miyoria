@@ -6,7 +6,8 @@
 //   owners' rules and what is hers to decide.
 // * A pledge is held (a `goal_pledge` row of the pledger's wallet, so it cannot be spent twice).
 //   When the total reaches the target the goal is `reached`, the held coins become hers (one
-//   `goal_funds` row of the purse) and she is told it is a promise now. Short at the deadline, or
+//   `goal_funds` row of the purse) and she is told it is a promise now; a card says so where the
+//   pledge that met it was made (none without a place, notices.ts). Short at the deadline, or
 //   if she withdraws it, every pledge is returned once.
 // * Goals persist in `GoalStore`; a sweep ends what ran out and finishes what a restart cut short.
 
@@ -16,6 +17,8 @@ import { type AccountRef, type ContextKey, newId, toTimestamp } from "@miyoria/t
 import { cleanText, guardTask } from "./deals.js";
 import type { EconomyService } from "./economy.js";
 import { STRANGER } from "./economy.js";
+import { postCard } from "./notices.js";
+import { receipt } from "./receipt.js";
 import { EconomyError, type GoalView, type PledgeResult } from "./types.js";
 
 export const MAX_TITLE_CHARS = 30;
@@ -144,6 +147,7 @@ export class GoalDesk {
     goalId: string,
     amount: number,
     key: string,
+    context: ContextKey | null = null,
   ): Promise<PledgeResult> {
     if (!Number.isInteger(amount) || amount < 1) throw new EconomyError(400, "至少 1");
     const who = await this.e.member(account);
@@ -218,13 +222,13 @@ export class GoalDesk {
       `{who}投了 ${out.pledge.pledged} ${c.currency}給你的目標「${out.goal.title}」(${out.pledge.raised}/${out.goal.target})`,
       who.name,
     );
-    if (out.pledge.reached) await this.#reach(out.goal);
+    if (out.pledge.reached) await this.#reach(out.goal, out.pledge.raised, context);
     else await this.e.purse.refresh();
     return out.pledge;
   }
 
-  /** The target is met: the pledges are hers, and so is the promise. */
-  async #reach(goal: Goal): Promise<void> {
+  /** The target is met: the pledges are hers, and so is the promise; a card says so, once. */
+  async #reach(goal: Goal, raised: number, context: ContextKey | null): Promise<void> {
     const moved = await this.e.serial(() =>
       this.#store().transition(goal.id, ["open"], {
         status: "reached",
@@ -232,6 +236,15 @@ export class GoalDesk {
       }),
     );
     if (!moved) return;
+    postCard(
+      this.e,
+      context,
+      receipt(
+        `🎯「${goal.title}」湊滿了!`,
+        `她答應的:${goal.promise}`,
+        `大家湊了 ${raised} ${this.e.config.currency}`,
+      ),
+    );
     await this.#fund(goal);
   }
 
