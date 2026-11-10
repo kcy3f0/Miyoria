@@ -63,6 +63,7 @@ import {
   GoalAgendaKey,
   type IncomingMessage,
   inspectInput,
+  isJsonObject,
   type JsonValue,
   type LaneKey,
   LessonsKey,
@@ -144,7 +145,15 @@ import {
 import type { TurnFlags } from "./coordinator.js";
 import { Expression, ExpressionParser, type Segment } from "./expression.js";
 import { fileParts, selectFiles } from "./files.js";
-import { type FocusSelection, focusVerb, type TurnFocusInit } from "./focus.js";
+import {
+  type CallFor,
+  callFor,
+  FOR_ARG,
+  FOR_PROPERTY,
+  type FocusSelection,
+  focusVerb,
+  type TurnFocusInit,
+} from "./focus.js";
 import { voiceScope } from "./handle.js";
 import { awaitBackfill, fetchAround, quotedParent, replyParents } from "./history.js";
 import { isSelfTalk, looksLikeReasoning, ReplyScreen } from "./leak.js";
@@ -3093,7 +3102,7 @@ class Turn {
       call.name,
       call.arguments,
       () => this.#hand(call, priority, this.signal, limit),
-      this.#requester(),
+      this.#requesterOf(call),
     );
     if (run.ok) this.#succeeded.add(call.name);
     this.#trace(call, run.ok, run.text);
@@ -3683,10 +3692,45 @@ class Turn {
   #toolSpecs(): ToolSpec[] {
     const scope = this.#toolScope();
     const tools = this.agent.tools;
+    const several = severalPeople(this.#focused.map((m) => m.author));
     return tools.names().flatMap((name) => {
       const tool = tools.get(name);
-      return tool && this.#offers(tool, scope) ? [tool.spec] : [];
+      if (!tool || !this.#offers(tool, scope)) return [];
+      return [several && tool.actsFor === true ? withFor(tool.spec) : tool.spec];
     });
+  }
+
+  /**
+   * The message a call acts for (`callFor`): its `for_whom` (taken off `args`) among the people of
+   * the focus when several called her at once, else `#requester`.
+   */
+  #callFor(tool: Tool | undefined, args: JsonValue): CallFor {
+    let pick: unknown;
+    if (isJsonObject(args) && FOR_ARG in args) {
+      pick = args[FOR_ARG];
+      delete args[FOR_ARG];
+    }
+    const names = this.agent.persona.names();
+    return callFor(
+      this.#focused,
+      this.#replyTargets,
+      pick,
+      tool?.actsFor === true,
+      (m) => m.mentions_self || (m.reply_to_self && directReason(m, names) === "reply"),
+      () => this.#requester(),
+    );
+  }
+
+  /** The message a call acts for, for the hands' record (`#requester` when it cannot tell). */
+  #requesterOf(call: ToolCall): IncomingMessage | undefined {
+    let args: JsonValue = {};
+    try {
+      args = JSON.parse(call.arguments.trim() === "" ? "{}" : call.arguments) as JsonValue;
+    } catch {
+      return this.#requester();
+    }
+    const found = this.#callFor(this.#tool(call.name), args);
+    return found.ok ? found.message : this.#requester();
   }
 
   #tool(name: string): Tool | undefined {
@@ -3749,12 +3793,15 @@ class Turn {
         return [false, `error: arguments are not valid JSON: ${errorMessage(error)}`];
       }
     }
+    // Whom it is for, before anything runs: never silently the latest speaker (`callFor`).
+    const target = this.#callFor(tool, args);
+    if (!target.ok) return [false, `error: ${target.error}`];
     if (this.#main !== null) {
       const grounded = groundArgs(call.name, args, this.key);
       if (JSON.stringify(grounded) !== JSON.stringify(args)) this.#tally.count("ground_args");
       args = grounded;
     }
-    const last = this.#requester();
+    const last = target.message;
     if (!last && this.intent === null && this.#main === null) {
       return [false, "error: no triggering message"];
     }
@@ -3884,4 +3931,24 @@ function ownBlock(key: string, title: string, body: string, order: number): Prom
 /** The context as a JSON object (event payloads). */
 function contextJson(key: ContextKey): JsonValue {
   return { platform: key.platform, scope: key.scope, channel: key.channel, kind: key.kind };
+}
+
+/**
+ * `spec` with a required `for_whom` (`callFor`): several people called her at once, so a tool that
+ * acts for someone says whom.
+ */
+function withFor(spec: ToolSpec): ToolSpec {
+  const params = isJsonObject(spec.parameters) ? spec.parameters : { type: "object" };
+  const properties = isJsonObject(params.properties) ? params.properties : {};
+  const required = Array.isArray(params.required)
+    ? params.required.filter((r) => r !== FOR_ARG)
+    : [];
+  return {
+    ...spec,
+    parameters: {
+      ...params,
+      properties: { ...properties, [FOR_ARG]: { ...FOR_PROPERTY } },
+      required: [...required, FOR_ARG],
+    },
+  };
 }

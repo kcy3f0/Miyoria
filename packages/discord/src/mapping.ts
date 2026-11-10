@@ -216,6 +216,41 @@ export function resolveMentions(text: string, names: MentionNames): string {
     .replace(/<a?:(\w{1,32}):\d{1,20}>/g, (_m, name: string) => `:${name}:`);
 }
 
+/** A user's name by id, from wherever the platform knows it (a cache), else `null`. */
+export type UserNames = (id: string) => string | null;
+
+/** User ids `<@id>` in `text` that `names` has no name for. */
+export function unnamedUsers(text: string, names: MentionNames): string[] {
+  const out: string[] = [];
+  for (const match of text.matchAll(USER_MENTION)) {
+    const id = match[1] as string;
+    if (!names.users.has(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * `names` with the users it lacks filled in from `lookup`. Her cards are sent without pings
+ * (`allowed_mentions: { parse: [] }`), so Discord lists nobody in their mention data: without
+ * this a receipt for someone read 「@某人」 in her history (2026-11-11), and nobody could tell
+ * whom it charged.
+ */
+export function withUserNames(
+  names: MentionNames,
+  text: string,
+  lookup: UserNames | null,
+): MentionNames {
+  if (lookup === null) return names;
+  const missing = unnamedUsers(text, names);
+  if (missing.length === 0) return names;
+  const users = new Map(names.users);
+  for (const id of missing) {
+    const name = lookup(id)?.trim();
+    if (name) users.set(id, name);
+  }
+  return { ...names, users };
+}
+
 const LEADING_MENTION = /^\s*<@!?(\d{1,20})>/;
 const USER_MENTION = /<@!?(\d{1,20})>/g;
 
@@ -328,6 +363,7 @@ export function incomingMessage(
   selfIds: ReadonlySet<string>,
   repliedAuthorId: string | null = null,
   referenced: QuotedMessage | null = null,
+  userNames: UserNames | null = null,
 ): IncomingMessage {
   const effectiveKind: ContextKind = msg.guildId === null ? "dm" : kind;
   let mentionsSelf = false;
@@ -338,6 +374,7 @@ export function incomingMessage(
     }
   }
   const context = contextKey(msg.guildId, msg.channelId, effectiveKind);
+  const text = msg.content.trim() === "" ? componentsText(msg.components) : msg.content;
   return {
     id: { context, id: msg.id },
     author: {
@@ -345,10 +382,7 @@ export function incomingMessage(
       display_name: displayName(msg.author, msg.member?.nickname ?? null),
       is_bot: msg.author.bot ?? false,
     },
-    text: resolveMentions(
-      msg.content.trim() === "" ? componentsText(msg.components) : msg.content,
-      mentionNames(msg.mentions),
-    ),
+    text: resolveMentions(text, withUserNames(mentionNames(msg.mentions), text, userNames)),
     mentions_self: mentionsSelf,
     reply_to_self: repliedAuthorId !== null && selfIds.has(repliedAuthorId),
     attachments: attachments(msg.attachments),
