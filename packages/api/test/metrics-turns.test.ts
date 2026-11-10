@@ -68,6 +68,31 @@ describe("aggregateTurnMetrics", () => {
     });
   });
 
+  it("a refused follow-up that has its outcome row is counted once, by the gate in its trace", () => {
+    // What the live log looks like (2026-11-07 to 11-10): the refused turn has both rows.
+    const stopped = (reasons: string[]) => {
+      const d = refused(["replying to her: skips her quiet setting", ...reasons]);
+      return { d, o: outcome("reply_to_her", SILENCE, { turn: d.trace.turn }) };
+    };
+    const rows = [
+      stopped(["anti-spam: her share 0.45 > 0.15", "p 0.00"]),
+      stopped(["level quiet", "score 0.40 < 0.45", "p 0.00"]),
+      stopped(["p 0.45, roll 0.65"]),
+    ];
+    const m = aggregateTurnMetrics(
+      rows.map((r) => r.o),
+      rows.map((r) => r.d),
+      { now: NOW, days: 3 },
+    );
+    expect(m.overall.followup).toEqual({ sent: 0, total: 3, rate: 0 });
+    expect(m.overall.followup_stopped).toMatchObject({
+      anti_spam: 1,
+      low_score: 1,
+      lost_roll: 1,
+      other: 0,
+    });
+  });
+
   it('tells a silence after "talking with her" from other silences', () => {
     const talking = outcome("reply_to_her", SILENCE, { turn: "tt" });
     const trace: DecisionRecord = {

@@ -1,10 +1,10 @@
 // How well she takes part, per local day (docs/design/v4-plan.md §13): `GET /api/turns/metrics?days=N`.
-// Read-only. It joins the two logs the turn engine already keeps, because neither is complete
-// alone: a turn that ran has an outcome row (`agent.turn.outcome`), but a follow-up the gate
-// refused never became a turn, so it only exists as a decision trace (`respond: false`) that has
-// no outcome. The trace carries no `TurnReason`, so the reason of a refused turn is read off the
-// reasons the gate wrote (`attention.ts`): "replying to her" marks a follow-up, "direct:" an
-// addressed one, `intent:` / `initiative:` her own. Whatever is none of these was ambient.
+// Read-only. It joins the two logs the turn engine keeps: every turn has an outcome row
+// (`agent.turn.outcome`; a turn the gate refused ends in `silence`) and a decision trace whose
+// reasons say which gate stopped it. A trace without an outcome row (older data, or a write that
+// was lost) is counted too; it carries no `TurnReason`, so its reason is read off what the gate
+// wrote (`attention.ts`): "replying to her" marks a follow-up, "direct:" an addressed one,
+// `intent:` / `initiative:` her own. Whatever is none of these was ambient.
 // The aggregation is a pure function over records; the route only fetches and clamps.
 
 import { DecisionLogKey, type DecisionRecord } from "@miyoria/store";
@@ -216,7 +216,13 @@ export function aggregateTurnMetrics(
       voice: o.context.kind === "voice",
       outcome: type,
       latency: o.latency_ms,
-      stop: type === "silence" && has(reasons, "talking with her") ? "passed_silent" : "other",
+      // A turn the gate refused has an outcome row too (`silence`), and its trace says which gate.
+      stop:
+        type !== "silence"
+          ? "other"
+          : has(reasons, "talking with her")
+            ? "passed_silent"
+            : stopOfRefused(reasons),
     });
   }
   for (const d of decisions) {
