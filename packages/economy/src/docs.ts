@@ -60,6 +60,12 @@ export interface EconomyDocStore {
   list(profile: ProfileId, kind: string, filter: DocFilter): Promise<EconomyDoc[]>;
 }
 
+/** Newest first by creation; the id breaks a tie (ULIDs sort by time). */
+export function newestFirst(a: EconomyDoc, b: EconomyDoc): number {
+  if (a.created_at !== b.created_at) return a.created_at < b.created_at ? 1 : -1;
+  return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+}
+
 export const EconomyDocsKey = serviceKey<EconomyDocStore>("EconomyDocs");
 
 /** The in-memory store: same behaviour as the real one, gone on restart. */
@@ -114,10 +120,7 @@ export class MemoryDocs implements EconomyDocStore {
       }
       out.push(doc);
     }
-    // Newest first; the id breaks a tie (ULIDs sort by time).
-    out.sort((a, b) =>
-      a.created_at === b.created_at ? (a.id < b.id ? 1 : -1) : a.created_at < b.created_at ? 1 : -1,
-    );
+    out.sort(newestFirst);
     return out.slice(0, Math.max(filter.limit, 0)).map((d) => structuredClone(d));
   }
 }

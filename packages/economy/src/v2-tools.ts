@@ -11,7 +11,7 @@ import { z } from "zod";
 import type { EconomyService } from "./economy.js";
 import { QUESTS } from "./quests.js";
 import { receipt, someone } from "./receipt.js";
-import { noSpeaker, reasonOf, refusal, speakerOf } from "./tools.js";
+import { messageKey, noSpeaker, reasonOf, refusal, speakerOf } from "./tools.js";
 import { EconomyError } from "./types.js";
 
 const NOT_ON_OWN = "不要設 on_own。";
@@ -132,7 +132,121 @@ export function completeQuestCapability(economy: EconomyService): Capability {
   }) as Capability;
 }
 
+// ---- collection and achievements -------------------------------------------------------------
+
+const RARITY_WORD: Record<string, string> = { N: "N", R: "R", SR: "SR", SSR: "SSR" };
+
+/** `economy.collection` (tool `check_collection`): the speaker's album, the odds, their titles. */
+export function collectionCapability(economy: EconomyService): Capability {
+  const cur = economy.config.currency;
+  return defineCapability<NoArgs>({
+    name: "economy.collection",
+    summary: "查說話的人的收藏冊、抽收藏的機率和稱號",
+    risk: "low",
+    args: NoArgs,
+    permission: null,
+    tool: {
+      name: "check_collection",
+      description:
+        `有人問他集到了什麼、收藏冊、稀有度和機率、抽收藏要多少${cur}、有什麼稱號和成就的時候用這個,` +
+        "不要自己猜。只看正在跟你說話的人自己的。稀有度只是一個標籤,不代表你比較喜歡他。" +
+        NOT_ON_OWN,
+      properties: {},
+    },
+    check: (_args, principal) => noSpeaker(principal),
+    async execute(_args, ctx) {
+      const who = speakerOf(ctx);
+      const [album, achieved] = await Promise.all([
+        economy.v2.album(who.account),
+        economy.v2.achievements(who.account),
+      ]);
+      const series = album.series.map(
+        (s) => `${s.label} ${s.owned_distinct}/${s.total}${s.complete ? "(集齊)" : ""}`,
+      );
+      const odds = album.odds.map((o) => `${RARITY_WORD[o.rarity]} ${o.percent}%`).join("、");
+      const titles = achieved.titles.length === 0 ? "還沒有" : achieved.titles.join("、");
+      return {
+        text:
+          `收藏冊:${series.join("、")}。抽一次 ${album.price} ${cur},今天抽了 ${album.draws_today}/${album.draws_per_day}。` +
+          `機率:${odds}${album.pity > 0 ? `;連續 ${album.pity} 次沒有 SR 以上就一定出 SR(已經 ${album.since_best} 次)` : ""}。` +
+          `稱號:${titles}。`,
+        data: {
+          series: album.series.map((s) => ({
+            id: s.id,
+            owned: s.owned_distinct,
+            total: s.total,
+            complete: s.complete,
+          })),
+          odds: album.odds.map((o) => ({ rarity: o.rarity, percent: o.percent })),
+          price: album.price,
+          titles: achieved.titles,
+        },
+      };
+    },
+  }) as Capability;
+}
+
+/** `economy.draw` (tool `draw_collectible`): a draw for the speaker, in text only. */
+export function drawCapability(economy: EconomyService): Capability {
+  const cur = economy.config.currency;
+  return defineCapability<NoArgs>({
+    name: "economy.draw",
+    summary: `幫說話的人抽一次收藏(${economy.config.draw_price} ${cur})`,
+    risk: "medium",
+    args: NoArgs,
+    permission: null,
+    limits: { per_day: 1_000, per_person_per_day: 20, cooldown_ms: 0 },
+    tool: {
+      name: "draw_collectible",
+      description:
+        `對方明確要抽一次收藏(花 ${economy.config.draw_price} ${cur})的時候用。只有文字頻道裡對方本人說了才用,` +
+        "不要自己提議、不要勸他抽。結果是機率決定的,稀有度不代表你比較喜歡他。" +
+        NOT_ON_OWN,
+      properties: {},
+    },
+    check: (_args, principal) => noSpeaker(principal),
+    async execute(_args, ctx) {
+      const who = speakerOf(ctx);
+      if (who.voice) {
+        return refusal(
+          "沒有抽",
+          "unconfirmed",
+          "語音裡可能聽錯,不能直接花錢;請對方在文字頻道用 /me draw",
+        );
+      }
+      return answering("沒有抽成", async (): Promise<Answer> => {
+        const r = await economy.v2.draw(
+          who.account,
+          messageKey(who.message.context, who.message.id),
+        );
+        const line = `${r.item.series}「${r.item.label}」(${r.item.rarity})${r.new ? ",新的一個" : ",重複的"}`;
+        return {
+          text: `抽到了${line},花 ${r.charged} ${cur},現在有 ${r.balance}。`,
+          data: {
+            done: true,
+            item: r.item.label,
+            rarity: r.item.rarity,
+            new: r.new,
+            charged: r.charged,
+            balance: r.balance,
+          },
+          receipt: receipt(
+            "🎴 抽收藏",
+            `${someone(who.account)} 抽到了 ${line}`,
+            `−${r.charged} ${cur} · 現在有 ${r.balance}`,
+          ),
+        };
+      });
+    },
+  }) as Capability;
+}
+
 /** Every tool of economy 2.0. */
 export function v2Capabilities(economy: EconomyService): Capability[] {
-  return [questsCapability(economy), completeQuestCapability(economy)];
+  return [
+    questsCapability(economy),
+    completeQuestCapability(economy),
+    collectionCapability(economy),
+    drawCapability(economy),
+  ];
 }

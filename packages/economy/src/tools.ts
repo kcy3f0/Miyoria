@@ -218,7 +218,7 @@ export function speakerOf(ctx: ExecContext): Speaker {
 }
 
 /** The ledger key of what one message (or utterance) paid for. */
-function messageKey(context: MessageRef["context"], id: string): string {
+export function messageKey(context: MessageRef["context"], id: string): string {
   return `say:${contextKeyString(context)}:${id}`;
 }
 

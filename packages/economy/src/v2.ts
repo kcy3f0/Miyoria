@@ -4,11 +4,23 @@
 import { errorMessage } from "@miyoria/kernel";
 import type { CoinEntry } from "@miyoria/store";
 import type { AccountRef } from "@miyoria/types";
-import type { EconomyConfig } from "./config.js";
+import { AchievementDesk } from "./achievements.js";
+import { Collection } from "./collection.js";
+import type { EconomyConfig, Rarity } from "./config.js";
 import type { EconomyService, Member } from "./economy.js";
 import { PlayDesk } from "./play.js";
 import { QuestDesk } from "./quests.js";
-import type { Economy2, QuestId, QuestResult, QuestsView } from "./v2-types.js";
+import type {
+  AchievementsView,
+  AlbumView,
+  DrawResult,
+  Economy2,
+  GiveItemResult,
+  OddsRow,
+  QuestId,
+  QuestResult,
+  QuestsView,
+} from "./v2-types.js";
 
 const ACTIVITY_LABEL: Readonly<Record<string, string>> = {
   game_join: "加入遊戲",
@@ -25,6 +37,10 @@ export function labelV2(r: CoinEntry, _config: EconomyConfig): string | null {
   switch (r.reason) {
     case "play":
       return (r.ref !== null && ACTIVITY_LABEL[r.ref]) || "一起玩";
+    case "achievement":
+      return "達成成就";
+    case "draw":
+      return "抽收藏";
     case "quest":
       return r.ref === "all" ? "今天的任務全部完成" : "每日任務";
     default:
@@ -35,10 +51,14 @@ export function labelV2(r: CoinEntry, _config: EconomyConfig): string | null {
 export class V2 implements Economy2 {
   readonly play: PlayDesk;
   readonly quest: QuestDesk;
+  readonly collection: Collection;
+  readonly achievement: AchievementDesk;
 
   constructor(readonly e: EconomyService) {
     this.play = new PlayDesk(e);
     this.quest = new QuestDesk(e);
+    this.collection = new Collection(e);
+    this.achievement = new AchievementDesk(e);
   }
 
   get currency(): string {
@@ -46,7 +66,13 @@ export class V2 implements Economy2 {
   }
 
   /** What may have become true after coins were earned: milestones. Never throws. */
-  async afterEarn(_who: Member): Promise<void> {}
+  async afterEarn(who: Member): Promise<void> {
+    try {
+      await this.achievement.evaluate(who);
+    } catch (error) {
+      this.e.log.warn({ err: errorMessage(error) }, "cannot check achievements");
+    }
+  }
 
   /** A quest done for someone already known; a failure is logged, never thrown at the caller. */
   async questDone(who: Member, quest: QuestId): Promise<void> {
@@ -63,5 +89,37 @@ export class V2 implements Economy2 {
 
   completeQuest(account: AccountRef, quest: QuestId, topic?: string): Promise<QuestResult> {
     return this.quest.completeFor(account, quest, topic);
+  }
+
+  album(account: AccountRef): Promise<AlbumView> {
+    return this.collection.album(account);
+  }
+
+  odds(): OddsRow[] {
+    return this.collection.odds();
+  }
+
+  rarityOdds(): { rarity: Rarity; percent: number }[] {
+    return this.collection.rarityOdds();
+  }
+
+  rollRarity(): Rarity {
+    return this.collection.rollRarity();
+  }
+
+  draw(account: AccountRef, key: string): Promise<DrawResult> {
+    return this.collection.draw(account, key);
+  }
+
+  giveItem(from: AccountRef, to: AccountRef, item: string, key: string): Promise<GiveItemResult> {
+    return this.collection.give(from, to, item, key);
+  }
+
+  recordCard(account: AccountRef, serial: string, traits: readonly string[]): Promise<number> {
+    return this.collection.recordCard(account, serial, traits);
+  }
+
+  achievements(account: AccountRef): Promise<AchievementsView> {
+    return this.achievement.view(account);
   }
 }

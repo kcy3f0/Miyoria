@@ -40,6 +40,7 @@ export const ALICE_TWO = discord("1b");
 export const BOB = discord("2");
 export const CAROL = discord("3"); // blocked
 export const DAVE = discord("4"); // never met
+export const ERIN = discord("5");
 export const TEXT: ContextKey = { platform: "discord", scope: "g", channel: "c", kind: "channel" };
 
 export interface Rig {
@@ -73,6 +74,7 @@ export async function rig(config: Record<string, JsonValue> = {}): Promise<Rig> 
     [ALICE, "Alice"],
     [BOB, "Bob"],
     [CAROL, "Carol"],
+    [ERIN, "Erin"],
   ] as const) {
     ids.set(a.id, await store.people.upsertAccount(a, name));
   }
@@ -160,6 +162,7 @@ export async function say(
   id: string,
   args: Record<string, JsonValue> = {},
   own = false,
+  context: ContextKey = TEXT,
 ): Promise<{ text: string; data: Record<string, JsonValue> }> {
   const capability = capabilities.find((c) => c.tool?.name === tool);
   if (!capability) throw new Error(`no tool ${tool}`);
@@ -171,10 +174,10 @@ export async function say(
   ).call(
     {
       turn: `turn-${id}`,
-      context: TEXT,
+      context,
       account: speaker,
-      principal: Principals.user(speaker, TEXT),
-      message: { context: TEXT, id },
+      principal: Principals.user(speaker, context),
+      message: { context, id },
       priority: "request",
       signal: new AbortController().signal,
       report: (d) => {

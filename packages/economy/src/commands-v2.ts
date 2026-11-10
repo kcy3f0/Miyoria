@@ -1,8 +1,10 @@
-// The Discord side of economy 2.0 (docs/design/v4-plan.md §10): `/me quests` and the rest. Same
-// rules as commands.ts: neutral cards, a stranger gets the plain line, the answer to anything that
-// moves coins is only for whoever pressed it, and every spend carries a fresh key.
+// The Discord side of economy 2.0 (docs/design/v4-plan.md §10): `/me quests`, `/me draw` and the
+// rest. Same rules as commands.ts: neutral cards, a stranger gets the plain line, the answer to
+// anything that moves coins is only for whoever pressed it, and every spend carries a fresh key.
 
 import {
+  ArgKind,
+  argSpec,
   type CardBlock,
   type CommandRegistry,
   type CommandReply,
@@ -12,13 +14,15 @@ import {
   notice,
 } from "@miyoria/commands";
 import { errorMessage, getLogger, type ServiceLookup } from "@miyoria/kernel";
+import { newId } from "@miyoria/types";
 import { STRANGER, WALLET_NODE } from "./economy.js";
+import { NO_RECEIVER } from "./transfer.js";
 import { EconomyError } from "./types.js";
 import { type Economy2, Economy2Key } from "./v2-types.js";
 
 const log = getLogger("economy.commands.v2");
 
-export const V2_PATHS = ["me quests"] as const;
+export const V2_PATHS = ["me quests", "me draw", "me album", "me giveitem", "me titles"] as const;
 
 const UNAVAILABLE = "錢包現在打不開";
 
@@ -55,6 +59,90 @@ class Handler2 {
       return cardReply(blocks, { accent: "neutral", title: "今天的任務" });
     });
   }
+
+  /** `/me draw`: one draw; the answer is public like feeding her, the odds are on `/me album`. */
+  draw(inv: Invocation): Promise<CommandReply> {
+    return this.guard(async (e) => {
+      // The platform does not hand a command its interaction id, so a press is its own key.
+      const r = await e.draw(inv.invoker, `discord:${newId()}`);
+      const tail = r.new ? "新的一個" : "重複的，可以送給別人";
+      return cardReply(
+        [
+          {
+            type: "text",
+            text: `**${r.item.label}**　${r.item.rarity}　${r.item.series}\n${tail}${r.by_pity ? "（保底）" : ""}`,
+          },
+          { type: "muted", text: `花了 ${r.charged} ${e.currency}，剩 ${r.balance}` },
+        ],
+        { accent: "neutral", title: "抽收藏" },
+      );
+    });
+  }
+
+  /** `/me album`: the person's own album, the odds and how close the pity is. */
+  album(inv: Invocation): Promise<CommandReply> {
+    return this.guard(async (e) => {
+      const a = await e.album(inv.invoker);
+      if (!a.member) return notice("info", STRANGER);
+      const lines = a.series.map((s) => {
+        const items = s.items.map((i) =>
+          i.owned > 0 ? `${i.label}${i.owned > 1 ? `×${i.owned}` : ""}` : "？？？",
+        );
+        const title = s.complete ? `　稱號「${s.title}」` : "";
+        return `**${s.label}** ${s.owned_distinct}/${s.total}${title}\n${items.join("、")}`;
+      });
+      const odds = a.odds.map((o) => `${o.rarity} ${o.percent}%`).join("　");
+      const pity =
+        a.pity > 0 ? `　連續 ${a.pity} 次沒有 SR 以上一定出 SR（目前 ${a.since_best} 次）` : "";
+      return cardReply(
+        [
+          { type: "text", text: lines.join("\n\n") },
+          {
+            type: "muted",
+            text: `抽一次 ${a.price} ${e.currency}，今天 ${a.draws_today} / ${a.draws_per_day}。機率　${odds}${pity}。稀有度只是標籤，不是她對你的感覺。`,
+          },
+        ],
+        { accent: "neutral", title: "收藏冊" },
+      );
+    });
+  }
+
+  /** `/me giveitem`: a spare copy to another member (the answer is only for the sender). */
+  giveItem(inv: Invocation): Promise<CommandReply> {
+    return this.guard(async (e) => {
+      const to = inv.account("user");
+      const item = inv.str("item")?.trim() ?? "";
+      if (to === null || item === "") return notice("warn", "要送給誰、送哪一個?");
+      // The option is a Discord user; another platform's account is not someone one can reach.
+      if (to.platform !== inv.invoker.platform) return notice("info", NO_RECEIVER);
+      const r = await e.giveItem(inv.invoker, to, item, `discord:${newId()}`);
+      return cardReply([{ type: "text", text: `把「${r.label}」送給了 ${r.to}` }], {
+        accent: "neutral",
+      });
+    });
+  }
+
+  /** `/me titles`: the titles held and the achievements still ahead. */
+  titles(inv: Invocation): Promise<CommandReply> {
+    return this.guard(async (e) => {
+      const view = await e.achievements(inv.invoker);
+      if (view.achievements.length === 0) return notice("info", STRANGER);
+      const done = view.achievements.filter((a) => a.unlocked_at !== null);
+      const ahead = view.achievements.filter((a) => a.unlocked_at === null);
+      const have =
+        view.titles.length === 0
+          ? "還沒有稱號"
+          : `稱號：${view.titles.map((t) => `「${t}」`).join("")}\n${done.map((a) => `✅ ${a.label}`).join("\n")}`;
+      const blocks: CardBlock[] = [
+        { type: "text", text: have },
+        {
+          type: "muted",
+          text: `還沒達成：${ahead.map((a) => `${a.label}（+${a.reward}）`).join("、") || "都達成了"}`,
+        },
+      ];
+      return cardReply(blocks, { accent: "neutral", title: "成就和稱號" });
+    });
+  }
 }
 
 export function unregisterV2(registry: CommandRegistry): void {
@@ -68,5 +156,33 @@ export function registerV2(registry: CommandRegistry, services: ServiceLookup): 
       permission: WALLET_NODE,
     }),
     (inv) => handler.quests(inv),
+  );
+  registry.register(
+    commandSpec("me draw", "花魚幣抽一次收藏（眼鏡、背景、手上的東西…），機率在 /me album", {
+      permission: WALLET_NODE,
+    }),
+    (inv) => handler.draw(inv),
+  );
+  registry.register(
+    commandSpec("me album", "你的收藏冊、抽收藏的機率和保底", {
+      permission: WALLET_NODE,
+      ephemeral: true,
+    }),
+    (inv) => handler.album(inv),
+  );
+  registry.register(
+    commandSpec("me giveitem", "把重複的收藏送給她認識的另一個人（只送重複的）", {
+      args: [
+        argSpec("user", "要送給誰", ArgKind.user),
+        argSpec("item", "哪一個收藏（名字）", ArgKind.string),
+      ],
+      permission: WALLET_NODE,
+      ephemeral: true,
+    }),
+    (inv) => handler.giveItem(inv),
+  );
+  registry.register(
+    commandSpec("me titles", "你的稱號和成就", { permission: WALLET_NODE, ephemeral: true }),
+    (inv) => handler.titles(inv),
   );
 }

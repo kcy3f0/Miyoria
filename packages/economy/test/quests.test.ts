@@ -3,13 +3,17 @@
 
 import { CommandRegistry, Permissions } from "@miyoria/commands";
 import { getLogger, ServiceRegistry } from "@miyoria/kernel";
+import type { JsonValue } from "@miyoria/types";
 import { customEvent, type Event, SONG_TOPIC } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import { EconomyCommands } from "../src/commands.js";
 import { Earnings } from "../src/earn.js";
 import { v2Capabilities } from "../src/v2-tools.js";
 import { Economy2Key } from "../src/v2-types.js";
-import { ALICE, BOB, balance, CAROL, DAVE, DAY, rejects, rig, say, T0 } from "./rig.js";
+import { ALICE, BOB, balance, rig as baseRig, CAROL, DAVE, DAY, rejects, say, T0 } from "./rig.js";
+
+/** Achievements pay coins of their own: keep them out of these sums. */
+const rig = (config: Record<string, JsonValue> = {}) => baseRig({ achievement_cap: 0, ...config });
 
 describe("quests", () => {
   it("pays each once a day and the bonus for all three", async () => {

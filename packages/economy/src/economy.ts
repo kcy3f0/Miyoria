@@ -921,6 +921,7 @@ export class EconomyService implements Economy {
       if (post.status !== "posted") throw new EconomyError(409, ALREADY_CHECKED_IN);
       return { gained, streak, balance: post.balance };
     });
+    await this.v2.afterEarn(who);
     return done;
   }
 
@@ -1032,6 +1033,7 @@ export class EconomyService implements Economy {
       await this.deals.paid(who).catch((error: unknown) => {
         this.#d.log.warn({ err: errorMessage(error) }, "cannot check a deal against a feed");
       });
+      await this.v2.afterEarn(who);
     }
     return {
       accepted: true,

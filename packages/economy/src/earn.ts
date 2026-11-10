@@ -190,12 +190,15 @@ export class Earnings {
       .sort((a, b) => b.no - a.no)[0];
     if (!entry?.requester) return;
     const title = [...(entry.song?.title || entry.query)].slice(0, 100).join("");
-    await this.#economy.earn(
+    const paid = await this.#economy.earn(
       entry.requester,
       "song",
       this.#config.song_finished,
       `song:${entry.no}:${entry.created_at}`,
       title,
     );
+    if (paid === null) return;
+    const who = await this.#economy.member(entry.requester);
+    if (who) await this.#economy.v2.afterEarn(who);
   }
 }
