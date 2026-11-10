@@ -188,9 +188,11 @@ describe("the feed on the page", () => {
   });
 
   it("is the page at /live, and nothing else", () => {
-    expect(isLivePath("/live")).toBe(true);
-    expect(isLivePath("/live?x=1")).toBe(true);
-    expect(isLivePath("/lively")).toBe(false);
+    expect(isLivePath("/watch")).toBe(true);
+    expect(isLivePath("/watch?x=1")).toBe(true);
+    expect(isLivePath("/watching")).toBe(false);
+    // The admin panel's 直播 page keeps `/live`.
+    expect(isLivePath("/live")).toBe(false);
     expect(isLivePath("/me")).toBe(false);
   });
 });

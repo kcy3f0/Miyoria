@@ -2815,6 +2815,12 @@ describe("link previews", () => {
     const me = (await r.get("/me", undefined, { ...BOT, ...SHOWN })).text;
     expect(meta(me, "og:title")).toBe("我的頁面 · Miyoria");
     expect(me).toContain('content="noindex, nofollow"');
+    // The public live page is `/watch`, open to search; `/live` is the admin panel's.
+    const watch = (await r.get("/watch", undefined, { ...BOT, ...SHOWN })).text;
+    expect(meta(watch, "og:title")).toBe("現場 · Miyoria");
+    expect(watch).not.toContain('content="noindex, nofollow"');
+    const live = (await r.get("/live", undefined, { ...BOT, ...SHOWN })).text;
+    expect(meta(live, "og:title")).toBe("管理面板 · Miyoria");
   });
 
   it("serves the site's picture as a PNG", async () => {
