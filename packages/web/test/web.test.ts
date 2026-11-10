@@ -241,12 +241,24 @@ describe("web_read", () => {
     expect(out.text.trimEnd().endsWith(`${DATA_OPEN}/資料${DATA_CLOSE}`)).toBe(true);
   });
 
-  it("keeps the whole answer within result_chars, closing mark included", async () => {
+  it("keeps the whole answer within result_chars (12,000 by default), closing mark included", async () => {
     const long = `<main><p>${"x".repeat(30_000)}</p></main>`;
     const r = rig({}, undefined, pages(long));
     const out = await r.web.read(ALICE, PAGE, signal());
-    expect([...out.text].length).toBeLessThanOrEqual(3900);
+    expect([...out.text].length).toBeLessThanOrEqual(12_000);
+    expect([...out.text].length).toBeGreaterThan(11_000);
     expect(out.text.trimEnd().endsWith(`${DATA_OPEN}/資料${DATA_CLOSE}`)).toBe(true);
+    // Lowered to what the agent allows, the answer follows.
+    const small = rig({ result_chars: 3900 }, undefined, pages(long));
+    const cut = await small.web.read(ALICE, PAGE, signal());
+    expect([...cut.text].length).toBeLessThanOrEqual(3900);
+    expect(cut.text.trimEnd().endsWith(`${DATA_OPEN}/資料${DATA_CLOSE}`)).toBe(true);
+  });
+
+  it("caps a search answer at search_chars, not at result_chars", async () => {
+    const r = rig({ search_chars: 400, result_chars: 12_000 });
+    const out = await r.web.search(ALICE, "鯨魚", 5, signal());
+    expect([...out.text].length).toBeLessThanOrEqual(400);
   });
 
   it("refuses internal addresses before any request is made", async () => {

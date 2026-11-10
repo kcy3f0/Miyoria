@@ -256,7 +256,11 @@ export class SceneDirector implements StreamCurtain, SceneRule {
     const prev = this.#facts;
     this.#facts = next;
     if (prev.live !== next.live) this.#liveChanged(next.live);
-    if (prev.playing !== next.playing || prev.game !== next.game) {
+    if (
+      prev.playing !== next.playing ||
+      prev.game !== next.game ||
+      prev.browsing !== next.browsing
+    ) {
       this.#situation += 1;
       this.#memory.returnTo = null;
       this.#memory.ended = false;

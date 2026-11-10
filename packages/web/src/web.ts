@@ -98,7 +98,7 @@ export class WebService {
       throw new WebError("查太多次了,等一下再查。", "search rate limit");
     }
     const hits = (await this.#find(q, signal)).slice(0, max);
-    const outcome: SearchOutcome = { hits, text: formatHits(q, hits, cfg.result_chars) };
+    const outcome: SearchOutcome = { hits, text: formatHits(q, hits, cfg.search_chars) };
     this.#searchCache.set(key, outcome, this.#now());
     return outcome;
   }

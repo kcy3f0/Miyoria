@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   FIXTURE_DIR,
+  failureCode,
   formatScorecard,
   loadFixtures,
   ofType,
@@ -74,17 +75,25 @@ describe("what the code under test does today", () => {
     return f;
   };
 
-  it("the failure guard never withholds obtain, so the retries run", () => {
-    const fixture = byId("mc-obtain-bread-loop");
-    const out = SUBJECTS.guard.run(fixture, { attempt: 0, live: false });
-    const blocked = new Set(
-      ofType(out, "game_step")
-        .filter((s) => s.blocked)
-        .map((s) => s.action),
-    );
-    expect(blocked.has("obtain")).toBe(false);
-    // It does hold the low-level actions after a failure.
-    expect([...blocked].every((a) => ["goto", "mine", "look", "attack"].includes(a))).toBe(true);
+  it("the method guard holds obtain bread after two identical failures, and cooked_beef after one invalid", () => {
+    const blockedOf = (id: string) =>
+      ofType(SUBJECTS.guard.run(byId(id), { attempt: 0, live: false }), "game_step").filter(
+        (s) => s.blocked,
+      );
+    const bread = blockedOf("mc-obtain-bread-loop");
+    expect(bread.some((s) => s.action === "obtain" && s.target === "bread")).toBe(true);
+    // Only a method (action and item) is held: not every obtain, and never `explore` or `stop`.
+    expect(bread.every((s) => s.action === "obtain" || s.failed)).toBe(true);
+    expect(bread.some((s) => s.action === "explore" || s.action === "stop")).toBe(false);
+    const beef = blockedOf("mc-obtain-cooked-beef-loop");
+    expect(beef.some((s) => s.action === "obtain" && s.target === "cooked_beef")).toBe(true);
+  });
+
+  it("reads the failure code back from the game's answer text", () => {
+    expect(failureCode("參數不對:no crafting recipe makes cooked_beef")).toBe("invalid");
+    expect(failureCode("材料不夠:還缺 小麥×3")).toBe("precondition");
+    expect(failureCode("took longer than 300 s")).toBe("timeout");
+    expect(failureCode(undefined)).toBe("failed");
   });
 
   it("the owner's rule, once written, denies every start she made on her own", () => {

@@ -174,6 +174,7 @@ describe("scene roles", () => {
       "starting",
       "ending",
       "sing",
+      "browse",
       "intermission",
     ]);
 
