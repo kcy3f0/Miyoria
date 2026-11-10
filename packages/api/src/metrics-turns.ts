@@ -7,8 +7,8 @@
 // `intent:` / `initiative:` her own. Whatever is none of these was ambient.
 // The aggregation is a pure function over records; the route only fetches and clamps.
 
-import { DecisionLogKey, type DecisionRecord } from "@miyoria/store";
-import type { TurnOutcomeRecord } from "@miyoria/types";
+import { type DecisionLog, DecisionLogKey, type DecisionRecord } from "@miyoria/store";
+import { type ProfileId, type TurnOutcomeRecord, toTimestamp } from "@miyoria/types";
 import { z } from "zod";
 import { ApiError } from "./errors.js";
 import { clampLimit, readQuery, usizeParam } from "./extract.js";
@@ -268,6 +268,58 @@ export function aggregateTurnMetrics(
   };
 }
 
+/** Where the window of `days` local days ending today starts (local midnight of its first day). */
+export function windowStart(now: number, days: number): number {
+  const today = new Date(now);
+  return new Date(today.getFullYear(), today.getMonth(), today.getDate() - (days - 1)).getTime();
+}
+
+/**
+ * The rows the window needs. A log that can answer "since" returns every row of the window, so
+ * nothing is cut; one that cannot is read newest first up to a cap, and `truncated` says when the
+ * cap was hit with the oldest row still inside the window (the first days are then partial).
+ */
+export async function loadTurnRows(
+  log: DecisionLog,
+  profile: ProfileId,
+  now: number,
+  days: number,
+): Promise<{
+  outcomes: TurnOutcomeRecord[];
+  decisions: DecisionRecord[];
+  truncated: boolean;
+}> {
+  if (log.recentOutcomes === undefined) {
+    throw ApiError.unavailable("this decision log does not keep turn outcomes");
+  }
+  const since = toTimestamp(windowStart(now, days));
+  if (log.outcomesSince !== undefined && log.decisionsSince !== undefined) {
+    const [outcomes, decisions] = await Promise.all([
+      log.outcomesSince(profile, since),
+      log.decisionsSince(profile, since),
+    ]);
+    return { outcomes, decisions, truncated: false };
+  }
+  const [outcomes, decisions] = await Promise.all([
+    log.recentOutcomes(profile, null, MAX_OUTCOME_ROWS),
+    log.recent(profile, null, MAX_DECISION_ROWS),
+  ]);
+  // Newest first: hitting the cap with the oldest row still inside the window means the
+  // window's first days are partial.
+  const cutoff = now - days * DAY_MS;
+  const oldest = (rows: readonly { ts?: string; at?: string }[], cap: number) => {
+    if (rows.length < cap) return false;
+    const last = rows[rows.length - 1];
+    const t = Date.parse(last?.ts ?? last?.at ?? "");
+    return !Number.isNaN(t) && t > cutoff;
+  };
+  return {
+    outcomes,
+    decisions,
+    truncated: oldest(outcomes, MAX_OUTCOME_ROWS) || oldest(decisions, MAX_DECISION_ROWS),
+  };
+}
+
 const QuerySchema = z.object({ days: usizeParam.optional() });
 
 export function turnMetricsRoutes(state: ApiState): Route[] {
@@ -279,26 +331,13 @@ export function turnMetricsRoutes(state: ApiState): Route[] {
         const q = readQuery(c, QuerySchema);
         const days = clampLimit(q.days, DEFAULT_DAYS, MAX_DAYS);
         const log = state.service(DecisionLogKey, "decision log");
-        if (log.recentOutcomes === undefined) {
-          throw ApiError.unavailable("this decision log does not keep turn outcomes");
-        }
         const now = Date.now();
-        const profile = state.profile();
-        const [outcomes, decisions] = await Promise.all([
-          log.recentOutcomes(profile, null, MAX_OUTCOME_ROWS),
-          log.recent(profile, null, MAX_DECISION_ROWS),
-        ]);
-        // Newest first: hitting the cap with the oldest row still inside the window means the
-        // window's first days are partial.
-        const cutoff = now - days * DAY_MS;
-        const oldest = (rows: readonly { ts?: string; at?: string }[], cap: number) => {
-          if (rows.length < cap) return false;
-          const last = rows[rows.length - 1];
-          const t = Date.parse(last?.ts ?? last?.at ?? "");
-          return !Number.isNaN(t) && t > cutoff;
-        };
-        const truncated =
-          oldest(outcomes, MAX_OUTCOME_ROWS) || oldest(decisions, MAX_DECISION_ROWS);
+        const { outcomes, decisions, truncated } = await loadTurnRows(
+          log,
+          state.profile(),
+          now,
+          days,
+        );
         return json(aggregateTurnMetrics(outcomes, decisions, { now, days, truncated }));
       },
     },
