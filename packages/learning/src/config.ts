@@ -91,13 +91,22 @@ export const KnowledgeConfigSchema = z.object({
   /** Offer the tool `knowledge_note` in turns. */
   tool: z.boolean().default(true),
   /**
-   * Put the documents about the people present in the prompt. Off once the main line reads the
+   * Put the documents about the people present in the prompt. Not set (`null`), it follows the
    * person profiles of `memory` (v4 §5.6), which carry these documents' points among the rest:
-   * one place per fact about a person, not four.
+   * with profiles the documents step aside (one place per fact about a person, not four), without
+   * them they are shown. `true` or `false` in the config wins over that.
    */
-  prompt_people: z.boolean().default(true),
+  prompt_people: z.boolean().nullable().default(null),
 });
 export type KnowledgeConfig = z.output<typeof KnowledgeConfigSchema>;
+
+/**
+ * Whether the documents about the people present go in the prompt: what the config says, and
+ * when it says nothing, only if the person profiles (which carry the same facts) are not there.
+ */
+export function peopleInPrompt(configured: boolean | null, profilesPresent: boolean): boolean {
+  return configured ?? !profilesPresent;
+}
 
 /**
  * `[modules.reflect]`: feedback signals, lessons and her reflections.

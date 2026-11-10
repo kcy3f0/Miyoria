@@ -8,6 +8,7 @@ import {
   KnowledgeConfigSchema,
   KnowledgeStore,
   knowledgeConfig,
+  peopleInPrompt,
   recapAgeNote,
   subjectsFor,
 } from "../src/index.js";
@@ -28,7 +29,13 @@ const request: PromptRequest = {
 
 describe("documents about people and the person profiles", () => {
   it("lists the people present by default and leaves them out when profiles carry them", () => {
-    expect(KnowledgeConfigSchema.parse({}).prompt_people).toBe(true);
+    // Not set: it follows the presence of the profiles; a set value wins.
+    expect(KnowledgeConfigSchema.parse({}).prompt_people).toBeNull();
+    expect(KnowledgeConfigSchema.parse({ prompt_people: false }).prompt_people).toBe(false);
+    expect(peopleInPrompt(null, false)).toBe(true);
+    expect(peopleInPrompt(null, true)).toBe(false);
+    expect(peopleInPrompt(true, true)).toBe(true);
+    expect(peopleInPrompt(false, false)).toBe(false);
     const kb = new KnowledgeStore(new MemorySettingsStore(), "p", knowledgeConfig(), {
       now: () => 0,
     });

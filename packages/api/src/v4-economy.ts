@@ -9,24 +9,21 @@
 // * `GET /api/economy2/room`: her room, every item with how far the audience got.
 // * `GET /api/people/{id}/quests`: today's three quests as that person sees them.
 //
-// `Economy2Key` is not exported from `@miyoria/economy` yet; the economy module provides the same
-// object as `EconomyService.v2`, so it is read from there. Every answer carries the currency's name.
+// Read through `Economy2Key`, which the economy module provides. Every answer carries the
+// currency's name.
 
-import { type Economy, EconomyKey, type EconomyService } from "@miyoria/economy";
+import { type Economy2, Economy2Key } from "@miyoria/economy";
 import { IdentityStoreKey } from "@miyoria/store";
 import { isUlid, type PersonId } from "@miyoria/types";
 import { ApiError } from "./errors.js";
 import { json, param, type Route } from "./route.js";
 import type { ApiContext, ApiState } from "./state.js";
 
-type V2 = EconomyService["v2"];
-
 const NO_ECONOMY = "economy module (economy 2.0) is not available";
 
 /** Economy 2.0 of the running economy, or a 503. */
-export function economy2(state: ApiState): V2 {
-  const economy = state.optional(EconomyKey) as (Economy & { v2?: V2 }) | undefined;
-  const v2 = economy?.v2;
+export function economy2(state: ApiState): Economy2 {
+  const v2 = state.optional(Economy2Key);
   if (v2 === undefined || typeof v2.health !== "function") throw ApiError.unavailable(NO_ECONOMY);
   return v2;
 }

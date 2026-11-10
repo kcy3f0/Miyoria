@@ -18,6 +18,7 @@ export {
   type KnowledgeConfig,
   KnowledgeConfigSchema,
   knowledgeConfig,
+  peopleInPrompt,
   type ReflectConfig,
   ReflectConfigSchema,
   reflectConfig,

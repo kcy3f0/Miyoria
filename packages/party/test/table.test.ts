@@ -208,3 +208,46 @@ describe("rewards", () => {
     await expect(playQuiz(failing)).resolves.toBeDefined();
   });
 });
+
+describe("the snapshot for the panel", () => {
+  it("lists running games with players and scores, and the games that ended, bounded", () => {
+    const { table } = rig();
+    expect(table.snapshot()).toEqual({ sessions: [], recent: [] });
+    const session = table.start(VOICE, "quiz", { questions: QUESTIONS });
+    session.game.next();
+    table.input(VOICE, amy, "玉山");
+    const live = table.snapshot();
+    expect(live.sessions).toHaveLength(1);
+    expect(live.sessions[0]).toMatchObject({
+      game: "quiz",
+      title: "問答",
+      state: "running",
+      scored: true,
+    });
+    expect(live.sessions[0]?.players.map((p) => [p.name, p.score])).toEqual([
+      ["你", 0],
+      ["Amy", 1],
+      ["Bob", 0],
+    ]);
+    // Nothing the game keeps hidden is in it: no answers, no view.
+    expect(JSON.stringify(live)).not.toContain("玉山");
+
+    table.end(VOICE, "host");
+    const after = table.snapshot();
+    expect(after.sessions).toEqual([]);
+    expect(after.recent).toHaveLength(1);
+    expect(after.recent[0]).toMatchObject({ game: "quiz", reason: "host", scored: true });
+    expect(after.recent[0]?.players[0]).toMatchObject({ name: "Amy", score: 1 });
+
+    // A shutdown is not a result, and only the last twenty are kept.
+    for (let i = 0; i < 25; i++) {
+      table.start(VOICE, "chain");
+      table.end(VOICE, "done");
+    }
+    expect(table.snapshot().recent).toHaveLength(20);
+    table.start(VOICE, "chain");
+    table.close();
+    expect(table.snapshot().recent).toHaveLength(20);
+    expect(table.snapshot().recent[0]?.reason).toBe("done");
+  });
+});

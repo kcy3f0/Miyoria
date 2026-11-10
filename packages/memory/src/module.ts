@@ -30,8 +30,10 @@ import {
   FollowupSourceKey,
   isJsonObject,
   type JsonValue,
+  MESSAGE_EXCLUDED_TOPIC,
   MemoryCuratorKey,
   MemoryRetrievalKey,
+  type MessageExcluded,
   PersonNoteWriterKey,
   PinnedMemoryKey,
   type ProfileId,
@@ -157,6 +159,7 @@ export class MemoryModule implements Module {
     ctx.provide(FollowupSourceKey, engine);
     ctx.provide(MemoryCuratorKey, new Curator(engine));
     ctx.provide(PersonNoteWriterKey, new PersonNotes(engine));
+    await engine.loadExclusions();
     this.#installer.recent = recent;
     this.#installer.install(ctx, engine);
     ctx.log.info({ embedder: embedder.name }, "memory started");
@@ -168,9 +171,12 @@ export class MemoryModule implements Module {
       "platform.message.created",
       "voice.utterance",
       CONVERSATION_FOLDED_TOPIC,
+      MESSAGE_EXCLUDED_TOPIC,
     ]);
     const installer = this.#installer;
-    ctx.spawn("consolidate", (signal) => consolidationLoop(ctx, engine, installer, sub, signal));
+    ctx.spawn("consolidate", (signal) =>
+      consolidationLoop(ctx, engine, installer, sub, signal, () => recent.log.invalidate()),
+    );
     if (config.forgetting.enabled) {
       ctx.spawn("forget", (signal) => maintenanceLoop(ctx, engine, signal));
     }
@@ -347,6 +353,7 @@ async function consolidationLoop(
   installer: Installer,
   sub: Subscription,
   signal: AbortSignal,
+  excluded: () => void = () => {},
 ): Promise<void> {
   const config = engine.config;
   const tracker = new ActivityTracker();
@@ -376,6 +383,17 @@ async function consolidationLoop(
         tracker.message(env.event.data.id.context, nowMs);
       } else if (env.event.type === "voice_utterance") {
         tracker.message(env.event.data.context, nowMs);
+      } else if (env.event.type === "custom" && env.event.data.topic === MESSAGE_EXCLUDED_TOPIC) {
+        const body = parseExcluded(env.event.data.payload);
+        if (body !== null) {
+          try {
+            const gone = await engine.excludeMessage(body);
+            excluded();
+            ctx.log.info(gone, "a message she was asked not to remember was taken out");
+          } catch (error) {
+            ctx.log.warn({ error: errorMessage(error) }, "cannot take out an excluded message");
+          }
+        }
       } else if (
         env.event.type === "custom" &&
         env.event.data.topic === CONVERSATION_FOLDED_TOPIC &&
@@ -411,6 +429,18 @@ async function consolidationLoop(
     }
     tick = nextTick(tickMs);
   }
+}
+
+/** The payload of `agent.message.excluded`, when it has the parts used here. */
+function parseExcluded(value: JsonValue | undefined): MessageExcluded | null {
+  if (!isJsonObject(value) || !isJsonObject(value.message) || !isJsonObject(value.context)) {
+    return null;
+  }
+  const message = value.message;
+  const context = parseFolded(value.context);
+  const messageContext = parseFolded(message.context);
+  if (context === null || messageContext === null || typeof message.id !== "string") return null;
+  return value as unknown as MessageExcluded;
 }
 
 function parseFolded(value: JsonValue | undefined): ContextKey | null {

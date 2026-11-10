@@ -379,4 +379,25 @@ describe("tools and commands", () => {
     const titles = await run(["me", "titles"], ALICE);
     expect(titles.card?.accent).toBe("neutral");
   });
+  it("tells people to type the path that exists where they are", async () => {
+    const r = await rig(cfg());
+    await r.economy.v2.openPrediction({ question: "q", options: ["a", "b"], minutes: 30 });
+    const registry = new CommandRegistry(Permissions.fromStrings(["discord:1", "web:1"]));
+    const services = new ServiceRegistry();
+    services.provide("test", Economy2Key, r.economy.v2);
+    new EconomyCommands().install(registry, services);
+    const ask = (platform: "discord" | "web") =>
+      registry.dispatch({
+        path: ["me", "predictions"],
+        args: {},
+        invoker: { platform, id: "1" },
+        invoker_display_name: "x",
+        context: { platform, scope: null, channel: "9", kind: "dm" },
+        invoker_is_guild_admin: false,
+      });
+    await fund(r, ALICE, 10);
+    expect(JSON.stringify((await ask("discord")).card)).toContain("/me play bet");
+    expect(JSON.stringify((await ask("web")).card)).toContain("/me bet");
+    expect(JSON.stringify((await ask("web")).card)).not.toContain("/me play");
+  });
 });

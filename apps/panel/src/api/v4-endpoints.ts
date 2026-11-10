@@ -9,6 +9,7 @@ import type {
   LifeDayView,
   NotebookEntry,
   NotebookPage,
+  PartySnapshot,
   PredictionView,
   QuestsView,
   RecentView,
@@ -37,6 +38,8 @@ export function createV4Api(client: ApiClient) {
     workspace: (o?: Opts) => client.get<WorkspaceView>("/api/workspace", o),
     skills: (o?: Opts) => client.get<{ skills: SkillSummary[] }>("/api/skills", o),
     skill: (name: string, o?: Opts) => client.get<SkillView>(`/api/skills/${seg(name)}`, o),
+
+    party: (o?: Opts) => client.get<PartySnapshot>("/api/party", o),
 
     notebook: (o?: Opts) => client.get<{ pages: NotebookEntry[] }>("/api/notebook", o),
     notebookPage: (path: string, o?: Opts) => client.get<NotebookPage>("/api/notebook/page", { ...o, query: { path } }),

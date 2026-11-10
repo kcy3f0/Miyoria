@@ -17,6 +17,7 @@ import {
   type ModerationService,
   type Observation,
   type ObserveOptions,
+  PartyOverviewKey,
   PipelineKey,
   type Principal,
   Principals,
@@ -192,6 +193,14 @@ describe("party module", () => {
     expect(h.registry.get("party.start")).toBeDefined();
     // Two people in voice: she is reminded she may suggest a game, nothing more.
     expect(await h.section()).toContain("你可以提議一起玩(party_start)");
+  });
+
+  it("gives the panel a read-only snapshot: empty when nothing runs, absent when the module is off", async () => {
+    h = await Harness.create();
+    const overview = h.sup.services.require(PartyOverviewKey);
+    expect(overview.snapshot()).toEqual({ sessions: [], recent: [] });
+    await h.sup.disable("party");
+    expect(h.sup.services.get(PartyOverviewKey)).toBeUndefined();
   });
 
   it("plays a quiz: her tools, answers by voice and chat, Observations that may claim the mic", async () => {

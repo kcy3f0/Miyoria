@@ -189,3 +189,43 @@ export interface RecentView {
   /** Lines left out because they came from a DM. */
   private_hidden: number;
 }
+
+// --- party games -------------------------------------------------------------------------
+
+export interface PartyPlayerView {
+  name: string;
+  her: boolean;
+  score: number;
+  present: boolean;
+  active: boolean;
+}
+
+export interface PartySessionView {
+  id: string;
+  game: string;
+  title: string;
+  context: ContextKey;
+  state: "running";
+  started_at: Timestamp;
+  scored: boolean;
+  players: PartyPlayerView[];
+}
+
+export interface PartyResultView {
+  id: string;
+  game: string;
+  title: string;
+  context: ContextKey;
+  /** `done`, `host`, `stop`, `idle`, `empty`, `left`, `away`. */
+  reason: string;
+  started_at: Timestamp;
+  ended_at: Timestamp;
+  scored: boolean;
+  players: PartyPlayerView[];
+}
+
+/** `GET /api/party` (503 when the party module is off). */
+export interface PartySnapshot {
+  sessions: PartySessionView[];
+  recent: PartyResultView[];
+}

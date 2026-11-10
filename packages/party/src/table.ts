@@ -15,8 +15,12 @@ import {
   type ContextKey,
   contextKeyString,
   newId,
+  PARTY_RECENT_MAX,
+  type PartyPlayerView,
+  type PartyResultView,
   type PartyRewardRequest,
   type PartyRewards,
+  type PartySnapshot,
   type SongClips,
   safeName,
   type VoiceParticipant,
@@ -116,6 +120,16 @@ const END_TEXT: Readonly<Record<EndReason, string>> = {
 /** Framework timers are prefixed so a game's own names never collide with them. */
 const IDLE_TIMER = "_idle";
 const EMPTY_TIMER = "_empty";
+
+function viewPlayers(players: readonly Player[]): PartyPlayerView[] {
+  return players.map((p) => ({
+    name: p.her ? "你" : safeName(p.name, 24),
+    her: p.her,
+    score: p.score,
+    present: p.present,
+    active: p.active,
+  }));
+}
 
 function createGame(id: GameId, host: Host, options: StartOptions): Game {
   switch (id) {
@@ -359,6 +373,8 @@ export class Table {
   /** Who is in each voice channel she is in. */
   readonly #rooms = new Map<string, { context: ContextKey; members: VoiceParticipant[] }>();
   readonly #self = new Set<string>();
+  /** Games that ended, newest first; in memory only. */
+  #recent: PartyResultView[] = [];
 
   constructor(deps: TableDeps) {
     this.config = deps.config;
@@ -421,6 +437,27 @@ export class Table {
   }
 
   // ---- games ------------------------------------------------------------------------------
+
+  /**
+   * What the admin panel shows: who plays what and the scores, and how the last games ended. Never
+   * what the game keeps hidden (`Game.view` is hers alone and is not read here).
+   */
+  snapshot(): PartySnapshot {
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const sessions = this.sessions()
+      .filter((s) => s.ended === null)
+      .map((s) => ({
+        id: s.id,
+        game: s.game.id,
+        title: s.game.title,
+        context: s.context,
+        state: "running" as const,
+        started_at: iso(s.startedAt),
+        scored: s.game.scored,
+        players: viewPlayers(s.players().filter((p) => p.her || p.present || p.score > 0)),
+      }));
+    return { sessions, recent: this.#recent.map((r) => ({ ...r, players: [...r.players] })) };
+  }
 
   /** The game in `context`: the voice channel itself, or its text chat (same channel id). */
   session(context: ContextKey): Session | null {
@@ -506,6 +543,23 @@ export class Table {
     const id = contextKeyString(session.context);
     if (this.#sessions.get(id) === session) this.#sessions.delete(id);
     if (reason === "shutdown") return;
+    this.#recent.unshift({
+      id: session.id,
+      game: session.game.id,
+      title: session.game.title,
+      context: session.context,
+      reason,
+      started_at: new Date(session.startedAt).toISOString(),
+      ended_at: new Date(this.clock.now()).toISOString(),
+      scored: session.game.scored,
+      players: viewPlayers(
+        session
+          .players()
+          .filter((p) => p.her || p.active || p.score > 0)
+          .sort((a, b) => b.score - a.score),
+      ),
+    });
+    if (this.#recent.length > PARTY_RECENT_MAX) this.#recent.length = PARTY_RECENT_MAX;
     session.note("end", session.finish(reason), {
       // Only an end she did not see coming is worth a line: she ended it herself, left, or
       // nobody is there to hear it.

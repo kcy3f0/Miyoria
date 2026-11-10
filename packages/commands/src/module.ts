@@ -22,6 +22,7 @@ import {
   intParam,
 } from "./components.js";
 import { registerHelp } from "./help.js";
+import { registerKeepsakes } from "./keepsakes.js";
 import { registerMenus } from "./menus.js";
 import { registerPanels } from "./panels.js";
 import { Permissions, parseAccount } from "./perms.js";
@@ -226,6 +227,7 @@ export function registerBuiltins(
 ): void {
   registerHelp(registry);
   registerMenus(registry, { services: ctx.services });
+  registerKeepsakes(registry, ctx.services);
   registerPanels(registry, { services: ctx.services, policyUrl: options.policyUrl ?? null });
   const sup = () => ctx.services.get(SupervisorKey);
   const suggest = (inv: Invocation, value: string) => moduleChoices(sup(), inv, value);

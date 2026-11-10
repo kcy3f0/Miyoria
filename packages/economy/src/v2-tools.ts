@@ -6,6 +6,7 @@
 //   `economy.agency` permission, nobody has it by default, so she calls them with `on_own`.
 
 import { type Capability, defineCapability } from "@miyoria/actions";
+import { typedCommand } from "@miyoria/commands";
 import type { JsonObject } from "@miyoria/types";
 import { z } from "zod";
 import type { EconomyService } from "./economy.js";
@@ -214,7 +215,7 @@ export function drawCapability(economy: EconomyService): Capability {
         return refusal(
           "沒有抽",
           "unconfirmed",
-          "語音裡可能聽錯,不能直接花錢;請對方在文字頻道用 /me draw",
+          `語音裡可能聽錯,不能直接花錢;請對方在文字頻道用 ${typedCommand("me draw", "discord")}`,
         );
       }
       return answering("沒有抽成", async (): Promise<Answer> => {
@@ -344,7 +345,7 @@ export function placeBetCapability(economy: EconomyService): Capability {
         return refusal(
           "沒有押",
           "unconfirmed",
-          "語音裡可能聽錯,不能直接花錢;請對方在文字頻道用 /me bet",
+          `語音裡可能聽錯,不能直接花錢;請對方在文字頻道用 ${typedCommand("me bet", "discord")}`,
         );
       }
       return answering("沒有押成", async (): Promise<Answer> => {
@@ -540,7 +541,7 @@ export function commissionCapability(economy: EconomyService): Capability {
         return refusal(
           "沒有委託",
           "unconfirmed",
-          "語音裡可能聽錯,不能直接花錢;請對方在文字頻道用 /me commission",
+          `語音裡可能聽錯,不能直接花錢;請對方在文字頻道用 ${typedCommand("me commission", "discord")}`,
         );
       }
       return answering("沒有委託成", async (): Promise<Answer> => {
@@ -755,7 +756,7 @@ export function fundRoomCapability(economy: EconomyService): Capability {
         return refusal(
           "沒有出錢",
           "unconfirmed",
-          "語音裡可能聽錯,不能直接花錢;請對方在文字頻道用 /me room",
+          `語音裡可能聽錯,不能直接花錢;請對方在文字頻道用 ${typedCommand("me room", "discord")}`,
         );
       }
       return answering("沒有出成", async (): Promise<Answer> => {
@@ -849,7 +850,7 @@ export function buyFromShopCapability(economy: EconomyService): Capability {
         return refusal(
           "沒有買",
           "unconfirmed",
-          "語音裡可能聽錯,不能直接花錢;請對方在文字頻道用 /me shop",
+          `語音裡可能聽錯,不能直接花錢;請對方在文字頻道用 ${typedCommand("me shop", "discord")}`,
         );
       }
       return answering("沒有買成", async (): Promise<Answer> => {

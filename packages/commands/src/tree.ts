@@ -11,7 +11,7 @@
 //   /voice    join · leave · mode · consent · golive start|stop|status
 //   /stream   start · stop · status · scene
 //   /me       i · profile · call · link · privacy · wallet · checkin · feed · give · board ·
-//             screen · goals · pledge · bounties · memory show|export|forget ·
+//             screen · letter · card · fortune · goals · pledge · bounties · memory show|export|forget ·
 //             play quests|draw|album|giveitem|predictions|bet|titles|commission|commissions|
 //             room|shop (regrouped for Discord, see `SLASH_REGROUP`)
 //   /queue    add · list · upvote · manage ... · vote start|end · song request|list|skip|stop
@@ -74,6 +74,15 @@ export const SLASH_REGROUP: Readonly<Record<string, string>> = {
   "me room": "me play room",
   "me shop": "me play shop",
 };
+
+/**
+ * The command line a person on `platform` types for `path` (`me album` is `/me play album` on
+ * Discord). Texts that tell people what to type use this, so they never name a path that the
+ * platform does not have.
+ */
+export function typedCommand(path: string, platform: string): string {
+  return `/${platform === "discord" ? (SLASH_REGROUP[path] ?? path) : path}`;
+}
 
 /** Display order of the top-level commands (e.g. in `/help`). */
 export const CATEGORY_ORDER: readonly string[] = [

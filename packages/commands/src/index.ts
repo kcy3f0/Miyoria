@@ -40,6 +40,7 @@ export {
 } from "./components.js";
 export { type ReplySink, ReplySinkKey, type UserResolver, UserResolverKey } from "./direct.js";
 export { HELP_NODE, registerHelp } from "./help.js";
+export { CARD_NODE, FORTUNE_NODE, registerKeepsakes } from "./keepsakes.js";
 export {
   MAX_MENUS_PER_TARGET,
   MENU_ROOT,
@@ -173,4 +174,4 @@ export {
   type ResolvedUser,
   splitPath,
 } from "./spec.js";
-export { CATEGORY_ORDER, COMMAND_GROUPS, SLASH_REGROUP } from "./tree.js";
+export { CATEGORY_ORDER, COMMAND_GROUPS, SLASH_REGROUP, typedCommand } from "./tree.js";

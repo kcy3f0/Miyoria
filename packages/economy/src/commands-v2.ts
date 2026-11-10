@@ -12,6 +12,7 @@ import {
   commandSpec,
   type Invocation,
   notice,
+  typedCommand,
 } from "@miyoria/commands";
 import { errorMessage, getLogger, type ServiceLookup } from "@miyoria/kernel";
 import { newId } from "@miyoria/types";
@@ -37,6 +38,14 @@ export const V2_PATHS = [
 ] as const;
 
 const UNAVAILABLE = "錢包現在打不開";
+
+/**
+ * What to type for `path` where `inv` came from: Discord regrouped these commands under
+ * `/me play` (it allows 25 subcommands per command), other places keep `/me <name>`.
+ */
+const typed = (inv: Invocation, path: string): string => typedCommand(path, inv.invoker.platform);
+/** The same for static texts (descriptions), which are what Discord shows. */
+const onDiscord = (path: string): string => typedCommand(path, "discord");
 
 class Handler2 {
   constructor(readonly services: ServiceLookup) {}
@@ -161,7 +170,7 @@ class Handler2 {
           { type: "text", text: lines.join("\n\n") },
           {
             type: "muted",
-            text: "猜中的人平分大家押的，不是她出錢；沒人猜中或取消就全部退回。用 /me bet 押。",
+            text: `猜中的人平分大家押的，不是她出錢；沒人猜中或取消就全部退回。用 ${typed(inv, "me bet")} 押。`,
           },
         ],
         { accent: "neutral", title: "預測" },
@@ -265,7 +274,7 @@ class Handler2 {
           { type: "text", text: lines.join("\n") },
           {
             type: "muted",
-            text: "大家一起出錢佈置她的房間，花掉就不退；出多出少她都一樣。用 /me room 填 item 和 amount 出錢。",
+            text: `大家一起出錢佈置她的房間，花掉就不退；出多出少她都一樣。用 ${typed(inv, "me room")} 填 item 和 amount 出錢。`,
           },
         ],
         { accent: "neutral", title: "她的房間" },
@@ -297,7 +306,7 @@ class Handler2 {
           { type: "text", text: lines.join("\n") },
           {
             type: "muted",
-            text: `每個禮拜換一批，下次 <t:${Math.floor(Date.parse(v.renews_at) / 1000)}:R>。買東西不會改變她對你的感覺。用 /me shop 填 item 買。`,
+            text: `每個禮拜換一批，下次 <t:${Math.floor(Date.parse(v.renews_at) / 1000)}:R>。買東西不會改變她對你的感覺。用 ${typed(inv, "me shop")} 填 item 買。`,
           },
         ],
         { accent: "neutral", title: "她的小店" },
@@ -341,9 +350,13 @@ export function registerV2(registry: CommandRegistry, services: ServiceLookup): 
     (inv) => handler.quests(inv),
   );
   registry.register(
-    commandSpec("me draw", "花魚幣抽一次收藏（眼鏡、背景、手上的東西…），機率在 /me album", {
-      permission: WALLET_NODE,
-    }),
+    commandSpec(
+      "me draw",
+      `花魚幣抽一次收藏（眼鏡、背景、手上的東西…），機率在 ${onDiscord("me album")}`,
+      {
+        permission: WALLET_NODE,
+      },
+    ),
     (inv) => handler.draw(inv),
   );
   registry.register(
@@ -373,7 +386,7 @@ export function registerV2(registry: CommandRegistry, services: ServiceLookup): 
   registry.register(
     commandSpec("me bet", "押魚幣猜預測的結果（猜中的人平分大家押的）", {
       args: [
-        argSpec("prediction", "預測的代號（/me predictions 看）", ArgKind.string),
+        argSpec("prediction", `預測的代號（${onDiscord("me predictions")} 看）`, ArgKind.string),
         argSpec("option", "選項的號碼或名字", ArgKind.string),
         argSpec("amount", "押多少魚幣", ArgKind.integer),
       ],
