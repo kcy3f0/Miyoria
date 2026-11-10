@@ -81,6 +81,7 @@ import {
 } from "./gate.js";
 import { Hands, type Job, type Run } from "./hands.js";
 import { LineBook } from "./lines.js";
+import { withoutRepeats } from "./loop.js";
 import { STEER_TOOL } from "./output.js";
 import { isTalk, Proposals } from "./proposals.js";
 
@@ -168,10 +169,7 @@ export function heardShare(text: string, heardMs: number, totalMs: number): stri
   return heard >= chars.length ? text : chars.slice(0, heard).join("");
 }
 
-/** Sentences of `text`, punctuation kept. */
-export function sentences(text: string): string[] {
-  return (text.match(/[^。!?!?\n]+[。!?!?\n]*/g) ?? []).filter((s) => s.trim() !== "");
-}
+export { sentences } from "./loop.js";
 
 interface LineInfo {
   attention(said: string): { key: string; revision: number };
@@ -602,6 +600,10 @@ export class MainTurn {
   #written = new Set<string>();
   /** Overdue commitments she was shown. */
   #overdue: Commitment[] = [];
+  /** Tools that ran inside this turn (`loop_tools`), in order. */
+  #ran: string[] = [];
+  /** How much of `said` came from earlier rounds of the tool loop. */
+  #earlier = 0;
 
   constructor(main: MainLine, agent: Agent, turn: TurnId, context: ContextKey, claim: MainClaim) {
     this.#main = main;
@@ -670,17 +672,95 @@ export class MainTurn {
     });
   }
 
-  /** Whether `line` goes out now. A muted turn keeps its mouth shut. */
+  /**
+   * Whether `line` goes out now. A muted turn keeps its mouth shut, and a sentence she said in an
+   * earlier round of the tool loop is not said again.
+   */
   screen(line: HeldLine): boolean {
     if (this.claim.muted) return false;
+    if (this.unrepeated(line.text).trim() === "") return false;
     const pass = this.gate.pass(line);
     if (pass) this.said.push({ text: line.text, voice: line.spoken, emotion: line.emotion });
     return pass;
   }
 
-  /** Whether a text line must wait for the end of the stream. */
+  /**
+   * Whether a text line must wait for the end of the stream: it claims too early, or an earlier
+   * line does (the order stays, across the rounds of the tool loop too).
+   */
   holdsText(text: string): boolean {
-    return !this.claim.muted && this.gate.holds(text);
+    return !this.claim.muted && (this.gate.holding() || this.gate.holds(text));
+  }
+
+  /** `text` without what she said in an earlier round of the tool loop. */
+  unrepeated(text: string): string {
+    return withoutRepeats(
+      text,
+      this.said.slice(0, this.#earlier).map((s) => s.text),
+    );
+  }
+
+  /** A round of the tool loop is over: what she said so far was said. */
+  round(): void {
+    this.#earlier = this.said.length;
+  }
+
+  /**
+   * In voice somebody waits in silence while the loop's tools run: a line first, when she has said
+   * nothing yet and something slow is coming (`null`: no need).
+   */
+  waitFor(tools: readonly string[]): string | null {
+    if (this.said.length > 0 || !this.#owes()) return null;
+    const slow = tools.filter((t) => !INSTANT_TOOLS.has(t));
+    return slow.length === 0 ? null : waitLine(slow);
+  }
+
+  /**
+   * A tool of the loop, run inside the turn by `run`. The hands log it like any action (`action`,
+   * then `result`), so the gate knows it is done and a commitment it keeps is kept; nobody needs a
+   * turn for its result, she reads it in this one. Only when it got something started that ends
+   * later (a receipt) do the hands follow it and tell her, as they do for their own.
+   */
+  async inTurn(
+    tool: string,
+    args: string,
+    run: () => Promise<Run>,
+    requester: unknown,
+  ): Promise<{ run: Run; accepted: boolean }> {
+    const hands = this.#main.hands;
+    let parsed: JsonValue = {};
+    try {
+      parsed = JSON.parse(args === "" ? "{}" : args) as JsonValue;
+    } catch {
+      // The tool answers for bad arguments.
+    }
+    const job = hands.begin({
+      turn: this.turn,
+      context: this.context,
+      tool,
+      args: parsed,
+      report: "none",
+      depth: this.claim.chain?.depth ?? 0,
+      requester,
+      cause: this.claim.cause,
+    });
+    this.#ran.push(tool);
+    let result: Run;
+    try {
+      result = await run();
+    } catch (error) {
+      hands.answered(job, { ok: false, text: errorMessage(error), data: null });
+      throw error;
+    }
+    hands.answered(job, result);
+    const accepted = job.state === "accepted";
+    if (accepted) job.report = this.claim.muted ? "prompt" : "turn";
+    return { run: result, accepted };
+  }
+
+  /** Every tool of the turn: the loop's, then the output's. */
+  #acted(output: TurnOutput): string[] {
+    return [...this.#ran, ...output.actions.map((a) => a.tool)];
   }
 
   /** A text line that went out. */
@@ -745,7 +825,7 @@ export class MainTurn {
   #commit(output: TurnOutput): CommitmentDraft[] {
     const drafts = [...output.commitments];
     const scope = this.#main.scope();
-    const tools = output.actions.map((a) => a.tool);
+    const tools = this.#acted(output);
     // A tool written as text is something she said she would do: it must not just evaporate.
     for (const tool of this.#written) {
       if (tools.includes(tool) || drafts.some((d) => d.capability === tool)) continue;
@@ -779,7 +859,7 @@ export class MainTurn {
       turn: this.turn,
       claim: this.claim.kind,
       say: this.said.length,
-      actions: output.actions.map((a) => a.tool),
+      actions: this.#acted(output),
       commitments: drafts.map((d) => d.what),
       silence: output.silence,
       why_silent: this.said.length > 0 ? null : output.silence ? "她選擇不開口" : "沒有要說的話",

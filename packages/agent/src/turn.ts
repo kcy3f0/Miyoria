@@ -126,6 +126,14 @@ import { ceilingFor, levelHint } from "./levels.js";
 import type { HeldLine } from "./mainline/gate.js";
 import type { Run } from "./mainline/hands.js";
 import {
+  asksSeriously,
+  handedOver,
+  higher,
+  QUESTION_PURPOSE,
+  STILL_RUNNING,
+  TOOL_STEP_PURPOSE,
+} from "./mainline/loop.js";
+import {
   ACTING_ALONE,
   FALLBACK_LINES,
   FALLBACK_RESULT_LINE,
@@ -134,22 +142,33 @@ import {
   MainTurn,
   sentences,
 } from "./mainline/main.js";
-import { COMMIT_SPEC, groundArgs, STEER_SPEC, slimTool, turnOutput } from "./mainline/output.js";
+import {
+  COMMIT_SPEC,
+  groundArgs,
+  isPseudoTool,
+  STEER_SPEC,
+  slimTool,
+  turnOutput,
+} from "./mainline/output.js";
 import {
   contextData,
   contextState,
+  exampleDialogues,
   fitHistory,
+  historyWindow,
   mainMessages,
   mainRules,
   pinnedSection,
   promptText,
   proposalData,
   resultData,
+  rotatedExamples,
+  stableHash,
   tailSection,
 } from "./mainline/prompt.js";
 import { linkMentions, type MentionTarget } from "./mentions.js";
 import { agentTurns } from "./metrics.js";
-import { KEEP_HINT, LONG_RESULT_CHARS } from "./notes.js";
+import { KEEP_HINT, LONG_RESULT_CHARS, NOTE_TOOLS } from "./notes.js";
 import {
   afterFold,
   buildMessages,
@@ -1435,6 +1454,20 @@ class Turn {
     return blocks.length === 0 ? null : blocks.join("");
   }
 
+  /**
+   * The main line's example dialogues as one data block (`null`: none). V3 left them out (the
+   * prompt had 4000 tokens); they show how she talks better than any rule. Which ones turns over
+   * with the session and stays put within it, as the prefix they sit in must.
+   */
+  #mainExamples(): string | null {
+    const chars = this.agent.config.mainline.examples_chars;
+    if (chars <= 0) return null;
+    const dialogues = exampleDialogues(this.agent.persona.examples());
+    const seed = stableHash(`${contextId(this.key)}:${this.session.startedAt}`);
+    const picked = rotatedExamples(dialogues, seed, chars);
+    return picked.length === 0 ? null : dataBlock("examples", EXAMPLES_TITLE, picked.join("\n\n"));
+  }
+
   /** What prompt contributors get to see of this turn. */
   #promptRequest(speakers: AccountRef[]): PromptRequest {
     const her = this.agent.persona.displayName();
@@ -1700,8 +1733,9 @@ class Turn {
     const text = this.#promptRequest(about).query;
     if (retrieval && text.trim() !== "") {
       try {
+        const lines = this.agent.config.mainline.memory_lines;
         const memories = await timeout(limit, this.signal, (signal) =>
-          retrieval.retrieve({ ...where, text }, signal),
+          retrieval.retrieve({ ...where, text, ...(lines > 0 ? { limit: lines } : {}) }, signal),
         );
         const body = retrieval.format(memories, now);
         if (body.trim() !== "") {
@@ -1745,7 +1779,7 @@ class Turn {
     const buckets = services.get(WorkingContextKey)?.buckets(this.key) ?? [];
     main.shown(line.commitments.overdue(this.key));
     const own = this.intent?.intent.id ?? main.claim.proposal?.id ?? null;
-    const examples = m.examples_chars > 0 ? this.#examples() : null;
+    const examples = this.#mainExamples();
     const wishes = services.get(DirectivesKey)?.wishes(this.key) ?? [];
     const telling = [...line.hands.peekResults(ACTING_ALONE), ...line.hands.peekResults(this.key)];
     main.telling(telling);
@@ -1761,7 +1795,6 @@ class Turn {
       // What she did with nobody there (`ACTING_ALONE`) she hears of wherever she speaks next.
       resultData(telling),
       wishes.length === 0 ? null : dataBlock("viewers", "觀眾的要求", wishes.join("\n")),
-      examples === null ? null : truncate(examples, m.examples_chars),
     ].filter((d): d is string => d !== null);
     const tail = tailSection({
       head: whenAndWhere(this.key, new Date(now), offset),
@@ -1778,16 +1811,28 @@ class Turn {
     const selection = this.plan.selection;
     const verbs = selection === null ? new Map<string, string>() : focusVerbs(selection);
     const folded = services.get(ConversationStatesKey)?.get(this.key) ?? null;
-    const history = withOlderParents(
+    const fold = folded?.folded_up_to ?? null;
+    // The history starts where the last turn's did, and only grows (`historyWindow`): the prefix up
+    // to its newest line is the last turn's prefix, which the provider has cached.
+    const window = historyWindow(
       markCurrent(
-        afterFold(
-          this.session.recent(m.history_lines).filter((e) => !this.#hidden(e)),
-          folded?.folded_up_to ?? null,
-          Math.min(cfg.history_after_fold, m.history_lines),
-        ),
+        this.session.history().filter((e) => !this.#hidden(e)),
         selection?.focus ?? [],
         verbs,
       ),
+      this.session.promptStart,
+      {
+        lines: m.history_lines,
+        chars: m.history_chars,
+        entryChars: m.entry_chars,
+        trim: m.history_trim,
+      },
+      fold === null ? null : timestampMs(fold.ts),
+      Math.min(cfg.history_after_fold, m.history_lines),
+    );
+    this.session.promptStart = window.start;
+    const history = withOlderParents(
+      window.shown,
       (id) => this.#shownEntry(id),
       (id) => this.#shownAround(id),
     );
@@ -1801,11 +1846,13 @@ class Turn {
           now,
           offset,
         ),
+        slow: examples === null ? [] : [examples],
         data,
         history: kept,
         tail,
         transcript: {
-          maxChars: m.history_chars,
+          // The window is within `history_chars` already; this only stops what it misjudged.
+          maxChars: m.history_chars * 2,
           maxEntryChars: m.entry_chars,
           gapMs: cfg.time_gap_ms,
         },
@@ -1862,7 +1909,7 @@ class Turn {
         (line) => main.screen(line),
         (text, spoken, aloud) => this.#safe(text, spoken, aloud),
       );
-      await this.#mainCall(main, router, messages, tools, priority, speech, null, null);
+      await this.#mainCall(main, router, messages, tools, priority, speech, null, null, null);
       this.#save();
       await this.#postAside(sink, speech.aside, priority);
       return speech.spoken;
@@ -1875,9 +1922,9 @@ class Turn {
       ? Promise.resolve()
       : this.#keepTyping(sink, lane, priority, typing.signal);
     const early: string[] = [];
-    // Her reasoning is no reply (leak.ts).
+    // Her reasoning is no reply (leak.ts). Each response of the tool loop is judged on its own.
     type Line = { text: string; blocked: string | null; n: number | null };
-    const screen = new ReplyScreen<Line>();
+    let screen = new ReplyScreen<Line>();
     const out = async (item: Line) => {
       early.push(await this.#sendText(sink, item.text, direct, priority, item.blocked, item.n));
     };
@@ -1885,6 +1932,9 @@ class Turn {
       for (const part of splitByReplyMarks(raw)) {
         if (main.claim.muted) return;
         const mark = takeReplyMark(part);
+        // What an earlier round of the tool loop already said is not sent twice.
+        mark.text = main.unrepeated(mark.text);
+        if (mark.text.trim() === "") continue;
         const safe = this.#safe(cleanReply(mark.text, names));
         const text = this.#linkMentions(safe.text);
         if (text === "") continue;
@@ -1902,8 +1952,14 @@ class Turn {
       }
     };
     const segments = new TextSegments(send, (text) => main.holdsText(text));
+    // A round of the tool loop ended: its first line, if the screen still holds it, goes out
+    // before the tools run, and so the person sees 「我查一下」 while she looks.
+    const between = async () => {
+      if (!main.claim.muted) for (const item of screen.flush()) await out(item);
+      screen = new ReplyScreen<Line>();
+    };
     try {
-      await this.#mainCall(main, router, messages, tools, priority, null, segments, send);
+      await this.#mainCall(main, router, messages, tools, priority, null, segments, send, between);
       if (!main.claim.muted) for (const item of screen.flush()) await out(item);
       this.#save();
     } finally {
@@ -1922,13 +1978,14 @@ class Turn {
     speech: Speech | null,
     segments: TextSegments | null,
     firstTokenMs: number | null = null,
+    level: ReasoningLevel = this.#level ?? "off",
   ): Promise<Step> {
     const controller = new AbortController();
     const onAbort = () => controller.abort(this.signal.reason);
     if (this.signal.aborted) onAbort();
     this.signal.addEventListener("abort", onAbort, { once: true });
     const deadline =
-      (this.#level ?? "off") === "off"
+      level === "off"
         ? main.config.first_token_timeout_ms
         : main.config.reasoning_first_token_timeout_ms;
     const timer = setTimeout(
@@ -1946,9 +2003,38 @@ class Turn {
   }
 
   /**
-   * One call of the main line: what she says goes out while it is written, then her words are
-   * compared with her actions. Only a claim with nothing behind it costs a second call (claims.ts:
-   * the last resort, as §10.1 has it).
+   * The reasoning purpose of a call of the main line (v4 §4.4) and its level: a call that reads
+   * what her tools brought back is `chat_tools`, a text reply to a real question `chat_question`.
+   * Never less than the turn's own purpose would get, so a tier nobody configured changes nothing.
+   */
+  #mainReasoning(
+    main: MainTurn,
+    router: LlmRouter,
+    request: ChatRequest,
+    afterTools: boolean,
+  ): ReasoningLevel {
+    const base = this.#reasoningPurpose();
+    const question =
+      !this.voice &&
+      this.intent === null &&
+      main.claim.kind === "addressed" &&
+      this.#focused.some((m) => asksSeriously(messageText(m)));
+    const purpose = afterTools ? TOOL_STEP_PURPOSE : question ? QUESTION_PURPOSE : base;
+    const level = higher(
+      router.reasoningFor("chat", { ...request, reasoning_purpose: base }),
+      router.reasoningFor("chat", { ...request, reasoning_purpose: purpose }),
+    );
+    request.reasoning_purpose = purpose;
+    request.reasoning = level;
+    return level;
+  }
+
+  /**
+   * One turn of the main line: what she says goes out while it is written, then her words are
+   * compared with her actions. The tools of `loop_tools` run inside the turn (v4 §4.2): their
+   * results go back to her with the transcript of the turn so far, for up to `max_tool_steps`
+   * rounds; what is left for the hands goes out with the last response. Only a claim with nothing
+   * behind it costs a corrective call (claims.ts: the last resort, as §10.1 has it).
    */
   async #mainCall(
     main: MainTurn,
@@ -1959,14 +2045,20 @@ class Turn {
     speech: Speech | null,
     segments: TextSegments | null,
     send: ((text: string) => Promise<void>) | null,
+    between: (() => Promise<void>) | null,
   ): Promise<void> {
     const cfg = this.agent.config;
     const messages = [...initial];
     main.offered(tools.map((t) => t.name));
     const offered = new Set(tools.map((t) => t.name));
+    // Only what is on offer: the Directives' filter decided that, and it holds inside the loop too.
+    const loop = new Set(main.config.loop_tools.filter((t) => offered.has(t) && !isPseudoTool(t)));
     let prompt: string | null = null;
     /** The response a corrective call stands in for: what is left if that call fails. */
     let before: Step | null = null;
+    /** Calls of earlier rounds that are the hands' (and `commit`): they go with the output. */
+    const later: ToolCall[] = [];
+    let rounds = 0;
     for (;;) {
       const request: ChatRequest = {
         messages: [...messages],
@@ -1976,14 +2068,15 @@ class Turn {
         reasoning_purpose: this.#reasoningPurpose(),
         session: this.#llmSession(),
       };
-      this.#level ??= router.reasoningFor("chat", request);
+      const level = this.#mainReasoning(main, router, request, rounds > 0);
+      this.#level ??= level;
       segments?.step();
       let step: Step;
       let fellBack = false;
       try {
         // In voice the person waits in silence: a correction starts soon or not at all.
         const deadline = before !== null && this.voice ? VOICE_CORRECTION_MS : null;
-        step = await this.#mainStream(main, router, request, speech, segments, deadline);
+        step = await this.#mainStream(main, router, request, speech, segments, deadline, level);
       } catch (error) {
         if (before === null || this.signal.aborted) throw error;
         this.agent.log.warn(
@@ -1998,6 +2091,22 @@ class Turn {
       if (speech?.stopped()) {
         this.agent.log.debug({ turn: this.turn }, "speech interrupted, generation stopped");
         return;
+      }
+      const now = fellBack ? [] : calls.filter((c) => loop.has(c.name));
+      if (now.length > 0 && rounds < cfg.max_tool_steps) {
+        await this.#roundEnded(main, expression, now, speech, segments, send, between);
+        messages.push(assistantMessage(raw, calls));
+        for (const call of calls) {
+          if (!loop.has(call.name)) later.push(call);
+          const result = loop.has(call.name)
+            ? await this.#inTurn(main, call, offered, priority)
+            : handedOver(call.name);
+          messages.push(toolResultMessage(call.id, result));
+        }
+        rounds += 1;
+        main.round();
+        if (speech?.stopped()) return;
+        continue;
       }
       if (segments !== null && !expression.isSilent() && !fellBack) {
         for (const text of sentences(segments.rest(expression))) {
@@ -2026,7 +2135,8 @@ class Turn {
         messages.push(userMessage(toolTextReminder(written)));
         continue;
       }
-      const output = turnOutput(expression, calls, main.said);
+      // Calls of the loop past the last round go to the hands too: a result turn tells her.
+      const output = turnOutput(expression, [...later, ...calls], main.said);
       const outcome = main.finish(output);
       if (outcome.remind !== null) {
         messages.push(assistantMessage(raw, []));
@@ -2051,6 +2161,65 @@ class Turn {
       );
       return;
     }
+  }
+
+  /**
+   * A response of the tool loop ended with calls of the loop: what she wrote after the last line
+   * break goes out (or waits behind a held line, as the gate decides), and in voice someone who has
+   * heard nothing yet hears a line before the tools run.
+   */
+  async #roundEnded(
+    main: MainTurn,
+    expression: Expression,
+    calls: readonly ToolCall[],
+    speech: Speech | null,
+    segments: TextSegments | null,
+    send: ((text: string) => Promise<void>) | null,
+    between: (() => Promise<void>) | null,
+  ): Promise<void> {
+    if (segments !== null && !expression.isSilent()) {
+      const rest = segments.rest(expression);
+      if (rest.trim() !== "") {
+        if (main.holdsText(rest)) {
+          for (const text of sentences(rest)) main.gate.hold({ text, spoken: null, emotion: null });
+        } else await send?.(rest);
+      }
+    }
+    await between?.();
+    if (speech === null) return;
+    const wait = main.waitFor(calls.map((c) => c.name));
+    if (wait === null) return;
+    const line = { text: wait, spoken: null, emotion: null };
+    main.said.push({ text: line.text, voice: null, emotion: null });
+    await speech.release(line);
+  }
+
+  /** A call of the loop, run now: what goes back to her in the same chain. */
+  async #inTurn(
+    main: MainTurn,
+    call: ToolCall,
+    offered: ReadonlySet<string>,
+    priority: Priority,
+  ): Promise<string> {
+    const { run, accepted } = await main.inTurn(
+      call.name,
+      call.arguments,
+      () => this.#hand(call, priority, this.signal),
+      this.#requester(),
+    );
+    if (run.ok) this.#succeeded.add(call.name);
+    let text = run.text;
+    if (run.ok && accepted) text = `${text}\n${STILL_RUNNING}`;
+    // Read in this turn, gone in the next unless she keeps what matters.
+    if (
+      run.ok &&
+      text.length >= LONG_RESULT_CHARS &&
+      !NOTE_TOOLS.has(call.name) &&
+      offered.has(KeepNoteTool.NAME)
+    ) {
+      text += KEEP_HINT;
+    }
+    return text;
   }
 
   /** One action, in the hands: it may outlive this turn. */

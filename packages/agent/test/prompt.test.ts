@@ -80,7 +80,7 @@ describe("prompt", () => {
     const rules = rulesPrompt(false);
     expect(rules).toBe(RULES);
     expect(rules).toContain(GUARD_RULES);
-    for (const rule of ["<silence/>", "<emo:名稱>", "一到三句"]) {
+    for (const rule of ["<silence/>", "<emo:名稱>", "長短跟著當下走"]) {
       expect(rules.split(rule).length - 1, rule).toBe(1);
     }
   });
@@ -107,7 +107,7 @@ describe("prompt", () => {
     expect(s).toContain(VOICE_ADDRESSED);
     expect(s).not.toContain(ADDRESSED);
     const rules = rulesPrompt(true);
-    expect(rules).toContain("一到兩句");
+    expect(rules).toContain("有人在聽");
     expect(rules).toContain("emoji");
     expect(rules).toContain("<emo:名稱>");
     expect(rules).not.toContain("<voice>");

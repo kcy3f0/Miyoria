@@ -83,6 +83,7 @@ export {
   FilesConfigSchema,
   type HistoryConfig,
   HistoryConfigSchema,
+  LOOP_TOOLS,
   MainLineConfigSchema,
   maxDebounceMs,
   modeFor,
@@ -140,14 +141,20 @@ export { ACTING_ALONE, MainLine, MainTurn } from "./mainline/main.js";
 export { COMMIT_SPEC, STEER_SPEC, slimTool } from "./mainline/output.js";
 export {
   contextData,
+  entryCost,
   estimateTokens,
+  exampleDialogues,
   fitHistory,
+  historyWindow,
   mainMessages,
   mainRules,
   pinnedSection,
   promptTokens,
   proposalData,
+  rotatedExamples,
+  stableHash,
   tailSection,
+  type WindowBudget,
 } from "./mainline/prompt.js";
 export { linkMentions, type MentionTarget } from "./mentions.js";
 export { AgentModule } from "./module.js";
