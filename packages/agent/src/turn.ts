@@ -157,6 +157,7 @@ import {
   cleanReply,
   dataMessage,
   EXAMPLES_TITLE,
+  FEELING_TITLE,
   FLAGGED_TITLE,
   flaggedBody,
   focusEntries,
@@ -176,7 +177,7 @@ import {
   whenAndWhere,
 } from "./prompt.js";
 import type { Agent, Initiative, IntentTurn } from "./runtime.js";
-import { type PresentPerson, peopleBody, selfBlocks } from "./self-block.js";
+import { feelingCauseBody, type PresentPerson, peopleBody, selfBlocks } from "./self-block.js";
 import { type HistoryEntry, messageText, type Session } from "./session.js";
 import { type BudgetState, EXHAUSTED_LINE } from "./signals.js";
 import {
@@ -1367,6 +1368,14 @@ class Turn {
     if (people !== "") {
       blocks.push(ownBlock("people", this.voice ? VOICE_PRESENT_TITLE : PRESENT_TITLE, people, 0));
     }
+    const feeling = feelingCauseBody({
+      context: this.key,
+      now: this.#now,
+      affect,
+      self,
+      presentPeople: present.flatMap((p) => (p.person === null ? [] : [p.person])),
+    });
+    if (feeling !== "") blocks.push(ownBlock("feeling", FEELING_TITLE, feeling, 1));
     const hint = this.initiative?.hint.trim() ?? "";
     if (this.initiative !== null && hint !== "") {
       blocks.push(ownBlock(`initiative:${this.initiative.reason}`, INITIATIVE_TITLE, hint, 1));
