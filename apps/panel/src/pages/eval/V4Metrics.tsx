@@ -6,6 +6,8 @@ import { EmptyLine, ErrorLine } from "@/components/query-state";
 import { StatusBadge } from "@/components/status";
 import { Skeleton } from "@/components/ui/misc";
 import { Segmented } from "@/components/ui/segmented";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { VoiceLatency } from "@/components/voice-latency";
 import { fmtMs } from "@/lib/e2e";
 import { contextShort, fmtPct } from "@/lib/format";
@@ -207,6 +209,204 @@ function Stopped({ data }: { data: TurnMetrics }) {
   );
 }
 
+// ---- what the code changed of her output after the model wrote it (docs/design/v4-patches.md) --
+
+/** The kinds `GET /api/turns/metrics` counts, in its order (`CORRECTION_KINDS` of the types). */
+export const CORRECTION_LABEL = {
+  claim_held: "說了做到的事,先扣住",
+  claim_parked: "說做好了,等結果才講",
+  claim_dropped: "沒有動作的宣稱,刪掉",
+  claim_reask: "沒有動作的宣稱,重問一次",
+  tool_text_reask: "工具寫成文字,重問一次",
+  tool_text_commit: "工具寫成文字,記成承諾",
+  promise_commit: "台詞裡的承諾,記成承諾",
+  leak_dropped: "推理寫進回覆,擋下",
+  wait_line: "固定的等待台詞",
+  fallback_line: "固定的失敗台詞",
+  keep_hint: "提醒記筆記",
+  ground_args: "改掉工具參數",
+  repeat_cut: "刪掉重複的句子",
+  noted_callback: "只記了筆記,叫她回來說",
+} as const;
+
+export type CorrectionKind = keyof typeof CORRECTION_LABEL;
+
+interface CorrectionCount {
+  events: number;
+  turns: number;
+}
+
+interface CorrectionsBucket {
+  /** Turns that reached the model and say what was corrected, by channel. */
+  measured: { voice: number; text: number };
+  kinds: Partial<Record<CorrectionKind, { voice: CorrectionCount; text: CorrectionCount }>>;
+}
+
+/** A bucket of a Core that counts corrections (an older one sends none: the block stays out). */
+type Counted = TurnMetricsBucket & { corrections?: CorrectionsBucket };
+
+const KINDS = Object.keys(CORRECTION_LABEL) as CorrectionKind[];
+const NONE: CorrectionCount = { events: 0, turns: 0 };
+
+function statOf(c: CorrectionsBucket, kind: CorrectionKind) {
+  const s = c.kinds[kind];
+  return { voice: s?.voice ?? NONE, text: s?.text ?? NONE };
+}
+
+/** Of the measured turns, the share where `kind` fired (`null`: none measured). */
+export function firedShare(c: CorrectionsBucket, kind: CorrectionKind): number | null {
+  const measured = c.measured.voice + c.measured.text;
+  const s = statOf(c, kind);
+  return measured === 0 ? null : (s.voice.turns + s.text.turns) / measured;
+}
+
+const share = (v: number | null) => (v === null ? "—" : pct(v));
+
+function Fired({ c }: { c: CorrectionCount }) {
+  if (c.events === 0) return <span className="text-muted-foreground/70">0</span>;
+  return (
+    <>
+      {c.events}
+      <span className="ml-1 text-muted-foreground">次 · {c.turns} 回合</span>
+    </>
+  );
+}
+
+const dayText = (day: string) => {
+  const [, m, d] = day.split("-").map(Number);
+  return m === undefined || d === undefined ? day : `${m}/${d}`;
+};
+
+function Corrections({ data }: { data: TurnMetrics }) {
+  const overall = (data.overall as Counted).corrections;
+  const ranked = useMemo(() => {
+    if (!overall) return KINDS;
+    const total = (k: CorrectionKind) => {
+      const s = statOf(overall, k);
+      return s.voice.events + s.text.events;
+    };
+    return [...KINDS].sort((a, b) => total(b) - total(a));
+  }, [overall]);
+  const [picked, setPicked] = useState<CorrectionKind | null>(null);
+  const times = useMemo(() => data.daily.map((d) => dayTime(d.day)), [data]);
+  if (!overall) return null;
+  const kind = picked ?? ranked[0] ?? "claim_held";
+  const measured = overall.measured.voice + overall.measured.text;
+  const days = data.daily.map((d) => ({ day: d.day, c: (d as Counted).corrections }));
+  const daily = (channel: "voice" | "text") =>
+    days.map(({ c }) => {
+      if (!c || c.measured[channel] === 0) return null;
+      return statOf(c, kind)[channel].turns / c.measured[channel];
+    });
+  return (
+    <section aria-label="事後修正" className="grid gap-(--stage-gap)">
+      <ChartBlock
+        title="事後修正"
+        value={String(measured)}
+        unit="回合有量到"
+        aside={`語音 ${overall.measured.voice} · 文字 ${overall.measured.text}`}
+      >
+        {measured === 0 ? (
+          <EmptyLine>這段時間沒有量到的回合</EmptyLine>
+        ) : (
+          <Table aria-label="每一種修正">
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>修正</TableHead>
+                <TableHead className="text-right">語音</TableHead>
+                <TableHead className="text-right">文字</TableHead>
+                <TableHead className="text-right">佔回覆</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {ranked.map((k) => {
+                const s = statOf(overall, k);
+                return (
+                  <TableRow key={k}>
+                    <TableCell>{CORRECTION_LABEL[k]}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      <Fired c={s.voice} />
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      <Fired c={s.text} />
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{share(firedShare(overall, k))}</TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        )}
+      </ChartBlock>
+      {measured > 0 && (
+        <ChartBlock
+          title="每天"
+          value={share(firedShare(overall, kind))}
+          aside="的回覆有這項修正"
+          action={
+            <Select value={kind} onValueChange={(v) => setPicked(v as CorrectionKind)}>
+              <SelectTrigger aria-label="修正" size="sm" className="w-56">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ranked.map((k) => (
+                  <SelectItem key={k} value={k}>
+                    {CORRECTION_LABEL[k]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          }
+        >
+          <TimeChart
+            label={`${CORRECTION_LABEL[kind]}的每日佔比`}
+            times={times}
+            fromZero
+            height={160}
+            format={pct}
+            series={[
+              { key: "voice", label: "語音", color: "var(--chart-1)", values: daily("voice") },
+              { key: "text", label: "文字", color: "var(--chart-2)", values: daily("text") },
+            ]}
+          />
+          <Table aria-label={`${CORRECTION_LABEL[kind]}的每天次數`}>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>日期</TableHead>
+                <TableHead className="text-right">量到的回合</TableHead>
+                <TableHead className="text-right">語音</TableHead>
+                <TableHead className="text-right">文字</TableHead>
+                <TableHead className="text-right">佔回覆</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {[...days].reverse().map(({ day, c }) => {
+                const s = c ? statOf(c, kind) : { voice: NONE, text: NONE };
+                const n = c ? c.measured.voice + c.measured.text : 0;
+                return (
+                  <TableRow key={day}>
+                    <TableCell className="tabular-nums">{dayText(day)}</TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">
+                      {n === 0 ? "—" : `語音 ${c?.measured.voice ?? 0} · 文字 ${c?.measured.text ?? 0}`}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      <Fired c={s.voice} />
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      <Fired c={s.text} />
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{c ? share(firedShare(c, kind)) : "—"}</TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </ChartBlock>
+      )}
+    </section>
+  );
+}
+
 /** The six stages come from the monitor's last 15 minutes, not from this window. */
 function Stages() {
   const voice = useVoice();
@@ -277,6 +477,7 @@ export function V4Metrics() {
             <Outcomes data={data} />
             <Stopped data={data} />
           </div>
+          <Corrections data={data} />
         </>
       )}
       <Stages />
