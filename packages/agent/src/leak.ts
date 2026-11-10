@@ -66,20 +66,32 @@ export class ReasoningGuard {
 /**
  * Lines on their way to the chat: the first one waits for the second (or the end of the reply),
  * so a leak that starts with an innocent line takes that line with it.
+ *
+ * Off (`[modules.agent.corrections] leak_screen = false`) every line goes out as it comes: no
+ * first line waits and nothing is dropped.
  */
 export class ReplyScreen<T extends { text: string }> {
   readonly #guard = new ReasoningGuard();
+  readonly #on: boolean;
   #first: T | null = null;
   #started = false;
   /** Set once the response was judged a leak. */
   dropped = false;
+  /** Lines this screen dropped (the held first line it took back included). */
+  droppedLines = 0;
+
+  constructor(on = true) {
+    this.#on = on;
+  }
 
   /** What may be sent now; `retracted` is set when it took the held first line back. */
   push(item: T): { send: T[]; retracted: boolean } {
+    if (!this.#on) return { send: [item], retracted: false };
     if (this.#guard.drops(item.text)) {
       const retracted = this.#first !== null;
       this.#first = null;
       this.dropped = true;
+      this.droppedLines += retracted ? 2 : 1;
       return { send: [], retracted };
     }
     if (!this.#started) {

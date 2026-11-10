@@ -468,6 +468,31 @@ export const WorkConfigSchema = z.object({
 });
 export type WorkConfig = z.output<typeof WorkConfigSchema>;
 
+/**
+ * `[modules.agent.corrections]`: the after-the-fact corrections of her output that v4 §4.5 steps
+ * 2 to 4 retire once they are measured (docs/design/v4-patches.md says what count over what
+ * period justifies switching each off). Every one is on by default; switching one off removes
+ * only that correction, never an outer wall (owner rules, the action gate, the delivery ledger,
+ * output moderation, the Floor's limits).
+ */
+export const CorrectionsConfigSchema = z.object({
+  /** A tool written as text instead of called: she is asked once more to call it. */
+  tool_text_reask: z.boolean().default(true),
+  /**
+   * A promise in her words ("我等一下進語音") or a tool written as text that no call followed
+   * becomes a commitment, so it cannot just evaporate.
+   */
+  promise_commit: z.boolean().default(true),
+  /**
+   * The claim regexes (claims.ts): a line that says something only a tool does, or that work is
+   * done, waits for the action or its result, is dropped without one, and she is asked once more.
+   */
+  claims: z.boolean().default(true),
+  /** The reply screen (leak.ts): lines that are her reasoning are dropped before they are sent. */
+  leak_screen: z.boolean().default(true),
+});
+export type CorrectionsConfig = z.output<typeof CorrectionsConfigSchema>;
+
 /** `[modules.agent]` config section. */
 export const AgentConfigSchema = z.object({
   /** Quiet time after the last message before a turn starts. */
@@ -531,6 +556,8 @@ export const AgentConfigSchema = z.object({
   mainline: MainLineConfigSchema.prefault({}),
   /** The work lane (v4 §4.3). */
   work: WorkConfigSchema.prefault({}),
+  /** The after-the-fact corrections that may be switched off once measured (v4 §4.5). */
+  corrections: CorrectionsConfigSchema.prefault({}),
   /** Offer registered tools to the model. */
   tools_enabled: z.boolean().default(true),
   /**

@@ -70,6 +70,7 @@ import {
 import type { Claim } from "../claims.js";
 import type { MainLineConfig } from "../config.js";
 import { voiceScope } from "../handle.js";
+import { CorrectionTally } from "../metrics.js";
 import { NOTE_TOOLS } from "../notes.js";
 import type { Agent } from "../runtime.js";
 import type { ToolScope } from "../tool-scope.js";
@@ -675,6 +676,8 @@ export class MainTurn {
   readonly context: ContextKey;
   readonly claim: MainClaim;
   readonly gate: LineGate;
+  /** What the code changed of her output in this turn (docs/design/v4-patches.md). */
+  readonly tally: CorrectionTally;
   /** What really went out of this call, in order. */
   said: SaySegment[] = [];
   #offered = new Set<string>();
@@ -695,18 +698,29 @@ export class MainTurn {
   /** How much of `said` came from earlier rounds of the tool loop. */
   #earlier = 0;
 
-  constructor(main: MainLine, agent: Agent, turn: TurnId, context: ContextKey, claim: MainClaim) {
+  constructor(
+    main: MainLine,
+    agent: Agent,
+    turn: TurnId,
+    context: ContextKey,
+    claim: MainClaim,
+    tally: CorrectionTally = new CorrectionTally(context.kind === "voice"),
+  ) {
     this.#main = main;
     this.#agent = agent;
     this.turn = turn;
     this.context = context;
     this.claim = claim;
+    this.tally = tally;
     main.own(turn);
-    this.gate = new LineGate({
-      scope: () => main.scope(),
-      done: (tool) => main.hands.done(context, tool),
-      pending: () => main.hands.pending(context),
-    });
+    this.gate = new LineGate(
+      {
+        scope: () => main.scope(),
+        done: (tool) => main.hands.done(context, tool),
+        pending: () => main.hands.pending(context),
+      },
+      agent.config.corrections.claims,
+    );
   }
 
   get config(): MainLineConfig {
@@ -827,7 +841,10 @@ export class MainTurn {
    */
   screen(line: HeldLine): boolean {
     if (this.claim.muted) return false;
-    if (this.unrepeated(line.text).trim() === "") return false;
+    if (this.unrepeated(line.text).trim() === "") {
+      this.tally.count("repeat_cut");
+      return false;
+    }
     const pass = this.gate.pass(line);
     if (pass) this.said.push({ text: line.text, voice: line.spoken, emotion: line.emotion });
     return pass;
@@ -849,6 +866,25 @@ export class MainTurn {
     );
   }
 
+  /** `unrepeated`, counted when it cut something: what a text line of hers goes out as. */
+  cutRepeats(text: string): string {
+    const left = this.unrepeated(text);
+    if (left !== text) this.tally.count("repeat_cut");
+    return left;
+  }
+
+  /**
+   * A text line noted as sent (`sent`) never went out: the reply screen took it. What she said
+   * is what reached someone; a dropped line of reasoning must not become a promise she made.
+   */
+  unsent(text: string): void {
+    for (let i = this.said.length - 1; i >= this.#earlier; i--) {
+      if (this.said[i]?.text !== text) continue;
+      this.said.splice(i, 1);
+      return;
+    }
+  }
+
   /** A round of the tool loop is over: what she said so far was said. */
   round(): void {
     this.#earlier = this.said.length;
@@ -861,7 +897,9 @@ export class MainTurn {
   waitFor(tools: readonly string[]): string | null {
     if (this.said.length > 0 || !this.#owes()) return null;
     const slow = tools.filter((t) => !INSTANT_TOOLS.has(t));
-    return slow.length === 0 ? null : waitLine(slow);
+    if (slow.length === 0) return null;
+    this.tally.count("wait_line");
+    return waitLine(slow);
   }
 
   /**
@@ -911,10 +949,13 @@ export class MainTurn {
 
   /** Of the lines the gate let out at the end, the ones that are not said already. */
   releasable(lines: readonly HeldLine[]): HeldLine[] {
-    return freshLines(
+    const fresh = freshLines(
       lines,
       this.said.map((s) => s.text),
     );
+    // A line comes back as it was, or cut (a new object), or not at all.
+    this.tally.count("repeat_cut", lines.length - fresh.filter((l) => lines.includes(l)).length);
+    return fresh;
   }
 
   /**
@@ -960,24 +1001,43 @@ export class MainTurn {
   /**
    * The stream ended. Compares what she said with what she does: lines that were waiting go out,
    * wait for their result or are dropped; a promise without an action becomes a commitment.
+   * `earlier`: tools of the output she handed over in an earlier round of the tool loop, and was
+   * told so there (`HANDED_OVER`) with a response of hers still to come.
    */
-  finish(output: TurnOutput): Outcome {
+  finish(output: TurnOutput, earlier: readonly string[] = []): Outcome {
+    const tally = this.tally;
     const tools = output.actions.map((a) => a.tool);
     const settled: Settled = this.gate.settle(tools);
+    tally.count("claim_held", settled.waited);
     const dropped = settled.dropped.find((c) => this.#offered.has(c.tool)) ?? null;
     if (dropped !== null && this.takeCorrection()) {
       this.#agent.log.info({ turn: this.turn, tool: dropped.tool }, "she claimed without doing");
+      tally.count("claim_reask");
       return { release: [], remind: dropped };
     }
+    tally.count("claim_dropped", settled.dropped.length);
     const release = [...settled.release];
     if (settled.started) {
+      tally.count("claim_parked", settled.parked.length);
       release.unshift({ text: STARTED_LINE, spoken: null, emotion: null });
     } else if (release.length === 0 && this.said.length === 0 && tools.length > 0 && this.#owes()) {
-      const slow = tools.filter((t) => !INSTANT_TOOLS.has(t));
-      if (slow.length > 0) release.push({ text: waitLine(slow), spoken: null, emotion: null });
-      // Only a note, and not a word for whoever waits (2026-11-09 21:06: she kept the lyrics and
-      // said nothing more): the note's answer calls her back to say it.
-      else this.#notedQuietly = true;
+      // v4 §4.5 step 1: the fixed line is for an output that acts and cannot say anything about
+      // it, because what it does comes back in another turn. A call she handed over in an earlier
+      // round of the tool loop was answered to her inside this turn, and she had a response after
+      // that: when the response chose silence, a fixed line would only overrule her. Left are the
+      // last response's own calls (long activities, lookups past the loop's rounds or time) and
+      // any output whose last response gave nothing at all.
+      const waiting = output.silence ? tools.filter((t) => !earlier.includes(t)) : tools;
+      const slow = waiting.filter((t) => !INSTANT_TOOLS.has(t));
+      if (slow.length > 0) {
+        tally.count("wait_line");
+        release.push({ text: waitLine(slow), spoken: null, emotion: null });
+      } else if (waiting.some((t) => NOTE_TOOLS.has(t))) {
+        // Only a note, and not a word for whoever waits (2026-11-09 21:06: she kept the lyrics
+        // and said nothing more): the note's answer calls her back to say it.
+        tally.count("noted_callback");
+        this.#notedQuietly = true;
+      }
     }
     for (const line of settled.parked) this.#main.hands.park(this.context, line);
     return { release, remind: null };
@@ -1010,9 +1070,13 @@ export class MainTurn {
     for (const tool of tools) this.#written.add(tool);
   }
 
-  /** Commitments of this output: the written ones, and promises with nothing behind them. */
+  /**
+   * Commitments of this output: the written ones, and promises with nothing behind them (those
+   * only while `[modules.agent.corrections] promise_commit` is on).
+   */
   #commit(output: TurnOutput): CommitmentDraft[] {
     const drafts = [...output.commitments];
+    if (!this.#agent.config.corrections.promise_commit) return drafts;
     const scope = this.#main.scope();
     const tools = this.#acted(output);
     // A tool written as text is something she said she would do: it must not just evaporate.
@@ -1024,12 +1088,14 @@ export class MainTurn {
         .trim();
       const what = said === "" ? `用 ${tool}` : [...said].slice(0, WHAT_CHARS).join("");
       drafts.push({ what, capability: tool, due_secs: null });
+      this.tally.count("tool_text_commit");
     }
     for (const segment of this.said) {
       for (const claim of promisedClaims(segment.text)) {
         if (tools.includes(claim.tool) || (scope !== null && claim.holds(scope))) continue;
         if (drafts.some((d) => d.capability === claim.tool)) continue;
         drafts.push({ what: segment.text.trim(), capability: claim.tool, due_secs: null });
+        this.tally.count("promise_commit");
       }
     }
     return drafts;
