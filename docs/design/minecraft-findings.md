@@ -93,6 +93,8 @@
 
 模組(Java)沒有改。
 
+PR 8 同時寫了另一個重複保護(同一個目標用參數字串當鍵,連續失敗兩次暫停 10 分鐘,`invalid` 整場暫停,她的提示詞列出暫停的目標)。合進 `v4-int` 時留下第 5 項的做法,沒有兩個保護一起跑:暫停的目標本來就由 `methods.ts` 的 `lines` 列進提示詞,被擋時也會催她換一次。它的設定名 `repeat_failure_limit` / `repeat_guard_secs` 當成 `method_repeat_limit` / `method_hold_secs` 的舊名,兩個都寫時以新名為準。
+
 ## 7. 只有實際玩一場才能確認的
 
 - 打獵:模組的 `nearby_entities` 沒有座標,只能靠 Baritone `follow` 走到旁邊時準心剛好對到動物,不然往下看 25 度再試。會不會一直打空要實際看;打不到的話,模組在 `nearby_entities` 加上 `position`,adapter 已經會直接瞄準。

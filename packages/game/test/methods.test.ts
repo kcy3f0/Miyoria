@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { defaultGameConfig } from "../src/index.js";
+import { defaultGameConfig, GameConfigSchema } from "../src/index.js";
 import { itemOf, MethodGuard, methodKey } from "../src/methods.js";
 import { AttemptRecord, attemptLine } from "../src/record.js";
 import { SkillBook } from "../src/skills.js";
@@ -22,6 +22,22 @@ describe("method keys", () => {
     expect(methodKey("explore", {})).toBe("explore");
     expect(methodKey("goto", { x: 1, z: 2 })).toBe("goto");
     expect(itemOf({ block: "Crafting Table" })).toBe("crafting_table");
+  });
+});
+
+describe("method guard config", () => {
+  it("takes PR 8's repeat_failure_limit / repeat_guard_secs as older names of its own keys", () => {
+    expect(cfg).toMatchObject({ method_repeat_limit: 2, method_hold_secs: 600 });
+    expect(cfg).not.toHaveProperty("repeat_failure_limit");
+    const old = GameConfigSchema.parse({ repeat_failure_limit: 3, repeat_guard_secs: 120 });
+    expect(old).toMatchObject({ method_repeat_limit: 3, method_hold_secs: 120 });
+    // The new name wins when both are set.
+    const both = GameConfigSchema.parse({ repeat_failure_limit: 0, method_repeat_limit: 4 });
+    expect(both.method_repeat_limit).toBe(4);
+    // 0 under the old name still turns the guard off.
+    const off = new MethodGuard(GameConfigSchema.parse({ repeat_failure_limit: 0 }));
+    off.failed("obtain:cooked_beef", "invalid", "no crafting recipe", 0);
+    expect(off.held("obtain:cooked_beef", 1)).toBeNull();
   });
 });
 

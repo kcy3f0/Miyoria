@@ -322,6 +322,7 @@ dirs = ["extensions"]
 # hazard_repeat_secs = 120   # hazard_events 的同一件事:隔一陣子再遇到就算新的
 # method_repeat_limit = 2    # 同一個方法(動作加物品,例如 obtain:bread)用同一個錯誤碼連續失敗這麼多次就擱置;0 = 不擱置
 # method_hold_secs = 600     # 擱置多久(method_release = "time" 時才用來解除)
+#                            # 舊名 repeat_failure_limit / repeat_guard_secs 也認得(兩個都寫時以 method_ 開頭的為準)
 # method_release = "changed" # 擱置的方法什麼時候可以回來。changed:要有東西變了(缺的物品進了背包、別的方法帶她到了別處)才回來,
 #                            # 回來又失敗就馬上再擱置 | time:過了 method_hold_secs 就回來(2026-11-10 之前的舊行為,要退回才用)
 # director_lane = true       # 導演的每個決定是工作線裡一個任務的步驟(每個 session 一個,有自己的紀錄:看到什麼、決定什麼、結果如何);
