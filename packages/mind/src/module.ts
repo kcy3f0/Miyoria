@@ -1,3 +1,4 @@
+import { actuatorsFor } from "@miyoria/actions";
 import {
   defineManifest,
   errorMessage,
@@ -8,7 +9,7 @@ import {
   withTimeout,
 } from "@miyoria/kernel";
 import { completeJson, LlmRouterKey, systemMessage, userMessage, withLlmTag } from "@miyoria/llm";
-import { SettingsStoreKey } from "@miyoria/store";
+import { type SettingsStore, SettingsStoreKey } from "@miyoria/store";
 import {
   ACTIVITY_CHANGED_TOPIC,
   ACTIVITY_DONE_TOPIC,
@@ -16,14 +17,17 @@ import {
   AFFECT_CHANGED_TOPIC,
   type Clock,
   customEvent,
+  DailyPostsKey,
   DIRECTIVE_CHANGED_TOPIC,
   dataBlock,
   GOAL_TOPIC,
   GoalAgendaKey,
   type JsonValue,
+  LifeLogKey,
   MindKey,
   newId,
   type ProfileId,
+  ReminderDeskKey,
   SALIENT_TOPIC,
   type Thought,
   type ThoughtDigest,
@@ -32,6 +36,15 @@ import { z } from "zod";
 import { DEPRECATED_MIND_KEYS, type MindConfig, MindConfigSchema } from "./config.js";
 import { GoalBook } from "./goals.js";
 import { type Condense, intentCounts, Journal, ruleDigest } from "./journal.js";
+import { LifeBook } from "./life/log.js";
+import { DailyPostDesk } from "./life/posts.js";
+import {
+  deliverer,
+  REMINDER_TOPIC,
+  ReminderBook,
+  type ReminderLimits,
+  remindCapability,
+} from "./life/reminders.js";
 import { MindLoop } from "./mind.js";
 
 const STORE_TIMEOUT_MS = 5_000;
@@ -89,6 +102,9 @@ export class MindModule implements Module {
   readonly #options: MindModuleOptions;
   #journal: Journal | null = null;
   #goals: GoalBook | null = null;
+  #life: LifeBook | null = null;
+  #reminders: ReminderBook | null = null;
+  #unregister: (() => void) | null = null;
 
   constructor(profile: ProfileId, options: MindModuleOptions = {}) {
     this.#profile = profile;
@@ -150,6 +166,7 @@ export class MindModule implements Module {
     }
     this.#goals = goals;
     ctx.provide(GoalAgendaKey, goals);
+    const life = await this.#startLife(ctx, config, store);
     const persona = this.#options.persona;
     const loop = new MindLoop({
       config,
@@ -163,12 +180,14 @@ export class MindModule implements Module {
       journal,
       goals,
       store,
+      life,
     });
     ctx.provide(MindKey, loop);
     const sub = ctx.subscribe(MIND_TOPICS);
     ctx.spawn("events", async () => {
       for await (const env of sub) {
         try {
+          life.observe(env);
           loop.observe(env);
         } catch (error) {
           ctx.log.warn({ err: errorMessage(error) }, "could not handle event");
@@ -178,11 +197,108 @@ export class MindModule implements Module {
     ctx.spawn("loop", (signal) => loop.run(signal));
   }
 
+  /**
+   * Her own life (docs/design/v4-plan.md §8): the life log (`LifeLogKey`), her timers
+   * (`ReminderDeskKey`, capability `self.remind` / tool `remind_me`, delivered while the module
+   * runs) and her daily posts (`DailyPostsKey`, off unless configured).
+   */
+  async #startLife(
+    ctx: ModuleContext,
+    config: MindConfig,
+    store: SettingsStore | null,
+  ): Promise<LifeBook> {
+    const clock = this.#options.clock ?? ctx.clock;
+    const offset = config.utc_offset_minutes;
+    let posts: DailyPostDesk | null = null;
+    const life = new LifeBook({
+      store,
+      profile: this.#profile,
+      clock,
+      offsetMinutes: offset,
+      dayStartHour: config.daily_hour,
+      keepDays: config.life_keep_days,
+      onRecord: (entry) => {
+        const desk = posts;
+        if (desk === null) return;
+        void desk.offer(entry).then(
+          (result) => ctx.log.debug({ result, activity: entry.activity }, "daily post"),
+          (error: unknown) => ctx.log.warn({ err: errorMessage(error) }, "daily post failed"),
+        );
+      },
+    });
+    const limits: ReminderLimits = {
+      max: config.reminders_max,
+      perPerson: config.reminders_per_person,
+      maxDays: config.reminder_max_days,
+      holdMins: config.reminder_hold_mins,
+    };
+    const reminders = new ReminderBook({
+      store,
+      profile: this.#profile,
+      clock,
+      limits,
+      offsetMinutes: offset,
+      deliver: deliverer(ctx.services, clock, limits, offset),
+      publish: (reminder, state) =>
+        ctx.publish(
+          customEvent(REMINDER_TOPIC, {
+            state,
+            reminder: JSON.parse(JSON.stringify(reminder)) as JsonValue,
+          }),
+        ),
+    });
+    const desk = new DailyPostDesk({
+      config: config.daily_posts,
+      store,
+      profile: this.#profile,
+      clock,
+      services: ctx.services,
+      dayOf: (at) => life.dayOf(at),
+    });
+    if (config.daily_posts.enabled && desk.channel() === null) {
+      ctx.log.warn(
+        "[modules.mind.daily_posts] is enabled without guild and channel: posts stay off",
+      );
+    }
+    if (store) {
+      for (const [what, load] of [
+        ["her life log", () => life.load()],
+        ["her timers", () => reminders.load()],
+        ["her daily posts", () => desk.load()],
+      ] as const) {
+        try {
+          const loaded = await withTimeout(
+            load().then(() => true),
+            STORE_TIMEOUT_MS,
+          );
+          if (loaded === undefined) ctx.log.warn(`loading ${what} timed out`);
+        } catch (error) {
+          ctx.log.warn({ err: errorMessage(error) }, `cannot load ${what}`);
+        }
+      }
+    }
+    posts = desk;
+    this.#life = life;
+    this.#reminders = reminders;
+    ctx.provide(LifeLogKey, life);
+    ctx.provide(ReminderDeskKey, reminders);
+    ctx.provide(DailyPostsKey, desk);
+    this.#unregister = actuatorsFor(ctx).register(remindCapability(reminders));
+    ctx.spawn("reminders", (signal) => reminders.run(signal));
+    return life;
+  }
+
   async stop(): Promise<void> {
+    this.#unregister?.();
+    this.#unregister = null;
     await this.#journal?.settle();
     await this.#goals?.flush();
+    await this.#life?.flush();
+    await this.#reminders?.flush();
     this.#journal = null;
     this.#goals = null;
+    this.#life = null;
+    this.#reminders = null;
   }
 }
 

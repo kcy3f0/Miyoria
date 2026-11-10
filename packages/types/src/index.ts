@@ -119,6 +119,20 @@ export {
   subjectKey,
 } from "./learning.js";
 export {
+  type DailyPosts,
+  DailyPostsKey,
+  isLifeActivityId,
+  LIFE_ACTIVITY_IDS,
+  type LifeActivityId,
+  type LifeEntry,
+  type LifeLog,
+  LifeLogKey,
+  REMIND_CAPABILITY,
+  type Reminder,
+  type ReminderDesk,
+  ReminderDeskKey,
+} from "./life.js";
+export {
   CHAT_DM,
   CHAT_START,
   type DirectorThoughtBody,
