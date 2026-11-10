@@ -102,7 +102,7 @@ export interface SandboxGateOptions {
   resultChars: number;
   /** Timeout of one call of an approved tool she wrote. */
   toolTimeoutMs: number;
-  /** Characters of a workspace file one read returns (default 3000). */
+  /** Characters of a workspace file one read returns (default 700). */
   readChars?: number;
   /** Output files kept in the workspace's `outputs/` (default 20). */
   keepOutputs?: number;
@@ -494,7 +494,7 @@ export class SandboxGate {
       sandbox: this.#o.sandbox,
       workspace,
       resultChars: this.#o.resultChars,
-      readChars: this.#o.readChars ?? 3000,
+      readChars: this.#o.readChars ?? 700,
       keepOutputs: this.#o.keepOutputs ?? 20,
     };
   }

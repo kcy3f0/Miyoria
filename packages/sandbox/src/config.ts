@@ -137,8 +137,11 @@ export const SandboxWorkspaceSchema = z.object({
   max_files: z.number().int().min(1).default(500),
   /** One file at most, in KiB. */
   max_file_kb: z.number().int().min(1).default(1024),
-  /** Characters of a file `workspace_read` returns at once (the rest is read with `offset`). */
-  read_chars: z.number().int().min(200).default(3000),
+  /**
+   * Characters of a file `workspace_read` returns at once (the rest is read with `offset`).
+   * Keep it below `[modules.agent] max_tool_result_chars` (1000), which cuts a tool result.
+   */
+  read_chars: z.number().int().min(200).default(700),
   /** Output files (`outputs/<run id>.txt`, full output of runs whose result was cut) kept. */
   keep_outputs: z.number().int().min(0).default(20),
 });

@@ -42,6 +42,43 @@ describe("SandboxModule capabilities", () => {
     expect(await registry.statusLines()).toEqual([]);
   });
 
+  it("offers_the_workspace_file_tools_even_without_docker_and_withdraws_them_on_stop", async () => {
+    const down = new FakeRunner();
+    down.dockerUp = false;
+    const { sup, registry, tools } = app();
+    await sup.register(new SandboxModule("p", { baseDir: base, runner: () => down }), {}, true);
+    await sup.startAll();
+    for (const name of [
+      "workspace.list",
+      "workspace.read",
+      "workspace.write",
+      "workspace.delete",
+    ]) {
+      expect(registry.get(name), name).toBeDefined();
+    }
+    expect(tools.get("workspace_write")).toBeDefined();
+    // Running a saved script and saving one (a review) need Docker.
+    expect(registry.get("workspace.run")).toBeUndefined();
+    expect(registry.get("workspace.save_script")).toBeUndefined();
+    const status = (await registry.statusLines()).join("\n");
+    expect(status).toContain("工作區:0/500 個檔案");
+    expect(status).toContain("網路:關閉");
+    await sup.stopAll();
+    expect(registry.get("workspace.write")).toBeUndefined();
+  });
+
+  it("keeps_the_workspace_tools_off_when_the_workspace_is_disabled", async () => {
+    const { sup, registry } = app();
+    await sup.register(
+      new SandboxModule("p", { baseDir: base, runner: () => new FakeRunner() }),
+      { workspace: { enabled: false } },
+      true,
+    );
+    await sup.startAll();
+    expect(registry.get("workspace.write")).toBeUndefined();
+    await sup.stopAll();
+  });
+
   it("registers_nothing_without_docker_or_when_disabled", async () => {
     const down = new FakeRunner();
     down.dockerUp = false;
