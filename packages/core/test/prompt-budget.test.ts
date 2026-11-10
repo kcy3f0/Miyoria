@@ -49,14 +49,18 @@ const VOICE: ContextKey = { platform: "discord", scope: "g", channel: "v", kind:
 const NOW = Date.UTC(2026, 10, 7, 6);
 const SPEAKS_IN = "Japanese";
 // The default has no cap (2026-11-08); this is the compact setting an owner can still choose.
+// 5000, not 4500: since v4 §4.2 a tool is offered with its whole description (`tool_chars`), not
+// its first sentence, about 410 tokens more over these 15 tools (1373 → 1784); the rest of the
+// prompt is as it was. A description cut to a sentence left her guessing what arguments mean.
 const budget = MainLineConfigSchema.parse({
-  prompt_tokens: 4500,
+  prompt_tokens: 5000,
   self_chars: 400,
   data_chars: 500,
   history_lines: 14,
   history_chars: 1000,
   entry_chars: 300,
 });
+const toolLimits = { description: budget.tool_chars, argument: budget.tool_arg_chars };
 const target = budget.prompt_tokens ?? 0;
 
 /** `n` characters of ordinary chat. */
@@ -158,7 +162,7 @@ async function mainPrompt() {
   const profile = await Profile.loadDir(PROFILE);
   const persona = profile.sections.map((s) => s.body.trim()).join("\n\n");
   const raw = capabilities();
-  const tools = [...raw.map(slimTool), COMMIT_SPEC, STEER_SPEC];
+  const tools = [...raw.map((t) => slimTool(t, toolLimits)), COMMIT_SPEC, STEER_SPEC];
   const data = [
     dataBlock("people", "語音頻道裡的人", chat(160)),
     dataBlock("pinned.people", "在場的人", chat(240)),
@@ -263,6 +267,7 @@ describe("the prompt budget (§10.4)", () => {
       writeFileSync(process.env.MIYORIA_PROMPT_REPORT, JSON.stringify(parts, null, 2));
     }
     expect(parts.total).toBeLessThanOrEqual(target);
+    // Whole descriptions, but without the request rule and `why` that every tool repeats.
     expect(parts.tools_slim).toBeLessThan(parts.tools_raw);
   });
 
