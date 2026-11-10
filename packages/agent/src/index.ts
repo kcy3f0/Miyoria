@@ -31,6 +31,7 @@ export {
   directReason,
   effectiveTalk,
   flooredTalk,
+  followsHerLine,
   type Gate,
   isQuestion,
   mentionsTopic,

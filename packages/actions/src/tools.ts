@@ -58,6 +58,8 @@ export class CapabilityTool implements Tool {
   readonly spec: ToolSpec;
   /** The gate checks the requester's permission itself (so `on_own` stays possible). */
   readonly permission = null;
+  /** A request on behalf of the person who asked: with several asking, the call says whom for. */
+  readonly actsFor = true;
 
   constructor(
     readonly registry: ActuatorRegistry,
