@@ -229,6 +229,13 @@ describe("party module", () => {
     expect(h.events.some((e) => v2Payload(e, ARBITER_IMPULSE_TOPIC) !== null)).toBe(false);
   });
 
+  it("shows the game in the voice channel and its chat, not in other channels", async () => {
+    h = await Harness.create();
+    await h.invoke("party.start", { game: "chain" });
+    expect(await h.section(VOICE_CHAT)).toContain("你在主持「成語接龍」");
+    expect(await h.section({ ...VOICE_CHAT, channel: "general" })).toBe("");
+  });
+
   it("refuses a second start that arrives at the same time as the first", async () => {
     h = await Harness.create();
     const [a, b] = await Promise.all([

@@ -4,7 +4,6 @@
 // nothing starts unless she calls `party_start`.
 
 import type { PromptContributor, PromptRequest, PromptSection } from "@miyoria/types";
-import { voiceOf } from "./actions.js";
 import type { Table } from "./table.js";
 
 export const PROMPT_KEY = "party";
@@ -18,17 +17,12 @@ export class PartyPrompt implements PromptContributor {
   constructor(private readonly table: Table) {}
 
   async contribute(request: PromptRequest): Promise<PromptSection[]> {
-    const voice = voiceOf(this.table, {
-      kind: "self",
-      requester: null,
-      context: request.context,
-      override: false,
-      actor: null,
-    });
-    if (voice === null) return [];
-    const session = this.table.session(voice);
+    // Only in the voice channel itself or its text chat: a turn in another channel of the server
+    // is not about the game.
+    const session = this.table.session(request.context);
     if (session === null) {
-      if (this.table.listeners(voice) < INVITE_LISTENERS) return [];
+      const voice = request.context;
+      if (voice.kind !== "voice" || this.table.listeners(voice) < INVITE_LISTENERS) return [];
       return [
         {
           key: PROMPT_KEY,
