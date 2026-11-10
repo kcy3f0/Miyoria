@@ -50,6 +50,7 @@ import {
 } from "./session.js";
 import type { ApiContext, ApiEnv, ApiState } from "./state.js";
 import { telemetryRoutes } from "./telemetry.js";
+import { v4Routes } from "./v4-routes.js";
 import { walletRoutes } from "./wallet.js";
 
 const log = getLogger("api.server");
@@ -176,6 +177,7 @@ export function routes(state: ApiState, options: AppOptions = {}): Route[] {
     ...llmCallRoutes(state),
     ...telemetryRoutes(state),
     ...liveRoutes(state),
+    ...v4Routes(state),
 
     ...metricsRoutes(state, { public: options.metricsPublic ?? false }),
   ];
