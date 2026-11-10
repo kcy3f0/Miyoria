@@ -181,6 +181,37 @@ export const VoiceConfigSchema = z.object({
    * posted to a text channel. Replies to people stay where they were asked.
    */
   keep_in_voice: z.boolean().default(true),
+  /**
+   * The debounces above count from the person's last sound (the utterance's end), not from when
+   * its transcript arrived. The voice node's silence and ASR were already part of that wait: on
+   * 2026-11-07 to 11-10 they took about a second, then 400 to 700 ms more were waited for the
+   * same question. `false`: count from the transcript, as before.
+   */
+  debounce_from_speech_end: z.boolean().default(true),
+  /**
+   * When someone calls her and part of the wait is still left, her turn starts at once: memory,
+   * the prompt and the model run while the wait ends; nothing of it is said or done before it
+   * does. Someone going on drops it (its work is counted in `agent_voice_speculation_total`) and
+   * the merged turn starts over.
+   */
+  speculate: z.boolean().default(true),
+  /** Dropped early starts per voice channel per minute; past that she waits as before. */
+  speculate_max_per_min: z.number().int().nonnegative().default(4),
+  /**
+   * What a voice turn's prompt needs that does not depend on the line she answers is kept per
+   * voice channel and read without waiting (`warm_contributors`, her skills, pinned memory, the
+   * profiles of the people here), then refreshed in the background for the next turn.
+   */
+  warm_context: z.boolean().default(true),
+  /** Contributors kept warm: their sections may be one turn old (at most `warm_max_age_ms`). */
+  warm_contributors: z.array(z.string()).default(["notebook", "just_now", "elsewhere"]),
+  /** A warm value older than this is not used. Default 120 000. */
+  warm_max_age_ms: z.number().int().positive().default(120_000),
+  /**
+   * What depends on the line she answers (memory retrieval, the other contributors) is waited
+   * for this long in voice, then left out. Default 400 (text waits `contributor_timeout_ms`).
+   */
+  live_context_ms: z.number().int().nonnegative().default(400),
 });
 export type VoiceConfig = z.output<typeof VoiceConfigSchema>;
 

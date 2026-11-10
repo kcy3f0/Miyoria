@@ -156,6 +156,13 @@ describe("config", () => {
         text_chat: true,
         text_aside: true,
         keep_in_voice: true,
+        debounce_from_speech_end: true,
+        speculate: true,
+        speculate_max_per_min: 4,
+        warm_context: true,
+        warm_contributors: ["notebook", "just_now", "elsewhere"],
+        warm_max_age_ms: 120_000,
+        live_context_ms: 400,
       },
       history: {
         backfill: 20,
