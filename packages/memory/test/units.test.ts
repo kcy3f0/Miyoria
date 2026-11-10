@@ -11,6 +11,7 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   ActivityTracker,
+  aboutOthers,
   type MemoryConfig,
   memoryConfig,
   parseExtraction,
@@ -218,6 +219,8 @@ describe("units", () => {
     expect(scopeForNew(cfg, guild, null, "fact", null)).toEqual(g);
     expect(scopeForNew(cfg, guild, null, "fact", p)).toEqual({ type: "person", person: p });
     expect(scopeForNew(cfg, guild, null, "self_note", null)).toEqual({ type: "global" });
+    // A note of hers about anyone else stays in the server.
+    expect(scopeForNew(cfg, guild, null, "self_note", null, true)).toEqual(g);
     for (const kind of ["episode", "fact", "self_note", "followup"] as const) {
       // Global facts and self notes from a DM stay in the DM.
       expect(scopeForNew(cfg, dm, owen, kind, p)).toEqual(dmScope);
@@ -230,6 +233,20 @@ describe("units", () => {
       type: "channel",
       context: guild,
     });
+  });
+
+  it("tells a note about her alone from one about someone else", () => {
+    expect(aboutOthers("我沒吃過拉麵", [], ["Amy"])).toBe(false);
+    expect(aboutOthers("我其他時候都在睡覺,彈吉他", [], [])).toBe(false);
+    expect(aboutOthers("我答應 Amy 下次一起去", [], ["Amy"])).toBe(true);
+    expect(aboutOthers("我答應 amy 下次一起去", [], ["Amy"])).toBe(true);
+    expect(aboutOthers("我懷疑木呱是機器人", [], ["木呱機器人v?", "木呱"])).toBe(true);
+    expect(aboutOthers("有人幫我做了一張卡片", [], [])).toBe(true);
+    expect(aboutOthers("我叫他早點睡", [], [])).toBe(true);
+    expect(aboutOthers("我自稱是鯨魚", [newId()], [])).toBe(true);
+    // A Latin name is a whole word: `Yu` is not in `you`.
+    expect(aboutOthers("I said thank you", [], ["Yu"])).toBe(false);
+    expect(aboutOthers("我跟 Yu 說晚安", [], ["Yu"])).toBe(true);
   });
 
   it("activity_tracker_triggers_on_idle_or_count", () => {

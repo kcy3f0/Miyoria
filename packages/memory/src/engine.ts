@@ -76,7 +76,7 @@ import {
   transcript,
 } from "./extract.js";
 import { RepeatDamper } from "./repeat.js";
-import { hasScope, isPrivate, scopeEquals, scopeForNew } from "./scope.js";
+import { aboutOthers, hasScope, isPrivate, mayRecall, scopeEquals, scopeForNew } from "./scope.js";
 import {
   effectiveConfidence,
   fadedConfidence,
@@ -749,8 +749,9 @@ export class MemoryEngine implements FollowupSource {
       signal,
       true,
     );
+    const handles = this.#handles?.list() ?? [];
     const wanted = (r: MemoryRecord) =>
-      hasScope(scopes, r.scope) &&
+      mayRecall(scopes, r, handles) &&
       kinds.includes(r.kind) &&
       r.superseded_by === null &&
       (options.includeDone || !r.done) &&
@@ -1081,11 +1082,18 @@ export class MemoryEngine implements FollowupSource {
     const evidence = this.config.evidence;
     report.skipped += x.skipped;
     const everyone = speakers.flatMap((s) => (s.person !== null ? [s.person] : []));
-    const scope = (kind: MemoryKind, global: PersonId | null) =>
-      scopeForNew(this.config, context, dmPartner, kind, global);
+    const scope = (kind: MemoryKind, global: PersonId | null, others = false) =>
+      scopeForNew(this.config, context, dmPartner, kind, global, others);
     const items: NewMemory[] = [];
     const base = { source_context: context, due: null };
     const names = nameWords(speakers.flatMap((s) => s.names));
+    // A note of hers that names or points at anyone else stays in the server it was written in.
+    const otherNames = [
+      ...speakers.flatMap((s) => s.names),
+      ...(this.#handles?.list() ?? []).map((h) => h.handle),
+    ];
+    const notJustHers = (content: string, subjects: readonly PersonId[]) =>
+      aboutOthers(content, subjects, otherNames);
     const others = lines.filter((l) => !l.self);
 
     // The lines backing a statement: among the ones the summarizer cited (else any line in
@@ -1162,7 +1170,7 @@ export class MemoryEngine implements FollowupSource {
       items.push({
         ...base,
         kind,
-        scope: scope(kind, global),
+        scope: scope(kind, global, kind === "self_note" && notJustHers(fact.statement, subjects)),
         subjects,
         content: fact.statement,
         importance: fact.importance,
@@ -1189,11 +1197,12 @@ export class MemoryEngine implements FollowupSource {
         report.refusedEvidence += 1;
         continue;
       }
+      const subjects = mentioned(note.note, speakers);
       items.push({
         ...base,
         kind: "self_note",
-        scope: scope("self_note", null),
-        subjects: mentioned(note.note, speakers),
+        scope: scope("self_note", null, notJustHers(note.note, subjects)),
+        subjects,
         content: note.note,
         importance: note.importance,
         confidence: 1,

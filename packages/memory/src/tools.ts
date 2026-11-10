@@ -13,7 +13,7 @@ import {
 import { formatLines, PROMPT_KINDS } from "./contributor.js";
 import type { MemoryEngine } from "./engine.js";
 import { LINE_REF_PREFIX, nameWords, supporting } from "./evidence.js";
-import { scopeForNew, visibleScopes } from "./scope.js";
+import { aboutOthers, scopeForNew, visibleScopes } from "./scope.js";
 
 export const REMEMBER = "remember";
 export const RECALL = "recall";
@@ -77,7 +77,23 @@ export class RememberTool implements Tool {
     const kind: MemoryKind = aboutSelf ? "self_note" : "fact";
     const subjects: PersonId[] = aboutSelf || person === null ? [] : [person];
     const globalPerson = global && !aboutSelf ? person : null;
-    const scope = scopeForNew(this.#engine.config, ctx.context, ctx.account, kind, globalPerson);
+    // Something about her that someone told her in a server: it stays there when it is about
+    // anyone else too (the teller included).
+    const others =
+      aboutSelf &&
+      aboutOthers(
+        content,
+        [],
+        [name, ...(this.#engine.handles?.list() ?? []).map((h) => h.handle)],
+      );
+    const scope = scopeForNew(
+      this.#engine.config,
+      ctx.context,
+      ctx.account,
+      kind,
+      globalPerson,
+      others,
+    );
     const now = toTimestamp(this.#clock.now());
 
     // She was told it, so the telling has to be in the log: a note nobody said is not kept.

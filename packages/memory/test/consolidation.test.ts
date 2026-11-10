@@ -125,6 +125,7 @@ describe.each(BACKENDS)("consolidation (%s store)", (backend) => {
     const promise = find(records, "答應 Amy");
     expect(promise.kind).toBe("self_note");
     expect(promise.subjects, "names in notes become subjects").toEqual([amy]);
+    expect(promise.scope, "a note about someone else stays in the server").toEqual(G1);
 
     const followup = find(records, "期末考");
     expect(followup.kind).toBe("followup");
@@ -154,6 +155,70 @@ describe.each(BACKENDS)("consolidation (%s store)", (backend) => {
     expect(third.reinforced).toBe(2);
     expect(third.refusedEvidence).toBe(4);
     expect(await e.all()).toHaveLength(records.length);
+  });
+
+  // 2026-11-09: a note written in the server about a card someone posted there was global, so in
+  // another person's DM she thanked that person for it.
+  it("server_notes_about_others_never_reach_a_dm", async () => {
+    const json = `{
+      "self_notes": [
+        {"note": "我答應 Amy 下次一起去吃拉麵", "importance": 0.8},
+        {"note": "有人幫我做了一張拉麵卡片", "importance": 0.8},
+        {"note": "我沒吃過拉麵", "importance": 0.8}
+      ]
+    }`;
+    const llm = new MockProvider("sum").reply(json);
+    const [e, ctx, owen, amy] = await guildSetup(backend, llm);
+    await e.log(ctx, acct("3"), "Amy", "我做了一張拉麵卡片給你", t0(-MINUTE), false);
+    await e.engine.consolidate(ctx, t0());
+    const records = await e.all();
+    expect(find(records, "答應 Amy").scope).toEqual(G1);
+    expect(find(records, "有人幫我").scope, "someone, unnamed, is still someone").toEqual(G1);
+    expect(find(records, "沒吃過拉麵").scope, "about her alone").toEqual({ type: "global" });
+
+    // Notes written before this, still global: one about Amy, one about Owen, one about someone.
+    const old = async (content: string, subjects: PersonId[]) =>
+      e.engine.store(
+        {
+          kind: "self_note",
+          scope: { type: "global" },
+          subjects,
+          content,
+          importance: 0.8,
+          confidence: 1,
+          source_context: ctx,
+          origin: "experienced",
+          source_events: [],
+          due: null,
+        },
+        t0(-HOUR),
+      );
+    await old("我懷疑 Amy 的拉麵是泡麵", [amy]);
+    await old("我說過 Owen 的拉麵最好吃", [owen]);
+    await old("我收下了大家送的拉麵貼圖", []);
+
+    const owenDm = dmCtx("d-owen");
+    const scopes = visibleScopes(owenDm, [acct("2")], [owen]);
+    const got = await e.engine.recall(scopes, [owen], "拉麵", PROMPT_KINDS, 20, t0());
+    const contents = got.map((r) => r.record.content);
+    expect(contents).toContain("我沒吃過拉麵");
+    expect(contents, "the DM partner is the subject").toContain("我說過 Owen 的拉麵最好吃");
+    for (const leak of ["答應 Amy", "有人幫我", "Amy 的拉麵", "大家送的"]) {
+      expect(
+        contents.some((c) => c.includes(leak)),
+        leak,
+      ).toBe(false);
+    }
+
+    // In the server they are all there.
+    const here = visibleScopes(ctx, [acct("2"), acct("3")], [owen, amy]);
+    const all = await e.engine.recall(here, [owen, amy], "拉麵", PROMPT_KINDS, 20, t0());
+    for (const note of ["答應 Amy", "有人幫我", "Amy 的拉麵", "大家送的"]) {
+      expect(
+        all.some((r) => r.record.content.includes(note)),
+        note,
+      ).toBe(true);
+    }
   });
 
   it("followups_are_due_and_can_be_marked_done", async () => {
