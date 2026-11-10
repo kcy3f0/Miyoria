@@ -545,7 +545,6 @@ function mePages(policyUrl: string | null): PanelPage[] {
         { id: "checkin", label: "簽到", path: "me checkin", style: "primary" },
         { id: "rice", label: "餵一碗", path: "me feed", args: { item: "rice" } },
         { id: "big-bowl", label: "餵鋼盆", path: "me feed", args: { item: "big_bowl" } },
-        { id: "dessert", label: "餵甜點", path: "me feed", args: { item: "dessert" } },
         {
           id: "screen",
           label: "留言上大螢幕",
