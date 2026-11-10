@@ -31,7 +31,7 @@ import {
 import type { ProfilesConfig } from "./config.js";
 import { readable } from "./contributor.js";
 import { type MemoryEngine, memoryFilter } from "./engine.js";
-import { disclose, PRIVATE_MARK, placeRef, type Viewer } from "./places.js";
+import { disclose, PRIVATE_MARK, placeRef, quotable, type Viewer, withheldTalk } from "./places.js";
 import { clockOf, type RecentDeps, viewerFor } from "./recent.js";
 import { parseWindow, type RecentLog, type Said } from "./recent-log.js";
 import { hasScope, visibleScopes } from "./scope.js";
@@ -133,7 +133,10 @@ export class Profiles implements PersonProfiles {
         !exclude.includes(r.id),
     );
     if (episode !== undefined) lastTopic = cut(episode.content, cfg.topic_chars);
-    else if (seen.said !== null) {
+    else if (seen.said !== null && seen.private && !quotable("private", viewer)) {
+      // Their DM, seen from a channel: that they talked, not about what.
+      lastTopic = withheldTalk(handle);
+    } else if (seen.said !== null) {
       lastTopic = `${safeName(handle)}說:「${cut(seen.said.text, cfg.topic_chars)}」`;
       topicPrivate = seen.private;
     }

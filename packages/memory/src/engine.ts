@@ -76,7 +76,15 @@ import {
   transcript,
 } from "./extract.js";
 import { RepeatDamper } from "./repeat.js";
-import { hasScope, isPrivate, scopeEquals, scopeForNew } from "./scope.js";
+import {
+  hasScope,
+  isPrivate,
+  mayRecall,
+  type NamedPerson,
+  noteAbout,
+  scopeEquals,
+  scopeForNew,
+} from "./scope.js";
 import {
   effectiveConfidence,
   fadedConfidence,
@@ -387,6 +395,11 @@ export class MemoryEngine implements FollowupSource {
   /** The handle directory, when there is one. */
   get handles(): HandleDirectory | null {
     return this.#handles;
+  }
+
+  /** Every handle and whose it is (for `noteAbout`). */
+  #knownNames(): NamedPerson[] {
+    return (this.#handles?.list() ?? []).map((h) => ({ name: h.handle, person: h.person }));
   }
 
   /**
@@ -749,8 +762,9 @@ export class MemoryEngine implements FollowupSource {
       signal,
       true,
     );
+    const known = this.#knownNames();
     const wanted = (r: MemoryRecord) =>
-      hasScope(scopes, r.scope) &&
+      mayRecall(scopes, r, known) &&
       kinds.includes(r.kind) &&
       r.superseded_by === null &&
       (options.includeDone || !r.done) &&
@@ -1086,6 +1100,23 @@ export class MemoryEngine implements FollowupSource {
     const items: NewMemory[] = [];
     const base = { source_context: context, due: null };
     const names = nameWords(speakers.flatMap((s) => s.names));
+    // A note of hers: global when about her alone, the person's when about one person alone,
+    // the server's when about anyone else (`noteAbout`). Its subjects are that one person.
+    const known: NamedPerson[] = [
+      ...speakers.flatMap((s) => s.names.map((name) => ({ name, person: s.person }))),
+      ...this.#knownNames(),
+    ];
+    const noteOf = (content: string, tagged: PersonId[]) => {
+      const where = scopeForNew(
+        this.config,
+        context,
+        dmPartner,
+        "self_note",
+        null,
+        noteAbout(content, tagged, known),
+      );
+      return { scope: where, subjects: where.type === "person" ? [where.person] : tagged };
+    };
     const others = lines.filter((l) => !l.self);
 
     // The lines backing a statement: among the ones the summarizer cited (else any line in
@@ -1162,8 +1193,9 @@ export class MemoryEngine implements FollowupSource {
       items.push({
         ...base,
         kind,
-        scope: scope(kind, global),
-        subjects,
+        ...(kind === "self_note"
+          ? noteOf(fact.statement, subjects)
+          : { scope: scope(kind, global), subjects }),
         content: fact.statement,
         importance: fact.importance,
         confidence: fact.confidence,
@@ -1192,8 +1224,7 @@ export class MemoryEngine implements FollowupSource {
       items.push({
         ...base,
         kind: "self_note",
-        scope: scope("self_note", null),
-        subjects: mentioned(note.note, speakers),
+        ...noteOf(note.note, mentioned(note.note, speakers)),
         content: note.note,
         importance: note.importance,
         confidence: 1,

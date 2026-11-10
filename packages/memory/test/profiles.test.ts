@@ -145,8 +145,14 @@ describe("person profiles", () => {
     t.log.say(S, "還不錯", at(11, 22), dm("dm-s"));
     const talking = { context: guild("lobby"), present: [pS], talking_with: [pS], now: at(12, 12) };
     const text = await t.profiles.render(talking, 2000);
-    expect(text).toContain("上次聊:Sora說:「還不錯」(私訊裡的事,只給你知道,不要在這裡引用或透露)");
-    expect(text).toContain("  · 你問過 Sora「上次面試結果怎麼樣?」");
+    // In a channel: that they talked and that she asked, never the words.
+    expect(text).toContain("上次聊:跟 Sora 私訊聊過(內容不在這裡說)");
+    expect(text).toContain("  · 你問過 Sora 一件事(內容不在這裡說)");
+    expect(text).not.toContain("面試");
+    expect(text).not.toContain("還不錯");
+    // In the DM itself, all of it.
+    const inDm = await t.profiles.render({ ...talking, context: dm("dm-s") }, 2000);
+    expect(inDm).toContain("  · 你問過 Sora「上次面試結果怎麼樣?」");
     // Present, but she is talking with someone else: nothing from their DM.
     const other = await t.profiles.render({ ...talking, talking_with: [pT] }, 2000);
     expect(other).not.toContain("面試");
