@@ -152,7 +152,10 @@ describe("a goal about a person is a wish", () => {
     const wish = book.of(`goal:${goal.id}`) as Wish;
     book.close(wish.key, "stop");
     g.wished(book.of(`goal:${goal.id}`) as Wish);
-    expect(g.goal(goal.id)).toMatchObject({ status: "dropped", close_reason: "對方說問過了,不要再問" });
+    expect(g.goal(goal.id)).toMatchObject({
+      status: "dropped",
+      close_reason: "對方說問過了,不要再問",
+    });
   });
 });
 
