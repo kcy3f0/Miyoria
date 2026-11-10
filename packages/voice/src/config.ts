@@ -151,6 +151,12 @@ export const VoiceConfigSchema = z.object({
    */
   golive_source: z.string().default("rtmp://127.0.0.1:1935/live/miyoria"),
   /**
+   * The node's ffmpeg is the server OBS pushes to (`-listen 1` for RTMP, `mode=listener` for SRT
+   * without `mode=`). False: another server (MediaMTX, `workers/mediamtx/`) takes OBS's stream
+   * and ffmpeg pulls the source from it. Applies to every Go Live source. Default true.
+   */
+  golive_listen: z.boolean().default(true),
+  /**
    * 墊話 (v4 §7.5): when she was addressed and nothing of hers is heard `filler_after_ms` after her
    * turn started, one short sound of hers plays so the silence has an owner. Never over her own
    * speech, for a turn she passes on, or once her first sentence is written; never the same twice

@@ -263,7 +263,7 @@ export class VoiceModule implements Module {
     const actuators = actuatorsFor(ctx);
     this.#capabilities = voiceCapabilities(
       link,
-      () => config.golive_source,
+      () => ({ source: config.golive_source, listen: config.golive_listen }),
       () => ctx.services.get(WorldStateKey),
       () => ctx.services.get(VoiceFloorKey),
     ).map((c) => actuators.register(c));

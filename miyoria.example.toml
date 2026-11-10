@@ -514,6 +514,10 @@ barge_in = "selective"     # 有人插話時:selective(只有這回合要回的�
 # 預設 = OBS 伺服器 rtmp://127.0.0.1:1935/live、金鑰 miyoria。`/voice golive start` 會用它
 # (她還不在語音裡時,會先進你所在的語音頻道)。
 # golive_source = "rtmp://127.0.0.1:1935/live/miyoria"
+# golive_listen = true         # true = voice node 的 ffmpeg 自己當 RTMP 伺服器等 OBS 推流;
+#                              # false = OBS 推到 MediaMTX(workers/mediamtx/,佔 :1935),ffmpeg 去那裡拉。
+#                              # 網站要看直播畫面就用 false,搭配 [modules.activity] obs_hub = true;
+#                              # OBS 的設定不用改,一樣是 rtmp://127.0.0.1:1935/live、金鑰 miyoria
 # 墊話(v4 §7.5):有人叫她、而她還沒有任何聲音時,先放一小段預先合成好的她自己的聲音(「嗯?」「欸~」),
 # 不然對方會聽到一段沉默。只在她被叫到時;她決定不說話的回合、或第一句寫好時就不放。
 # 不是一句台詞(不進她的對話紀錄,也不算 Floor 的額度);連兩次不會是同一個。預設開著,不要就 filler = false
@@ -557,8 +561,11 @@ barge_in = "selective"     # 有人插話時:selective(只有這回合要回的�
 [modules.activity]
 # golive_timeout_ms = 60000      # Go Live 多久沒開始就算失敗
 # obs = true                     # 連著直播機時 OBS 是開台的第二步(過閘門);false = 只有 Go Live
-# obs_start_delay_ms = 3000      # Go Live 開了之後等多久才按 OBS 開始直播
+# obs_start_delay_ms = 3000      # Go Live 開了之後等多久才按 OBS 開始直播(obs_hub:OBS 開播後等多久才開 Go Live)
 # obs_attempts = 3
+# obs_hub = false                # true = OBS 推到 MediaMTX(workers/mediamtx/),網站自己看得到,跟 Go Live 脫鉤:
+#                                # 開台先開 OBS 再開 Go Live;關台、離開語音、Go Live 斷掉都不會停 OBS。
+#                                # 要搭配 [modules.voice] golive_listen = false;OBS 一樣推 rtmp://127.0.0.1:1935/live、金鑰 miyoria
 # voice_timeout_ms = 20000       # 進 / 離開語音等確認的時間
 # speech_wait_ms = 30000         # 離開語音前最多等她把那一輪話講完多久
 # game_timeout_ms = 300000       # 遊戲最多開多久(含啟動器與載入世界)
