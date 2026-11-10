@@ -220,13 +220,19 @@ function parseTag(raw: string): Segment | null {
   const tag = asciiLower(raw);
   const emotion = /^span\s+emo\s*=\s*["']?([a-z0-9_-]+)["']?$/.exec(tag);
   if (emotion !== null) return { type: "emotion", emotion: emotion[1] as string };
-  if (SPAN_TAG.test(tag)) return { type: "markup" };
+  if (HTML_TAG.test(tag)) return { type: "markup" };
   if (TOOL_TAG.test(tag)) return { type: "tool", name: tag };
   return null;
 }
 
-/** `<span>` and `</span>`, exactly: `a < b 和 c > d` is not a tag. */
-const SPAN_TAG = /^\/?span(?:\s[a-z0-9_ ="'-]*)?$/;
+/**
+ * HTML she writes as if the chat rendered it (2026-11-10/11: `<p>`, `</p>`, `<section>`,
+ * `<h>我沒有亂…`): the tag is dropped, the text stays. Only these names, with their attributes:
+ * `a < b 和 c > d`, `vector<int>`, `a<i>b`, `<Sakana2486>` and Discord's `<@id>`, `<#id>`,
+ * `<:name:id>`, `<t:…>` are not tags.
+ */
+const HTML_TAG =
+  /^\/?(?:h[1-6]?|p|section|div|span|br|hr|em|strong|small|ul|ol|li|article|header|footer|blockquote|center|font|mark)(?:\s[a-z0-9_ ="'-]*)?\s*\/?$/;
 /** Tool names are snake_case; an ordinary word in brackets stays text. */
 const TOOL_TAG = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
 /** What a tag above can look like before its `>` arrives. */

@@ -227,6 +227,44 @@ describe("markup the model imitates", () => {
       expect(Expression.parse(text).text).toBe(text);
     }
   });
+
+  // 2026-11-10/11 in the channel: 「<h>我沒有亂…」, a line of `<section>`, `<p>…` and `</p>`.
+  it("drops stray HTML tags and keeps their text", () => {
+    const cases: [string, string][] = [
+      ["<h>我沒有亂，只是同時有四件事在跑。", "我沒有亂，只是同時有四件事在跑。"],
+      ["<section>", ""],
+      ["<p>滑 X 吧，至少會看到有人在吵架。</p>", "滑 X 吧，至少會看到有人在吵架。"],
+      ["</p>", ""],
+      ['<div class="x">好<br/>啦</div>', "好啦"],
+      ["<H2>標題</H2><strong>重點</strong>", "標題重點"],
+      ["<emo:smug><em>哼</em><pause 200/>才不要", "哼才不要"],
+    ];
+    for (const [input, out] of cases) expect(Expression.parse(input).text, input).toBe(out);
+    expect(Expression.parse("<emo:smug><p>哼</p>").emotions).toEqual(["smug"]);
+  });
+
+  it("also when a tag arrives in pieces", () => {
+    expect(parseChunks(["<h", ">我沒有亂", "<", "/h", ">"])).toEqual([text("我沒有亂")]);
+    expect(parseChunks(["<sec", "tion", ">"])).toEqual([]);
+  });
+
+  it("leaves Discord markup, code and names in brackets alone", () => {
+    for (const text of [
+      "<@123456789> 你好",
+      "<#987654321>",
+      "<:miyo_smug:112233>",
+      "<a:dance:445566>",
+      "<t:1794350884:R>",
+      "<https://example.com>",
+      "#include <bits/stdc++.h>",
+      "vector<int> v; pair<int, int> p;",
+      "for (int i = 0; i<n; i++) if (a<b && b>c) x = a<i>b;",
+      "<Sakana2486> 說的",
+      "<unistd.h>",
+    ]) {
+      expect(Expression.parse(text).text, text).toBe(text);
+    }
+  });
 });
 
 // 2026-11-09: `thinking` is one of her emotion names and the model used it as a thinking block:

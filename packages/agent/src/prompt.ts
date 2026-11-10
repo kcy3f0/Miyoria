@@ -35,6 +35,7 @@ import {
   sameAccount,
   timestampMs,
 } from "@miyoria/types";
+import { toTraditional } from "./script.js";
 import type { HistoryEntry } from "./session.js";
 import { charCount, utf8Len } from "./util.js";
 
@@ -757,7 +758,10 @@ function asciiEqualIgnoreCase(a: string, b: string): boolean {
   return true;
 }
 
-/** Removes a leading `"{her name}:"` the model may copy from the history format. */
+/**
+ * Removes a leading `"{her name}:"` the model may copy from the history format, and writes what
+ * she wrote in Simplified Chinese in Traditional (`script.ts`).
+ */
 export function cleanReply(text: string, names: readonly string[]): string {
   let t = text.trim();
   for (const name of names) {
@@ -770,7 +774,7 @@ export function cleanReply(text: string, names: readonly string[]): string {
       break;
     }
   }
-  return t.trim();
+  return toTraditional(t.trim());
 }
 
 const CUT_SETS: readonly (readonly string[])[] = [

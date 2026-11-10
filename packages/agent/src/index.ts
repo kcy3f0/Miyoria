@@ -218,6 +218,7 @@ export {
   VOICE_SITUATION,
 } from "./prompt.js";
 export { BARGE_IN_TOPIC, SUBTITLE_TOPIC } from "./runtime.js";
+export { toTraditional } from "./script.js";
 export {
   activityBlock,
   feelingCauseBody,
