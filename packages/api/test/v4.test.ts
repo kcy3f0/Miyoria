@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ActuatorRegistryKey } from "@miyoria/actions";
-import { EconomyKey } from "@miyoria/economy";
+import { Economy2Key } from "@miyoria/economy";
 import { Supervisor, SupervisorKey } from "@miyoria/kernel";
 import { LIFE_ACTIVITIES } from "@miyoria/mind";
 import { PersistentWorkspace, SandboxKey } from "@miyoria/sandbox";
@@ -226,7 +226,7 @@ describe("economy 2.0", () => {
       },
       room: async () => [{ id: "sofa", label: "沙發", price: 500, funded: 120 }],
     };
-    h.sup.services.provide("economy", EconomyKey, { v2 } as never);
+    h.sup.services.provide("economy", Economy2Key, v2 as never);
     const health = await h.get("/api/economy2/health");
     expect(health.status).toBe(200);
     expect(health.body).toMatchObject({ currency: "魚幣", available: false, days: [] });
@@ -241,7 +241,7 @@ describe("economy 2.0", () => {
 
   it("is a 503 when the economy has no 2.0", async () => {
     const h = await harness();
-    h.sup.services.provide("economy", EconomyKey, {} as never);
+    h.sup.services.provide("economy", Economy2Key, {} as never);
     expect((await h.get("/api/economy2/health")).status).toBe(503);
   });
 });
