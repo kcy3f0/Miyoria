@@ -30,6 +30,7 @@ import {
   ReflectModule,
   repairEphemeralHandles,
 } from "@miyoria/learning";
+import { LiveModule } from "@miyoria/live";
 import {
   type LlmConfig,
   LlmConfigSchema,
@@ -177,6 +178,7 @@ async function coreModules({
     new EconomyModule(profileId),
     new WebModule(),
     new SandboxModule(profileId, { baseDir }),
+    new LiveModule({ names: profile.names() }),
   ];
 }
 

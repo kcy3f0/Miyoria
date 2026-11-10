@@ -622,6 +622,21 @@ export {
   newImpulse,
 } from "./impulse.js";
 export {
+  type LiveActivity,
+  type LiveActivityKind,
+  type LiveEmotion,
+  type LiveEvent,
+  type LiveFeed,
+  LiveFeedKey,
+  type LiveLine,
+  type LivePatOutcome,
+  type LivePats,
+  type LivePatter,
+  type LivePlace,
+  type LivePresence,
+  type LiveSnapshot,
+} from "./live.js";
+export {
   holdsBack,
   INPUT_FLAGS,
   INPUT_SOURCES,
