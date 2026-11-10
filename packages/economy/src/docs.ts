@@ -14,7 +14,7 @@ import {
   type EconomyDocStore,
   EconomyDocsKey,
 } from "@miyoria/store";
-import { type AccountRef, type JsonObject, type ProfileId, sameAccount } from "@miyoria/types";
+import { type ProfileId, sameAccount } from "@miyoria/types";
 
 export { type DocFilter, type DocUpdate, type EconomyDoc, type EconomyDocStore, EconomyDocsKey };
 

@@ -96,7 +96,7 @@ export class PredictionDesk {
       const n = Number(which) - 1;
       if (Number.isInteger(n) && n >= 0 && n < options.length) return n;
     } else {
-      const at = options.findIndex((o) => o === which.trim());
+      const at = options.indexOf(which.trim());
       if (at >= 0) return at;
     }
     throw new EconomyError(400, "沒有這個選項");

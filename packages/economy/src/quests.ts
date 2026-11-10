@@ -22,7 +22,6 @@ export const QUESTS: readonly { id: QuestId; label: string }[] = [
   { id: "listen_song", label: "聽完一首歌" },
 ];
 
-const DAY_MS = 86_400_000;
 const MAX_ROWS = 2_000;
 const MAX_TOPIC_CHARS = 40;
 
