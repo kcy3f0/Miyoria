@@ -32,6 +32,11 @@ export const ActivityConfigSchema = z.object({
   restore_poll_ms: z.number().int().positive().default(5_000),
   /** How long an executor may take to accept a steer (a change of a running task's goal). */
   steer_timeout_ms: z.number().int().positive().default(10_000),
+  /**
+   * Browsing (v4 §8.1 逛網路) shows while she searches or reads the web on her own, and ends
+   * this long after her last search or page.
+   */
+  browse_idle_ms: z.number().int().positive().default(300_000),
   /** Ended tasks remembered (`tasks()`, `task(id)`). */
   task_history: z.number().int().positive().default(50),
 });

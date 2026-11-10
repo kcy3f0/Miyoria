@@ -302,8 +302,9 @@ describe("activity", () => {
     });
   });
 
-  it("browse stays off; chatting needs no driver", async () => {
+  it("browse needs the web; chatting needs no driver", async () => {
     const w = new FakeWorld();
+    w.missing.add("web.search");
     const browse = await w.service.request(
       w.transition({ type: "start", activity: "browse", target: "threads", goal: null }),
     );

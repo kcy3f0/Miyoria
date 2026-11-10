@@ -42,6 +42,7 @@ import {
   type HerActivity,
   type HerBroadcast,
   type HerPresence,
+  isJsonObject,
   type JsonObject,
   type JsonValue,
   NOTICE_TOPIC,
@@ -71,7 +72,7 @@ import {
   voiceLane,
 } from "@miyoria/types";
 import { type ActivityConfig, defaultActivityConfig } from "./config.js";
-import { Facts, startedSession } from "./facts.js";
+import { BROWSE_CAPABILITIES, Facts, GATE_DECISION_TOPIC, startedSession } from "./facts.js";
 import { type ActivityPort, failureCode, type PrimaryStep, StepError } from "./port.js";
 import { SteerDesk } from "./steer.js";
 import { answerText, doneText, endedText, failedText, what } from "./texts.js";
@@ -225,6 +226,9 @@ export class ActivityService implements ActivityManager, ActivityRouter, TaskSte
   #restoring: Restoring | null = null;
   #failureTimer: ReturnType<typeof setTimeout> | null = null;
   #chatting = false;
+  /** Browsing the web (v4 §8.1), and what. */
+  #browse: { target: string | null } | null = null;
+  #browseTimer: ReturnType<typeof setTimeout> | null = null;
   #override: SceneOverride | null = null;
   #overrideTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -364,8 +368,15 @@ export class ActivityService implements ActivityManager, ActivityRouter, TaskSte
   #refusal(request: ActivityRequest): { code: TaskFailureCode; detail: string } | null {
     if (request.type === "start") {
       switch (request.activity) {
+        // v4 §8.1: browsing is her web reading (`web.search` / `web.read`), not the old Threads
+        // extension; it needs the web module and does not take over a game.
         case "browse":
-          return { code: "precondition", detail: "瀏覽活動(Threads)目前關閉中" };
+          if (!this.#port.has("web.search")) {
+            return { code: "precondition", detail: "網路搜尋沒有啟用,沒辦法逛網路" };
+          }
+          return this.facts.session === null
+            ? null
+            : { code: "precondition", detail: "正在玩遊戲,先停掉遊戲再去逛網路" };
         case "singing":
           return { code: "invalid", detail: "唱歌要用點歌,不是在這裡開始" };
         case "game":
@@ -477,6 +488,9 @@ export class ActivityService implements ActivityManager, ActivityRouter, TaskSte
           return already(null);
         }
         if (request.activity === "chatting" && this.#chatting) return already(null);
+        if (request.activity === "browse" && this.#browse?.target === request.target) {
+          return already(null);
+        }
         return fresh();
       }
       case "stop": {
@@ -501,11 +515,60 @@ export class ActivityService implements ActivityManager, ActivityRouter, TaskSte
     }
   }
 
-  /** The activity running per the facts (game session, chatting). */
+  /** The activity running per the facts (game session, browsing, chatting). */
   #runningActivity(): Exclude<ActivityType, "idle"> | null {
     if (this.facts.session) return "game";
+    if (this.#browse) return "browse";
     if (this.#chatting) return "chatting";
     return null;
+  }
+
+  // ---- browsing ---------------------------------------------------------------------------
+
+  /**
+   * She is browsing `target` (a search, a site) as of now: it shows until `browse_idle_ms` after
+   * her last search or page, or until she stops it or starts something else.
+   */
+  #browsing(target: string | null): void {
+    this.#browse = { target: target ?? this.#browse?.target ?? null };
+    if (this.#browseTimer !== null) clearTimeout(this.#browseTimer);
+    this.#browseTimer = setTimeout(() => {
+      this.#browseTimer = null;
+      this.#endBrowse();
+    }, this.#config.browse_idle_ms);
+    this.#browseTimer.unref?.();
+    this.#changed();
+  }
+
+  #endBrowse(): void {
+    if (this.#browseTimer !== null) clearTimeout(this.#browseTimer);
+    this.#browseTimer = null;
+    if (this.#browse === null) return;
+    this.#browse = null;
+    this.#changed();
+  }
+
+  /** A `gate.decision`: her own web call the gate allowed means she is browsing. */
+  #decision(payload: JsonValue): void {
+    if (!isJsonObject(payload) || payload.allowed !== true) return;
+    const capability = typeof payload.capability === "string" ? payload.capability : "";
+    if (!BROWSE_CAPABILITIES.includes(capability)) return;
+    // What she looks up for someone, or in the middle of a game or a song, is not her browsing.
+    const principal = isJsonObject(payload.principal) ? payload.principal : null;
+    if (principal?.kind !== "self") return;
+    if (this.facts.session !== null || this.facts.song !== null) return;
+    const args = isJsonObject(payload.args) ? payload.args : {};
+    let target: string | null = null;
+    if (typeof args.query === "string" && args.query.trim() !== "") {
+      target = [...args.query.trim()].slice(0, 60).join("");
+    } else if (typeof args.url === "string") {
+      try {
+        target = new URL(args.url).hostname;
+      } catch {
+        target = null;
+      }
+    }
+    this.#browsing(target);
   }
 
   #broadcasting(): boolean {
@@ -1071,9 +1134,15 @@ export class ActivityService implements ActivityManager, ActivityRouter, TaskSte
     signal: AbortSignal,
   ): Promise<string> {
     if (request.activity === "chatting") {
+      this.#endBrowse();
       this.#chatting = true;
       return "";
     }
+    if (request.activity === "browse") {
+      this.#browsing(request.target);
+      return "";
+    }
+    this.#endBrowse();
     const target = request.target ?? "";
     if (this.facts.session?.game === target) {
       entry.name = this.facts.session.name;
@@ -1139,6 +1208,10 @@ export class ActivityService implements ActivityManager, ActivityRouter, TaskSte
       this.#chatting = false;
       if (request.activity === "chatting") return "";
     }
+    if (request.activity === "browse" || (request.activity === null && this.#browse !== null)) {
+      this.#endBrowse();
+      if (request.activity === "browse") return "";
+    }
     const session = this.facts.session;
     if (session === null) return "本來就沒有在玩";
     entry.name = session.name;
@@ -1192,6 +1265,10 @@ export class ActivityService implements ActivityManager, ActivityRouter, TaskSte
         if (event !== null) this.#steering.observeTask(task.owner, event);
         return;
       }
+    }
+    if (env.event.type === "custom" && env.event.data.topic === GATE_DECISION_TOPIC) {
+      this.#decision(env.event.data.payload);
+      return;
     }
     if (!this.facts.apply(env)) return;
     const session = this.facts.session;
@@ -1611,6 +1688,18 @@ export class ActivityService implements ActivityManager, ActivityRouter, TaskSte
       const since = this.#stable("activity", `restoring:${target}`);
       return { type: "game", target, phase: "starting", task: null, failure: null, since };
     }
+    const browse = this.#browse;
+    if (browse !== null) {
+      const since = this.#stable("activity", `browse:${browse.target ?? ""}`);
+      return {
+        type: "browse",
+        target: browse.target,
+        phase: "running",
+        task: null,
+        failure: null,
+        since,
+      };
+    }
     if (this.#chatting) {
       const since = this.#stable("activity", "chatting");
       return { type: "chatting", target: null, phase: "running", task: null, failure: null, since };
@@ -1704,8 +1793,10 @@ export class ActivityService implements ActivityManager, ActivityRouter, TaskSte
     for (const e of [...this.#pending]) e.controller.abort(new StepError("cancelled", "正在關閉"));
     if (this.#failureTimer !== null) clearTimeout(this.#failureTimer);
     if (this.#overrideTimer !== null) clearTimeout(this.#overrideTimer);
+    if (this.#browseTimer !== null) clearTimeout(this.#browseTimer);
     this.#failureTimer = null;
     this.#overrideTimer = null;
+    this.#browseTimer = null;
   }
 }
 
