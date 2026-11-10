@@ -17,6 +17,7 @@ import { GoalBook, ReminderBook, ReminderError } from "../src/index.js";
 
 const T0 = Date.parse("2026-11-10T03:47:00.000Z");
 const MIN = 60_000;
+const DAY = 24 * 60 * MIN;
 const CHAT: ContextKey = { platform: "discord", scope: "g1", channel: "c1", kind: "channel" };
 const clock = { now: () => T0 };
 
@@ -103,6 +104,7 @@ describe("a goal about a person is a wish", () => {
       what: "S 說話時接話,也順便問期末報告",
       why: "關心",
       trigger: { kind: "whenever" },
+      expires: toTimestamp(T0 + DAY),
       person: "S",
       context: CHAT,
       source: "plan",
@@ -117,6 +119,7 @@ describe("a goal about a person is a wish", () => {
       what: "問 S 期末報告的結果",
       why: "關心",
       trigger: { kind: "whenever" },
+      expires: toTimestamp(T0 + DAY),
       person: "S",
       context: CHAT,
       source: "plan",
@@ -125,6 +128,7 @@ describe("a goal about a person is a wish", () => {
       what: "S 上線時陪他聊天",
       why: "想念",
       trigger: { kind: "whenever" },
+      expires: toTimestamp(T0 + DAY),
       steps: ["陪他聊遊戲", "問期末報告的結果"],
       person: "S",
       context: CHAT,
@@ -145,6 +149,7 @@ describe("a goal about a person is a wish", () => {
       what: "問 S 期末報告的結果",
       why: "關心",
       trigger: { kind: "whenever" },
+      expires: toTimestamp(T0 + DAY),
       person: "S",
       context: CHAT,
       source: "plan",
