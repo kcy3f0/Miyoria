@@ -10,11 +10,12 @@
 // Anything learned in a DM is scoped to that DM, so it never surfaces elsewhere (unless
 // `allow_global_from_dm` is set for person-wide facts).
 //
-// Her own notes are the one kind that may go `global`, and only when they are about her alone: a
-// note written in a server that names or refers to someone else (「我懷疑木呱是機器人」, a card
-// someone made her) is the server's, like the rest of what was said there. 2026-11-09: a global
-// note about a card someone posted in the server reached another person's DM, where she thanked
-// that person for it.
+// Her own notes are the one kind that may go `global`, and only when they are about her alone. A
+// note written in a server about one person and nobody else goes to that `person`: it comes back
+// wherever they are, their DM included, and nowhere they are not. Any other note that names or
+// refers to someone (「我懷疑木呱是機器人」, a card someone made her) is the server's, like the rest
+// of what was said there. 2026-11-09: a global note about a card someone posted in the server
+// reached another person's DM, where she thanked that person for it.
 
 import type { MemoryKind, MemoryRecord, MemoryScope } from "@miyoria/store";
 import {
@@ -22,7 +23,6 @@ import {
   type ContextKey,
   contextKeyEquals,
   contextKeyString,
-  type HandleEntry,
   type PersonId,
   type PromptRequest,
   sameAccount,
@@ -56,29 +56,48 @@ function pushUnique(scopes: MemoryScope[], scope: MemoryScope): void {
 
 /**
  * Whether `record` may be recalled where `scopes` are visible: its scope is among them, and, in a
- * private place, a `global` note learned in a server is not about anyone but the people there.
- * Notes written before server notes about others were scoped to the server are still `global`;
- * this keeps them out of DMs until they are moved (packages/memory/scripts/rescope-self-notes.ts).
+ * private place, a `global` note learned in a server is about her alone or about one of the people
+ * there alone. Notes written before server notes about others were scoped by `noteAbout` are still
+ * `global`; this reads them as if they were moved (packages/memory/scripts/rescope-self-notes.ts).
  */
 export function mayRecall(
   scopes: readonly MemoryScope[],
   record: MemoryRecord,
-  handles: readonly Pick<HandleEntry, "handle" | "person">[] = [],
+  names: readonly NamedPerson[] = [],
 ): boolean {
   if (!hasScope(scopes, record.scope)) return false;
   if (record.scope.type !== "global" || !privateView(scopes)) return true;
   const from = record.source_context;
   if (from === null || isPrivate(from)) return true;
-  const here = new Set<PersonId>();
-  for (const s of scopes) if (s.type === "person") here.add(s.person);
-  if (record.subjects.some((p) => !here.has(p))) return false;
-  if (record.subjects.length > 0) return true;
-  const others = handles.filter((h) => h.person === null || !here.has(h.person));
-  return !aboutOthers(
-    record.content,
-    [],
-    others.map((h) => h.handle),
+  const about = noteAbout(record.content, record.subjects, names);
+  if (about.type === "self") return true;
+  return (
+    about.type === "person" && scopes.some((s) => s.type === "person" && s.person === about.person)
   );
+}
+
+/**
+ * Where an old `global` note of hers belongs now, by the rule new notes follow (`noteAbout`,
+ * `scopeForNew`), and its subjects: `null` when it stays `global` (about her alone, or not learned
+ * in a server, so there is nowhere to move it).
+ */
+export function rescoped(
+  config: MemoryConfig,
+  note: Pick<MemoryRecord, "content" | "subjects" | "source_context">,
+  names: readonly NamedPerson[],
+): { scope: MemoryScope; subjects: PersonId[] } | null {
+  const from = note.source_context;
+  if (from === null || isPrivate(from)) return null;
+  const scope = scopeForNew(
+    config,
+    from,
+    null,
+    "self_note",
+    null,
+    noteAbout(note.content, note.subjects, names),
+  );
+  if (scope.type === "global") return null;
+  return { scope, subjects: scope.type === "person" ? [scope.person] : [...note.subjects] };
 }
 
 /** Scopes of a private place: a DM scope, or the channel scope of a DM or guild-less context. */
@@ -86,26 +105,50 @@ function privateView(scopes: readonly MemoryScope[]): boolean {
   return scopes.some((s) => s.type === "dm" || (s.type === "channel" && isPrivate(s.context)));
 }
 
-// Words that point at someone other than her (「對方」「有人」「大家」, a bare 他 / 她 / 你). 其他
-// and 吉他 hold a 他 that is nobody; 迷你 a 你.
-const OTHERS =
-  /對方|有人|大家|別人|别人|某人|某位|有位|那位|這位|这位|其他人|所有人|每個人|每个人|有些人|很多人|一群人|群友|網友|网友|朋友|觀眾|观众|聽眾|听众|粉絲|粉丝|(?<![其吉])他|她|(?<!迷)你|妳/;
+/** A name she knows someone by, and whose it is (`null`: not linked to a person). */
+export interface NamedPerson {
+  name: string;
+  person: PersonId | null;
+}
+
+/** Who a note of hers is about besides her: nobody, exactly one person, or anyone else. */
+export type NoteAbout =
+  | { type: "self" }
+  | { type: "person"; person: PersonId }
+  | { type: "others" };
+
+// Words for people beyond one: 「大家」「有人」「別人」…. 朋友 counts: 「我朋友」 is someone else.
+const THIRD_PARTIES =
+  /有人|大家|別人|别人|某人|某位|有位|那位|這位|这位|其他人|所有人|每個人|每个人|有些人|很多人|一群人|他們|她們|他们|她们|你們|妳們|你们|群友|網友|网友|朋友|觀眾|观众|聽眾|听众|粉絲|粉丝/;
+// A bare pronoun (或「對方」): someone, unnamed. 其他 and 吉他 hold a 他 that is nobody; 迷你 a 你.
+const PRONOUN = /對方|对方|(?<![其吉])他|她|(?<!迷)你|妳/;
 
 /** `text` refers to someone other than her by a pronoun or a word for people. */
 export function refersToOthers(text: string): boolean {
-  return OTHERS.test(text);
+  return THIRD_PARTIES.test(text) || PRONOUN.test(text);
 }
 
 /**
- * A note of hers is about someone else too: it is about people (`subjects`), names one of
- * `names` (`namesIn`) or refers to someone (`refersToOthers`).
+ * Who a note of hers is about besides her: the people it is tagged with (`subjects`) and the ones
+ * whose names it holds (`namesIn`). One person, and no word for anyone beyond them, is that person
+ * (a 他 / 你 is them); nobody tagged or named and no word for anyone is her alone. Everything else,
+ * a name not linked to a person included, is `others`.
  */
-export function aboutOthers(
+export function noteAbout(
   content: string,
   subjects: readonly PersonId[],
-  names: Iterable<string>,
-): boolean {
-  return subjects.length > 0 || refersToOthers(content) || namesIn(content, names);
+  names: readonly NamedPerson[],
+): NoteAbout {
+  const people = new Set<PersonId>(subjects);
+  for (const n of names) {
+    if (!namesIn(content, [n.name])) continue;
+    if (n.person === null) return { type: "others" };
+    people.add(n.person);
+  }
+  const [only, ...more] = people;
+  if (only === undefined) return refersToOthers(content) ? { type: "others" } : { type: "self" };
+  if (more.length > 0 || THIRD_PARTIES.test(content)) return { type: "others" };
+  return { type: "person", person: only };
 }
 
 /**
@@ -202,9 +245,9 @@ export function isPrivate(context: ContextKey): boolean {
  * * DM (or guild-less context): `dm { partner }`, or `channel` when the partner is unknown or
  *   there are several. With `allow_global_from_dm`, global facts about a known person become
  *   `person`.
- * * Guild: self notes about her alone → `global`; global facts about a known person → `person`;
- *   everything else, self notes about anyone else (`others`, see `aboutOthers`) included →
- *   `guild` (or `channel`, per `guild_scope`).
+ * * Guild: self notes about her alone → `global`, about one person alone → `person` (see
+ *   `noteAbout`); global facts about a known person → `person`; everything else, self notes about
+ *   anyone else included → `guild` (or `channel`, per `guild_scope`).
  */
 export function scopeForNew(
   config: MemoryConfig,
@@ -212,7 +255,7 @@ export function scopeForNew(
   dmPartner: AccountRef | null,
   kind: MemoryKind,
   globalPerson: PersonId | null,
-  others = false,
+  about: NoteAbout = { type: "self" },
 ): MemoryScope {
   if (isPrivate(context)) {
     if (kind === "fact" && config.allow_global_from_dm && globalPerson !== null) {
@@ -221,7 +264,10 @@ export function scopeForNew(
     if (dmPartner !== null && context.kind === "dm") return { type: "dm", account: dmPartner };
     return { type: "channel", context };
   }
-  if (kind === "self_note" && !others) return { type: "global" };
+  if (kind === "self_note" && about.type === "self") return { type: "global" };
+  if (kind === "self_note" && about.type === "person") {
+    return { type: "person", person: about.person };
+  }
   if (kind === "fact" && globalPerson !== null) return { type: "person", person: globalPerson };
   if (config.guild_scope === "guild" && context.scope !== null) {
     return { type: "guild", platform: context.platform, guild: context.scope };

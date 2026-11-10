@@ -13,7 +13,7 @@ import {
 import { formatLines, PROMPT_KINDS } from "./contributor.js";
 import type { MemoryEngine } from "./engine.js";
 import { LINE_REF_PREFIX, nameWords, supporting } from "./evidence.js";
-import { aboutOthers, scopeForNew, visibleScopes } from "./scope.js";
+import { noteAbout, scopeForNew, visibleScopes } from "./scope.js";
 
 export const REMEMBER = "remember";
 export const RECALL = "recall";
@@ -75,25 +75,32 @@ export class RememberTool implements Tool {
     // Who said it: read back as "X 說過…", never as a plain fact or an instruction.
     const name = (await this.#engine.nameOf(ctx.account)) ?? ctx.account.id;
     const kind: MemoryKind = aboutSelf ? "self_note" : "fact";
-    const subjects: PersonId[] = aboutSelf || person === null ? [] : [person];
+    let subjects: PersonId[] = aboutSelf || person === null ? [] : [person];
     const globalPerson = global && !aboutSelf ? person : null;
-    // Something about her that someone told her in a server: it stays there when it is about
-    // anyone else too (the teller included).
-    const others =
-      aboutSelf &&
-      aboutOthers(
-        content,
-        [],
-        [name, ...(this.#engine.handles?.list() ?? []).map((h) => h.handle)],
-      );
+    // Something about her that someone told her in a server: global only when about her alone,
+    // the person's when about them alone (the teller, say), else the server's.
+    const about = aboutSelf
+      ? noteAbout(
+          content,
+          [],
+          [
+            { name, person },
+            ...(this.#engine.handles?.list() ?? []).map((h) => ({
+              name: h.handle,
+              person: h.person,
+            })),
+          ],
+        )
+      : undefined;
     const scope = scopeForNew(
       this.#engine.config,
       ctx.context,
       ctx.account,
       kind,
       globalPerson,
-      others,
+      about,
     );
+    if (aboutSelf && scope.type === "person") subjects = [scope.person];
     const now = toTimestamp(this.#clock.now());
 
     // She was told it, so the telling has to be in the log: a note nobody said is not kept.

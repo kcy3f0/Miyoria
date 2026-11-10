@@ -209,14 +209,17 @@ export {
 export { RepeatDamper } from "./repeat.js";
 export { MemoryRetriever } from "./retrieval.js";
 export {
-  aboutOthers,
   hasScope,
   isPrivate,
   mayRecall,
+  type NamedPerson,
+  type NoteAbout,
   namesIn,
+  noteAbout,
   presentPeople,
   refersToOthers,
   requestScopes,
+  rescoped,
   scopeEquals,
   scopeForNew,
   scopeLabel,

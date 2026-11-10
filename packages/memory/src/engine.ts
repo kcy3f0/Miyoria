@@ -76,7 +76,15 @@ import {
   transcript,
 } from "./extract.js";
 import { RepeatDamper } from "./repeat.js";
-import { aboutOthers, hasScope, isPrivate, mayRecall, scopeEquals, scopeForNew } from "./scope.js";
+import {
+  hasScope,
+  isPrivate,
+  mayRecall,
+  type NamedPerson,
+  noteAbout,
+  scopeEquals,
+  scopeForNew,
+} from "./scope.js";
 import {
   effectiveConfidence,
   fadedConfidence,
@@ -387,6 +395,11 @@ export class MemoryEngine implements FollowupSource {
   /** The handle directory, when there is one. */
   get handles(): HandleDirectory | null {
     return this.#handles;
+  }
+
+  /** Every handle and whose it is (for `noteAbout`). */
+  #knownNames(): NamedPerson[] {
+    return (this.#handles?.list() ?? []).map((h) => ({ name: h.handle, person: h.person }));
   }
 
   /**
@@ -749,9 +762,9 @@ export class MemoryEngine implements FollowupSource {
       signal,
       true,
     );
-    const handles = this.#handles?.list() ?? [];
+    const known = this.#knownNames();
     const wanted = (r: MemoryRecord) =>
-      mayRecall(scopes, r, handles) &&
+      mayRecall(scopes, r, known) &&
       kinds.includes(r.kind) &&
       r.superseded_by === null &&
       (options.includeDone || !r.done) &&
@@ -1082,18 +1095,28 @@ export class MemoryEngine implements FollowupSource {
     const evidence = this.config.evidence;
     report.skipped += x.skipped;
     const everyone = speakers.flatMap((s) => (s.person !== null ? [s.person] : []));
-    const scope = (kind: MemoryKind, global: PersonId | null, others = false) =>
-      scopeForNew(this.config, context, dmPartner, kind, global, others);
+    const scope = (kind: MemoryKind, global: PersonId | null) =>
+      scopeForNew(this.config, context, dmPartner, kind, global);
     const items: NewMemory[] = [];
     const base = { source_context: context, due: null };
     const names = nameWords(speakers.flatMap((s) => s.names));
-    // A note of hers that names or points at anyone else stays in the server it was written in.
-    const otherNames = [
-      ...speakers.flatMap((s) => s.names),
-      ...(this.#handles?.list() ?? []).map((h) => h.handle),
+    // A note of hers: global when about her alone, the person's when about one person alone,
+    // the server's when about anyone else (`noteAbout`). Its subjects are that one person.
+    const known: NamedPerson[] = [
+      ...speakers.flatMap((s) => s.names.map((name) => ({ name, person: s.person }))),
+      ...this.#knownNames(),
     ];
-    const notJustHers = (content: string, subjects: readonly PersonId[]) =>
-      aboutOthers(content, subjects, otherNames);
+    const noteOf = (content: string, tagged: PersonId[]) => {
+      const where = scopeForNew(
+        this.config,
+        context,
+        dmPartner,
+        "self_note",
+        null,
+        noteAbout(content, tagged, known),
+      );
+      return { scope: where, subjects: where.type === "person" ? [where.person] : tagged };
+    };
     const others = lines.filter((l) => !l.self);
 
     // The lines backing a statement: among the ones the summarizer cited (else any line in
@@ -1170,8 +1193,9 @@ export class MemoryEngine implements FollowupSource {
       items.push({
         ...base,
         kind,
-        scope: scope(kind, global, kind === "self_note" && notJustHers(fact.statement, subjects)),
-        subjects,
+        ...(kind === "self_note"
+          ? noteOf(fact.statement, subjects)
+          : { scope: scope(kind, global), subjects }),
         content: fact.statement,
         importance: fact.importance,
         confidence: fact.confidence,
@@ -1197,12 +1221,10 @@ export class MemoryEngine implements FollowupSource {
         report.refusedEvidence += 1;
         continue;
       }
-      const subjects = mentioned(note.note, speakers);
       items.push({
         ...base,
         kind: "self_note",
-        scope: scope("self_note", null, notJustHers(note.note, subjects)),
-        subjects,
+        ...noteOf(note.note, mentioned(note.note, speakers)),
         content: note.note,
         importance: note.importance,
         confidence: 1,

@@ -11,9 +11,9 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   ActivityTracker,
-  aboutOthers,
   type MemoryConfig,
   memoryConfig,
+  noteAbout,
   parseExtraction,
   relativeDate,
   requestScopes,
@@ -219,8 +219,14 @@ describe("units", () => {
     expect(scopeForNew(cfg, guild, null, "fact", null)).toEqual(g);
     expect(scopeForNew(cfg, guild, null, "fact", p)).toEqual({ type: "person", person: p });
     expect(scopeForNew(cfg, guild, null, "self_note", null)).toEqual({ type: "global" });
-    // A note of hers about anyone else stays in the server.
-    expect(scopeForNew(cfg, guild, null, "self_note", null, true)).toEqual(g);
+    // A note of hers about one person alone is theirs; about anyone else, the server's.
+    expect(scopeForNew(cfg, guild, null, "self_note", null, { type: "person", person: p })).toEqual(
+      { type: "person", person: p },
+    );
+    expect(scopeForNew(cfg, guild, null, "self_note", null, { type: "others" })).toEqual(g);
+    expect(scopeForNew(cfg, dm, owen, "self_note", null, { type: "person", person: p })).toEqual(
+      dmScope,
+    );
     for (const kind of ["episode", "fact", "self_note", "followup"] as const) {
       // Global facts and self notes from a DM stay in the DM.
       expect(scopeForNew(cfg, dm, owen, kind, p)).toEqual(dmScope);
@@ -235,18 +241,34 @@ describe("units", () => {
     });
   });
 
-  it("tells a note about her alone from one about someone else", () => {
-    expect(aboutOthers("我沒吃過拉麵", [], ["Amy"])).toBe(false);
-    expect(aboutOthers("我其他時候都在睡覺,彈吉他", [], [])).toBe(false);
-    expect(aboutOthers("我答應 Amy 下次一起去", [], ["Amy"])).toBe(true);
-    expect(aboutOthers("我答應 amy 下次一起去", [], ["Amy"])).toBe(true);
-    expect(aboutOthers("我懷疑木呱是機器人", [], ["木呱機器人v?", "木呱"])).toBe(true);
-    expect(aboutOthers("有人幫我做了一張卡片", [], [])).toBe(true);
-    expect(aboutOthers("我叫他早點睡", [], [])).toBe(true);
-    expect(aboutOthers("我自稱是鯨魚", [newId()], [])).toBe(true);
+  it("tells who a note of hers is about", () => {
+    const amy = newId();
+    const bob = newId();
+    const names = [
+      { name: "Amy", person: amy },
+      { name: "Bob", person: bob },
+      { name: "木呱", person: null },
+      { name: "Yu", person: null },
+    ];
+    const self = { type: "self" };
+    const others = { type: "others" };
+    const onlyAmy = { type: "person", person: amy };
+    expect(noteAbout("我沒吃過拉麵", [], names)).toEqual(self);
+    expect(noteAbout("我其他時候都在睡覺,彈吉他", [], names)).toEqual(self);
+    // One person alone, tagged or named (a 他 is them).
+    expect(noteAbout("我答應 Amy 下次一起去", [], names)).toEqual(onlyAmy);
+    expect(noteAbout("我答應 amy 下次一起去,叫他別遲到", [], names)).toEqual(onlyAmy);
+    expect(noteAbout("我收下了那張卡片", [amy], names)).toEqual(onlyAmy);
+    // Anyone beyond them.
+    expect(noteAbout("我答應 Amy 和 Bob 下次一起去", [], names)).toEqual(others);
+    expect(noteAbout("我答應 Amy 下次一起去", [bob], names)).toEqual(others);
+    expect(noteAbout("我答應 Amy 跟大家一起去", [], names)).toEqual(others);
+    expect(noteAbout("我懷疑木呱是機器人", [], names)).toEqual(others);
+    expect(noteAbout("有人幫我做了一張卡片", [], names)).toEqual(others);
+    expect(noteAbout("我叫他早點睡", [], names)).toEqual(others);
     // A Latin name is a whole word: `Yu` is not in `you`.
-    expect(aboutOthers("I said thank you", [], ["Yu"])).toBe(false);
-    expect(aboutOthers("我跟 Yu 說晚安", [], ["Yu"])).toBe(true);
+    expect(noteAbout("I said thank you", [], names)).toEqual(self);
+    expect(noteAbout("我跟 Yu 說晚安", [], names)).toEqual(others);
   });
 
   it("activity_tracker_triggers_on_idle_or_count", () => {
