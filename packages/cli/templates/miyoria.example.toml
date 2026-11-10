@@ -351,7 +351,7 @@ dirs = ["extensions"]
 # broken_affinity = 1.5       # ...好感扣多少
 # broken_growth = 1.5         # 同一個人之後每次食言扣的倍數
 # broken_cap = 3              # ...最多到第一次的幾倍
-# ---- 花在卡片、歌、畫面上(docs/design/economy.md §13):價格,和一個人一天最多買幾次(每日 0 = 下架;退款的不算)
+# # ---- 花在卡片、歌、畫面上(docs/design/economy.md §13):價格,和一個人一天最多買幾次(每日 0 = 下架;退款的不算)
 # card_reroll = 30            # 重抽今天最新的一張卡(舊的作廢,她重新發一張)
 # card_rerolls_per_day = 2
 # card_pose = 20              # 選下一張卡用她的哪張圖(限好感等級允許的)
@@ -367,12 +367,12 @@ dirs = ["extensions"]
 # screen_message_cooldown_s = 600   # 每個人多久能送一則
 # fortune = 10                # 她幫你寫一張籤
 # fortunes_per_day = 1
-# ---- 人和人之間(§13):transfer_max = 0 或任一個每日上限 = 0 就關閉轉帳
+# # ---- 人和人之間(§13):transfer_max = 0 或任一個每日上限 = 0 就關閉轉帳
 # transfer_max = 50           # 一次轉帳最多
 # transfer_out_per_day = 100  # 一個人一天最多轉出
 # transfer_in_per_day = 100   # 一個人一天最多收到
 # board_days = 30             # 贊助榜統計過去幾天花在她身上的
-# ---- 她自己的錢包(§13):付費禮物的一部分是她的
+# # ---- 她自己的錢包(§13):付費禮物的一部分是她的
 # her_share = 0.2             # 付費禮物(餵食、信、表情、螢幕訊息、獻詞)她留多少比例
 # treat_per_person = 30       # 她請一個人一天最多
 # treat_total = 100           # 她請所有人一天最多
@@ -385,46 +385,46 @@ dirs = ["extensions"]
 # bounties_open = 3           # 同時最多幾個
 # bounty_days = 3             # 一個開幾天
 # agency_sweep_s = 60         # 多久結算一次結束的集資和懸賞
-# ---- 經濟 2.0(docs/design/v4-plan.md §10)------------------------------------------------
-# 一起玩、參與(play.ts):各種活動給多少、一種活動一天最多給一個人幾次、全部加起來一天最多。0 = 關掉
+# # ---- 經濟 2.0(docs/design/v4-plan.md §10)------------------------------------------------
+# # 一起玩、參與(play.ts):各種活動給多少、一種活動一天最多給一個人幾次、全部加起來一天最多。0 = 關掉
 # play_rewards = { game_join = 5, game_finish = 10, game_win = 5, sing_along = 5, headpat = 1, web_reaction = 1, prediction_join = 3 }
 # play_per_activity_per_day = 10
 # play_cap = 40
-# 每天三個小任務:一個給多少、三個都完成多給多少、一天最多(三個加獎勵)
+# # 每天三個小任務:一個給多少、三個都完成多給多少、一天最多(三個加獎勵)
 # quest_reward = 10
 # quest_bonus = 15
 # quest_cap = 45
 # quest_topic_days = 14       # 「聊點新的」任務:一個話題這麼多天內不能重複
-# 成就和稱號:一次性獎勵(依大小)和一天最多
+# # 成就和稱號:一次性獎勵(依大小)和一天最多
 # achievement_small = 10
 # achievement_big = 30
 # achievement_cap = 60
-# 收藏(抽卡):一次多少、一天幾次、機率(權重,公開)、幾抽沒出 SR 以上就保底一張(0 = 不保底)
+# # 收藏(抽卡):一次多少、一天幾次、機率(權重,公開)、幾抽沒出 SR 以上就保底一張(0 = 不保底)
 # draw_price = 30
 # draws_per_day = 10
 # rarity_weights = { N = 70, R = 22, SR = 7, SSR = 1 }
 # draw_pity = 30
 # item_gifts_per_day = 3      # 一個人一天最多送出幾件收藏(0 = 不能送)
-# collection_series = [ ... ] # 系列和收藏品(預設三個系列:眼鏡、手上的東西、背景);每個 { id, label, title, items = [{ id, label, rarity }] }
-# 委託:各種的價格(0 = 不接那一種)、一個人一天最多幾件、同時最多幾件等她、幾天沒動就退回、她留下送達價格的幾成
+# # collection_series = [ ... ] # 系列和收藏品(預設三個系列:眼鏡、手上的東西、背景);每個 { id, label, title, items = [{ id, label, rarity }] }
+# # 委託:各種的價格(0 = 不接那一種)、一個人一天最多幾件、同時最多幾件等她、幾天沒動就退回、她留下送達價格的幾成
 # commission_prices = { poem = 40, name = 30, tool = 120, song = 80, voice = 60 }
 # commissions_per_day = 3
 # commissions_open = 10
 # commission_days = 3
 # commission_share = 0.5
-# 預測:一個人一場最多下注、一天最多、最長開放幾分鐘、同時最多幾場、關閉後沒結算幾小時就退回全部賭注
+# # 預測:一個人一場最多下注、一天最多、最長開放幾分鐘、同時最多幾場、關閉後沒結算幾小時就退回全部賭注
 # bet_max = 50
 # bet_daily_max = 100
 # prediction_max_minutes = 120
 # predictions_open = 3
 # prediction_expire_hours = 24
-# 她的房間:大家一起出錢買的家具、衣服、背景(room_items = [{ id, label, kind = "furniture" | "outfit" | "background", price }])
+# # 她的房間:大家一起出錢買的家具、衣服、背景(room_items = [{ id, label, kind = "furniture" | "outfit" | "background", price }])
 # room_pledge_max = 100       # 一個人對一件最多出多少
-# 她每週的小店:可以進貨什麼(shop_catalog,每項 { id, label, kind(title 或 collectible), price, item })、一週上架幾件、賣出的錢她留幾成(其餘離開經濟)
+# # 她每週的小店:可以進貨什麼(shop_catalog,每項 { id, label, kind(title 或 collectible), price, item })、一週上架幾件、賣出的錢她留幾成(其餘離開經濟)
 # shop_slots = 4              # 1 到 20
 # shop_her_share = 0.5
 # owe_days = 14               # 食言後「欠她一餐」算幾天,直到你餵她
-# 經濟健康表:顯示幾天,和一週內發出去的幣被收回的比例低於多少就標「通膨」
+# # 經濟健康表:顯示幾天,和一週內發出去的幣被收回的比例低於多少就標「通膨」
 # health_days = 14            # 1 到 90
 # health_warn_ratio = 0.6
 # utc_offset_minutes = 480    # 「今天」從哪個時區的午夜開始算
