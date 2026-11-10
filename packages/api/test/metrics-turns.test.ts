@@ -1,7 +1,15 @@
-import type { DecisionRecord } from "@miyoria/store";
+import type { DecisionLog, DecisionRecord } from "@miyoria/store";
 import type { ContextKey, TurnOutcome, TurnOutcomeRecord, TurnReason } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
-import { aggregateTurnMetrics, localDay, stopOfRefused } from "../src/metrics-turns.js";
+import {
+  aggregateTurnMetrics,
+  loadTurnRows,
+  localDay,
+  MAX_DECISION_ROWS,
+  MAX_OUTCOME_ROWS,
+  stopOfRefused,
+  windowStart,
+} from "../src/metrics-turns.js";
 
 const TEXT: ContextKey = { platform: "discord", scope: "g", channel: "c", kind: "channel" };
 const VOICE: ContextKey = { platform: "discord", scope: "g", channel: "v", kind: "voice" };
@@ -172,5 +180,60 @@ describe("stopOfRefused", () => {
     expect(stopOfRefused(["p 0.11, roll 0.90"])).toBe("lost_roll");
     expect(stopOfRefused(["floor: held"])).toBe("floor");
     expect(stopOfRefused(["someone is speaking"])).toBe("other");
+  });
+});
+
+describe("loadTurnRows", () => {
+  const PROFILE = "p" as never;
+
+  it("asks a log that can for everything since the first local midnight, with no cap", async () => {
+    const calls: string[] = [];
+    const log: DecisionLog = {
+      append: async () => undefined,
+      recent: async () => {
+        calls.push("recent");
+        return [];
+      },
+      recentOutcomes: async () => {
+        calls.push("recentOutcomes");
+        return [];
+      },
+      outcomesSince: async (_p, since) => {
+        calls.push(`outcomes ${since}`);
+        return [outcome("addressed", SENT)];
+      },
+      decisionsSince: async (_p, since) => {
+        calls.push(`decisions ${since}`);
+        return [refused(["score 0.1 < 0.45"])];
+      },
+    };
+    const rows = await loadTurnRows(log, PROFILE, NOW, 3);
+    const since = new Date(windowStart(NOW, 3)).toISOString();
+    expect(since).toBe(new Date(2026, 10, 8).toISOString());
+    expect(calls.sort()).toEqual([`decisions ${since}`, `outcomes ${since}`]);
+    expect(rows.outcomes).toHaveLength(1);
+    expect(rows.decisions).toHaveLength(1);
+    expect(rows.truncated).toBe(false);
+  });
+
+  it("falls back to the capped read, and says so when the cap cut into the window", async () => {
+    const many = (n: number, daysAgo: number) =>
+      Array.from({ length: n }, () => outcome("addressed", SENT, { daysAgo }));
+    const capped = (ago: number): DecisionLog => ({
+      append: async () => undefined,
+      recent: async () => [],
+      recentOutcomes: async (_p, _c, limit) => {
+        expect(limit).toBe(MAX_OUTCOME_ROWS);
+        return many(MAX_OUTCOME_ROWS, ago);
+      },
+    });
+    expect((await loadTurnRows(capped(0), PROFILE, NOW, 3)).truncated).toBe(true);
+    expect((await loadTurnRows(capped(9), PROFILE, NOW, 3)).truncated).toBe(false);
+    expect(MAX_DECISION_ROWS).toBeGreaterThan(MAX_OUTCOME_ROWS);
+  });
+
+  it("refuses a log that keeps no outcomes", async () => {
+    const log: DecisionLog = { append: async () => undefined, recent: async () => [] };
+    await expect(loadTurnRows(log, PROFILE, NOW, 3)).rejects.toThrow(/turn outcomes/);
   });
 });

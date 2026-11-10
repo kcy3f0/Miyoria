@@ -4,35 +4,15 @@
 // was issued came back, which is what inflation looks like before anyone feels it.
 //
 // The numbers come from the ledger, the single source of truth; this only adds them up. The ledger
-// store does not have a per-day, per-reason total yet, so `LedgerStatsStore` is the port it will
-// implement (one `GROUP BY`, SQL in the integration notes of the change that added it); with none,
-// the table says it is not available rather than inventing numbers.
+// store answers `dailyTotals` with one `GROUP BY` (`LedgerStatsStore`, provided by the app); with
+// none, the table says it is not available rather than inventing numbers.
 
-import { type ProfileId, serviceKey, type Timestamp } from "@miyoria/types";
+import type { LedgerDayTotal } from "@miyoria/store";
+import { LedgerStatsKey, type LedgerStatsStore } from "@miyoria/store";
 import type { EconomyService } from "./economy.js";
 import type { HealthView } from "./v2-types.js";
 
-/** Sums of the positive and of the negative rows of one reason on one local day. */
-export interface LedgerDayTotal {
-  /** The local day number (`floor((epoch_ms + offset) / 86_400_000)`, as `EconomyService.today`). */
-  day: number;
-  reason: string;
-  /** The sum of the rows with `delta > 0`. */
-  positive: number;
-  /** The sum of the rows with `delta < 0`, as a positive number. */
-  negative: number;
-}
-
-export interface LedgerStatsStore {
-  /** Totals per local day and reason from `since` on (all wallets, her purse included). */
-  dailyTotals(
-    profile: ProfileId,
-    since: Timestamp,
-    offsetMinutes: number,
-  ): Promise<LedgerDayTotal[]>;
-}
-
-export const LedgerStatsKey = serviceKey<LedgerStatsStore>("LedgerStats");
+export { type LedgerDayTotal, LedgerStatsKey, type LedgerStatsStore };
 
 /** Reasons that put new coins into the economy: nothing was spent for them. */
 export const ISSUED_REASONS: readonly string[] = [
