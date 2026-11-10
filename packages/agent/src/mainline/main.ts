@@ -81,8 +81,8 @@ import {
 } from "./gate.js";
 import { Hands, type Job, type Run } from "./hands.js";
 import { LineBook } from "./lines.js";
-import { withoutRepeats } from "./loop.js";
-import { STEER_TOOL } from "./output.js";
+import { freshLines, withoutRepeats } from "./loop.js";
+import { isPseudoTool, STEER_TOOL } from "./output.js";
 import { isTalk, Proposals } from "./proposals.js";
 
 /** What she says when something has to be said and the model cannot (§21). */
@@ -602,6 +602,8 @@ export class MainTurn {
   #overdue: Commitment[] = [];
   /** Tools that ran inside this turn (`loop_tools`), in order. */
   #ran: string[] = [];
+  /** The jobs of `#ran`. */
+  #loopJobs: Job[] = [];
   /** How much of `said` came from earlier rounds of the tool loop. */
   #earlier = 0;
 
@@ -652,6 +654,15 @@ export class MainTurn {
 
   offered(tools: readonly string[]): void {
     this.#offered = new Set(tools);
+  }
+
+  /**
+   * Whether a call of this turn may run: its tool was on offer (after the Directives' filter and
+   * her state), or it is one of the output's own (`commit`, `steer_task`). A name the model made up
+   * or remembered from an earlier turn is no way around the filter.
+   */
+  isOffered(tool: string): boolean {
+    return isPseudoTool(tool) || this.#offered.has(tool);
   }
 
   shown(overdue: readonly Commitment[]): void {
@@ -745,6 +756,7 @@ export class MainTurn {
       cause: this.claim.cause,
     });
     this.#ran.push(tool);
+    this.#loopJobs.push(job);
     let result: Run;
     try {
       result = await run();
@@ -756,6 +768,32 @@ export class MainTurn {
     const accepted = job.state === "accepted";
     if (accepted) job.report = this.claim.muted ? "prompt" : "turn";
     return { run: result, accepted };
+  }
+
+  /** Of the lines the gate let out at the end, the ones that are not said already. */
+  releasable(lines: readonly HeldLine[]): HeldLine[] {
+    return freshLines(
+      lines,
+      this.said.map((s) => s.text),
+    );
+  }
+
+  /**
+   * The turn ends before its last response after a round of the tool loop: the call after the
+   * tools failed (`failed`) or she was cut off (`stopped`). What she said and what she handed over
+   * still stand: the decision is logged, the calls she was told went to the hands go there and her
+   * promises are kept. What the loop's tools brought back becomes a result: told in a turn of its
+   * own when the call failed (someone asked and heard nothing), in her next prompt when she was
+   * cut off (whoever cut in has that turn).
+   */
+  leave(
+    output: TurnOutput,
+    run: (tool: string, id: string, args: string, signal: AbortSignal) => Promise<Run>,
+    requester: unknown,
+    why: "failed" | "stopped",
+  ): void {
+    this.conclude(output, run, requester);
+    this.#main.hands.retell(this.#loopJobs, why === "failed" ? "turn" : "prompt");
   }
 
   /** Every tool of the turn: the loop's, then the output's. */

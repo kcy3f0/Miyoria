@@ -246,6 +246,24 @@ export class Hands {
     this.#d.told(job.context, job);
   }
 
+  /**
+   * Jobs that ran inside a turn (`report: "none"`) whose turn ended before she said what came of
+   * them: they become results like the hands' own. `turn`: a result turn tells them (the call after
+   * the tools failed, and nobody heard the answer); `prompt`: her next turn's prompt shows them (she
+   * was cut off, and whoever cut in gets that turn). A job still waiting for its task already has
+   * its way of being told.
+   */
+  retell(jobs: readonly Job[], report: "turn" | "prompt"): void {
+    const ended = jobs.filter((j) => j.state === "done" || j.state === "failed");
+    for (const job of ended) {
+      job.report = report;
+      this.#keep(contextKeyString(job.context), job);
+    }
+    // One turn tells them all: they are in the same place, and each shows the rest.
+    const last = ended.at(-1);
+    if (report === "turn" && last !== undefined) this.#d.told(last.context, last);
+  }
+
   #keep(key: string, job: Job): void {
     this.#unsaid.set(key, [...(this.#unsaid.get(key) ?? []), job].slice(-MAX_RESULTS));
   }
