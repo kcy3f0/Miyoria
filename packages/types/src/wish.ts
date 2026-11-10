@@ -193,7 +193,7 @@ const LATIN_FILLER = new Set([
   "promised",
 ]);
 
-function escape(text: string): string {
+function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
@@ -203,7 +203,7 @@ export function wishGrams(text: string, person: Handle | null = null): Set<strin
   if (person !== null && person.trim() !== "") {
     const name = person.trim().toLowerCase();
     s = /^[\w.\- ]+$/.test(name)
-      ? s.replace(new RegExp(`(?<![a-z0-9])${escape(name)}(?![a-z0-9])`, "g"), " ")
+      ? s.replace(new RegExp(`(?<![a-z0-9])${escapeRegExp(name)}(?![a-z0-9])`, "g"), " ")
       : s.replaceAll(name, " ");
   }
   s = s.replace(/<[^>]*>/g, " ").replace(/[0-9]+/g, " ");

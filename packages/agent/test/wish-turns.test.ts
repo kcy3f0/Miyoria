@@ -41,7 +41,12 @@ afterEach(async () => {
 
 /** A model that takes `ms` to say `text`. */
 function slow(ms: number, text = "好喔"): Paced {
-  return new Paced([[[ms, textDelta(text)], [0, done()]]]);
+  return new Paced([
+    [
+      [ms, textDelta(text)],
+      [0, done()],
+    ],
+  ]);
 }
 
 async function rig(llm: ChatProvider, mode = "normal"): Promise<Harness> {

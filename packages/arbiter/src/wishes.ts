@@ -18,7 +18,9 @@
 
 import {
   type AskedLookup,
+  type Delivery,
   type EventLog,
+  type Handle,
   type HandleDirectory,
   isJsonObject,
   type JsonValue,
@@ -33,8 +35,6 @@ import {
   stopsAsking,
   timestampMs,
   toTimestamp,
-  type Delivery,
-  type Handle,
   WISH_SOURCE,
   type Wish,
   type WishBody,

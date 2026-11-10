@@ -147,7 +147,13 @@ describe("one wish, asked once (2026-11-10)", () => {
     await wait(2_000);
 
     // S speaks in the channel five times.
-    for (const text of ["大家午安", "你已經在私訊問過我了", "今天好熱", "你問我好幾次了", "吃飯囉"]) {
+    for (const text of [
+      "大家午安",
+      "你已經在私訊問過我了",
+      "今天好熱",
+      "你問我好幾次了",
+      "吃飯囉",
+    ]) {
       h.say(mention(c, "S", text));
       await wait(2 * MIN);
     }
@@ -167,7 +173,7 @@ describe("one wish, asked once (2026-11-10)", () => {
     const plan = events.find(
       (e) => e.kind === "proposal" && JSON.stringify(e.body).includes('"source":"plan"'),
     );
-    const id = (plan?.body as { proposal: { id: string } }).proposal.id;
+    const id = (plan?.body as { proposal?: { id: string } } | undefined)?.proposal?.id ?? "";
     const ended = events.find(
       (e) => e.kind === "result" && (e.body as { proposal?: string }).proposal === id,
     );

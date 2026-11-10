@@ -34,9 +34,9 @@ import {
   type Floor,
   type FloorClaimKind,
   FloorKey,
-  HandleDirectoryKey,
   floorRank,
   type Handle,
+  HandleDirectoryKey,
   type ImpulseAttention,
   isJsonObject,
   type JsonObject,
@@ -233,11 +233,8 @@ export class MainLine implements Mouth {
     const now = () => agent.ctx.clock.now();
     const log = () => services.get(EventLogKey) ?? null;
     this.lines = new LineBook(() => services.get(DeliveryLedgerKey) ?? null, now);
-    this.commitments = new CommitmentBook(
-      log,
-      now,
-      this.config.commitment_due_secs,
-      () => this.wishes(),
+    this.commitments = new CommitmentBook(log, now, this.config.commitment_due_secs, () =>
+      this.wishes(),
     );
     this.proposals = new Proposals({ log, now, services });
     this.hands = new Hands({
