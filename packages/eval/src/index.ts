@@ -27,5 +27,6 @@ export {
   type Scorecard,
   type Verdict,
 } from "./runner.js";
+export { failureCode } from "./subjects/guard.js";
 export { SUBJECTS } from "./subjects/index.js";
 export { ofType, type Trace, type TraceEvent, TraceEventSchema } from "./trace.js";
