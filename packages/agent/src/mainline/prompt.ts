@@ -95,7 +95,9 @@ const ADDRESSING: Record<FloorClaimKind, string> = {
   urgent: "剛發生緊急的事(見參考資料「你想聊的事」):馬上用一句話反應。",
   notable: "剛發生一件事(見參考資料「你想聊的事」)。想講就簡短講,不想講就 <silence/>。",
   wish: "現在沒人跟你說話,這是你自己想做的事(見參考資料)。要動手就直接呼叫工具,不要只用講的。不適合就 <silence/>。不要說出盤算的過程。",
-  ambient: "沒有人叫你,大家在聊。真的想插話才開口,否則 <silence/>。",
+  // v4 §7.2: a look. She picks the rung; an emoji is the cheapest way to take part.
+  ambient:
+    "沒有人叫你,大家在聊,你看了一眼「要回的訊息」。怎麼參與由你決定,從輕到重:不理(<silence/>)、用 react 按一個表情(不算你講話)、一句短話、加入聊天。別人是在跟別人講話時,真的需要才插話。不想參與就 <silence/>。",
 };
 
 const MUTED = "現在沒有人在聽,或你講夠多了:不要開口,只輸出工具呼叫,不想做就 <silence/>。";
