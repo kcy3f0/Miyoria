@@ -103,6 +103,11 @@ export interface PatDeskOptions {
   who: (by: LivePatter) => Promise<PatWho>;
   /** A batch closed. */
   observe: (batch: PatObservation) => void;
+  /**
+   * An accepted pat of someone who is not blocked, with a key unique to it. The module forwards it
+   * to the economy's participation service; nothing here knows what it pays.
+   */
+  award?: (by: LivePatter, key: string) => void;
   /** The counts changed: `patted` when somebody just patted. */
   changed?: (pats: LivePats, patted: boolean) => void;
 }
@@ -113,6 +118,9 @@ export class PatDesk {
   readonly #who: PatDeskOptions["who"];
   readonly #observe: PatDeskOptions["observe"];
   readonly #changed: NonNullable<PatDeskOptions["changed"]>;
+  readonly #award: PatDeskOptions["award"];
+  /** Makes the key of each pat unique even when two come in the same millisecond. */
+  #serial = 0;
   readonly #people: Window;
   readonly #everyone: Window;
   /** When each pat of the last minute came, oldest first. */
@@ -127,6 +135,7 @@ export class PatDesk {
     this.#who = options.who;
     this.#observe = options.observe;
     this.#changed = options.changed ?? (() => {});
+    this.#award = options.award;
     this.#people = new Window(options.config.per_person_per_minute, MINUTE_MS);
     this.#everyone = new Window(options.config.per_minute, MINUTE_MS, 1);
   }
@@ -156,7 +165,11 @@ export class PatDesk {
     this.#recent.push(now);
     this.#forget(now);
     const who = await this.#who(by).catch((): PatWho => ({ kind: "blocked" }));
-    if (who.kind !== "blocked") this.#add(key, who, this.#now());
+    if (who.kind !== "blocked") {
+      this.#add(key, who, this.#now());
+      this.#serial += 1;
+      this.#award?.(by, `pat:${key}:${now}:${this.#serial}`);
+    }
     const pats = this.pats();
     this.#changed(pats, true);
     return { status: "ok", pats };

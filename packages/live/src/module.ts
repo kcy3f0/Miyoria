@@ -16,6 +16,7 @@ import {
   LiveFeedKey,
   type LivePatter,
   ModerationKey,
+  ParticipationKey,
   SocialSignalsKey,
   sameAccount,
 } from "@miyoria/types";
@@ -70,7 +71,7 @@ export class LiveModule implements Module {
   static readonly ID = "live";
   readonly manifest = defineManifest(LiveModule.ID, "Live page", {
     description: "Her state, face and public lines for the live page; head-pats as Observations",
-    optional: ["facts", "moderation", "activity", "social", "self"],
+    optional: ["facts", "moderation", "activity", "social", "self", "economy"],
     configSchema: LiveConfigSchema,
   });
   readonly #own: readonly string[];
@@ -124,6 +125,14 @@ export class LiveModule implements Module {
         } catch (error) {
           ctx.log.warn({ err: errorMessage(error) }, "cannot tell her about the pats");
         }
+      },
+      // Looked up per pat: the economy may start after this module, or not at all.
+      award: (by, key) => {
+        const participation = ctx.services.get(ParticipationKey);
+        if (!participation) return;
+        participation.award(by.account, "headpat", key).catch((error) => {
+          ctx.log.debug({ err: errorMessage(error) }, "a pat could not be paid");
+        });
       },
       changed: (pats, patted) => state.setPats(pats, patted),
     });

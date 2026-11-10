@@ -24,17 +24,20 @@ function rig(config: Record<string, unknown> = {}) {
   let clock = 1_800_000_000_000;
   const written: PatObservation[] = [];
   const changes: Array<{ pats: LivePats; patted: boolean }> = [];
+  const awards: Array<{ account: AccountRef; key: string }> = [];
   const desk = new PatDesk({
     config: LiveConfigSchema.parse({ pats: true, ...config }),
     now: () => clock,
     who: async (by) => PEOPLE[by.account.id] ?? { kind: "stranger" },
     observe: (o) => written.push(o),
     changed: (pats, patted) => changes.push({ pats, patted }),
+    award: (by, key) => awards.push({ account: by.account, key }),
   });
   return {
     desk,
     written,
     changes,
+    awards,
     advance(ms: number) {
       clock += ms;
       desk.tick();
@@ -43,6 +46,16 @@ function rig(config: Record<string, unknown> = {}) {
 }
 
 describe("pats", () => {
+  it("are paid once each, with a key of their own, and never for a blocked person", async () => {
+    const r = rig();
+    await r.desk.pat(patter("1"));
+    await r.desk.pat(patter("1"));
+    await r.desk.pat(patter("3"));
+    await r.desk.pat(patter("9"));
+    expect(r.awards.map((a) => a.account.id)).toEqual(["1", "1", "9"]);
+    expect(new Set(r.awards.map((a) => a.key)).size).toBe(3);
+  });
+
   it("are closed by default: nothing is counted and nothing reaches her", async () => {
     const r = rig({ pats: false });
     expect(await r.desk.pat(patter("1"))).toEqual({ status: "closed" });
