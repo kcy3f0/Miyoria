@@ -10,8 +10,10 @@ import {
   ACTIVITY_CHANGED_TOPIC,
   ActivityManagerKey,
   AffectStateKey,
+  customEvent,
   EventLogKey,
   HandleDirectoryKey,
+  LIVE_TOUCH_TOPIC,
   type LiveFeed,
   LiveFeedKey,
   type LivePatter,
@@ -24,6 +26,7 @@ import { LiveConfigSchema } from "./config.js";
 import { LIVE_TOPICS, LiveState } from "./feed.js";
 import { PAT_BUCKET, PatDesk, type PatWho } from "./pats.js";
 import type { Screen } from "./privacy.js";
+import { VideoWatch } from "./video.js";
 
 /** How often the clock-driven parts move: the activity line, a batch of pats closing. */
 const TICK_MS = 1_000;
@@ -35,6 +38,8 @@ const MAX_VERDICTS = 2_000;
 export interface LiveModuleOptions {
   /** Her own names (`Profile.names()`): a line may say them. */
   names?: readonly string[];
+  /** For tests: the `fetch` that asks MediaMTX. */
+  fetch?: typeof fetch;
 }
 
 /**
@@ -65,7 +70,10 @@ export async function whoPats(ctx: ModuleContext, by: LivePatter): Promise<PatWh
  * Module `live`: the feed of the live page (docs/design/v4-plan.md §9.2) and its head-pats.
  * Provides `LiveFeedKey`, which the api serves at `GET /api/public/live` and
  * `POST /api/member/live/pat`. Reads the bus and her body state; writes only pat Observations
- * (with `pats = true`), and never publishes anything: being watched changes nothing about her.
+ * (with `pats = true`). Its only publication is the custom event `live.touch` (`{ x, y, part }`,
+ * no names) for each accepted pat that came with a spot on the picture, for the stage to draw a
+ * hand there; being watched changes nothing about her. With `[modules.live.video]` it also asks
+ * MediaMTX whether OBS is publishing, so the page can show the picture.
  */
 export class LiveModule implements Module {
   static readonly ID = "live";
@@ -75,9 +83,11 @@ export class LiveModule implements Module {
     configSchema: LiveConfigSchema,
   });
   readonly #own: readonly string[];
+  readonly #fetch: typeof fetch | undefined;
 
   constructor(options: LiveModuleOptions = {}) {
     this.#own = [...(options.names ?? [])];
+    this.#fetch = options.fetch;
   }
 
   async start(ctx: ModuleContext): Promise<void> {
@@ -134,18 +144,50 @@ export class LiveModule implements Module {
           ctx.log.debug({ err: errorMessage(error) }, "a pat could not be paid");
         });
       },
-      changed: (pats, patted) => state.setPats(pats, patted),
+      changed: (pats, patted, touch) => state.setPats(pats, patted, touch),
+      touched: (touch) =>
+        ctx.publish(customEvent(LIVE_TOUCH_TOPIC, { x: touch.x, y: touch.y, part: touch.part })),
     });
     const state = new LiveState(
-      { channels: config.channels, screen, maxViewers: config.max_viewers, pats: desk.pats() },
+      {
+        channels: config.channels,
+        screen,
+        maxViewers: config.max_viewers,
+        pats: desk.pats(),
+        video: { on: false, src: null },
+      },
       now,
     );
     const body = () => state.setPresence(ctx.services.get(ActivityManagerKey)?.snapshot() ?? null);
 
+    const videoConfig = config.video;
+    // Without the secret MediaMTX's HLS wants cookies, which a proxy cannot carry: stay off.
+    const videoOn = videoConfig.enabled && videoConfig.secret !== "";
+    if (videoConfig.enabled && !videoOn) {
+      ctx.log.warn(
+        "live page: video.enabled needs video.secret (MIYORIA_HLS_SECRET); video stays off",
+      );
+    }
+    const watch = new VideoWatch({
+      config: videoConfig,
+      fetch: this.#fetch,
+      changed: (video) => state.setVideo(video),
+      note: (on, reason) =>
+        ctx.log.info({ reason }, on ? "live page: OBS is publishing" : "live page: OBS stopped"),
+    });
     const feed: LiveFeed = {
       snapshot: () => state.snapshot(),
       follow: (listener) => state.follow(listener),
       pat: (by) => desk.pat(by),
+      video: () =>
+        videoOn
+          ? {
+              on: watch.on,
+              upstream: videoConfig.hls,
+              secret: videoConfig.secret,
+              max_viewers: config.max_viewers,
+            }
+          : null,
     };
     ctx.provide(LiveFeedKey, feed);
     if (config.channels.length === 0) {
@@ -165,6 +207,13 @@ export class LiveModule implements Module {
         state.onEvent(env.event, now());
       }
     });
+    if (videoOn) {
+      ctx.log.info({ hls: videoConfig.hls }, "live page: video is on, watching MediaMTX");
+      ctx.spawn("video", async (signal) => {
+        await watch.poll(signal);
+        for await (const _ of interval(videoConfig.poll_ms, signal)) await watch.poll(signal);
+      });
+    }
     ctx.spawn("tick", async (signal) => {
       for await (const _ of interval(TICK_MS, signal)) {
         state.tick(now());

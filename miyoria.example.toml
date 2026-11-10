@@ -514,6 +514,10 @@ barge_in = "selective"     # 有人插話時:selective(只有這回合要回的�
 # 預設 = OBS 伺服器 rtmp://127.0.0.1:1935/live、金鑰 miyoria。`/voice golive start` 會用它
 # (她還不在語音裡時,會先進你所在的語音頻道)。
 # golive_source = "rtmp://127.0.0.1:1935/live/miyoria"
+# golive_listen = true         # true = voice node 的 ffmpeg 自己當 RTMP 伺服器等 OBS 推流;
+#                              # false = OBS 推到 MediaMTX(workers/mediamtx/,佔 :1935),ffmpeg 去那裡拉。
+#                              # 網站要看直播畫面就用 false,搭配 [modules.activity] obs_hub = true;
+#                              # OBS 的設定不用改,一樣是 rtmp://127.0.0.1:1935/live、金鑰 miyoria
 # 墊話(v4 §7.5):有人叫她、而她還沒有任何聲音時,先放一小段預先合成好的她自己的聲音(「嗯?」「欸~」),
 # 不然對方會聽到一段沉默。只在她被叫到時;她決定不說話的回合、或第一句寫好時就不放。
 # 不是一句台詞(不進她的對話紀錄,也不算 Floor 的額度);連兩次不會是同一個。預設開著,不要就 filler = false
@@ -557,8 +561,11 @@ barge_in = "selective"     # 有人插話時:selective(只有這回合要回的�
 [modules.activity]
 # golive_timeout_ms = 60000      # Go Live 多久沒開始就算失敗
 # obs = true                     # 連著直播機時 OBS 是開台的第二步(過閘門);false = 只有 Go Live
-# obs_start_delay_ms = 3000      # Go Live 開了之後等多久才按 OBS 開始直播
+# obs_start_delay_ms = 3000      # Go Live 開了之後等多久才按 OBS 開始直播(obs_hub:OBS 開播後等多久才開 Go Live)
 # obs_attempts = 3
+# obs_hub = false                # true = OBS 推到 MediaMTX(workers/mediamtx/),網站自己看得到,跟 Go Live 脫鉤:
+#                                # 開台先開 OBS 再開 Go Live;關台、離開語音、Go Live 斷掉都不會停 OBS。
+#                                # 要搭配 [modules.voice] golive_listen = false;OBS 一樣推 rtmp://127.0.0.1:1935/live、金鑰 miyoria
 # voice_timeout_ms = 20000       # 進 / 離開語音等確認的時間
 # speech_wait_ms = 30000         # 離開語音前最多等她把那一輪話講完多久
 # game_timeout_ms = 300000       # 遊戲最多開多久(含啟動器與載入世界)
@@ -1160,6 +1167,20 @@ max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不
 # per_person_per_minute = 10     # 每個人每分鐘最多摸幾下
 # per_minute = 120               # 所有人加起來每分鐘最多幾下
 
+# 直播頁的畫面(OBS -> MediaMTX -> Core 轉送 LL-HLS)。OBS 有推流頁面就顯示真實畫面,跟 Discord Go Live 無關;
+# 沒開或 OBS 沒推流時頁面維持畫出來的小人。畫面上的觸摸會依下面的範圍判成 臉 / 頭 / 身體 / 畫面,
+# 並以 live.touch 事件讓直播畫面長出手。範圍 = [x0, y0, x1, y1],0..1,左上為原點;空陣列 = 永遠不選這個部位
+# [modules.live.video]
+# enabled = false                # 預設關;要開必須有 secret,沒有的話只記警告、畫面維持關閉
+# secret = "${MIYORIA_HLS_SECRET:-}"  # 等於 MediaMTX 的 hlsCDNSecret(環境變數 MTX_HLSCDNSECRET);Core 轉送時以 Bearer 帶上,不會記錄也不會給瀏覽器
+# hls = "http://127.0.0.1:8888/live/miyoria/"  # 該 path 的 HLS 位址,要以 / 結尾
+# api = "http://127.0.0.1:9997"  # MediaMTX 控制 API,輪詢看 OBS 有沒有在推流
+# path = "live/miyoria"
+# poll_ms = 2000
+# face = [0.67, 0.22, 0.83, 0.40]  # 臉優先於頭、頭優先於身體,都不在就是「畫面」
+# head = [0.62, 0.10, 0.88, 0.38]
+# body = [0.58, 0.35, 0.92, 1.00]
+
 # 語音派對遊戲(v4 §9.1;海龜湯、猜歌、接龍、問答、故事接龍):規則和計分是程式的狀態機,主持、吐槽、
 # 判定模糊答案是她。她叫 party_start 才會開始,不會自己跑,所以預設就開著。下面都是預設值
 # [modules.party]
@@ -1238,6 +1259,11 @@ enabled = true                 # VTube Studio:設定 → 開啟 API(port 8001)
 # [stage.lipsync]
 # latency_ms = 180             # 嘴型延後多久(觀眾比播放器晚聽到聲音);嘴比聲音早就加大,晚就調小
 # [stage.emotion] resting_strength = 0.6:沒有情緒標記時,臉往她表現出來的情緒靠多少(感受強度乘上這個)
+# 觀眾在網站摸她(Core 的 live.touch → overlay 畫手印 + 她小小反應,頭/臉/身體各一套,screen 不反應):
+# [stage.touch] enabled = true、cooldown_ms = 1500(兩次反應的最短間隔,連摸只會延長)、hold_ms = 900、max_ms = 5000
+# [stage.touch.head] face_z = 8, face_y = -3, eye_smile = 0.8   # 角度加在 FaceAngleX/Y/Z、MiyoriaBodyZ;eye_smile 是 MiyoriaEyeSmile 的峰值
+# [stage.touch.face] face_x = 3, face_y = 6, face_z = -5, eye_smile = 0.5, expression = "blush"   # expression 預設 off;借用 [gift_expression] 的檔案
+# [stage.touch.body] face_z = 3, body_z = 6, eye_smile = 0.3
 # 眨眼、動作、情緒漸變、手勢:[stage.blink] / [stage.motion] / [stage.emotion] / [stage.gesture],見 docs/protocols/stage-link.md
 
 [stage.obs]

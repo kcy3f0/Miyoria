@@ -15,10 +15,13 @@ import {
   type LiveEmotion,
   type LiveEvent,
   type LiveLine,
+  type LivePart,
   type LivePats,
   type LivePlace,
   type LivePresence,
   type LiveSnapshot,
+  type LiveSpot,
+  type LiveVideo,
   SONG_PREPARE_TOPIC,
   SONG_TOPIC,
   SPEECH_SYNTH_TOPIC,
@@ -68,6 +71,7 @@ export interface LiveStateOptions {
   screen: Screen;
   maxViewers: number;
   pats: LivePats;
+  video?: LiveVideo;
 }
 
 /** Where she is, as the public status says it (`publicStatus` in the api package). */
@@ -108,6 +112,7 @@ export class LiveState {
   #emotion: LiveEmotion = NEUTRAL;
   #line: LiveLine | null = null;
   #pats: LivePats;
+  #video: LiveVideo;
   #snapshot: ActivitySnapshot | null = null;
 
   constructor(options: LiveStateOptions, now: () => number = Date.now) {
@@ -115,6 +120,7 @@ export class LiveState {
     this.#screen = options.screen;
     this.#maxViewers = options.maxViewers;
     this.#pats = options.pats;
+    this.#video = options.video ?? { on: false, src: null };
     this.#forwarder = new Forwarder(true, { now });
   }
 
@@ -126,6 +132,7 @@ export class LiveState {
       emotion: { ...this.#emotion },
       line: this.#line === null ? null : { ...this.#line },
       pats: { ...this.#pats },
+      video: { ...this.#video },
     };
   }
 
@@ -167,10 +174,22 @@ export class LiveState {
     this.#emit({ type: "presence", presence: { ...next } });
   }
 
-  setPats(pats: LivePats, patted: boolean): void {
+  setPats(pats: LivePats, patted: boolean, touch?: { spot: LiveSpot; part: LivePart }): void {
     const same = pats.recent === this.#pats.recent && pats.open === this.#pats.open;
     this.#pats = { ...pats };
-    if (patted || !same) this.#emit({ type: "pat", pats: { ...pats } });
+    if (!patted && same) return;
+    this.#emit(
+      patted && touch
+        ? { type: "pat", pats: { ...pats }, spot: { ...touch.spot }, part: touch.part }
+        : { type: "pat", pats: { ...pats } },
+    );
+  }
+
+  /** OBS started or stopped publishing. */
+  setVideo(video: LiveVideo): void {
+    if (video.on === this.#video.on && video.src === this.#video.src) return;
+    this.#video = { ...video };
+    this.#emit({ type: "video", video: { ...video } });
   }
 
   /** Lets time-based state move on: thinking shows after a moment, turns expire. */

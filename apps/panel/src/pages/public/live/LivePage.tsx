@@ -5,8 +5,11 @@ import { Page } from "@/components/page";
 import { LiveStage } from "./LiveStage";
 import type { SourceFactory } from "./feed";
 
-/** The address of the live page: anyone may open it, logged in or not. */
-export const LIVE_PAGE = "/live";
+/**
+ * The address of the live page: anyone may open it, logged in or not. Not `/live`: that is the
+ * admin panel's 直播 page.
+ */
+export const LIVE_PAGE = "/watch";
 
 /** Whether `path` (path and query) is the live page. */
 export function isLivePath(path: string): boolean {
@@ -15,7 +18,7 @@ export function isLivePath(path: string): boolean {
 }
 
 /**
- * `/live`: her, for anyone with the link. Watching needs nothing; patting needs a Discord login,
+ * `/watch`: her, for anyone with the link. Watching needs nothing; patting needs a Discord login,
  * which comes back here. Nothing on it talks to an admin route.
  */
 export function LivePage({ source }: { source?: SourceFactory | null }) {

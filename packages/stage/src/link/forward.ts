@@ -20,6 +20,7 @@ import {
   SCREEN_SONG_MAX,
   SCREEN_TEXT_MAX,
 } from "../protocol.js";
+import { parseTouch, TOUCH_TOPIC } from "../touch.js";
 
 /** Topic of the agent's emotion markers. */
 export const EMOTION_TOPIC = "agent.emotion";
@@ -235,6 +236,7 @@ export class Forwarder {
         if (event.data.topic === SUBTITLE_TOPIC) return this.#onWritten(event.data.payload);
         if (event.data.topic === VOICE_UPCOMING_TOPIC) return this.#onUpcoming(event.data.payload);
         if (event.data.topic === GIFT_TOPIC) return giftMessage(event.data.payload);
+        if (event.data.topic === TOUCH_TOPIC) return touchMessage(event.data.payload);
         if (event.data.topic === SCREEN_TOPIC) return screenMessage(event.data.payload);
         if (event.data.topic === AFFECT_CHANGED_TOPIC) return this.#onAffect(event.data.payload);
         return event.data.topic === EMOTION_TOPIC ? this.#onEmotion(event.data.payload) : [];
@@ -445,6 +447,11 @@ function giftMessage(payload: JsonValue): CoreMessage[] {
       label: label.slice(0, GIFT_LABEL_MAX),
     },
   ];
+}
+
+function touchMessage(payload: JsonValue): CoreMessage[] {
+  const touch = parseTouch(payload);
+  return touch === null ? [] : [{ type: "touch", ...touch }];
 }
 
 function screenMessage(payload: JsonValue): CoreMessage[] {

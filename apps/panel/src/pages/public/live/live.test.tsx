@@ -1,8 +1,8 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MemberSession } from "@/api/types";
 import { ConnectionProvider } from "@/app/connection";
 import { mockFetch, testQueryClient } from "@/test/render";
@@ -17,7 +17,8 @@ import {
   type SourceLike,
 } from "./feed";
 import { isLivePath } from "./LivePage";
-import { LiveStage, PAT_MS, poseOf } from "./LiveStage";
+import { contentBox, spotAt } from "./touch";
+import { LiveStage, PAT_MS, poseOf, RETRY_VIDEO_MS } from "./LiveStage";
 import { faceOf } from "./Mascot";
 
 const NOW: LiveSnapshot = {
@@ -27,7 +28,59 @@ const NOW: LiveSnapshot = {
   emotion: { name: "neutral", intensity: 0 },
   line: null,
   pats: { recent: 0, open: true },
+  video: { on: false, src: null },
 };
+const VIDEO_ON = { on: true, src: "/api/public/live/video/index.m3u8" };
+
+// hls.js is mocked: jsdom has no Media Source Extensions. Each instance is kept for the tests.
+const hlsState = vi.hoisted(() => ({ supported: true, all: [] as unknown[] }));
+vi.mock("hls.js", () => {
+  class FakeHls {
+    static isSupported = () => hlsState.supported;
+    static Events = { ERROR: "hlsError", FRAG_LOADED: "hlsFragLoaded" };
+    static ErrorTypes = { NETWORK_ERROR: "networkError", MEDIA_ERROR: "mediaError" };
+    handlers = new Map<string, (e: string, d: unknown) => void>();
+    config: unknown;
+    source: string | null = null;
+    media: unknown = null;
+    destroyed = false;
+    started = 0;
+    recovered = 0;
+    constructor(config: unknown) {
+      this.config = config;
+      hlsState.all.push(this);
+    }
+    on(e: string, h: (e: string, d: unknown) => void) {
+      this.handlers.set(e, h);
+    }
+    loadSource(s: string) {
+      this.source = s;
+    }
+    attachMedia(m: unknown) {
+      this.media = m;
+    }
+    startLoad() {
+      this.started += 1;
+    }
+    recoverMediaError() {
+      this.recovered += 1;
+    }
+    swapAudioCodec() {}
+    destroy() {
+      this.destroyed = true;
+    }
+  }
+  return { default: FakeHls };
+});
+interface FakeHlsLike {
+  config: Record<string, unknown>;
+  source: string | null;
+  destroyed: boolean;
+  started: number;
+  recovered: number;
+  handlers: Map<string, (e: string, d: unknown) => void>;
+}
+const hlsAll = () => hlsState.all as FakeHlsLike[];
 
 const MEMBER: MemberSession = { name: "Alice", avatar_url: null } as MemberSession;
 
@@ -63,6 +116,8 @@ const factory = (url: string) => new FakeSource(url);
 
 afterEach(() => {
   FakeSource.all = [];
+  hlsState.all = [];
+  hlsState.supported = true;
   vi.useRealTimers();
 });
 
@@ -133,9 +188,11 @@ describe("the feed on the page", () => {
   });
 
   it("is the page at /live, and nothing else", () => {
-    expect(isLivePath("/live")).toBe(true);
-    expect(isLivePath("/live?x=1")).toBe(true);
-    expect(isLivePath("/lively")).toBe(false);
+    expect(isLivePath("/watch")).toBe(true);
+    expect(isLivePath("/watch?x=1")).toBe(true);
+    expect(isLivePath("/watching")).toBe(false);
+    // The admin panel's 直播 page keeps `/live`.
+    expect(isLivePath("/live")).toBe(false);
     expect(isLivePath("/me")).toBe(false);
   });
 });
@@ -264,5 +321,190 @@ describe("the live stage", () => {
     act(() => t.source.fail(false));
     expect(screen.getAllByTestId("live-state").at(-1)).toHaveTextContent("她在語音頻道· 重新連線中…");
     expect(screen.getAllByRole("button", { name: /摸摸頭/ }).at(-1)).toBeDisabled();
+  });
+});
+
+describe("the picture and the touches", () => {
+  it("folds the video and where a pat landed into the feed", () => {
+    let view = liveReducer(initialView, { type: "hello", snapshot: NOW });
+    expect(view.now?.video).toEqual({ on: false, src: null });
+    view = liveReducer(view, { type: "video", video: VIDEO_ON });
+    expect(view.now?.video).toEqual(VIDEO_ON);
+    view = liveReducer(view, { type: "pat", pats: { recent: 1, open: true }, spot: { x: 0.25, y: 0.5 }, part: "head" });
+    expect(view.patSeq).toBe(1);
+    expect(view.patSpot).toEqual({ x: 0.25, y: 0.5 });
+    view = liveReducer(view, { type: "pat", pats: { recent: 2, open: true } });
+    expect(view.patSpot).toBeNull();
+    view = liveReducer(view, { type: "video", video: { on: false, src: null } });
+    expect(view.now?.video.on).toBe(false);
+    expect(parseLiveEvent(JSON.stringify({ type: "video", video: VIDEO_ON }))).toEqual({ type: "video", video: VIDEO_ON });
+  });
+
+  it("maps a touch onto the picture, not the box it is letterboxed in", () => {
+    // 16:9 picture in a 4:3 box: bars above and below.
+    expect(contentBox(800, 600, 1920, 1080)).toEqual({ left: 0, top: 75, width: 800, height: 450 });
+    // In a wide box: bars left and right.
+    expect(contentBox(1600, 450, 1920, 1080)).toEqual({ left: 400, top: 0, width: 800, height: 450 });
+    expect(contentBox(800, 600, 0, 0)).toBeNull();
+    expect(spotAt(400, 300, 800, 600, 1920, 1080)).toEqual({ x: 0.5, y: 0.5 });
+    expect(spotAt(0, 75, 800, 600, 1920, 1080)).toEqual({ x: 0, y: 0 });
+    expect(spotAt(800, 525, 800, 600, 1920, 1080)).toEqual({ x: 1, y: 1 });
+    expect(spotAt(200, 75 + 225, 800, 600, 1920, 1080)).toEqual({ x: 0.25, y: 0.5 });
+    expect(spotAt(400, 20, 800, 600, 1920, 1080)).toBeNull(); // on the top bar
+    expect(spotAt(400, 560, 800, 600, 1920, 1080)).toBeNull(); // on the bottom bar
+    expect(spotAt(100, 200, 1600, 450, 1920, 1080)).toBeNull(); // on a side bar
+    expect(spotAt(400, 300, 800, 600, 0, 0)).toBeNull(); // size not known yet
+  });
+
+  describe("on the stage", () => {
+    const calls: Array<{ method: string; path: string; body: unknown }> = [];
+    beforeEach(() => {
+      calls.length = 0;
+      mockFetch((method, url, body) => {
+        calls.push({ method, path: url.pathname, body });
+        return { body: { pats: { recent: 1, open: true } } };
+      });
+      Object.defineProperty(HTMLMediaElement.prototype, "play", { configurable: true, value: () => Promise.resolve() });
+      Object.defineProperty(HTMLMediaElement.prototype, "pause", { configurable: true, value: () => {} });
+      Object.defineProperty(HTMLMediaElement.prototype, "load", { configurable: true, value: () => {} });
+    });
+
+    /** The `<video>` as a 800x600 box showing a 1920x1080 picture. */
+    function sized(view: ReturnType<typeof stage>) {
+      const video = view.container.querySelector("video") as HTMLVideoElement;
+      Object.defineProperty(video, "videoWidth", { configurable: true, value: 1920 });
+      Object.defineProperty(video, "videoHeight", { configurable: true, value: 1080 });
+      Object.defineProperty(video, "clientWidth", { configurable: true, value: 800 });
+      Object.defineProperty(video, "clientHeight", { configurable: true, value: 600 });
+      video.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600, right: 800, bottom: 600, x: 0, y: 0, toJSON: () => ({}) });
+      act(() => {
+        video.dispatchEvent(new Event("loadedmetadata"));
+      });
+      return video;
+    }
+
+    it("draws her figure while OBS is not publishing", () => {
+      const s = stage();
+      s.send({ type: "hello", snapshot: NOW });
+      expect(s.figure()).not.toBeNull();
+      expect(s.container.querySelector("video")).toBeNull();
+    });
+
+    it("plays the picture with hls.js once OBS publishes, and goes back to the figure when it stops", async () => {
+      const s = stage();
+      s.send({ type: "hello", snapshot: { ...NOW, video: VIDEO_ON } });
+      expect(s.container.querySelector("video")).not.toBeNull();
+      expect(s.figure()).toBeNull();
+      await waitFor(() => expect(hlsAll()).toHaveLength(1));
+      const hls = hlsAll()[0] as FakeHlsLike;
+      expect(hls.source).toBe("/api/public/live/video/index.m3u8");
+      expect(hls.config).toMatchObject({ lowLatencyMode: true });
+      expect(screen.getByRole("button", { name: "開啟聲音" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "全螢幕" })).toBeInTheDocument();
+      // The state line and the pat button stay beside the picture.
+      expect(screen.getByTestId("live-state")).toHaveTextContent("她在語音頻道");
+      expect(screen.getByRole("button", { name: /摸摸頭/ })).toBeEnabled();
+      s.send({ type: "video", video: { on: false, src: null } });
+      expect(s.figure()).not.toBeNull();
+      expect(s.container.querySelector("video")).toBeNull();
+      expect(hls.destroyed).toBe(true);
+    });
+
+    it("tears the player down when the page goes", async () => {
+      const s = stage();
+      s.send({ type: "hello", snapshot: { ...NOW, video: VIDEO_ON } });
+      await waitFor(() => expect(hlsAll()).toHaveLength(1));
+      s.unmount();
+      expect((hlsAll()[0] as FakeHlsLike).destroyed).toBe(true);
+    });
+
+    it("plays the playlist natively where there is no Media Source (iOS Safari)", async () => {
+      hlsState.supported = false;
+      const canPlay = vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue("maybe");
+      const s = stage();
+      s.send({ type: "hello", snapshot: { ...NOW, video: VIDEO_ON } });
+      const video = s.container.querySelector("video") as HTMLVideoElement;
+      await waitFor(() => expect(video.getAttribute("src")).toBe("/api/public/live/video/index.m3u8"));
+      canPlay.mockRestore();
+    });
+
+    it("recovers a network error, and gives the picture up to her figure when it will not come back", async () => {
+      const s = stage();
+      s.send({ type: "hello", snapshot: { ...NOW, video: VIDEO_ON } });
+      await waitFor(() => expect(hlsAll()).toHaveLength(1));
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const hls = hlsAll()[0] as FakeHlsLike;
+      const fail = (type: string) => act(() => hls.handlers.get("hlsError")?.("hlsError", { fatal: true, type }));
+      fail("mediaError");
+      expect(hls.recovered).toBe(1);
+      fail("networkError");
+      act(() => vi.advanceTimersByTime(1_100));
+      expect(hls.started).toBe(1);
+      expect(s.figure()).toBeNull();
+      for (let i = 0; i < 5; i++) fail("networkError");
+      expect(s.figure()).not.toBeNull();
+      expect(screen.getByTestId("live-state")).toHaveTextContent("直播畫面連不上");
+      // After a while it is tried again.
+      act(() => vi.advanceTimersByTime(RETRY_VIDEO_MS + 100));
+      expect(s.container.querySelector("video")).not.toBeNull();
+    });
+
+    it("sends a touch as a spot on the picture, ignores the bars, and shows the hand at once", async () => {
+      const s = stage();
+      s.send({ type: "hello", snapshot: { ...NOW, video: VIDEO_ON } });
+      sized(s);
+      const layer = await screen.findByTestId("touch-layer");
+      fireEvent.click(layer, { clientX: 400, clientY: 20 }); // the bar above the picture
+      expect(calls).toEqual([]);
+      fireEvent.click(layer, { clientX: 200, clientY: 300 });
+      expect(s.container.querySelector("[data-spot=own]")).not.toBeNull();
+      await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("她感覺到了"));
+      expect(calls).toEqual([{ method: "POST", path: "/api/member/live/pat", body: { x: 0.25, y: 0.5 } }]);
+      // Her own pat coming back with its spot does not draw a second hand.
+      s.send({ type: "pat", pats: { recent: 1, open: true }, spot: { x: 0.25, y: 0.5 }, part: "body" });
+      expect(s.container.querySelectorAll("[data-spot]")).toHaveLength(1);
+    });
+
+    it("keeps the button for the keyboard, which pats without a spot", async () => {
+      const s = stage();
+      s.send({ type: "hello", snapshot: { ...NOW, video: VIDEO_ON } });
+      await userEvent.click(screen.getByRole("button", { name: /摸摸頭/ }));
+      await waitFor(() => expect(calls).toHaveLength(1));
+      expect(calls[0]?.body).toEqual({});
+    });
+
+    it("shows another viewer's pat as a small hand where it landed", async () => {
+      const s = stage();
+      s.send({ type: "hello", snapshot: { ...NOW, video: VIDEO_ON } });
+      sized(s);
+      s.send({ type: "pat", pats: { recent: 1, open: true }, spot: { x: 0.7, y: 0.3 }, part: "face" });
+      const hand = s.container.querySelector("[data-spot=other]") as HTMLElement;
+      expect(hand).not.toBeNull();
+      expect(hand.style.left).toBe("70%");
+      expect(hand.style.top).toBe("30%");
+      expect(calls).toEqual([]);
+    });
+
+    it("does not touch while pats are closed, and a visitor is sent to log in instead", () => {
+      const closed = stage();
+      closed.send({ type: "hello", snapshot: { ...NOW, video: VIDEO_ON, pats: { recent: 0, open: false } } });
+      expect(screen.queryByTestId("touch-layer")).toBeNull();
+      expect(screen.queryByTestId("touch-login")).toBeNull();
+      closed.unmount();
+
+      const visitor = stage(null, "/api/auth/oauth/login?next=%2Flive");
+      visitor.send({ type: "hello", snapshot: { ...NOW, video: VIDEO_ON } });
+      expect(screen.queryByTestId("touch-layer")).toBeNull();
+      expect(screen.getByTestId("touch-login")).toHaveAttribute("href", "/api/auth/oauth/login?next=%2Flive");
+    });
+
+    it("remembers that the sound was turned on", async () => {
+      const s = stage();
+      s.send({ type: "hello", snapshot: { ...NOW, video: VIDEO_ON } });
+      await userEvent.click(screen.getByRole("button", { name: "開啟聲音" }));
+      expect(localStorage.getItem("miyoria.live.sound")).toBe("on");
+      expect(screen.getByRole("button", { name: "靜音" })).toBeInTheDocument();
+      localStorage.clear();
+    });
   });
 });

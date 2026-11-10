@@ -27,6 +27,7 @@ import {
   VERSION,
 } from "./protocol.js";
 import { SongVideo } from "./song-video.js";
+import { TouchConfigSchema } from "./touch.js";
 import {
   ApiError,
   ERROR_USER_DENIED,
@@ -68,6 +69,7 @@ export const StageConfigSchema = z.object({
   blink: BlinkConfigSchema.prefault({}),
   emotion: EmotionConfigSchema.prefault({}),
   gesture: GestureConfigSchema.prefault({}),
+  touch: TouchConfigSchema.prefault({}),
 });
 export type StageConfigSection = z.output<typeof StageConfigSchema>;
 
@@ -385,6 +387,10 @@ class Stage {
         return;
       case "screen":
         this.#overlay.screen(msg);
+        return;
+      case "touch":
+        this.#overlay.touch(msg);
+        this.#avatar?.touch(msg.part);
         return;
       case "status_request":
         this.#answer(msg.id, () => this.#refreshHotkeys());

@@ -1,5 +1,56 @@
 import { z } from "zod";
 
+/** `[x0, y0, x1, y1]` on the video frame, each 0..1, origin top-left; `[]` = never chosen. */
+const Rect = z.array(z.number().min(0).max(1)).refine(
+  (r) => {
+    if (r.length === 0) return true;
+    const [x0, y0, x1, y1] = r;
+    return r.length === 4 && (x0 ?? 1) < (x1 ?? 0) && (y0 ?? 1) < (y1 ?? 0);
+  },
+  {
+    message: "a rect is [x0, y0, x1, y1] in 0..1 with x0 < x1 and y0 < y1, or empty",
+  },
+);
+
+const HttpUrl = z.string().refine(
+  (value) => {
+    try {
+      const { protocol } = new URL(value);
+      return protocol === "http:" || protocol === "https:";
+    } catch {
+      return false;
+    }
+  },
+  { message: "must be an http(s) URL" },
+);
+
+/** `[modules.live.video]`: her picture from OBS through MediaMTX, and what a touch on it lands on. */
+export const LiveVideoConfigSchema = z.object({
+  /** Off: no video, the page keeps the drawn figure. */
+  enabled: z.boolean().default(false),
+  /** Base URL of the path's LL-HLS files, ending with `/`. */
+  hls: HttpUrl.refine((u) => u.endsWith("/"), { message: "must end with /" }).default(
+    "http://127.0.0.1:8888/live/miyoria/",
+  ),
+  /** MediaMTX control API, polled to know whether OBS is publishing. */
+  api: HttpUrl.default("http://127.0.0.1:9997"),
+  /** The MediaMTX path OBS publishes to. */
+  path: z.string().min(1).max(200).default("live/miyoria"),
+  /**
+   * MediaMTX's `hlsCDNSecret` (env `MTX_HLSCDNSECRET`): sent upstream as a Bearer token so its HLS
+   * needs no cookies. Required for video: enabled without it stays off (with a warning). Never
+   * logged, never sent to a browser.
+   */
+  secret: z.string().max(512).default(""),
+  poll_ms: z.number().int().min(500).max(60_000).default(2_000),
+  /** Where her head, face and body are on the frame; face wins over head wins over body. */
+  head: Rect.default([0.62, 0.1, 0.88, 0.38]),
+  face: Rect.default([0.67, 0.22, 0.83, 0.4]),
+  body: Rect.default([0.58, 0.35, 0.92, 1.0]),
+});
+
+export type LiveVideoConfig = z.output<typeof LiveVideoConfigSchema>;
+
 /**
  * `[modules.live]`: the live page's feed and its head-pats (docs/design/v4-plan.md §9.2).
  *
@@ -44,6 +95,7 @@ export const LiveConfigSchema = z.object({
   per_person_per_minute: z.number().int().min(1).max(120).default(10),
   /** Pats everyone together may give per minute. */
   per_minute: z.number().int().min(1).max(10_000).default(120),
+  video: LiveVideoConfigSchema.prefault({}),
 });
 
 export type LiveConfig = z.output<typeof LiveConfigSchema>;
