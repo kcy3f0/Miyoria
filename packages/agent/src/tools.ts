@@ -26,7 +26,7 @@ export class ReactTool implements Tool {
       properties: {
         emoji: {
           type: "string",
-          description: "一個 emoji,例如 👍、😤、🐋",
+          description: "一個 emoji,例如 👍、😤、🐋;伺服器表情寫 :名字:",
         },
       },
       required: ["emoji"],

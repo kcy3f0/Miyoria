@@ -262,7 +262,7 @@ export function emojiContributor(
           key: EMOJI_CONTRIBUTOR,
           title: "伺服器表情",
           body: [
-            "這個伺服器的自訂表情和意思。別人訊息裡的 :名字: 就是這些;你想用時寫 :名字:,偶爾、適時用就好,一則最多一個。",
+            "這個伺服器的自訂表情和意思。別人訊息裡的 :名字: 就是這些;你想用時寫 :名字:,偶爾、適時用就好,一則最多一個。用 react 按表情時也可以填 :名字:。",
             ...lines,
           ].join("\n"),
           order: 70,

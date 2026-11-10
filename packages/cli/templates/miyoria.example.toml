@@ -195,6 +195,8 @@ presence_intents = true
 # 伺服器自訂 emoji(docs/design/server-emoji.md):她看得到每個 emoji 的意思、寫 :名字: 就會送出那個 emoji。
 # 沒寫意思的 emoji,如果聊天模型看得懂圖,會自己看一次圖寫一句(存起來,只看一次)。
 # 頻率:一則最多 per_message 個;她在同一個頻道最近 window_messages 則裡最多 max_in_window 則有;同一個不連續用。
+# 按表情反應(react)也可以用 :名字:,次數照 [modules.agent.rhythm] 的反應上限。清單放在主線提示詞對話紀錄前面那段
+# (字數上限是 [modules.agent.mainline] 的 emoji_chars)。
 # [modules."platform.discord.bot".emoji]
 # enabled = true
 # auto_describe = true
@@ -632,6 +634,7 @@ barge_in = "selective"     # 有人插話時:selective(只有這回合要回的�
 # life_chars = 800               # 「今天的她」(她做過的事),放在對話紀錄前面
 # skills_chars = 800             # 她的技能索引(一個名字加一行)
 # notebook_chars = 600           # 筆記本索引
+# emoji_chars = 1200             # Discord 伺服器自訂表情和意思的清單(表變了才會變,放在對話紀錄前面)
 # just_now_chars = 1200          # 「剛才」她在每個地方做了什麼(放在對話紀錄後面)
 # elsewhere_chars = 900          # 她在的其他地方在聊什麼
 # trace_chars = 600              # 她的工具帶回來的結果,留幾行在她那句回覆旁邊的紀錄裡(一回合所有呼叫合計)

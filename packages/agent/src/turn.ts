@@ -265,10 +265,13 @@ const UNLIMITED = Number.MAX_SAFE_INTEGER;
 /** History lines looked through for suspicious messages. */
 const FLAGGED_HISTORY = 12;
 /**
- * Contributor sections the main line shows before the history (v4 §4.1): they change when she
- * writes a page, not every turn. The rest of what contributors say is data of the turn.
+ * Contributor sections the main line shows before the history (v4 §4.1), the most stable first:
+ * the server's own emoji (`server_emoji` of packages/discord emoji.ts: they change when someone
+ * adds one) and her notebook's index (when she writes a page). The rest of what contributors say
+ * is data of the turn.
  */
-const SLOW_SECTIONS: ReadonlySet<string> = new Set(["notebook"]);
+const SLOW_ORDER: readonly string[] = ["server_emoji", "notebook"];
+const SLOW_SECTIONS: ReadonlySet<string> = new Set(SLOW_ORDER);
 /** Title of 「今天的她」 (v4 §6.2). */
 const LIFE_TITLE = "今天的你";
 const DAY_MS = 86_400_000;
@@ -1892,8 +1895,8 @@ class Turn {
   }
 
   /**
-   * The slow part of the main line's data (v4 §4.1), the most stable first: her skills, her
-   * notebook's index, 「今天的她」, the people here. Each has a budget of its own, never a share
+   * The slow part of the main line's data (v4 §4.1), the most stable first: her skills, the
+   * server's emoji, her notebook's index, 「今天的她」, the people here. Each has a budget of its own, never a share
    * of a pool that the turn's other data could change.
    */
   #mainSlow(
@@ -1907,7 +1910,9 @@ class Turn {
       // The skill index comes as a data block; anything else is made one.
       extras.slow.push(skills.includes("⟦資料") ? skills : dataBlock("skills", "你的技能", skills));
     }
-    const sections: PromptSection[] = contributed.map((s, i) => ({ ...s, order: i }));
+    const sections: PromptSection[] = [...contributed]
+      .sort((a, b) => SLOW_ORDER.indexOf(a.key) - SLOW_ORDER.indexOf(b.key))
+      .map((s, i) => ({ ...s, order: i }));
     const life = this.#mainLife();
     if (life !== null) {
       sections.push({ key: "life", title: LIFE_TITLE, body: life, order: sections.length });
@@ -1923,7 +1928,12 @@ class Turn {
     const { data } = contributedData(sections);
     const slow = budgetBlocks(data, {
       total: UNLIMITED,
-      budgets: { notebook: m.notebook_chars, life: m.life_chars, people: m.people_chars },
+      budgets: {
+        server_emoji: m.emoji_chars,
+        notebook: m.notebook_chars,
+        life: m.life_chars,
+        people: m.people_chars,
+      },
       defaultBudget: m.notebook_chars,
     });
     extras.slow.push(...slow.blocks);

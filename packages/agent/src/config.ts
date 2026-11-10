@@ -393,6 +393,11 @@ export const MainLineConfigSchema = z.object({
   skills_chars: z.number().int().nonnegative().default(800),
   /** The index of her notebook (contributor `notebook`), before the history. */
   notebook_chars: z.number().int().nonnegative().default(600),
+  /**
+   * The server's custom emoji and their meanings (contributor `server_emoji`, Discord), before
+   * the history: they change when someone adds or renames one, not every turn.
+   */
+  emoji_chars: z.number().int().nonnegative().default(1200),
   /** What she did just now, across every place (contributor `just_now`), after the history. */
   just_now_chars: z.number().int().nonnegative().default(1200),
   /** What is going on in the other places she is in (contributor `elsewhere`), after it. */

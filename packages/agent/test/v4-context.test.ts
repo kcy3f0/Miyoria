@@ -293,6 +293,42 @@ describe("the slow part and the turn's data (§4.1)", () => {
     expect(world.profileCalls[0]?.where.talking_with).toEqual(["p-Alice", "p-Bob"]);
   });
 
+  it("the server's emoji list (PR 8) is a slow block, before the notebook, and out of the turn's data", async () => {
+    const world = new World();
+    // Gathered after the notebook (order 70): placed before it all the same, as the more stable.
+    world.registry.register({
+      key: "server_emoji",
+      contribute: async () => [
+        {
+          key: "server_emoji",
+          title: "伺服器表情",
+          body: "這個伺服器的自訂表情和意思。\n- :fanfan: 一碗白飯,討飯用",
+          order: 70,
+        },
+      ],
+    });
+    const llm = new Scripted([reply("嗯")]);
+    await rig(llm, (s) => world.provide(s)).then(async (h) => {
+      const c = channel("c");
+      h.say(incoming(c, "Bob", "第一句"));
+      await wait(10);
+      h.say(mention(c, "Alice", "好啊"));
+      await wait(3000);
+    });
+    const request = llm.requests[0];
+    const history = at(request, "Bob: 第一句");
+    const slow = at(request, ":fanfan:");
+    expect(slow).toBeGreaterThan(0);
+    expect(slow).toBeLessThan(history);
+    expect(at(request, "人/Alice")).toBe(slow);
+    const before = text(request?.messages[slow]);
+    const order = ["技能清單", ":fanfan:", "人/Alice"].map((n) => before.indexOf(n));
+    expect(order.every((n) => n >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // Once only: not again among the turn's data after the history.
+    expect((request?.messages ?? []).filter((m) => text(m).includes(":fanfan:"))).toHaveLength(1);
+  });
+
   it("two turns in a row share their prompt up to the newest line, slow blocks included", async () => {
     const world = new World();
     const llm = new Scripted([reply("嗯"), reply("好")]);
@@ -549,6 +585,7 @@ describe("the parts of it", () => {
     expect(m.life_chars).toBe(800);
     expect(m.skills_chars).toBe(800);
     expect(m.notebook_chars).toBe(600);
+    expect(m.emoji_chars).toBe(1200);
     expect(m.just_now_chars).toBe(1200);
     expect(m.elsewhere_chars).toBe(900);
     expect(m.trace_chars).toBe(600);
