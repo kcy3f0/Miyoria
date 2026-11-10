@@ -75,6 +75,15 @@ export const SLASH_REGROUP: Readonly<Record<string, string>> = {
   "me shop": "me play shop",
 };
 
+/**
+ * The command line a person on `platform` types for `path` (`me album` is `/me play album` on
+ * Discord). Texts that tell people what to type use this, so they never name a path that the
+ * platform does not have.
+ */
+export function typedCommand(path: string, platform: string): string {
+  return `/${platform === "discord" ? (SLASH_REGROUP[path] ?? path) : path}`;
+}
+
 /** Display order of the top-level commands (e.g. in `/help`). */
 export const CATEGORY_ORDER: readonly string[] = [
   "miyo",
