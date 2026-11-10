@@ -10,8 +10,15 @@ import {
   type LiveSnapshot,
 } from "@miyoria/types";
 import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
-import { LIVE_STREAMS_PER_CLIENT, liveRoutes, PATS_CLOSED, sseMessage } from "../src/live.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  LIVE_STREAMS_PER_CLIENT,
+  liveRoutes,
+  PATS_CLOSED,
+  sseMessage,
+  VIDEO_PER_CLIENT,
+  videoUrl,
+} from "../src/live.js";
 import { Monitor } from "../src/monitor.js";
 import { PublicConfigSchema, PublicSide } from "../src/public.js";
 import type { SessionRecord } from "../src/session.js";
@@ -24,12 +31,17 @@ const SNAPSHOT: LiveSnapshot = {
   emotion: { name: "neutral", intensity: 0 },
   line: null,
   pats: { recent: 0, open: true },
+  video: { on: false, src: null },
 };
 
 class FakeFeed implements LiveFeed {
   listeners = new Set<(e: LiveEvent) => void>();
   pats: LivePatter[] = [];
   outcome: LivePatOutcome = { status: "ok", pats: { recent: 1, open: true } };
+  info: ReturnType<LiveFeed["video"]> = null;
+  video(): ReturnType<LiveFeed["video"]> {
+    return this.info;
+  }
   constructor(private readonly max = 100) {}
   snapshot(): LiveSnapshot {
     return SNAPSHOT;
@@ -216,5 +228,189 @@ describe("POST /api/member/live/pat", () => {
     expect(closed.status).toBe(403);
     expect(await closed.json()).toEqual({ error: PATS_CLOSED });
     expect((await pat(rig(undefined).app)).status).toBe(503);
+  });
+});
+
+describe("POST /api/member/live/pat with a spot", () => {
+  it("carries a spot to the feed, and takes none", async () => {
+    const feed = new FakeFeed();
+    expect((await pat(rig(feed).app, { x: 0.25, y: 1 })).status).toBe(200);
+    expect(feed.pats[0]?.spot).toEqual({ x: 0.25, y: 1 });
+    expect((await pat(rig(feed).app, {})).status).toBe(200);
+    expect(feed.pats[1]?.spot).toBeUndefined();
+  });
+
+  it("refuses half a spot, out of range, not a number, or anything more", async () => {
+    const feed = new FakeFeed();
+    const { app } = rig(feed);
+    for (const body of [
+      { x: 0.5 },
+      { y: 0.5 },
+      { x: 1.01, y: 0 },
+      { x: -0.1, y: 0 },
+      { x: "0.5", y: 0.5 },
+      { x: null, y: 0.5 },
+      { x: 0.5, y: 0.5, account: "1" },
+    ]) {
+      expect((await pat(app, body)).status).toBe(422);
+    }
+    expect(feed.pats).toEqual([]);
+  });
+});
+
+describe("videoUrl", () => {
+  const base = "http://127.0.0.1:8888/live/miyoria/";
+  const q = (s = "") => new URLSearchParams(s);
+
+  it("takes the files MediaMTX serves", () => {
+    for (const file of [
+      "index.m3u8",
+      "video1_stream.m3u8",
+      "audio2_stream.m3u8",
+      "afeec1028f39_video1_part22.mp4",
+      "seg0.m4s",
+      "a.ts",
+      "x.aac",
+    ]) {
+      expect(videoUrl(base, file, q())).toBe(`${base}${file}`);
+    }
+  });
+
+  it("refuses anything else", () => {
+    for (const file of [
+      "",
+      "..",
+      "../index.m3u8",
+      "a/b.m3u8",
+      "a\\b.m3u8",
+      ".hidden.m3u8",
+      "a..b.m3u8",
+      "index",
+      "index.html",
+      "index.m3u8/",
+      "a%2Fb.m3u8",
+      "a b.m3u8",
+      `${"a".repeat(130)}.m3u8`,
+    ]) {
+      expect(videoUrl(base, file, q())).toBeNull();
+    }
+  });
+
+  it("forwards only the LL-HLS query, and only well-formed", () => {
+    const out = videoUrl(
+      base,
+      "video1_stream.m3u8",
+      q("_HLS_msn=12&_HLS_part=3&_HLS_skip=YES&token=x&hlsSession=1"),
+    );
+    expect(out).toBe(`${base}video1_stream.m3u8?_HLS_msn=12&_HLS_part=3&_HLS_skip=YES`);
+    expect(videoUrl(base, "a.m3u8", q("_HLS_msn=-1&_HLS_part=1e3&_HLS_skip=NO"))).toBe(
+      `${base}a.m3u8`,
+    );
+  });
+});
+
+describe("GET /api/public/live/video/:file", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const INFO = { on: true, upstream: "http://mtx/live/miyoria/", secret: "s3cret", max_viewers: 2 };
+
+  function live(info: ReturnType<LiveFeed["video"]> = INFO) {
+    const feed = new FakeFeed();
+    feed.info = info;
+    return rig(feed).app;
+  }
+
+  it("proxies with the secret only, and passes the headers that matter", async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      seen.push({ url, init });
+      return new Response("#EXTM3U", {
+        status: 200,
+        headers: {
+          "content-type": "application/vnd.apple.mpegurl",
+          "cache-control": "public, max-age=1",
+          "set-cookie": "hlsSession=1",
+          "content-length": "7",
+        },
+      });
+    });
+    const res = await live().request("/api/public/live/video/index.m3u8?_HLS_msn=4&x=1", {
+      headers: { cookie: "miyoria_session=zzz", authorization: "Bearer mine", accept: "*/*" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("#EXTM3U");
+    expect(res.headers.get("content-type")).toBe("application/vnd.apple.mpegurl");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=1");
+    expect(res.headers.get("content-length")).toBe("7");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect(seen[0]?.url).toBe("http://mtx/live/miyoria/index.m3u8?_HLS_msn=4");
+    expect(seen[0]?.init.redirect).toBe("manual");
+    expect(seen[0]?.init.headers).toEqual({ authorization: "Bearer s3cret", accept: "*/*" });
+  });
+
+  it("is 404 while video is off or not publishing, and for a bad file", async () => {
+    const fetched = vi.fn();
+    vi.stubGlobal("fetch", fetched);
+    expect((await live(null).request("/api/public/live/video/index.m3u8")).status).toBe(404);
+    expect(
+      (await live({ ...INFO, on: false }).request("/api/public/live/video/index.m3u8")).status,
+    ).toBe(404);
+    for (const path of ["..%2Findex.m3u8", "a%2Fb.m3u8", "index.html", "%2e%2e"]) {
+      expect((await live().request(`/api/public/live/video/${path}`)).status).toBe(404);
+    }
+    expect(fetched).not.toHaveBeenCalled();
+  });
+
+  it("maps upstream trouble: 404 stays, the rest is 502", async () => {
+    for (const [up, down] of [
+      [404, 404],
+      [401, 502],
+      [302, 502],
+      [500, 502],
+    ] as const) {
+      vi.stubGlobal("fetch", async () => new Response("no", { status: up }));
+      expect((await live().request("/api/public/live/video/a.m3u8")).status).toBe(down);
+    }
+    vi.stubGlobal("fetch", async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    expect((await live().request("/api/public/live/video/a.m3u8")).status).toBe(502);
+  });
+
+  it("answers HEAD without a body", async () => {
+    vi.stubGlobal("fetch", async () => new Response(null, { status: 200 }));
+    const res = await live().request("/api/public/live/video/a.m3u8", { method: "HEAD" });
+    expect(res.status).toBe(200);
+  });
+
+  it("limits what one client holds at once, and frees a slot when one ends", async () => {
+    vi.stubGlobal(
+      "fetch",
+      async () => new Response(new ReadableStream({ start() {} }), { status: 200 }),
+    );
+    const app = live({ ...INFO, max_viewers: 100 });
+    const open: Response[] = [];
+    for (let i = 0; i < VIDEO_PER_CLIENT; i++) {
+      open.push(await app.request("/api/public/live/video/a.m3u8"));
+    }
+    const refused = await app.request("/api/public/live/video/a.m3u8");
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("retry-after")).not.toBeNull();
+    await open[0]?.body?.cancel();
+    expect((await app.request("/api/public/live/video/a.m3u8")).status).toBe(200);
+  });
+
+  it("limits the total to three per viewer the feed takes", async () => {
+    vi.stubGlobal(
+      "fetch",
+      async () => new Response(new ReadableStream({ start() {} }), { status: 200 }),
+    );
+    const feed = new FakeFeed();
+    feed.info = { ...INFO, max_viewers: 1 };
+    const { app } = rig(feed);
+    for (let i = 0; i < 3; i++) {
+      expect((await app.request("/api/public/live/video/a.m3u8")).status).toBe(200);
+    }
+    expect((await app.request("/api/public/live/video/a.m3u8")).status).toBe(429);
   });
 });
