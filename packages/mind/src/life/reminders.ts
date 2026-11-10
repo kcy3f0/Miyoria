@@ -8,6 +8,12 @@
 // a stable attention key (`reminder:<id>`, the revision counting how often it came due), and she
 // decides what to say. Owner rules screen the proposal, the Arbiter's quiet hours and pause hold
 // it back until they end (§8.4).
+//
+// A timer about a person is a wish too (`@miyoria/types` `wish.ts`), and must not be a fourth way
+// to raise one (2026-11-10: a proposal, two promises and a goal asked S the same thing). Setting
+// one about something they answered already is refused; a one-off timer is cancelled once she
+// asked (a daily one stays: tomorrow is another question); and what comes due is screened again
+// on the board before it reaches the Floor.
 
 import {
   type ActionResult,
@@ -36,6 +42,9 @@ import {
   repairHandleText,
   sameAccount,
   toTimestamp,
+  type Wish,
+  type Wishes,
+  wishHolder,
 } from "@miyoria/types";
 import { z } from "zod";
 
@@ -161,6 +170,8 @@ export interface ReminderBookOptions {
   deliver: Deliver;
   /** Every new, fired or ended timer (for the panel). */
   publish?: (reminder: Reminder, state: "set" | "fired" | "held" | "done" | "cancelled") => void;
+  /** What she wants to ask whom (the arbiter's `WishesKey`), when it runs. */
+  wishes?: () => Wishes | null;
 }
 
 /** Her timers: `ReminderDeskKey`. Reads answer from memory; writes persist in the background. */
@@ -263,6 +274,15 @@ export class ReminderBook implements ReminderDesk {
     const id = newId();
     const person =
       input.person !== null && isValidHandle(input.person.trim()) ? input.person.trim() : null;
+    const wish =
+      person === null
+        ? null
+        : (this.#o.wishes?.()?.hold(person, what, wishHolder("reminder", id)) ?? null);
+    if (wish?.state === "closed" && !input.daily) {
+      throw new ReminderError(
+        wish.end === "stop" ? "對方說你問過了,不要再問" : "這件事對方已經回答過了,不用提醒",
+      );
+    }
     const reminder: Reminder = {
       id,
       key: reminderKey(id),
@@ -290,6 +310,16 @@ export class ReminderBook implements ReminderDesk {
     this.#persist(r.id);
     this.#o.publish?.(structuredClone(r), "cancelled");
     return true;
+  }
+
+  /** She asked what a one-off timer was for, or it was answered: it is not needed any more. */
+  wished(wish: Wish): void {
+    if (wish.state === "open" || wish.end === "expired") return;
+    for (const holder of wish.holders) {
+      if (!holder.startsWith("reminder:")) continue;
+      const r = this.#open.get(holder.slice("reminder:".length));
+      if (r && !r.daily) this.cancel(r.id);
+    }
   }
 
   /** Delivers what is due at `now` (one pass; passes never overlap). */
