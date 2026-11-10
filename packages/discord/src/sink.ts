@@ -20,6 +20,7 @@ import {
   type EmojiUsage,
   reactionEmoji,
   renderEmoji,
+  uncodeEmoji,
 } from "./emoji.js";
 import { PLATFORM, snowflake } from "./mapping.js";
 import { renderReply } from "./render.js";
@@ -106,7 +107,7 @@ export class DiscordSink implements PlatformSink, ReplySink {
   /** `:name:` → server emoji in guild channels, within the limits; recorded per channel. */
   #withEmoji(context: ContextKey, text: string): string {
     const emoji = this.#emoji;
-    if (emoji === null || context.scope === null || !emoji.enabled()) return text;
+    if (emoji === null || context.scope === null || !emoji.enabled()) return uncodeEmoji(text);
     const guild = context.scope;
     const rendered = renderEmoji(
       text,
@@ -169,10 +170,9 @@ export class DiscordSink implements PlatformSink, ReplySink {
     const id = snowflake(message.id, "message");
     const guild = message.context.scope;
     const table = this.#emoji?.table ?? null;
-    const resolved =
-      table !== null && guild !== null
-        ? reactionEmoji(emoji, (name) => table.get(guild, name))
-        : emoji;
+    const resolved = reactionEmoji(emoji, (name) =>
+      table !== null && guild !== null ? table.get(guild, name) : undefined,
+    );
     await inContext(
       `reacting to message ${message.id} in ${contextKeyString(message.context)}`,
       async () => {
