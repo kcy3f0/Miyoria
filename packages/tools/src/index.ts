@@ -51,6 +51,12 @@ export interface Tool {
   /** Permission node the triggering user needs, if any. */
   readonly permission?: string | null;
   /**
+   * It acts for the person who asked (their wallet, their request, their limits). In a turn where
+   * several people called her at once, the call must say whom it is for: the agent offers it a
+   * `for_whom` argument then, takes it off before `call`, and refuses a call that does not say.
+   */
+  readonly actsFor?: boolean;
+  /**
    * Runs the tool. The returned text (or the error message) goes back to the model, so keep it
    * short.
    */
