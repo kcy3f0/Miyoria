@@ -1,6 +1,7 @@
 // Per-turn context from other modules: every registered `PromptContributor` is asked
 // concurrently, each with a time limit, and the sections of those that answered in time are
-// handed to the prompt compiler (compiler.ts), which budgets them into the data message.
+// handed to the prompt compiler (compiler.ts), which budgets them into the data message. In voice
+// some are kept warm instead (`Warm`, below).
 
 import { errorMessage, getLogger } from "@miyoria/kernel";
 import type {

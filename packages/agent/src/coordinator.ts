@@ -20,7 +20,11 @@
 //
 // In voice channels the debounce is shorter (shorter still when someone calls her, and when a
 // model judged the speaker done there is little left to wait for), but it is extended (up to
-// `voice.max_debounce_ms`) while someone is speaking.
+// `voice.max_debounce_ms`) while someone is speaking. It counts from the person's last sound, not
+// from the transcript: the voice node's silence and ASR were already part of the same wait. When
+// someone calls her and part of it is left, her turn starts at once and holds its output until
+// the wait is over; anything new before that drops it and the merged turn starts over (bounded by
+// `voice.speculate_max_per_min`, counted in `miyoria_agent_voice_speculation_*`).
 //
 // An initiative request starts a turn without input, but only when the context is quiet: no
 // turn in flight, no debounce pending, no speech of hers still queued. While the Arbiter runs

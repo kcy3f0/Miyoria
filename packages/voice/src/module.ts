@@ -154,6 +154,19 @@ export class VoiceModule implements Module {
             reason: record.reason,
             total_ms: record.total_ms,
             ...record.segments,
+            // The agent's parts, so one log line reads the whole timeline.
+            ...(record.parts
+              ? {
+                  wait: record.parts.prepare.wait,
+                  decide: record.parts.prepare.decide,
+                  context: record.parts.prepare.context,
+                  prompt: record.parts.prepare.prompt,
+                  first_token: record.parts.llm_first.first_token,
+                  held: record.parts.llm_first.held,
+                  speculative: record.speculative === true,
+                }
+              : {}),
+            ...(record.filler_ms === undefined ? {} : { filler_ms: record.filler_ms }),
           },
           "voice e2e latency",
         );
