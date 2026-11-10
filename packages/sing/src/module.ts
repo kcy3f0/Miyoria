@@ -24,6 +24,7 @@ import { SingClips } from "./clips.js";
 import { registerCommands } from "./commands.js";
 import { SingConfigSchema } from "./config.js";
 import { PROMPT_KEY, SingPrompt } from "./prompt.js";
+import { ROOM_PROMPT_KEY, VoiceRoom, VoiceRoomPrompt } from "./room.js";
 import { Singer } from "./singer.js";
 
 /** The singing flow (set list, requests, playback), for the Admin API and tests. */
@@ -103,6 +104,8 @@ export class SingModule implements Module {
     commands.attach(ctx);
     const prompts = ctx.services.get(PromptContributorsKey) ?? null;
     prompts?.register(new SingPrompt(singer));
+    const room = new VoiceRoom(() => ctx.clock.now());
+    prompts?.register(new VoiceRoomPrompt(room, singer.list));
     ctx.provide(SingerKey, singer);
     ctx.provide(VoiceFloorKey, singer);
     ctx.provide(SpeechPauseKey, singer);
@@ -125,12 +128,16 @@ export class SingModule implements Module {
     const events = ctx.subscribe([
       "voice.joined",
       "voice.left",
+      "voice.participants",
       "voice.playback",
       "agent.turn.completed",
       "queue.item_activated",
     ]);
     ctx.spawn("events", async () => {
-      for await (const env of events) singer.onEvent(env.event);
+      for await (const env of events) {
+        room.onEvent(env.event);
+        singer.onEvent(env.event);
+      }
     });
     await singer.restore();
     ctx.spawn("worker", (signal) => singer.run(signal));
@@ -167,6 +174,7 @@ export class SingModule implements Module {
     running.singer.close();
     running.commands.detach();
     running.prompts?.unregister(PROMPT_KEY);
+    running.prompts?.unregister(ROOM_PROMPT_KEY);
     running.unroute?.();
     for (const unregister of running.capabilities) unregister();
   }
