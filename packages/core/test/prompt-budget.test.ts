@@ -52,8 +52,10 @@ const SPEAKS_IN = "Japanese";
 // 5000, not 4500: since v4 §4.2 a tool is offered with its whole description (`tool_chars`), not
 // its first sentence, about 410 tokens more over these 15 tools (1373 → 1784); the rest of the
 // prompt is as it was. A description cut to a sentence left her guessing what arguments mean.
+// 5200 (2026-11-11): the persona's third round (persona-v4 §8) and `react` taking several emoji
+// added about 60; live turns run without a cap, so this only keeps the compact setting honest.
 const budget = MainLineConfigSchema.parse({
-  prompt_tokens: 5000,
+  prompt_tokens: 5200,
   self_chars: 400,
   data_chars: 500,
   history_lines: 14,
