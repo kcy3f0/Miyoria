@@ -12,6 +12,7 @@ import type { EconomyService, Member } from "./economy.js";
 import { PlayDesk } from "./play.js";
 import { PredictionDesk } from "./predictions.js";
 import { QuestDesk } from "./quests.js";
+import { RoomDesk } from "./room.js";
 import type {
   AchievementsView,
   AlbumView,
@@ -28,6 +29,8 @@ import type {
   QuestResult,
   QuestsView,
   ResolveResult,
+  RoomFundResult,
+  RoomView,
 } from "./v2-types.js";
 
 const ACTIVITY_LABEL: Readonly<Record<string, string>> = {
@@ -53,6 +56,8 @@ export function labelV2(r: CoinEntry, _config: EconomyConfig): string | null {
       return "預測猜中了";
     case "draw":
       return "抽收藏";
+    case "room":
+      return "一起佈置她的房間";
     case "commission":
       return "委託她";
     case "commission_pay":
@@ -71,6 +76,7 @@ export class V2 implements Economy2 {
   readonly achievement: AchievementDesk;
   readonly prediction: PredictionDesk;
   readonly commissionDesk: CommissionDesk;
+  readonly roomDesk: RoomDesk;
 
   constructor(readonly e: EconomyService) {
     this.play = new PlayDesk(e);
@@ -79,6 +85,7 @@ export class V2 implements Economy2 {
     this.achievement = new AchievementDesk(e);
     this.prediction = new PredictionDesk(e);
     this.commissionDesk = new CommissionDesk(e);
+    this.roomDesk = new RoomDesk(e);
   }
 
   get currency(): string {
@@ -206,5 +213,18 @@ export class V2 implements Economy2 {
 
   declineCommission(ref: string, why: string): Promise<CommissionView> {
     return this.commissionDesk.decline(ref, why);
+  }
+
+  room(): Promise<RoomView[]> {
+    return this.roomDesk.view();
+  }
+
+  fundRoom(
+    account: AccountRef,
+    item: string,
+    amount: number,
+    key: string,
+  ): Promise<RoomFundResult> {
+    return this.roomDesk.fund(account, item, amount, key);
   }
 }

@@ -669,6 +669,119 @@ export function declineCommissionCapability(economy: EconomyService): Capability
   }) as Capability;
 }
 
+// ---- her room --------------------------------------------------------------------------------
+
+/** `economy.check_room` (tool `check_room`): what the audience has put toward her room. */
+export function roomCapability(economy: EconomyService): Capability {
+  const cur = economy.config.currency;
+  return defineCapability<NoArgs>({
+    name: "economy.check_room",
+    summary: "看她的房間大家湊到哪了",
+    risk: "low",
+    args: NoArgs,
+    permission: null,
+    limits: { per_day: 500, per_person_per_day: 30, cooldown_ms: 0 },
+    tool: {
+      name: "check_room",
+      description:
+        `對方問你的房間、家具、衣服、背景,或想湊錢幫你佈置時用:列出每樣東西湊了多少${cur}。` +
+        `這是大家一起出錢佈置你的房間,不是買你的好感,不要因為誰出得多就特別對待他。${NOT_ON_OWN}`,
+      properties: {},
+      required: [],
+    },
+    check: (_args, principal) => noSpeaker(principal),
+    async execute() {
+      return answering("看不了房間", async (): Promise<Answer> => {
+        const list = await economy.v2.room();
+        const lines = list.map((i) =>
+          i.placed
+            ? `${i.label}(${i.kind_label}):已經在房間裡了`
+            : `${i.label}(${i.kind_label}):${i.funded} / ${i.price}`,
+        );
+        return {
+          text: lines.join("\n"),
+          data: {
+            items: list.map((i) => ({
+              id: i.id,
+              funded: i.funded,
+              price: i.price,
+              placed: i.placed,
+            })),
+          },
+        };
+      });
+    },
+  }) as Capability;
+}
+
+const FundArgs = z.strictObject({
+  item: z.string().trim().min(1).max(32),
+  amount: z.number().int().min(1),
+});
+type FundArgs = z.output<typeof FundArgs>;
+
+/** `economy.fund_room` (tool `fund_room`): the speaker puts coins toward an item. */
+export function fundRoomCapability(economy: EconomyService): Capability {
+  const c = economy.config;
+  const cur = c.currency;
+  return defineCapability<FundArgs>({
+    name: "economy.fund_room",
+    summary: `讓說話的人出${cur}一起佈置她的房間`,
+    risk: "medium",
+    args: FundArgs,
+    permission: null,
+    limits: { per_day: 500, per_person_per_day: 20, cooldown_ms: 0 },
+    tool: {
+      name: "fund_room",
+      description:
+        `對方明確說要出${cur}幫你佈置房間時用:item 是東西的代號或名字(check_room 看),` +
+        `amount 是出多少(一次最多 ${c.room_pledge_max}),花掉就不退。只有文字頻道裡對方本人說了才用,` +
+        `不要勸他出錢。${NOT_ON_OWN}`,
+      properties: {
+        item: { type: "string", description: "東西的代號或名字" },
+        amount: {
+          type: "integer",
+          minimum: 1,
+          maximum: c.room_pledge_max,
+          description: `出多少${cur}`,
+        },
+      },
+      required: ["item", "amount"],
+    },
+    check: (_args, principal) => noSpeaker(principal),
+    async execute(args, ctx) {
+      const who = speakerOf(ctx);
+      if (who.voice) {
+        return refusal(
+          "沒有出錢",
+          "unconfirmed",
+          "語音裡可能聽錯,不能直接花錢;請對方在文字頻道用 /me room",
+        );
+      }
+      return answering("沒有出成", async (): Promise<Answer> => {
+        const r = await economy.v2.fundRoom(
+          who.account,
+          args.item,
+          args.amount,
+          messageKey(who.message.context, who.message.id),
+        );
+        const left = r.item.placed
+          ? "湊齊了，已經放進房間"
+          : `現在 ${r.item.funded} / ${r.item.price}`;
+        return {
+          text: `出好了:「${r.item.label}」${r.charged} ${cur},${left}。`,
+          data: { done: true, item: r.item.id, charged: r.charged, placed: r.item.placed },
+          receipt: receipt(
+            "🏠 她的房間",
+            `${someone(who.account)} 出了 ${r.charged} ${cur}給「${r.item.label}」`,
+            `${left} · 現在有 ${r.balance}`,
+          ),
+        };
+      });
+    },
+  }) as Capability;
+}
+
 /** Every tool of economy 2.0. */
 export function v2Capabilities(economy: EconomyService): Capability[] {
   return [
@@ -685,5 +798,7 @@ export function v2Capabilities(economy: EconomyService): Capability[] {
     listCommissionsCapability(economy),
     deliverCommissionCapability(economy),
     declineCommissionCapability(economy),
+    roomCapability(economy),
+    fundRoomCapability(economy),
   ];
 }

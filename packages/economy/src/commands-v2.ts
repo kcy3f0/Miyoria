@@ -32,6 +32,7 @@ export const V2_PATHS = [
   "me bet",
   "me commission",
   "me commissions",
+  "me room",
 ] as const;
 
 const UNAVAILABLE = "錢包現在打不開";
@@ -235,6 +236,42 @@ class Handler2 {
     });
   }
 
+  /** `/me room`: where the audience got with her room; with `item` and `amount`, puts coins in. */
+  room(inv: Invocation): Promise<CommandReply> {
+    return this.guard(async (e) => {
+      const item = inv.str("item")?.trim() ?? "";
+      const amount = inv.int("amount");
+      if (item !== "" && amount !== null) {
+        const r = await e.fundRoom(inv.invoker, item, amount, `discord:${newId()}`);
+        const left = r.item.placed
+          ? "湊齊了，放進她的房間了"
+          : `${r.item.funded} / ${r.item.price}`;
+        return cardReply(
+          [
+            { type: "text", text: `出了 ${r.charged} ${e.currency}給「${r.item.label}」，${left}` },
+            { type: "muted", text: `剩 ${r.balance}` },
+          ],
+          { accent: "neutral", title: "她的房間" },
+        );
+      }
+      const list = await e.room();
+      const lines = list.map(
+        (i) =>
+          `**${i.label}**（${i.kind_label}）${i.placed ? "　已經在房間裡" : `　${i.funded} / ${i.price}，${i.backers} 人出了`}`,
+      );
+      return cardReply(
+        [
+          { type: "text", text: lines.join("\n") },
+          {
+            type: "muted",
+            text: "大家一起出錢佈置她的房間，花掉就不退；出多出少她都一樣。用 /me room 填 item 和 amount 出錢。",
+          },
+        ],
+        { accent: "neutral", title: "她的房間" },
+      );
+    });
+  }
+
   /** `/me titles`: the titles held and the achievements still ahead. */
   titles(inv: Invocation): Promise<CommandReply> {
     return this.guard(async (e) => {
@@ -332,6 +369,18 @@ export function registerV2(registry: CommandRegistry, services: ServiceLookup): 
       ephemeral: true,
     }),
     (inv) => handler.commissions(inv),
+  );
+  registry.register(
+    commandSpec("me room", "看她的房間大家湊到哪了，或出魚幣一起佈置", {
+      args: [
+        argSpec("item", "要出錢的東西（名字或代號），不填就只看", ArgKind.string, {
+          required: false,
+        }),
+        argSpec("amount", "出多少魚幣", ArgKind.integer, { required: false }),
+      ],
+      permission: WALLET_NODE,
+    }),
+    (inv) => handler.room(inv),
   );
   registry.register(
     commandSpec("me titles", "你的稱號和成就", { permission: WALLET_NODE, ephemeral: true }),

@@ -215,6 +215,31 @@ export interface CommissionResult {
   duplicate: boolean;
 }
 
+// ---- her room --------------------------------------------------------------------------------
+
+/** On the bus when an item of her room is fully funded: whatever draws the room puts it in. */
+export const ROOM_TOPIC = "economy.room.placed";
+
+export interface RoomView {
+  id: string;
+  label: string;
+  kind: "furniture" | "outfit" | "background";
+  kind_label: string;
+  price: number;
+  funded: number;
+  /** How many people gave; never who, and never ranked. */
+  backers: number;
+  placed: boolean;
+}
+
+export interface RoomFundResult {
+  item: RoomView;
+  /** What was taken (cut to what was missing). */
+  charged: number;
+  balance: number;
+  duplicate: boolean;
+}
+
 export interface Economy2 {
   /** The currency's name (`魚幣`). */
   readonly currency: string;
@@ -285,6 +310,10 @@ export interface Economy2 {
   deliverCommission(ref: string, text: string): Promise<CommissionView>;
   /** She will not do it: the price goes back. */
   declineCommission(ref: string, why: string): Promise<CommissionView>;
+  /** Her room: every item with how far the audience got. */
+  room(): Promise<RoomView[]>;
+  /** Puts coins into an item of her room (`EconomyError` 400/402/403/409/429). */
+  fundRoom(account: AccountRef, item: string, amount: number, key: string): Promise<RoomFundResult>;
 }
 
 export const Economy2Key = serviceKey<Economy2>("Economy2");
