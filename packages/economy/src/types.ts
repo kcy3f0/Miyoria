@@ -1,7 +1,8 @@
 // The shapes shared with the panel, the stage overlay and the Discord commands. Changing one
 // changes the contract (docs/design/economy.md).
 
-import { type AccountRef, serviceKey } from "@miyoria/types";
+import { type AccountRef, type ContextKey, serviceKey } from "@miyoria/types";
+import type { AchievementUnlocked } from "./v2-types.js";
 
 export type FeedItem = "rice" | "big_bowl" | "dessert";
 export type GiftExpression = "heart" | "blush" | "squint";
@@ -120,6 +121,8 @@ export interface CheckinResult {
   gained: number;
   streak: number;
   balance: number;
+  /** Achievements the check-in unlocked (paid); absent when none. */
+  unlocked?: AchievementUnlocked[];
 }
 
 /** Refused when she is full: `accepted` false, `charged` 0. */
@@ -129,6 +132,8 @@ export interface FeedResult {
   charged: number;
   balance: number;
   message: string;
+  /** Achievements the feed unlocked (paid); absent when none. */
+  unlocked?: AchievementUnlocked[];
 }
 
 export interface SpendResult {
@@ -230,9 +235,16 @@ export interface Economy {
   /**
    * Holds `amount` for the open goal `goal` (`EconomyError`: 400 a bad amount, 402 short, 403 a
    * stranger, 409 the goal is over, 429 the most one person may pledge). The same key twice
-   * answers what the first did. Pledges are returned if the goal is not met.
+   * answers what the first did. Pledges are returned if the goal is not met. `context` is where
+   * the pledge was made: when it meets the target, a card says so there (none without one).
    */
-  pledge(account: AccountRef, goal: string, amount: number, key: string): Promise<PledgeResult>;
+  pledge(
+    account: AccountRef,
+    goal: string,
+    amount: number,
+    key: string,
+    context?: ContextKey | null,
+  ): Promise<PledgeResult>;
   /** The bounties she has open. */
   bounties(): Promise<BountyView[]>;
   /**

@@ -54,6 +54,7 @@ import {
   MAX_FEED_COUNT,
   STRANGER,
 } from "./economy.js";
+import { mutedText, unlockLines } from "./notices.js";
 import { receipt, someone } from "./receipt.js";
 import { EconomyError, FEED_ITEMS, type FeedItem, type ShopItem } from "./types.js";
 
@@ -366,7 +367,10 @@ export function acceptFoodCapability(economy: EconomyService, offers: VoiceOffer
             receipt: receipt(
               "🍚 收下了",
               `${someone(who.account)} 餵了${label}`,
-              `−${r.charged} ${cur} · 剩 ${r.balance}${less ? " · 吃不下的沒扣" : ""}`,
+              mutedText([
+                `−${r.charged} ${cur} · 剩 ${r.balance}${less ? " · 吃不下的沒扣" : ""}`,
+                ...unlockLines(r.unlocked),
+              ]),
             ),
           }),
     };
@@ -496,7 +500,7 @@ export function checkinCapability(economy: EconomyService): Capability {
           receipt: receipt(
             "📅 簽到",
             `${someone(who.account)} 拿到 ${r.gained} ${cur}`,
-            `連續第 ${r.streak} 天 · 現在有 ${r.balance}`,
+            mutedText([`連續第 ${r.streak} 天 · 現在有 ${r.balance}`, ...unlockLines(r.unlocked)]),
           ),
         };
       } catch (error) {

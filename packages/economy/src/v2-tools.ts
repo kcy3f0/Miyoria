@@ -10,6 +10,7 @@ import { typedCommand } from "@miyoria/commands";
 import type { JsonObject } from "@miyoria/types";
 import { z } from "zod";
 import type { EconomyService } from "./economy.js";
+import { bonusLine, mutedText, unlockLines } from "./notices.js";
 import { QUESTS } from "./quests.js";
 import { receipt, someone } from "./receipt.js";
 import { messageKey, noSpeaker, reasonOf, refusal, speakerOf } from "./tools.js";
@@ -113,7 +114,7 @@ export function completeQuestCapability(economy: EconomyService): Capability {
               receipt: receipt(
                 "📝 每日任務",
                 `${someone(who.account)} 聊了一件新的事,拿到 ${r.paid} ${cur}`,
-                r.bonus > 0 ? `三個任務都完成,再加 ${r.bonus}` : null,
+                mutedText([r.bonus > 0 ? bonusLine(r.bonus) : null, ...unlockLines(r.unlocked)]),
               ),
             };
           case "done":
@@ -237,7 +238,7 @@ export function drawCapability(economy: EconomyService): Capability {
           receipt: receipt(
             "🎴 抽收藏",
             `${someone(who.account)} 抽到了 ${line}`,
-            `−${r.charged} ${cur} · 現在有 ${r.balance}`,
+            mutedText([`−${r.charged} ${cur} · 現在有 ${r.balance}`, ...unlockLines(r.unlocked)]),
           ),
         };
       });
