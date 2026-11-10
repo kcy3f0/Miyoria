@@ -134,7 +134,7 @@ export function judgeAnswer(heard: string, answers: readonly string[]): Verdict 
   return close ? "close" : "miss";
 }
 
-/** How far a near miss is, for her (never the answer itself): "差一個字". */
+/** How far a near miss is, for her (never the answer itself): "差 1 個字(答案 2 個字)". */
 export function closeness(heard: string, answers: readonly string[]): string {
   const h = fold(heard);
   let best = Number.POSITIVE_INFINITY;
@@ -150,7 +150,7 @@ export function closeness(heard: string, answers: readonly string[]): string {
     }
   }
   if (!Number.isFinite(best)) return "有點接近";
-  return best <= 0 ? "幾乎一樣" : `${length} 個字裡差 ${best} 個`;
+  return best <= 0 ? "幾乎一樣" : `差 ${best} 個字(答案 ${length} 個字)`;
 }
 
 const STOP_PHRASES = [

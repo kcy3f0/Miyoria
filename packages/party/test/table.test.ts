@@ -169,7 +169,9 @@ describe("rewards", () => {
   async function playQuiz(rewards: Rewards | null, minPlayers = 2) {
     const r = rig({
       rewards: () => rewards,
-      config: { rewards: { enabled: true, coins_per_point: 7, max_coins: 10, min_players: minPlayers } },
+      config: {
+        rewards: { enabled: true, coins_per_point: 7, max_coins: 10, min_players: minPlayers },
+      },
     });
     const game = r.table.start(VOICE, "quiz", { questions: QUESTIONS }).game;
     game.next();

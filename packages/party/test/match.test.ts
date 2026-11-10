@@ -58,7 +58,7 @@ describe("judgeAnswer", () => {
 
   it("says how near a miss is without the answer", () => {
     const near = closeness("情天", ["晴天"]);
-    expect(near).toBe("2 個字裡差 1 個");
+    expect(near).toBe("差 1 個字(答案 2 個字)");
     expect(near).not.toContain("晴");
   });
 });

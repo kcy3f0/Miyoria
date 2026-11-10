@@ -168,6 +168,14 @@ export class ChainGame implements Game {
       );
       return true;
     }
+    if (other !== null && this.#used.has(fold(other))) {
+      this.#host.note(
+        `c${this.#chains}:w${n}:used:${player.key}`,
+        `${nameOf(player)} 說的「${quote(other, 8)}」已經用過了。`,
+        { untrusted: true, person: player },
+      );
+      return true;
+    }
     if (other !== null) {
       this.#pending = { player, word: other };
       this.#host.note(
