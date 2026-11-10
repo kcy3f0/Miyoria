@@ -135,10 +135,19 @@ export function joinTarget(
   return { channel: null, follow: requester.id };
 }
 
-/** The four capabilities, bound to `link` (and the default Go Live source). */
+/**
+ * Where Go Live reads from by default: the source, and whether the node's ffmpeg is the server
+ * the encoder pushes to (`listen`, default true) or pulls from one (false, e.g. MediaMTX).
+ */
+export interface GoLiveDefaults {
+  source: string;
+  listen?: boolean;
+}
+
+/** The four capabilities, bound to `link` (and the default Go Live source, or its defaults). */
 export function voiceCapabilities(
   link: VoiceLink,
-  goliveSource: () => string,
+  goliveSource: () => string | GoLiveDefaults,
   world: () => WorldState | undefined = () => undefined,
   floor: () => VoiceFloor | undefined = () => undefined,
   now: () => number = Date.now,
@@ -274,7 +283,10 @@ export function voiceCapabilities(
       if (link.isStreaming(guild)) {
         return { text: "already live", data: { already: true, joined: false } };
       }
-      const source = (args.source ?? goliveSource()).trim();
+      const defaults = goliveSource();
+      const { source: fallback, listen } =
+        typeof defaults === "string" ? { source: defaults, listen: undefined } : defaults;
+      const source = (args.source ?? fallback).trim();
       if (source === "") throw new CapabilityError("no Go Live source configured");
       let joined = false;
       if (link.channel(guild) === null) {
@@ -289,7 +301,8 @@ export function voiceCapabilities(
           throw new GoLiveJoinError(errorMessage(error), { cause: error });
         }
       }
-      await link.goliveStart({ guild, source });
+      // Only a pull is said out loud: the node's default (listen) stays its own.
+      await link.goliveStart({ guild, source, ...(listen === false ? { listen } : {}) });
       return { text: "Go Live started", data: { already: false, joined } };
     },
   });
