@@ -192,15 +192,7 @@ export class MemoryModule implements Module {
       });
     };
     ctx.spawn("consolidate", (signal) =>
-      consolidationLoop(
-        ctx,
-        engine,
-        installer,
-        sub,
-        signal,
-        () => recent.log.invalidate(),
-        seen,
-      ),
+      consolidationLoop(ctx, engine, installer, sub, signal, () => recent.log.invalidate(), seen),
     );
     if (config.forgetting.enabled) {
       ctx.spawn("forget", (signal) => maintenanceLoop(ctx, engine, signal));
