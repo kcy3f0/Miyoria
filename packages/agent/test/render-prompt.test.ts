@@ -212,7 +212,7 @@ describe("the whole prompt of the shipped persona", () => {
     const system = systemText(request);
     // One place says how long a reply is, and it names no sentence count.
     expect(system).not.toMatch(/[一二三1-3]\s*到\s*[二三四2-4]\s*句/);
-    expect(system.split("長短跟著當下").length - 1).toBe(1);
+    expect(system.split("短、口語").length - 1).toBe(1);
     // Her names are a fact, not a role she plays.
     expect(system).not.toMatch(/演的樣子|角色設定/);
     // Her mood is a state: no way to act it and no tag picked for her in the tail.

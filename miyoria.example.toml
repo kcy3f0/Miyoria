@@ -627,7 +627,7 @@ barge_in = "selective"     # 有人插話時:selective(只有這回合要回的�
 # history_trim = 0.6             # 紀錄超過預算時一次砍到預算的這個比例(0 到 1,不含 0)
 # entry_chars = 600              # 單則上限
 # memory_lines = 20              # 每回合帶進來的記憶最多幾則(0 = 照 [modules.memory] 的 recall_limit)
-# examples_chars = 2000          # 範例對話(0 = 不放);每個 session 輪替一批,同一個 session 內不變,前綴才不會變
+# examples_chars = 4000          # 範例對話(0 = 不放);每個 session 輪替一批,同一個 session 內不變,前綴才不會變
 # loop_tools = ["web_search", "web_read", "recall", "remember", "check_coins", "keep_note", "drop_note", "code_run", "voice_status", "work_list", "work_steer"]
 #                                # 回合內迴圈的工具:結果當場帶回、同一次呼叫鏈接著讀;其他工具(開遊戲、唱歌、
 #                                # 開台、進語音、work_start)交給手,結果回來另開回合。輪數上限是 [modules.agent] 的 max_tool_steps

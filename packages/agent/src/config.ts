@@ -357,7 +357,8 @@ export const MainLineConfigSchema = z.object({
    * Example dialogues, before the history (0: none). Which of them she sees turns over from one
    * session to the next and stays the same within one, so the prefix does too.
    */
-  examples_chars: z.number().int().nonnegative().default(2000),
+  // 4000 (2026-11-11): her examples grew to about 2,100 characters; at 2000 some were never shown.
+  examples_chars: z.number().int().nonnegative().default(4000),
   /** Tools that run inside the turn (`LOOP_TOOLS`); the rest go to the hands. */
   loop_tools: z.array(z.string()).default([...LOOP_TOOLS]),
   /** Calls of the loop run per round; more in one response are refused (she hears so). */
