@@ -121,6 +121,11 @@ export class EconomyModule implements Module {
         } catch (error) {
           ctx.log.warn({ err: errorMessage(error) }, "the goal and bounty sweep failed");
         }
+        try {
+          await economy.v2.sweep();
+        } catch (error) {
+          ctx.log.warn({ err: errorMessage(error) }, "the economy 2.0 sweep failed");
+        }
       }
     });
     ctx.spawn("deals", async (signal) => {

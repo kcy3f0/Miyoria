@@ -9,17 +9,21 @@ import { Collection } from "./collection.js";
 import type { EconomyConfig, Rarity } from "./config.js";
 import type { EconomyService, Member } from "./economy.js";
 import { PlayDesk } from "./play.js";
+import { PredictionDesk } from "./predictions.js";
 import { QuestDesk } from "./quests.js";
 import type {
   AchievementsView,
   AlbumView,
+  BetResult,
   DrawResult,
   Economy2,
   GiveItemResult,
   OddsRow,
+  PredictionView,
   QuestId,
   QuestResult,
   QuestsView,
+  ResolveResult,
 } from "./v2-types.js";
 
 const ACTIVITY_LABEL: Readonly<Record<string, string>> = {
@@ -39,6 +43,10 @@ export function labelV2(r: CoinEntry, _config: EconomyConfig): string | null {
       return (r.ref !== null && ACTIVITY_LABEL[r.ref]) || "一起玩";
     case "achievement":
       return "達成成就";
+    case "bet":
+      return "押預測";
+    case "bet_win":
+      return "預測猜中了";
     case "draw":
       return "抽收藏";
     case "quest":
@@ -53,12 +61,14 @@ export class V2 implements Economy2 {
   readonly quest: QuestDesk;
   readonly collection: Collection;
   readonly achievement: AchievementDesk;
+  readonly prediction: PredictionDesk;
 
   constructor(readonly e: EconomyService) {
     this.play = new PlayDesk(e);
     this.quest = new QuestDesk(e);
     this.collection = new Collection(e);
     this.achievement = new AchievementDesk(e);
+    this.prediction = new PredictionDesk(e);
   }
 
   get currency(): string {
@@ -72,6 +82,11 @@ export class V2 implements Economy2 {
     } catch (error) {
       this.e.log.warn({ err: errorMessage(error) }, "cannot check achievements");
     }
+  }
+
+  /** Settles what ran out: predictions nobody called, stakes a crash left halfway. */
+  async sweep(): Promise<void> {
+    await this.prediction.sweep();
   }
 
   /** A quest done for someone already known; a failure is logged, never thrown at the caller. */
@@ -121,5 +136,35 @@ export class V2 implements Economy2 {
 
   achievements(account: AccountRef): Promise<AchievementsView> {
     return this.achievement.view(account);
+  }
+
+  predictions(account: AccountRef | null): Promise<PredictionView[]> {
+    return this.prediction.view(account);
+  }
+
+  openPrediction(req: {
+    question: string;
+    options: readonly string[];
+    minutes: number;
+  }): Promise<PredictionView> {
+    return this.prediction.open(req);
+  }
+
+  placeBet(
+    account: AccountRef,
+    ref: string,
+    option: string | number,
+    amount: number,
+    key: string,
+  ): Promise<BetResult> {
+    return this.prediction.bet(account, ref, option, amount, key);
+  }
+
+  resolvePrediction(ref: string, option: string | number): Promise<ResolveResult> {
+    return this.prediction.resolve(ref, option);
+  }
+
+  cancelPrediction(ref: string): Promise<ResolveResult> {
+    return this.prediction.cancel(ref);
   }
 }

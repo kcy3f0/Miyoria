@@ -22,7 +22,15 @@ import { type Economy2, Economy2Key } from "./v2-types.js";
 
 const log = getLogger("economy.commands.v2");
 
-export const V2_PATHS = ["me quests", "me draw", "me album", "me giveitem", "me titles"] as const;
+export const V2_PATHS = [
+  "me quests",
+  "me draw",
+  "me album",
+  "me giveitem",
+  "me titles",
+  "me predictions",
+  "me bet",
+] as const;
 
 const UNAVAILABLE = "錢包現在打不開";
 
@@ -122,6 +130,56 @@ class Handler2 {
     });
   }
 
+  /** `/me predictions`: what is open to stake on, and how the stakes lie. */
+  predictions(inv: Invocation): Promise<CommandReply> {
+    return this.guard(async (e) => {
+      const list = await e.predictions(inv.invoker);
+      if (list.length === 0) {
+        return cardReply([{ type: "text", text: "現在沒有預測" }], { accent: "neutral" });
+      }
+      const lines = list.map((p) => {
+        const state =
+          p.status === "open"
+            ? `到 <t:${Math.floor(Date.parse(p.closes_at) / 1000)}:R> 截止`
+            : p.status === "closed"
+              ? "已截止，等結果"
+              : p.status === "resolved"
+                ? `結果：${p.winner}`
+                : "取消了";
+        const options = p.options
+          .map((o, i) => `${i + 1}. ${o.label}　${o.staked}（${o.backers} 人）`)
+          .join("\n");
+        const mine = p.my_bet ? `\n你押了 ${p.my_bet.amount} 在「${p.my_bet.option}」` : "";
+        return `**[${p.id}] ${p.question}**　${state}\n${options}${mine}`;
+      });
+      return cardReply(
+        [
+          { type: "text", text: lines.join("\n\n") },
+          {
+            type: "muted",
+            text: "猜中的人平分大家押的，不是她出錢；沒人猜中或取消就全部退回。用 /me bet 押。",
+          },
+        ],
+        { accent: "neutral", title: "預測" },
+      );
+    });
+  }
+
+  /** `/me bet`: a stake (the answer is only for the sender). */
+  bet(inv: Invocation): Promise<CommandReply> {
+    return this.guard(async (e) => {
+      const prediction = inv.str("prediction")?.trim() ?? "";
+      const option = inv.str("option")?.trim() ?? "";
+      const amount = inv.int("amount");
+      if (prediction === "" || option === "" || amount === null) {
+        return notice("warn", "要押哪個預測的哪個選項、押多少？");
+      }
+      const r = await e.placeBet(inv.invoker, prediction, option, amount, `discord:${newId()}`);
+      const line = `押了「${r.question}」的「${r.option}」${r.amount} ${e.currency}，剩 ${r.balance}。`;
+      return cardReply([{ type: "text", text: line }], { accent: "neutral" });
+    });
+  }
+
   /** `/me titles`: the titles held and the achievements still ahead. */
   titles(inv: Invocation): Promise<CommandReply> {
     return this.guard(async (e) => {
@@ -180,6 +238,24 @@ export function registerV2(registry: CommandRegistry, services: ServiceLookup): 
       ephemeral: true,
     }),
     (inv) => handler.giveItem(inv),
+  );
+  registry.register(
+    commandSpec("me predictions", "現在能押的預測：選項、押了多少、你押了什麼", {
+      permission: WALLET_NODE,
+    }),
+    (inv) => handler.predictions(inv),
+  );
+  registry.register(
+    commandSpec("me bet", "押魚幣猜預測的結果（猜中的人平分大家押的）", {
+      args: [
+        argSpec("prediction", "預測的代號（/me predictions 看）", ArgKind.string),
+        argSpec("option", "選項的號碼或名字", ArgKind.string),
+        argSpec("amount", "押多少魚幣", ArgKind.integer),
+      ],
+      permission: WALLET_NODE,
+      ephemeral: true,
+    }),
+    (inv) => handler.bet(inv),
   );
   registry.register(
     commandSpec("me titles", "你的稱號和成就", { permission: WALLET_NODE, ephemeral: true }),

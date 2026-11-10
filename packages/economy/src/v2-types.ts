@@ -127,6 +127,62 @@ export interface AchievementsView {
   titles: string[];
 }
 
+// ---- predictions -----------------------------------------------------------------------------
+
+/** What one option of a prediction stands at. */
+export interface PredictionOption {
+  label: string;
+  /** Coins staked on it, and by how many people. */
+  staked: number;
+  backers: number;
+  /** What one coin on it would return if it won now; `null` while nobody backs it. */
+  multiplier: number | null;
+}
+
+export interface PredictionView {
+  /** The short code people and her tools name it by. */
+  id: string;
+  question: string;
+  options: PredictionOption[];
+  /** Everything staked. */
+  total: number;
+  closes_at: string;
+  /** `closed`: betting ended and the result is not called yet. */
+  status: "open" | "closed" | "resolved" | "cancelled";
+  winner: string | null;
+  /** This person's own stake, if they have one. */
+  my_bet: {
+    option: string;
+    amount: number;
+    outcome: "open" | "won" | "lost" | "refunded";
+    payout: number;
+  } | null;
+}
+
+export interface BetResult {
+  prediction: string;
+  question: string;
+  option: string;
+  amount: number;
+  balance: number;
+  /** The key was used before: nothing new was staked. */
+  duplicate: boolean;
+  /** The stake's own id. */
+  stake_id: string;
+}
+
+export interface ResolveResult {
+  id: string;
+  /** The winning option; `null` when it was called off or nobody was right. */
+  winner: string | null;
+  winners: number;
+  pool: number;
+  /** What went back to people (their payouts, or every stake given back). */
+  paid: number;
+  /** Everyone got their stake back. */
+  refunded: boolean;
+}
+
 export interface Economy2 {
   /** The currency's name (`魚幣`). */
   readonly currency: string;
@@ -156,6 +212,30 @@ export interface Economy2 {
   recordCard(account: AccountRef, serial: string, traits: readonly string[]): Promise<number>;
   /** The achievements and titles of `account`. */
   achievements(account: AccountRef): Promise<AchievementsView>;
+  /** The predictions open now and the ones settled lately; `account` adds their own stake. */
+  predictions(account: AccountRef | null): Promise<PredictionView[]>;
+  /** A prediction people can stake on for `minutes` (`EconomyError`: 400 a bad one, 429 too many). */
+  openPrediction(req: {
+    question: string;
+    options: readonly string[];
+    minutes: number;
+  }): Promise<PredictionView>;
+  /**
+   * Stakes `amount` on an option (its number from 1, or its words) of the prediction `ref`
+   * (`EconomyError`: 400 a bad amount or option, 402 short, 403 a stranger, 409 closed or already
+   * staked, 429 the day's limit). The same key twice answers the first stake.
+   */
+  placeBet(
+    account: AccountRef,
+    ref: string,
+    option: string | number,
+    amount: number,
+    key: string,
+  ): Promise<BetResult>;
+  /** Calls the result: the ones who were right share the pool; nobody right gives all back. */
+  resolvePrediction(ref: string, option: string | number): Promise<ResolveResult>;
+  /** Calls a prediction off: every stake is given back. */
+  cancelPrediction(ref: string): Promise<ResolveResult>;
 }
 
 export const Economy2Key = serviceKey<Economy2>("Economy2");
