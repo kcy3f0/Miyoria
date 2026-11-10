@@ -12,7 +12,9 @@
 //
 // Her own notes are the one kind that may go `global`, and only when they are about her alone. A
 // note written in a server about one person and nobody else goes to that `person`: it comes back
-// wherever they are, their DM included, and nowhere they are not. Any other note that names or
+// in that server while they are there and in their DM, never in another server (`mayRecall`: her
+// persona promises 「其他伺服器的內容不外傳」; `source_context` keeps where it was written). Any
+// other note that names or
 // refers to someone (「我懷疑木呱是機器人」, a card someone made her) is the server's, like the rest
 // of what was said there. 2026-11-09: a global note about a card someone posted in the server
 // reached another person's DM, where she thanked that person for it.
@@ -55,10 +57,12 @@ function pushUnique(scopes: MemoryScope[], scope: MemoryScope): void {
 }
 
 /**
- * Whether `record` may be recalled where `scopes` are visible: its scope is among them, and, in a
- * private place, a `global` note learned in a server is about her alone or about one of the people
- * there alone. Notes written before server notes about others were scoped by `noteAbout` are still
- * `global`; this reads them as if they were moved (packages/memory/scripts/rescope-self-notes.ts).
+ * Whether `record` may be recalled where `scopes` are visible: its scope is among them, and a note
+ * of hers learned in a server does not leave it, but for the DM of the one person it is about.
+ * 「其他伺服器的內容不外傳」: a `person` note comes back in the server it was written in (its
+ * `source_context`) and in a private place, never in another server. Notes written before server
+ * notes were scoped by `noteAbout` are still `global`; this reads them as if they were moved
+ * (`rescoped`, packages/memory/scripts/rescope-self-notes.ts).
  */
 export function mayRecall(
   scopes: readonly MemoryScope[],
@@ -66,13 +70,28 @@ export function mayRecall(
   names: readonly NamedPerson[] = [],
 ): boolean {
   if (!hasScope(scopes, record.scope)) return false;
-  if (record.scope.type !== "global" || !privateView(scopes)) return true;
+  if (record.kind !== "self_note") return true;
   const from = record.source_context;
   if (from === null || isPrivate(from)) return true;
+  const home = sameServer(scopes, from);
+  if (record.scope.type === "person") return home || privateView(scopes);
+  if (record.scope.type !== "global") return true;
   const about = noteAbout(record.content, record.subjects, names);
   if (about.type === "self") return true;
-  return (
-    about.type === "person" && scopes.some((s) => s.type === "person" && s.person === about.person)
+  if (about.type === "others") return home;
+  const here = scopes.some((s) => s.type === "person" && s.person === about.person);
+  return here && (home || privateView(scopes));
+}
+
+/** `scopes` are of a place in the server `from` is in. */
+function sameServer(scopes: readonly MemoryScope[], from: ContextKey): boolean {
+  return scopes.some(
+    (s) =>
+      (s.type === "guild" && s.platform === from.platform && s.guild === from.scope) ||
+      (s.type === "channel" &&
+        !isPrivate(s.context) &&
+        s.context.platform === from.platform &&
+        s.context.scope === from.scope),
   );
 }
 

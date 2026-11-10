@@ -5,7 +5,8 @@
 //
 // * about her alone: stays `global`;
 // * about one person alone (tagged or named, nobody else, no 大家 / 有人 / 別人): that `person`,
-//   so it still comes back in their DM and wherever they are, and nowhere else;
+//   so it still comes back in their DM and, while they are there, in the server it was written in
+//   (`source_context`, kept as it was), and nowhere else;
 // * about anyone else: the server it was written in.
 //
 // SQLite only. Stop the node first (it holds the database), and back it up (scripts/backup.*).

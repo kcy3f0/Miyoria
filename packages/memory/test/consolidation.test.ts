@@ -294,6 +294,58 @@ describe.each(BACKENDS)("consolidation (%s store)", (backend) => {
     for (const note of ["答應 Amy 下次", "Amy 和 Owen", "有人幫我", "Amy 的拉麵", "一樣難吃"]) {
       expect(shows(all, note), note).toBe(true);
     }
+
+    // Another server, with both there too: none of g1's notes about anyone. A note about Amy is
+    // hers in g1 and in her DM, never in a server it was not written in.
+    const g2 = visibleScopes(guildCtx("g2", "c9"), [acct("2"), acct("3")], [owen, amy]);
+    const elsewhere = (await e.engine.recall(g2, [owen, amy], "拉麵", PROMPT_KINDS, 30, t0())).map(
+      (r) => r.record.content,
+    );
+    for (const note of [
+      "答應 Amy 下次",
+      "Amy 的拉麵",
+      "Owen 的拉麵最好吃",
+      "Amy 和 Owen",
+      "有人幫我",
+      "一樣難吃",
+    ]) {
+      expect(shows(elsewhere, note), note).toBe(false);
+    }
+  });
+
+  it("an old global note about someone stays in its server before it is moved too", async () => {
+    const e = await env(backend);
+    const amy = await e.person(acct("3"), "Amy");
+    const ctx = guildCtx("g1", "c1");
+    await e.engine.store(
+      {
+        kind: "self_note",
+        scope: { type: "global" },
+        subjects: [amy],
+        content: "我懷疑 Amy 的拉麵是泡麵",
+        importance: 0.8,
+        confidence: 1,
+        source_context: ctx,
+        origin: "experienced",
+        source_events: [],
+        due: null,
+      },
+      t0(-HOUR),
+    );
+    const recallIn = async (where: ContextKey, n: string) =>
+      (
+        await e.engine.recall(
+          visibleScopes(where, [acct(n)], [amy]),
+          [amy],
+          "拉麵",
+          PROMPT_KINDS,
+          5,
+          t0(),
+        )
+      ).length;
+    expect(await recallIn(ctx, "3"), "its server").toBe(1);
+    expect(await recallIn(dmCtx("d-amy"), "3"), "her DM").toBe(1);
+    expect(await recallIn(guildCtx("g2", "c9"), "3"), "another server").toBe(0);
   });
 
   it("followups_are_due_and_can_be_marked_done", async () => {
