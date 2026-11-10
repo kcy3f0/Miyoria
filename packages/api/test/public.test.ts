@@ -1813,7 +1813,14 @@ describe("the wallet", () => {
       },
     } as never);
     const economy = new EconomyService({
-      config: EconomyConfigSchema.parse(config),
+      // These tests pin the wallet's own sums: the one-time achievement and quest rewards of
+      // economy 2.0 (a first check-in, a first meal) are tested in the economy package.
+      config: EconomyConfigSchema.parse({
+        achievement_cap: 0,
+        quest_reward: 0,
+        quest_bonus: 0,
+        ...config,
+      }),
       services: s,
       profile: "p",
       clock: { now: () => Date.now() },
