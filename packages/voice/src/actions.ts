@@ -221,6 +221,15 @@ export function voiceCapabilities(
     },
   });
 
+  /**
+   * Go Live pulls from a hub (MediaMTX) that OBS publishes to for the website as well: ending Go
+   * Live then leaves OBS alone, so the website never sees the ending scene.
+   */
+  const fromHub = (): boolean => {
+    const defaults = goliveSource();
+    return typeof defaults !== "string" && defaults.listen === false;
+  };
+
   const leave = defineCapability<GuildArgs>({
     name: "voice.leave",
     summary: "離開語音頻道",
@@ -248,7 +257,7 @@ export function voiceCapabilities(
       // Without the ActivityManager (it stops the broadcast as its own step): Go Live ends
       // first, with the curtain, so she never streams from a call she left.
       if (!ctx.task && link.isStreaming(guild)) {
-        await ctx.services.get(StreamCurtainKey)?.close(ctx.signal);
+        if (!fromHub()) await ctx.services.get(StreamCurtainKey)?.close(ctx.signal);
         await link.goliveStop(guild);
       }
       await link.leave(guild);
@@ -315,7 +324,7 @@ export function voiceCapabilities(
     permission: "voice.golive",
     tool: {
       name: "stream_stop",
-      description: "結束 Discord Go Live 直播(OBS 也會停止直播)。",
+      description: "結束 Discord Go Live 直播。",
       properties: { guild: GUILD_PROPERTY },
     },
     scope: guildOf,
@@ -324,8 +333,9 @@ export function voiceCapabilities(
     async execute(args, ctx) {
       const guild = requireGuild(args, ctx.principal);
       if (!link.isStreaming(guild)) return { text: "not live", data: { stopped: false } };
-      // The stage shows the ending scene for a moment first (when it has one).
-      await ctx.services.get(StreamCurtainKey)?.close(ctx.signal);
+      // The stage shows the ending scene for a moment first (when it has one), unless OBS goes on
+      // for the website.
+      if (!fromHub()) await ctx.services.get(StreamCurtainKey)?.close(ctx.signal);
       await link.goliveStop(guild);
       return { text: "Go Live stopped", data: { stopped: true } };
     },

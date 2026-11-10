@@ -354,6 +354,22 @@ describe("voice capabilities", () => {
     expect(s.link.calls).toEqual(["curtain", "golive_stop g1"]);
   });
 
+  it("stream_stop leaves OBS alone when Go Live pulls from the hub the website also reads", async () => {
+    const s = setup(["voice.golive"], {
+      golive: () => ({ source: "rtmp://127.0.0.1:1935/live/miyoria", listen: false }),
+    });
+    s.link.streaming = true;
+    s.link.inVoice = "vc1";
+    const curtain: StreamCurtain = {
+      close: async () => {
+        s.link.calls.push("curtain");
+      },
+    };
+    s.services.provide("stage.link", StreamCurtainKey, curtain);
+    expect(await s.tools.get("stream_stop")?.call(s.ctx, {})).toBe("Go Live stopped");
+    expect(s.link.calls).toEqual(["golive_stop g1"]);
+  });
+
   it("another server is off limits for her and chat requests", async () => {
     const s = setup(["voice.join"]);
     await expect(s.tools.get("voice_join")?.call(s.ctx, { guild: "g2" })).rejects.toThrow(
