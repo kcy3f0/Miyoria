@@ -990,8 +990,15 @@ export interface E2eStats {
   samples: number;
 }
 
-/** The six segments of `speech_end → first_audio_played`, in the order a listener hears them. */
-export type E2eSegmentName = "endpoint" | "asr" | "llm_first" | "tts_queue" | "tts_first" | "playback";
+/** The segments of `speech_end → first_audio_played`, in the order a listener hears them. */
+export type E2eSegmentName =
+  | "endpoint"
+  | "asr"
+  | "prepare"
+  | "llm_first"
+  | "tts_queue"
+  | "tts_first"
+  | "playback";
 
 /** Replies to human speech over the recent window; incomplete ones are only counted, by reason. */
 export interface VoiceE2eLatency {
