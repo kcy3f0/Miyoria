@@ -164,7 +164,7 @@ Phase 0–8 先用 Rust 寫成原型(留在 git 歷史裡),之後整個改寫成
 - [ ] Minecraft 換方法(另外討論)
 - [ ] 決定中日雙語語音是否保留;speculative 生成;Silero VAD
 
-## v4 規劃(階段 0 進行中)
+## v4(程式在分支 `v4-int`,還沒上線)
 
 從「管住她」到「讓她有能力」:agent 迴圈和 context、人格重寫、開口節奏、她自己的生活、一起玩、經濟 2.0、遊戲。實測數字、原因、分階段和目前 PR 的處理見 [design/v4-plan.md](design/v4-plan.md)。
 
