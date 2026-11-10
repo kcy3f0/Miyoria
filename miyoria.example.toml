@@ -683,6 +683,8 @@ barge_in = "selective"     # 有人插話時:selective(只有這回合要回的�
 # promise_commit = true          # 她說了「我等一下進語音」之類的承諾、或寫成文字的工具之後沒有呼叫:記成承諾,不會憑空消失
 # claims = true                  # 說了只有工具才做得到的事、或說事情做好了(關鍵字比對):等動作或結果,沒有就丟掉那句並再問她一次
 # leak_screen = true             # 回覆審查:是她推理內容的行在送出前丟掉
+# self_talk = true               # 她寫給自己的盤算(「他在問我…,直接回他就好。」)只拿掉那一行,文字不送、語音不念;和 leak_screen 分開
+# prohibition_write = true       # 主人直接說「不要玩 <遊戲>」而她沒呼叫 directive_add:回合結束時用說話者的身分替她寫一條 deny
 
 # 節奏:文字頻道裡她怎麼「看一眼」和怎麼分幾則送(v4 §7.2、§7.3)。這一節在 [modules.agent.rhythm]
 # (不是 [modules.agent.mainline]),下面都是預設值

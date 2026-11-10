@@ -37,6 +37,10 @@ export const CORRECTION_KINDS = [
   "repeat_cut",
   /** An output that only kept a note was called back by a result turn to say something. */
   "noted_callback",
+  /** A line that was a note to herself about how to answer was left out (`isSelfTalk`). */
+  "self_talk_cut",
+  /** A plain "don't play <game>" she did not write down was written as a rule for her. */
+  "prohibition_written",
 ] as const;
 
 export type CorrectionKind = (typeof CORRECTION_KINDS)[number];

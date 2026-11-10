@@ -35,9 +35,11 @@ v4-plan §2.5 說她的輸出在模型寫完之後還會被改寫、扣住或重
 | 16 | `groundArgs` | `output.ts:94`;`turn.ts:3371` | 2026-11-08 填錯的伺服器 id、把文字頻道當語音頻道 | 刪掉不對的 `guild`、`voice_join` 的 `channel` | 工具說明完整、參數說明不再被砍 | `ground_args` | 留著,先量 |
 | 17 | 刪掉前一輪說過的句子 | `loop.ts:123,145`;`main.ts:842,870,951` | 2026-11-10 迴圈上線:下一輪又先說「我查一下」 | 整句一樣就不再送 | 這是迴圈帶來的,V4 沒有對應的根治 | `repeat_cut` | 留著 |
 | 18 | 拿掉寫成標籤的工具和 `<span>` | `expression.ts` `parseTag` | 2026-11-08 標籤出現在她的話裡 | 標籤不給人看,也不執行 | 原生工具呼叫 | 沒算 | 留著(格式) |
+| 19 | 寫給自己的盤算拿掉那行(PR 8) | `leak.ts:44,112`(`isSelfTalk`、`ReplyScreen`);主線 `turn.ts:2709`;V2 `turn.ts:2331`;語音 `turn.ts:1476`(`#selfTalk`) | 2026-11-08「莎露朵在問我上面訊息寫什麼,直接念給她聽就好。」 | 第三人稱、對自己下指令的那一行不送也不念,同一則的其他行照送;不算她說過的話 | 根治推理外洩(§5) | `self_talk_cut` | 開關 `self_talk` |
+| 20 | 主人說「不要玩 X」替她寫規則(PR 8) | `prohibition.ts:49`;`turn.ts:372,1431`(`keepRules`) | `mc-owner-rule-never-written`:說了四次不要玩 Minecraft,她都答應,沒有一次呼叫 `directive_add` | 回合結束時用說話者的身分寫一條 deny,規則服務照樣判斷那個人能不能寫 | 工具說明完整、迴圈內她看得到自己沒做(§4.2) | `prohibition_written` | 開關 `prohibition_write` |
 | — | 每個工具說明後的請求規則 | `actions/src/tools.ts:19` | 好感決定要不要做 | 每個能力工具說明後面附一段 | 主線已用 `slimTool` 拿掉,固定規則講一次(`output.ts:110`) | 不是輸出 | 主線已拆;V2 還在 |
 | — | 高風險動作的第二次 LLM 審核 | `packages/actions` 閘門的 `review` 階段 | | 動作被擋或要 owner 核准 | | 閘門稽核本來就記 | **外牆,不拆** |
-| — | `isSelfTalk` | `types/src/impulse.ts:145`,`arbiter.ts:370` | | 生成之前:自己起頭的發言受 Arbiter 限制 | | 不是輸出 | 不是事後修正;`prohibition.ts`(PR 8)不在這個分支 |
+| — | `isSelfTalk` | `types/src/impulse.ts:145`,`arbiter.ts:370` | | 生成之前:自己起頭的發言受 Arbiter 限制 | | 不是輸出 | 不是事後修正;和 #19 的 `leak.ts` `isSelfTalk` 同名,是不同的東西 |
 | — | 預算用完的固定句 | `signals.ts:17` | | 不呼叫模型 | | 不是輸出 | 外牆(預算) |
 
 外牆照 §15 不動:主人規則、行動閘門(含第二次審核)、送達帳本、輸出審查(`safeOutgoing`)、發言權和 Floor 的硬上限、沒在提供清單上的工具不跑(`NOT_OFFERED`)、靜音回合不開口。
@@ -81,7 +83,7 @@ v4-plan §2.5 說她的輸出在模型寫完之後還會被改寫、扣住或重
 
 ## 4. 第二到四步:開關,和什麼數字可以關
 
-`[modules.agent.corrections]`,四個都預設 `true`,每個都有測試(`corrections.test.ts`「the four of v4 §4.5 steps 2 to 4」):
+`[modules.agent.corrections]`,四個都預設 `true`,每個都有測試(`corrections.test.ts`「the four of v4 §4.5 steps 2 to 4」)。PR 8 合進來的兩個(#19、#20)也各有一個開關,同樣預設 `true`(`corrections.test.ts`「PR 8's two corrections」):
 
 ```toml
 [modules.agent.corrections]
@@ -89,7 +91,11 @@ tool_text_reask = true   # 工具寫成文字就重問(#6)
 promise_commit = true    # 台詞的承諾、寫成文字的工具變承諾(#7、#8)
 claims = true            # claims.ts 的 regex:扣留、刪掉、重問、「開始了,等我一下」(#1 到 #5)
 leak_screen = true       # 文字的推理過濾(#9)
+self_talk = true         # 寫給自己的盤算拿掉那行,文字和語音(#19);和 leak_screen 分開
+prohibition_write = true # 主人說「不要玩 X」她沒寫規則,替她寫(#20)
 ```
+
+#19、#20 還沒有上線數字,關掉的門檻照下表的做法,等量到再訂。#20 另有事故題 `mc-owner-rule-never-written`(現在是 xfail:題目只有紀錄,重播不了主線的選擇)。
 
 關掉的門檻都用面板「事後修正」讀,條件是**連續一段期間、量到的回合夠多、佔回覆低於門檻,而且 `pnpm eval` 事故題全綠**:
 

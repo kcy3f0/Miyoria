@@ -135,6 +135,8 @@ describe("config", () => {
         promise_commit: true,
         claims: true,
         leak_screen: true,
+        self_talk: true,
+        prohibition_write: true,
       },
       attention: {
         recent_window: 20,

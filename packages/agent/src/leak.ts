@@ -86,28 +86,30 @@ export class ReasoningGuard {
  * so a leak that starts with an innocent line takes that line with it.
  *
  * Off (`[modules.agent.corrections] leak_screen = false`) every line goes out as it comes: no
- * first line waits and nothing is dropped.
+ * first line waits and nothing is dropped. A note to herself (`isSelfTalk`) is a correction of
+ * its own (`self_talk`): it is left out, line by line, whether the leak screen is on or not.
  */
 export class ReplyScreen<T extends { text: string }> {
   readonly #guard = new ReasoningGuard();
   readonly #on: boolean;
+  readonly #selfTalk: boolean;
   #first: T | null = null;
   #started = false;
   /** Set once the response was judged a leak. */
   dropped = false;
   /** Lines this screen dropped (the held first line it took back included). */
   droppedLines = 0;
-
-  constructor(on = true) {
-    this.#on = on;
-  }
-
   /** Notes to herself left out of the reply (`isSelfTalk`). */
   selfTalk = 0;
 
+  constructor(on = true, selfTalk = true) {
+    this.#on = on;
+    this.#selfTalk = selfTalk;
+  }
+
   /** What may be sent now; `retracted` is set when it took the held first line back. */
   push(item: T): { send: T[]; retracted: boolean } {
-    if (!this.dropped && isSelfTalk(item.text)) {
+    if (this.#selfTalk && !this.dropped && isSelfTalk(item.text)) {
       this.selfTalk += 1;
       return { send: [], retracted: false };
     }

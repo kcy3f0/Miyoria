@@ -521,6 +521,18 @@ export const CorrectionsConfigSchema = z.object({
   claims: z.boolean().default(true),
   /** The reply screen (leak.ts): lines that are her reasoning are dropped before they are sent. */
   leak_screen: z.boolean().default(true),
+  /**
+   * A note to herself about how to answer, in the third person (leak.ts `isSelfTalk`,
+   * 2026-11-08 「莎露朵在問我上面訊息寫什麼,直接念給她聽就好。」), is left out of the reply and
+   * not said aloud. Only that line: the rest of the reply is hers.
+   */
+  self_talk: z.boolean().default(true),
+  /**
+   * The owner said plainly "don't play <game>" and she did not call `directive_add`: the rule is
+   * written for her at the end of the turn, as the person who said it (prohibition.ts); the
+   * directive service still decides whether that person may.
+   */
+  prohibition_write: z.boolean().default(true),
 });
 export type CorrectionsConfig = z.output<typeof CorrectionsConfigSchema>;
 

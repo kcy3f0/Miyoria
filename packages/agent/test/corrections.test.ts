@@ -12,6 +12,9 @@ import {
   ActivityManagerKey,
   type ActivitySnapshot,
   type CountedOutcome,
+  type DirectiveRequest,
+  type Directives,
+  DirectivesKey,
   type Envelope,
   EventLogKey,
   type JsonValue,
@@ -91,12 +94,18 @@ function idle(): ActivityManager {
   return { snapshot, task: () => null, tasks: () => [] } as unknown as ActivityManager;
 }
 
-async function rig(chat: ChatProvider, tools: Probe[] = [], config: object = {}): Promise<Harness> {
+async function rig(
+  chat: ChatProvider,
+  tools: Probe[] = [],
+  config: object = {},
+  directives: Directives | null = null,
+): Promise<Harness> {
   return Harness.build("normal", { ...(noCheck() as object), ...config }, chat, null, {
     tools,
     provide: (services) => {
       services.provide("app", PipelineKey, { pipeline: "v3" as const });
       services.provide("app", ActivityManagerKey, idle());
+      if (directives !== null) services.provide("app", DirectivesKey, directives);
     },
     before: [[new FactsModule(null, "p"), null]],
     modules: [[new ArbiterModule("p"), { quiet_start_hour: 0, quiet_end_hour: 0 }]],
@@ -283,6 +292,74 @@ describe("the four of v4 §4.5 steps 2 to 4, each behind its own flag", () => {
       { text: "情緒標記:用 smug 吧" },
     ]);
     expect(screen.flush()).toEqual([]);
+  });
+});
+
+/** A directive service that writes down every rule it is asked for (and allows everything). */
+function recording(): Directives & { added: DirectiveRequest[] } {
+  const added: DirectiveRequest[] = [];
+  return {
+    added,
+    inject: () => [],
+    wishes: () => [],
+    filterTools: <T extends { name: string }>(tools: readonly T[]) => [...tools],
+    forbids: () => null,
+    screen: () => ({ outcome: "allow" }),
+    check: async () => ({ outcome: "allow" }),
+    add: async (request: DirectiveRequest) => {
+      added.push(request);
+      return { status: "question", question: "test" };
+    },
+  } as unknown as Directives & { added: DirectiveRequest[] };
+}
+
+describe("PR 8's two corrections, each counted and behind its own flag", () => {
+  /** 2026-11-08: a note to herself about how to answer, then her answer (leak.test.ts). */
+  const NOTE = "莎露朵在問我上面訊息寫什麼,直接念給她聽就好。\n上面寫的是「明天見」喔";
+
+  it("self_talk: on, only the note to herself is left out and counted; off, it is sent", async () => {
+    const on = await rig(new Scripted([reply(NOTE)]));
+    on.say(mention(C, "Alice", "上面寫什麼"));
+    await wait(3000);
+    expect(on.sink.texts()).toEqual(["上面寫的是「明天見」喔"]);
+    expect(counted(on)).toEqual({ self_talk_cut: 1 });
+
+    const off = await rig(new Scripted([reply(NOTE)]), [], { corrections: { self_talk: false } });
+    off.say(mention(C, "Alice", "上面寫什麼"));
+    await wait(3000);
+    expect(off.sink.texts()).toEqual(NOTE.split("\n"));
+    expect(counted(off).self_talk_cut).toBeUndefined();
+  });
+
+  it("self_talk is its own flag: with the leak screen off, the note is still left out", () => {
+    const screen = new ReplyScreen<{ text: string }>(false, true);
+    expect(screen.push({ text: "直接念給她聽就好。" }).send).toEqual([]);
+    expect(screen.push({ text: "情緒標記:用 smug 吧" }).send).toHaveLength(1);
+    expect(screen.selfTalk).toBe(1);
+    const neither = new ReplyScreen<{ text: string }>(false, false);
+    expect(neither.push({ text: "直接念給她聽就好。" }).send).toHaveLength(1);
+  });
+
+  it("prohibition_write: on, a plain 「不要玩 Minecraft」 she did not write down is written and counted; off, it is not", async () => {
+    const on = recording();
+    const h = await rig(new Scripted([reply("好啦好啦")]), [], {}, on);
+    h.say(mention(C, "Owen", "你先不要玩 Minecraft 啦"));
+    await wait(3000);
+    expect(on.added).toHaveLength(1);
+    expect(on.added[0]).toMatchObject({ effect: "deny", scope: { activity: "minecraft" } });
+    expect(counted(h)).toMatchObject({ prohibition_written: 1 });
+
+    const off = recording();
+    const h2 = await rig(
+      new Scripted([reply("好啦好啦")]),
+      [],
+      { corrections: { prohibition_write: false } },
+      off,
+    );
+    h2.say(mention(C, "Owen", "你先不要玩 Minecraft 啦"));
+    await wait(3000);
+    expect(off.added).toEqual([]);
+    expect(counted(h2).prohibition_written).toBeUndefined();
   });
 });
 

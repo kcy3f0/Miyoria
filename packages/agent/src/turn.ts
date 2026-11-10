@@ -494,6 +494,8 @@ class Speech {
     readonly screen: ((line: HeldLine) => boolean) | null = null,
     /** Every sentence passes here before anything is done with it. */
     readonly safe: Safe = (text, spoken) => safeOutgoing(null, { path: "reply", text, spoken }),
+    /** `true`: the sentence is a note to herself and is not said (the turn counts it). */
+    readonly selfTalk: (text: string) => boolean = isSelfTalk,
   ) {}
 
   /** Her speech was interrupted, or she gave way: nothing more is said. */
@@ -684,7 +686,7 @@ class Speech {
     const text = safe.text.replace(/[ \t]{2,}/g, " ");
     if (!isSpeakable(text)) return;
     // Her reasoning, or a note to herself, is no sentence to say (leak.ts).
-    if (looksLikeReasoning(text) || isSelfTalk(text)) return;
+    if (looksLikeReasoning(text) || this.selfTalk(text)) return;
     // The filtered line is said as it is: there is nothing to translate.
     const said = (safe.spoken ?? (safe.blocked === null ? "" : text)).trim();
     const line = { text, spoken: said === "" ? null : said, emotion, blocked };
@@ -1423,9 +1425,11 @@ class Turn {
   /**
    * A plain "don't play <game>" in this turn that she did not write down herself is written for
    * her (prohibition.ts), as the person who said it; the directive service decides whether it
-   * counts. Never throws.
+   * counts. Never throws. A correction (`prohibition_written`, `[modules.agent.corrections]
+   * prohibition_write`).
    */
   async keepRules(): Promise<void> {
+    if (!this.agent.config.corrections.prohibition_write) return;
     if (this.#succeeded.has("directive_add")) return;
     const directives = this.agent.ctx.services.get(DirectivesKey);
     if (!directives) return;
@@ -1451,6 +1455,7 @@ class Turn {
           minutes: found.minutes,
           source_event: `msg:${input.id.id}`,
         });
+        this.#tally.count("prohibition_written");
         this.agent.log.info(
           { turn: this.turn, activity: found.activity, status: change.status },
           "wrote down a prohibition she did not",
@@ -1462,6 +1467,16 @@ class Turn {
         );
       }
     }
+  }
+
+  /**
+   * A sentence to say that is a note to herself (leak.ts `isSelfTalk`) is not said, and counted
+   * (`self_talk_cut`); `[modules.agent.corrections] self_talk = false` says it.
+   */
+  #selfTalk(text: string): boolean {
+    if (!this.agent.config.corrections.self_talk || !isSelfTalk(text)) return false;
+    this.#tally.count("self_talk_cut");
+    return true;
   }
 
   /**
@@ -2278,6 +2293,7 @@ class Turn {
         (spoken, written) => this.agent.noteSubtitle(this.key, this.turn, spoken, written),
         null,
         (text, spoken, aloud) => this.#safe(text, spoken, aloud),
+        (text) => this.#selfTalk(text),
       );
       await this.#produce(router, messages, priority, speech);
       this.#save();
@@ -2298,7 +2314,7 @@ class Turn {
     const early: string[] = [];
     // Her reasoning is no reply (leak.ts).
     type Line = { text: string; blocked: string | null; n: number | null };
-    const screen = new ReplyScreen<Line>(cfg.corrections.leak_screen);
+    const screen = new ReplyScreen<Line>(cfg.corrections.leak_screen, cfg.corrections.self_talk);
     const send = async (raw: string) => {
       for (const part of splitByReplyMarks(raw)) {
         const mark = takeReplyMark(part);
@@ -2306,8 +2322,10 @@ class Turn {
         const text = this.#linkMentions(safe.text);
         if (text === "") continue;
         const before = screen.droppedLines;
+        const cut = screen.selfTalk;
         const { send: now } = screen.push({ text, blocked: safe.blocked, n: mark.n });
         this.#tally.count("leak_dropped", screen.droppedLines - before);
+        this.#tally.count("self_talk_cut", screen.selfTalk - cut);
         for (const item of now) {
           early.push(await this.#sendText(sink, item.text, direct, priority, item.blocked, item.n));
         }
@@ -2640,6 +2658,7 @@ class Turn {
         (spoken, written) => this.agent.noteSubtitle(this.key, this.turn, spoken, written),
         (line) => main.screen(line),
         (text, spoken, aloud) => this.#safe(text, spoken, aloud),
+        (text) => this.#selfTalk(text),
       );
       await this.#mainCall(main, router, messages, tools, priority, speech, null, null, null);
       this.#save();
@@ -2657,7 +2676,8 @@ class Turn {
     // Her reasoning is no reply (leak.ts). Each response of the tool loop is judged on its own.
     type Line = { text: string; blocked: string | null; n: number | null };
     const screening = cfg.corrections.leak_screen;
-    let screen = new ReplyScreen<Line>(screening);
+    const selfTalk = cfg.corrections.self_talk;
+    let screen = new ReplyScreen<Line>(screening, selfTalk);
     let first: Line | null = null;
     let leaked = 0;
     const out = async (item: Line) => {
@@ -2676,8 +2696,16 @@ class Turn {
         // Noted as said before the screen decides: the first line it holds is still hers to say.
         main.sent(text);
         const was = screen.droppedLines;
+        const cut = screen.selfTalk;
         const item = { text, blocked: safe.blocked, n: mark.n };
         const { send: now, retracted } = screen.push(item);
+        if (screen.selfTalk > cut) {
+          // A note to herself (leak.ts `isSelfTalk`): only this line is left out, and it is not
+          // what she said. It is not the first line the screen holds either.
+          main.unsent(text);
+          this.#tally.count("self_talk_cut");
+          continue;
+        }
         if (screen.droppedLines > was) {
           // Neither this line nor a first line it took back reached anyone: they are not what she
           // said (2026-11-10 review: the dropped lines stayed in `said`, and a line of reasoning
@@ -2701,7 +2729,7 @@ class Turn {
     // before the tools run, and so the person sees 「我查一下」 while she looks.
     const between = async () => {
       if (!main.claim.muted) for (const item of screen.flush()) await out(item);
-      screen = new ReplyScreen<Line>(screening);
+      screen = new ReplyScreen<Line>(screening, selfTalk);
       first = null;
     };
     try {

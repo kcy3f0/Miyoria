@@ -227,6 +227,8 @@ export const CORRECTION_LABEL = {
   ground_args: "改掉工具參數",
   repeat_cut: "刪掉重複的句子",
   noted_callback: "只記了筆記,叫她回來說",
+  self_talk_cut: "寫給自己的盤算,拿掉那行",
+  prohibition_written: "主人說不要玩,替她寫規則",
 } as const;
 
 export type CorrectionKind = keyof typeof CORRECTION_LABEL;
