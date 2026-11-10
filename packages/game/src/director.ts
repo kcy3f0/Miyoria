@@ -600,9 +600,20 @@ export class Director {
     this.#view = view;
     this.#actuators = actuators;
     this.#shelf = new SkillShelf({
-      actuators,
+      has: (capability) => actuators.get(capability) !== undefined,
+      // Her skill store, through the gate as the director, like its game steps.
+      act: (call, signal) =>
+        actuators.invoke(
+          {
+            principal: Principals.director(this.#session?.context ?? null),
+            capability: call.capability,
+            args: call.args,
+            why: call.why,
+            turn: null,
+          },
+          signal ? { signal } : {},
+        ),
       lane: () => ctx.services.get(WorkLaneKey) ?? null,
-      context: () => this.#session?.context ?? null,
       now: () => this.#now(),
     });
   }

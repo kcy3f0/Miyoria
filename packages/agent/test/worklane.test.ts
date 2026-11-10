@@ -514,6 +514,17 @@ describe("a task its owner drives (the game director)", () => {
     ).rejects.toMatchObject({ state: "out_of_budget" });
     expect(work.ended).toBe(true);
   });
+
+  it("what an owner learned outlives the process (the director's skills)", async () => {
+    const store = new MemorySettingsStore();
+    const first = laneRig([reply("x")], { store });
+    await first.lane.keep("game.minecraft", "skills", [{ target: "bread", steps: ["farm"] }]);
+    const second = laneRig([reply("x")], { store });
+    expect(await second.lane.kept("game.minecraft", "skills")).toEqual([
+      { target: "bread", steps: ["farm"] },
+    ]);
+    expect(await second.lane.kept("game.minecraft", "other")).toBeNull();
+  });
 });
 
 describe("her own initiative", () => {

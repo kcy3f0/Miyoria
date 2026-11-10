@@ -10,15 +10,9 @@
 //
 // The page is lines she can read, one per item: `- bread ← obtain {"item":"wheat"} → …`.
 
-import type { ActuatorRegistry } from "@miyoria/actions";
+import type { ActionOutcome } from "@miyoria/actions";
 import { errorMessage, getLogger } from "@miyoria/kernel";
-import {
-  type ContextKey,
-  isJsonObject,
-  type JsonValue,
-  Principals,
-  type WorkLane,
-} from "@miyoria/types";
+import { isJsonObject, type JsonObject, type JsonValue, type WorkLane } from "@miyoria/types";
 import type { Skill } from "./skills.js";
 
 const log = getLogger("game.skills");
@@ -77,11 +71,17 @@ function fromJson(game: string, value: JsonValue | null): Skill[] {
   });
 }
 
+/** A skill capability, run by the director through the gate (principal `director`). */
+export type SkillCall = (
+  call: { capability: string; args: JsonObject; why: string },
+  signal?: AbortSignal,
+) => Promise<ActionOutcome>;
+
 export interface ShelfDeps {
-  actuators: ActuatorRegistry;
+  /** Whether her skill store offers `capability` (the `skills` module runs). */
+  has(capability: string): boolean;
+  act: SkillCall;
   lane(): WorkLane | null;
-  /** Where the director acts (the gate wants a place). */
-  context(): ContextKey | null;
   now(): number;
 }
 
@@ -98,22 +98,20 @@ export class SkillShelf {
   }
 
   #has(capability: string): boolean {
-    return this.#d.actuators.get(capability) !== undefined;
+    return this.#d.has(capability);
   }
 
   /** The skills kept for `game`, newest first; none when nothing is kept anywhere. */
   async load(game: string, signal?: AbortSignal): Promise<Skill[]> {
     if (this.#has(SKILL_READ)) {
       try {
-        const outcome = await this.#d.actuators.invoke(
+        const outcome = await this.#d.act(
           {
-            principal: Principals.director(this.#d.context()),
             capability: SKILL_READ,
             args: { name: skillName(game) },
             why: "遊戲開始前,想起之前學會的做法",
-            turn: null,
           },
-          signal ? { signal } : {},
+          signal,
         );
         if (outcome.status === "done") {
           const page = isJsonObject(outcome.result.data) ? outcome.result.data.text : null;
@@ -143,9 +141,8 @@ export class SkillShelf {
   ): Promise<"skills" | "settings" | "none"> {
     if (this.#has(SKILL_WRITE)) {
       try {
-        const outcome = await this.#d.actuators.invoke(
+        const outcome = await this.#d.act(
           {
-            principal: Principals.director(this.#d.context()),
             capability: SKILL_WRITE,
             args: {
               name: skillName(game),
@@ -153,9 +150,8 @@ export class SkillShelf {
               body: skillPage(game, skills),
             },
             why: "記下這場學會的做法",
-            turn: null,
           },
-          signal ? { signal } : {},
+          signal,
         );
         if (outcome.status === "done") return "skills";
         log.debug({ game, status: outcome.status }, "the skill store did not take the skills");
