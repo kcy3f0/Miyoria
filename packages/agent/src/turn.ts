@@ -107,7 +107,9 @@ import {
 } from "@miyoria/types";
 import {
   assess,
+  directReason,
   flooredTalk,
+  type LookFacts,
   decide as sample,
   type TalkLevel,
   type VoiceAttention,
@@ -132,7 +134,7 @@ import { type FocusSelection, focusVerb, type TurnFocusInit } from "./focus.js";
 import { voiceScope } from "./handle.js";
 import { awaitBackfill, fetchAround, quotedParent, replyParents } from "./history.js";
 import { looksLikeReasoning, ReplyScreen } from "./leak.js";
-import { ceilingFor, levelHint } from "./levels.js";
+import { ceilingFor, levelHint, paceMs } from "./levels.js";
 import type { HeldLine } from "./mainline/gate.js";
 import type { Run } from "./mainline/hands.js";
 import {
@@ -297,6 +299,11 @@ export interface TurnPlan {
   selection: FocusSelection | null;
   /** What `agent.turn.focus` / `agent.turn.outcome` say about it. */
   focus: TurnFocusInit;
+  /**
+   * The coordinator saw its one question stand `rhythm.question_secs` by its own clock with
+   * nobody saying anything after it (v4 §7.2).
+   */
+  stood?: boolean;
 }
 
 /**
@@ -660,11 +667,67 @@ class Speech {
   }
 }
 
+/** A line of a list, or a link: long content, kept in one message with its neighbours. */
+function listLine(line: string): boolean {
+  return (
+    /^\s*(?:[-*•‧·]\s|\d{1,3}[.)、]\s?|[(（]\d{1,3}[)）])/.test(line) || /https?:\/\//.test(line)
+  );
+}
+
+/** What is written so far of a line might still turn into a list item. */
+function maybeListLine(partial: string): boolean {
+  return /^\s*(?:\d{1,3}[.)、]?|[-*•‧·(（]|[(（]\d{1,3})?$/.test(partial);
+}
+
+/**
+ * Whether a message may end at the line break at `i` of `text`: not inside long content (v4 §7.3:
+ * a list, its lead-in line ending in a colon, a run of links goes as one message, never split).
+ * After a list line it waits until the next line shows whether the list goes on.
+ */
+export function breaksAt(text: string, i: number): boolean {
+  const start = text.lastIndexOf("\n", i - 1) + 1;
+  const before = text.slice(start, i);
+  const end = text.indexOf("\n", i + 1);
+  const after = text.slice(i + 1, end === -1 ? undefined : end);
+  const leadIn = /[:：]\s*$/.test(before);
+  const known = end !== -1 || !maybeListLine(after);
+  if (leadIn) return known ? !listLine(after) && after.trim() !== "" : false;
+  if (!listLine(before)) return true;
+  return known && !listLine(after);
+}
+
+/**
+ * The rest of a finished text reply as the gate holds it, one piece per message: plain lines
+ * sentence by sentence (`sentences`), but a code block, a list or a run of links whole.
+ */
+export function textPieces(text: string): string[] {
+  const out: string[] = [];
+  let from = 0;
+  let fenced = false;
+  const flush = (to: number) => {
+    const piece = text.slice(from, to);
+    from = to + 1;
+    if (piece.trim() === "") return;
+    const long = piece.includes("```") || piece.includes("\n") || listLine(piece);
+    out.push(...(long ? [piece] : sentences(piece)));
+  };
+  for (let i = 0; i < text.length; i++) {
+    if (text.startsWith("```", i)) {
+      fenced = !fenced;
+      i += 2;
+    } else if (!fenced && text[i] === "\n" && breaksAt(`${text}\n`, i)) {
+      flush(i);
+    }
+  }
+  flush(text.length);
+  return out;
+}
+
 /**
  * Text replies go out line by line while the model writes (a line break outside code blocks
- * ends a message). A line that claims something only a tool does, with nothing backing it
- * (claims.ts), is held back (with the rest of the response), so the reminder in `#produce` can
- * still replace it.
+ * ends a message, unless it is inside a list or a run of links: `breaksAt`). A line that claims
+ * something only a tool does, with nothing backing it (claims.ts), is held back (with the rest of
+ * the response), so the reminder in `#produce` can still replace it.
  */
 class TextSegments {
   /** UTF-16 offset into the step's text up to which it was handled. */
@@ -686,24 +749,26 @@ class TextSegments {
   async update(expression: Expression): Promise<void> {
     if (this.#held || expression.silence) return;
     const text = expression.text;
-    let cut = -1;
+    const cuts: number[] = [];
     let fenced = false;
     for (let i = 0; i < text.length; i++) {
       if (text.startsWith("```", i)) {
         fenced = !fenced;
         i += 2;
-      } else if (!fenced && text[i] === "\n" && i >= this.#sent) {
-        cut = i;
+      } else if (!fenced && text[i] === "\n" && i >= this.#sent && breaksAt(text, i)) {
+        cuts.push(i);
       }
     }
-    if (cut < 0) return;
-    const piece = text.slice(this.#sent, cut);
-    if (this.hold(piece)) {
-      this.#held = true;
-      return;
+    // Lines that arrived together still go out as messages of their own (paced by `#sendText`).
+    for (const cut of cuts) {
+      const piece = text.slice(this.#sent, cut);
+      if (this.hold(piece)) {
+        this.#held = true;
+        return;
+      }
+      this.#sent = cut + 1;
+      if (piece.trim() !== "") await this.send(piece);
     }
-    this.#sent = cut + 1;
-    if (piece.trim() !== "") await this.send(piece);
   }
 
   /** What was not sent yet of `expression`. */
@@ -835,6 +900,8 @@ class Turn {
   readonly #traced: TraceCall[] = [];
   /** The line this turn's trace follows, once kept. */
   #traceAfter: TraceAnchor | null = null;
+  /** When her last text message of this turn went out (clock ms): the pace of the next. */
+  #lastTextAt: number | null = null;
 
   constructor(
     readonly agent: Agent,
@@ -1196,12 +1263,17 @@ class Turn {
 
   /**
    * The message her tools act for: the latest one that @-mentions her or replies to her, else
-   * the latest one. Someone chatting right after a request must not become its requester.
+   * the latest one. Someone chatting right after a request must not become its requester, and a
+   * reply to her that is said to someone else or only laughs (attention's `directReason`) asks
+   * her for nothing.
    */
   #requester(): IncomingMessage | undefined {
     const pool = this.#focused;
+    const names = this.agent.persona.names();
     return (
-      pool.findLast((m) => m.mentions_self || m.reply_to_self) ??
+      pool.findLast(
+        (m) => m.mentions_self || (m.reply_to_self && directReason(m, names) === "reply"),
+      ) ??
       pool.at(-1) ??
       (this.#main?.claim.chain?.requester as IncomingMessage | undefined)
     );
@@ -1272,8 +1344,22 @@ class Turn {
           someoneSpeaking: this.session.someoneSpeaking(),
           questionWindowMs: voiceCfg.question_window_ms,
           others: this.session.voiceMembers().length,
+          roster: this.session.voiceMembers().map((m) => m.display_name),
         }
       : null;
+    // v4 §7.2: under the main line a text channel with a level gets looks instead of the dice.
+    const rhythm = this.agent.rhythm;
+    const look: LookFacts | null =
+      this.#main !== null && !this.voice && ceiling !== null
+        ? {
+            used: rhythm.looksUsed(this.key),
+            perHour: rhythm.config.looks_per_hour,
+            questionSecs: rhythm.config.question_secs,
+            topicGapMs: rhythm.config.topic_gap_mins * 60_000,
+            close: this.#close(rhythm.config.close_affinity),
+            stood: this.plan.stood === true,
+          }
+        : null;
     const assessment = assess({
       config: attentionCfg,
       mode,
@@ -1288,6 +1374,7 @@ class Turn {
       now: this.#now,
       voice,
       modelMayPass: this.#main !== null,
+      look,
     });
     const reasons = assessment.reasons;
     if (mode !== configured) reasons.push(`llm budget ${budget}: as mention-only`);
@@ -1325,7 +1412,24 @@ class Turn {
         ? `p ${fixed(probability, 2)}`
         : `p ${fixed(probability, 2)}, roll ${fixed(roll, 2)}`,
     );
+    if (respond) {
+      // A look or a reaction to her line is a model call: it counts against the cap.
+      const opened = assessment.opened ?? null;
+      if (opened === "look" || opened === "reaction") rhythm.noteLook(this.key);
+      rhythm.took(this.inputs.map((m) => m.id.id));
+    }
     return { respond, direct: assessment.direct, score: assessment.score, reasons };
+  }
+
+  /** A speaker of this turn she is close to (affinity, or her owner), by name, if any. */
+  #close(affinity: number): string | null {
+    for (const m of this.inputs) {
+      const a = this.social?.attitude(m.author.account) ?? null;
+      if (a !== null && !a.blocked && (a.owner === true || a.affinity >= affinity)) {
+        return m.author.display_name;
+      }
+    }
+    return null;
   }
 
   /** Stable id of this conversation for the LLM provider (routing, prompt caching). */
@@ -2442,7 +2546,7 @@ class Turn {
           continue;
         }
         if (segments !== null && !expression.isSilent() && !fellBack) {
-          for (const text of sentences(segments.rest(expression))) {
+          for (const text of textPieces(segments.rest(expression))) {
             main.gate.hold({ text, spoken: null, emotion: null });
           }
         }
@@ -2516,7 +2620,8 @@ class Turn {
       const rest = segments.rest(expression);
       if (rest.trim() !== "") {
         if (main.holdsText(rest)) {
-          for (const text of sentences(rest)) main.gate.hold({ text, spoken: null, emotion: null });
+          for (const text of textPieces(rest))
+            main.gate.hold({ text, spoken: null, emotion: null });
         } else await send?.(rest);
       }
     }
@@ -2717,6 +2822,8 @@ class Turn {
     this.flags.committed = true;
     const chunks = splitMessage(text, cfg.max_message_chars);
     for (const [i, chunk] of chunks.entries()) {
+      // The pieces of one long message follow each other at once; a new message waits its turn.
+      if (i === 0) await this.#pace(sink, lane, priority, chunk);
       const action = newAction(
         lane,
         priority,
@@ -2739,8 +2846,40 @@ class Turn {
         throw new TurnError(`submitting reply: ${errorMessage(error)}`, { cause: error });
       }
       this.#output();
+      this.#lastTextAt = this.#now;
     }
     return text;
+  }
+
+  /**
+   * v4 §7.3: the second and later messages of a reply wait for about as long as typing them takes
+   * (`paceMs`, from when the one before went out; generating them counts), with typing shown, so
+   * several short lines do not land at once. The first message never waits here.
+   */
+  async #pace(sink: ActionSink, lane: LaneKey, priority: Priority, text: string): Promise<void> {
+    const last = this.#lastTextAt;
+    if (last === null) return;
+    const wait = paceMs(this.agent.rhythm.config, text) - (this.#now - last);
+    if (wait <= 0) return;
+    try {
+      await sink.submit(this.#typingAction(lane, priority));
+    } catch (error) {
+      this.agent.log.warn({ error: errorMessage(error) }, "could not submit typing action");
+    }
+    await sleep(wait, this.signal);
+  }
+
+  #typingAction(lane: LaneKey, priority: Priority) {
+    return newAction(
+      lane,
+      priority,
+      { type: "typing", context: this.key },
+      {
+        ttl: TYPING_TTL_MS,
+        turn: this.turn,
+        coalesce_key: `typing:${contextKeyDisplay(this.key)}`,
+      },
+    );
   }
 
   /** Budget exhausted: says (or writes) the constant out-of-energy line. */
@@ -2782,18 +2921,8 @@ class Turn {
   ): Promise<void> {
     const refresh = typingRefreshMs(this.agent.config);
     while (!signal.aborted) {
-      const typing = newAction(
-        lane,
-        priority,
-        { type: "typing", context: this.key },
-        {
-          ttl: TYPING_TTL_MS,
-          turn: this.turn,
-          coalesce_key: `typing:${contextKeyDisplay(this.key)}`,
-        },
-      );
       try {
-        await sink.submit(typing);
+        await sink.submit(this.#typingAction(lane, priority));
       } catch (error) {
         this.agent.log.warn({ error: errorMessage(error) }, "could not submit typing action");
       }

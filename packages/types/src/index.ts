@@ -644,6 +644,7 @@ export {
   type MessageActions,
   MessageActionsKey,
 } from "./message-actions.js";
+export { MESSAGE_EXCLUDED_TOPIC, type MessageExcluded } from "./message-exclusion.js";
 export {
   holdsBack,
   INPUT_FLAGS,
