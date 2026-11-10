@@ -2267,3 +2267,46 @@ export interface Delivery {
   /** Its `utterance` event. */
   line: Ulid;
 }
+
+// ---- turn metrics (`GET /api/turns/metrics`, mirrors packages/api/src/metrics-turns.ts) -------
+
+/** `sent / total`; `rate` is `null` with no samples, never 0. */
+export interface MetricRatio {
+  sent: number;
+  total: number;
+  rate: number | null;
+}
+
+export interface FollowupStopReasons {
+  anti_spam: number;
+  low_score: number;
+  lost_roll: number;
+  floor: number;
+  passed_silent: number;
+  other: number;
+}
+
+export interface TurnMetricsBucket {
+  turns: number;
+  followup: MetricRatio;
+  ambient: MetricRatio;
+  addressed: MetricRatio;
+  voice_latency: { p50_ms: number | null; p90_ms: number | null; samples: number };
+  voice_origin: { self_started: number; answering: number };
+  outcomes: { sent: number; silence: number; cancelled: number; error: number };
+  followup_stopped: FollowupStopReasons;
+}
+
+export interface TurnMetricsDay extends TurnMetricsBucket {
+  /** Local date, `YYYY-MM-DD`. */
+  day: string;
+}
+
+export interface TurnMetrics {
+  days: number;
+  from: string;
+  /** The read cap was hit inside the window: its oldest day may be partial. */
+  truncated: boolean;
+  overall: TurnMetricsBucket;
+  daily: TurnMetricsDay[];
+}
