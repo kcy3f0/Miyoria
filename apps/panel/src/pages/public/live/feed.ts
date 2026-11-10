@@ -32,6 +32,17 @@ export interface LivePats {
   recent: number;
   open: boolean;
 }
+/** The OBS picture: `src` is the playlist's path on the Core while OBS publishes, else `null`. */
+export interface LiveVideo {
+  on: boolean;
+  src: string | null;
+}
+export type LivePart = "head" | "face" | "body" | "screen";
+/** Where on the video frame, 0..1 from the top left. */
+export interface LiveSpot {
+  x: number;
+  y: number;
+}
 export interface LiveSnapshot {
   presence: LivePresence;
   activity: LiveActivity | null;
@@ -39,6 +50,7 @@ export interface LiveSnapshot {
   emotion: LiveEmotion;
   line: LiveLine | null;
   pats: LivePats;
+  video: LiveVideo;
 }
 
 export type LiveEvent =
@@ -48,7 +60,8 @@ export type LiveEvent =
   | { type: "speaking"; speaking: boolean }
   | { type: "emotion"; emotion: LiveEmotion }
   | { type: "line"; line: LiveLine }
-  | { type: "pat"; pats: LivePats };
+  | { type: "video"; video: LiveVideo }
+  | { type: "pat"; pats: LivePats; spot?: LiveSpot; part?: LivePart };
 
 export const LIVE_PATH = "/api/public/live";
 export const PAT_PATH = "/api/member/live/pat";
@@ -61,11 +74,13 @@ export interface LiveView {
   now: LiveSnapshot | null;
   /** Bumped whenever someone (anyone) pats her, so the figure can react to others' pats too. */
   patSeq: number;
+  /** Where the latest pat landed on the video, `null` when it carried no spot. */
+  patSpot: LiveSpot | null;
 }
 
 export type LiveAction = LiveEvent | { type: "link"; link: Link };
 
-export const initialView: LiveView = { link: "connecting", now: null, patSeq: 0 };
+export const initialView: LiveView = { link: "connecting", now: null, patSeq: 0, patSpot: null };
 
 export function liveReducer(view: LiveView, action: LiveAction): LiveView {
   if (action.type === "link") return action.link === view.link ? view : { ...view, link: action.link };
@@ -85,14 +100,21 @@ export function liveReducer(view: LiveView, action: LiveAction): LiveView {
       // A late update of an older line does not push the newer one away.
       if (now.line !== null && action.line.id < now.line.id) return view;
       return { ...view, now: { ...now, line: action.line } };
+    case "video":
+      return { ...view, now: { ...now, video: action.video } };
     case "pat": {
       const more = action.pats.recent > now.pats.recent;
-      return { ...view, now: { ...now, pats: action.pats }, patSeq: view.patSeq + (more ? 1 : 0) };
+      return {
+        ...view,
+        now: { ...now, pats: action.pats },
+        patSeq: view.patSeq + (more ? 1 : 0),
+        patSpot: action.spot ?? null,
+      };
     }
   }
 }
 
-const TYPES = new Set(["hello", "presence", "activity", "speaking", "emotion", "line", "pat"]);
+const TYPES = new Set(["hello", "presence", "activity", "speaking", "emotion", "line", "video", "pat"]);
 
 /** One `data:` payload, or `null` when it is not a live event. */
 export function parseLiveEvent(data: string): LiveEvent | null {
