@@ -17,6 +17,7 @@ export {
   type WorkerJob,
   WorkerJobSchema,
 } from "./client.js";
+export { type ClipDeps, clipStartOf, SingClips, sliceClip } from "./clips.js";
 export { backingOf, listCard, registerCommands } from "./commands.js";
 export {
   defaultSingConfig,

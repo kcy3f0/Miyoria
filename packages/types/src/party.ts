@@ -55,6 +55,11 @@ export interface SongClipInfo {
   artist: string | null;
   /** Other names people use for it (a translated title, a nickname). */
   aliases?: string[];
+  /**
+   * Where a clip worth guessing from starts, in ms (the first sung line rather than a long
+   * instrumental intro). Absent: from the start.
+   */
+  clipStartMs?: number;
 }
 
 export type ClipOutcome = "finished" | "stopped" | "failed";
