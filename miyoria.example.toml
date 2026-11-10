@@ -732,6 +732,7 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # max_doc_chars = 6000
 # said_confidence = 0.6          # 別人說的關於別人的事,信心最多這麼高
 # tool = true                    # 聊天時可以用工具 knowledge_note 整理
+# prompt_people = true           # 把在場的人的資料放進提示。不寫:有人物卡(memory 的 profiles)就不放,免得同一件事講兩次;寫 true / false 以這裡為準
 
 # 反思:每天 daily_hour 之後找安靜的時候回顧一天(整理記憶、取代過時的、更新資料與感情、
 # 從大家的反應檢討自己、寫下學到的事、定長期目標),長對話結束後也會稍微反思一下

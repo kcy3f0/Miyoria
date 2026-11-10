@@ -36,6 +36,7 @@ import {
   type KnowledgeSubject,
   LessonsKey,
   type PersonId,
+  PersonProfilesKey,
   type ProfileId,
   PromptContributorsKey,
   type PromptRequest,
@@ -44,7 +45,12 @@ import {
   SocialSignalsKey,
 } from "@miyoria/types";
 import type { BudgetState } from "./caps.js";
-import { ConversationConfigSchema, KnowledgeConfigSchema, ReflectConfigSchema } from "./config.js";
+import {
+  ConversationConfigSchema,
+  KnowledgeConfigSchema,
+  peopleInPrompt,
+  ReflectConfigSchema,
+} from "./config.js";
 import { ConversationEngine, FEEDBACK_TOPIC } from "./conversation.js";
 import { FeedbackTracker } from "./feedback.js";
 import { KnowledgeStore } from "./knowledge.js";
@@ -252,7 +258,8 @@ export class KnowledgeModule implements Module {
     contributors?.register({
       key: KNOWLEDGE_CONTRIBUTOR,
       contribute: async (request: PromptRequest) => {
-        const body = kb.render(subjectsFor(kb, request, config.prompt_people), {
+        const people = peopleInPrompt(config.prompt_people, s.get(PersonProfilesKey) !== undefined);
+        const body = kb.render(subjectsFor(kb, request, people), {
           context: request.context,
           maxChars: config.prompt_chars,
         });
