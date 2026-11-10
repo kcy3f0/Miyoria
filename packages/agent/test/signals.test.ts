@@ -2,20 +2,19 @@ import { describe, expect, it } from "vitest";
 import { herStatusHint, parseBudgetState, shownHint } from "../src/index.js";
 
 describe("signals", () => {
-  it("shown emotion hint: what shows, as her state, not how to act it", () => {
+  it("shown emotion hint: a fact about her, never how to act it nor which tag", () => {
     const hint = shownHint({
       from: "shy",
       tag: "embarrassed",
       style: "兇回去、嫌棄對方,但臉紅了",
       masked: true,
     });
-    expect(hint).toBe(
-      "你現在外表的樣子:兇回去、嫌棄對方,但臉紅了(接近 <emo:embarrassed>);心裡的感受你不想直接講出來",
-    );
-    // Only a plain tag name gets through.
-    expect(shownHint({ from: "joy", tag: "x>y", style: "開心", masked: false })).toContain(
-      "<emo:neutral>",
-    );
+    expect(hint).toBe("這份感受你不太想讓人看出來。");
+    expect(hint).not.toContain("兇回去");
+    expect(hint).not.toContain("<emo:");
+    // Joy shows as it is, masked or not: the mood line names it.
+    expect(shownHint({ from: "joy", tag: "smug", style: "表面淡定", masked: true })).toBe("");
+    expect(shownHint({ from: "shy", tag: "embarrassed", style: "害羞", masked: false })).toBe("");
   });
 
   it("parses_budget_states", () => {

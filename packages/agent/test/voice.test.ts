@@ -438,7 +438,9 @@ describe("voice", () => {
     expect(msgs[2]).toMatchObject({ role: "assistant", content: "欸,真的嗎?那走吧!" });
     const prompt = JSON.stringify(paced.requests[0]?.messages);
     expect(prompt).toContain("每一句先寫 <voice>");
-    expect(prompt).toContain("用 Japanese 念出來");
+    // The setting's language, named in Chinese.
+    expect(prompt).toContain("用日文念出來");
+    expect(prompt).not.toContain("Japanese");
     subtitles.close();
   });
 

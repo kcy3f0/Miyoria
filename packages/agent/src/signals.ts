@@ -63,14 +63,24 @@ export function unansweredHint(topics: readonly RaisedTopic[]): string {
   return `你最近在這裡自己提過、沒人接的話題:${lines.map((l) => `「${l}」`).join("、")}。一陣子內不要再提(換句話說也一樣);沒人接就放下,跟著大家現在聊的事,或換個話題。`;
 }
 
+/** The feelings she would rather keep to herself when her display rules mask them. */
+const KEPT_TO_HERSELF: ReadonlySet<string> = new Set([
+  "shy",
+  "missing",
+  "lonely",
+  "gratitude",
+  "jealousy",
+  "guilt",
+]);
+
 /**
- * What she shows of her emotion (the `self` module's display rules), as her state: what shows on
- * her and whether she keeps the feeling to herself. How to act on it is the persona's, which says
- * mood is a state and not a script (2026-11-10 rewrite). Only fixed text: no names.
+ * What she shows of her emotion (the `self` module's display rules), as a fact about her: only
+ * that she would rather not show a soft feeling, when the rules mask one. Never how it shows (the
+ * rules' `style`) nor which `<emo:…>` it is: in the last system message every turn, 「兇回去、嫌棄
+ * 對方,但臉紅了」 or 「接近 <emo:smug>」 was a script she played on every line, the very formula
+ * the persona dropped (persona-v4.md §7). Joy, pride, anger and surprise show as they are: the
+ * mood line already names them. Only fixed text: no names. Empty when there is nothing to say.
  */
 export function shownHint(shown: ShownEmotion): string {
-  const tag = /^[a-z_]{1,32}$/.test(shown.tag) ? shown.tag : "neutral";
-  const style = neutralize(shown.style).replace(/\s+/g, " ").trim().slice(0, 80);
-  const hide = shown.masked ? ";心裡的感受你不想直接講出來" : "";
-  return `你現在外表的樣子:${style}(接近 <emo:${tag}>)${hide}`;
+  return shown.masked && KEPT_TO_HERSELF.has(shown.from) ? "這份感受你不太想讓人看出來。" : "";
 }
