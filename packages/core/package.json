@@ -53,6 +53,7 @@
     "@miyoria/queue": "workspace:*",
     "@miyoria/replay": "workspace:*",
     "@miyoria/sandbox": "workspace:*",
+    "@miyoria/skills": "workspace:*",
     "@miyoria/scheduler": "workspace:*",
     "@miyoria/self": "workspace:*",
     "@miyoria/sing": "workspace:*",
