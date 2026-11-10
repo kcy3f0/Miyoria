@@ -33,6 +33,10 @@
 // starts once the context is free, unless it expired meanwhile. A newer intent replaces a
 // waiting one.
 //
+// A question nobody answered (text channels of the main line) is looked at again once it stood
+// `[modules.agent.rhythm] question_secs` with nobody saying anything after it: a turn on that
+// message, which attention lets through as a look only if the cap allows (v4 §7.2).
+//
 // Under `pipeline = "v3"` someone calling her while she speaks on her own, or something urgent,
 // cuts in as far as the Floor's interrupt level says (§7.3): `wrap_up` finishes the sentence that
 // is playing and drops the rest, `cut_short` and `interrupt` stop that sentence too.
@@ -53,9 +57,9 @@ import {
   type TurnReason,
   toTimestamp,
 } from "@miyoria/types";
-import { answersHer, directReason } from "./attention.js";
+import { answersHer, asideOf, directReason, isQuestion } from "./attention.js";
 import { maxDebounceMs, voiceMaxDebounceMs } from "./config.js";
-import { type CallKind, callKind, type FocusSelection, selectFocus } from "./focus.js";
+import { type CallKind, callKind, callsHer, type FocusSelection, selectFocus } from "./focus.js";
 import { UNCAPPED_INITIATIVES } from "./levels.js";
 import type { Agent, Inbox, Initiative, Input, IntentTurn } from "./runtime.js";
 import type { Session } from "./session.js";
@@ -101,8 +105,12 @@ type Wake =
   | { type: "stop" }
   | { type: "input"; input: Input }
   | { type: "deadline" }
+  | { type: "recheck" }
   | { type: "turn_done" }
   | { type: "idle" };
+
+/** A question nobody answered gets its look a moment after it stood long enough. */
+const RECHECK_SLACK_MS = 50;
 
 /** Debounce window (clock ms): when it opened and when the turn should start. */
 interface Window {
@@ -136,14 +144,36 @@ export class Coordinator {
   /** How `msg` relates to her (focus.ts). */
   #callKind(msg: IncomingMessage): CallKind {
     const cfg = this.#agent.config.voice;
+    const names = this.#agent.persona.names();
+    const roster = this.#voice ? this.#session.voiceMembers().map((m) => m.display_name) : [];
     const voice = this.#voice
       ? {
           lastSelfAt: this.#session.lastSelfAt(),
           questionWindowMs: cfg.question_window_ms,
           others: this.#session.voiceMembers().length,
+          roster,
+          names,
         }
       : null;
-    return callKind(msg, directReason(msg, this.#agent.persona.names()), voice);
+    const follows = answersHer(this.#session, [msg], this.#now);
+    return callKind(
+      msg,
+      directReason(msg, names, roster),
+      voice,
+      asideOf(msg, names, roster, follows),
+    );
+  }
+
+  /**
+   * When a question nobody answered is worth a look (v4 §7.2): text channels of the main line,
+   * a question not said to her (that one she answers anyway). `null`: never.
+   */
+  #recheckAt(msg: IncomingMessage, kind: CallKind): number | null {
+    if (this.#agent.mainline === null || callsHer(kind)) return null;
+    if (this.#key.kind === "voice" || this.#key.kind === "dm") return null;
+    if (!isQuestion(msg.text.toLowerCase())) return null;
+    // By this clock, from when it arrived: a platform's timestamps may be skewed from it.
+    return this.#now + this.#agent.rhythm.config.question_secs * 1000 + RECHECK_SLACK_MS;
   }
 
   async run(signal: AbortSignal): Promise<void> {
@@ -159,10 +189,19 @@ export class Coordinator {
     let restarts = 0;
     /** Her intent waiting for the context to be free. */
     let waiting: IntentTurn | null = null;
+    /** The last line was a question nobody answered yet: look again at `at` (v4 §7.2). */
+    let recheck: { msg: IncomingMessage; at: number } | null = null;
     for (;;) {
       // Voice contexts live until she leaves the channel.
-      const idle = pending.length === 0 && running === null && waiting === null && !voice;
-      const wake = await this.#next(signal, running, running === null ? window : null, idle);
+      const idle =
+        pending.length === 0 && running === null && waiting === null && recheck === null && !voice;
+      const wake = await this.#next(
+        signal,
+        running,
+        running === null ? window : null,
+        idle,
+        recheck?.at ?? null,
+      );
       const now = this.#now;
       switch (wake.type) {
         case "stop": {
@@ -180,12 +219,15 @@ export class Coordinator {
             case "message": {
               const msg = input.message;
               const kind = this.#callKind(msg);
+              // Whatever was said since, the question that stood alone does not any more.
+              const at = this.#recheckAt(msg, kind);
+              recheck = at === null ? null : { msg, at };
               if (running && !running.flags.committed && !running.done) {
                 const r = running;
                 const disposition = inputDisposition({
                   phase: r.flags.queued ? "speaking" : "generating",
                   voice,
-                  addressesHer: kind !== null,
+                  addressesHer: callsHer(kind),
                   fromFocus: (r.plan.selection?.authors ?? []).some((a) =>
                     sameAccount(a, msg.author.account),
                   ),
@@ -204,12 +246,12 @@ export class Coordinator {
                 }
               }
               // Someone calling her cuts into what she says on her own.
-              if (kind !== null) {
+              if (callsHer(kind)) {
                 await this.#giveWay(kind === "reply" ? "reply" : "addressed", running, unplayed);
               }
               // Her speech that is written but not played yet is played as is (§3.9).
               pending.push(msg);
-              let wait = voice && kind !== null ? cfg.voice.direct_debounce_ms : debounce;
+              let wait = voice && callsHer(kind) ? cfg.voice.direct_debounce_ms : debounce;
               if (voice && msg.turn_complete === true) {
                 wait = Math.min(wait, cfg.voice.turn_debounce_ms);
               }
@@ -268,6 +310,7 @@ export class Coordinator {
               waiting = null;
               pending = [];
               window = null;
+              recheck = null;
               restarts = 0;
               break;
             }
@@ -294,6 +337,17 @@ export class Coordinator {
           pending = [];
           running = this.#start(inputs, null, signal, null, restarts);
           restarts = 0;
+          break;
+        }
+        case "recheck": {
+          const r = recheck;
+          recheck = null;
+          // Only into a quiet place, and only once a message: a turn that already answered or
+          // looked at it settled it.
+          const free = running === null && pending.length === 0 && window === null;
+          if (r !== null && free && !this.#agent.rhythm.taken(r.msg.id.id)) {
+            running = this.#start([r.msg], null, signal, null, 0, true);
+          }
           break;
         }
         case "turn_done": {
@@ -388,6 +442,7 @@ export class Coordinator {
     running: Running | null,
     window: Window | null,
     idle: boolean,
+    recheckAt: number | null = null,
   ): Promise<Wake> {
     let idleFired = false;
     for (;;) {
@@ -397,6 +452,7 @@ export class Coordinator {
       if (input) return { type: "input", input };
       if (this.#inbox.closed) return { type: "stop" };
       if (window && this.#now >= window.deadline) return { type: "deadline" };
+      if (recheckAt !== null && this.#now >= recheckAt) return { type: "recheck" };
       if (idleFired) return { type: "idle" };
 
       const timers: ReturnType<typeof setTimeout>[] = [];
@@ -411,6 +467,10 @@ export class Coordinator {
       if (running) waits.push(running.promise);
       if (window) {
         const ms = Math.max(window.deadline - this.#now, 0);
+        waits.push(new Promise<void>((resolve) => timers.push(setTimeout(resolve, ms))));
+      }
+      if (recheckAt !== null) {
+        const ms = Math.max(recheckAt - this.#now, 0);
         waits.push(new Promise<void>((resolve) => timers.push(setTimeout(resolve, ms))));
       }
       if (idle) {
@@ -536,6 +596,7 @@ export class Coordinator {
     signal: AbortSignal,
     intent: IntentTurn | null = null,
     restarts = 0,
+    stood = false,
   ): Running {
     const turn = intent?.turn ?? newId();
     this.#agent.ctx.publish(
@@ -543,6 +604,7 @@ export class Coordinator {
       { turn },
     );
     const plan = this.#plan(turn, inputs, initiative, restarts);
+    if (stood) plan.stood = true;
     this.#agent.focusBoard.start(plan.focus);
     const flags: TurnFlags = { committed: false, queued: false, interrupted: false };
     const controller = new AbortController();
