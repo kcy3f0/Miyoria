@@ -650,6 +650,7 @@ describe("the route table", () => {
       "GET /api/public/board",
       "GET /api/public/card/:serial",
       "GET /api/public/live",
+      "GET /api/public/live/video/:file",
       "GET /api/public/songs",
       "GET /api/public/status",
       "GET /og/card/:file",

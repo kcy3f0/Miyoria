@@ -637,6 +637,7 @@ export {
   type KeepsakeWho,
 } from "./keepsakes.js";
 export {
+  LIVE_TOUCH_TOPIC,
   type LiveActivity,
   type LiveActivityKind,
   type LiveEmotion,
@@ -644,12 +645,16 @@ export {
   type LiveFeed,
   LiveFeedKey,
   type LiveLine,
+  type LivePart,
   type LivePatOutcome,
   type LivePats,
   type LivePatter,
   type LivePlace,
   type LivePresence,
   type LiveSnapshot,
+  type LiveSpot,
+  type LiveTouch,
+  type LiveVideo,
 } from "./live.js";
 export {
   type MessageActionOutcome,

@@ -62,6 +62,30 @@ export interface LivePats {
   open: boolean;
 }
 
+/** Her picture, when OBS is publishing: the page plays `src` (LL-HLS through the api). */
+export interface LiveVideo {
+  on: boolean;
+  /** `/api/public/live/video/index.m3u8` while `on`, else `null`. */
+  src: string | null;
+}
+
+/** What a touch landed on, judged from where it fell on the video frame. */
+export type LivePart = "head" | "face" | "body" | "screen";
+
+/** Where a touch fell: 0..1 on the video frame, origin top-left. */
+export interface LiveSpot {
+  x: number;
+  y: number;
+}
+
+/** Custom bus topic of one accepted touch from the picture; the stage draws a hand there. */
+export const LIVE_TOUCH_TOPIC = "live.touch";
+
+/** Payload of `LIVE_TOUCH_TOPIC`: where and on what, never who. */
+export interface LiveTouch extends LiveSpot {
+  part: LivePart;
+}
+
 export interface LiveSnapshot {
   presence: LivePresence;
   activity: LiveActivity | null;
@@ -69,6 +93,8 @@ export interface LiveSnapshot {
   emotion: LiveEmotion;
   line: LiveLine | null;
   pats: LivePats;
+  /** `{ on: false, src: null }` while video is off or OBS is not publishing. */
+  video: LiveVideo;
 }
 
 /** One change, as the page receives it (SSE `event:` is `type`, `data:` the rest as JSON). */
@@ -79,13 +105,17 @@ export type LiveEvent =
   | { type: "speaking"; speaking: boolean }
   | { type: "emotion"; emotion: LiveEmotion }
   | { type: "line"; line: LiveLine }
-  /** Somebody patted her just now. */
-  | { type: "pat"; pats: LivePats };
+  /** Somebody patted her just now; `spot` and `part` are there when the pat came from the picture. */
+  | { type: "pat"; pats: LivePats; spot?: LiveSpot; part?: LivePart }
+  /** Her picture came or went. */
+  | { type: "video"; video: LiveVideo };
 
 /** Who pats: the logged-in account and the name their session carries. */
 export interface LivePatter {
   account: AccountRef;
   name: string;
+  /** Where on the picture; none for the keyboard button (counts as her head). */
+  spot?: LiveSpot;
 }
 
 export type LivePatOutcome =
@@ -107,6 +137,11 @@ export interface LiveFeed {
   follow(listener: (event: LiveEvent) => void): (() => void) | null;
   /** A pat from a member. */
   pat(by: LivePatter): Promise<LivePatOutcome>;
+  /**
+   * Internal, never serialized: where the api proxies her picture from (`upstream` ends with `/`)
+   * and whether it is on. `null` when video is not configured.
+   */
+  video(): { on: boolean; upstream: string; secret: string; max_viewers: number } | null;
 }
 
 export const LiveFeedKey = serviceKey<LiveFeed>("LiveFeed");
