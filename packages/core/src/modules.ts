@@ -48,6 +48,7 @@ import { SandboxModule } from "@miyoria/sandbox";
 import { SchedulerModule } from "@miyoria/scheduler";
 import { SelfModule } from "@miyoria/self";
 import { SingModule } from "@miyoria/sing";
+import { SkillsModule } from "@miyoria/skills";
 import { MoodModule, SocialModule } from "@miyoria/social";
 import { SpeechConfigSchema, SpeechModule } from "@miyoria/speech";
 import {
@@ -177,6 +178,7 @@ async function coreModules({
     new EconomyModule(profileId),
     new WebModule(),
     new SandboxModule(profileId, { baseDir }),
+    new SkillsModule(),
   ];
 }
 
