@@ -96,6 +96,26 @@ describe("DiscordHistory", () => {
     expect(await history.recent(ctx, { before: null, limit: 0 })).toEqual([]);
   });
 
+  test("fetched_history_carries_who_the_message_is_for", async () => {
+    const bob = { id: "50", username: "bob", globalName: "Bob" };
+    const msgs = [
+      fetched("1", 1000),
+      fetched("2", 2000, {
+        type: MessageType.Reply,
+        reference: { messageId: "1" },
+        content: "<@50> she repeats herself",
+        mentions: { users: new Map([["50", bob]]), repliedUser: { id: "7" } },
+      }),
+    ];
+    const history = new DiscordHistory(client(msgs), new Set(["7"]));
+    const out = await history.recent(ctx, { before: null, limit: 10 });
+    expect(out[0]?.mentions_others).toEqual([]);
+    expect(out[1]?.opens_with_other_mention).toBe(true);
+    expect(out[1]?.mentions_others?.map((m) => m.display_name)).toEqual(["Bob"]);
+    const one = await history.fetch({ context: ctx, id: "2" });
+    expect(one?.opens_with_other_mention).toBe(true);
+  });
+
   test("an_aborted_signal_stops_the_read", async () => {
     const history = new DiscordHistory(client([fetched("5", 5000)]), new Set());
     const controller = new AbortController();

@@ -176,6 +176,7 @@ export {
   type IncomingMessage,
   imageType,
   incomingText,
+  type MentionedAccount,
   type MessageRef,
   type OutgoingMessage,
   PlatformHistories,
@@ -637,6 +638,12 @@ export {
   type LivePresence,
   type LiveSnapshot,
 } from "./live.js";
+export {
+  type MessageActionOutcome,
+  type MessageActionRequest,
+  type MessageActions,
+  MessageActionsKey,
+} from "./message-actions.js";
 export {
   holdsBack,
   INPUT_FLAGS,
