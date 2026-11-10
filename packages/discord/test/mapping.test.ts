@@ -3,6 +3,7 @@ import { ApplicationCommandOptionType, ChannelType } from "discord.js";
 import { describe, expect, test } from "vitest";
 import {
   commandPath,
+  componentsText,
   displayName,
   hasContent,
   incomingMessage,
@@ -389,5 +390,19 @@ describe("who a message is for", () => {
       selves(),
     );
     expect(lead.opens_with_other_mention).toBe(true);
+  });
+});
+
+describe("componentsText", () => {
+  test("reads_text_displays_in_order_and_ignores_the_rest", () => {
+    expect(
+      componentsText([
+        { type: 17, components: [{ type: 10, content: " 第一行 " }, { type: 14 }] },
+        { toJSON: () => ({ type: 10, content: "第二行" }) },
+        null,
+      ]),
+    ).toBe("第一行\n第二行");
+    expect(componentsText(undefined)).toBe("");
+    expect([...componentsText([{ type: 10, content: "長".repeat(700) }])].length).toBe(601);
   });
 });

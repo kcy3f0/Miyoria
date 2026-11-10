@@ -27,6 +27,12 @@ export const SongMetaSchema = z.object({
   video: z.object({ file: z.string() }).nullable().catch(null),
   /** What became of the song's backing voices (`acapella` has no instrumental). */
   backing: z.string().optional().catch(undefined),
+  /** Its beat: tempo and beat times in seconds from the start of the playback (older workers: none). */
+  beats: z
+    .object({ bpm: z.number(), times: z.array(z.number()) })
+    .nullable()
+    .catch(null)
+    .optional(),
 });
 export type SongMeta = z.output<typeof SongMetaSchema>;
 export type LyricLine = z.output<typeof LyricLineSchema>;

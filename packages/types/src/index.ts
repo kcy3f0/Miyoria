@@ -259,10 +259,13 @@ export {
   SocialSignalsKey,
 } from "./social.js";
 export {
+  MAX_BEATS,
+  parseSongBeats,
   parseSongCue,
   parseSongPrepare,
   SONG_PREPARE_TOPIC,
   SONG_TOPIC,
+  type SongBeats,
   type SongCue,
   type SongPrepare,
 } from "./song.js";

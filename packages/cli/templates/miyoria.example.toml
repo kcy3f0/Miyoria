@@ -192,6 +192,18 @@ ambient_channels = []
 # 沒開就設成 false,否則 Discord 會拒絕連線
 presence_intents = true
 
+# 伺服器自訂 emoji(docs/design/server-emoji.md):她看得到每個 emoji 的意思、寫 :名字: 就會送出那個 emoji。
+# 沒寫意思的 emoji,如果聊天模型看得懂圖,會自己看一次圖寫一句(存起來,只看一次)。
+# 頻率:一則最多 per_message 個;她在同一個頻道最近 window_messages 則裡最多 max_in_window 則有;同一個不連續用。
+# [modules."platform.discord.bot".emoji]
+# enabled = true
+# auto_describe = true
+# max_listed = 40
+# per_message = 1
+# window_messages = 3
+# max_in_window = 1
+# descriptions = { fanfan = "一碗白飯,討飯用" }
+
 # Admin API:CLI(`miyoria module ...`)和之後的管理面板用。token 由 `miyoria init` 產生
 [modules.api]
 bind = "127.0.0.1:7878"
@@ -234,6 +246,17 @@ token = "${VOICE_LINK_TOKEN:-}"
 [modules."stage.link"]
 bind = "127.0.0.1:7882"
 token = "${STAGE_LINK_TOKEN:-}"
+
+# 直播精華:直播中唱完一首歌、她情緒很強、聊天室突然很多訊息時,叫 OBS 存 replay buffer(最後幾十秒),
+# 檔案旁邊放一個 <檔名>.json 寫為什麼存。replay buffer 的長度和資料夾在 OBS 設定 → 輸出 → 重播緩衝。
+# [modules."stage.link".highlights]
+# enabled = true
+# cooldown_secs = 90             # 兩段精華至少隔多久
+# delay_ms = 4000                # 那一刻之後再等多久才存(反應也錄進去)
+# emotions = ["laugh", "surprised", "excited"]
+# emotion_intensity = 0.85
+# chat_burst_messages = 8        # chat_burst_secs 秒內這麼多句就算聊天室炸開(0 = 關)
+# chat_burst_secs = 20
 
 # OBS 智慧場景:每個場景的用途(chat 聊天 / game 遊戲 / brb 暫離 / starting 開場 / ending 結尾 / sing 唱歌)。
 # 第一次看到 OBS 的場景清單時用 fast 模型從名稱判斷(沒有模型就用關鍵字),面板「直播」頁可以改;
@@ -856,6 +879,10 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # reply_window_mins = 10         # 她說完話之後多久內的回覆算回應她
 # light_after_total_lines = 300  # 自上次反思後各處累積這麼多句,安靜時就稍微反思一下(0 = 關)
 # max_bonds = 5                  # 一次反思最多整理幾個人的人物卡(在意程度每人每天最多調一次)
+# [modules.reflect.diary]          # 每天反思完寫一篇短日記貼到這個頻道(空的 = 不寫)。內容來自她自己的回顧,
+# channel = ""                  # 私訊裡的事不寫,貼文照樣過審核;例如 "discord:<伺服器 id>:<頻道 id>"
+# max_chars = 300
+# heading = ""                   # 每篇上面加的一行,例如 "📔 今天的日記"
 
 # 長期記憶的新鮮度:回想時只放真的相關的事,舊的、現在式的、一直重複的會被淘汰。
 # [modules.memory]
@@ -966,6 +993,10 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # read_chars = 2000              # 一次讀回幾字(長的分段讀)
 # writes_per_hour = 30           # 每小時最多寫幾次(所有頁加起來)
 # index_chars = 600              # prompt 裡索引的字數
+# [modules.memory.dates]          # 生日和紀念日:對方告訴她(remember_date),當天對方第一次說話時她會想起來、找機會祝賀
+# enabled = true
+# utc_offset_minutes = 480       # 她的日曆用的時區(480 = 台灣)
+# met_anniversary = true         # 認識滿一年、兩年…那天也算
 # /me memory forget 刪掉關於你的、你告訴她的、從你說的話整理出來的記憶;
 # 聊天紀錄和事件紀錄不動(用 /admin memory wipe 清除),對你的好感與印象(關係資料)也不動。
 
@@ -1179,6 +1210,17 @@ max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不
 [stage]
 core_url = "ws://127.0.0.1:7882/stage-link"
 token = "${STAGE_LINK_TOKEN:-}"
+
+# 直播精華:直播中唱完一首歌、她情緒很強、聊天室突然很多訊息時,叫 OBS 存 replay buffer(最後幾十秒),
+# 檔案旁邊放一個 <檔名>.json 寫為什麼存。replay buffer 的長度和資料夾在 OBS 設定 → 輸出 → 重播緩衝。
+# [modules."stage.link".highlights]
+# enabled = true
+# cooldown_secs = 90             # 兩段精華至少隔多久
+# delay_ms = 4000                # 那一刻之後再等多久才存(反應也錄進去)
+# emotions = ["laugh", "surprised", "excited"]
+# emotion_intensity = 0.85
+# chat_burst_messages = 8        # chat_burst_secs 秒內這麼多句就算聊天室炸開(0 = 關)
+# chat_burst_secs = 20
 # overlay_backdrop = "data/stage/backdrop.jpg"   # 直播背景圖(overlay 的 ?layer=backdrop 會模糊、壓暗它)
 
 [stage.vts]
@@ -1201,6 +1243,7 @@ password = "${OBS_PASSWORD:-}"
 # song_video_dir = "data/songs"      # worker 的 SING_DATA_DIR;不在裡面的路徑不放
 # song_video_lead_ms = 0             # 影片比歌慢就加大(OBS 開檔要一點時間)
 # song_video_resync_ms = 300         # 跟歌差超過就 seek
+# replay_buffer = true               # 直播時自動開 OBS 的重播緩衝,精華才存得到
 
 # 回放紀錄(v2 §4):把她聽到、看到的事件(訊息、語音轉錄、在線狀態、遊戲 / 唱歌事件)逐行寫進
 # <dir>/<日期>.jsonl,之後用 `pnpm replay <檔案>` 拿假模型重播,看回合、Arbiter 與活動狀態的決策。

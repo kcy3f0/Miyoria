@@ -147,7 +147,7 @@ import { fileParts, selectFiles } from "./files.js";
 import { type FocusSelection, focusVerb, type TurnFocusInit } from "./focus.js";
 import { voiceScope } from "./handle.js";
 import { awaitBackfill, fetchAround, quotedParent, replyParents } from "./history.js";
-import { looksLikeReasoning, ReplyScreen } from "./leak.js";
+import { isSelfTalk, looksLikeReasoning, ReplyScreen } from "./leak.js";
 import { ceilingFor, levelHint, paceMs } from "./levels.js";
 import type { HeldLine } from "./mainline/gate.js";
 import type { Run } from "./mainline/hands.js";
@@ -206,6 +206,7 @@ import {
 import { linkMentions, type MentionTarget } from "./mentions.js";
 import { agentTurns, CorrectionTally } from "./metrics.js";
 import { KEEP_HINT, LONG_RESULT_CHARS, loopKeepHint, NOTE_TOOLS } from "./notes.js";
+import { prohibitionOf } from "./prohibition.js";
 import {
   afterFold,
   buildMessages,
@@ -368,6 +369,7 @@ export async function runTurn(
   try {
     try {
       text = await t.respond();
+      await t.keepRules();
       outcome = t.outcome(text);
     } catch (error) {
       if (signal.aborted) return;
@@ -681,8 +683,8 @@ class Speech {
     // Links taken out may leave double spaces behind.
     const text = safe.text.replace(/[ \t]{2,}/g, " ");
     if (!isSpeakable(text)) return;
-    // Her reasoning is no sentence to say (leak.ts).
-    if (looksLikeReasoning(text)) return;
+    // Her reasoning, or a note to herself, is no sentence to say (leak.ts).
+    if (looksLikeReasoning(text) || isSelfTalk(text)) return;
     // The filtered line is said as it is: there is nothing to translate.
     const said = (safe.spoken ?? (safe.blocked === null ? "" : text)).trim();
     const line = { text, spoken: said === "" ? null : said, emotion, blocked };
@@ -1416,6 +1418,50 @@ class Turn {
   #shownEntry(id: string): HistoryEntry | undefined {
     const entry = this.session.entry(id);
     return entry === undefined || this.#hidden(entry) ? undefined : entry;
+  }
+
+  /**
+   * A plain "don't play <game>" in this turn that she did not write down herself is written for
+   * her (prohibition.ts), as the person who said it; the directive service decides whether it
+   * counts. Never throws.
+   */
+  async keepRules(): Promise<void> {
+    if (this.#succeeded.has("directive_add")) return;
+    const directives = this.agent.ctx.services.get(DirectivesKey);
+    if (!directives) return;
+    for (const input of this.inputs) {
+      if (input.author.is_bot || this.agent.isSelf(input.author.account)) continue;
+      const found = prohibitionOf(input.text);
+      if (found === null) continue;
+      try {
+        const change = await directives.add({
+          by: {
+            type: "account",
+            subject: {
+              account: input.author.account,
+              context: this.key,
+              platform_roles: [],
+              is_guild_admin: false,
+            },
+            askers: [],
+          },
+          text: found.text,
+          effect: "deny",
+          scope: { activity: found.activity },
+          minutes: found.minutes,
+          source_event: `msg:${input.id.id}`,
+        });
+        this.agent.log.info(
+          { turn: this.turn, activity: found.activity, status: change.status },
+          "wrote down a prohibition she did not",
+        );
+      } catch (error) {
+        this.agent.log.warn(
+          { turn: this.turn, error: errorMessage(error) },
+          "could not write a rule",
+        );
+      }
+    }
   }
 
   /**

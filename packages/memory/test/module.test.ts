@@ -170,11 +170,13 @@ describe("module", () => {
       "notebook",
     ]);
     expect(h.tools.names()).toEqual([
+      "forget_date",
       "notebook_delete",
       "notebook_read",
       "notebook_write",
       "recall",
       "remember",
+      "remember_date",
     ]);
     const reg = h.sup.services.require(CommandRegistryKey);
     for (const path of PATHS) {

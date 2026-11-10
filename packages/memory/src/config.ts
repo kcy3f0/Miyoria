@@ -197,6 +197,19 @@ export const NotebookConfigSchema = z.object({
 export type NotebookConfig = z.output<typeof NotebookConfigSchema>;
 
 /**
+ * `[modules.memory.dates]`: birthdays and other dates people tell her (`remember_date`), and the
+ * day she met them; on the day, the first time they speak she gets a followup to bring it up.
+ */
+export const DatesConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Her calendar's offset from UTC (minutes; 480 = Taiwan). */
+  utc_offset_minutes: z.number().int().min(-840).max(840).default(480),
+  /** The yearly day she first met someone counts too (from the first anniversary on). */
+  met_anniversary: z.boolean().default(true),
+});
+export type DatesConfig = z.output<typeof DatesConfigSchema>;
+
+/**
  * `[modules.memory]`.
  *
  * ```toml
@@ -297,6 +310,7 @@ export const MemoryConfigSchema = z.object({
   recent: RecentConfigSchema.prefault({}),
   profiles: ProfilesConfigSchema.prefault({}),
   notebook: NotebookConfigSchema.prefault({}),
+  dates: DatesConfigSchema.prefault({}),
 });
 export type MemoryConfig = z.output<typeof MemoryConfigSchema>;
 

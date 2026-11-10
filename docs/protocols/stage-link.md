@@ -31,7 +31,9 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 | `avatar_hotkey` | `name`, `id?` | 觸發 VTS hotkey(名稱或 hotkey ID) |
 | `gaze` | `target`(`chat` / `game` / `camera`) | 她看哪裡 |
 | `song_video` | `action`(`play` / `stop`), `song`, `path?`, `offset_ms?`, `scene?` | 她唱的歌的原曲影片(見下面「唱歌時放影片」)。`play`:`path` 是直播機上歌曲快取裡的影片(絕對路徑),`offset_ms` 是送出時歌已經唱了多久,`scene` 是導演會切去的 `sing` 場景(沒有就是目前場景);`stop`:停掉並清空。沒有 `id`、不回覆 |
+| `beat` | `song`, `bpm`, `times_ms`, `offset_ms` | 她唱的歌的節拍:`times_ms` 是每一拍離歌開頭幾毫秒(排好序),`offset_ms` 是送出時歌已經唱了多久;Stage 每拍讓她點一下頭、身體換一邊擺(`[stage.motion] beat_nod_deg` / `beat_sway_deg`)。歌結束時送空的 `times_ms`;最後一拍過後兩秒也會自己停。沒有 `id`、不回覆 |
 | `notice` | `text` | overlay 的一行狀態(`""` 清掉)。她的語音因為要做歌暫停時是「準備歌曲中…」(來自 `speech.pause`)。新的 overlay 改用 `activity` 顯示這段時間,`notice` 留給舊版 Stage / overlay;新 overlay 只在沒有 `activity` 時才把它顯示在活動膠囊裡 |
+| `clip` | `reason`, `id?` | 存一段精華:Stage 叫 OBS 存 replay buffer(直播最後幾十秒,長度和資料夾在 OBS 設定),在檔案旁邊寫 `<檔名>.json`(`reason`、`at`)。成功時回 `status`,並另外送 `clip_saved`;OBS 沒存到(replay buffer 沒開)回 `error`。Core 在直播中、唱完歌 / 她情緒很強 / 聊天室突然很多訊息時送(`[modules."stage.link".highlights]`) |
 | `activity` | `kind`, `label`, `detail`, `progress`, `elapsed_ms`, `duration_ms` | 她現在在做什麼(overlay 左下的活動膠囊,見下面「活動」)。`kind`:`thinking` / `synthesizing` / `song_prepare` / `singing`,`null` = 隱藏(其他欄位為空);`label` 是短的中文狀態(≤ 40);`detail` 是歌名(已跳脫、≤ 49 字)或 `null`;`progress` 0..1 或 `null`(不確定);唱歌時 `elapsed_ms`(送出時唱到哪)與 `duration_ms`(歌多長),進度由收到的一方自己的時鐘推進 |
 | `status_request` | `id?` | 要一份最新的 `status` |
 | `ping` / `pong` | | |
@@ -54,7 +56,7 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 {"type":"activity","kind":null,"label":"","detail":null,"progress":null,"elapsed_ms":null,"duration_ms":null}
 ```
 
-`song_video`、`activity` 是 v1 之後加的:舊版 Stage 不認得它們(記 debug log、略過),協定版本仍是 1。
+`song_video`、`activity`、`beat`、`clip` / `clip_saved` 是 v1 之後加的:舊版 Stage 不認得它們(記 debug log、略過),協定版本仍是 1。
 
 **活動(`activity`,Core 端)**:由 `stage.link` 從匯流排事件算出來,優先順序由高到低:
 
@@ -82,6 +84,7 @@ Stage 節點(`miyoria stage`,跑在直播機)和 Core 的 `stage.link` 模組之
 |---|---|---|
 | `status` | `vts`(bool), `obs`(bool), `scene`(string / null), `streaming`(bool), `scenes`(string[]), `hotkeys`(string[]), `overlay_url`(string / null), `id?` | 目前狀態。`vts`:已連上並通過 VTS 認證;`obs`:已連上 obs-websocket;`scene`:OBS 目前的 program 場景;`scenes`:OBS 所有場景名稱(`GetSceneList`,順序跟 OBS 場景清單由上到下一樣,OBS 沒連上時是 `[]`);`hotkeys`:VTS 目前模型的 hotkey 名稱(VTS 連上 / 換連線、以及收到 `status_request` 時重新讀取,VTS 沒連上時是 `[]`);`overlay_url`:Stage 的 overlay 網頁(給 OBS browser source 用,綁 `0.0.0.0` / `::` 時寫成 `127.0.0.1`) |
 | `error` | `message`, `id?` | 錯誤 |
+| `clip_saved` | `reason`, `path` | 精華存好了:`path` 是直播機上 OBS 寫的檔案。Core 發 `stage.clip` 事件 |
 | `ping` / `pong` | | |
 
 ```json

@@ -35,7 +35,7 @@ export {
   type SongPayments,
   SongPaymentsKey,
 } from "./payments.js";
-export { paced, singSong, sleep, songVideoPath } from "./player.js";
+export { paced, singSong, sleep, songBeats, songVideoPath } from "./player.js";
 export { PROMPT_KEY, SingPrompt } from "./prompt.js";
 export {
   BACKING_LABELS,

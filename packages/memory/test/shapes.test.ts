@@ -101,6 +101,7 @@ describe("shapes", () => {
         writes_per_hour: 30,
         index_chars: 600,
       },
+      dates: { enabled: true, utc_offset_minutes: 480, met_anniversary: true },
     });
     // Nested sections keep their other defaults.
     expect(memoryConfig({ weights: { vector: 1 } }).weights.text).toBe(0.25);

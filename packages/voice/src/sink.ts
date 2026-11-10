@@ -38,7 +38,7 @@ import { VoiceLinkError } from "./link/conn.js";
 import type { VoiceLink } from "./link/link.js";
 import type { Playback } from "./link/playback.js";
 import { BufferedAudio, type LinePrefetch, type PreparedLine, type Producer } from "./prefetch.js";
-import { stripTags } from "./text.js";
+import { stripEmoji, stripTags } from "./text.js";
 import { LATENCY_TOPIC } from "./topics.js";
 import type { SpeechTranslator } from "./translate.js";
 import type { TurnGate } from "./turn.js";
@@ -610,7 +610,8 @@ export class Speaker implements VoiceSink {
     if (guild === null) {
       throw new VoiceLinkError(`voice context \`${contextKeyString(context)}\` has no guild`);
     }
-    const stripped = stripTags(rawText);
+    // Emoji and server emoji shortcodes cannot be said (docs/design/server-emoji.md).
+    const stripped = stripEmoji(stripTags(rawText));
     if (stripped === "") return "completed";
     this.#lineAt.set(guild, this.#d.ctx.clock.now());
     if (this.#muted) return "interrupted";

@@ -635,6 +635,9 @@ importers:
       '@node-rs/jieba':
         specifier: ^2.0.4
         version: 2.0.4
+      '@resvg/resvg-js':
+        specifier: ^2.6.2
+        version: 2.6.2
       discord.js:
         specifier: ^14.26.0
         version: 14.28.0
@@ -653,12 +656,24 @@ importers:
       pino:
         specifier: ^10.4.0
         version: 10.4.0
+      react:
+        specifier: ^19.1.0
+        version: 19.3.1
+      react-dom:
+        specifier: ^19.1.0
+        version: 19.3.1(react@19.3.1)
+      sharp:
+        specifier: ^0.35.5
+        version: 0.35.5(@types/node@24.19.2)
       smol-toml:
         specifier: ^1.9.1
         version: 1.9.1
       ulid:
         specifier: ^3.0.2
         version: 3.0.2
+      uqr:
+        specifier: 0.1.2
+        version: 0.1.2
       ws:
         specifier: ^8.22.1
         version: 8.22.1
@@ -900,6 +915,12 @@ importers:
       '@miyoria/kernel':
         specifier: workspace:*
         version: link:../kernel
+      '@miyoria/llm':
+        specifier: workspace:*
+        version: link:../llm
+      '@miyoria/store':
+        specifier: workspace:*
+        version: link:../store
       '@miyoria/types':
         specifier: workspace:*
         version: link:../types

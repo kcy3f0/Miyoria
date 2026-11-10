@@ -37,6 +37,7 @@ import {
   LessonsKey,
   type PersonId,
   PersonProfilesKey,
+  PlatformSinksKey,
   type ProfileId,
   PromptContributorsKey,
   type PromptRequest,
@@ -52,6 +53,7 @@ import {
   ReflectConfigSchema,
 } from "./config.js";
 import { ConversationEngine, FEEDBACK_TOPIC } from "./conversation.js";
+import { Diary } from "./diary.js";
 import { FeedbackTracker } from "./feedback.js";
 import { KnowledgeStore } from "./knowledge.js";
 import { LessonStore } from "./lessons.js";
@@ -547,6 +549,12 @@ export class ReflectModule implements Module {
         }
       }
     });
+    const diary = new Diary(config.diary, {
+      router: () => s.get(LlmRouterKey),
+      sinks: () => s.get(PlatformSinksKey),
+      persona: () => (persona ? persona(s) : ""),
+      name: this.options.name ?? "她",
+    });
     ctx.spawn("reflect", async (signal) => {
       while (!signal.aborted) {
         try {
@@ -566,6 +574,7 @@ export class ReflectModule implements Module {
         );
         if (run) {
           ctx.publish(customEvent("reflect.run", JSON.parse(JSON.stringify(run)) as JsonValue));
+          if (run.kind === "daily") void diary.write(run, signal);
           ctx.log.info(
             { kind: run.kind, error: run.error, lessons: run.lessons.length },
             "she reflected",

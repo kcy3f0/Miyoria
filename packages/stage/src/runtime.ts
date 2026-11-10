@@ -345,6 +345,16 @@ class Stage {
         this.#overlay.activity(activity);
         return;
       }
+      case "beat":
+        this.#avatar?.beat(msg.times_ms, msg.offset_ms);
+        return;
+      case "clip":
+        this.#answer(msg.id, async () => {
+          const path = await this.#obsOrThrow().clip(msg.reason);
+          if (path === null) throw new StageError("OBS saved no replay (is its replay buffer on?)");
+          this.replies?.({ type: "clip_saved", reason: msg.reason, path });
+        });
+        return;
       case "song_video":
         if (msg.action === "play") this.#songVideo?.play(msg);
         else this.#songVideo?.stop(msg.song);
