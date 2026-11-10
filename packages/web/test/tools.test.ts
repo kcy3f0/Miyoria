@@ -176,7 +176,9 @@ describe("module", () => {
     expect(m.manifest.id).toBe("web");
     expect(WebConfigSchema.parse({})).toMatchObject({
       region: "tw-tzh",
-      read_chars: 4000,
+      read_chars: 12_000,
+      result_chars: 12_000,
+      search_chars: 3900,
       search_per_person: 6,
       read_per_person: 10,
       search_global: 30,
