@@ -51,7 +51,7 @@ function book(
 
 function decision(
   capability: string,
-  args: Record<string, string>,
+  args: Record<string, JsonValue>,
   principal: Principal = Principals.self(CHAT),
   allowed = true,
 ) {
@@ -97,6 +97,17 @@ describe("her life log", () => {
       ["browse", "查了「Minecraft 1.22 新生物」"],
       ["code", "寫了一段 python"],
     ]);
+  });
+
+  it("a song someone asked for is not her practice; one she picked, or marked practice, is", () => {
+    const b = book();
+    const owen = { platform: "discord", id: "1" };
+    b.observe(decision("sing.request", { query: "點播的歌" }, Principals.self(CHAT, owen)));
+    b.observe(decision("sing.request", { query: "自己挑的歌" }));
+    b.observe(
+      decision("sing.request", { query: "順便練的歌", practice: true }, Principals.self(CHAT, owen)),
+    );
+    expect(b.today().map((e) => e.what)).toEqual(["準備了〈自己挑的歌〉", "準備了〈順便練的歌〉"]);
   });
 
   it("names each kind of call in her terms", () => {

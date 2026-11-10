@@ -250,7 +250,14 @@ export class LifeBook implements LifeLog {
     // Only what she does as herself is her life; what she does for someone is theirs.
     if (principal?.kind !== "self") return;
     const capability = typeof payload.capability === "string" ? payload.capability : "";
-    const point = pointOf(capability, isJsonObject(payload.args) ? payload.args : {});
+    const args = isJsonObject(payload.args) ? payload.args : {};
+    // A song someone asked for is theirs, not her practice: she sings it as herself, but with them
+    // as the requester. Only a song she picked (no requester), or one the sing module marks as
+    // practice, is (2026-11-10: every request counted as her practice).
+    if (capability === "sing.request" && principal.requester != null && args.practice !== true) {
+      return;
+    }
+    const point = pointOf(capability, args);
     if (point === null) return;
     const at = typeof payload.at === "string" ? payload.at : toTimestamp(this.#now());
     this.record({ ...point, at, minutes: null, capability });
