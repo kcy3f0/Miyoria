@@ -90,6 +90,12 @@ export const KnowledgeConfigSchema = z.object({
   said_confidence: z.number().min(0).max(1).default(0.6),
   /** Offer the tool `knowledge_note` in turns. */
   tool: z.boolean().default(true),
+  /**
+   * Put the documents about the people present in the prompt. Off once the main line reads the
+   * person profiles of `memory` (v4 §5.6), which carry these documents' points among the rest:
+   * one place per fact about a person, not four.
+   */
+  prompt_people: z.boolean().default(true),
 });
 export type KnowledgeConfig = z.output<typeof KnowledgeConfigSchema>;
 

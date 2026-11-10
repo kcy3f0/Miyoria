@@ -92,6 +92,7 @@ export {
   ReflectModule,
   subjectsFor,
 } from "./modules.js";
+export { RECAP_STALE_MINS, recapAgeNote } from "./recap-age.js";
 export {
   MAX_PUBLIC_FEELING,
   MAX_STANCE,

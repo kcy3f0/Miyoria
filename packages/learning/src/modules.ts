@@ -246,7 +246,7 @@ export class KnowledgeModule implements Module {
     contributors?.register({
       key: KNOWLEDGE_CONTRIBUTOR,
       contribute: async (request: PromptRequest) => {
-        const body = kb.render(subjectsFor(kb, request), {
+        const body = kb.render(subjectsFor(kb, request, config.prompt_people), {
           context: request.context,
           maxChars: config.prompt_chars,
         });
@@ -279,13 +279,20 @@ export class KnowledgeModule implements Module {
   }
 }
 
-/** The people of the turn (speakers first), this server, topics named in the input, herself. */
-export function subjectsFor(kb: KnowledgeStore, request: PromptRequest): KnowledgeSubject[] {
+/**
+ * The people of the turn (speakers first, unless `people` is off: the person profiles carry
+ * them), this server, topics named in the input, herself.
+ */
+export function subjectsFor(
+  kb: KnowledgeStore,
+  request: PromptRequest,
+  people = true,
+): KnowledgeSubject[] {
   const out: KnowledgeSubject[] = [];
   const speakers = request.participants.filter((p) =>
     request.speakers.some((a) => a.platform === p.account.platform && a.id === p.account.id),
   );
-  for (const p of [...speakers, ...request.participants]) {
+  for (const p of people ? [...speakers, ...request.participants] : []) {
     if (p.person !== null) out.push({ type: "person", person: p.person });
   }
   if (request.context.scope !== null && request.context.kind !== "dm") {
