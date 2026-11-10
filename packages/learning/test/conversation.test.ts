@@ -137,6 +137,20 @@ describe("conversation compaction", () => {
     expect([...(await store.list("p", STATE_PREFIX)).keys()]).toEqual([stateKey(TEXT)]);
   });
 
+  it("says how old the recap is once it fell behind (v4 §5.7)", async () => {
+    const provider = new MockProvider("p").reply(FIRST);
+    const r = await rig({ provider });
+    await lines(r, 16);
+    await wait(6_000);
+    expect(provider.requests()).toHaveLength(1);
+    const fresh = await r.contribute("conversation", request(TEXT));
+    expect(fresh).toContain("前情提要:");
+    expect(fresh).not.toContain("寫到");
+    await wait(31 * 60_000);
+    // The last folded line was said at 12:00 UTC: 20:00 at the default UTC+8.
+    expect(await r.contribute("conversation", request(TEXT))).toContain("(寫到 20:00 為止)");
+  });
+
   it("hides threads of her notes nobody touched for stale_thread_mins from turns", async () => {
     // The second fold keeps the open question and the plan as they were: nobody touched them.
     const kept = JSON.stringify({
