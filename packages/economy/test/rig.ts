@@ -8,7 +8,7 @@ import {
   CapabilityTool,
 } from "@miyoria/actions";
 import { getLogger, ServiceRegistry } from "@miyoria/kernel";
-import { CoinLedgerStoreKey, PeopleStoreKey, SqliteStore } from "@miyoria/store";
+import { CoinLedgerStoreKey, DealStoreKey, PeopleStoreKey, SqliteStore } from "@miyoria/store";
 import {
   type AccountRef,
   AffectStateKey,
@@ -69,6 +69,7 @@ export async function rig(config: Record<string, JsonValue> = {}): Promise<Rig> 
   const k = "test";
   services.provide(k, CoinLedgerStoreKey, store.coins);
   services.provide(k, PeopleStoreKey, store.people);
+  services.provide(k, DealStoreKey, store.deals);
   const ids = new Map<string, PersonId>();
   for (const [a, name] of [
     [ALICE, "Alice"],
