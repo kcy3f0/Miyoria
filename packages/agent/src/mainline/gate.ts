@@ -102,6 +102,11 @@ export class LineGate {
     return false;
   }
 
+  /** Lines are held: whatever comes after them waits too. */
+  holding(): boolean {
+    return this.#held.length > 0;
+  }
+
   /** Whether a text line must wait: it stays in the reply, nothing is kept here. */
   holds(text: string): boolean {
     return this.#mustWait(text);

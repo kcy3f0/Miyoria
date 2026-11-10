@@ -274,9 +274,28 @@ export const PromptConfigSchema = z.object({
 export type PromptConfig = z.output<typeof PromptConfigSchema>;
 
 /**
+ * Tools that answer at once (a lookup, a note, a short program): they run inside the turn and she
+ * reads the result in the same call chain (docs/design/v4-plan.md §4.2). Everything else (games,
+ * songs, going live, joining voice) stays with the hands and comes back in a turn of its own.
+ */
+export const LOOP_TOOLS: readonly string[] = [
+  "web_search",
+  "web_read",
+  "recall",
+  "remember",
+  "check_coins",
+  "keep_note",
+  "drop_note",
+  "code_run",
+  "voice_status",
+];
+
+/**
  * `[modules.agent.mainline]`: the main line of `pipeline = "v3"` (docs/design/v3-architecture.md
  * §10). The prompt has no token cap by default (2026-11-08: 4000 left her with no conversation);
- * each part keeps its own character budget.
+ * each part keeps its own character budget. The budgets are the ones of docs/design/v4-plan.md
+ * §4.1: the history sits in the cached prefix, so a long one costs little once the layout keeps
+ * that prefix the same from turn to turn (11-07's 4000-token target was set before it did).
  */
 export const MainLineConfigSchema = z.object({
   /** A cap on the prompt (null: none); over it the oldest history gives way. */
@@ -284,16 +303,28 @@ export const MainLineConfigSchema = z.object({
   /** Her own state in the tail of the prompt. */
   self_chars: z.number().int().nonnegative().default(1600),
   /** What contributors add to the data part, together. */
-  data_chars: z.number().int().nonnegative().default(4000),
+  data_chars: z.number().int().nonnegative().default(12_000),
   /** History lines shown at most, and their characters. */
-  history_lines: z.number().int().nonnegative().default(30),
-  history_chars: z.number().int().nonnegative().default(4000),
+  history_lines: z.number().int().nonnegative().default(200),
+  history_chars: z.number().int().nonnegative().default(20_000),
+  /**
+   * A history over its budget is cut back to this share of it in one go, not a line per turn: the
+   * first line of the history then stays where it is for many turns, and so does the cached prefix.
+   */
+  history_trim: z.number().gt(0).lte(1).default(0.6),
   /** The newest lines kept even when the prompt is over `prompt_tokens`. */
   history_floor: z.number().int().nonnegative().default(8),
   /** One history entry. */
   entry_chars: z.number().int().nonnegative().default(600),
-  /** Example dialogues in the data part (0: none). */
-  examples_chars: z.number().int().nonnegative().default(0),
+  /** Memories retrieved per turn (the memory module's `recall_limit` when 0). */
+  memory_lines: z.number().int().nonnegative().default(20),
+  /**
+   * Example dialogues, before the history (0: none). Which of them she sees turns over from one
+   * session to the next and stays the same within one, so the prefix does too.
+   */
+  examples_chars: z.number().int().nonnegative().default(1500),
+  /** Tools that run inside the turn (`LOOP_TOOLS`); the rest go to the hands. */
+  loop_tools: z.array(z.string()).default([...LOOP_TOOLS]),
   /** Lines of "最近講過" in the tail. */
   recent_lines: z.number().int().nonnegative().default(4),
   /** Untrusted working-context entries in the data part. */
@@ -323,8 +354,11 @@ export const AgentConfigSchema = z.object({
   typing_extend_ms: z.number().int().nonnegative().default(2500),
   /** Upper bound on the total debounce of one turn. */
   max_debounce_ms: z.number().int().nonnegative().default(4000),
-  /** Messages kept per conversation context. */
-  history_limit: z.number().int().nonnegative().default(50),
+  /**
+   * Messages kept per conversation context. More than the main line's `history_lines`, so the
+   * oldest line it shows is never the one that falls out.
+   */
+  history_limit: z.number().int().nonnegative().default(240),
   /** Messages of history included in the prompt. */
   prompt_history: z.number().int().nonnegative().default(30),
   /**
@@ -375,12 +409,15 @@ export const AgentConfigSchema = z.object({
   mainline: MainLineConfigSchema.prefault({}),
   /** Offer registered tools to the model. */
   tools_enabled: z.boolean().default(true),
-  /** Rounds of tool calls per turn before she must answer. */
+  /**
+   * Rounds of tool calls per turn before she must answer. Under the main line: rounds of
+   * `mainline.loop_tools` inside one turn, and how long a chain of result turns may get.
+   */
   max_tool_steps: z.number().int().nonnegative().default(3),
   /** Time limit for one tool call. */
   tool_timeout_ms: z.number().int().nonnegative().default(10_000),
-  /** Tool results are truncated to this many characters. */
-  max_tool_result_chars: z.number().int().nonnegative().default(1000),
+  /** Tool results are truncated to this many characters (v4 §4.2: a program's output). */
+  max_tool_result_chars: z.number().int().nonnegative().default(4000),
   temperature: z.number().nullable().default(null),
   max_tokens: z.number().int().nonnegative().nullable().default(null),
   /** A context with no activity for this long forgets its session. */

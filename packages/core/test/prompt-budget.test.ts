@@ -254,8 +254,8 @@ describe("the prompt budget (§10.4)", () => {
       history_kept: fitted.length,
       fixed: promptTokens(whole.slice(0, 1)),
       pinned: promptTokens(whole.slice(1, 2)),
-      data: promptTokens(whole.slice(2, 3)),
-      history: promptTokens(whole.slice(3, -1)),
+      history: promptTokens(whole.slice(2, -2)),
+      data: promptTokens(whole.slice(-2, -1)),
       tail: promptTokens(whole.slice(-1)),
       v2_total: v2Tokens(persona, raw, SPEAKS_IN),
     };
@@ -297,8 +297,13 @@ describe("the prompt budget (§10.4)", () => {
     expect(String(messages[0]?.content)).toContain("# 規則");
     expect(String(messages[1]?.content)).toContain("主人規則");
     expect(String(messages[1]?.content)).toContain("逾期");
+    // v4 §4.1: the data of the turn comes after the history, so the history stays in the cached
+    // prefix; with it, the message she answers.
     expect(messages[2]?.role).toBe("user");
-    expect(String(messages[2]?.content)).toContain("⟦資料");
+    expect(String(messages[2]?.content)).not.toContain("⟦資料");
+    expect(messages.at(-2)?.role).toBe("user");
+    expect(String(messages.at(-2)?.content)).toContain("⟦資料");
+    expect(String(messages.at(-2)?.content)).toContain("要回的訊息");
     expect(messages.at(-1)?.role).toBe("system");
     expect(String(messages.at(-1)?.content)).toContain("# 現在");
     expect(String(messages.at(-1)?.content)).toContain("<voice>");
