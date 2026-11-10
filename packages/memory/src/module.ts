@@ -52,6 +52,7 @@ import { buildEmbedder, type Embedder } from "./embed.js";
 import { MemoryEngine, MemoryEngineKey } from "./engine.js";
 import { PersonNotes } from "./person-note.js";
 import { PinnedReader } from "./pinned.js";
+import { RecentPast } from "./recent-install.js";
 import { MemoryRetriever } from "./retrieval.js";
 import { RECALL, REMEMBER, RecallTool, RememberTool } from "./tools.js";
 
@@ -59,6 +60,9 @@ import { RECALL, REMEMBER, RecallTool, RememberTool } from "./tools.js";
 const MAINTENANCE_FIRST_MS = 60_000;
 const MAINTENANCE_CHECK_MS = 600_000;
 const HOUR_MS = 3_600_000;
+/** How often records without a vector are given one, and how many at a time. */
+const BACKFILL_MS = 120_000;
+const BACKFILL_BATCH = 32;
 
 export class MemoryModuleError extends Error {
   override readonly name = "MemoryModuleError";
@@ -99,6 +103,7 @@ export class MemoryModule implements Module {
   readonly #records: MemoryRecordStore | undefined;
   readonly #installer = new Installer();
   #engine: MemoryEngine | null = null;
+  #embedderInUse: Embedder | null = null;
   #degraded: string | null = null;
 
   /** `embedding` is the top-level `[memory.embedding]` section. */
@@ -137,13 +142,22 @@ export class MemoryModule implements Module {
       clock: ctx.clock,
     });
     this.#engine = engine;
+    this.#embedderInUse = embedder;
     engine.attach(services);
+    const recent = new RecentPast(engine, services, ctx.clock);
+    try {
+      await recent.notebook.load();
+    } catch (error) {
+      ctx.log.warn({ error: errorMessage(error) }, "cannot load her notebook: it starts empty");
+    }
+    recent.provide((key, value) => ctx.provide(key, value));
     ctx.provide(MemoryEngineKey, engine);
     ctx.provide(PinnedMemoryKey, new PinnedReader(engine, ctx.clock));
     ctx.provide(MemoryRetrievalKey, new MemoryRetriever(engine));
     ctx.provide(FollowupSourceKey, engine);
     ctx.provide(MemoryCuratorKey, new Curator(engine));
     ctx.provide(PersonNoteWriterKey, new PersonNotes(engine));
+    this.#installer.recent = recent;
     this.#installer.install(ctx, engine);
     ctx.log.info({ embedder: embedder.name }, "memory started");
 
@@ -160,10 +174,16 @@ export class MemoryModule implements Module {
     if (config.forgetting.enabled) {
       ctx.spawn("forget", (signal) => maintenanceLoop(ctx, engine, signal));
     }
+    if (embedder.enabled) {
+      ctx.spawn("embed", (signal) => backfillLoop(ctx, engine, signal));
+    }
   }
 
   async stop(): Promise<void> {
     this.#installer.uninstall();
+    const embedder = this.#embedderInUse as (Embedder & { close?: () => Promise<void> }) | null;
+    this.#embedderInUse = null;
+    await embedder?.close?.();
   }
 
   async health(): Promise<Health> {
@@ -182,6 +202,10 @@ export class MemoryModule implements Module {
 class Installer {
   #contributors: PromptContributors | null = null;
   #tools: ToolRegistry | null = null;
+  /** The v4 readers' contributors and tools, registered beside the memory ones. */
+  recent: RecentPast | null = null;
+  #recentContributors: string[] = [];
+  #recentTools: string[] = [];
   readonly #commands = new MemoryCommands();
 
   install(ctx: ModuleContext, engine: MemoryEngine): void {
@@ -190,7 +214,9 @@ class Installer {
     const contributors = services.get(PromptContributorsKey);
     if (contributors && contributors !== this.#contributors) {
       this.#contributors?.unregister(CONTRIBUTOR_KEY);
+      for (const key of this.#recentContributors) this.#contributors?.unregister(key);
       contributors.register(new MemoryContributor(engine));
+      this.#recentContributors = this.recent?.register(contributors, engine) ?? [];
       this.#contributors = contributors;
     }
     const tools = services.get(ToolRegistryKey);
@@ -198,11 +224,14 @@ class Installer {
       if (this.#tools) {
         this.#tools.unregister(REMEMBER);
         this.#tools.unregister(RECALL);
+        for (const name of this.#recentTools) this.#tools.unregister(name);
+        this.#recentTools = [];
         this.#tools = null;
       }
       try {
         tools.register(new RememberTool(engine, ctx.clock));
         tools.register(new RecallTool(engine, ctx.clock));
+        this.#recentTools = this.recent?.registerTools(tools, engine) ?? [];
         this.#tools = tools;
       } catch (error) {
         ctx.log.warn({ error: errorMessage(error) }, "could not register memory tools");
@@ -216,10 +245,14 @@ class Installer {
 
   uninstall(): void {
     this.#contributors?.unregister(CONTRIBUTOR_KEY);
+    for (const key of this.#recentContributors) this.#contributors?.unregister(key);
+    this.#recentContributors = [];
     this.#contributors = null;
     if (this.#tools) {
       this.#tools.unregister(REMEMBER);
       this.#tools.unregister(RECALL);
+      for (const name of this.#recentTools) this.#tools.unregister(name);
+      this.#recentTools = [];
       this.#tools = null;
     }
     this.#commands.uninstall();
@@ -410,6 +443,29 @@ async function maintenanceLoop(
       ctx.log.info({ report }, "memory maintenance done");
     } catch (error) {
       ctx.log.warn({ error: errorMessage(error) }, "memory maintenance failed");
+    }
+  }
+}
+
+/** Gives vectors to records stored without one, a batch at a time, while the embedder is on. */
+async function backfillLoop(
+  ctx: ModuleContext,
+  engine: MemoryEngine,
+  signal: AbortSignal,
+): Promise<void> {
+  for (;;) {
+    try {
+      await sleep(BACKFILL_MS, signal);
+    } catch {
+      return;
+    }
+    if (!engine.embedder.enabled) return;
+    try {
+      const n = await engine.backfillEmbeddings(BACKFILL_BATCH, signal);
+      if (n > 0) ctx.log.info({ records: n }, "memories given vectors");
+    } catch (error) {
+      if (signal.aborted) return;
+      ctx.log.warn({ error: errorMessage(error) }, "embedding backfill failed");
     }
   }
 }
