@@ -20,6 +20,7 @@ export const v4Keys = {
   workspace: ["workspace"] as const,
   skills: ["skills"] as const,
   skill: (name: string) => ["skills", name] as const,
+  party: ["party"] as const,
   notebook: ["notebook"] as const,
   notebookPage: (path: string) => ["notebook", "page", path] as const,
   recent: (context: ContextKey | null) => ["recent", context] as const,
@@ -92,6 +93,11 @@ export function usePersonQuests(id: string) {
 export function useWorkspace() {
   const api = useV4Api();
   return useQuery({ queryKey: v4Keys.workspace, queryFn: ({ signal }) => api.workspace({ signal }), refetchInterval: poll(60_000), retry: false });
+}
+
+export function useParty() {
+  const api = useV4Api();
+  return useQuery({ queryKey: v4Keys.party, queryFn: ({ signal }) => api.party({ signal }), refetchInterval: poll(10_000), retry: false });
 }
 
 export function useSkills() {
