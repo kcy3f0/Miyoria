@@ -219,6 +219,28 @@ describe("a done without progress", () => {
     await h.stop();
   });
 
+  it("asking for what she already has meets the goal but is no progress for the method", async () => {
+    const h = await H.create([
+      decide("拿木劍", { name: "obtain", args: { item: "wooden_sword" } }),
+      decide("拿木劍", { name: "obtain", args: { item: "wooden_sword" } }),
+      decide("再拿木劍", { name: "obtain", args: { item: "wooden_sword" } }),
+    ]);
+    h.exec.autoEnd = (spec) =>
+      spec.goal === "obtain"
+        ? { type: "done", detail: "背包裡已經有木劍了", data: outcome(false, { wooden_sword: 1 }) }
+        : null;
+    await h.start();
+    expect(h.of(GOAL_TOPIC)).toEqual([expect.objectContaining({ goal: "拿木劍", code: "done" })]);
+    await secs(4);
+    // The second time the same method did nothing: held, not asked a third time.
+    await secs(4);
+    expect(h.names()).toEqual(["obtain", "obtain"]);
+    expect(h.of(DECISION_TOPIC).at(-1)?.verdict).toBe(
+      'Keep("held: obtain:wooden_sword failed the same way again (no_progress)")',
+    );
+    await h.stop();
+  });
+
   it("an executor without outcomes keeps the old meaning: done is progress", async () => {
     const h = await H.create([decide("砍樹", { name: "mine", args: { block: "oak_log" } })]);
     await h.start();

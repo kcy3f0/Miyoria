@@ -1164,11 +1164,14 @@ export class Director {
       if (instant) return;
       this.#attempt(s, track, progressed ? "progress" : "no_progress", null, why);
       if (!progressed) {
-        // Done, but nothing changed (an explore that saw nothing new, an empty mine): not a
-        // success, and doing it again the same way is the repeat the guard stops.
+        // Done, but nothing changed (an explore that saw nothing new, an empty mine, something
+        // she already had): not a success, and doing it again the same way is the repeat the
+        // guard stops. The goal may be met all the same.
         s.guard = guardAfter(this.#cfg, why, now) ?? s.guard;
         s.methods.failed(track.method, "no_progress", why, now);
-        if (ofGoal && g) {
+        if (ofGoal && g?.want && wantMet(g.want, outcome?.inventory ?? null)) {
+          this.#finishGoal({ type: "reached", code: "done", detail: text });
+        } else if (ofGoal && g) {
           g.task = null;
           this.#goalAttemptFailed(g, "no_progress", why);
         }
