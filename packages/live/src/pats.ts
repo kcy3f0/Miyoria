@@ -13,14 +13,26 @@
 import {
   accountRefString,
   type Handle,
+  type LivePart,
   type LivePatOutcome,
   type LivePats,
   type LivePatter,
+  type LiveSpot,
+  type LiveTouch,
   type Observation,
   type PersonId,
   safeName,
 } from "@miyoria/types";
 import type { LiveConfig } from "./config.js";
+import { classify } from "./video.js";
+
+/** How each kind of touch is told to her, in the order of a batch's summary. */
+const TOUCH_WORDS: ReadonlyArray<readonly [LivePart, string]> = [
+  ["head", "摸頭"],
+  ["face", "戳臉"],
+  ["body", "碰身體"],
+  ["screen", "點畫面"],
+];
 
 const MINUTE_MS = 60_000;
 /** People tracked by the per-person limit at once; past this the oldest windows are forgotten. */
@@ -88,6 +100,14 @@ interface Batch {
   known: Map<PersonId, Patter>;
   /** Accounts of people she never met, and their pats. */
   strangers: Map<string, number>;
+  /** Touches by kind, everyone together. */
+  parts: Map<LivePart, number>;
+}
+
+/** Where one pat landed, when it came from the picture. */
+export interface PatTouch {
+  spot: LiveSpot;
+  part: LivePart;
 }
 
 /** What one batch tells her. */
@@ -108,8 +128,10 @@ export interface PatDeskOptions {
    * to the economy's participation service; nothing here knows what it pays.
    */
   award?: (by: LivePatter, key: string) => void;
-  /** The counts changed: `patted` when somebody just patted. */
-  changed?: (pats: LivePats, patted: boolean) => void;
+  /** The counts changed: `patted` when somebody just patted (`touch` when it had a spot). */
+  changed?: (pats: LivePats, patted: boolean, touch?: PatTouch) => void;
+  /** An accepted pat of someone who is not blocked, with a spot: the stage may draw a hand. */
+  touched?: (touch: LiveTouch) => void;
 }
 
 export class PatDesk {
@@ -119,6 +141,7 @@ export class PatDesk {
   readonly #observe: PatDeskOptions["observe"];
   readonly #changed: NonNullable<PatDeskOptions["changed"]>;
   readonly #award: PatDeskOptions["award"];
+  readonly #touched: PatDeskOptions["touched"];
   /** Makes the key of each pat unique even when two come in the same millisecond. */
   #serial = 0;
   readonly #people: Window;
@@ -136,6 +159,7 @@ export class PatDesk {
     this.#observe = options.observe;
     this.#changed = options.changed ?? (() => {});
     this.#award = options.award;
+    this.#touched = options.touched;
     this.#people = new Window(options.config.per_person_per_minute, MINUTE_MS);
     this.#everyone = new Window(options.config.per_minute, MINUTE_MS, 1);
   }
@@ -165,21 +189,31 @@ export class PatDesk {
     this.#recent.push(now);
     this.#forget(now);
     const who = await this.#who(by).catch((): PatWho => ({ kind: "blocked" }));
+    // No spot is the keyboard button (or an old page): that is her head, as it always was.
+    const spot = by.spot;
+    const part: LivePart = spot ? classify(spot, this.#config.video) : "head";
     if (who.kind !== "blocked") {
-      this.#add(key, who, this.#now());
+      this.#add(key, who, this.#now(), part);
       this.#serial += 1;
       this.#award?.(by, `pat:${key}:${now}:${this.#serial}`);
+      if (spot) this.#touched?.({ x: spot.x, y: spot.y, part });
     }
     const pats = this.pats();
-    this.#changed(pats, true);
+    this.#changed(pats, true, spot ? { spot: { x: spot.x, y: spot.y }, part } : undefined);
     return { status: "ok", pats };
   }
 
-  #add(account: string, who: Exclude<PatWho, { kind: "blocked" }>, now: number): void {
+  #add(
+    account: string,
+    who: Exclude<PatWho, { kind: "blocked" }>,
+    now: number,
+    part: LivePart,
+  ): void {
     if (this.#batch === null) {
-      this.#batch = { opened: now, known: new Map(), strangers: new Map() };
+      this.#batch = { opened: now, known: new Map(), strangers: new Map(), parts: new Map() };
     }
     const batch = this.#batch;
+    batch.parts.set(part, (batch.parts.get(part) ?? 0) + 1);
     if (who.kind === "known") {
       const patter = batch.known.get(who.person);
       if (patter) patter.count += 1;
@@ -214,7 +248,15 @@ export class PatDesk {
     if (named.length > 0) parts.push(named.join("、"));
     if (moreKnown > 0) parts.push(`還有 ${moreKnown} 個你認識的人`);
     if (batch.strangers.size > 0) parts.push(`${batch.strangers.size} 個你不認識的人`);
-    const summary = `網頁現場有人摸了摸你的頭,一共 ${total} 下:${parts.join(",")}。`;
+    // Only head-pats: the words it always had. Otherwise say what kinds of touches they were.
+    const onlyHead = [...batch.parts.keys()].every((p) => p === "head");
+    const kinds = TOUCH_WORDS.flatMap(([part, word]) => {
+      const n = batch.parts.get(part) ?? 0;
+      return n > 0 ? [`${word} ${n} 下`] : [];
+    }).join("、");
+    const summary = onlyHead
+      ? `網頁現場有人摸了摸你的頭,一共 ${total} 下:${parts.join(",")}。`
+      : `網頁現場有人在畫面上碰了碰你,一共 ${total} 下(${kinds}):${parts.join(",")}。`;
     // Seconds since the epoch: it only goes up, across restarts too, so the ledger never takes a
     // new batch for one already answered.
     this.#revision = Math.max(Math.floor(now / 1000), this.#revision + 1);
