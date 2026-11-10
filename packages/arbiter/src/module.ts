@@ -523,9 +523,13 @@ class Runner {
       return;
     }
     const social = this.ctx.services.get(SocialSignalsKey) ?? null;
+    const handles = this.ctx.services.get(HandleDirectoryKey) ?? null;
     for (const followup of due) {
       if (this.#failedMarks.has(followup.id)) continue;
-      const impulse = this.producers.followup(now, followup, social);
+      // About someone: one wish with the same topic held elsewhere (a birthday of memory's dates
+      // and a followup written in consolidation are said once, not by each).
+      const person = followup.person === null ? null : (handles?.ofPerson(followup.person) ?? null);
+      const impulse = this.producers.followup(now, followup, social, person);
       if (!impulse) continue;
       if (this.floor !== null) {
         await this.#propose(impulse, followup.id);
