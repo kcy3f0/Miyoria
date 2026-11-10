@@ -413,7 +413,5 @@
       "target": "bread"
     }
   ],
-  "status": "xfail",
-  "reason": "the method guard cut obtain bread from 34 failed asks to 9 over the two hours (two per ten-minute hold), but the check allows 2 without a success in between: the hold expires and the same ask is made again",
-  "flips_with": "game: a goal whose attempts ran out stays held for the session (goal hold), or the check counts failures per hold window"
+  "status": "pass"
 }

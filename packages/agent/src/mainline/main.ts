@@ -598,6 +598,8 @@ export class MainLine implements Mouth {
     const buckets = this.#agent.ctx.services.get(WorkingContextKey)?.buckets() ?? [];
     return buckets.flatMap((b) => {
       if (!b.writer.endsWith(".task")) return [];
+      // A work-lane task is steered with `work_steer`, which knows its goal and budgets.
+      if (b.writer === "worklane.task") return [];
       const entry = b.entries.at(-1);
       if (!entry?.attention_key.startsWith("task:")) return [];
       return [
