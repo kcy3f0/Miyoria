@@ -146,6 +146,20 @@ describe("song guessing", () => {
     expect(game.view().join("\n")).toContain("已經結束");
   });
 
+  it("starts the clip where the song says it is worth guessing, else at the start", () => {
+    const clips = new FakeClips([
+      { id: "a", title: "甲", artist: null, clipStartMs: 12_000 },
+      { id: "b", title: "乙", artist: null },
+    ]);
+    const { table } = rig({ clips: () => clips });
+    const game = table.start(VOICE, "song", { rounds: 2 }).game;
+    game.next();
+    game.next();
+    const starts = new Map(clips.played.map((p) => [p.id, p.startMs]));
+    expect(starts.get("a")).toBe(12_000);
+    expect(starts.get("b")).toBe(0);
+  });
+
   it("tells her when a clip cannot play", async () => {
     const clips = new FakeClips(SONGS);
     const { table, out } = rig({ clips: () => clips });

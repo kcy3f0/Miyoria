@@ -25,6 +25,8 @@ const RequestArgs = z.object({
   backing: z.enum(BACKING_MODES).nullish(),
   /** How to call the person who asked (shown in the list and to her later). */
   by: z.string().trim().min(1).max(64).nullish(),
+  /** She prepares it for herself (練歌): no one is waiting, so it is not sung on its own. */
+  practice: z.boolean().nullish(),
   /** Commands only: use a ticket when the person is at the limit. */
   ticket: z.boolean().nullish(),
   /** Commands only: a paid dedication (up to 40 characters). */
@@ -84,11 +86,18 @@ export function singCapabilities(singer: Singer, perms: SingPermissions): Capabi
             "convert 伴唱也用你的聲音唱、acapella 清唱(只有你的主唱,沒有伴奏)",
         },
         by: { type: "string", description: "點歌的人怎麼稱呼(可省略)" },
+        practice: {
+          type: "boolean",
+          description:
+            "沒人點、是你自己想練的歌就填 true:先準備好放進歌單,不會自己開唱,等有人在語音、你想唱再用 sing_start",
+        },
       },
       required: ["query"],
     },
     async execute(args, ctx) {
       const p = ctx.principal;
+      // Only she practises: a person's request or a command is always for someone.
+      const practice = p.kind === "self" && (args.practice === true || p.requester === null);
       const entry = await singer.request(
         {
           query: args.query,
@@ -97,7 +106,8 @@ export function singCapabilities(singer: Singer, perms: SingPermissions): Capabi
           requester: p.requester,
           requester_name: byOf(p, args.by),
           context: p.context,
-          forced: forced(p),
+          forced: !practice && forced(p),
+          practice,
           // Money moves only on the person's own command, never on her tool call.
           ...(p.kind === "command"
             ? { ticket: args.ticket === true, dedication: args.dedication ?? null }
@@ -111,7 +121,7 @@ export function singCapabilities(singer: Singer, perms: SingPermissions): Capabi
           ? `${label} 已經準備好了(#${entry.no}),${entry.forced ? "她有空就會唱" : "可以用 sing_start 開唱"}。`
           : entry.state === "playing"
             ? `${label} 已經準備好了(#${entry.no}),她馬上就唱。`
-            : `開始準備 ${label}(#${entry.no},大約一到兩分鐘)。${entry.forced ? "好了她就會唱。" : "好了會告訴你。"}`;
+            : `開始準備 ${label}(#${entry.no},大約一到兩分鐘)。${entry.forced ? "好了她就會唱。" : practice ? "好了會告訴你,不會自己開唱。" : "好了會告訴你。"}`;
       return { text, data: { song: entry.no, state: entry.state } };
     },
   });

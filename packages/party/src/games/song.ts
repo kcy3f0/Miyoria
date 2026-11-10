@@ -104,7 +104,7 @@ export class SongGame implements Game {
     this.#clip = controller;
     const stop = () => controller.abort();
     this.#host.signal.addEventListener("abort", stop, { once: true });
-    const clip = { startMs: 0, durationMs: this.#host.cfg.clip_secs * 1000 };
+    const clip = { startMs: song.clipStartMs ?? 0, durationMs: this.#host.cfg.clip_secs * 1000 };
     void clips
       .play(this.#host.context, song.id, clip, controller.signal)
       .catch(() => "failed" as const)

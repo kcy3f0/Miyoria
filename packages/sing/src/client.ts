@@ -25,6 +25,8 @@ export const SongMetaSchema = z.object({
   /** Its original video sits in the song's cache dir as `video.file` (older workers: none). */
   has_video: z.boolean().catch(false),
   video: z.object({ file: z.string() }).nullable().catch(null),
+  /** What became of the song's backing voices (`acapella` has no instrumental). */
+  backing: z.string().optional().catch(undefined),
 });
 export type SongMeta = z.output<typeof SongMetaSchema>;
 export type LyricLine = z.output<typeof LyricLineSchema>;
@@ -133,6 +135,8 @@ export interface SingWorker {
   goExclusive(id: string): Promise<void>;
   /** Tells the worker who is listening (`POST /gpu/context`). */
   context(context: GpuContext, signal?: AbortSignal): Promise<void>;
+  /** Every song the worker has finished and cached (newest first): what she has covered. */
+  songs(signal?: AbortSignal): Promise<SongMeta[]>;
   /** PCM s16le mono at `song.play.sample_rate`. */
   audio(song: string, track: SongTrack, signal?: AbortSignal): Promise<Int16Array>;
   /** `null` when healthy, else why not. */
@@ -220,6 +224,17 @@ export class HttpSingWorker implements SingWorker {
       this.#timeoutMs,
       signal,
     );
+  }
+
+  async songs(signal?: AbortSignal): Promise<SongMeta[]> {
+    const res = await this.#call("/songs", {}, this.#timeoutMs, signal);
+    const body = (await res.json()) as { songs?: unknown };
+    if (!Array.isArray(body.songs)) throw new SingWorkerError("song worker sent a malformed list");
+    // One song the schema cannot read does not hide the others.
+    return body.songs.flatMap((raw) => {
+      const parsed = SongMetaSchema.safeParse(raw);
+      return parsed.success ? [parsed.data] : [];
+    });
   }
 
   async audio(song: string, track: SongTrack, signal?: AbortSignal): Promise<Int16Array> {

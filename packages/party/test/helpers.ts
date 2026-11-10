@@ -68,7 +68,7 @@ export class Recorder implements PartyOutput {
 
 /** Plays nothing: records the clips and ends them when the test says so. */
 export class FakeClips implements SongClips {
-  readonly played: { context: ContextKey; id: string; durationMs: number }[] = [];
+  readonly played: { context: ContextKey; id: string; startMs: number; durationMs: number }[] = [];
   readonly #ends: ((o: ClipOutcome) => void)[] = [];
   constructor(readonly songs: SongClipInfo[]) {}
 
@@ -82,7 +82,7 @@ export class FakeClips implements SongClips {
     clip: { startMs: number; durationMs: number },
     signal?: AbortSignal,
   ): Promise<ClipOutcome> {
-    this.played.push({ context, id, durationMs: clip.durationMs });
+    this.played.push({ context, id, startMs: clip.startMs, durationMs: clip.durationMs });
     return new Promise((resolve) => {
       this.#ends.push(resolve);
       signal?.addEventListener("abort", () => resolve("stopped"), { once: true });
