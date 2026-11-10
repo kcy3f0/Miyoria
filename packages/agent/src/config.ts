@@ -288,6 +288,10 @@ export const LOOP_TOOLS: readonly string[] = [
   "drop_note",
   "code_run",
   "voice_status",
+  // The work lane answers these at once; `work_start` only gets a task going, so it stays with
+  // the hands, which follow the task and tell her when it ends.
+  "work_list",
+  "work_steer",
 ];
 
 /**
@@ -327,6 +331,12 @@ export const MainLineConfigSchema = z.object({
   loop_tools: z.array(z.string()).default([...LOOP_TOOLS]),
   /** Calls of the loop run per round; more in one response are refused (she hears so). */
   loop_calls: z.number().int().positive().default(4),
+  /**
+   * What the loop's results of one round add to the messages, together. One result may be a whole
+   * page now (`max_tool_result_chars`), so the bound a round had before (four calls of 4,000) is
+   * kept here: a result past it is cut shorter, never the turn's prompt made four pages longer.
+   */
+  loop_round_chars: z.number().int().positive().default(16_000),
   /**
    * All the loop's tools of one turn together, in text: the turn holds the Floor meanwhile. Spent,
    * a call of the loop is not run and further calls go to the hands.
@@ -392,6 +402,72 @@ export const MainLineConfigSchema = z.object({
 });
 export type MainLineConfig = z.output<typeof MainLineConfigSchema>;
 
+/**
+ * Tools a work-lane task may be given (v4 §4.3 "能用的": the web, the sandbox, her notebook, her
+ * memory, reading files). Never more than the Directives' filter offers where the task started,
+ * and never a tool that says something to someone, whatever is listed here (`worklane/allow.ts`).
+ */
+export const WORK_TOOLS: readonly string[] = [
+  "web_search",
+  "web_read",
+  "recall",
+  "code_run",
+  "workspace_list",
+  "workspace_read",
+  "workspace_write",
+  "workspace_run",
+  "workspace_save_script",
+  "skill_list",
+  "skill_read",
+  "skill_write",
+  "notebook_read",
+  "notebook_write",
+];
+
+/** `[modules.agent.work]`: the work lane (docs/design/v4-plan.md §4.3). */
+export const WorkConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Tasks running at once (one or two); more wait in the queue. */
+  max_running: z.number().int().min(1).max(4).default(1),
+  /** Tasks waiting at most; a start past it is refused (she hears so). */
+  max_queued: z.number().int().nonnegative().default(4),
+  /** Model calls one task may make. */
+  max_steps: z.number().int().positive().default(12),
+  /** Tool calls one model call may make; more are refused (it hears so). */
+  calls_per_step: z.number().int().positive().default(4),
+  /** How long one task may run, from its first step. */
+  max_minutes: z.number().positive().default(10),
+  /** Tokens one task may spend (prompt and completion). */
+  max_tokens: z.number().int().positive().default(80_000),
+  /** Tokens all tasks together may spend in a day (UTC), the game director's steps too. */
+  daily_tokens: z.number().int().positive().default(600_000),
+  /** Tools a task may be given (`WORK_TOOLS`). */
+  tools: z.array(z.string()).default([...WORK_TOOLS]),
+  /** One tool call. */
+  tool_timeout_ms: z.number().int().positive().default(30_000),
+  /** One tool result in its transcript (a page is 12,000). */
+  tool_result_chars: z.number().int().positive().default(12_500),
+  /**
+   * Its transcript, all the results together: past it the oldest results are cut to a line, so a
+   * long task keeps what it concluded, not every page it read.
+   */
+  transcript_chars: z.number().int().positive().default(48_000),
+  /** Her conclusion, as the main line is told it. */
+  result_chars: z.number().int().positive().default(1200),
+  /** Lines of "what it did" the main line is told. */
+  did_lines: z.number().int().positive().default(6),
+  /** Ended tasks kept for `work_list` and the panel. */
+  keep_ended: z.number().int().nonnegative().default(20),
+  /**
+   * Her own wish to do something that is work (§8.2: browse, code, tidy her notebook, improve a
+   * skill) is proposed as a work-lane task, not as a one-line call.
+   */
+  initiative: z.boolean().default(true),
+  /** Model calls a task she starts on her own may make. */
+  initiative_steps: z.number().int().positive().default(8),
+});
+export type WorkConfig = z.output<typeof WorkConfigSchema>;
+
 /** `[modules.agent]` config section. */
 export const AgentConfigSchema = z.object({
   /** Quiet time after the last message before a turn starts. */
@@ -453,6 +529,8 @@ export const AgentConfigSchema = z.object({
   typing_refresh_ms: z.number().int().nonnegative().default(8000),
   /** The main line of `pipeline = "v3"`. */
   mainline: MainLineConfigSchema.prefault({}),
+  /** The work lane (v4 §4.3). */
+  work: WorkConfigSchema.prefault({}),
   /** Offer registered tools to the model. */
   tools_enabled: z.boolean().default(true),
   /**
@@ -462,8 +540,12 @@ export const AgentConfigSchema = z.object({
   max_tool_steps: z.number().int().nonnegative().default(3),
   /** Time limit for one tool call. */
   tool_timeout_ms: z.number().int().nonnegative().default(10_000),
-  /** Tool results are truncated to this many characters (v4 §4.2: a program's output). */
-  max_tool_result_chars: z.number().int().nonnegative().default(4000),
+  /**
+   * Tool results are truncated to this many characters (v4 §4.2: a page read is 12,000 with its
+   * block markers, `[modules.web] result_chars`; a little more for a moderation note before it).
+   * What one round of the loop adds together stays bounded by `mainline.loop_round_chars`.
+   */
+  max_tool_result_chars: z.number().int().nonnegative().default(12_500),
   temperature: z.number().nullable().default(null),
   max_tokens: z.number().int().nonnegative().nullable().default(null),
   /** A context with no activity for this long forgets its session. */

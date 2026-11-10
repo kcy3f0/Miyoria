@@ -41,6 +41,10 @@ export const TOO_MANY = "這一輪叫太多工具了,這個沒有執行;還需�
 export const OUT_OF_TIME = "這回合查東西的時間用完了,這個沒有執行。";
 /** What a call of the loop answers when she was cut off before it ran. */
 export const CUT_OFF = "你被打斷了,這個沒有執行。";
+/** After a result cut to what was left of the round (`mainline.loop_round_chars`). */
+export const ROUND_CUT = "\n…(這一輪的結果加起來太長,後面截掉了;需要的話下一輪再讀)";
+/** Even late in a full round, a result keeps at least this much. */
+export const ROUND_MIN_CHARS = 600;
 
 /**
  * The calls that go to the hands, each once: a call she makes again in a later response (round
