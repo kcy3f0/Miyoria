@@ -76,7 +76,11 @@ export class RecentPast {
       states: () => services.get(ConversationStatesKey) ?? null,
       utcOffsetMinutes: engine.config.utc_offset_minutes,
     };
-    this.log = new RecentLog(config, () => engine.events);
+    this.log = new RecentLog(
+      config,
+      () => engine.events,
+      () => engine.exclusions,
+    );
     this.timeline = new Timeline(this.log, this.deps);
     this.elsewhere = new OtherPlaces(this.log, this.deps);
     this.threads = new Threads(

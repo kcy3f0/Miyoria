@@ -18,6 +18,7 @@ import {
   toTimestamp,
 } from "@miyoria/types";
 import type { RecentConfig } from "./config.js";
+import type { ExclusionList } from "./exclusion.js";
 
 const log = getLogger("memory.recent");
 
@@ -143,9 +144,15 @@ function happening(
 }
 
 /** Turns log events into a window. Exported for the tests. */
-export function parseWindow(events: readonly LogEvent[], from: number): Window {
+export function parseWindow(
+  events: readonly LogEvent[],
+  from: number,
+  excluded?: Pick<ExclusionList, "hasEvent"> | null,
+): Window {
   const window: Window = { from, said: [], her: [], happenings: [], partners: new Map() };
-  const sorted = [...events].sort((a, b) => timestampMs(a.at) - timestampMs(b.at));
+  // What someone asked her not to remember is not part of any window.
+  const visible = excluded ? events.filter((e) => !excluded.hasEvent(e)) : events;
+  const sorted = [...visible].sort((a, b) => timestampMs(a.at) - timestampMs(b.at));
   for (const event of sorted) {
     const body = obj(event.body);
     if (body === null) continue;
@@ -197,12 +204,18 @@ export function parseWindow(events: readonly LogEvent[], from: number): Window {
 export class RecentLog {
   readonly #config: () => RecentConfig;
   readonly #events: () => RecentReader | null;
+  readonly #excluded: () => ExclusionList | null;
   #cached: { at: number; window: Window } | null = null;
   #pending: Promise<Window> | null = null;
 
-  constructor(config: () => RecentConfig, events: () => RecentReader | null) {
+  constructor(
+    config: () => RecentConfig,
+    events: () => RecentReader | null,
+    excluded: () => ExclusionList | null = () => null,
+  ) {
     this.#config = config;
     this.#events = events;
+    this.#excluded = excluded;
   }
 
   /** The window ending at `nowMs`. A failing log gives an empty window (and a warning). */
@@ -238,7 +251,7 @@ export class RecentLog {
       log.warn({ err: errorMessage(error) }, "cannot read the event log");
       return parseWindow([], from);
     }
-    const window = parseWindow(rows, from);
+    const window = parseWindow(rows, from, this.#excluded());
     this.#cached = { at: nowMs, window };
     return window;
   }

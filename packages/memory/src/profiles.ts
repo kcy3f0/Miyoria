@@ -227,7 +227,9 @@ export class Profiles implements PersonProfiles {
           order: "desc",
           limit: 20,
         });
-        const parsed = parseWindow(older, 0).said.filter((s) => s.handle === handle);
+        const parsed = parseWindow(older, 0, this.#engine.exclusions).said.filter(
+          (s) => s.handle === handle,
+        );
         for (let j = parsed.length - 1; j >= 0; j--) {
           const hit = pick(parsed[j] as Said);
           if (hit !== null) return hit;
