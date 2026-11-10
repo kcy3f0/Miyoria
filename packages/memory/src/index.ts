@@ -136,11 +136,14 @@ export {
   type ExNote,
   type Extraction,
   ExtractionError,
+  type PendingFollowup,
   parseExtraction,
+  pendingBlock,
   type SubjectName,
   systemPrompt,
   transcript,
 } from "./extract.js";
+export { sameMatter } from "./followups.js";
 // v4 §5: what she can find and connect.
 export { LocalEmbedder, prefixesOf, resolveRuntime } from "./local-embed.js";
 export {

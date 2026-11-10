@@ -906,6 +906,7 @@ min_interval_secs = 45           # 兩次之間至少隔多久
 # episode_recency_tau_days = 1.5 # 事件記憶(episode)的新近度衰減:小時到幾天,不是幾週
 # state_note_hours = 12          # 「已經開台」「正在下載」這類現在式的筆記多久後失效(0 = 不失效)
 # followup_max_age_hours = 6     # 追問過了時間這麼久沒人提就自動關掉;先挑最新的(0 = 不自動關)
+# followup_repeat_hours = 24    # 同一個人、同一件事的追問,問過或答過這麼久內不再記一條新的(0 = 只看還沒問的)
 # [modules.memory.repeat]        # 同一個梗在最近回想的 window 則裡出現超過 allowed 次就降權
 # window = 40
 # allowed = 3
