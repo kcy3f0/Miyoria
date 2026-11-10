@@ -26,24 +26,72 @@ describe("method keys", () => {
 });
 
 describe("method guard", () => {
-  it("holds a method after the same code twice, for method_hold_secs", () => {
+  it("holds a method after two failures, and time alone never lets it back", () => {
     const g = new MethodGuard(cfg);
-    expect(g.failed("obtain:bread", "precondition", "還缺 小麥×3", 0)).toBeNull();
+    expect(g.failed("obtain:bread", "precondition", "還缺 小麥 wheat×3", 0)).toBeNull();
     expect(g.held("obtain:bread", 1)).toBeNull();
-    const hold = g.failed("obtain:bread", "precondition", "還缺 小麥×3", 1_000);
+    const hold = g.failed("obtain:bread", "precondition", "還缺 小麥 wheat×3", 1_000);
     expect(hold).toMatchObject({ method: "obtain:bread", code: "precondition", until: 601_000 });
+    expect(hold?.needs).toEqual(new Set(["wheat"]));
     expect(g.held("obtain:bread", 2_000)).toBe(hold);
     expect(g.held("obtain:cooked_beef", 2_000)).toBeNull();
-    expect(g.held("obtain:bread", 601_000)).toBeNull();
+    // 2026-11-08: the hold ran out after ten minutes and the same ask came back unchanged.
+    expect(g.held("obtain:bread", 601_000)).toBe(hold);
+    expect(g.held("obtain:bread", 3 * 60 * MIN)).toBe(hold);
   });
 
-  it("a different code in between starts the count again", () => {
+  it("two failures in a row hold it, whatever their codes", () => {
     const g = new MethodGuard(cfg);
+    g.failed("mine:stone", "not_found", "看不到", 0);
+    g.failed("mine:stone", "timeout", "挖太久", 1);
+    expect(g.held("mine:stone", 2)).not.toBeNull();
+  });
+
+  it("comes back when what it said was missing is in her inventory, and only then", () => {
+    const g = new MethodGuard(cfg);
+    g.seen({ dirt: 3 });
+    g.failed("obtain:bread", "precondition", "材料不夠:還缺 小麥 wheat×3", 0);
+    g.failed("obtain:bread", "precondition", "材料不夠:還缺 小麥 wheat×3", 1);
+    // Something new, but not what was missing: still held.
+    g.seen({ dirt: 3, oak_log: 4 }, "mine:oak_log");
+    expect(g.held("obtain:bread", 2)).not.toBeNull();
+    // The wheat is there: it may be tried again.
+    g.seen({ dirt: 3, oak_log: 4, wheat: 3 }, "farm:wheat");
+    expect(g.held("obtain:bread", 3)).toBeNull();
+    // Tried again and failed the same way: the change did not help, held again at once.
+    expect(g.failed("obtain:bread", "precondition", "還要站在工作台旁邊", 4)).not.toBeNull();
+    expect(g.held("obtain:bread", 5)).not.toBeNull();
+  });
+
+  it("missing something it did not name: something new and the hold's time, both", () => {
+    const g = new MethodGuard(cfg);
+    g.seen({});
+    g.failed("obtain:bread", "precondition", "還缺 小麥×3", 0);
+    g.failed("obtain:bread", "precondition", "還缺 小麥×3", 0);
+    expect(g.held("obtain:bread", 20 * MIN)).not.toBeNull();
+    g.seen({ wheat: 3 });
+    expect(g.held("obtain:bread", MIN)).not.toBeNull();
+    expect(g.held("obtain:bread", 11 * MIN)).toBeNull();
+  });
+
+  it("could not find or reach it: another method getting somewhere lets it back", () => {
+    const g = new MethodGuard(cfg);
+    g.failed("mine:stone", "not_found", "看不到石頭", 0);
+    g.failed("mine:stone", "not_found", "看不到石頭", 0);
+    g.changed({ gained: {}, fresh: [], progressed: "mine:stone" });
+    expect(g.held("mine:stone", 1)).not.toBeNull();
+    g.changed({ gained: {}, fresh: [], progressed: "explore" });
+    expect(g.held("mine:stone", 1)).toBeNull();
+  });
+
+  it("method_release = time is the guard before: the same code twice, ten minutes", () => {
+    const g = new MethodGuard({ ...cfg, method_release: "time" });
     g.failed("mine:stone", "not_found", "看不到", 0);
     g.failed("mine:stone", "timeout", "挖太久", 1);
     expect(g.held("mine:stone", 2)).toBeNull();
     g.failed("mine:stone", "timeout", "挖太久", 3);
     expect(g.held("mine:stone", 4)).not.toBeNull();
+    expect(g.held("mine:stone", 600_004)).toBeNull();
   });
 
   it("only progress with the same method clears it", () => {
@@ -75,9 +123,12 @@ describe("method guard", () => {
     g.failed("obtain:apple", "invalid", "沒有配方", 0);
     expect(g.goalHeld("bread", 1)).not.toBeNull();
     expect(g.lines(MIN)).toEqual([
-      "目標「bread」(暫停 9 分鐘):precondition,還缺 小麥×3",
+      "目標「bread」(等缺的東西拿到了再試):precondition,還缺 小麥×3",
       "obtain:apple(這場不能再用):invalid,沒有配方",
     ]);
+    g.failed("mine:stone", "not_found", "看不到", 0);
+    g.failed("mine:stone", "not_found", "看不到", 0);
+    expect(g.lines(MIN).at(-1)).toBe("mine:stone(等別的做法有進展再試):not_found,看不到");
     g.goalReached("bread");
     expect(g.goalHeld("bread", 1)).toBeNull();
   });
@@ -185,12 +236,12 @@ const fixture = JSON.parse(
 ) as { trace: Step[] };
 
 describe("2026-11-08, replayed through the method guard", () => {
-  const replay = () => {
-    const guard = new MethodGuard(cfg);
+  const replay = (config = cfg) => {
+    const guard = new MethodGuard(config);
     const ran: Step[] = [];
     const held: Step[] = [];
     for (const step of fixture.trace) {
-      if (cfg.instant_actions.includes(step.action)) continue;
+      if (config.instant_actions.includes(step.action)) continue;
       const method = methodKey(step.action, step.target ? { item: step.target } : {});
       const now = step.t * 1000;
       if (guard.held(method, now) !== null) {
@@ -199,18 +250,27 @@ describe("2026-11-08, replayed through the method guard", () => {
       }
       ran.push(step);
       if (step.failed) guard.failed(method, codeOf(step.detail), step.detail ?? "", now);
-      else guard.progressed(method);
+      else {
+        guard.progressed(method);
+        // She got somewhere (the recording kept no inventory: nothing she gained is known).
+        guard.changed({ gained: {}, fresh: [], progressed: method });
+      }
     }
     return { ran, held };
   };
+  const bread = (s: Step) => s.action === "obtain" && s.target === "bread";
 
-  it("lets bread through only twice per hold instead of every time", () => {
+  it("lets bread fail twice, then never again unchanged: no wheat ever came", () => {
     const { ran } = replay();
-    const bread = (s: Step) => s.action === "obtain" && s.target === "bread";
     expect(fixture.trace.filter(bread)).toHaveLength(32);
+    // 2 of 32 over the 2 h 11 min (was 9 with a ten-minute hold that ran out by itself).
+    expect(ran.filter(bread)).toHaveLength(2);
+  });
+
+  it("method_release = time keeps the old guard: two per ten-minute hold", () => {
+    const { ran } = replay({ ...cfg, method_release: "time" });
     const through = ran.filter(bread);
-    // 9 of 32 over the 2 h 11 min: two per ten-minute hold (the recording kept no codes, so
-    // the first one, without a detail, counts as another code).
+    // The recording kept no codes, so the first one, without a detail, counts as another code.
     expect(through).toHaveLength(9);
     // Never three bread failures with the same code inside one hold window.
     const precondition = through.filter((s) => codeOf(s.detail) === "precondition");

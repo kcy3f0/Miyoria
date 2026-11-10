@@ -64,6 +64,28 @@ export const GameConfigSchema = z.object({
   method_repeat_limit: z.number().int().nonnegative().default(2),
   method_hold_secs: z.number().nonnegative().default(600),
   /**
+   * When a held method may come back (methods.ts). `changed`: only once something changed (an item
+   * the failure said was missing is in her inventory now, another method got her somewhere), and
+   * a failure after that holds it again at once; the same method failing twice in a row holds it
+   * whatever the codes. `time`: after `method_hold_secs`, whatever happened, and only the same
+   * code twice holds (the guard before 2026-11-10, for rollback): on the replay of 11-08 it still
+   * let `obtain bread` fail 9 times, two per hold.
+   */
+  method_release: z.enum(["changed", "time"]).default("changed"),
+  /**
+   * The director's decisions are steps of one work-lane task per session (v4 §11.2 item 1), with
+   * its own transcript: what it saw, what it decided, what came of it. `false`: every decision is
+   * its own call, as before (rollback); also what happens when the agent's work lane is not there.
+   */
+  director_lane: z.boolean().default(true),
+  /** Decisions that task's transcript keeps (older ones fall out; her record still has them). */
+  director_steps: z.number().int().positive().default(6),
+  /**
+   * Skills she learned in a game are kept across restarts (§11.2 item 8): in her skill store when
+   * the `skills` module runs (one skill per game), else in the settings store.
+   */
+  keep_skills: z.boolean().default(true),
+  /**
    * Survival goals the director starts by itself, when the adapter offers them: `night_action`
    * when night falls (`night_started`), `death_action` `death_action_delay_secs` after she died
    * (she respawns first). The goal she had waits and comes back when it ends. `null` turns one
