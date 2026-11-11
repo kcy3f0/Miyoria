@@ -1988,6 +1988,7 @@ describe("the wallet", () => {
     expect(shape(read.body)).toEqual(
       [
         "goals[].deadline",
+        "goals[].fulfilled",
         "goals[].id",
         "goals[].my_pledge",
         "goals[].promise",
@@ -2071,6 +2072,28 @@ describe("the wallet", () => {
       (await r.spend("/api/member/goals/goal-1/pledge", bob, { amount: 5 }, "p-c")).status,
     ).toBe(409);
     expect(await r.coins.goals.get("goal-1")).toMatchObject({ status: "reached" });
+
+    // The owner sees it owed and marks it kept, once; a member cannot.
+    const owed = await raw(r.base, "GET", "/api/economy/goals", { token: TOKEN });
+    expect(owed.body).toMatchObject({
+      goals: [{ id: "goal-1", promise: "學三種貓叫", fulfilled_at: null, fulfilled_by: null }],
+    });
+    const memberTry = await r.post("/api/economy/goals/goal-1/fulfill", alice, {});
+    expect([401, 403]).toContain(memberTry.status);
+    const mark = (id: string) =>
+      raw(r.base, "POST", `/api/economy/goals/${id}/fulfill`, {
+        token: TOKEN,
+        json: {},
+        headers: { "x-miyoria-request": "1" },
+      });
+    const kept = await mark("goal-1");
+    expect(kept.status).toBe(200);
+    expect(kept.body).toMatchObject({ goal: { id: "goal-1", fulfilled_by: "owner" } });
+    expect((await mark("goal-1")).status).toBe(409);
+    expect((await mark("nope")).status).toBe(409);
+    expect(
+      ((await r.get("/api/member/goals", alice)).body as { goals: unknown[] }).goals[0],
+    ).toMatchObject({ status: "reached", fulfilled: true });
   });
 
   it("checks in once a day", async () => {

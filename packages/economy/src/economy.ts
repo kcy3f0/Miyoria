@@ -22,6 +22,8 @@ import {
   type CoinLedgerStore,
   CoinLedgerStoreKey,
   type CoinRule,
+  type Goal,
+  type GoalFulfiller,
   PeopleStoreKey,
   type Person,
 } from "@miyoria/store";
@@ -91,6 +93,7 @@ import {
   type PaidItem,
   type PledgeResult,
   type Purchase,
+  type ReachedGoalView,
   SCREEN_TOPIC,
   type ShopItem,
   type SpendResult,
@@ -438,6 +441,16 @@ export class EconomyService implements Economy {
 
   goals(account: AccountRef): Promise<GoalView[]> {
     return this.goalDesk.view(account);
+  }
+
+  /** Reached goals, kept or still owed, newest first (the panel). */
+  async reachedGoals(): Promise<ReachedGoalView[]> {
+    return (await this.goalDesk.reached()).map(reachedView);
+  }
+
+  /** Marks a reached goal's promise kept (`goalId` `null`: the newest one owed). */
+  async fulfillGoal(goalId: string | null, by: GoalFulfiller): Promise<ReachedGoalView> {
+    return reachedView(await this.goalDesk.fulfill(goalId, by));
   }
 
   pledge(
@@ -1548,3 +1561,16 @@ export function voiceWindow(ms: number): number {
 }
 
 export { VOICE_WINDOW_MS };
+
+/** A reached goal as the owner sees it. */
+function reachedView(g: Goal): ReachedGoalView {
+  return {
+    id: g.id,
+    title: g.title,
+    promise: g.promise,
+    target: g.target,
+    reached_at: g.closed_at,
+    fulfilled_at: g.fulfilled_at ?? null,
+    fulfilled_by: g.fulfilled_by ?? null,
+  };
+}

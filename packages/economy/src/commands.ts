@@ -359,7 +359,8 @@ function goalEnded(g: GoalView): string {
     cancelled: "取消了，已退回",
     open: "",
   }[g.status];
-  return `${g.title}　${word}`;
+  const kept = g.status === "reached" ? (g.fulfilled ? "，她做到了" : "，她還沒做到") : "";
+  return `${g.title}　${word}${kept}`;
 }
 
 function unregister(registry: CommandRegistry): void {
