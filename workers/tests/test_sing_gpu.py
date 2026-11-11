@@ -248,7 +248,8 @@ class SimCard:
         monkeypatch.setenv("SING_GPU_POLICY", os.environ.get("SING_GPU_POLICY", "auto"))
         monkeypatch.setenv("SING_GPU_CHECK_S", "0.01")
         monkeypatch.setenv("SING_MOCK_STEPS", os.environ.get("SING_MOCK_STEPS", "8"))
-        monkeypatch.delenv("SING_GPU_POLICY", raising=False)
+        # Only the older switch is cleared: clearing SING_GPU_POLICY here too undid the line above,
+        # so these scenarios ran under the default ``yield`` and failed.
         monkeypatch.delenv("SING_GPU_SHARE", raising=False)
         m = server.state.machine
         m.profile, m.audience, m.gap_until, m.last = Profile(tmp_path), Audience(), 0.0, None
@@ -334,7 +335,8 @@ def test_on_a_24_gb_card_a_song_never_touches_her_voice(sing, machine):  # noqa:
 def test_on_a_full_12_gb_card_people_keep_her_voice_until_there_is_room(sing, machine, monkeypatch):  # noqa: F811
     card = machine(total=12 * GB, others=4500)
     people(sing)
-    job = submit(sing, "sim 12 gb")
+    # backing="drop" needs the separation, the stage this scenario watches (``_needs_stems``).
+    job = submit(sing, "sim 12 gb", backing="drop")
     until(lambda: job_of(sing, job)["stage"] == "gpu_wait")
     held = job_of(sing, job)
     assert held["gpu"]["mode"] == "wait" and "等空間" in held["gpu"]["reason"]
@@ -351,7 +353,7 @@ def test_on_a_full_12_gb_card_people_keep_her_voice_until_there_is_room(sing, ma
 def test_on_a_12_gb_card_a_song_needed_now_takes_a_bounded_window(sing, machine):  # noqa: F811
     card = machine(total=12 * GB, others=4500)
     people(sing)
-    job = sing.post("/jobs", json={"query": "sim urgent", "exclusive_ack": True}).json()["job"]["id"]
+    job = sing.post("/jobs", json={"query": "sim urgent", "exclusive_ack": True, "backing": "drop"}).json()["job"]["id"]
     people(sing, urgent=[job])
     until(lambda: job_of(sing, job)["exclusive"] == "waiting")
     assert card.calls == []  # she says so first
@@ -431,7 +433,9 @@ def test_a_spill_releases_the_card_and_goes_on_from_where_it_was(sing, machine, 
     assert card.steps == 12  # no step ran twice
     codes = [d["code"] for d in done["song"]["gpu"]["decisions"]]
     assert "spill_free" in codes and "spill_wait" in codes
-    assert card.profile.step("convert") <= 0.02  # the run that spilled taught nothing about normal
+    # The run that spilled (0.2 s a step) taught nothing about normal: the step stays near 0.02.
+    # Not exactly 0.02: a clean step is measured too, and CI once had 0.0201.
+    assert card.profile.step("convert") < 0.05
 
 
 def test_a_spill_in_separation_restarts_it_on_the_cpu(sing, machine, monkeypatch):  # noqa: F811
@@ -439,7 +443,7 @@ def test_a_spill_in_separation_restarts_it_on_the_cpu(sing, machine, monkeypatch
     card = machine(total=12 * GB, others=500, spill_under=99999)
     card.profile.note_step("separate", 0.02)
     people(sing)
-    job = submit(sing, "sim separation spill")
+    job = submit(sing, "sim separation spill", backing="drop")  # separation runs only for it
     until(lambda: len(card.backend.separate_devices) == 2)
     assert card.backend.separate_devices == [None, "cpu"]
     assert card.calls == []
