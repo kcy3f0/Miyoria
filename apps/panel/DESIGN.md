@@ -279,6 +279,15 @@ operate-mode rules above do not bind it; real data does. Strategy and the direct
   weeks from `days`, 附錄：自己養一隻 with the real setup commands and the service diagram
   (`Schematic`), and the back cover with the login again.
 - Copy is plain and specific. No slogans: say what she does.
+- Type is one colour. The misregistered second plate is for her pictures, ornaments and buttons,
+  never for headings.
+- Inside pictures (`landing/art/*-a.webp`, `*-p.webp`) are poses rendered from the official free
+  DeepSeek-chan Live2D model (pointing, singing, glasses, heart eyes, the steel basin, cold sweat)
+  and turned into the same two halftone plates. The model and PSD stay out of the repo, as their
+  guidelines ask; the back cover credits the original illustrator, 神宫凉子.
+- Ornaments (`Ornaments.tsx`): a riso icon per contents entry, a dot-screen whale, rubber stamps, a
+  starburst sticker, wavy rules, taped photos, a turning record while she sings, and the setup
+  steps as a coupon to cut out.
 - The token form stays at `/login` with no link from the landing.
 
 ## Charts

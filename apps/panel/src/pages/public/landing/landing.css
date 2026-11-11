@@ -183,11 +183,11 @@
   color: var(--pink);
   mix-blend-mode: screen;
   user-select: none;
+  transform: translate(calc(var(--mx) * -6px), calc(var(--my) * -4px));
 }
 .mz-mast span {
   position: relative;
   display: inline-block;
-  text-shadow: calc(-6px + var(--mx) * -8px) calc(5px + var(--my) * -6px) 0 var(--aqua);
   animation: mz-ink 0.9s calc(0.08s * var(--i)) both cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
@@ -366,7 +366,6 @@
   white-space: nowrap;
   letter-spacing: -0.01em;
   color: var(--paper);
-  text-shadow: 3px 3px 0 var(--pink);
 }
 .mz-lead p {
   max-width: 22em;
@@ -539,7 +538,6 @@
   font-size: clamp(36px, 4.4vw, 60px);
   line-height: 1.15;
   color: var(--paper);
-  text-shadow: -4px 3px 0 rgba(94, 200, 229, 0.55);
 }
 .mz-folio {
   display: block;
@@ -616,7 +614,6 @@
   font-size: 54px;
   line-height: 0.9;
   color: var(--pink);
-  text-shadow: -3px 2px 0 var(--aqua);
 }
 .mz-toc h3 {
   font-weight: 900;
@@ -706,6 +703,7 @@
 
 .mz-weeks {
   grid-column: 2;
+  grid-row: 3;
   margin: 0;
 }
 .mz-weeks figcaption {
@@ -946,7 +944,7 @@
   margin-top: clamp(96px, 14vw, 200px);
   display: flex;
   align-items: flex-end;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 24px;
   font-size: 13px;
   color: var(--mute);
@@ -955,6 +953,424 @@
   color: var(--paper);
   width: 110px;
   height: 38px;
+}
+
+
+/* ---------- ornaments ---------- */
+
+.mz-orn {
+  overflow: visible;
+}
+.mz-orn g {
+  mix-blend-mode: screen;
+}
+.mz-orn-a {
+  fill: var(--aqua);
+  stroke: var(--aqua);
+  transform: translate(-2.5px, 2px);
+}
+.mz-orn-p {
+  fill: var(--pink);
+  stroke: var(--pink);
+}
+.mz-orn path,
+.mz-orn circle {
+  stroke-width: 0;
+}
+.mz-orn .mz-orn-cut {
+  fill: var(--stock);
+}
+.mz-orn .mz-orn-line {
+  fill: none;
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+.mz-icon {
+  display: inline-block;
+  width: 30px;
+  height: 30px;
+  margin-left: 12px;
+  vertical-align: -6px;
+  transition: transform 0.3s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.mz-toc li:hover .mz-icon {
+  transform: rotate(-10deg) scale(1.15);
+}
+
+.mz-whale {
+  display: block;
+  fill: url(#mz-dots);
+}
+.mz-whale pattern circle {
+  fill: var(--aqua);
+}
+.mz-whale-body {
+  stroke: var(--aqua);
+  stroke-width: 2;
+}
+.mz-whale-line,
+.mz-whale-spout {
+  fill: none;
+  stroke: var(--aqua);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.mz-whale-eye {
+  fill: var(--pink);
+}
+.mz-whale-spread {
+  width: min(320px, 70%);
+  margin-top: 40px;
+  margin-left: 30%;
+  animation: mz-swim 7s ease-in-out infinite;
+}
+@keyframes mz-swim {
+  50% {
+    transform: translate(-14px, -8px) rotate(-2deg);
+  }
+}
+
+.mz-stamp {
+  width: 120px;
+  height: 120px;
+  color: var(--pink);
+  opacity: 0.9;
+}
+.mz-stamp-edge {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+}
+.mz-stamp-ring {
+  font-family: var(--label);
+  font-weight: 800;
+  font-size: 12.5px;
+  letter-spacing: 0.16em;
+  fill: currentColor;
+}
+.mz-stamp-mid {
+  font-family: var(--serif);
+  font-weight: 900;
+  font-size: 22px;
+  fill: currentColor;
+}
+
+.mz-burst {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 130px;
+  height: 130px;
+  color: var(--stock);
+  text-align: center;
+  font-weight: 900;
+  font-size: 14px;
+  line-height: 1.2;
+}
+.mz-burst svg {
+  position: absolute;
+  inset: 0;
+  fill: var(--aqua);
+  animation: mz-turn 24s linear infinite;
+}
+.mz-burst span {
+  position: relative;
+}
+.mz-burst b {
+  display: block;
+  font-family: var(--label);
+  font-weight: 800;
+  font-size: 34px;
+  line-height: 1;
+}
+@keyframes mz-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.mz-waves {
+  display: block;
+  width: 100%;
+  height: 16px;
+  margin: 0;
+}
+.mz-waves path {
+  fill: none;
+  stroke: var(--aqua);
+  stroke-width: 1.5;
+  opacity: 0.5;
+}
+
+/* A taped-in photo of her. */
+.mz-photo {
+  margin: 0;
+  width: fit-content;
+  transform: rotate(var(--tilt));
+}
+.mz-photo-frame {
+  position: relative;
+  padding: 10px 10px 0;
+  background: #161d30;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+/* Her, two plates of the same picture, the pink a little off. */
+.mz-cut {
+  position: relative;
+}
+.mz-cut img {
+  display: block;
+  width: 100%;
+  height: auto;
+  mix-blend-mode: screen;
+}
+.mz-cut img + img {
+  position: absolute;
+  inset: 0;
+  transform: translate(4px, -3px);
+}
+.mz-photo-frame .mz-cut {
+  height: 100%;
+  overflow: hidden;
+  background: #0d1220;
+}
+.mz-photo-frame .mz-cut img {
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 0;
+}
+.mz-photo figcaption {
+  padding: 10px 2px 0;
+  font-size: 13px;
+  color: var(--mute);
+}
+.mz-tape {
+  position: absolute;
+  width: 96px;
+  height: 26px;
+  background: rgba(233, 228, 216, 0.22);
+}
+.mz-tape-a {
+  left: -26px;
+  top: 6px;
+  transform: rotate(-32deg);
+}
+.mz-tape-b {
+  right: -24px;
+  bottom: 24px;
+  transform: rotate(-28deg);
+}
+.mz-photo-feature {
+  margin-top: 48px;
+}
+.mz-photo-feature .mz-photo-frame {
+  width: min(380px, 100%);
+  height: 400px;
+  padding-bottom: 10px;
+}
+
+/* The record beside the song chart. */
+.mz-songs-head {
+  grid-column: 1;
+  grid-row: 1;
+}
+.mz-songs .mz-chart,
+.mz-songs .mz-chart-empty {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+.mz-songs-art {
+  position: relative;
+  grid-column: 1;
+  grid-row: 2 / span 2;
+  align-self: start;
+  margin-top: 24px;
+}
+.mz-record {
+  position: relative;
+  width: min(320px, 70%);
+  margin-left: auto;
+  aspect-ratio: 1;
+}
+.mz-record-disc {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background:
+    conic-gradient(from 30deg, transparent 0 10%, rgba(255, 255, 255, 0.08) 14%, transparent 20% 56%, rgba(255, 255, 255, 0.06) 60%, transparent 66%),
+    repeating-radial-gradient(circle, #0a0c12 0 1.5px, #161a24 2px 3.2px);
+  box-shadow: 0 24px 50px rgba(0, 0, 0, 0.5);
+}
+.mz-record-on .mz-record-disc {
+  animation: mz-turn 3.6s linear infinite;
+}
+.mz-record-label {
+  position: absolute;
+  inset: 31%;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--pink);
+}
+.mz-record-label img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 9%;
+  transform: scale(2.4) translateY(14%);
+  filter: brightness(0.3);
+  mix-blend-mode: multiply;
+}
+.mz-record-label::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--stock-deep);
+  transform: translate(-50%, -50%);
+}
+.mz-record-arm {
+  position: absolute;
+  right: -6%;
+  top: -4%;
+  width: 14px;
+  height: 58%;
+  background: linear-gradient(var(--paper), #9aa0b0);
+  border-radius: 7px;
+  transform-origin: 50% 10px;
+  transform: rotate(18deg);
+  transition: transform 0.8s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.mz-record-on .mz-record-arm {
+  transform: rotate(28deg);
+}
+.mz-stamp-live {
+  position: absolute;
+  right: 26%;
+  top: -40px;
+  transform: rotate(-14deg);
+}
+.mz-burst-week {
+  right: 0;
+  bottom: -40px;
+}
+
+/* The steps, as a coupon to cut out. */
+.mz-coupon {
+  position: relative;
+  padding: 34px 24px 6px;
+  border: 2px dashed rgba(255, 72, 176, 0.6);
+}
+.mz-coupon-cut {
+  position: absolute;
+  left: 18px;
+  top: -13px;
+  padding: 0 10px;
+  background: var(--stock);
+  font-size: 14px;
+  color: var(--pink);
+}
+.mz-plant-wrap {
+  position: relative;
+}
+.mz-stamp-diy {
+  position: absolute;
+  right: 10px;
+  bottom: -70px;
+  transform: rotate(12deg);
+  color: var(--aqua);
+}
+
+/* Back cover: her coming up from the bottom edge. */
+.mz-back-her {
+  position: absolute;
+  right: 6vw;
+  top: 40px;
+  width: min(300px, 28vw);
+  pointer-events: none;
+}
+.mz-burst-free {
+  right: calc(6vw + min(300px, 28vw) - 40px);
+  top: 80px;
+  width: 110px;
+  height: 110px;
+  font-size: 22px;
+}
+.mz-burst-free svg {
+  fill: var(--pink);
+}
+
+
+.mz-songs-her {
+  position: absolute;
+  left: -4%;
+  top: 30px;
+  width: 58%;
+  pointer-events: none;
+}
+.mz-chart-empty {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+.mz-sticker {
+  flex: none;
+  width: 120px;
+  transform: rotate(-6deg);
+}
+.mz-basin {
+  position: absolute;
+  z-index: 2;
+  right: -64px;
+  top: -96px;
+  width: 140px;
+  margin: 0;
+  transform: rotate(8deg);
+  text-align: center;
+}
+.mz-basin .mz-cut {
+  background: #161d30;
+  padding: 8px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
+}
+.mz-basin figcaption {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--mute);
+}
+.mz-teacher {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: -40px 0 10px;
+}
+.mz-teacher .mz-cut {
+  width: 240px;
+}
+.mz-bubble {
+  position: relative;
+  order: -1;
+  margin-bottom: 120px;
+  padding: 12px 16px;
+  max-width: 220px;
+  background: var(--paper);
+  color: var(--stock);
+  font-weight: 900;
+  font-size: 15px;
+  line-height: 1.5;
+  border-radius: 14px;
+}
+.mz-bubble::after {
+  content: "";
+  position: absolute;
+  right: -12px;
+  bottom: 14px;
+  border: 8px solid transparent;
+  border-left: 14px solid var(--paper);
 }
 
 /* ---------- small screens ---------- */
@@ -1046,6 +1462,44 @@
   .mz-back-foot {
     flex-direction: column;
     align-items: flex-start;
+  }
+  .mz-songs-head,
+  .mz-songs .mz-chart,
+  .mz-songs .mz-chart-empty,
+  .mz-songs-art,
+  .mz-weeks {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .mz-songs-art {
+    margin-bottom: 40px;
+  }
+  .mz-record {
+    width: 240px;
+  }
+  .mz-back-her {
+    position: relative;
+    right: auto;
+    top: auto;
+    width: 200px;
+    margin: 0 auto 24px;
+  }
+  .mz-songs-her {
+    left: 0;
+    width: 52%;
+  }
+  .mz-basin {
+    right: -10px;
+    width: 100px;
+  }
+  .mz-teacher .mz-cut {
+    width: 160px;
+  }
+  .mz-burst-free {
+    display: none;
+  }
+  .mz-whale-spread {
+    margin-left: 0;
   }
 }
 

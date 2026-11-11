@@ -5,8 +5,21 @@ import { useApi } from "@/app/connection";
 import { loginNext } from "@/app/session";
 import { LIVE_PAGE } from "../live/LivePage";
 import { STATE, stateLabel, usePublicSongs, usePublicStatus } from "../PublicSite";
+import basinA from "./art/basin-a.webp";
+import basinP from "./art/basin-p.webp";
+import fingerA from "./art/finger-a.webp";
+import fingerP from "./art/finger-p.webp";
+import glassesA from "./art/glasses-a.webp";
+import glassesP from "./art/glasses-p.webp";
+import heartA from "./art/heart-a.webp";
+import heartP from "./art/heart-p.webp";
+import singA from "./art/sing-a.webp";
+import singP from "./art/sing-p.webp";
+import sweatA from "./art/sweat-a.webp";
+import sweatP from "./art/sweat-p.webp";
 import aqua from "./plate-aqua.webp";
 import pink from "./plate-pink.webp";
+import { Burst, Icon, Stamp, Waves, Whale } from "./Ornaments";
 import { Schematic } from "./Schematic";
 import "./landing.css";
 
@@ -191,7 +204,12 @@ function SongChart({ songs }: { songs?: PublicSongs }) {
     ...(songs?.recent ?? []).map((s) => ({ s, tag: "剛唱完", on: false })),
   ].slice(0, 8);
   if (rows.length === 0) {
-    return <p className="mz-chart-empty">今天還沒有人點歌。登入之後，第一首可以是你點的。</p>;
+    return (
+      <div className="mz-chart-empty">
+        <Cut art={{ a: sweatA, p: sweatP }} className="mz-sticker" />
+        <p>今天還沒有人點歌。登入之後，第一首可以是你點的。</p>
+      </div>
+    );
   }
   return (
     <ol className="mz-chart">
@@ -229,6 +247,46 @@ function TwoWeeks({ days }: { days: PublicDay[] }) {
         ))}
       </div>
     </figure>
+  );
+}
+
+type Art = { a: string; p: string };
+
+/** Her, as the two plates of one picture, without a frame. */
+function Cut({ art, className }: { art: Art; className?: string }) {
+  return (
+    <div className={`mz-cut ${className ?? ""}`} aria-hidden>
+      <img src={art.a} alt="" loading="lazy" />
+      <img src={art.p} alt="" loading="lazy" />
+    </div>
+  );
+}
+
+/** A printed photo of her, taped onto the page. */
+function Photo({ art, caption, className, tilt = 0 }: { art: Art; caption?: string; className?: string; tilt?: number }) {
+  return (
+    <figure className={`mz-photo ${className ?? ""}`} style={{ "--tilt": `${tilt}deg` } as CSSProperties} data-print>
+      <div className="mz-photo-frame">
+        <Cut art={art} />
+        <i className="mz-tape mz-tape-a" />
+        <i className="mz-tape mz-tape-b" />
+      </div>
+      {caption && <figcaption>{caption}</figcaption>}
+    </figure>
+  )
+}
+
+/** A record in the song chart: it turns while she is singing. */
+function Record({ spinning }: { spinning: boolean }) {
+  return (
+    <div className={spinning ? "mz-record mz-record-on" : "mz-record"} aria-hidden>
+      <div className="mz-record-disc">
+        <div className="mz-record-label">
+          <img src={pink} alt="" />
+        </div>
+      </div>
+      <div className="mz-record-arm" />
+    </div>
   );
 }
 
@@ -400,12 +458,17 @@ export default function Landing({ discord, notice }: { discord: boolean; notice?
               這本是 DeepSeek-chan 的介紹。她是一個跑在 Discord 上的 AI，大部分時間沒有人在操作她：要不要說話、要不要進語音、要不要開台，都是她看當下的情況自己決定。指令還是有，只是很少用到。
             </p>
             <p className="mz-sign">編輯部</p>
+            <Photo className="mz-photo-feature" art={{ a: fingerA, p: fingerP }} tilt={-3} caption="「指令還是有啦，只是我比較想自己決定。」" />
+            <Whale className="mz-whale-spread" />
           </div>
           <ol className="mz-page mz-page-r mz-toc">
             {CONTENTS.map((c, i) => (
               <li key={c.name} data-print style={{ "--d": i } as CSSProperties}>
                 <span className="mz-toc-page">{c.page}</span>
-                <h3>{c.name}</h3>
+                <h3>
+                  {c.name}
+                  <Icon name={c.name} />
+                </h3>
                 <p>{c.text}</p>
               </li>
             ))}
@@ -419,6 +482,7 @@ export default function Landing({ discord, notice }: { discord: boolean; notice?
           </ol>
         </section>
 
+        <Waves />
         <section className="mz-songs" aria-labelledby="mz-songs-title">
           <div className="mz-songs-head" data-print>
             <span className="mz-folio">p. 08</span>
@@ -426,6 +490,17 @@ export default function Landing({ discord, notice }: { discord: boolean; notice?
               本期歌單
             </h2>
             <p>她現在在唱的、排隊中的、剛唱完的。資料直接從她那邊來，會自己更新。</p>
+          </div>
+          <div className="mz-songs-art" data-print>
+            <Record spinning={status.data?.state === "singing"} />
+            <Cut art={{ a: singA, p: singP }} className="mz-songs-her" />
+            {status.data?.state === "singing" && <Stamp ring="NOW SINGING ・ LIVE ・ " mid="現場" className="mz-stamp-live" />}
+            {days.length > 1 && (
+              <Burst className="mz-burst-week">
+                兩週唱了
+                <b>{days.reduce((n, d) => n + d.songs_sung, 0)}</b>首
+              </Burst>
+            )}
           </div>
           <SongChart songs={songs.data} />
           {days.length > 1 && <TwoWeeks days={days} />}
@@ -442,7 +517,15 @@ export default function Landing({ discord, notice }: { discord: boolean; notice?
             </p>
           </div>
           <div className="mz-appendix-body">
-            <ol className="mz-steps">
+            <div className="mz-coupon">
+              <figure className="mz-basin" aria-hidden>
+                <Cut art={{ a: basinA, p: basinP }} />
+                <figcaption>跑 doctor 之前的她</figcaption>
+              </figure>
+              <p className="mz-coupon-cut" aria-hidden>
+                ✂ 沿虛線剪下，貼在螢幕旁邊
+              </p>
+              <ol className="mz-steps">
               {STEPS.map((s, i) => (
                 <li key={s.cmd} data-print style={{ "--d": i } as CSSProperties}>
                   <div className="mz-cmd">
@@ -452,11 +535,17 @@ export default function Landing({ discord, notice }: { discord: boolean; notice?
                   <p>{s.note}</p>
                 </li>
               ))}
-            </ol>
+              </ol>
+            </div>
             <figure className="mz-plant-wrap" data-print>
+              <div className="mz-teacher" aria-hidden>
+                <Cut art={{ a: glassesA, p: glassesP }} />
+                <p className="mz-bubble">卡住的話，先跑 pnpm dev doctor。</p>
+              </div>
               <Schematic layout="wide" />
               <Schematic layout="narrow" />
               <figcaption>想開語音、唱歌和直播的話，右邊這幾台要一張 NVIDIA 顯卡。</figcaption>
+              <Stamp ring="OPEN SOURCE ・ DIY ・ 自己養 ・ " mid="自製" className="mz-stamp-diy" />
             </figure>
           </div>
           <a className="mz-link mz-repo" href={REPO} target="_blank" rel="noreferrer">
@@ -469,6 +558,8 @@ export default function Landing({ discord, notice }: { discord: boolean; notice?
         <div className="mz-back-mast" aria-hidden>
           {MAST}
         </div>
+        <Cut art={{ a: heartA, p: heartP }} className="mz-back-her" />
+        <Burst className="mz-burst-free">免費</Burst>
         <div className="mz-back-body" data-print>
           <h2 id="mz-back-title">
             訂閱方式：
@@ -480,7 +571,7 @@ export default function Landing({ discord, notice }: { discord: boolean; notice?
         </div>
         <div className="mz-back-foot">
           <Barcode text="DEEPSEEK" />
-          <span>MIYORIA・開源專案・DeepSeek-chan 的立繪以兩色網點重製</span>
+          <span>MIYORIA・開源專案・DeepSeek-chan 原畫：神宫凉子，本刊以兩色網點重製</span>
         </div>
       </footer>
     </div>
