@@ -335,7 +335,8 @@ def test_on_a_24_gb_card_a_song_never_touches_her_voice(sing, machine):  # noqa:
 def test_on_a_full_12_gb_card_people_keep_her_voice_until_there_is_room(sing, machine, monkeypatch):  # noqa: F811
     card = machine(total=12 * GB, others=4500)
     people(sing)
-    job = submit(sing, "sim 12 gb")
+    # backing="drop" needs the separation, the stage this scenario watches (``_needs_stems``).
+    job = submit(sing, "sim 12 gb", backing="drop")
     until(lambda: job_of(sing, job)["stage"] == "gpu_wait")
     held = job_of(sing, job)
     assert held["gpu"]["mode"] == "wait" and "等空間" in held["gpu"]["reason"]
@@ -352,7 +353,7 @@ def test_on_a_full_12_gb_card_people_keep_her_voice_until_there_is_room(sing, ma
 def test_on_a_12_gb_card_a_song_needed_now_takes_a_bounded_window(sing, machine):  # noqa: F811
     card = machine(total=12 * GB, others=4500)
     people(sing)
-    job = sing.post("/jobs", json={"query": "sim urgent", "exclusive_ack": True}).json()["job"]["id"]
+    job = sing.post("/jobs", json={"query": "sim urgent", "exclusive_ack": True, "backing": "drop"}).json()["job"]["id"]
     people(sing, urgent=[job])
     until(lambda: job_of(sing, job)["exclusive"] == "waiting")
     assert card.calls == []  # she says so first
@@ -442,7 +443,7 @@ def test_a_spill_in_separation_restarts_it_on_the_cpu(sing, machine, monkeypatch
     card = machine(total=12 * GB, others=500, spill_under=99999)
     card.profile.note_step("separate", 0.02)
     people(sing)
-    job = submit(sing, "sim separation spill")
+    job = submit(sing, "sim separation spill", backing="drop")  # separation runs only for it
     until(lambda: len(card.backend.separate_devices) == 2)
     assert card.backend.separate_devices == [None, "cpu"]
     assert card.calls == []
