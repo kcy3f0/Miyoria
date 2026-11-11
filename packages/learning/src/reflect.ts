@@ -78,69 +78,79 @@ export const REFLECT_STATE_KEY = "reflect:state";
 const DAY_MS = 86_400_000;
 const MINUTE_MS = 60_000;
 
+// Her reply is long and written in one go: one item or a few characters over a limit used to
+// refuse the whole reflection ("her reflection failed"), and the repair try often came back over
+// again. Over-long text is cut, extra items are dropped from the end and numbers are clamped; only
+// a reply that is not the right shape at all is refused.
+const cutText = (s: string, max: number) => {
+  const c = [...s.trim()];
+  return c.length > max ? `${c.slice(0, max - 1).join("")}…` : c.join("");
+};
+/** Non-empty text of at most `max` characters (cut, not refused). */
+const text = (max: number) =>
+  z
+    .string()
+    .trim()
+    .min(1)
+    .transform((s) => cutText(s, max));
+/** Text that may be empty, at most `max` characters. */
+const note = (max: number) => z.string().transform((s) => cutText(s, max));
+/** At most `n` items: the first `n` are kept. */
+const upTo = <T extends z.ZodType>(item: T, n: number) =>
+  z.array(item).transform((a) => a.slice(0, n));
+/** A number clamped into [min, max] (rounded when `int`). */
+const within = (min: number, max: number, int = false) =>
+  z.number().transform((v) => Math.min(max, Math.max(min, int ? Math.round(v) : v)));
+
 export const ReflectionSchema = z.object({
-  summary: z.string().min(1).max(1200),
-  insights: z
-    .array(
-      z.object({
-        from: z.array(z.string()).min(1).max(12),
-        content: z.string().min(1).max(400),
-        kind: z.enum(["fact", "self_note"]).default("fact"),
-        importance: z.number().min(0).max(1).default(0.6),
-      }),
-    )
-    .max(8)
-    .default([]),
-  outdated: z
-    .array(z.object({ old: z.string(), by: z.string() }))
-    .max(10)
-    .default([]),
-  documents: z.array(DraftSchema).max(10).default([]),
-  feelings: z
-    .array(z.object({ person: z.string(), note: z.string().min(1).max(300) }))
-    .max(5)
-    .default([]),
-  lessons: z
-    .array(
-      z.object({
-        text: z.string().min(1).max(200),
-        person: z.string().nullable().default(null),
-        place: z.string().nullable().default(null),
-        talk: z.number().min(-1).max(1).nullable().default(null),
-        days: z.number().int().min(1).max(180).nullable().default(null),
-      }),
-    )
-    .max(6)
-    .default([]),
-  drop_lessons: z.array(z.string()).max(20).default([]),
-  goals: z
-    .array(
-      z.object({
-        text: z.string().min(1).max(200),
-        why: z.string().max(200).default(""),
-        days: z.number().int().min(1).max(60).nullable().default(null),
-      }),
-    )
-    .max(5)
-    .default([]),
+  summary: text(1200),
+  insights: upTo(
+    z.object({
+      from: upTo(z.string(), 12).pipe(z.array(z.string()).min(1)),
+      content: text(400),
+      kind: z.enum(["fact", "self_note"]).default("fact"),
+      importance: within(0, 1).default(0.6),
+    }),
+    8,
+  ).default([]),
+  outdated: upTo(z.object({ old: z.string(), by: z.string() }), 10).default([]),
+  documents: upTo(DraftSchema, 10).default([]),
+  feelings: upTo(z.object({ person: z.string(), note: text(300) }), 5).default([]),
+  lessons: upTo(
+    z.object({
+      text: text(200),
+      person: z.string().nullable().default(null),
+      place: z.string().nullable().default(null),
+      talk: within(-1, 1).nullable().default(null),
+      days: within(1, 180, true).nullable().default(null),
+    }),
+    6,
+  ).default([]),
+  drop_lessons: upTo(z.string(), 20).default([]),
+  goals: upTo(
+    z.object({
+      text: text(200),
+      why: note(200).default(""),
+      days: within(1, 60, true).nullable().default(null),
+    }),
+    5,
+  ).default([]),
   /** Person-card tidy-up: small proposed changes (the program caps them). */
-  bonds: z
-    .array(
-      z.object({
-        person: z.string().min(1),
-        attachment: z.number().min(-1).max(1).default(0),
-        affinity: z.number().min(-100).max(100).default(0),
-        trust: z.number().min(-100).max(100).default(0),
-        feeling: z.string().max(300).nullable().default(null),
-        /** Filtered and cut by the program; a bad value here must not cost the reflection. */
-        public_feeling: z.string().nullable().default(null).catch(null),
-        /** Her one-line stance toward them; cut by the program, a bad value costs nothing. */
-        stance: z.string().nullable().default(null).catch(null),
-        why: z.string().max(200).default(""),
-      }),
-    )
-    .max(10)
-    .default([]),
+  bonds: upTo(
+    z.object({
+      person: z.string().min(1),
+      attachment: within(-1, 1).default(0),
+      affinity: within(-100, 100).default(0),
+      trust: within(-100, 100).default(0),
+      feeling: note(300).nullable().default(null),
+      /** Filtered and cut by the program; a bad value here must not cost the reflection. */
+      public_feeling: z.string().nullable().default(null).catch(null),
+      /** Her one-line stance toward them; cut by the program, a bad value costs nothing. */
+      stance: z.string().nullable().default(null).catch(null),
+      why: note(200).default(""),
+    }),
+    10,
+  ).default([]),
 });
 export type ReflectionReply = z.output<typeof ReflectionSchema>;
 
