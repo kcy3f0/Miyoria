@@ -383,7 +383,8 @@ export const MainLineConfigSchema = z.object({
    * are written again only when who is here or who talks with her changes, or after
    * `people_refresh_mins`: in between the block reads the same and the prefix stays cached.
    */
-  people_chars: z.number().int().nonnegative().default(2400),
+  // 3600 since the people are `<person/>` tags: the attribute names take room the old lines did not.
+  people_chars: z.number().int().nonnegative().default(3600),
   people_refresh_mins: z.number().nonnegative().default(30),
   /**
    * 「今天的她」 (`LifeLog.summary`, v4 §6.2), before the history: it changes when she has done

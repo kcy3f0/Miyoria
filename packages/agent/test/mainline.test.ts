@@ -378,7 +378,9 @@ describe("one call", () => {
     expect(messages[0]?.role).toBe("system");
     expect(String(messages[0]?.content)).toContain("# 規則");
     expect(messages.at(-1)?.role).toBe("system");
-    expect(String(messages.at(-1)?.content)).toContain("# 現在");
+    expect(String(messages.at(-1)?.content)).toContain("<now>");
+    // What she answers is the very last thing she reads.
+    expect(String(messages.at(-1)?.content).trimEnd().endsWith("</reply_to>")).toBe(true);
     expect(llm.requests[0]?.tools?.map((t) => t.name)).toContain("commit");
   });
 });
@@ -1620,8 +1622,6 @@ describe("the hands merge repeats", () => {
     h.answered(job, { ok: true, text: "沒有收下,原因(not_enough):魚幣不夠", data: null });
     const tail = tailSection({
       head: "",
-      kind: "addressed",
-      muted: false,
       notes: [],
       state: [],
       tasks: [],
@@ -1795,12 +1795,7 @@ describe("stage 1 of v4: the prompt keeps its prefix (§4.1)", () => {
     messages.pop();
     const last = messages.at(-1);
     const text = JSON.stringify(last?.content ?? "");
-    if (
-      last?.role === "user" &&
-      (text.includes("系統附上的參考資料") || text.includes("要回的訊息"))
-    ) {
-      messages.pop();
-    }
+    if (last?.role === "user" && text.includes("<data source=")) messages.pop();
     // Up to the end of the newest history line: a line merged into it later only adds after it.
     const json = JSON.stringify(messages);
     return json.slice(0, json.lastIndexOf('","name":'));
@@ -1852,8 +1847,12 @@ describe("stage 1 of v4: the prompt keeps its prefix (§4.1)", () => {
     expect(at("Bob: 早")).toBeGreaterThan(1);
     expect(at("想看她唱歌")).toBeGreaterThan(at("Bob: 早"));
     expect(messages.at(-2)?.role).toBe("user");
-    expect(String(messages.at(-2)?.content)).toContain("⟦資料");
-    expect(String(messages.at(-2)?.content)).toContain("要回的訊息");
+    expect(String(messages.at(-2)?.content)).toContain("<data source=");
+    // The message she answers is not repeated with the data: once more, last, in the tail.
+    expect(String(messages.at(-2)?.content)).not.toContain("Alice 問你");
+    expect(String(messages.at(-1)?.content)).toMatch(
+      /<reply_to>\n.*\nAlice 問你:嗨\n<\/reply_to>$/,
+    );
     expect(messages.at(-1)?.role).toBe("system");
   });
 
@@ -1893,7 +1892,7 @@ describe("stage 1 of v4: the tool loop inside a turn (§4.2)", () => {
     expect(asked?.tool_calls?.[0]?.name).toBe("web_search");
     const answer = second.find((m) => m.role === "tool");
     // What the tool brought back is data, as the hands' results are.
-    expect(answer?.content).toBe("⟦資料 來源=tool 標題=web_search_的結果⟧\ndone\n⟦/資料⟧");
+    expect(answer?.content).toBe('<data source="tool" title="web_search 的結果">\ndone\n</data>');
     expect(answer?.tool_call_id).toBe(asked?.tool_calls?.[0]?.id);
     // Logged like any action, and the turn's decision names it.
     expect(results(h)).toContainEqual(
@@ -1953,7 +1952,7 @@ describe("stage 1 of v4: the tool loop inside a turn (§4.2)", () => {
     await wait(1000);
     const second = llm.requests[1]?.messages ?? [];
     const handed = second.filter((m) => m.role === "tool").map((m) => m.content);
-    expect(handed[0]).toContain("⟦資料");
+    expect(handed[0]).toContain("<data source=");
     expect(handed[1]).toBe(HANDED_OVER);
     await wait(10_000);
     expect(sing.calls).toHaveLength(1);
