@@ -188,7 +188,13 @@ class FakeWorker implements SingWorker {
     return structuredClone(this.library);
   }
 
+  /** Songs its cache cleaned out (`/songs/{id}/files/*` answers 404). */
+  readonly cleaned = new Set<string>();
+
   async audio(song: string, track: SongTrack): Promise<Int16Array> {
+    if (this.cleaned.has(song)) {
+      throw new SingWorkerError(`song ${song} has no ${track}`, { status: 404 });
+    }
     const seconds =
       [...this.jobs.values()].find((j) => j.song?.id === song)?.song?.duration_s ??
       this.library.find((m) => m.id === song)?.duration_s ??
@@ -576,6 +582,28 @@ describe("sing module", () => {
     await settle(6000 + 400);
     expect(h.voice.plays).toHaveLength(1);
     expect(h.mind.suggestions.filter((s) => s.reason === "song_ready")).toHaveLength(0);
+  });
+
+  it("asks again for a ready song the worker's cache cleaned out, and sings it once it is made", async () => {
+    h = await Harness.create();
+    await h.command("queue song request", { song: "Song A" });
+    h.worker.finish("j1", "Song A", 1);
+    await settle(200);
+    expect(h.singer.list.get(1)?.state).toBe("ready");
+    h.worker.cleaned.add("s-j1");
+    await h.join();
+    await settle(6000 + 400);
+    // Not sung, not failed: the same request went to the worker again.
+    expect(h.voice.plays).toHaveLength(0);
+    expect(h.worker.submitted).toHaveLength(2);
+    expect(h.worker.submitted[1]).toEqual(h.worker.submitted[0]);
+    const entry = h.singer.list.get(1);
+    expect(entry?.state).toBe("preparing");
+    expect(entry?.job).toBe("j2");
+    expect(h.singer.playing()).toBeNull();
+    h.worker.finish("j2", "Song A", 1);
+    await settle(200 + 6000 + 400);
+    expect(h.voice.plays).toHaveLength(1);
   });
 
   it("tells the worker who is listening and which songs are needed now", async () => {
