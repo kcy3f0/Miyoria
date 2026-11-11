@@ -16,6 +16,17 @@ class ResizeObserverStub {
   disconnect() {}
 }
 globalThis.ResizeObserver ??= ResizeObserverStub as unknown as typeof ResizeObserver;
+// The landing's reveals and water: jsdom has no IntersectionObserver and no canvas drawing.
+class IntersectionObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+}
+globalThis.IntersectionObserver ??= IntersectionObserverStub as unknown as typeof IntersectionObserver;
+HTMLCanvasElement.prototype.getContext = (() => null) as typeof HTMLCanvasElement.prototype.getContext;
 Element.prototype.scrollIntoView ??= () => {};
 Element.prototype.hasPointerCapture ??= () => false;
 Element.prototype.releasePointerCapture ??= () => {};

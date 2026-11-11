@@ -19,7 +19,7 @@ import { WalletMain } from "./Wallet";
 /** The Core rebuilds these every few seconds at most, so polling faster buys nothing. */
 const POLL_MS = 15_000;
 
-const STATE: Record<PublicState, { label: string; tone: Tone; pulse?: boolean }> = {
+export const STATE: Record<PublicState, { label: string; tone: Tone; pulse?: boolean }> = {
   singing: { label: "她在唱歌", tone: "brand", pulse: true },
   playing: { label: "她在玩遊戲", tone: "success" },
   live: { label: "她在直播", tone: "brand", pulse: true },
@@ -30,7 +30,7 @@ const STATE: Record<PublicState, { label: string; tone: Tone; pulse?: boolean }>
 
 const GAMES: Record<string, string> = { minecraft: "Minecraft" };
 
-function stateLabel(status: PublicStatus): string {
+export function stateLabel(status: PublicStatus): string {
   if (status.state === "playing" && status.game) {
     return `她在玩 ${GAMES[status.game] ?? status.game}`;
   }
@@ -40,7 +40,7 @@ function stateLabel(status: PublicStatus): string {
 const duration = (s: number | null) =>
   s === null ? null : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 
-function usePublicStatus() {
+export function usePublicStatus() {
   const api = useApi();
   return useQuery({
     queryKey: ["public", "status"],
@@ -49,7 +49,7 @@ function usePublicStatus() {
   });
 }
 
-function usePublicSongs() {
+export function usePublicSongs() {
   const api = useApi();
   return useQuery({
     queryKey: ["public", "songs"],

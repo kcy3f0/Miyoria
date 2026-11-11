@@ -1,0 +1,774 @@
+@import "@fontsource-variable/brygada-1918";
+@import "@fontsource-variable/brygada-1918/wght-italic.css";
+@import "@fontsource-variable/chiron-sung-hk";
+@import "@fontsource/lxgw-wenkai-tc/chinese-traditional-400.css";
+@import "@fontsource/lxgw-wenkai-tc/400.css";
+
+/*
+ * Her tank. A night aquarium: tank water lit by caustics, a near-black wall it is set into,
+ * milky acrylic placards with ink-dark type, and her pink only on the way in.
+ */
+.aq {
+  --aq-wall: #06090c;
+  --aq-room: #0a1013;
+  --aq-water: #04222c;
+  --aq-ink: #0c1d22;
+  --aq-ink-soft: #3d5d63;
+  --aq-acrylic: rgba(226, 238, 236, 0.88);
+  --aq-text: #e6f0ee;
+  --aq-text-soft: #a9c3c1;
+  --aq-line: rgba(196, 232, 228, 0.15);
+  --aq-tide: #8fd3cf;
+  --aq-pink: #f29dc4;
+  --aq-pink-ink: #3a1022;
+  --aq-latin: "Brygada 1918 Variable", Georgia, serif;
+  --aq-sung: "Chiron Sung HK Variable", "Noto Serif TC", serif;
+  --aq-hand: "LXGW WenKai TC", "Chiron Sung HK Variable", serif;
+  --aq-ui: "Geist Variable", system-ui, sans-serif;
+  --aq-mono: "Geist Mono Variable", ui-monospace, monospace;
+  --aq-ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  position: relative;
+  z-index: 1;
+  min-height: 100svh;
+  background: var(--aq-wall);
+  color: var(--aq-text);
+  font-family: var(--aq-ui);
+  text-shadow: none;
+  scroll-behavior: smooth;
+}
+
+.aq ::selection {
+  background: var(--aq-tide);
+  color: var(--aq-ink);
+}
+
+.aq a:focus-visible,
+.aq button:focus-visible {
+  outline: 2px solid var(--aq-tide);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+/* Wayfinding sign along the top of the wall. */
+.aq-way {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 5;
+  height: 4rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 1.75rem;
+}
+.aq-mark {
+  font-family: var(--aq-latin);
+  font-weight: 600;
+  font-size: 1.375rem;
+  letter-spacing: -0.01em;
+  color: var(--aq-text);
+  text-decoration: none;
+}
+.aq-way nav {
+  display: flex;
+  gap: 1.75rem;
+  font-family: var(--aq-sung);
+  font-size: 0.9375rem;
+}
+.aq-way nav a {
+  color: var(--aq-text-soft);
+  text-decoration: none;
+  text-underline-offset: 6px;
+  transition: color 0.3s;
+}
+.aq-way nav a:hover {
+  color: var(--aq-text);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+}
+
+/* The hall: the tank window set into the wall, a placard and the feeding board in front of it. */
+.aq-hall {
+  position: relative;
+  height: 100svh;
+  min-height: 40rem;
+}
+.aq-tank {
+  position: absolute;
+  inset: 4rem 1.25rem 2.5rem;
+  overflow: hidden;
+  border-radius: 1.375rem;
+  background: linear-gradient(180deg, #0a4a5a, var(--aq-water) 70%, #021116);
+  box-shadow:
+    inset 0 0 0 1px rgba(196, 238, 234, 0.22),
+    inset 0 2px 0 rgba(220, 250, 246, 0.12),
+    inset 0 -60px 120px -40px rgba(0, 0, 0, 0.7);
+  touch-action: pan-y;
+  cursor: grab;
+}
+.aq-water {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.aq-her {
+  position: absolute;
+  left: 43%;
+  bottom: -7%;
+  height: 104%;
+  width: auto;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;
+  animation: aq-bob 9s ease-in-out infinite;
+}
+@keyframes aq-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1.6%);
+  }
+}
+.aq-floor {
+  position: absolute;
+  inset: auto 0 0;
+  height: 38%;
+  background: linear-gradient(180deg, rgba(2, 17, 22, 0), rgba(2, 14, 18, 0.72) 70%, rgba(2, 10, 13, 0.92));
+  pointer-events: none;
+}
+.aq-fog {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-color: rgba(198, 228, 230, 0.05);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .5 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.2'/%3E%3C/svg%3E");
+  backdrop-filter: blur(10px) saturate(1.15);
+  -webkit-backdrop-filter: blur(10px) saturate(1.15);
+  mask-size: 100% 100%;
+  -webkit-mask-size: 100% 100%;
+  mask-repeat: no-repeat;
+  -webkit-mask-repeat: no-repeat;
+}
+
+/* The exhibit placard: milky acrylic on standoffs, mounted over the lower edge of the window. */
+.aq-placard {
+  position: absolute;
+  left: 3.5rem;
+  bottom: 1rem;
+  z-index: 3;
+  width: min(27rem, calc(100% - 2.5rem));
+  padding: 1.75rem 1.875rem 1.625rem;
+  border-radius: 4px;
+  color: var(--aq-ink);
+  background: var(--aq-acrylic);
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 22px 44px -20px rgba(0, 0, 0, 0.75);
+}
+.aq-placard h1 {
+  display: grid;
+  gap: 0.375rem;
+  margin: 0;
+}
+.aq-name {
+  font-family: var(--aq-latin);
+  font-weight: 600;
+  font-size: clamp(2.25rem, 3.2vw, 3.25rem);
+  line-height: 0.95;
+  white-space: nowrap;
+  letter-spacing: -0.015em;
+}
+.aq-latin {
+  font-family: var(--aq-latin);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 1.25rem;
+  color: var(--aq-ink-soft);
+}
+.aq-common {
+  margin: 1rem 0 0;
+  font-family: var(--aq-sung);
+  font-weight: 650;
+  font-size: 1.1875rem;
+  letter-spacing: 0.04em;
+}
+.aq-facts {
+  display: grid;
+  gap: 0.5rem;
+  margin: 1.125rem 0 0;
+  padding: 1rem 0 0;
+  border-top: 1px solid rgba(12, 29, 34, 0.22);
+  font-size: 0.875rem;
+  line-height: 1.7;
+}
+.aq-facts div {
+  display: grid;
+  grid-template-columns: 3.5rem 1fr;
+  gap: 0.75rem;
+}
+.aq-facts dt {
+  font-family: var(--aq-sung);
+  font-weight: 600;
+  color: var(--aq-ink-soft);
+}
+.aq-facts dd {
+  margin: 0;
+}
+.aq-notice {
+  margin: 1rem 0 0;
+  font-size: 0.875rem;
+  color: #7a1838;
+}
+
+.aq-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  margin-top: 1.375rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid rgba(12, 29, 34, 0.22);
+}
+.aq-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.125rem;
+  border-radius: 4px;
+  background: var(--aq-pink);
+  color: var(--aq-pink-ink);
+  font-weight: 600;
+  font-size: 0.9375rem;
+  text-decoration: none;
+  box-shadow: 0 6px 16px -8px rgba(120, 30, 70, 0.6);
+  transition:
+    transform 0.4s var(--aq-ease),
+    background-color 0.3s;
+}
+.aq-btn svg {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+.aq-btn:hover {
+  background: #f7b6d4;
+  transform: translateY(-2px);
+}
+.aq-link {
+  color: inherit;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 5px;
+  transition: text-underline-offset 0.3s var(--aq-ease);
+}
+.aq-link:hover {
+  text-underline-offset: 8px;
+}
+
+/* The feeding board: a dark enamel sign hung from the top of the window. */
+.aq-board {
+  position: absolute;
+  top: 6.25rem;
+  right: 3.25rem;
+  z-index: 3;
+  width: 18.5rem;
+  padding: 1.125rem 1.25rem 1rem;
+  border-radius: 4px;
+  background: #0b171a;
+  box-shadow:
+    inset 0 0 0 1px rgba(196, 232, 228, 0.2),
+    0 18px 36px -18px rgba(0, 0, 0, 0.8);
+}
+.aq-board::before,
+.aq-board::after {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  width: 1px;
+  height: 2.25rem;
+  background: rgba(196, 232, 228, 0.35);
+}
+.aq-board::before {
+  left: 18%;
+}
+.aq-board::after {
+  right: 18%;
+}
+.aq-board-title {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin: 0 0 0.75rem;
+  font-family: var(--aq-sung);
+  font-weight: 700;
+  font-size: 1.125rem;
+  letter-spacing: 0.08em;
+}
+.aq-lamp {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #4c6a6d;
+}
+.aq-lamp-on {
+  background: var(--aq-tide);
+  animation: aq-lamp 1.8s ease-in-out infinite;
+}
+@keyframes aq-lamp {
+  50% {
+    opacity: 0.35;
+  }
+}
+.aq-board-rows {
+  display: grid;
+  margin: 0;
+}
+.aq-board-rows div {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-top: 1px dotted rgba(196, 232, 228, 0.22);
+  font-size: 0.875rem;
+}
+.aq-board-rows dt {
+  flex-shrink: 0;
+  color: var(--aq-text-soft);
+}
+.aq-board-rows dd {
+  min-width: 0;
+  margin: 0 0 0 auto;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aq-board-song {
+  font-family: var(--aq-sung);
+  font-weight: 600;
+  font-size: 0.9375rem;
+  font-synthesis: none;
+}
+.aq-board-wait {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--aq-text-soft);
+}
+
+/* Observation notes, on the wall past the tank. */
+.aq-habits {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: clamp(2.5rem, 6vw, 6rem);
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: clamp(6rem, 12vw, 10rem) 1.5rem clamp(5rem, 10vw, 8rem);
+}
+.aq-habits-lead {
+  position: sticky;
+  top: 7rem;
+  align-self: start;
+}
+.aq-habits-lead h2 {
+  margin: 0;
+  font-family: var(--aq-sung);
+  font-weight: 800;
+  font-size: clamp(2.25rem, 4.2vw, 3.75rem);
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  text-wrap: balance;
+}
+.aq-habits-lead p {
+  max-width: 26em;
+  margin: 1.5rem 0 0;
+  font-size: 1.0625rem;
+  line-height: 1.9;
+  color: var(--aq-text-soft);
+}
+.aq-habit-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.aq-habit-list li {
+  padding: 1.75rem 0 1.875rem;
+  border-top: 1px solid var(--aq-line);
+}
+.aq-habit-list li:last-child {
+  border-bottom: 1px solid var(--aq-line);
+}
+.aq-habit-list h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 0.875rem;
+  margin: 0;
+  font-family: var(--aq-sung);
+  font-weight: 700;
+  font-size: 1.75rem;
+  letter-spacing: 0.06em;
+}
+.aq-habit-list h3 i {
+  font-family: var(--aq-latin);
+  font-weight: 400;
+  font-size: 1.25rem;
+  letter-spacing: 0;
+  color: var(--aq-tide);
+}
+.aq-habit-list p {
+  max-width: 34em;
+  margin: 0.75rem 0 0;
+  font-size: 1.03rem;
+  line-height: 1.9;
+  color: #cddedc;
+}
+
+/* The keepers' room: the plant behind the tank, for people who want to run her themselves. */
+.aq-keepers {
+  padding: clamp(5rem, 10vw, 8rem) max(1.5rem, calc((100% - 76rem) / 2)) clamp(4rem, 8vw, 6rem);
+  background: var(--aq-room);
+  border-top: 1px solid var(--aq-line);
+}
+.aq-keepers-head h2 {
+  margin: 0;
+  font-family: var(--aq-sung);
+  font-weight: 800;
+  font-size: clamp(2rem, 3.4vw, 3rem);
+  letter-spacing: 0.06em;
+}
+.aq-keepers-head p {
+  max-width: 40em;
+  margin: 1.25rem 0 0;
+  font-size: 1.0625rem;
+  line-height: 1.9;
+  color: var(--aq-text-soft);
+}
+.aq-hand {
+  font-family: var(--aq-hand);
+  font-size: 1.125rem;
+  color: var(--aq-text);
+}
+.aq-keepers-body {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: clamp(2rem, 5vw, 4.5rem);
+  align-items: start;
+  margin-top: clamp(2.5rem, 5vw, 4rem);
+}
+.aq-plant-wrap {
+  margin: 0;
+  overflow-x: auto;
+}
+.aq-plant {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.aq-plant-narrow {
+  display: none;
+}
+.aq-pipe {
+  fill: none;
+  stroke: #1d3a3f;
+  stroke-width: 7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.aq-flow {
+  fill: none;
+  stroke: var(--aq-tide);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 2 16;
+  animation: aq-flow 1.6s linear infinite;
+  opacity: 0.85;
+}
+@keyframes aq-flow {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+.aq-node rect {
+  fill: #0e1b1f;
+  stroke: rgba(170, 220, 215, 0.32);
+  stroke-width: 1;
+}
+.aq-node-main rect {
+  stroke: var(--aq-tide);
+}
+.aq-node-name {
+  font-family: var(--aq-mono);
+  font-size: 15px;
+  fill: var(--aq-text);
+}
+.aq-node-main .aq-node-name {
+  font-size: 18px;
+}
+.aq-node-detail {
+  font-family: var(--aq-ui);
+  font-size: 12.5px;
+  fill: var(--aq-text-soft);
+}
+.aq-plant-zone text {
+  font-family: var(--aq-hand);
+  font-size: 15px;
+  fill: var(--aq-text-soft);
+}
+.aq-steps {
+  display: grid;
+  gap: 1.375rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: aq-step;
+}
+.aq-steps li {
+  counter-increment: aq-step;
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  column-gap: 0.75rem;
+}
+.aq-steps li::before {
+  content: counter(aq-step);
+  grid-row: span 2;
+  font-family: var(--aq-latin);
+  font-size: 1.625rem;
+  line-height: 1.6;
+  color: var(--aq-tide);
+}
+.aq-cmd {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.375rem 0.375rem 0.875rem;
+  border-radius: 4px;
+  background: #050a0c;
+  box-shadow: inset 0 0 0 1px var(--aq-line);
+}
+.aq-cmd code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  font-family: var(--aq-mono);
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+.aq-copy {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--aq-text-soft);
+  cursor: pointer;
+  transition:
+    background-color 0.2s,
+    color 0.2s;
+}
+.aq-copy:hover {
+  background: rgba(196, 232, 228, 0.1);
+  color: var(--aq-text);
+}
+.aq-copy svg {
+  width: 1rem;
+  height: 1rem;
+}
+.aq-steps p {
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+  line-height: 1.7;
+  color: var(--aq-text-soft);
+}
+.aq-repo {
+  display: inline-block;
+  margin-top: 2.5rem;
+}
+
+/* Opening hours: the close. */
+.aq-hours {
+  display: grid;
+  justify-items: center;
+  padding: clamp(6rem, 12vw, 9rem) 1.5rem clamp(5rem, 10vw, 7rem);
+  text-align: center;
+  background: radial-gradient(80% 120% at 50% 100%, rgba(10, 74, 90, 0.45), transparent 70%);
+}
+.aq-hours-sign {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  font-family: var(--aq-sung);
+}
+.aq-hours-sign strong {
+  font-weight: 800;
+  font-size: clamp(2.125rem, 6vw, 5.5rem);
+  letter-spacing: 0.04em;
+  text-wrap: balance;
+  line-height: 1.1;
+}
+.aq-actions-quiet {
+  justify-content: center;
+  border-top: 0;
+  margin-top: 1.5rem;
+}
+
+/* Observation notes drift up a little as they reach the viewport; they are readable all along. */
+.aq-armed [data-surface]:not([data-surface="in"]) {
+  opacity: 0.45;
+  transform: translateY(1rem);
+}
+.aq [data-surface] {
+  transition:
+    opacity 0.9s var(--aq-ease),
+    transform 0.9s var(--aq-ease);
+}
+.aq-habit-list li:nth-child(2) {
+  transition-delay: 0.06s;
+}
+.aq-habit-list li:nth-child(3) {
+  transition-delay: 0.12s;
+}
+
+@media (max-width: 760px) {
+  .aq-way {
+    padding: 0 1rem;
+  }
+  .aq-way nav {
+    gap: 1.125rem;
+    font-size: 0.875rem;
+  }
+  .aq-hall {
+    height: auto;
+    min-height: 0;
+    padding: 3.75rem 0.75rem 1rem;
+  }
+  .aq-tank {
+    position: relative;
+    inset: auto;
+    height: 74svh;
+    min-height: 26rem;
+  }
+  .aq-her {
+    left: calc(50% - 0.3 * max(74svh, 26rem));
+    height: 88%;
+    bottom: -2%;
+  }
+  .aq-placard {
+    position: relative;
+    left: auto;
+    bottom: auto;
+    width: auto;
+    margin: -4.5rem 0.75rem 0;
+    padding: 1.5rem 1.375rem 1.375rem;
+  }
+  .aq-board {
+    position: relative;
+    top: auto;
+    right: auto;
+    width: auto;
+    margin: 1rem 0.75rem 0;
+  }
+  .aq-board::before,
+  .aq-board::after {
+    display: none;
+  }
+  .aq-habits,
+  .aq-keepers-body {
+    grid-template-columns: 1fr;
+  }
+  .aq-habits-lead {
+    position: static;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aq-her,
+  .aq-lamp-on,
+  .aq-flow {
+    animation: none;
+  }
+  .aq-armed [data-surface]:not([data-surface="in"]) {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Light from the tank falls on the wall below it. */
+.aq-lit {
+  position: relative;
+  isolation: isolate;
+}
+.aq-spill {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0.22;
+  mask-image: radial-gradient(70% 60% at 50% 0%, #000, transparent 100%);
+  -webkit-mask-image: radial-gradient(70% 60% at 50% 0%, #000, transparent 100%);
+}
+.aq-spill-up {
+  mask-image: radial-gradient(70% 70% at 50% 100%, #000, transparent 100%);
+  -webkit-mask-image: radial-gradient(70% 70% at 50% 100%, #000, transparent 100%);
+}
+.aq-spill canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* On a phone the board hangs as one line inside the top of the tank. */
+.aq-board-line {
+  display: none;
+}
+@media (max-width: 760px) {
+  .aq-tank {
+    height: 52svh;
+    min-height: 20rem;
+  }
+  .aq-her {
+    left: calc(50% - 0.3 * max(52svh, 20rem));
+  }
+  .aq-placard {
+    margin-top: -3rem;
+  }
+  .aq-board-line {
+    position: absolute;
+    top: 0.75rem;
+    left: 0.75rem;
+    right: 0.75rem;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    padding: 0.5rem 0.75rem;
+    border-radius: 4px;
+    background: #0b171a;
+    box-shadow: inset 0 0 0 1px rgba(196, 232, 228, 0.2);
+    font-size: 0.8125rem;
+  }
+  .aq-board-line span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--aq-text-soft);
+  }
+  .aq-plant-wide {
+    display: none;
+  }
+  .aq-plant-narrow {
+    display: block;
+  }
+}

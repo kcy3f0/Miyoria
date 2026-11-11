@@ -216,7 +216,7 @@ token form stays at `#/login`, with no link to it from the page.
 
 | Who | Sees |
 |---|---|
-| Anyone | 現在, 今天, 歌單, and a Discord login button |
+| Anyone not logged in | Her tank, the landing (see "Landing" below): who she is, what she is doing now, today's numbers, Discord login |
 | Logged in | Also 她眼中的你, 一起的回憶, 你點的歌, and a rail with 點歌 and 你的資料 |
 | Someone she does not know, or a blocked person | The same page, "她還不認識你", no 點歌. The two cannot be told apart |
 
@@ -250,6 +250,33 @@ token form stays at `#/login`, with no link to it from the page.
   her emotion. Her lines come as they are said, with a cursor until a line is final. All motion is
   CSS and stops under `prefers-reduced-motion` (the hands and hearts just stay a moment).
 - 請她忘記我 confirms with what goes and what stays, in the words `/me memory forget` uses.
+
+## Landing
+
+What someone who is not logged in sees at `/` (`pages/public/landing/`, loaded on demand with its
+own fonts). It is its own world, a night aquarium, and the panel's operate-mode rules above do not
+bind it; the two-accent commitment and real data do. Strategy and the direction contract live in
+`.impeccable/surfaces/src-pages-public-landing.md`.
+
+- Ground: the wall `#06090c`, the keepers' room `#0a1013`, tank water from `#0a4a5a` down to
+  `#04222c`, lit by `Caustics` (WebGL, half resolution, paused off screen, one still frame under
+  reduced motion). Two faint copies of the same light fall on the wall below the tank.
+- The glass: `FogGlass`, a `backdrop-filter` layer whose mask is a quarter-size canvas. The
+  pointer wipes it, cleared spots fog over again in a few seconds, and "擦擦看" plus one swipe across
+  her face are on the glass until the first wipe. This is the page's one authored moment.
+- Type: Brygada 1918 for Latin placard type, Chiron Sung HK for Chinese headings, LXGW WenKai TC for
+  the keepers' handwriting, Geist for controls, Geist Mono for commands.
+- Colour: neutrals tinted from the water, tide `#8fd3cf` for light and lamps, her pink `#f29dc4`
+  only on the Discord login. No third hue.
+- Placard: milky acrylic `rgba(226,238,236,.88)`, 4px corners, ink `#0c1d22`; the Discord login is
+  its last line. The feeding board (`今天的她`) is a dark enamel sign hung on two rods; on a phone it
+  also hangs as one line inside the top of the tank so her state is in the first viewport.
+- Below the tank: observation notes as an editorial list (no cards), then the keepers' room for
+  developers with the service plant (`Schematic`, a wide and a narrow drawing) and the real setup
+  commands, then the close, `她在的時候都開著`, with the login again.
+- Her picture is a matte of `docs/assets/hero.webp` (OpenCV GrabCut); replace `her.webp` with a
+  Live2D export when one exists.
+- The token form stays at `/login` with no link from the landing.
 
 ## Charts
 
