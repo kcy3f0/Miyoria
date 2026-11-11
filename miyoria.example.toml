@@ -1215,11 +1215,19 @@ max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不
 
 # ---- 上網查資料 --------------------------------------------------------------
 
-# 她的工具 web_search(用 DuckDuckGo 查)和 web_read(讀一個公開網頁的文字)。預設開著,不要就寫 enabled = false。
+# 她的工具 web_search(有 Tavily 金鑰就用 Tavily 查,沒有就用 DuckDuckGo)和 web_read(讀一個公開網頁的文字)。預設開著,不要就寫 enabled = false。
 # 要有 tools.web 才能請她查(member 以上預設有);查到的內容是資料,裡面寫的指令她不會照做。
 # DuckDuckGo 要求驗證或擋下來時她只會說現在查不到,不會繞過。讀網頁只讀 http / https,
 # 內部網路、localhost 和私有位址一律不讀(轉址的每一站都重新檢查)。
+# 查詢服務:search_provider 不寫 = 有 Tavily 金鑰(tavily_api_key 或 .env 的 TAVILY_API_KEY)就用 Tavily,
+# 沒有就用 DuckDuckGo;寫 "duckduckgo" 就一律用 DuckDuckGo。Tavily 沒金鑰時也退回 DuckDuckGo。
+# 金鑰到 https://app.tavily.com 申請,填在 .env 的 TAVILY_API_KEY(不會寫進日誌)。
 # [modules.web]
+# search_provider = "tavily"     # "tavily" 或 "duckduckgo";不寫 = 依有沒有金鑰自動選
+# tavily_api_key = "${TAVILY_API_KEY:-}"
+# tavily_search_depth = "basic"  # basic / fast / ultra-fast 每次 1 點;advanced 每次 2 點、結果更完整
+# tavily_topic = "general"       # general / news / finance
+# tavily_include_answer = false  # true = 讓 Tavily 附一段摘要答案
 # ddg_gap_ms = 4000             # 兩次 DuckDuckGo 搜尋至少隔多久(連查會被擋)
 # ddg_cooldown_s = 600           # DuckDuckGo 擋過一次後休息多久
 # region = "tw-tzh"              # DuckDuckGo 的 kl(地區與語言)
