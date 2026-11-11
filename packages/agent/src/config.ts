@@ -315,6 +315,7 @@ export const LOOP_TOOLS: readonly string[] = [
   "recall",
   "remember",
   "check_coins",
+  "set_call_name",
   "keep_note",
   "drop_note",
   "code_run",

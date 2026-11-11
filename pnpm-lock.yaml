@@ -1682,6 +1682,9 @@ importers:
 
   packages/social:
     dependencies:
+      '@miyoria/actions':
+        specifier: workspace:*
+        version: link:../actions
       '@miyoria/commands':
         specifier: workspace:*
         version: link:../commands
