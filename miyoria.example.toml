@@ -126,6 +126,8 @@ reflect = "high"
 # tts = { venv = "workers/.venv-tts-faster", port = 8002 }
 # # offload:sing 工作時先請這些 worker 卸下模型(自動設好 SING_OFFLOAD_URLS,沒有它做歌會爆顯存)
 # sing = { venv = "workers/.venv-sing", port = 8005, offload = ["tts", "asr"] }
+# # 歌曲快取自己清,最久沒用的先刪(預設留 6 GB、14 天;workers/README.md 第 9 節),要改就加 env:
+# # sing = { ..., env = { SING_CACHE_MAX_GB = "10", SING_CACHE_MAX_DAYS = "30" } }
 # # 選用:判斷講完(Smart Turn + Silero,跑在 CPU)。需要自己下載模型(workers/README.md 第 10 節);
 # # 模型沒放好 worker 照常啟動,她會退回安靜多久就算講完,doctor --deep 會提醒
 # turn = { venv = "workers/.venv-turn", port = 8006 }

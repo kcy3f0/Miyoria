@@ -509,6 +509,21 @@ curl -X POST http://127.0.0.1:8005/songs/yt-KTZ-y85Erus/lyrics -H "content-type:
 
 做好的歌快取在 `data/songs/<id>/`(`meta.json` 有來源、音高、歌詞、各階段耗時與 VRAM 峰值);同一個查詢 / 連結 / 檔案 + 同樣的音高設定再點一次是馬上好。`data/` 是本機資料:下載的歌、模型權重、參考音都不要提交。
 
+**快取自己清**(`cache.py`):一首歌 150–260 MB、一個下載(`_sources/`)約 130 MB,不清的話很快就十幾 GB。worker 記每首歌最後一次被用到的時間(做好、點歌命中快取、Core 開唱時抓音軌、猜歌遊戲抓片段、重找歌詞;記在 `data/songs/_usage.json`,舊的歌沒記錄就看資料夾的修改時間),啟動時、每做完一首、每小時各清一次(背景執行緒,不擋工作):
+
+1. 不刪:排隊中 / 正在做的工作用到的歌和下載,和 `SING_CACHE_PROTECT_HOURS` 內用過的。
+2. 超過 `SING_CACHE_MAX_DAYS` 天沒用的歌刪掉。
+3. 歌 + 下載合計超過 `SING_CACHE_MAX_GB`,從最久沒用的歌開始刪,直到低於上限。
+4. 下載只在沒有任何歌還是用它做的時候才刪(重點同一首換 key 會沿用分離好的音軌);`queries.json` 裡指到它的查詢一起拿掉。
+
+大小一個檔案只算一次(歌的 `video.mp4` 是下載那份的硬連結)。刪的時候先把資料夾改名移開,檔案正被打開(OBS 正在放影片)就改不了名,留到下次。被刪掉的歌再點一次就重做(沒有下載就重新下載),Core 開唱時才發現歌不見了(404)也會自己重新點、好了再唱。`library/`、`_ytdlp-cache/`、`_lyrics/`、`_gpu-profile.json` 不動;`data/rvc-test`、`data/rvc-train-songs` 是手動放的訓練資料,不在快取裡,也不會被清。
+
+```bash
+curl -s http://127.0.0.1:8005/cache                                   # 大小、幾首、上限、上次清了什麼
+curl -s -X POST "http://127.0.0.1:8005/cache/prune?dry_run=true"      # 只列出會刪什麼
+curl -s -X POST http://127.0.0.1:8005/cache/prune                     # 現在清
+```
+
 **安裝(原生 Windows,Git Bash)**
 
 ```bash
@@ -549,6 +564,8 @@ curl -s http://127.0.0.1:8005/jobs/<id>          # state / stage / progress;done
 |---|---|---|
 | `SING_BACKEND` | `seed-vc` | `mock` = 正弦波假歌(測試用) |
 | `SING_DATA_DIR` / `SING_LIBRARY_DIR` | `<repo>/data/songs` / `<data>/library` | 快取與本機歌庫 |
+| `SING_CACHE_MAX_GB` / `SING_CACHE_MAX_DAYS` | 6 / 14 | 歌 + 下載最多留多大(最久沒用的先刪)/ 幾天沒用就刪;0 = 不限,兩個都 0 = 不清 |
+| `SING_CACHE_PROTECT_HOURS` / `SING_CACHE_EVERY_S` | 6 / 3600 | 這麼近用過的不刪 / 除了啟動和每首做完,多久再清一次 |
 | `SING_REF` / `SING_SEEDVC_DIR` | `../voices/deepseek-chan/ref.wav` / `../models/seed-vc` | 參考音、Seed-VC 原始碼 |
 | `SING_DEVICE` / `SING_SEPARATE_DEVICE` | `cuda` | 分離 OOM 時自動退到 CPU |
 | `SING_DIFFUSION_STEPS` / `SING_CFG_RATE` | 30 / 0.7 | 步數越多越穩、越慢 |

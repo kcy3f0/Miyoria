@@ -706,12 +706,50 @@ export class Singer implements VoiceFloor, SpeechPause {
         await this.waitQuiet(guild, turn, expectMs, both);
         if (!both.aborted) outcome = await this.#sing(entry, guild, both);
       } catch (error) {
+        if (isGone(error) && !both.aborted && (await this.#prepareAgain(entry))) return;
         log.warn({ no: entry.no, err: errorMessage(error) }, "could not sing");
         outcome = "error";
         entry.error = errorMessage(error);
       }
       this.#ended(entry, guild, outcome);
     });
+  }
+
+  /**
+   * The worker's cache cleaned the song out while it sat ready here (`workers/sing/cache.py`):
+   * the same request again makes it again, and it is ready (and offered or started) as before.
+   * Nothing was audible yet, so it keeps its place and its charges. `false`: the worker refused.
+   */
+  async #prepareAgain(entry: SongEntry): Promise<boolean> {
+    let job: WorkerJob;
+    try {
+      job = await this.worker.submit(this.#query(entry.query, entry.key, entry.backing));
+    } catch (error) {
+      log.warn({ no: entry.no, err: errorMessage(error) }, "could not ask for a song again");
+      return false;
+    }
+    log.info(
+      { no: entry.no, job: job.id },
+      "the song worker no longer has the song; making it again",
+    );
+    if (this.#playing?.entry === entry) this.#playing = null;
+    if (entry.song) this.#cue({ state: "ended", song: entry.song.id, outcome: "interrupted" });
+    Object.assign(entry, {
+      state: "preparing",
+      stage: "queued",
+      progress: 0,
+      error: null,
+      song: null,
+      ready_at: null,
+      reminders: 0,
+      last_reminder_ms: null,
+      job: job.id,
+    } satisfies Partial<SongEntry>);
+    this.#apply(entry, job);
+    this.#updatePause();
+    this.#publishPrepare();
+    if (!this.#closed) this.#autoStart();
+    return true;
   }
 
   async #sing(entry: SongEntry, guild: string, signal: AbortSignal): Promise<PlaybackState> {
@@ -1239,6 +1277,11 @@ export class Singer implements VoiceFloor, SpeechPause {
 }
 
 const NOT_PREPARING: SongPrepare = { no: null, title: "", stage: "", progress: 0, exclusive: null };
+
+/** The worker does not have the song's audio (any more): its cache cleaned it out. */
+function isGone(error: unknown): boolean {
+  return error instanceof SingWorkerError && error.status === 404;
+}
 
 function pct(p: number): string {
   return `${Math.round(Math.max(0, Math.min(1, p)) * 100)}%`;
