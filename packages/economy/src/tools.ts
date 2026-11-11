@@ -574,7 +574,7 @@ export function lookCapability(economy: EconomyService): Capability {
       const { principal } = ctx;
       const account = principal.kind === "user" ? principal.requester : null;
       const w = account === null ? null : await economy.wallet(account);
-      const known = w !== null && w.can_earn;
+      const known = w?.can_earn === true;
       const out: string[] = [];
       const data: JsonObject = { currency: cur, has_wallet: known };
       if (about !== "shop") {
