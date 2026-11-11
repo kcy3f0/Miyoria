@@ -276,11 +276,15 @@ export {
   DATA_OPEN,
   dataBlock,
   escapeData,
+  escapeTags,
+  escapeXml,
   filterOutgoing,
   MASKED,
   maskSecrets,
   neutralize,
+  PROMPT_TAGS,
   safeName,
+  xmlAttrs,
 } from "./untrusted.js";
 export {
   type PlaybackState,
