@@ -1021,6 +1021,10 @@ describe("sing module", () => {
 
     const none = await h.invoke(Principals.self(VOICE), "sing.play", {});
     expect(none.status).toBe("denied");
+    // A model that fills the optional number with 0 means "the first ready", not a bad argument.
+    const zero = await h.invoke(Principals.self(VOICE), "sing.play", { song: 0 });
+    expect(zero.status).toBe("denied");
+    expect(zero.status === "denied" && zero.decision.reason).toBe("no song is ready");
   });
 
   describe("paid extras", () => {

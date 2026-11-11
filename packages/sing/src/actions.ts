@@ -32,7 +32,10 @@ const RequestArgs = z.object({
   /** Commands only: a paid dedication (up to 40 characters). */
   dedication: z.string().trim().max(200).nullish(),
 });
-const PlayArgs = z.object({ song: z.number().int().positive().nullish() });
+// Song numbers start at 1; a model that fills the optional field with 0 means "the first ready".
+const PlayArgs = z.object({
+  song: z.preprocess((v) => (v === 0 ? null : v), z.number().int().positive().nullish()),
+});
 const StopArgs = z.object({ all: z.boolean().nullish(), current: z.boolean().nullish() });
 const SteerArgs = z.object({
   steer: z.object({
