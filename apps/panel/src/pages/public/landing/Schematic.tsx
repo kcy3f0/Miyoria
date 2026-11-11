@@ -62,37 +62,37 @@ const NARROW: Plan = {
 };
 
 /**
- * The keepers' room drawing: Miyoria's services as the tank's life-support plant. Every box is a
+ * The keepers' room drawing: Miyoria's services as a wiring diagram in the appendix. Every box is a
  * real service from the README with its real port; the pipes are the connections between them.
  */
 export function Schematic({ layout }: { layout: "wide" | "narrow" }) {
   const plan = layout === "wide" ? WIDE : NARROW;
-  const id = `aq-plant-title-${layout}`;
+  const id = `mz-plant-title-${layout}`;
   return (
-    <svg className={`aq-plant aq-plant-${layout}`} viewBox={plan.box} role="img" aria-labelledby={id}>
+    <svg className={`mz-plant mz-plant-${layout}`} viewBox={plan.box} role="img" aria-labelledby={id}>
       <title id={id}>
         Miyoria 的服務：core 連著 Discord，推論機上的 asr、tts、sing，以及直播機上的 voice-node 和 stage
       </title>
       <g>
         {plan.pipes.map((d) => (
           <g key={d}>
-            <path d={d} className="aq-pipe" />
-            <path d={d} className="aq-flow" />
+            <path d={d} className="mz-pipe" />
+            <path d={d} className="mz-flow" />
           </g>
         ))}
       </g>
       {plan.nodes.map((n) => (
-        <g key={n.name} transform={`translate(${n.x} ${n.y})`} className={n.main ? "aq-node aq-node-main" : "aq-node"}>
+        <g key={n.name} transform={`translate(${n.x} ${n.y})`} className={n.main ? "mz-node mz-node-main" : "mz-node"}>
           <rect width={n.w} height={n.main ? 76 : 56} rx="6" />
-          <text x="14" y="24" className="aq-node-name">
+          <text x="14" y="24" className="mz-node-name">
             {n.name}
           </text>
-          <text x="14" y={n.main ? 48 : 43} className="aq-node-detail">
+          <text x="14" y={n.main ? 48 : 43} className="mz-node-detail">
             {n.detail}
           </text>
         </g>
       ))}
-      <g className="aq-plant-zone">
+      <g className="mz-plant-zone">
         {plan.zones.map((z) => (
           <text key={z.text} x={z.x} y={z.y}>
             {z.text}

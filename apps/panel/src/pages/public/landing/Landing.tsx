@@ -1,129 +1,140 @@
-import { Check, Copy, LogIn } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import type { PublicSongs, PublicStatus } from "@/api/types";
+import { Check, Copy } from "lucide-react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
+import type { PublicDay, PublicSongs, PublicStatus } from "@/api/types";
 import { useApi } from "@/app/connection";
 import { loginNext } from "@/app/session";
 import { LIVE_PAGE } from "../live/LivePage";
 import { STATE, stateLabel, usePublicSongs, usePublicStatus } from "../PublicSite";
-import { Caustics } from "./Caustics";
-import { FogGlass, type Writing } from "./FogGlass";
-import her from "./her.webp";
+import aqua from "./plate-aqua.webp";
+import pink from "./plate-pink.webp";
 import { Schematic } from "./Schematic";
 import "./landing.css";
 
-/** What is written into the fog before anyone comes, and the one swipe across her face. */
-const GLASS = {
-  wide: { writing: { text: "擦擦看", x: 0.19, y: 0.34, size: 0.085 }, swipe: { x: 0.6, y: 0.3, rx: 0.09, ry: 0.07 } },
-  narrow: { writing: { text: "擦擦看", x: 0.05, y: 0.6, size: 0.06 }, swipe: { x: 0.5, y: 0.3, rx: 0.2, ry: 0.06 } },
-} satisfies Record<string, { writing: Writing; swipe: { x: number; y: number; rx: number; ry: number } }>;
-
-const NARROW = "(max-width: 760px)";
-
 const REPO = "https://github.com/owenliu0924/Miyoria";
+const MAST = "MIYORIA";
 
-const HABITS = [
+/** The contents page: what she does, in the order a reader would meet it. */
+const CONTENTS = [
   {
+    page: "04",
     name: "聊天",
-    latin: "loquax",
-    text: "被叫到時回話，想加入的時候就自己加入。她記得每個人、每個暱稱，也記得自己有多喜歡你。",
+    text: "叫她會回，沒叫她也可能自己插話。誰叫什麼暱稱、上次聊到哪裡，她都記得。",
   },
   {
+    page: "06",
     name: "語音",
-    latin: "vocalis",
-    text: "會進語音頻道聽大家說話，用自己的聲音回答。可以講日文、字幕留中文，你插話她也聽得到。",
+    text: "會進語音頻道聽大家講話，再用自己的聲音回。她講日文，字幕是中文，你中途插話她也聽得到。",
   },
   {
+    page: "08",
     name: "唱歌",
-    latin: "cantrix",
-    text: "把你點的歌變成她聲音的翻唱，唱的時候歌詞會跟著出現在直播畫面上。",
+    text: "你點一首歌，她用自己的聲音翻唱。唱的時候歌詞會跟著跑在直播畫面上。",
   },
   {
+    page: "10",
     name: "直播",
-    latin: "spectatrix",
-    text: "透過 OBS 在 Discord 開播。表情、手勢和口型跟著她的話動，場景她自己切。",
+    text: "用 OBS 在 Discord 開台。表情、手勢和嘴型跟著她講的話動，場景她自己切。",
   },
   {
+    page: "12",
     name: "遊戲",
-    latin: "lusor",
-    text: "正當地玩 Minecraft：不透視、真的一步一步進度，一邊玩一邊講給你聽。",
+    text: "真的在玩 Minecraft：不開透視，一格一格挖，邊玩邊跟你講她在幹嘛。",
   },
 ];
 
 const STEPS = [
   { cmd: "git clone https://github.com/owenliu0924/Miyoria", note: "把她的原始碼拿回家" },
-  { cmd: "node scripts/setup.mjs", note: "在 Miyoria 資料夾裡跑：裝好 pnpm 和套件，接著問你 LLM key 和 Discord token" },
-  { cmd: "pnpm dev doctor", note: "檢查 Node、LLM、Discord 和資料庫" },
-  { cmd: "pnpm dev chat", note: "先在終端機跟她聊，不需要 Discord" },
-  { cmd: "pnpm dev core", note: "Discord bot、她的心智迴圈和管理面板" },
+  { cmd: "node scripts/setup.mjs", note: "在 Miyoria 資料夾裡跑：裝好 pnpm 和套件，然後問你 LLM key 和 Discord token" },
+  { cmd: "pnpm dev doctor", note: "檢查 Node、LLM、Discord 和資料庫是不是都通" },
+  { cmd: "pnpm dev chat", note: "先在終端機跟她聊，不用 Discord" },
+  { cmd: "pnpm dev core", note: "Discord bot、她的心智迴圈和管理面板一起開" },
 ];
+
+/** What the cover line under her state says, by state. */
+const STATE_LINE: Record<PublicStatus["state"], string> = {
+  singing: "在語音頻道唱歌，點歌的人在排隊",
+  playing: "不開外掛，一格一格慢慢挖",
+  live: "在 Discord 開台中，進來就看得到",
+  in_voice: "在語音頻道裡，講話她聽得到",
+  idle: "在 Discord 上晃，叫她名字她會回",
+  offline: "現在不在線上，晚點再來找她",
+};
 
 function hours(v: number) {
   return `${Math.round(v * 10) / 10} 小時`;
 }
 
-function songTitle(songs: PublicSongs | undefined) {
-  const s = songs?.playing;
-  if (!s) return null;
-  return s.title ?? "歌名還不知道";
+function title(s: { title: string | null } | null | undefined) {
+  return s?.title ?? "還不知道歌名";
 }
 
-/** The feeding board: what she is doing right now and what today came to, from the Core. */
-function Board({
-  status,
-  songs,
-  failed,
-}: {
-  status: PublicStatus | undefined;
-  songs: PublicSongs | undefined;
-  failed: boolean;
-}) {
-  const playing = songTitle(songs);
-  const on = status ? (STATE[status.state].pulse ?? false) : false;
+/** "2026 冬": the issue line, from today's date. */
+function issue(now = new Date()) {
+  const m = now.getMonth();
+  const season = m < 2 || m === 11 ? "冬" : m < 5 ? "春" : m < 8 ? "夏" : "秋";
+  return `創刊號・${now.getFullYear()} ${season}`;
+}
+
+/** Bars from the characters of a word, so the barcode is the same every time. */
+function Barcode({ text }: { text: string }) {
+  const bars: { x: number; w: number }[] = [];
+  let x = 0;
+  for (const ch of `*${text}*`) {
+    const code = ch.charCodeAt(0);
+    for (let i = 0; i < 5; i++) {
+      const w = ((code >> i) & 1) + 1;
+      if (i % 2 === 0) bars.push({ x, w });
+      x += w + 1;
+    }
+  }
   return (
-    <section className="aq-board" aria-label="她現在">
-      <h2 className="aq-board-title">
-        <span className={on ? "aq-lamp aq-lamp-on" : "aq-lamp"} aria-hidden />
-        今天的她
-      </h2>
-      {status ? (
-        <dl className="aq-board-rows">
-          <div>
-            <dt>現在</dt>
-            <dd>{stateLabel(status)}</dd>
-          </div>
-          {playing && (
-            <div>
-              <dt>正在唱</dt>
-              <dd className="aq-board-song">{playing}</dd>
-            </div>
-          )}
-          <div>
-            <dt>今天唱了</dt>
-            <dd>{status.today.songs_sung} 首</dd>
-          </div>
-          <div>
-            <dt>今天直播</dt>
-            <dd>{hours(status.today.hours_live)}</dd>
-          </div>
-        </dl>
-      ) : (
-        <p className="aq-board-wait">{failed ? "現在看不到她的狀態" : "正在看她在不在…"}</p>
-      )}
+    <svg className="mz-barcode" viewBox={`0 0 ${x} 40`} preserveAspectRatio="none" aria-hidden>
+      {bars.map((b) => (
+        <rect key={b.x} x={b.x} width={b.w} height="40" />
+      ))}
+    </svg>
+  );
+}
+
+/** The cover line that is live: her state, the song if there is one, and today's numbers. */
+function NowLine({ status, songs, failed }: { status?: PublicStatus; songs?: PublicSongs; failed: boolean }) {
+  if (!status) {
+    return (
+      <section className="mz-now" aria-label="她現在">
+        <p className="mz-now-wait">{failed ? "現在看不到她在幹嘛" : "正在看她在不在…"}</p>
+      </section>
+    );
+  }
+  const playing = songs?.playing;
+  const waiting = songs?.upcoming.length ?? 0;
+  return (
+    <section className="mz-now" aria-label="她現在">
+      <p className="mz-now-state">
+        <span className={STATE[status.state].pulse ? "mz-dot mz-dot-on" : "mz-dot"} aria-hidden />
+        {stateLabel(status)}
+      </p>
+      <h2 className="mz-now-title">{playing ? `〈${title(playing)}〉` : stateLabel(status).replace(/^她/, "")}</h2>
+      <p className="mz-now-sub">
+        {playing && waiting > 0 ? `後面還有 ${waiting} 首在排隊` : STATE_LINE[status.state]}
+      </p>
+      <p className="mz-now-today">
+        今天唱了 <b>{status.today.songs_sung}</b> 首・直播 <b>{hours(status.today.hours_live)}</b>
+      </p>
     </section>
   );
 }
 
-function Actions({ loginUrl, live, quiet }: { loginUrl: string | null; live: boolean; quiet?: boolean }) {
+/** A printed button: the pink plate over an aqua one that is a little off; pressing lines them up. */
+function Actions({ loginUrl, live }: { loginUrl: string | null; live: boolean }) {
   return (
-    <div className={quiet ? "aq-actions aq-actions-quiet" : "aq-actions"}>
+    <div className="mz-actions">
       {loginUrl && (
-        <a className="aq-btn" href={loginUrl}>
-          <LogIn aria-hidden />
-          用 Discord 登入
+        <a className="mz-btn" href={loginUrl}>
+          <span>用 Discord 登入</span>
         </a>
       )}
-      <a className={loginUrl ? "aq-link" : "aq-btn"} href={LIVE_PAGE}>
-        {live ? "她正在直播，去看" : "去她的直播間"}
+      <a className={loginUrl ? "mz-link" : "mz-btn"} href={LIVE_PAGE}>
+        <span>{live ? "她正在直播，去看" : "去她的直播間"}</span>
       </a>
     </div>
   );
@@ -139,7 +150,7 @@ function CopyCommand({ cmd }: { cmd: string }) {
   return (
     <button
       type="button"
-      className="aq-copy"
+      className="mz-copy"
       aria-label={done ? "已複製" : `複製 ${cmd}`}
       onClick={() => {
         void navigator.clipboard?.writeText(cmd).then(() => setDone(true));
@@ -150,144 +161,291 @@ function CopyCommand({ cmd }: { cmd: string }) {
   );
 }
 
-/** Sections fade up out of the water once, as they reach the viewport. */
-function useSurfacing() {
+/** The running strip between the cover and the inside pages. */
+function Ticker({ status, songs }: { status?: PublicStatus; songs?: PublicSongs }) {
+  const items = ["MIYORIA 創刊號"];
+  if (status) {
+    items.push(stateLabel(status));
+    if (songs?.playing) items.push(`正在唱〈${title(songs.playing)}〉`);
+    if (songs?.upcoming[0]) items.push(`下一首〈${title(songs.upcoming[0])}〉`);
+    items.push(`今天唱了 ${status.today.songs_sung} 首`, `在語音待了 ${hours(status.today.hours_in_voice)}`);
+  } else {
+    items.push("DeepSeek-chan", "住在 Discord");
+  }
+  const run = [...items, ...items];
+  return (
+    <div className="mz-ticker" aria-hidden>
+      <div className="mz-ticker-run">
+        {run.map((t, i) => (
+          <span key={i}>{t}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SongChart({ songs }: { songs?: PublicSongs }) {
+  const rows = [
+    ...(songs?.playing ? [{ s: songs.playing, tag: "現在", on: true }] : []),
+    ...(songs?.upcoming ?? []).map((s) => ({ s, tag: s.ready ? "排隊中" : "準備中", on: false })),
+    ...(songs?.recent ?? []).map((s) => ({ s, tag: "剛唱完", on: false })),
+  ].slice(0, 8);
+  if (rows.length === 0) {
+    return <p className="mz-chart-empty">今天還沒有人點歌。登入之後，第一首可以是你點的。</p>;
+  }
+  return (
+    <ol className="mz-chart">
+      {rows.map((r, i) => (
+        <li key={i} className={r.on ? "mz-chart-on" : undefined} data-print style={{ "--d": i } as CSSProperties}>
+          <span className="mz-chart-n">{String(i + 1).padStart(2, "0")}</span>
+          <span className="mz-chart-t">
+            {title(r.s)}
+            {r.s.artist && <small>{r.s.artist}</small>}
+          </span>
+          <span className="mz-chart-tag">{r.tag}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function TwoWeeks({ days }: { days: PublicDay[] }) {
+  const max = Math.max(1, ...days.map((d) => d.songs_sung));
+  return (
+    <figure className="mz-weeks" data-print>
+      <figcaption>最近兩週，每天唱了幾首</figcaption>
+      <div className="mz-weeks-bars">
+        {days.map((d, i) => (
+          <div
+            key={d.date}
+            className="mz-weeks-bar"
+            style={{ "--h": d.songs_sung / max, "--d": i } as CSSProperties}
+            title={`${d.date}：${d.songs_sung} 首`}
+          >
+            <span>{d.songs_sung}</span>
+            <i />
+            <small>{Number(d.date.slice(8))}</small>
+          </div>
+        ))}
+      </div>
+    </figure>
+  );
+}
+
+/** Inside pages print in once, as they reach the viewport. */
+function usePrint() {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const root = ref.current;
     if (!root) return;
-    const items = root.querySelectorAll<HTMLElement>("[data-surface]");
     const io = new IntersectionObserver(
       (es) => {
         for (const e of es) {
           if (e.isIntersecting) {
-            e.target.setAttribute("data-surface", "in");
+            e.target.setAttribute("data-print", "in");
             io.unobserve(e.target);
           }
         }
       },
-      { rootMargin: "0px 0px -12% 0px" },
+      { rootMargin: "0px 0px -10% 0px" },
     );
-    for (const el of items) io.observe(el);
-    root.classList.add("aq-armed");
-    return () => io.disconnect();
+    const watch = () => {
+      for (const el of root.querySelectorAll<HTMLElement>("[data-print]:not([data-print='in'])")) io.observe(el);
+    };
+    watch();
+    // The song chart and the two weeks arrive after the first paint, with the Core's answer.
+    const mo = new MutationObserver(watch);
+    mo.observe(root, { childList: true, subtree: true });
+    root.classList.add("mz-armed");
+    return () => {
+      io.disconnect();
+      mo.disconnect();
+    };
+  }, []);
+  return ref;
+}
+
+/** The pointer pulls the two plates out of register a little; they drift back when it leaves. */
+function useRegistration() {
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (!window.matchMedia("(pointer: fine)").matches) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    let frame = 0;
+    let tx = 0;
+    let ty = 0;
+    let x = 0;
+    let y = 0;
+    const step = () => {
+      x += (tx - x) * 0.08;
+      y += (ty - y) * 0.08;
+      el.style.setProperty("--mx", x.toFixed(3));
+      el.style.setProperty("--my", y.toFixed(3));
+      frame = Math.abs(tx - x) + Math.abs(ty - y) > 0.001 ? requestAnimationFrame(step) : 0;
+    };
+    const kick = () => {
+      if (!frame) frame = requestAnimationFrame(step);
+    };
+    const move = (e: PointerEvent) => {
+      const r = el.getBoundingClientRect();
+      tx = ((e.clientX - r.left) / r.width - 0.5) * 2;
+      ty = ((e.clientY - r.top) / r.height - 0.5) * 2;
+      kick();
+    };
+    const leave = () => {
+      tx = 0;
+      ty = 0;
+      kick();
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerleave", leave);
+    return () => {
+      cancelAnimationFrame(frame);
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerleave", leave);
+    };
   }, []);
   return ref;
 }
 
 /**
- * `/` for a visitor who is not logged in: her tank. The first viewport is for her community (meet
- * her, see what she is doing, log in); the keepers' room further down is for people who want to
- * run Miyoria themselves.
+ * `/` for a visitor who is not logged in: a two-colour riso magazine with her on the cover. The
+ * cover is for her community (who she is, what she is doing now, log in); the appendix is for
+ * people who want to run Miyoria themselves.
  */
 export default function Landing({ discord, notice }: { discord: boolean; notice?: string | null }) {
   const api = useApi();
   const status = usePublicStatus();
   const songs = usePublicSongs();
-  const tank = useRef<HTMLDivElement>(null);
-  const root = useSurfacing();
+  const root = usePrint();
+  const cover = useRegistration();
   const loginUrl = discord ? api.discordLoginUrl(loginNext()) : null;
   const live = status.data?.live ?? false;
-  const [glass] = useState(() => (window.matchMedia(NARROW).matches ? GLASS.narrow : GLASS.wide));
+  const days = status.data?.days ?? [];
 
   return (
-    <div className="aq" ref={root}>
-      <header className="aq-way">
-        <a className="aq-mark" href="/">
-          Miyoria
+    <div className="mz" ref={root}>
+      <header className="mz-cover" ref={cover} aria-label="封面">
+        <div className="mz-flood" aria-hidden />
+        <span className="mz-crop mz-crop-tl" aria-hidden />
+        <span className="mz-crop mz-crop-tr" aria-hidden />
+        <span className="mz-crop mz-crop-bl" aria-hidden />
+        <span className="mz-crop mz-crop-br" aria-hidden />
+
+        <div className="mz-meta">
+          <span>{issue()}</span>
+          <nav aria-label="這一期">
+            <a href="#contents">目錄</a>
+            <a href="#appendix">自己養一隻</a>
+            {loginUrl && <a href={loginUrl}>登入</a>}
+          </nav>
+          <span className="mz-meta-ink">
+            <i className="mz-swatch mz-swatch-a" />
+            <i className="mz-swatch mz-swatch-p" />
+            <i className="mz-swatch mz-swatch-o" />
+            雙色 Riso
+          </span>
+        </div>
+
+        <div className="mz-mast" aria-hidden>
+          {[...MAST].map((ch, i) => (
+            <span key={ch + String(i)} style={{ "--i": i } as CSSProperties}>
+              {ch}
+            </span>
+          ))}
+        </div>
+
+        <div className="mz-her">
+          <img className="mz-plate mz-plate-a" src={aqua} alt="DeepSeek-chan，藍色長髮、戴著鯨魚耳朵的女僕裝女孩" />
+          <img className="mz-plate mz-plate-p" src={pink} alt="" />
+        </div>
+
+        <a className="mz-line mz-line-keep" href="#appendix">
+          <strong>自己養一隻</strong>
+          <span>她是開源的。準備一個 Discord bot token 和一組 LLM key，只聊天的話連顯卡都不用。</span>
         </a>
-        <nav aria-label="館內">
-          <a href="#habits">觀察紀錄</a>
-          <a href="#keepers">飼育員手冊</a>
-          {loginUrl && <a href={loginUrl}>登入</a>}
-        </nav>
+
+        <NowLine status={status.data} songs={songs.data} failed={status.isError} />
+
+        <div className="mz-lead">
+          <h1>
+            <span className="mz-lead-name">DeepSeek-chan</span>
+          </h1>
+          <p>鯨魚耳、女僕裝，平常住在 Discord。會跟你聊天、唱你點的歌，也會自己跑去玩 Minecraft。</p>
+          {notice && (
+            <p role="alert" className="mz-notice">
+              {notice}
+            </p>
+          )}
+          <Actions loginUrl={loginUrl} live={live} />
+        </div>
+
+        <div className="mz-price">
+          <Barcode text={MAST} />
+          <span>定價：免費</span>
+        </div>
       </header>
 
+      <Ticker status={status.data} songs={songs.data} />
+
       <main>
-        <section className="aq-hall" aria-label="DeepSeek-chan">
-          <div className="aq-tank" ref={tank}>
-            <Caustics className="aq-water" />
-            <img className="aq-her" src={her} alt="DeepSeek-chan，藍色長髮、戴著鯨魚耳朵的女僕裝女孩" />
-            <div className="aq-floor" aria-hidden />
-            {status.data && (
-              <p className="aq-board-line" aria-hidden>
-                <span className={STATE[status.data.state].pulse ? "aq-lamp aq-lamp-on" : "aq-lamp"} />
-                <span>{stateLabel(status.data)}</span>
-                {songTitle(songs.data) && <span>{songTitle(songs.data)}</span>}
-              </p>
-            )}
-            <FogGlass surface={tank} writing={glass.writing} swipe={glass.swipe} className="aq-fog" />
-          </div>
-
-          <article className="aq-placard">
-            <h1>
-              <span className="aq-name">DeepSeek-chan</span>
-              <span className="aq-latin">Balaena miyoria</span>
-            </h1>
-            <p className="aq-common">會自己決定要做什麼的鯨魚女孩</p>
-            <dl className="aq-facts">
-              <div>
-                <dt>棲息地</dt>
-                <dd>Discord 伺服器</dd>
-              </div>
-              <div>
-                <dt>習性</dt>
-                <dd>聊天、唱歌、玩遊戲、開直播。什麼時候做哪一件，她自己決定。</dd>
-              </div>
-            </dl>
-            {notice && (
-              <p role="alert" className="aq-notice">
-                {notice}
-              </p>
-            )}
-            <Actions loginUrl={loginUrl} live={live} />
-          </article>
-
-          <Board status={status.data} songs={songs.data} failed={status.isError} />
-        </section>
-
-        <div className="aq-lit">
-        <div className="aq-spill" aria-hidden>
-          <Caustics />
-        </div>
-        <section id="habits" className="aq-habits" aria-labelledby="aq-habits-title">
-          <div className="aq-habits-lead">
-            <h2 id="aq-habits-title">她不是等你下指令的。</h2>
-            <p>
-              她會注意誰在、大家在做什麼、自己心情好不好，再決定要開口、進語音、唱歌還是開播。指令只是備用。
+        <section id="contents" className="mz-spread" aria-labelledby="mz-contents-title">
+          <div className="mz-page mz-page-l" data-print>
+            <h2 id="mz-contents-title" className="mz-h2">
+              目錄
+            </h2>
+            <p className="mz-note">
+              這本是 DeepSeek-chan 的介紹。她是一個跑在 Discord 上的 AI，大部分時間沒有人在操作她：要不要說話、要不要進語音、要不要開台，都是她看當下的情況自己決定。指令還是有，只是很少用到。
             </p>
+            <p className="mz-sign">編輯部</p>
           </div>
-          <ul className="aq-habit-list">
-            {HABITS.map((h) => (
-              <li key={h.name} data-surface>
-                <h3>
-                  {h.name}
-                  <i lang="la">{h.latin}</i>
-                </h3>
-                <p>{h.text}</p>
+          <ol className="mz-page mz-page-r mz-toc">
+            {CONTENTS.map((c, i) => (
+              <li key={c.name} data-print style={{ "--d": i } as CSSProperties}>
+                <span className="mz-toc-page">{c.page}</span>
+                <h3>{c.name}</h3>
+                <p>{c.text}</p>
               </li>
             ))}
-          </ul>
+            <li data-print style={{ "--d": CONTENTS.length } as CSSProperties}>
+              <span className="mz-toc-page">16</span>
+              <h3>
+                <a href="#appendix">附錄：自己養一隻</a>
+              </h3>
+              <p>給想在自己伺服器上跑她的人。</p>
+            </li>
+          </ol>
         </section>
-        </div>
 
-        <section id="keepers" className="aq-keepers" aria-labelledby="aq-keepers-title">
-          <div className="aq-keepers-head">
-            <h2 id="aq-keepers-title">飼育員手冊</h2>
+        <section className="mz-songs" aria-labelledby="mz-songs-title">
+          <div className="mz-songs-head" data-print>
+            <span className="mz-folio">p. 08</span>
+            <h2 id="mz-songs-title" className="mz-h2">
+              本期歌單
+            </h2>
+            <p>她現在在唱的、排隊中的、剛唱完的。資料直接從她那邊來，會自己更新。</p>
+          </div>
+          <SongChart songs={songs.data} />
+          {days.length > 1 && <TwoWeeks days={days} />}
+        </section>
+
+        <section id="appendix" className="mz-appendix" aria-labelledby="mz-appendix-title">
+          <div className="mz-appendix-head" data-print>
+            <span className="mz-folio">p. 16</span>
+            <h2 id="mz-appendix-title" className="mz-h2">
+              附錄：自己養一隻
+            </h2>
             <p>
-              Miyoria 是開源的。想在自己的伺服器養一隻？只要 Node.js 24、一個 Discord bot token 和一組 LLM API key，
-              <span className="aq-hand">其他都有預設值，只聊天的話連顯卡都不用。</span>
+              Miyoria 是開源的。要準備的只有 Node.js 24、一個 Discord bot token 和一組 LLM API key，其他設定都有預設值。只想聊天的話，不需要顯卡。
             </p>
           </div>
-          <div className="aq-keepers-body">
-            <figure className="aq-plant-wrap">
-              <Schematic layout="wide" />
-              <Schematic layout="narrow" />
-            </figure>
-            <ol className="aq-steps">
-              {STEPS.map((s) => (
-                <li key={s.cmd}>
-                  <div className="aq-cmd">
+          <div className="mz-appendix-body">
+            <ol className="mz-steps">
+              {STEPS.map((s, i) => (
+                <li key={s.cmd} data-print style={{ "--d": i } as CSSProperties}>
+                  <div className="mz-cmd">
                     <code>{s.cmd}</code>
                     <CopyCommand cmd={s.cmd} />
                   </div>
@@ -295,22 +453,36 @@ export default function Landing({ discord, notice }: { discord: boolean; notice?
                 </li>
               ))}
             </ol>
+            <figure className="mz-plant-wrap" data-print>
+              <Schematic layout="wide" />
+              <Schematic layout="narrow" />
+              <figcaption>想開語音、唱歌和直播的話，右邊這幾台要一張 NVIDIA 顯卡。</figcaption>
+            </figure>
           </div>
-          <a className="aq-link aq-repo" href={REPO} target="_blank" rel="noreferrer">
-            在 GitHub 上看原始碼
+          <a className="mz-link mz-repo" href={REPO} target="_blank" rel="noreferrer">
+            <span>在 GitHub 上看原始碼</span>
           </a>
         </section>
-
-        <section className="aq-hours aq-lit" aria-label="開放時間">
-          <div className="aq-spill aq-spill-up" aria-hidden>
-            <Caustics />
-          </div>
-          <p className="aq-hours-sign">
-            <strong>她在的時候都開著</strong>
-          </p>
-          <Actions loginUrl={loginUrl} live={live} quiet />
-        </section>
       </main>
+
+      <footer className="mz-back" aria-labelledby="mz-back-title">
+        <div className="mz-back-mast" aria-hidden>
+          {MAST}
+        </div>
+        <div className="mz-back-body" data-print>
+          <h2 id="mz-back-title">
+            訂閱方式：
+            <br />
+            用 Discord 登入，免費。
+          </h2>
+          <p>登入之後可以點歌、看她怎麼記得你，也會拿到她送的卡片。</p>
+          <Actions loginUrl={loginUrl} live={live} />
+        </div>
+        <div className="mz-back-foot">
+          <Barcode text="DEEPSEEK" />
+          <span>MIYORIA・開源專案・DeepSeek-chan 的立繪以兩色網點重製</span>
+        </div>
+      </footer>
     </div>
   );
 }

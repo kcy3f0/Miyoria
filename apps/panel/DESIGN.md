@@ -216,7 +216,7 @@ token form stays at `#/login`, with no link to it from the page.
 
 | Who | Sees |
 |---|---|
-| Anyone not logged in | Her tank, the landing (see "Landing" below): who she is, what she is doing now, today's numbers, Discord login |
+| Anyone not logged in | Her magazine, the landing (see "Landing" below): who she is, what she is doing now, today's numbers, Discord login |
 | Logged in | Also 她眼中的你, 一起的回憶, 你點的歌, and a rail with 點歌 and 你的資料 |
 | Someone she does not know, or a blocked person | The same page, "她還不認識你", no 點歌. The two cannot be told apart |
 
@@ -254,28 +254,31 @@ token form stays at `#/login`, with no link to it from the page.
 ## Landing
 
 What someone who is not logged in sees at `/` (`pages/public/landing/`, loaded on demand with its
-own fonts). It is its own world, a night aquarium, and the panel's operate-mode rules above do not
-bind it; the two-accent commitment and real data do. Strategy and the direction contract live in
+own fonts). It is its own world, a two-colour riso magazine with her on the cover, and the panel's
+operate-mode rules above do not bind it; real data does. Strategy and the direction contract live in
 `.impeccable/surfaces/src-pages-public-landing.md`.
 
-- Ground: the wall `#06090c`, the keepers' room `#0a1013`, tank water from `#0a4a5a` down to
-  `#04222c`, lit by `Caustics` (WebGL, half resolution, paused off screen, one still frame under
-  reduced motion). Two faint copies of the same light fall on the wall below the tank.
-- The glass: `FogGlass`, a `backdrop-filter` layer whose mask is a quarter-size canvas. The
-  pointer wipes it, cleared spots fog over again in a few seconds, and "擦擦看" plus one swipe across
-  her face are on the glass until the first wipe. This is the page's one authored moment.
-- Type: Brygada 1918 for Latin placard type, Chiron Sung HK for Chinese headings, LXGW WenKai TC for
-  the keepers' handwriting, Geist for controls, Geist Mono for commands.
-- Colour: neutrals tinted from the water, tide `#8fd3cf` for light and lamps, her pink `#f29dc4`
-  only on the Discord login. No third hue.
-- Placard: milky acrylic `rgba(226,238,236,.88)`, 4px corners, ink `#0c1d22`; the Discord login is
-  its last line. The feeding board (`今天的她`) is a dark enamel sign hung on two rods; on a phone it
-  also hangs as one line inside the top of the tank so her state is in the first viewport.
-- Below the tank: observation notes as an editorial list (no cards), then the keepers' room for
-  developers with the service plant (`Schematic`, a wide and a narrow drawing) and the real setup
-  commands, then the close, `她在的時候都開著`, with the login again.
-- Her picture is a matte of `docs/assets/hero.webp` (OpenCV GrabCut); replace `her.webp` with a
-  Live2D export when one exists.
+- Stock: `#101522`, the inside pages a shade deeper `#0b0f19`, paper-coloured type `#e9e4d8`, rules
+  `#263049`. Two inks only, aqua `#5ec8e5` and fluo pink `#ff48b0`, laid with `screen` so where
+  they overprint they go pale. Paper fibre (SVG turbulence) over everything.
+- Type: Gloock for the masthead, her name and folio numbers; Noto Serif TC 500/900 for all
+  Chinese; Big Shoulders Display for labels and figures; Geist Mono only for the real commands.
+- Cover: the masthead `MIYORIA` in pink with the aqua plate a few pixels off; her picture as two
+  halftone plates (`plate-aqua.webp` line screen, `plate-pink.webp` dots, made from the matte of
+  `docs/assets/hero.webp`); a thin aqua dot flood behind her; crop marks. Cover lines: 自己養一隻
+  (to the appendix), her live state, song and today's numbers (`她現在`), her name as the `h1`
+  with the Discord login, and a barcode price box.
+- Buttons are printed blocks: the pink plate over an aqua one out of register. Hover pulls the
+  plates apart and screens dots into the pink; pressing lines them up. Secondary links carry two
+  out-of-register underlines that meet on hover.
+- Motion: on load the masthead letters ink in one by one and the plates slide into register; the
+  pointer pulls the plates and the masthead's aqua copy out of register (fine pointers only); a
+  pink ticker runs her live lines under the cover; inside pages print in with a left-to-right
+  wipe as they arrive, the two-week bars grow. All of it stops under `prefers-reduced-motion`.
+- Inside: 目錄 as a two-page spread with the fold, 本期歌單 from `/api/public/songs` plus the last two
+  weeks from `days`, 附錄：自己養一隻 with the real setup commands and the service diagram
+  (`Schematic`), and the back cover with the login again.
+- Copy is plain and specific. No slogans: say what she does.
 - The token form stays at `/login` with no link from the landing.
 
 ## Charts

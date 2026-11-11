@@ -323,7 +323,7 @@ afterEach(() => {
 });
 
 describe("an anonymous visitor", () => {
-  it("gets her tank: who she is, what she is doing, Discord login, and nothing of the panel", async () => {
+  it("gets her magazine cover: who she is, what she is doing, Discord login, and nothing of the panel", async () => {
     core();
     renderApp();
     const placard = await screen.findByRole("heading", { level: 1 });
@@ -366,7 +366,7 @@ describe("an anonymous visitor", () => {
     expect(await screen.findByLabelText("Admin token")).toBeInTheDocument();
   });
 
-  it("gets her tank without a login when Discord login is off, and her live page as the way in", async () => {
+  it("gets her magazine without a login when Discord login is off, and her live page as the way in", async () => {
     core({ discord: false });
     renderApp();
     await screen.findByRole("heading", { level: 1 });
@@ -374,7 +374,7 @@ describe("an anonymous visitor", () => {
     expect(screen.getAllByRole("link", { name: /直播/ })[0]).toHaveAttribute("href", "/watch");
   });
 
-  it("sees why a Discord login failed, on her placard, with the login right below", async () => {
+  it("sees why a Discord login failed, on her cover, with the login right below", async () => {
     window.history.replaceState(null, "", "/login?error=cancelled");
     core();
     renderApp();

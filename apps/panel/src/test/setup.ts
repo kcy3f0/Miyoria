@@ -16,7 +16,7 @@ class ResizeObserverStub {
   disconnect() {}
 }
 globalThis.ResizeObserver ??= ResizeObserverStub as unknown as typeof ResizeObserver;
-// The landing's reveals and water: jsdom has no IntersectionObserver and no canvas drawing.
+// The landing prints its pages in as they scroll into view: jsdom has no IntersectionObserver.
 class IntersectionObserverStub {
   observe() {}
   unobserve() {}

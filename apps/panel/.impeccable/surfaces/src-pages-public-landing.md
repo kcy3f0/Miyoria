@@ -14,25 +14,23 @@ the real install commands from the README. Asset: a cutout of DeepSeek-chan matt
 
 ## Direction contract
 
-THESIS: The page is a night aquarium and she is the one in the tank. The frosted glass is the tank's
-acrylic, fogged, and the visitor wipes it clear to see her; the editorial voice is the exhibit
-placard. Refuses the VTuber template of a standing figure on one side, a big name on the other and
-glass cards on violet neon.
+THESIS: The page is a two-colour riso magazine, the first issue, and she is the cover. Everything a
+visitor needs is a cover line; the inside pages are the contents, the song chart, and an appendix
+for people who run her. Refuses the VTuber template of a glossy standing figure on violet glass.
 
-OWN-WORLD: Tank water in deep teal-ink (#04222c to #0a4a5a) lit by moving caustics; a near-black
-wall (#06090c) the tank is set into; placards of milky frosted acrylic with ink-dark text; her
-pink (#f29dc4) only on the action. Brygada 1918 for Latin placard type, Chiron Sung HK for Chinese
-placard type, LXGW WenKai TC for keepers' handwriting, Geist for controls, Geist Mono for commands.
+OWN-WORLD: Dark stock (#101522) printed in two inks, aqua #5ec8e5 and fluo pink #ff48b0, laid with
+screen, slightly out of register; paper fibre; crop marks, colour swatches and a barcode as the
+print's own furniture. Gloock for the masthead and numbers, Noto Serif TC for Chinese, Big
+Shoulders Display for labels, Geist Mono only for commands.
 
-STORY: A visitor sees her floating behind fogged glass, wipes it, reads her placard and what she is
-doing right now on the feeding board, and logs in with Discord. A developer scrolls past the
-observation notes into the keepers' room and copies the install command.
+STORY: A visitor sees the masthead ink in and her plates slide into register, reads what she is
+doing now on the cover line, and logs in with Discord. A developer opens the contents, reaches the
+appendix and copies the install command.
 
-FIRST VIEWPORT: The tank window fills the viewport inside a thin wall margin; she floats right of
-centre behind fog with "擦擦看" written into the condensation; the placard is mounted on the wall at
-lower left over the window's edge, with the Discord login as its last line; the feeding board hangs
-upper right with live state; wayfinding sign across the top.
+FIRST VIEWPORT: Masthead across the top behind her head; her as two halftone plates in the middle;
+自己養一隻 at left and her live state at right as cover lines; her name, one plain sentence and the
+Discord login at lower left; barcode price box at lower right.
 
-FORM: Night aquarium, first on the ordered list of seven. seed: none (unavailable)
+FORM: Riso magazine cover, chosen by the owner from four riso studies. seed: none (unavailable)
 
-FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, DESIGN.md, and every shipping raster carrying its provenance
