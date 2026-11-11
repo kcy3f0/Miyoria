@@ -216,7 +216,6 @@ async function download(
   return { dataUrl: `data:${type};base64,${body.toString("base64")}`, bytes: body.length };
 }
 
-/** The content parts for loaded images: a label (who sent which file), then the image. */
 /** The line before an image: who sent it and where it was. */
 function imageLabel(c: ImageCandidate, who: string, name: string): string {
   if (c.source === "parent") return `(被回覆的那則訊息裡 ${who} 傳的圖片 ${name})`;
@@ -228,6 +227,7 @@ function imageLabel(c: ImageCandidate, who: string, name: string): string {
   return `(${who} 這則訊息附的圖片 ${name})`;
 }
 
+/** The content parts for loaded images: a label (who sent which file, and where), then the image. */
 export function imageParts(
   images: readonly LoadedImage[],
   detail: VisionConfig["detail"],
