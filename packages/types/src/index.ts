@@ -896,6 +896,7 @@ export {
   VoiceTurnsKey,
 } from "./voice-turn.js";
 export {
+  DM_SAME_WISH,
   sameWish,
   stopsAsking,
   WISH_SOURCE,

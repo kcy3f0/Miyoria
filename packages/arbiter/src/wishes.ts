@@ -31,6 +31,7 @@ import {
   type ObservationBody,
   type PersonThreads,
   type Projection,
+  DM_SAME_WISH,
   sameWish,
   stopsAsking,
   timestampMs,
@@ -343,7 +344,7 @@ export class WishBook implements Wishes, Projection {
         const dm = this.#dms.get(body.call);
         if (dm === undefined || body.state === "accepted") return;
         this.#dms.delete(body.call);
-        if (body.state === "done") this.#reached(dm.to, dm.text, timestampMs(event.at));
+        if (body.state === "done") this.#reached(dm.to, dm.text, timestampMs(event.at), DM_SAME_WISH);
         return;
       }
       default:
@@ -351,11 +352,11 @@ export class WishBook implements Wishes, Projection {
     }
   }
 
-  /** A line of hers reached `person`: what it was about is asked. */
-  #reached(person: string, said: string, at: number): void {
+  /** A line of hers reached `person`: what it was about is asked (`min`: `sameWish`'s share). */
+  #reached(person: string, said: string, at: number, min = 0.5): void {
     for (const w of [...this.#wishes.values()]) {
       if (w.state !== "open" && w.state !== "asked") continue;
-      if (!samePerson(w.person, person) || !sameWish(said, w.topic, w.person)) continue;
+      if (!samePerson(w.person, person) || !sameWish(said, w.topic, w.person, min)) continue;
       this.asked(w.key, at);
     }
   }
