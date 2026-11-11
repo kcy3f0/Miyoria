@@ -248,7 +248,8 @@ class SimCard:
         monkeypatch.setenv("SING_GPU_POLICY", os.environ.get("SING_GPU_POLICY", "auto"))
         monkeypatch.setenv("SING_GPU_CHECK_S", "0.01")
         monkeypatch.setenv("SING_MOCK_STEPS", os.environ.get("SING_MOCK_STEPS", "8"))
-        monkeypatch.delenv("SING_GPU_POLICY", raising=False)
+        # Only the older switch is cleared: clearing SING_GPU_POLICY here too undid the line above,
+        # so these scenarios ran under the default ``yield`` and failed.
         monkeypatch.delenv("SING_GPU_SHARE", raising=False)
         m = server.state.machine
         m.profile, m.audience, m.gap_until, m.last = Profile(tmp_path), Audience(), 0.0, None
@@ -431,7 +432,9 @@ def test_a_spill_releases_the_card_and_goes_on_from_where_it_was(sing, machine, 
     assert card.steps == 12  # no step ran twice
     codes = [d["code"] for d in done["song"]["gpu"]["decisions"]]
     assert "spill_free" in codes and "spill_wait" in codes
-    assert card.profile.step("convert") <= 0.02  # the run that spilled taught nothing about normal
+    # The run that spilled (0.2 s a step) taught nothing about normal: the step stays near 0.02.
+    # Not exactly 0.02: a clean step is measured too, and CI once had 0.0201.
+    assert card.profile.step("convert") < 0.05
 
 
 def test_a_spill_in_separation_restarts_it_on_the_cpu(sing, machine, monkeypatch):  # noqa: F811
