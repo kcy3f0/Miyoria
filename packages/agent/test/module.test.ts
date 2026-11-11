@@ -73,7 +73,9 @@ describe("agent module", () => {
     expect(msgs[1]?.role).toBe("user");
     expect(msgs[1]?.content).toBe("Owen: 早安\nOwen: DeepSeek 在嗎\n阿明: 安安");
     expect(msgs[2]?.role).toBe("user");
-    expect(msgs[2]?.content).toContain("標題=在場的人⟧\n阿明、Owen\n⟦/資料⟧");
+    expect(msgs[2]?.content).toContain(
+      'title="在場的人">\n<person name="阿明"/>\n<person name="Owen"/>\n</data>',
+    );
     // The focus: Owen called her, 阿明 is background.
     expect(msgs[2]?.content).toMatch(/# 要回的訊息.*\nOwen 問你:DeepSeek 在嗎$/);
     expect(msgs[3]?.role).toBe("system");

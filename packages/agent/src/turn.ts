@@ -56,8 +56,10 @@ import {
   ConversationStatesKey,
   type CountedOutcome,
   contextKeyString as contextKeyDisplay,
+  DATA_OPEN,
   DirectivesKey,
   dataBlock,
+  escapeXml,
   FileReaderKey,
   type FloorClaimKind,
   GoalAgendaKey,
@@ -112,6 +114,7 @@ import {
   voiceLane,
   WorkingContextKey,
   WorldStateKey,
+  xmlAttrs,
 } from "@miyoria/types";
 import {
   assess,
@@ -158,6 +161,13 @@ import { voiceScope } from "./handle.js";
 import { awaitBackfill, fetchAround, quotedParent, replyParents } from "./history.js";
 import { isSelfTalk, looksLikeReasoning, ReplyScreen } from "./leak.js";
 import { ceilingFor, levelHint, paceMs } from "./levels.js";
+import {
+  pickKaomoji,
+  RECENT_OWN_LINES,
+  SCAN_LINES,
+  styleNote,
+  triggeredEntries,
+} from "./lorebook.js";
 import type { HeldLine } from "./mainline/gate.js";
 import type { Run } from "./mainline/hands.js";
 import {
@@ -196,6 +206,7 @@ import {
   contextData,
   contextState,
   exampleDialogues,
+  examplesBlock,
   fitHistory,
   historyWindow,
   mainMessages,
@@ -245,7 +256,13 @@ import {
   whenAndWhere,
 } from "./prompt.js";
 import type { Agent, Initiative, IntentTurn } from "./runtime.js";
-import { feelingCauseBody, type PresentPerson, peopleBody, selfBlocks } from "./self-block.js";
+import {
+  feelingCauseBody,
+  type PresentPerson,
+  peopleBody,
+  personTag,
+  selfBlocks,
+} from "./self-block.js";
 import { type HistoryEntry, messageText, type Session } from "./session.js";
 import { type BudgetState, EXHAUSTED_LINE } from "./signals.js";
 import {
@@ -283,6 +300,8 @@ const SLOW_ORDER: readonly string[] = ["server_emoji", "notebook"];
 const SLOW_SECTIONS: ReadonlySet<string> = new Set(SLOW_ORDER);
 /** Title of 「今天的她」 (v4 §6.2). */
 const LIFE_TITLE = "今天的你";
+/** An emotion she feels at least this much counts as her mood for the lorebook. */
+const MOOD_MIN = 0.3;
 const DAY_MS = 86_400_000;
 /**
  * The party tools that act in a running game, with the game they are for (`null`: any). Offered
@@ -1931,7 +1950,9 @@ class Turn {
     const m = this.agent.config.mainline;
     if (skills !== null && skills.trim() !== "") {
       // The skill index comes as a data block; anything else is made one.
-      extras.slow.push(skills.includes("⟦資料") ? skills : dataBlock("skills", "你的技能", skills));
+      extras.slow.push(
+        skills.includes(DATA_OPEN) ? skills : dataBlock("skills", "你的技能", skills),
+      );
     }
     const sections: PromptSection[] = [...contributed]
       .sort((a, b) => SLOW_ORDER.indexOf(a.key) - SLOW_ORDER.indexOf(b.key))
@@ -1941,12 +1962,8 @@ class Turn {
       sections.push({ key: "life", title: LIFE_TITLE, body: life, order: sections.length });
     }
     if (people !== null) {
-      sections.push({
-        key: "people",
-        title: this.#peopleTitle(),
-        body: people,
-        order: sections.length,
-      });
+      // Over its budget the block keeps whole lines: a cut `<person/>` would read as nothing.
+      sections.push(ownBlock("people", this.#peopleTitle(), people, sections.length));
     }
     const { data } = contributedData(sections);
     const slow = budgetBlocks(data, {
@@ -2117,8 +2134,7 @@ class Turn {
         profiles.render(where, m.people_chars, { exclude }, s),
       );
       const handle = present.find((p) => crush !== null && p.person === crush)?.handle;
-      const lines = [body.trim(), handle === undefined ? "" : `- ${safeName(handle)}:你偷偷喜歡他`];
-      const text = lines.filter((l) => l !== "").join("\n");
+      const text = handle === undefined ? body.trim() : markSecret(body.trim(), handle);
       const out = text === "" ? null : text;
       kept.slow.set("people", key, now, out);
       return out;
@@ -2172,7 +2188,48 @@ class Turn {
     );
     const seed = stableHash(`${contextId(this.key)}:${this.session.startedAt}`);
     const picked = rotatedExamples(dialogues, seed, chars);
-    return picked.length === 0 ? null : dataBlock("examples", EXAMPLES_TITLE, picked.join("\n\n"));
+    return examplesBlock(picked, this.agent.persona.names());
+  }
+
+  /**
+   * The turn's `<style_note>` (`lorebook.ts`): the lorebook entries that what was just said or her
+   * mood bring up and, in text, a few kaomoji for her mood that she has not used lately.
+   */
+  #styleNote(history: readonly HistoryEntry[]): string {
+    const book = this.agent.persona.lorebook();
+    const moods = this.#moods();
+    const answered = focusEntries(history);
+    const others = history.filter((e) => !e.isSelf && e.current !== true).slice(-SCAN_LINES);
+    const scan = [...others, ...answered].map((e) => e.text).join("\n");
+    const entries = triggeredEntries(book, scan, moods, this.voice);
+    if (this.voice) return styleNote(true, [], entries);
+    const own = history
+      .filter((e) => e.isSelf)
+      .slice(-RECENT_OWN_LINES)
+      .map((e) => e.text);
+    const seed = stableHash(`${contextId(this.key)}:${this.#now}:${history.at(-1)?.ts ?? 0}`);
+    return styleNote(false, pickKaomoji(book, moods, own, seed), entries);
+  }
+
+  /** Her emotions now, by name: the tag she shows and the strongest ones she feels. */
+  #moods(): Set<string> {
+    const services = this.agent.ctx.services;
+    const moods = new Set<string>();
+    try {
+      const snap = services.get(AffectStateKey)?.snapshot() ?? null;
+      const self = services.get(SelfStateKey) ?? null;
+      const shown = snap !== null ? snap.shown : (self?.shown() ?? null);
+      if (shown !== null) moods.add(shown.tag);
+      const felt = snap !== null ? snap.top : (self?.emotions() ?? []);
+      for (const e of felt.slice(0, 2)) if (e.intensity >= MOOD_MIN) moods.add(e.name);
+    } catch (error) {
+      this.agent.log.warn(
+        { turn: this.turn, error: errorMessage(error) },
+        "no mood for the lorebook",
+      );
+    }
+    if (moods.size === 0) moods.add("neutral");
+    return moods;
   }
 
   /** What prompt contributors get to see of this turn. */
@@ -2577,19 +2634,6 @@ class Turn {
       resultData(telling),
       wishes.length === 0 ? null : dataBlock("viewers", "觀眾的要求", wishes.join("\n")),
     ].filter((d): d is string => d !== null);
-    const tail = tailSection({
-      head: whenAndWhere(this.key, new Date(now), offset),
-      kind: main.claim.kind,
-      muted: main.claim.muted,
-      notes: extras.self,
-      state: contextState(buckets),
-      tasks: line.tasks().map((t) => `${t.task}(${t.owner}):${t.text}`),
-      recent: main.main.recent(this.key, m.recent_lines),
-      actions: [...line.hands.recent(ACTING_ALONE, 2), ...line.hands.recent(this.key, 3)],
-      speaksIn: this.voice ? speaksIn : null,
-      now,
-      party: services.get(PartyStatusKey)?.running(this.key) ?? null,
-    });
     const selection = this.plan.selection;
     const verbs = selection === null ? new Map<string, string>() : focusVerbs(selection);
     const folded = services.get(ConversationStatesKey)?.get(this.key) ?? null;
@@ -2620,6 +2664,18 @@ class Turn {
       (id) => this.#shownAround(id),
     );
     this.#replyTargets = focusEntries(history);
+    const tail = tailSection({
+      head: whenAndWhere(this.key, new Date(now), offset),
+      notes: extras.self,
+      state: contextState(buckets),
+      tasks: line.tasks().map((t) => `${t.task}(${t.owner}):${t.text}`),
+      recent: main.main.recent(this.key, m.recent_lines),
+      actions: [...line.hands.recent(ACTING_ALONE, 2), ...line.hands.recent(this.key, 3)],
+      speaksIn: this.voice ? speaksIn : null,
+      now,
+      party: services.get(PartyStatusKey)?.running(this.key) ?? null,
+      style: this.#styleNote(history),
+    });
     // What her tools brought back in earlier turns, beside her lines (v4 §4.2).
     const traces = [...keptOf(this.session).traces.list()];
     const build = (kept: readonly HistoryEntry[]) =>
@@ -2635,6 +2691,7 @@ class Turn {
         data,
         history: kept,
         tail,
+        turn: { kind: main.claim.kind, muted: main.claim.muted },
         transcript: {
           // The window is within `history_chars` already; this only stops what it misjudged.
           maxChars: m.history_chars * 2,
@@ -3915,6 +3972,23 @@ class Turn {
 }
 
 /** One of the agent's own data blocks. */
+/** What the people block says of her crush. */
+const SECRET = "你偷偷喜歡他";
+
+/**
+ * The profiles of the people here with her crush marked on `handle`'s `<person>` tag (a tag of its
+ * own when the profiles have none for them).
+ */
+export function markSecret(body: string, handle: string): string {
+  const name = ` name="${escapeXml(safeName(handle))}"`;
+  const lines = body === "" ? [] : body.split("\n");
+  const at = lines.findIndex((l) => l.startsWith(`<person${name}`) && l.endsWith("/>"));
+  if (at < 0) return [...lines, personTag({ name: handle, secret: SECRET })].join("\n");
+  const line = lines[at] as string;
+  lines[at] = `${line.slice(0, -2)}${xmlAttrs({ secret: SECRET })}/>`;
+  return lines.join("\n");
+}
+
 function ownBlock(key: string, title: string, body: string, order: number): PromptBlock {
   return {
     key,

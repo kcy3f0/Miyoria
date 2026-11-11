@@ -174,7 +174,7 @@ export const FOR_ARG = "for_whom";
 /** The schema of `FOR_ARG`, offered to tools that act for someone (`Tool.actsFor`) then. */
 export const FOR_PROPERTY = {
   type: "string",
-  description: "這件事是幫誰做的:「要回的訊息」裡那個人的編號(例如 1)或名字。",
+  description: "這件事是幫誰做的:要回的訊息(<reply_to>)裡那個人的編號(例如 1)或名字。",
 } as const;
 
 /** What a tool call acts for: the message of the person it is for, or why it cannot tell. */
@@ -216,7 +216,7 @@ export function callFor(
     const why = said.trim() === "" ? "好幾個人同時叫你" : `${FOR_ARG} 「${safeName(said)}」 對不上`;
     return {
       ok: false,
-      error: `${why},沒辦法知道這件事是幫誰做的,所以沒有做。再呼叫一次,用 ${FOR_ARG} 填「要回的訊息」裡的編號或名字:${choices.join("、")}`,
+      error: `${why},沒辦法知道這件事是幫誰做的,所以沒有做。再呼叫一次,用 ${FOR_ARG} 填要回的訊息(<reply_to>)裡的編號或名字:${choices.join("、")}`,
     };
   }
   const theirs = focus.filter((m) => sameAccount(m.author.account, who));
