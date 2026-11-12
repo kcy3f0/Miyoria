@@ -129,6 +129,11 @@ describe("judge", () => {
     expect(judge(cfg, facts(new ActionCall("mine"), true, 1, true), look, "x", false)).toEqual({
       type: "step",
     });
+    // Dropping something on the way is a step too, not a new goal ending the one running.
+    const drop = new ActionCall("drop", { item: "dirt" });
+    expect(judge(cfg, facts(new ActionCall("mine"), true, 1, true), drop, "x", false)).toEqual({
+      type: "step",
+    });
     expect(verdictDebug({ type: "step" })).toBe("Step");
     expect(verdictDebug({ type: "replace" })).toBe("Replace");
     expect(verdictDebug({ type: "keep", why: "too soon to switch goals" })).toBe(
@@ -253,6 +258,7 @@ describe("goalNote and config", () => {
       "select",
       "place",
       "respawn",
+      "drop",
       "stop",
     ]);
     // Completion is not read from event names any more: no reached / failed event lists.
