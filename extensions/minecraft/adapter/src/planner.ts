@@ -233,11 +233,20 @@ const MINED: Record<string, string[]> = {
   sand: ["sand"],
   red_sand: ["red_sand"],
   gravel: ["gravel"],
-  // Gravel drops flint now and then; the runner mines again until there is enough.
+  // Gravel drops flint only now and then (CHANCE_DROPS): mostly it drops itself.
   flint: ["gravel"],
   clay_ball: ["clay"],
   obsidian: ["obsidian"],
   melon_slice: ["melon"],
+};
+
+/**
+ * Items their blocks drop only now and then, and about how many blocks give one (gravel drops
+ * flint one time in ten). The runner mines that many blocks for each one missing, and counts a
+ * round that mined blocks but was unlucky as progress, not as the step failing.
+ */
+const CHANCE_DROPS: Record<string, number> = {
+  flint: 10,
 };
 
 /** The pickaxe that reaches each tier. */
@@ -259,7 +268,8 @@ const FUELS: Array<[string, number]> = [
 ];
 
 export type Step =
-  | { kind: "mine"; item: string; blocks: string[]; count: number }
+  /** `per`: a chance drop, about this many blocks mined for each one (`CHANCE_DROPS`). */
+  | { kind: "mine"; item: string; blocks: string[]; count: number; per?: number }
   | { kind: "craft"; item: string; count: number; table: boolean }
   | { kind: "smelt"; item: string; input: string; count: number }
   | { kind: "place"; item: "crafting_table" | "furnace" }
@@ -446,7 +456,8 @@ class Planner {
     if (blocks) {
       const amount = this.#amount(item, missing);
       this.#tool(Math.max(...blocks.map(requiredTier)) as Tier, depth);
-      this.steps.push({ kind: "mine", item, blocks, count: amount });
+      const per = CHANCE_DROPS[item];
+      this.steps.push({ kind: "mine", item, blocks, count: amount, ...(per ? { per } : {}) });
       this.#add(item, amount);
       return;
     }

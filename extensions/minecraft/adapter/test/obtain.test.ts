@@ -159,6 +159,33 @@ describe("obtain runner", () => {
     expect(world.requests.some((r) => r.params.command === "goto" && r.params.block === "oak_log")).toBe(true);
   });
 
+  it("mines gravel until flint drops, an unlucky round is not a failure", async () => {
+    // Gravel gives flint on every 15th block, itself otherwise. Like Baritone, `mine` goes on
+    // until the blocks' drops (gravel and flint) in her inventory reach the count.
+    class Gravel extends World {
+      broken = 0;
+      override async request(type: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+        if (type !== "baritone" || params.command !== "mine") return super.request(type, params);
+        this.requests.push({ type, params });
+        const drops = () => (this.inv.gravel ?? 0) + (this.inv.flint ?? 0);
+        while (drops() < (params.count as number)) {
+          this.broken++;
+          const drop = this.broken % 15 === 0 ? "flint" : "gravel";
+          this.inv[drop] = (this.inv[drop] ?? 0) + 1;
+        }
+        setTimeout(() => this.runner.feed({ name: "baritone_idle", data: { process: "Mine" } }), 1);
+        return {};
+      }
+    }
+    const world = new Gravel();
+    world.visible.add("gravel");
+    const result = await runner(world, "flint").run();
+    expect(result).toEqual({ ok: true, message: "拿到燧石了" });
+    expect(world.inv.flint).toBe(1);
+    // Ten blocks a round for the one flint missing: none in the first ten, one in the next.
+    expect(world.requests.filter((r) => r.params.command === "mine").map((r) => r.params.count)).toEqual([10, 20]);
+  });
+
   it("stops when cancelled", async () => {
     const world = new World();
     const r = runner(world, "wooden_pickaxe");
