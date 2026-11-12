@@ -233,20 +233,11 @@ const MINED: Record<string, string[]> = {
   sand: ["sand"],
   red_sand: ["red_sand"],
   gravel: ["gravel"],
-  // Gravel drops flint only now and then (CHANCE_DROPS): mostly it drops itself.
+  // Gravel drops flint now and then; the runner mines again until there is enough.
   flint: ["gravel"],
   clay_ball: ["clay"],
   obsidian: ["obsidian"],
   melon_slice: ["melon"],
-};
-
-/**
- * Items their blocks drop only now and then, and about how many blocks give one (gravel drops
- * flint one time in ten). The runner mines that many blocks for each one missing, and counts a
- * round that mined blocks but was unlucky as progress, not as the step failing.
- */
-const CHANCE_DROPS: Record<string, number> = {
-  flint: 10,
 };
 
 /** The pickaxe that reaches each tier. */
@@ -268,8 +259,7 @@ const FUELS: Array<[string, number]> = [
 ];
 
 export type Step =
-  /** `per`: a chance drop, about this many blocks mined for each one (`CHANCE_DROPS`). */
-  | { kind: "mine"; item: string; blocks: string[]; count: number; per?: number }
+  | { kind: "mine"; item: string; blocks: string[]; count: number }
   | { kind: "craft"; item: string; count: number; table: boolean }
   | { kind: "smelt"; item: string; input: string; count: number }
   | { kind: "place"; item: "crafting_table" | "furnace" }
@@ -309,30 +299,6 @@ export function knows(item: string): boolean {
   if (item in RECIPES || item in SMELTING || item in MINED) return true;
   if (item in HUNTED || item in GATHERED || item === "#food") return true;
   return item.endsWith("_planks") && planksOf(item) !== undefined;
-}
-
-const fromScratch = new Map<string, boolean>();
-
-/**
- * Whether the planner can get `item` from an empty inventory: false when the way there needs
- * something it cannot plan (monster drops such as blaze rods, ender pearls and string, or wool),
- * so with nothing in hand its plan would fail. Implies `knows`.
- */
-export function plansFromScratch(item: string): boolean {
-  let known = fromScratch.get(item);
-  if (known === undefined) {
-    known = knows(item);
-    if (known) {
-      try {
-        plan(item, 1, {});
-      } catch (error) {
-        if (!(error instanceof PlanError)) throw error;
-        known = false;
-      }
-    }
-    fromScratch.set(item, known);
-  }
-  return known;
 }
 
 /** The food the world around her offers most cheaply (what `obtain food` goes for). */
@@ -480,8 +446,7 @@ class Planner {
     if (blocks) {
       const amount = this.#amount(item, missing);
       this.#tool(Math.max(...blocks.map(requiredTier)) as Tier, depth);
-      const per = CHANCE_DROPS[item];
-      this.steps.push({ kind: "mine", item, blocks, count: amount, ...(per ? { per } : {}) });
+      this.steps.push({ kind: "mine", item, blocks, count: amount });
       this.#add(item, amount);
       return;
     }

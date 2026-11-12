@@ -161,12 +161,11 @@ const GameConfigFields = z.object({
   queue_kind: z.string().default("game_goal"),
   /**
    * Actions that never replace the current goal and whose success is nobody's progress. `stop`
-   * is one: on 2026-11-08 it became a goal 64 times and counted as reached 19 times. The same
-   * list as the Minecraft adapter's instant goals (`drop` included).
+   * is one: on 2026-11-08 it became a goal 64 times and counted as reached 19 times.
    */
   instant_actions: z
     .array(z.string())
-    .default(["chat", "look", "attack", "use", "select", "place", "respawn", "drop", "stop"]),
+    .default(["chat", "look", "attack", "use", "select", "place", "respawn", "stop"]),
   /**
    * Game event types that trigger an early decision (a goal's task ending always does: its
    * `game.<id>.task.done|failed` event, not one of these). Not `hostile_near` or `reflex_end`:

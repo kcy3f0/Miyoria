@@ -409,13 +409,8 @@ export class ObtainRunner {
 
   async #mine(step: Extract<Step, { kind: "mine" }>, snap: Snapshot): Promise<Outcome> {
     const before = countOf(snap.inventory ?? {}, step.item);
-    // Baritone's count is the total of the blocks' drops in her inventory. A chance drop (flint
-    // from gravel) is counted with the blocks it comes from, and asks for enough blocks to give
-    // the missing amount on average.
-    const drops = (inv: Inventory): number =>
-      step.per === undefined ? countOf(inv, step.item) : countOf(inv, step.item) + step.blocks.reduce((n, b) => n + (inv[b] ?? 0), 0);
-    const dropsBefore = drops(snap.inventory ?? {});
-    const params = { command: "mine", blocks: step.blocks, count: dropsBefore + step.count * (step.per ?? 1) };
+    // Baritone's count is the total of the blocks' drops in her inventory.
+    const params = { command: "mine", blocks: step.blocks, count: before + step.count };
     let wake: Wake;
     try {
       wake = await this.#job("baritone", params, ["baritone_idle"], this.#o.mineTimeoutMs);
@@ -441,13 +436,9 @@ export class ObtainRunner {
       return { fail: `挖${itemName(step.item)}挖太久了`, code: "timeout" };
     }
     if (wake === "cancelled") return "interrupted";
-    const inv = (await this.#host.observe()).inventory ?? {};
-    const after = countOf(inv, step.item);
+    const after = countOf((await this.#host.observe()).inventory ?? {}, step.item);
     if (after >= before + step.count) return "done";
-    if (after > before) return "progress";
-    // Blocks mined without the chance drop: unlucky, mine some more (bounded by `maxSteps`).
-    if (step.per !== undefined && drops(inv) > dropsBefore) return "progress";
-    return { fail: `沒挖到${itemName(step.item)}`, code: "not_found" };
+    return after > before ? "progress" : { fail: `沒挖到${itemName(step.item)}`, code: "not_found" };
   }
 
   /** Explores until one of `blocks` comes into sight; false when the time runs out. */

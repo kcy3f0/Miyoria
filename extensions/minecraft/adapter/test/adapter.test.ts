@@ -121,25 +121,6 @@ describe("actions", () => {
     expect(() => toRequests({ name: "select", args: { slot: 9 } })).toThrow("0–8");
     expect(() => toRequests({ name: "fly" })).toThrow("沒有「fly」");
   });
-
-  it("drop refuses a bad item or slot instead of dropping what is in her hand", () => {
-    for (const item of ["", "  ", 5, "iron pickaxe!", {}]) {
-      expect(() => toRequests({ name: "drop", args: { item } }), JSON.stringify(item)).toThrow("drop 的 item");
-    }
-    for (const slot of [-1, 36, 2.5, "abc", "", true]) {
-      expect(() => toRequests({ name: "drop", args: { slot } }), JSON.stringify(slot)).toThrow("drop 的 slot");
-    }
-    expect(() => toRequests({ name: "drop", args: { item: "dirt", slot: 3 } })).toThrow("其中一個");
-    // Absent (or null) is the hand; a good slot is passed on as given.
-    expect(toRequests({ name: "drop", args: {} })).toEqual([{ type: "drop", params: { all: true } }]);
-    expect(toRequests({ name: "drop", args: { item: null, slot: null, all: false } })).toEqual([
-      { type: "drop", params: { all: false } },
-    ]);
-    expect(toRequests({ name: "drop", args: { slot: "35" } })).toEqual([{ type: "drop", params: { all: true, slot: 35 } }]);
-    expect(toRequests({ name: "drop", args: { item: "Rotten Flesh" } })).toEqual([
-      { type: "drop", params: { all: true, item: "rotten_flesh" } },
-    ]);
-  });
 });
 
 describe("events", () => {
@@ -573,11 +554,6 @@ describe("obtain: one entry, the old paths as strategies", () => {
     await waitFor(() => ends(tasks).length === 4);
     expect(ends(tasks).at(-1)).toEqual(["o4", "precondition"]);
     expect(adapter.plan).toBeNull();
-    // Known to the planner but made from monster drops (blaze rods, ender pearls): AltoClef.
-    await adapter.tasks.start(spec("o5", "obtain", { item: "ender_eye" }));
-    await waitFor(() => m.requests.some((r) => r.type === "altoclef" && r.task === "o5"));
-    expect(m.requests.find((r) => r.task === "o5")).toMatchObject({ command: "get ender_eye 1" });
-    await adapter.tasks.cancel("o5");
   });
 
   it("another body task replaces the plan", async () => {

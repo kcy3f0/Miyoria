@@ -139,7 +139,7 @@ export const ACTIONS: GameActionSpec[] = [
   { name: "respawn", description: "死掉時按重生", parameters: obj({}), budget_s: 15 },
   {
     name: "drop",
-    description: "丟棄手持物品,或背包中的某種物品 {item} / 某一格 {slot}(兩者擇一)",
+    description: "丟棄手持物品或背包中的特定物品/欄位",
     parameters: obj({ item: str("物品 id"), slot: int("欄位 0-35"), all: { type: "boolean", description: "丟出一整組" } }),
     budget_s: 10,
   },
@@ -346,23 +346,12 @@ export function toRequests(action: GameAction, opts: MapOptions = {}): BridgeReq
     case "respawn":
       return [{ type: "respawn", params: {} }];
     case "drop": {
-      // Nothing given drops what is in her hand. A bad item or slot is refused rather than read
-      // as nothing: dropping the held stack instead could throw away her only pickaxe.
-      const given = (v: unknown) => v !== undefined && v !== null;
-      const params: Record<string, unknown> = { all: typeof a.all === "boolean" ? a.all : true };
-      if (given(a.item) && given(a.slot)) throw new ActionError("drop 只能給 item 或 slot 其中一個");
-      if (given(a.item)) {
-        const item = id(a.item);
-        if (!item || !/^[a-z0-9_:]+$/.test(item)) throw new ActionError("drop 的 item 要是物品 id");
-        params.item = item;
-      }
-      if (given(a.slot)) {
-        const slot = num(a.slot);
-        if (slot === undefined || !Number.isInteger(slot) || slot < 0 || slot > 35) {
-          throw new ActionError("drop 的 slot 要是 0–35 的整數");
-        }
-        params.slot = slot;
-      }
+      const item = id(a.item);
+      const slot = num(a.slot);
+      const all = typeof a.all === "boolean" ? a.all : true;
+      const params: Record<string, unknown> = { all };
+      if (item) params.item = item;
+      if (slot !== undefined) params.slot = Math.round(slot);
       return [{ type: "drop", params }];
     }
     default:
