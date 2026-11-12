@@ -153,6 +153,8 @@ Environment
     SING_RELOAD_TIMEOUT_S  longest wait for a worker to reload    (default 300)
     SING_MOCK_SECONDS      mock: song length                      (default 3)
     SING_MOCK_STAGE_MS     mock: delay per stage                  (default 0)
+    SING_LYRICS_URL        lyrics service (workers/lyrics) that finds the lyrics, for a worker on another
+                           machine than Core                       (default empty: look them up here)
     HOST / PORT            bind address                           (default 127.0.0.1 / 8005)
 """
 
@@ -488,7 +490,11 @@ class _RealAdapter:
         if os.environ.get("SING_LYRICS", "1") == "0":
             return None
         from lyrics import hints_of, search
+        from lyrics_remote import remote_url, search_remote
 
+        url = remote_url()  # the lyrics service next to Core's language model and ASR (workers/lyrics)
+        if url:
+            return search_remote(url, hints_of(src), duration, audio, fresh)
         return search(hints_of(src), duration, cache_dir=self.b.store.root / "_lyrics", audio=audio, fresh=fresh)
 
     def lyrics_hints(self, url: str) -> dict[str, Any]:
