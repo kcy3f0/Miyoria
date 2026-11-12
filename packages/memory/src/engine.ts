@@ -14,17 +14,18 @@ import {
   userMessage,
   withLlmTag,
 } from "@miyoria/llm";
-import type {
-  LogEntry,
-  MemoryFilter,
-  MemoryKind,
-  MemoryRecord,
-  MemoryRecordStore,
-  MemoryScope,
-  MemorySource,
-  MessageLog,
-  PeopleStore,
-  SettingsStore,
+import {
+  embeddingValues,
+  type LogEntry,
+  type MemoryFilter,
+  type MemoryKind,
+  type MemoryRecord,
+  type MemoryRecordStore,
+  type MemoryScope,
+  type MemorySource,
+  type MessageLog,
+  type PeopleStore,
+  type SettingsStore,
 } from "@miyoria/store";
 import {
   type AccountRef,
@@ -321,6 +322,15 @@ const ms = timestampMs;
  */
 function staleState(record: MemoryRecord): boolean {
   return (record.kind === "fact" || record.kind === "self_note") && isPresentState(record.content);
+}
+
+/**
+ * Cosine between `query` and a record's stored vector, read without decoding `record.embedding`
+ * (which costs about a millisecond per thousand dimensions); null when the record has none.
+ */
+function recordCosine(query: readonly number[], record: MemoryRecord): number | null {
+  const stored = embeddingValues(record);
+  return stored === null ? null : cosine(query, stored);
 }
 
 function sortedUnique(ids: readonly PersonId[]): PersonId[] {
@@ -627,8 +637,7 @@ export class MemoryEngine implements FollowupSource {
       }
       const textSim = textSimilarity(record.content, content);
       const vecSim =
-        hit.vector_score ??
-        (embedding !== null && record.embedding !== null ? cosine(embedding, record.embedding) : 0);
+        hit.vector_score ?? (embedding !== null ? (recordCosine(embedding, record) ?? 0) : 0);
       if (textSim >= dedupe.text_similarity) {
         if (identical === null || textSim > identical[0]) identical = [textSim, record];
       } else if (vecSim >= dedupe.vector_similarity && (similar === null || vecSim > similar[0])) {
@@ -834,11 +843,7 @@ export class MemoryEngine implements FollowupSource {
     const backendWeight = tokens.length > 0 ? 1 : this.config.context_weight;
     const ranked: Searched[] = [];
     for (const [record, text, vectorScore] of candidates.values()) {
-      const vector =
-        vectorScore ??
-        (embedding !== null && record.embedding !== null
-          ? cosine(embedding, record.embedding)
-          : null);
+      const vector = vectorScore ?? (embedding !== null ? recordCosine(embedding, record) : null);
       const backend = maxText > 0 ? (text / maxText) * backendWeight : 0;
       let t = Math.max(
         backend,
