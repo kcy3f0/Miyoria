@@ -119,6 +119,9 @@ export interface SongRequest
 const SCREEN_TOPIC = "economy.screen";
 
 const LINK = /https?:\/\/[^\s<>"'「」]+/i;
+/** A link pasted without its scheme (`www.bilibili.com/video/BV…/`, `youtu.be/…`): one of the usual hosts. */
+const BARE_LINK =
+  /(?<![\w./-])(?:www\.[\w-]+\.[a-z]{2,}|(?:music\.)?youtube\.com|m\.youtube\.com|youtu\.be|bilibili\.com|b23\.tv)\/[^\s<>"'「」]*/i;
 
 /**
  * The worker request for a set list query: a link (anywhere in it, e.g. 「唱這首 https://…」),
@@ -126,7 +129,8 @@ const LINK = /https?:\/\/[^\s<>"'「」]+/i;
  */
 export function workerQuery(query: string, key: number, backing: BackingMode = "keep"): SongQuery {
   const q = query.trim();
-  const link = LINK.exec(q)?.[0];
+  const bare = BARE_LINK.exec(q)?.[0];
+  const link = LINK.exec(q)?.[0] ?? (bare === undefined ? undefined : `https://${bare}`);
   // Only the exception is sent: the worker keeps the backing voices by default.
   const extra = backing === "keep" ? {} : { backing };
   if (link !== undefined) return { url: link, key, ...extra };
