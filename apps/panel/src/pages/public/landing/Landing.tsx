@@ -1,5 +1,5 @@
 import { Check, Copy } from "lucide-react";
-import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { PublicSong, PublicSongs, PublicStatus } from "@/api/types";
 import { useApi } from "@/app/connection";
 import { loginNext } from "@/app/session";
@@ -34,7 +34,6 @@ const STEPS = [
 ];
 
 const SECTIONS = [
-  { id: "top", label: "首頁" },
   { id: "moments", label: "日常" },
   { id: "songs", label: "歌單" },
   { id: "watch", label: "直播" },
@@ -138,79 +137,6 @@ function useScenes(sea: React.RefObject<HTMLCanvasElement | null>, hole: React.R
   }, [sea, hole]);
 }
 
-/**
- * The bar leaves upward and comes back as a capsule once the cover is behind; the capsule hides while
- * reading down and returns on the way up. The pill under the links follows the section in view.
- */
-function useNav() {
-  const nav = useRef<HTMLElement>(null);
-  const links = useRef<HTMLDivElement>(null);
-  const [active, setActive] = useState(0);
-  useEffect(() => {
-    const el = nav.current;
-    if (!el) return;
-    let fold = window.scrollY > 80;
-    el.classList.toggle("ml-fold", fold);
-    let last = window.scrollY;
-    let swap: ReturnType<typeof setTimeout> | undefined;
-    const onScroll = () => {
-      const y = window.scrollY;
-      const next = y > 80;
-      if (next !== fold) {
-        fold = next;
-        clearTimeout(swap);
-        el.classList.remove("ml-drop", "ml-hide");
-        el.classList.add("ml-out");
-        swap = setTimeout(() => {
-          el.classList.toggle("ml-fold", fold);
-          el.classList.remove("ml-out");
-          void el.offsetWidth;
-          el.classList.add("ml-drop");
-          swap = setTimeout(() => el.classList.remove("ml-drop"), 850);
-        }, 260);
-      } else if (fold && !el.classList.contains("ml-out") && !el.classList.contains("ml-drop")) {
-        if (y > last + 6 && y > window.innerHeight * 1.2) el.classList.add("ml-hide");
-        else if (y < last - 6) el.classList.remove("ml-hide");
-      }
-      last = y;
-      const max = document.documentElement.scrollHeight - window.innerHeight;
-      el.style.setProperty("--p", max > 0 ? (y / max).toFixed(4) : "0");
-      let k = 0;
-      SECTIONS.forEach((s, i) => {
-        const top = document.getElementById(s.id)?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
-        if (top < window.innerHeight * 0.4) k = i;
-      });
-      setActive(k);
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    onScroll();
-    return () => {
-      clearTimeout(swap);
-      window.removeEventListener("scroll", onScroll);
-    };
-  }, []);
-  return { nav, links, active };
-}
-
-/** The pill under the active link and the faint one under the hovered link. */
-function Pill({ links, active }: { links: React.RefObject<HTMLDivElement | null>; active: number }) {
-  const [box, setBox] = useState<{ left: number; width: number } | null>(null);
-  useEffect(() => {
-    const measure = () => {
-      const a = links.current?.querySelectorAll("a")[active];
-      if (a) setBox({ left: a.offsetLeft, width: a.offsetWidth });
-    };
-    measure();
-    const t = setTimeout(measure, 300);
-    window.addEventListener("resize", measure);
-    return () => {
-      clearTimeout(t);
-      window.removeEventListener("resize", measure);
-    };
-  }, [links, active]);
-  return <span className="ml-pill" style={box ? { left: box.left, width: box.width } : { opacity: 0 }} aria-hidden />;
-}
-
 /** Things print in as they come into view, and her pictures drift a little against the scroll. */
 function useReveal(root: React.RefObject<HTMLDivElement | null>) {
   useEffect(() => {
@@ -250,11 +176,18 @@ function useReveal(root: React.RefObject<HTMLDivElement | null>) {
   }, [root]);
 }
 
+/** Her mark: a whale's tail coming up out of the water. */
 function Mark() {
+  const id = useId();
   return (
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="12" cy="12" r="4.5" fill="#000" stroke="#fff" strokeOpacity=".7" />
-      <ellipse className="ml-orbit" cx="12" cy="12" rx="11" ry="3.4" stroke="#fbbf77" strokeWidth="1.5" />
+    <svg viewBox="0 0 32 32" aria-hidden>
+      <defs>
+        <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#a5e8ff" />
+          <stop offset="1" stopColor="#3d6ef5" />
+        </linearGradient>
+      </defs>
+      <path fill={`url(#${id})`} d="M12.6 29.5C13.3 26 13.8 22.6 14 19.6C9.6 18.9 5 15.6 2.7 9.4C2.4 8.5 3.2 7.9 4 8.4C7.2 10.7 10.7 11.6 13.4 11.4C14.7 11.3 15.6 12.1 16 13.3C16.4 12.1 17.3 11.3 18.6 11.4C21.3 11.6 24.8 10.7 28 8.4C28.8 7.9 29.6 8.5 29.3 9.4C27 15.6 22.4 18.9 18 19.6C18.2 22.6 18.7 26 19.4 29.5Z" />
     </svg>
   );
 }
@@ -312,8 +245,8 @@ function Moments() {
         <p className="ml-sub ml-rv">不用指令，直接標她就好。</p>
         <div className="ml-moments">
           <article className="ml-tile ml-big ml-rv">
-            <Her loop={HER.glasses} className="ml-cut" style={{ right: -40, top: 20, height: 900 }} />
-            <div className="ml-dc ml-seq" style={{ left: 28, top: 32 }}>
+            <Her loop={HER.glasses} className="ml-cut ml-cut-big" />
+            <div className="ml-dc ml-seq">
               <Msg who="阿哲" color="#f59e0b" time="今天 23:41">
                 @{NAME} 明天微積分期中，極限到底怎麼算
               </Msg>
@@ -332,8 +265,8 @@ function Moments() {
             </h3>
           </article>
           <article className="ml-tile ml-rv">
-            <Her loop={HER.basin} className="ml-cut" style={{ right: 10, top: -10, height: 640 }} />
-            <div className="ml-vc ml-seq" style={{ left: 24, top: 26 }}>
+            <Her loop={HER.basin} className="ml-cut ml-cut-small" />
+            <div className="ml-vc ml-seq">
               <div className="ml-vc-ch">🔊 深夜閒聊</div>
               <div className="ml-vc-u ml-talk">
                 <Av me />
@@ -353,8 +286,8 @@ function Moments() {
             </h3>
           </article>
           <article className="ml-tile ml-rv">
-            <Her loop={HER.grass} className="ml-cut" style={{ right: 10, top: -10, height: 640 }} />
-            <div className="ml-dc ml-seq" style={{ left: 24, top: 26, width: 290 }}>
+            <Her loop={HER.grass} className="ml-cut ml-cut-small" />
+            <div className="ml-dc ml-dc-short ml-seq">
               <Msg who={NAME} me>
                 我在 Minecraft 蓋了一間房子！！雖然門是歪的
               </Msg>
@@ -533,25 +466,23 @@ export default function Landing({ discord, notice }: { discord: boolean; notice?
   const root = useRef<HTMLDivElement>(null);
   const sea = useRef<HTMLCanvasElement>(null);
   const hole = useRef<HTMLCanvasElement>(null);
-  const { nav, links, active } = useNav();
   useScenes(sea, hole);
   useReveal(root);
 
   return (
     <div className="ml" ref={root}>
       <canvas className="ml-sea" ref={sea} aria-hidden />
-      <nav className="ml-nav" ref={nav} aria-label="這一頁">
+      <nav className="ml-nav" aria-label="這一頁">
         <a className="ml-wm" href="#top">
           <Mark />
           <span>{NAME}</span>
         </a>
-        <div className="ml-links" ref={links}>
-          {SECTIONS.map((s, i) => (
-            <a key={s.id} href={`#${s.id}`} className={i === active ? "ml-on" : undefined}>
+        <div className="ml-links">
+          {SECTIONS.map((s) => (
+            <a key={s.id} href={`#${s.id}`}>
               {s.label}
             </a>
           ))}
-          <Pill links={links} active={active} />
         </div>
         <div className="ml-right">
           {loginUrl ? (
@@ -565,9 +496,6 @@ export default function Landing({ discord, notice }: { discord: boolean; notice?
             </a>
           )}
         </div>
-        <span className="ml-progress" aria-hidden>
-          <i />
-        </span>
       </nav>
 
       <main>
