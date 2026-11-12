@@ -216,7 +216,7 @@ token form stays at `#/login`, with no link to it from the page.
 
 | Who | Sees |
 |---|---|
-| Anyone not logged in | Her magazine, the landing (see "Landing" below): who she is, what she is doing now, today's numbers, Discord login |
+| Anyone not logged in | Her landing (see "Landing" below): who she is, what she is doing now, today's numbers, Discord login |
 | Logged in | Also 她眼中的你, 一起的回憶, 你點的歌, and a rail with 點歌 and 你的資料 |
 | Someone she does not know, or a blocked person | The same page, "她還不認識你", no 點歌. The two cannot be told apart |
 
@@ -253,41 +253,32 @@ token form stays at `#/login`, with no link to it from the page.
 
 ## Landing
 
-What someone who is not logged in sees at `/` (`pages/public/landing/`, loaded on demand with its
-own fonts). It is its own world, a two-colour riso magazine with her on the cover, and the panel's
-operate-mode rules above do not bind it; real data does. Strategy and the direction contract live in
-`.impeccable/surfaces/src-pages-public-landing.md`.
+What someone who is not logged in sees at `/` (`pages/public/landing/`, loaded on demand). It is its
+own world, black with her in it, and the panel's operate-mode rules above do not bind it; real data
+does. Strategy and the direction contract live in `.impeccable/surfaces/src-pages-public-landing.md`.
 
-- Stock: `#101522`, the inside pages a shade deeper `#0b0f19`, paper-coloured type `#e9e4d8`, rules
-  `#263049`. Two inks only, aqua `#5ec8e5` and fluo pink `#ff48b0`, laid with `screen` so where
-  they overprint they go pale. Paper fibre (SVG turbulence) over everything.
-- Type: Gloock for the masthead, her name and folio numbers; Noto Serif TC 500/900 for all
-  Chinese; Big Shoulders Display for labels and figures; Geist Mono only for the real commands.
-- Cover: the masthead `MIYORIA` in pink with the aqua plate a few pixels off; her picture as two
-  halftone plates (`plate-aqua.webp` line screen, `plate-pink.webp` dots, made from the matte of
-  `docs/assets/hero.webp`); a thin aqua dot flood behind her; crop marks. Cover lines: 自己養一隻
-  (to the appendix), her live state, song and today's numbers (`她現在`), her name as the `h1`
-  with the Discord login, and a barcode price box.
-- Buttons are printed blocks: the pink plate over an aqua one out of register. Hover pulls the
-  plates apart and screens dots into the pink; pressing lines them up. Secondary links carry two
-  out-of-register underlines that meet on hover.
-- Motion: on load the masthead letters ink in one by one and the plates slide into register; the
-  pointer pulls the plates and the masthead's aqua copy out of register (fine pointers only); a
-  pink ticker runs her live lines under the cover; inside pages print in with a left-to-right
-  wipe as they arrive, the two-week bars grow. All of it stops under `prefers-reduced-motion`.
-- Inside: 目錄 as a two-page spread with the fold, 本期歌單 from `/api/public/songs` plus the last two
-  weeks from `days`, 附錄：自己養一隻 with the real setup commands and the service diagram
-  (`Schematic`), and the back cover with the login again.
-- Copy is plain and specific. No slogans: say what she does.
-- Type is one colour. The misregistered second plate is for her pictures, ornaments and buttons,
-  never for headings.
-- Inside pictures (`landing/art/*-a.webp`, `*-p.webp`) are poses rendered from the official free
-  DeepSeek-chan Live2D model (pointing, singing, glasses, heart eyes, the steel basin, cold sweat)
-  and turned into the same two halftone plates. The model and PSD stay out of the repo, as their
-  guidelines ask; the back cover credits the original illustrator, 神宫凉子.
-- Ornaments (`Ornaments.tsx`): a riso icon per contents entry, a dot-screen whale, rubber stamps, a
-  starburst sticker, wavy rules, taped photos, a turning record while she sings, and the setup
-  steps as a coupon to cut out.
+- Black base `#000`, type `#f4f4f5`, muted `#a1a1aa`, rules white at 10%. Geist with the system
+  Chinese faces; Geist Mono only for the real commands. Her name on the site is Miyoria.
+- Cover: a real black hole (`blackhole.ts`, the passes of sayed1145/glsl-black-hole, MIT, licence
+  kept in `blackhole-glsl.ts`). The lensing map is traced once, each frame re-lights the disc and
+  blooms it; it only renders while the cover is on screen. Her animated picture stands to the
+  right, her name as the `h1` with the Discord login and her live page.
+- Under the cover: the night sea (`sea.ts`, our own shader), a fixed canvas of sharp-crested waves
+  lit by the sky and a moon; scrolling moves the camera forward.
+- Glass is light (6-8 px blur) and only where something sits over the water: the nav capsule, tiles,
+  the player, the terminal.
+- Nav: a flat bar on the cover that folds into a floating capsule after it, with a sliding pill on
+  the current section and a scroll progress line; it hides while scrolling down and drops back in
+  when scrolling up.
+- Sections are pictures, not lists: 她在 Discord 的樣子 (her with mock Discord messages that pop in as
+  a conversation, and a voice channel), 歌單 from `/api/public/songs`, 直播間 (a stage that links to
+  `/watch`), and 自己養一隻 with the real setup commands typed out.
+- Her pictures (`landing/her/*.webm`, `.webp` posters) are short loops recorded from the official
+  free Live2D model by 神宫凉子. Only the recordings ship; the model and PSD stay out of the repo, as
+  their guidelines ask. The footer credits the illustrator and the black hole and has no picture.
+- Motion: headings come in a character at a time, sections rise as they arrive, her pictures drift
+  with scroll. All of it stops under `prefers-reduced-motion`, and the shaders draw one frame.
+- Without WebGL the cover and sea are plain black.
 - The token form stays at `/login` with no link from the landing.
 
 ## Charts

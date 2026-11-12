@@ -16,7 +16,7 @@ class ResizeObserverStub {
   disconnect() {}
 }
 globalThis.ResizeObserver ??= ResizeObserverStub as unknown as typeof ResizeObserver;
-// The landing prints its pages in as they scroll into view: jsdom has no IntersectionObserver.
+// The landing reveals its sections as they scroll into view: jsdom has no IntersectionObserver.
 class IntersectionObserverStub {
   observe() {}
   unobserve() {}

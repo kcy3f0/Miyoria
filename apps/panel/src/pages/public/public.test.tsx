@@ -323,15 +323,15 @@ afterEach(() => {
 });
 
 describe("an anonymous visitor", () => {
-  it("gets her magazine cover: who she is, what she is doing, Discord login, and nothing of the panel", async () => {
+  it("gets her landing cover: who she is, what she is doing, Discord login, and nothing of the panel", async () => {
     core();
     renderApp();
     const placard = await screen.findByRole("heading", { level: 1 });
-    expect(placard).toHaveTextContent("DeepSeek-chan");
+    expect(placard).toHaveTextContent("Miyoria");
     const logins = await screen.findAllByRole("link", { name: "用 Discord 登入" });
     for (const link of logins) expect(link).toHaveAttribute("href", "/api/auth/oauth/login?next=%2F");
     const board = screen.getByRole("region", { name: "她現在" });
-    expect(await within(board).findByText("她在唱歌")).toBeInTheDocument();
+    expect(await within(board).findByText(/她在唱歌/)).toBeInTheDocument();
     expect(screen.queryByLabelText("Admin token")).toBeNull();
     expect(screen.queryByText("她眼中的你")).toBeNull();
     for (const name of ["總覽", "內心", "權限", "資料", "設定", "緊急停止"]) {
@@ -366,12 +366,13 @@ describe("an anonymous visitor", () => {
     expect(await screen.findByLabelText("Admin token")).toBeInTheDocument();
   });
 
-  it("gets her magazine without a login when Discord login is off, and her live page as the way in", async () => {
+  it("gets her landing without a login when Discord login is off, and her live page as the way in", async () => {
     core({ discord: false });
     renderApp();
     await screen.findByRole("heading", { level: 1 });
     expect(screen.queryByRole("link", { name: "用 Discord 登入" })).toBeNull();
-    expect(screen.getAllByRole("link", { name: /直播/ })[0]).toHaveAttribute("href", "/watch");
+    const watch = screen.getAllByRole("link", { name: /直播/ }).map((a) => a.getAttribute("href"));
+    expect(watch).toContain("/watch");
   });
 
   it("sees why a Discord login failed, on her cover, with the login right below", async () => {
@@ -413,7 +414,7 @@ describe("a member", () => {
     core({ member: USER });
     renderApp();
     const now = await screen.findByRole("region", { name: "現在" });
-    expect(await within(now).findByText("她在唱歌")).toBeInTheDocument();
+    expect(await within(now).findByText(/她在唱歌/)).toBeInTheDocument();
     expect(within(now).getByText("3 首")).toBeInTheDocument();
     const songs = screen.getByRole("region", { name: "歌單" });
     expect(await within(songs).findByText("歌名還不知道")).toBeInTheDocument();
