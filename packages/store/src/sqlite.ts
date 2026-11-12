@@ -48,7 +48,6 @@ import {
   contextLookupKey,
   cosine,
   decodeEmbedding,
-  embeddingFromF32,
   encodeEmbedding,
   fromMicros,
   lazyEmbedding,
@@ -1876,7 +1875,7 @@ function memoryFromRow(row: Row): MemoryRecord {
     superseded_by: optStr(row, "superseded_by"),
   };
   return embedding instanceof Uint8Array
-    ? lazyEmbedding(record, () => embeddingFromF32(decodeEmbedding(embedding)))
+    ? lazyEmbedding(record, () => decodeEmbedding(embedding))
     : record;
 }
 

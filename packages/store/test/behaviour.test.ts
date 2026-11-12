@@ -27,6 +27,7 @@ import {
   type DecisionRecord,
   dataCategory,
   type EconomyDoc,
+  embeddingValues,
   type Goal,
   type GoalPledge,
   type LogEntry,
@@ -947,6 +948,32 @@ function behaviour(open: () => Promise<Store>): void {
     replaced.embedding = null;
     expect(replaced.embedding).toBeNull();
     expect(Object.keys(replaced)).toEqual(Object.keys(r));
+  });
+
+  it("memory_embedding_values_skip_decoding", async () => {
+    const memories = store.memories;
+    const profile = unique("profile");
+    const r = memory(profile, "fact", { type: "global" }, "values", at(Date.now()));
+    r.embedding = [0.1, -0.2, 0.3];
+    await memories.upsert(r);
+
+    // The stored float32 values come out without decoding `embedding` into decimals.
+    const [listed] = await memories.list(profile, { ...baseFilter, limit: 10 });
+    if (!listed) throw new Error("not listed");
+    const values = embeddingValues(listed);
+    expect(Array.from(values ?? [])).toEqual([0.1, -0.2, 0.3].map(Math.fround));
+    expect(Object.getOwnPropertyDescriptor(listed, "embedding")?.get).toBeDefined();
+    // Reading it afterwards still gives the shortest decimals.
+    expect(listed.embedding).toEqual([0.1, -0.2, 0.3]);
+
+    // Once replaced, the values follow the property.
+    const [replaced] = await memories.list(profile, { ...baseFilter, limit: 10 });
+    if (!replaced) throw new Error("not listed");
+    replaced.embedding = [1, 2];
+    expect(embeddingValues(replaced)).toEqual([1, 2]);
+    replaced.embedding = null;
+    expect(embeddingValues(replaced)).toBeNull();
+    expect(embeddingValues({ embedding: [0.5] })).toEqual([0.5]);
   });
 
   it("memory_touch", async () => {

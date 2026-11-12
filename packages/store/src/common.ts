@@ -228,16 +228,32 @@ export function embeddingFromF32(values: ArrayLike<number>): number[] {
   return Array.from(values, shortestF32);
 }
 
+/** The stored float32 values of records whose `embedding` has not been decoded yet. */
+interface PendingEmbedding {
+  read: () => Float32Array;
+  values?: Float32Array;
+}
+const pendingEmbeddings = new WeakMap<object, PendingEmbedding>();
+
+function pendingValues(pending: PendingEmbedding): Float32Array {
+  pending.values ??= pending.read();
+  return pending.values;
+}
+
 /**
  * Makes `record.embedding` decode on first read instead of with the row. Most reads (lists, the
  * prompt's person lines) never look at it, and `embeddingFromF32` costs about a millisecond per
  * thousand dimensions. The first read or write leaves a plain property; the key keeps its place.
+ * `read` gives the stored float32 values, which `embeddingValues` hands out without decoding.
  */
 export function lazyEmbedding<T extends { embedding: number[] | null }>(
   record: T,
-  decode: () => number[],
+  read: () => Float32Array,
 ): T {
+  const pending: PendingEmbedding = { read };
+  pendingEmbeddings.set(record, pending);
   const settle = (value: number[] | null): number[] | null => {
+    pendingEmbeddings.delete(record);
     try {
       Object.defineProperty(record, "embedding", {
         value,
@@ -253,7 +269,7 @@ export function lazyEmbedding<T extends { embedding: number[] | null }>(
   let decoded: number[] | undefined;
   Object.defineProperty(record, "embedding", {
     get: () => {
-      decoded ??= decode();
+      decoded ??= embeddingFromF32(pendingValues(pending));
       return settle(decoded);
     },
     set: (value: number[] | null) => {
@@ -263,6 +279,17 @@ export function lazyEmbedding<T extends { embedding: number[] | null }>(
     configurable: true,
   });
   return record;
+}
+
+/**
+ * A record's embedding for arithmetic such as cosine: the stored float32 values while
+ * `record.embedding` is still undecoded (so ranking never pays for the shortest-decimal
+ * conversion), otherwise `record.embedding` itself. Leaves `record.embedding` undecoded.
+ */
+export function embeddingValues(record: { embedding: number[] | null }): ArrayLike<number> | null {
+  const pending = pendingEmbeddings.get(record);
+  if (pending !== undefined) return pendingValues(pending);
+  return record.embedding;
 }
 
 /** Cosine similarity; 0 when either vector has no length. */

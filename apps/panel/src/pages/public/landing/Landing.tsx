@@ -3,8 +3,8 @@ import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 
 import type { PublicSong, PublicSongs, PublicStatus } from "@/api/types";
 import { useApi } from "@/app/connection";
 import { loginNext } from "@/app/session";
-import { LIVE_PAGE } from "../live/LivePage";
-import { STATE, stateLabel, usePublicSongs, usePublicStatus } from "../PublicSite";
+import { LIVE_PAGE } from "../live/path";
+import { STATE, stateLabel, usePublicSongs, usePublicStatus } from "../status";
 import { mountBlackHole } from "./blackhole";
 import basinPoster from "./her/basin.webp";
 import basinLoop from "./her/basin.webm";
@@ -57,20 +57,66 @@ function title(s: PublicSong | null | undefined) {
   return s?.title ?? "還不知道歌名";
 }
 
-/** Her, moving: a 4 s loop recorded from her model (only the recording ships, never the model). */
-function Her({ loop, className, style, label }: { loop: Loop; className?: string; style?: CSSProperties; label?: string }) {
+/** How far outside the screen (a share of its height) a loop starts loading. */
+const NEAR = "50% 0px";
+
+/**
+ * Her, moving: a 4 s loop recorded from her model (only the recording ships, never the model).
+ * Nothing is downloaded until it comes near the screen (`eager`: at once, for the cover), and it
+ * plays only while it can be seen. With reduced motion it never plays, as before.
+ */
+export function Her({
+  loop,
+  className,
+  style,
+  label,
+  eager = false,
+}: {
+  loop: Loop;
+  className?: string;
+  style?: CSSProperties;
+  label?: string;
+  eager?: boolean;
+}) {
+  const video = useRef<HTMLVideoElement>(null);
   const [moving] = useState(() => !still());
+  const [near, setNear] = useState(eager);
+  useEffect(() => {
+    const v = video.current;
+    if (!v) return;
+    if (typeof IntersectionObserver !== "function") {
+      setNear(true);
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[entries.length - 1];
+        if (!entry) return;
+        if (entry.isIntersecting) {
+          setNear(true);
+          // The first time the source is not set yet: `autoPlay` starts it once it loads.
+          if (moving && v.currentSrc !== "") v.play().catch(() => undefined);
+        } else if (moving) {
+          v.pause();
+        }
+      },
+      { rootMargin: NEAR },
+    );
+    io.observe(v);
+    return () => io.disconnect();
+  }, [moving]);
   return (
     <video
+      ref={video}
       className={className}
       style={style}
-      src={loop.src}
-      poster={loop.poster}
+      src={near ? loop.src : undefined}
+      poster={near ? loop.poster : undefined}
       autoPlay={moving}
       loop
       muted
       playsInline
-      preload="auto"
+      preload={near && moving ? "auto" : "none"}
       aria-label={label}
       aria-hidden={label ? undefined : true}
       data-drift
@@ -495,7 +541,7 @@ export default function Landing({ discord, notice }: { discord: boolean; notice?
         <header className="ml-hero" id="top">
           <canvas className="ml-hole" ref={hole} aria-hidden />
           <div className="ml-scrim" aria-hidden />
-          <Her loop={HER.heart} className="ml-hero-her" label={`${NAME}，藍色長髮、戴著鯨魚耳朵的女僕裝女孩`} />
+          <Her loop={HER.heart} className="ml-hero-her" eager label={`${NAME}，藍色長髮、戴著鯨魚耳朵的女僕裝女孩`} />
           <div className="ml-copy">
             <Now status={status.data} songs={songs.data} failed={status.isError} />
             <h1>

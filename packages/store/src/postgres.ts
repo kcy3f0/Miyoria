@@ -32,7 +32,6 @@ import {
   canonicalMemoryScope,
   cleanEmbedding,
   contextLookupKey,
-  embeddingFromF32,
   fromMicros,
   lazyEmbedding,
   memoryKind,
@@ -223,10 +222,10 @@ function vectorLiteral(v: readonly number[]): string {
   return `[${v.map((x) => String(Math.fround(x))).join(",")}]`;
 }
 
-function parseVector(s: string): number[] {
+function parseVector(s: string): Float32Array {
   const inner = s.trim().replace(/^\[/, "").replace(/\]$/, "");
-  if (inner.trim() === "") return [];
-  return embeddingFromF32(
+  if (inner.trim() === "") return new Float32Array(0);
+  return Float32Array.from(
     inner.split(",").map((x) => {
       const n = Number(x.trim());
       if (Number.isNaN(n)) {

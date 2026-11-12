@@ -1,7 +1,5 @@
 import {
   type Query,
-  QueryCache,
-  QueryClient,
   useInfiniteQuery,
   useMutation,
   useQueries,
@@ -47,6 +45,9 @@ import { type EvalData, loadEvalData } from "@/lib/eval-data";
 import { startOfDay } from "@/lib/rules";
 import { fetchTurnEvents } from "@/lib/turn-events";
 import { useApi } from "./connection";
+import { createQueryClient, FINAL } from "./query-client";
+
+export { createQueryClient };
 
 export const queryKeys = {
   health: ["health"] as const,
@@ -105,8 +106,6 @@ export const queryKeys = {
   evalData: (windowMs: number) => ["facts", "eval", windowMs] as const,
 };
 
-/** Errors that retrying cannot fix. */
-const FINAL = new Set(["unauthorized", "not_provided", "not_found", "bad_response"]);
 
 /** Polls every `ms`, but stops once the route turned out not to exist or the token is bad. */
 const poll =
@@ -115,23 +114,6 @@ const poll =
     const e = query.state.error;
     return isApiError(e) && FINAL.has(e.kind) ? false : ms;
   };
-
-export function createQueryClient(onError?: (error: Error) => void): QueryClient {
-  const client = new QueryClient({
-    queryCache: new QueryCache({ onError: (error) => onError?.(error) }),
-    defaultOptions: {
-      queries: {
-        staleTime: 10_000,
-        refetchOnWindowFocus: true,
-        retry: (count, error) => !(isApiError(error) && FINAL.has(error.kind)) && count < 2,
-      },
-      mutations: { retry: false },
-    },
-  });
-  // Voice measurements written from the event stream have no fetcher to bring them back.
-  client.setQueryDefaults(["e2e"], { gcTime: Number.POSITIVE_INFINITY, staleTime: Number.POSITIVE_INFINITY });
-  return client;
-}
 
 // --- system ------------------------------------------------------------------
 
