@@ -274,7 +274,7 @@ import {
 } from "./speech.js";
 import { offeredIn, scopeOfHer, scopeOfSnapshot, type ToolScope } from "./tool-scope.js";
 import { KeepNoteTool, ReactTool } from "./tools.js";
-import { charCount, contextId, fixed, guard, TimeoutError, timeout } from "./util.js";
+import { charCount, contextId, fixed, guard, TimeoutError, timeout, toolBatches } from "./util.js";
 import { imageParts, selectImages } from "./vision.js";
 
 const TYPING_TTL_MS = 10_000;
@@ -3545,9 +3545,14 @@ class Turn {
         else earlier = expression;
       }
       messages.push(assistantMessage(raw, calls));
-      for (const call of calls) {
-        const result = await this.#runTool(call, priority);
-        messages.push(toolResultMessage(call.id, result));
+      // Calls that only look (a search, a balance) run side by side; anything else alone, in order.
+      const readOnly = (call: ToolCall) => this.#tool(call.name)?.readOnly === true;
+      for (const batch of toolBatches(calls, readOnly)) {
+        const tried = await Promise.all(batch.map((call) => this.#tryTool(call, priority)));
+        batch.forEach((call, i) => {
+          const result = this.#toolResult(call, tried[i] as [boolean, string]);
+          messages.push(toolResultMessage(call.id, result));
+        });
       }
     }
     return earlier ?? new Expression();
@@ -3677,8 +3682,8 @@ class Turn {
   }
 
   /** Runs one tool call; the result (or error) is a short text for the model. */
-  async #runTool(call: ToolCall, priority: Priority): Promise<string> {
-    const [ok, full] = await this.#tryTool(call, priority);
+  /** What a call brought back, as the model reads it; publishes `agent.tool`. */
+  #toolResult(call: ToolCall, [ok, full]: [boolean, string]): string {
     if (ok) this.#succeeded.add(call.name);
     let result = truncate(full, this.agent.config.max_tool_result_chars);
     // A long result (a search, lyrics, a page) is gone next turn unless she keeps what matters.
