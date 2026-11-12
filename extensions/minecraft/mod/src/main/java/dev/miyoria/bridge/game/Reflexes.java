@@ -308,6 +308,7 @@ public final class Reflexes {
         release();
         ClientPlayerEntity p = mc.player;
         switch (k) {
+            case LAVA -> restoreHeld(mc, p);
             case FLEE, PICKUP -> {
                 if (baritone != null) baritone.reflexCancel();
             }
@@ -315,23 +316,28 @@ public final class Reflexes {
                 if (mc.interactionManager != null) mc.interactionManager.cancelBlockBreaking();
             }
             case EAT -> {
-                if (p != null && mc.interactionManager != null) {
-                    if (p.isUsingItem()) mc.interactionManager.stopUsingItem(p);
-                    if (swappedFrom >= 0) {
-                        // the same swap again puts the food and the hotbar item back where they were
-                        mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, swappedFrom,
-                                p.getInventory().selectedSlot, SlotActionType.SWAP, p);
-                    }
+                if (p != null && mc.interactionManager != null && p.isUsingItem()) {
+                    mc.interactionManager.stopUsingItem(p);
                 }
-                if (p != null && restoreSlot >= 0) p.getInventory().selectedSlot = restoreSlot;
-                restoreSlot = -1;
-                swappedFrom = -1;
+                restoreHeld(mc, p);
             }
             default -> {
             }
         }
         if (k != Kind.UNSTUCK) unstuckAttempts = 0;
         if (k == Kind.PICKUP) unreachable.clear();
+    }
+
+    /** Puts back what {@link #hold} took out of her hand for a reflex (the food, the water bucket). */
+    private void restoreHeld(MinecraftClient mc, ClientPlayerEntity p) {
+        if (p != null && mc.interactionManager != null && swappedFrom >= 0) {
+            // the same swap again puts the item and the hotbar item back where they were
+            mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, swappedFrom,
+                    p.getInventory().selectedSlot, SlotActionType.SWAP, p);
+        }
+        if (p != null && restoreSlot >= 0) p.getInventory().selectedSlot = restoreSlot;
+        restoreSlot = -1;
+        swappedFrom = -1;
     }
 
     /** {@code yielded}: it gave way to a request (not a failure). */
@@ -353,11 +359,14 @@ public final class Reflexes {
         switch (k) {
             case LAVA -> {
                 // A water bucket, once: using it again on the next ticks would scoop the water back up.
-                if (ticks == 1 && mc.interactionManager != null) {
+                // Not where water boils away (the Nether): the bucket would be emptied for nothing.
+                // What she held comes back when the reflex ends, as after eating.
+                if (ticks == 1 && mc.interactionManager != null && !w.getDimension().ultrawarm()) {
                     PlayerInventory inv = p.getInventory();
                     for (int i = 0; i < inv.main.size(); i++) {
                         if (inv.main.get(i).isOf(Items.WATER_BUCKET)) {
-                            hold(mc, p, i);
+                            restoreSlot = inv.selectedSlot;
+                            swappedFrom = hold(mc, p, i);
                             p.setPitch(90f);
                             mc.interactionManager.interactItem(p, Hand.MAIN_HAND);
                             break;
@@ -382,22 +391,11 @@ public final class Reflexes {
                 if (mc.interactionManager != null) mc.interactionManager.updateBlockBreakingProgress(at, Direction.UP);
                 p.swingHand(Hand.MAIN_HAND);
 
-                // If suffocation continues beyond 5 ticks, backstep/move laterally toward an adjacent open block
+                // If suffocation continues beyond 5 ticks, step out to a neighbouring spot she can
+                // stand on (ground under it, no lava or fire): never off a ledge or into lava.
                 if (ticks > 5) {
-                    BlockPos feet = p.getBlockPos();
-                    BlockPos escape = null;
-                    for (Direction d : Direction.values()) {
-                        if (!d.getAxis().isHorizontal()) continue;
-                        BlockPos adj = feet.offset(d);
-                        if (free(w, adj) && free(w, adj.up())) {
-                            escape = adj;
-                            break;
-                        }
-                    }
-                    if (escape != null) {
-                        Vec3d targetVec = new Vec3d(escape.getX() + 0.5, escape.getY(), escape.getZ() + 0.5);
-                        moveToward(mc, p, targetVec, false);
-                    }
+                    if (spot == null) spot = safeSpot(p, w, 1, 1, null);
+                    if (spot != null) moveToward(mc, p, spot, false);
                 }
             }
             case DROWNING -> press(mc.options.jumpKey);
