@@ -238,17 +238,17 @@ token form stays at `#/login`, with no link to it from the page.
   HLS only where there is no Media Source, i.e. iOS Safari). It starts muted with an 開啟聲音
   button (the choice and the volume are remembered in `localStorage`), a live dot, play, volume
   and fullscreen in a bar under the picture, outside the touch layer. A network or media error is
-  recovered; when it will not come back, or OBS stops, the stage falls back to the drawn figure
-  (`Mascot`, an original figure, never her Live2D model), and tries the picture again after 20 s.
+  recovered; when it will not come back, or OBS stops, the stage drops the picture (no drawn
+  stand-in for her), and tries the picture again after 20 s.
   Her state line, her lines and the pat button sit under the picture.
   Touch: a member with pats open clicks or taps the picture, and the page posts `{x, y}`, 0..1
   on the picture itself (`touch.ts` maps the click through `object-fit: contain`; a click on a bar
   is nothing). A hand and a heart show at once at the spot; other viewers' pats that carry a spot
   show as small hands there. A visitor sees a 登入後摸摸她 hint on hover and the click goes to the
   login; while pats are closed the picture takes no touch. The 摸摸頭 button stays for the
-  keyboard and posts `{}`. Over the drawn figure a pat is a hand and hearts and the face follows
-  her emotion. Her lines come as they are said, with a cursor until a line is final. All motion is
-  CSS and stops under `prefers-reduced-motion` (the hands and hearts just stay a moment).
+  keyboard and posts `{}`. Without a picture a pat shows only in the note and the count. Her lines
+  come as they are said, with a cursor until a line is final. All motion is CSS and stops under
+  `prefers-reduced-motion` (the hands and hearts just stay a moment).
 - 請她忘記我 confirms with what goes and what stays, in the words `/me memory forget` uses.
 
 ## Landing
