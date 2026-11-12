@@ -1418,3 +1418,211 @@ def test_the_split_from_the_song_alone_leaves_the_rest_of_it(tmp_path):
     b.complete_stems(tmp_path)
     backing, _ = sf.read(tmp_path / "backing.wav", dtype="float32")
     assert np.allclose(backing, x * 0.3, atol=1e-4)
+
+
+# ── running parts of a job side by side ──────────────────────────────────────
+
+
+def test_lyrics_are_looked_up_while_the_song_converts(sing, monkeypatch):
+    """The lookup starts once the lead is there, not after the mix; its ASR check waits for the conversion."""
+    if not is_mock():
+        pytest.skip("reads the mock backend's log")
+    server = _sing_server()
+    b = server.state.backend
+    seen: list[tuple[str, bool]] = []
+
+    def gate():
+        job = server.state.jobs[server.state.running]
+        seen.append((job.stage, job.converted.is_set()))
+
+    monkeypatch.setattr(b, "lyrics_gate", gate)
+    monkeypatch.setattr(b, "delay", 0.05)
+    monkeypatch.setenv("SING_MOCK_LYRICS_ASR", "1")
+    after = len(b.lyrics_after_asr_wait)
+    song = _job(sing, "lyrics side by side")["song"]
+    stage, converted = seen[-1]
+    assert stage in ("lead", "convert") and converted is False
+    assert b.lyrics_after_asr_wait[after:] == [True]  # the ASR check came after the conversion
+    assert song["lyrics"]["synced"] and song["timings"]["lyrics_s"] >= 0
+    assert b.lyrics_calls[-1] == pytest.approx(2.0)  # the source's length (the mix is not there yet)
+
+
+def test_the_next_song_is_found_and_downloaded_while_one_is_made(sing, monkeypatch):
+    if not is_mock():
+        pytest.skip("reads the mock backend's log")
+    b = _sing_server().state.backend
+    monkeypatch.setattr(b, "delay", 0.25)
+    first = sing.post("/jobs", json={"query": "prefetch first one"}).json()["job"]["id"]
+    second = sing.post("/jobs", json={"query": "prefetch second one"}).json()["job"]["id"]
+    assert wait(sing, first)["state"] == "done"
+    done = wait(sing, second)
+    assert done["state"] == "done", done
+    timings = done["song"]["timings"]
+    assert timings.get("prefetched") == 1
+    assert "resolve_s" not in timings and "download_s" not in timings
+
+
+def test_no_prefetch_when_it_is_off(sing, monkeypatch):
+    if not is_mock():
+        pytest.skip("reads the mock backend's log")
+    b = _sing_server().state.backend
+    monkeypatch.setattr(b, "delay", 0.25)
+    monkeypatch.setenv("SING_PREFETCH", "0")
+    first = sing.post("/jobs", json={"query": "no prefetch first"}).json()["job"]["id"]
+    second = sing.post("/jobs", json={"query": "no prefetch second"}).json()["job"]["id"]
+    wait(sing, first)
+    timings = wait(sing, second)["song"]["timings"]
+    assert "prefetched" not in timings and "download_s" in timings
+
+
+def test_a_download_cut_short_leaves_no_source_behind(sing, monkeypatch, tmp_path):
+    if not is_mock():
+        pytest.skip("mock only")
+    server = _sing_server()
+
+    def broken(src, dest, progress):
+        dest.write_bytes(b"half a song")
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(server.state.backend, "fetch", broken)
+    dest = tmp_path / "source.wav"
+    with pytest.raises(RuntimeError):
+        server._fetch(None, dest, lambda f: None)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_prepared_instrumental_mixes_exactly_the_same(tmp_path):
+    np = pytest.importorskip("numpy")
+    sf = pytest.importorskip("soundfile")
+    import engine
+
+    sr, n = 44100, 44100
+    t = np.arange(n) / sr
+
+    def tone(hz, a):
+        return (a * np.sin(2 * np.pi * hz * t)).astype("float32")[:, None].repeat(2, axis=1)
+
+    for name, hz, a in (("lead", 440, 0.4), ("conv", 440, 0.1), ("inst", 220, 0.2), ("backing", 330, 0.1)):
+        sf.write(tmp_path / f"{name}.wav", tone(hz, a), sr)
+
+    class Backend:
+        def transpose(self, x, sr, key):
+            return np.roll(x, key * 10, axis=0) * 0.9  # any change, the same both times
+
+    plain, ready = tmp_path / "plain", tmp_path / "ready"
+    plain.mkdir()
+    ready.mkdir()
+    args = (tmp_path / "lead.wav", tmp_path / "conv.wav", tmp_path / "inst.wav", -2)
+    engine.mix_song(*args, plain, Backend(), -16.0, tmp_path / "backing.wav")
+    prepared = engine.instrumental_for_mix(tmp_path / "inst.wav", -2, Backend(), tmp_path / "backing.wav")
+    engine.mix_song(*args, ready, Backend(), -16.0, tmp_path / "backing.wav", prepared=prepared)
+    for f in ("mix.wav", "instrumental.wav", "play_mix.pcm"):
+        assert (plain / f).read_bytes() == (ready / f).read_bytes(), f
+
+
+def test_find_lyrics_waits_once_for_the_asr_and_not_on_its_budget(net, monkeypatch, tmp_path):
+    import lyrics
+
+    net(lrclib=[_lrclib_item("Song", "Artist", 200, _lrc(12, 16.0))])
+    audio = tmp_path / "lead.wav"
+    audio.write_bytes(b"x")
+    monkeypatch.setattr(lyrics, "_clip", lambda *a: b"wav")
+    order: list[str] = []
+    monkeypatch.setattr(lyrics, "asr_text", lambda wav, url, timeout: order.append("asr") or "line number 3 of the song")
+    hints = {"title": "Song", "artist": None}
+
+    def slow_wait():
+        order.append("wait")
+        time.sleep(0.3)
+
+    r = lyrics.find_lyrics(hints, 200, llm=None, audio=audio, asr_url="http://asr", asr_mode="1", asr_wait=slow_wait,
+                           budget_s=0.2)
+    assert r is not None and r["checks"]["asr"]["ok"] is True
+    assert order[0] == "wait" and order.count("wait") == 1 and "asr" in order
+    order.clear()
+    assert lyrics.find_lyrics(hints, 200, llm=None, audio=audio, asr_url="http://asr", asr_mode="0",
+                              asr_wait=slow_wait) is not None
+    assert order == []  # no spot check, no wait
+
+
+def test_the_rvc_pass_falls_back_to_a_fresh_process(monkeypatch, tmp_path):
+    import rvcpass
+
+    env = {"SING_APPLIO_DIR": str(tmp_path / "applio"), "SING_RVC_MODEL": str(tmp_path / "m.pth")}
+    srv = rvcpass.Server(env)
+    args = srv._args("A.wav", "B.wav", -3)
+    assert args[args.index("--input-path") + 1] == "A.wav" and args[args.index("--output-path") + 1] == "B.wav"
+    assert args[args.index("--pitch") + 1] == "-3" and "core.py" not in args and "infer" not in args
+
+    calls: list[str] = []
+
+    class Broken:
+        def start(self, warm_up=True):
+            pass
+
+        def run(self, *a):
+            calls.append("server")
+            raise RuntimeError("it died")
+
+        def stop(self):
+            calls.append("stop")
+
+    monkeypatch.setattr(rvcpass, "available", lambda env=None: True)
+    monkeypatch.setattr(rvcpass, "_server", Broken())
+    monkeypatch.setattr(rvcpass, "run_once", lambda i, o, e=None, p=0: calls.append("fresh") or o)
+    monkeypatch.delenv("SING_RVC_SERVER", raising=False)
+    assert rvcpass.run(tmp_path / "in.wav", tmp_path / "out.wav") == tmp_path / "out.wav"
+    assert calls == ["server", "stop", "fresh"] and rvcpass._server is None
+    monkeypatch.setenv("SING_RVC_SERVER", "0")
+    calls.clear()
+    rvcpass.run(tmp_path / "in.wav", tmp_path / "out.wav")
+    assert calls == ["fresh"]
+
+
+def test_the_download_reuses_the_lookups_answer_while_it_is_fresh(monkeypatch):
+    import time as _time
+
+    import engine
+    from songs import Source
+
+    info = {"id": "x", "formats": [{"format_id": "251", "url": "https://example.test/a"}]}
+    src = Source(key="yt-x", kind="youtube", title="T", info=info, info_at=_time.monotonic())
+    got = engine.fresh_info(src)
+    assert got == info and got is not info  # a copy: the audio and the video threads each get one
+    got["formats"].clear()
+    assert info["formats"]  # what one thread does to its copy leaves the other's alone
+    assert "info" not in src.public() and "info_at" not in src.public()
+    monkeypatch.setenv("SING_INFO_REUSE_S", "5")
+    src.info_at = _time.monotonic() - 10
+    assert engine.fresh_info(src) is None  # links that may have expired: read the page again
+    monkeypatch.delenv("SING_INFO_REUSE_S")
+    assert engine.fresh_info(Source(key="k", kind="url", title="T")) is None
+    assert engine.fresh_info(Source(key="k", kind="url", title="T", info={"id": "x"}, info_at=_time.monotonic())) is None
+
+
+def test_her_rvc_model_picks_the_key_from_the_pitch_it_reads(sing, monkeypatch):
+    """SING_VOICE=rvc with the auto key: no pitch analysis in the worker, the RVC pass answers with it."""
+    if not is_mock():
+        pytest.skip("replaces the mock backend's conversion")
+    server = _sing_server()
+    b = server.state.backend
+    asked: list[tuple] = []
+
+    def convert_auto(vocal, out, choose, progress, cancelled):
+        shift = choose((220.0, 300.0), 440.0)  # an octave under her: up an octave
+        asked.append((vocal.name, shift))
+        server._write_wav(out, server._tone(1, 16000, 440), 16000)
+        progress(1.0)
+
+    monkeypatch.setattr(b, "voice", "rvc", raising=False)
+    monkeypatch.setattr(b, "convert_auto", convert_auto, raising=False)
+    f0_before = len(b.f0_inputs)
+    song = _job(sing, "rvc reads the pitch")["song"]
+    assert asked == [("lead.wav", 12)]
+    assert len(b.f0_inputs) == f0_before  # the worker read no pitch itself
+    p = song["pitch"]
+    assert p["auto"] is True and p["octave_shift"] == 12 and p["vocal_shift"] == 12
+    assert p["source_median_hz"] == 220.0 and p["ref_median_hz"] == 440.0
+    # An explicit pitch is the requester's: the plain conversion, no question asked.
+    _job(sing, "rvc reads the pitch", pitch=-3)
+    assert len(asked) == 1
