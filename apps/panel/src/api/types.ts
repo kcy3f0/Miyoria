@@ -515,6 +515,8 @@ export interface GoalView {
   my_pledge: number;
   deadline: string;
   status: "open" | "reached" | "expired" | "cancelled";
+  /** A reached goal whose promise she kept (absent on an older Core). */
+  fulfilled?: boolean;
 }
 
 /** `POST /api/member/goals/:id/pledge`. */

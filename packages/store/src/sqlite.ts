@@ -102,6 +102,7 @@ import type {
   EconomyDoc,
   FortuneRecord,
   Goal,
+  GoalFulfiller,
   GoalPatch,
   GoalPledge,
   GoalStatus,
@@ -1053,6 +1054,17 @@ function goalFromRow(row: Row): Goal {
     created_at: ts(row, "created_at"),
     deadline: ts(row, "deadline"),
     closed_at: optTs(row, "closed_at"),
+    ...fulfilledOf(row),
+  };
+}
+
+/** The kept-promise columns of a goal row; nothing while it is owed. */
+function fulfilledOf(row: Row): Pick<Goal, "fulfilled_at" | "fulfilled_by"> {
+  const at = optTs(row, "fulfilled_at");
+  if (at === null) return {};
+  return {
+    fulfilled_at: at,
+    fulfilled_by: optStr(row, "fulfilled_by") === "self" ? "self" : "owner",
   };
 }
 
@@ -1127,6 +1139,16 @@ class SqliteGoals implements GoalStore {
       params,
     );
     return rows.map(goalFromRow);
+  }
+
+  async fulfill(id: string, by: GoalFulfiller, at: Timestamp): Promise<boolean> {
+    return (
+      this.db.run(
+        "UPDATE goals SET fulfilled_at = $at, fulfilled_by = $by WHERE id = $id AND " +
+          "status = 'reached' AND fulfilled_at IS NULL",
+        { id, by, at: toMicros(at) },
+      ) > 0
+    );
   }
 
   async addPledge(pledge: GoalPledge): Promise<void> {

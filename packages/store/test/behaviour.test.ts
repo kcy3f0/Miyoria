@@ -1903,6 +1903,16 @@ function behaviour(open: () => Promise<Store>): void {
     expect(
       (await store.goals.list(profile, { statuses: ["open"], limit: 9 })).map((g) => g.title),
     ).toEqual(["lamp"]);
+    // A kept promise: only a reached goal, and the first mark stands.
+    expect(await store.goals.get(first.id)).not.toHaveProperty("fulfilled_at");
+    expect(await store.goals.fulfill(second.id, "owner", at(3_500))).toBe(false);
+    expect(await store.goals.fulfill(first.id, "self", at(4_000))).toBe(true);
+    expect(await store.goals.fulfill(first.id, "owner", at(5_000))).toBe(false);
+    expect(await store.goals.get(first.id)).toMatchObject({
+      fulfilled_at: at(4_000),
+      fulfilled_by: "self",
+    });
+    expect(await store.goals.get(second.id)).not.toHaveProperty("fulfilled_at");
 
     const bounty = (ms: number, task: string): Bounty => ({
       id: newId(),
