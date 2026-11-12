@@ -75,8 +75,10 @@ const brotli = promisify(brotliCompress);
 const gzipped = promisify(gzip);
 
 /**
- * The encoding to send for an `Accept-Encoding` header: brotli, else gzip, else none (`null`).
- * A coding listed with `q=0` is refused; `*` stands for any coding not listed.
+ * The encoding to send for an `Accept-Encoding` header (RFC 9110 §12.5.3): the acceptable coding
+ * with the highest `q`, brotli before gzip before none on a tie, `null` for none. `*` stands for
+ * any coding not listed; sending as is (`identity`) is acceptable unless refused with `q=0`, and
+ * when it is not named it counts as the lowest `q` listed.
  */
 export function pickEncoding(header: string | null): Encoding | null {
   if (header === null) return null;
@@ -88,10 +90,18 @@ export function pickEncoding(header: string | null): Encoding | null {
     const value = qp === undefined ? 1 : Number(qp.slice(2));
     q.set(name, Number.isFinite(value) ? value : 0);
   }
-  const accepts = (coding: Encoding) => (q.get(coding) ?? q.get("*") ?? 0) > 0;
-  if (accepts("br")) return "br";
-  if (accepts("gzip")) return "gzip";
-  return null;
+  const weight = (coding: string, otherwise: number) => q.get(coding) ?? q.get("*") ?? otherwise;
+  let best: Encoding | null = null;
+  // Not named, sending as is ranks with the least wanted coding listed (as `negotiator` does).
+  let bestQ = weight("identity", q.size === 0 ? 1 : Math.min(...q.values()));
+  for (const coding of ["gzip", "br"] as const) {
+    const w = weight(coding, 0);
+    if (w > 0 && w >= bestQ) {
+      best = coding;
+      bestQ = w;
+    }
+  }
+  return best;
 }
 
 /** Compresses on the zlib thread pool, never on the event loop. */
