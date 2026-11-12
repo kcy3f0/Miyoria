@@ -265,17 +265,20 @@ does. Strategy and the direction contract live in `.impeccable/surfaces/src-page
   right, her name as the `h1` with the Discord login and her live page.
 - Under the cover: the night sea (`sea.ts`, our own shader), a fixed canvas of sharp-crested waves
   lit by the sky and a moon; scrolling moves the camera forward.
-- Glass is light (6-8 px blur) and only where something sits over the water: the nav capsule, tiles,
-  the player, the terminal.
-- Nav: a flat bar on the cover that folds into a floating capsule after it, with a sliding pill on
-  the current section and a scroll progress line; it hides while scrolling down and drops back in
-  when scrolling up.
+- Glass is light (6-8 px blur) and only where something sits over the water: tiles, the player,
+  the terminal.
+- Nav: a flat bar on the cover that scrolls away with it; no sticky bar over the sections.
+- Mark: a whale's tail coming up out of the water, light to deep blue
+  (`docs/assets/logo/`: `miyoria-mark.svg`, `miyoria-mark-light.svg` for light grounds,
+  `miyoria-icon.svg` on its dark tile, which is also the favicon).
 - Sections are pictures, not lists: 她在 Discord 的樣子 (her with mock Discord messages that pop in as
   a conversation, and a voice channel), 歌單 from `/api/public/songs`, 直播間 (a stage that links to
   `/watch`), and 自己養一隻 with the real setup commands typed out.
 - Her pictures (`landing/her/*.webm`, `.webp` posters) are short loops recorded from the official
   free Live2D model by 神宫凉子. Only the recordings ship; the model and PSD stay out of the repo, as
   their guidelines ask. The footer credits the illustrator and the black hole and has no picture.
+- Phones get their own layout: her above the words on the cover, each tile with the chat on top
+  and her under it, a tall stage, and a three-column footer.
 - Motion: headings come in a character at a time, sections rise as they arrive, her pictures drift
   with scroll. All of it stops under `prefers-reduced-motion`, and the shaders draw one frame.
 - Without WebGL the cover and sea are plain black.
