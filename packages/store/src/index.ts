@@ -62,6 +62,7 @@ export {
   type EconomyDoc,
   type FortuneRecord,
   type Goal,
+  type GoalFulfiller,
   type GoalPatch,
   type GoalPledge,
   type GoalStatus,

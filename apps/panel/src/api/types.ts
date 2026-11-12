@@ -515,6 +515,8 @@ export interface GoalView {
   my_pledge: number;
   deadline: string;
   status: "open" | "reached" | "expired" | "cancelled";
+  /** A reached goal whose promise she kept (absent on an older Core). */
+  fulfilled?: boolean;
 }
 
 /** `POST /api/member/goals/:id/pledge`. */
@@ -2007,6 +2009,12 @@ export interface PersonCard {
   emotions: Partial<Record<"missing" | "jealousy" | "gratitude" | "resentment", number>>;
   feeling: string;
   label: RelationshipLabel;
+  /** -100..100, one per affinity point (absent on an older Core). */
+  level?: number;
+  /** How she acts with them now, one line she wrote in her reflection; `null` or absent: none yet. */
+  stance?: string | null;
+  /** The `level` the stance was written at; she rewrites it every 5 levels. */
+  stance_level?: number | null;
   owner: boolean;
   blocked: boolean;
   last_seen: Timestamp | null;

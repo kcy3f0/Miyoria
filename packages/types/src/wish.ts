@@ -224,12 +224,7 @@ export function wishGrams(text: string, person: Handle | null = null): Set<strin
  * paraphrased a wish whose topic also carried its plan's steps, shared 0.30, and the wish
  * fired again 13 minutes later; an unrelated DM shared 0.00).
  */
-export function sameWish(
-  a: string,
-  b: string,
-  person: Handle | null = null,
-  min = 0.5,
-): boolean {
+export function sameWish(a: string, b: string, person: Handle | null = null, min = 0.5): boolean {
   const x = wishGrams(a, person);
   const y = wishGrams(b, person);
   if (x.size === 0 || y.size === 0) return false;

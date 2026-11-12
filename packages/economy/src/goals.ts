@@ -10,9 +10,11 @@
 //   pledge that met it was made (none without a place, notices.ts). Short at the deadline, or
 //   if she withdraws it, every pledge is returned once.
 // * Goals persist in `GoalStore`; a sweep ends what ran out and finishes what a restart cut short.
+// * A reached goal's promise is owed until it is marked kept (`fulfill`): by the owner on the panel,
+//   or by her when she says she did it. Until then her purse block reminds her; after, it does not.
 
 import { errorMessage } from "@miyoria/kernel";
-import { type Goal, GoalStoreKey } from "@miyoria/store";
+import { type Goal, type GoalFulfiller, GoalStoreKey } from "@miyoria/store";
 import { type AccountRef, type ContextKey, newId, toTimestamp } from "@miyoria/types";
 import { cleanText, guardTask } from "./deals.js";
 import type { EconomyService } from "./economy.js";
@@ -26,6 +28,8 @@ export const MAX_PROMISE_CHARS = 60;
 export const OPEN_GOAL = "已經有一個目標在進行了";
 export const NO_GOAL = "現在沒有進行中的目標";
 export const GOAL_OVER = "這個目標已經結束了";
+export const NOT_OWED = "沒有湊滿、還沒做到的目標";
+export const ALREADY_KEPT = "這個目標已經記成做到了";
 const DAY_MS = 86_400_000;
 const VIEW_LIMIT = 10;
 
@@ -262,6 +266,43 @@ export class GoalDesk {
     await this.e.purse.refresh();
   }
 
+  // ---- the promise ----------------------------------------------------------------------
+
+  /** Reached goals, newest first, kept or still owed (the panel lists them). */
+  async reached(): Promise<Goal[]> {
+    return this.#store().list(this.e.profile, { statuses: ["reached"], limit: VIEW_LIMIT });
+  }
+
+  /**
+   * Marks a reached goal's promise kept. `goalId` `null`: the newest one still owed (her own
+   * report). Throws `EconomyError` 409 when there is none or it was marked already.
+   */
+  async fulfill(goalId: string | null, by: GoalFulfiller): Promise<Goal> {
+    const store = this.#store();
+    const kept = await this.e.serial(async (): Promise<Goal> => {
+      const goal =
+        goalId === null
+          ? ((await this.reached()).find((g) => g.fulfilled_at === undefined) ?? null)
+          : await store.get(goalId);
+      if (!goal || goal.profile !== this.e.profile || goal.status !== "reached") {
+        throw new EconomyError(409, NOT_OWED);
+      }
+      if (goal.fulfilled_at !== undefined) throw new EconomyError(409, ALREADY_KEPT);
+      const at = toTimestamp(this.e.now());
+      if (!(await store.fulfill(goal.id, by, at))) throw new EconomyError(409, ALREADY_KEPT);
+      return { ...goal, fulfilled_at: at, fulfilled_by: by };
+    });
+    this.e.purse.audit("economy.goal.fulfilled", { goal: kept.id, by });
+    this.e.purse.news(
+      `goal:${kept.id}:fulfilled`,
+      by === "owner"
+        ? `主人把目標「${kept.title}」記成做到了(你答應的:${kept.promise}),謝謝大家。`
+        : `你把目標「${kept.title}」記成做到了(你答應的:${kept.promise})。`,
+    );
+    await this.e.purse.refresh();
+    return kept;
+  }
+
   // ---- time -----------------------------------------------------------------------------
 
   /** Ends goals past their deadline (every pledge returned) and finishes interrupted ones. */
@@ -326,6 +367,7 @@ export class GoalDesk {
           .reduce((n, p) => n + p.amount, 0),
         deadline: g.deadline,
         status: g.status,
+        fulfilled: g.fulfilled_at !== undefined,
       });
     }
     return out;

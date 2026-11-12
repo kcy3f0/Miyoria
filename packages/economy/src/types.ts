@@ -245,6 +245,13 @@ export interface Economy {
     key: string,
     context?: ContextKey | null,
   ): Promise<PledgeResult>;
+  /** Reached goals, kept or still owed, newest first (the panel). */
+  reachedGoals(): Promise<ReachedGoalView[]>;
+  /**
+   * Marks a reached goal's promise kept (`goalId` `null`: the newest one owed). `EconomyError`
+   * 409 when it is not reached or was marked already (the first mark stands).
+   */
+  fulfillGoal(goalId: string | null, by: "owner" | "self"): Promise<ReachedGoalView>;
   /** The bounties she has open. */
   bounties(): Promise<BountyView[]>;
   /**
@@ -292,6 +299,21 @@ export interface GoalView {
   /** When it ends if it has not been reached. */
   deadline: string;
   status: "open" | "reached" | "expired" | "cancelled";
+  /** A reached goal whose promise she kept (marked by the owner or by her). */
+  fulfilled: boolean;
+}
+
+/** A reached goal for the owner: what she promised and whether she kept it. */
+export interface ReachedGoalView {
+  id: string;
+  title: string;
+  promise: string;
+  target: number;
+  /** When it was reached. */
+  reached_at: string | null;
+  /** When the promise was marked kept; `null` while it is owed. */
+  fulfilled_at: string | null;
+  fulfilled_by: "owner" | "self" | null;
 }
 
 /** What a pledge did. */

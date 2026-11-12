@@ -243,6 +243,33 @@ describe("markup the model imitates", () => {
     );
   });
 
+  // 2026-11-11 in the channel: 「<react emoji="👍"/>」 went out as the first line of a reply.
+  it("takes a tool written as a tag with attributes out of the text", () => {
+    const cases: [string, string][] = [
+      ['<react emoji="👍"/>\n可以啊,你看', "\n可以啊,你看"],
+      ["<react emoji='💀' />笑死", "笑死"],
+      ['好<react emoji="<:miyo_smug:112233445566778899>"/>', "好"],
+      ['<remember text="他喜歡貓" about="owen">記住了', "記住了"],
+      ["<react/>嗯", "嗯"],
+    ];
+    for (const [input, out] of cases) {
+      const e = Expression.parse(input);
+      expect(e.text, input).toBe(out);
+      expect(e.tools.length, input).toBe(1);
+    }
+    expect(Expression.parse('<react emoji="👍"/>').tools).toEqual(["react"]);
+    expect(Expression.parse('<react emoji="👍"/>').isSilent()).toBe(true);
+  });
+
+  it("also when the attribute tag arrives in pieces", () => {
+    const tool: Segment = { type: "tool", name: "react" };
+    expect(parseChunks(["<react emo", 'ji="', "👍", '"/', ">可以啊"])).toEqual([
+      tool,
+      text("可以啊"),
+    ]);
+    expect(parseChunks(['<react emoji="<:miyo', ":1122>", '"/>好'])).toEqual([tool, text("好")]);
+  });
+
   it("drops a span, also across chunks", () => {
     const parser = new ExpressionParser();
     const e = new Expression();

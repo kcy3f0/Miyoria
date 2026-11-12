@@ -193,6 +193,11 @@ export class Singer implements VoiceFloor, SpeechPause {
   readonly #clips = new Map<string, number>();
   readonly #turnsDone: TurnId[] = [];
   #closed = false;
+  /**
+   * Whether someone is in her voice channel of `guild`: `true` / `false`, or `null` when that is
+   * not known (no member list yet, or an account of another platform such as a web viewer).
+   */
+  #present: (guild: string, who: AccountRef) => boolean | null = () => null;
   /** JSON of the set list last stored. */
   #saved: string | null = null;
   /** Restored songs that never reached the worker. */
@@ -222,7 +227,24 @@ export class Singer implements VoiceFloor, SpeechPause {
     this.list = new SetList(cfg);
   }
 
+  /** Where she learns who is in voice (the module's `VoiceRoom`). */
+  setPresence(present: (guild: string, who: AccountRef) => boolean | null): void {
+    this.#present = present;
+  }
+
   // ----- views -----
+
+  /**
+   * Whether a song that starts on its own waits for its requester: they left the voice channel
+   * she is in (2026-11-12: a song asked for by command was sung to someone who had gone). It
+   * stays ready and starts once they are back; songs whose people are there go first.
+   */
+  waitsForRequester(entry: SongEntry): boolean {
+    if (entry.requester === null || entry.practice === true) return false;
+    const where = this.voiceContext(entry.context?.scope ?? null) ?? this.voiceContext();
+    if (where === null || where.scope === null) return false;
+    return this.#present(where.scope, entry.requester) === false;
+  }
 
   /** `SpeechPause`: speech is off while a song's job has the GPU. */
   paused(): string | null {
@@ -629,10 +651,15 @@ export class Singer implements VoiceFloor, SpeechPause {
     if (!ok) this.#autoStart();
   }
 
-  /** Starts the next song that should start on its own, when she is in voice and free. */
+  /**
+   * Starts the next song that should start on its own, when she is in voice and free. A song
+   * whose requester left the channel is passed over until they are back (`waitsForRequester`).
+   */
   #autoStart(): void {
     if (this.#playing || this.#closed) return;
-    const next = this.list.ready().find((e) => e.practice !== true && !this.#mindDecides(e));
+    const next = this.list
+      .ready()
+      .find((e) => e.practice !== true && !this.#mindDecides(e) && !this.waitsForRequester(e));
     if (!next) return;
     const where = this.voiceContext(next.context?.scope ?? null) ?? this.voiceContext();
     if (where === null || where.scope === null) return;
@@ -1028,6 +1055,10 @@ export class Singer implements VoiceFloor, SpeechPause {
         if (c.scope !== null) this.#speaking.delete(c.scope);
         return;
       }
+      case "voice_participants":
+        // Someone came back: a song that waited for them may start now.
+        this.#autoStart();
+        return;
       case "voice_playback": {
         const guild = event.data.context.scope;
         if (guild === null) return;

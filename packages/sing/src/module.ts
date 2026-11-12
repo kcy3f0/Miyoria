@@ -106,6 +106,7 @@ export class SingModule implements Module {
     prompts?.register(new SingPrompt(singer));
     const room = new VoiceRoom(() => ctx.clock.now());
     prompts?.register(new VoiceRoomPrompt(room, singer.list));
+    singer.setPresence((guild, who) => room.present(guild, who));
     ctx.provide(SingerKey, singer);
     ctx.provide(VoiceFloorKey, singer);
     ctx.provide(SpeechPauseKey, singer);

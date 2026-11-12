@@ -57,6 +57,11 @@ export interface Tool {
    */
   readonly actsFor?: boolean;
   /**
+   * It only looks (a search, a balance, a file): it changes nothing anyone else reads, so when
+   * the model asks for several in one step they run at the same time. Unset: one at a time.
+   */
+  readonly readOnly?: boolean;
+  /**
    * Runs the tool. The returned text (or the error message) goes back to the model, so keep it
    * short.
    */
