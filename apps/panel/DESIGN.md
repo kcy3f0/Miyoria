@@ -78,7 +78,9 @@ clamped on read), the owner's picture in IndexedDB (`miyoria-panel`). Never a li
 The default background is the owner's picture, `public/background.local.jpg`. It is game art, so it
 is ignored by git and never ships; where the file is missing the 暮色 gradient shows instead. The
 login card's right half shows `public/login.local.jpg` the same way, at 82% over the frosted
-backdrop, beside a lighter glass (`--login`) than the floating surfaces.
+backdrop, beside a lighter glass (`--login`) than the floating surfaces. Whether each file is there
+is read at build time (`__PANEL_ART__` in `vite.config.ts`): a build without them never asks for
+them, so adding or removing one takes a rebuild.
 
 ## Color
 
