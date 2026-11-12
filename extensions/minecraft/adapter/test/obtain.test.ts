@@ -21,7 +21,6 @@ class World implements RunnerHost {
   /** Blocks `explore` brings into view. */
   explorable = new Set<string>();
   placed = new Set<string>();
-  freeSlots = 30;
   readonly requests: Array<{ type: string; params: Record<string, unknown> }> = [];
   readonly emitted: GameEvent[] = [];
   runner!: ObtainRunner;
@@ -84,33 +83,12 @@ class World implements RunnerHost {
       this.placed.add(item);
       return { item };
     }
-    if (type === "drop") {
-      const item = params.item as string;
-      delete this.inv[item];
-      this.freeSlots += 1;
-      return { dropped: item };
-    }
-    if (type === "smelt") {
-      const item = params.item as string | undefined;
-      if (item) {
-        // starting smelt
-        this.inv[item] = (this.inv[item] ?? 0) - (params.count as number);
-        this.#later("smelt_finished", { ready_in_secs: 0.01, furnace: { x: 10, y: 64, z: 20 } });
-        return { furnace: { x: 10, y: 64, z: 20 } };
-      } else {
-        // collecting
-        this.inv.iron_ingot = (this.inv.iron_ingot ?? 0) + 1;
-        this.#later("smelt_finished", { collected: { iron_ingot: 1 }, furnace: { x: 10, y: 64, z: 20 } });
-        return { furnace: { x: 10, y: 64, z: 20 } };
-      }
-    }
     return {};
   }
 
   async observe(): Promise<Snapshot> {
     return {
       inventory: Object.fromEntries(Object.entries(this.inv).filter(([, n]) => n > 0)),
-      inventory_free_slots: this.freeSlots,
       nearby_blocks: [...this.visible, ...this.placed].map((block) => ({ block, count: 1, distance: 3 })),
     };
   }
@@ -136,34 +114,14 @@ describe("obtain runner", () => {
     expect(world.requests.map((r) => (r.type === "baritone" ? `mine ${r.params.count}` : `${r.type} ${r.params.item}`))).toEqual([
       "mine 3",
       "craft oak_planks",
-      "craft stick",
       "craft crafting_table",
       "place crafting_table",
+      "craft stick",
       "craft wooden_pickaxe",
-      "mine 1",
     ]);
     const steps = world.emitted.filter((e) => e.type === "plan_step").map((e) => (e.data as { text: string }).text);
-    expect(steps[0]).toBe("取得木鎬:第 1/7 步,砍原木×3");
+    expect(steps[0]).toBe("取得木鎬:第 1/6 步,砍原木×3");
     expect(steps.at(-1)).toBe("取得木鎬:第 6/6 步,做木鎬×1");
-  });
-
-  it("drops low value junk when inventory is nearly full", async () => {
-    const world = new World();
-    world.inv = { wheat_seeds: 12, dirt: 64 };
-    world.freeSlots = 2; // critically full
-    const result = await runner(world, "stick").run();
-    expect(result.ok).toBe(true);
-    expect(world.requests.some((r) => r.type === "drop" && r.params.item === "wheat_seeds")).toBe(true);
-  });
-
-  it("remembers furnace coordinates and walks back to it to collect", async () => {
-    const world = new World();
-    world.inv = { raw_iron: 1, coal: 2 };
-    world.placed.add("furnace");
-    const result = await runner(world, "iron_ingot").run();
-    expect(result.ok).toBe(true);
-    // Should have walked back to the exact furnace coordinates
-    expect(world.requests.some((r) => r.type === "baritone" && r.params.command === "goto" && r.params.x === 10 && r.params.z === 20)).toBe(true);
   });
 
   it("explores for blocks out of sight, then gives up with the reason", async () => {

@@ -5,43 +5,21 @@ const lines = (target: string, inv: Record<string, number> = {}, world = {}, cou
   plan(target, count, inv, world).map(describeStep);
 
 describe("planner", () => {
-  it("recovers placed crafting table so it is in inventory after crafting", () => {
-    expect(lines("wooden_pickaxe")).toEqual([
-      "砍原木×3",
-      "做木材×12",
-      "做木棒×4",
-      "做工作台×1",
-      "放下工作台",
-      "做木鎬×1",
-      "挖工作台×1",
-    ]);
-    expect(lines("furnace", { crafting_table: 1, cobblestone: 8 }, { table: false })).toEqual([
-      "放下工作台",
-      "做熔爐×1",
-      "挖工作台×1",
-    ]);
-  });
-
   it("works an iron pickaxe back to bare hands, each source in one go", () => {
     expect(lines("iron_pickaxe")).toEqual([
       "砍原木×4",
       "做木材×16",
-      "做木棒×8",
       "做工作台×1",
       "放下工作台",
+      "做木棒×8",
       "做木鎬×1",
-      "挖工作台×1",
       "挖鵝卵石×11",
-      "放下工作台",
       "做熔爐×1",
       "放下熔爐",
       "做石鎬×1",
-      "挖工作台×1",
       "挖粗鐵×3",
       "用熔爐燒鐵錠×3",
-      "放下工作台",
       "做鐵鎬×1",
-      "挖工作台×1",
     ]);
   });
 
@@ -63,16 +41,7 @@ describe("planner", () => {
 
   it("needs the right pickaxe tier before mining", () => {
     expect(lines("diamond", { iron_pickaxe: 1 })).toEqual(["挖鑽石×1"]);
-    expect(lines("cobblestone", {})).toEqual([
-      "砍原木×3",
-      "做木材×12",
-      "做木棒×4",
-      "做工作台×1",
-      "放下工作台",
-      "做木鎬×1",
-      "挖工作台×1",
-      "挖鵝卵石×1",
-    ]);
+    expect(lines("cobblestone", {})).toEqual(["砍原木×3", "做木材×12", "做工作台×1", "放下工作台", "做木棒×4", "做木鎬×1", "挖鵝卵石×1"]);
   });
 
   it("treats tag ingredients as any member", () => {

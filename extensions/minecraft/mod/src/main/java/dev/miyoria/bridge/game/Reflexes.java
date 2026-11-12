@@ -308,7 +308,7 @@ public final class Reflexes {
         release();
         ClientPlayerEntity p = mc.player;
         switch (k) {
-            case FLEE, PICKUP, LAVA -> {
+            case FLEE, PICKUP -> {
                 if (baritone != null) baritone.reflexCancel();
             }
             case SUFFOCATION -> {
@@ -352,27 +352,21 @@ public final class Reflexes {
         if (p == null || w == null) return;
         switch (k) {
             case LAVA -> {
-                // If holding or carrying a water bucket, attempt to deploy it to extinguish / solidify lava
-                int waterSlot = -1;
-                PlayerInventory inv = p.getInventory();
-                for (int i = 0; i < inv.main.size(); i++) {
-                    if (inv.main.get(i).isOf(Items.WATER_BUCKET)) {
-                        waterSlot = i;
-                        break;
+                // A water bucket, once: using it again on the next ticks would scoop the water back up.
+                if (ticks == 1 && mc.interactionManager != null) {
+                    PlayerInventory inv = p.getInventory();
+                    for (int i = 0; i < inv.main.size(); i++) {
+                        if (inv.main.get(i).isOf(Items.WATER_BUCKET)) {
+                            hold(mc, p, i);
+                            p.setPitch(90f);
+                            mc.interactionManager.interactItem(p, Hand.MAIN_HAND);
+                            break;
+                        }
                     }
                 }
-                if (waterSlot >= 0 && mc.interactionManager != null && ticks <= 4) {
-                    hold(mc, p, waterSlot);
-                    p.setPitch(90f);
-                    mc.interactionManager.interactItem(p, Hand.MAIN_HAND);
-                }
-
+                // Keys, not Baritone: a path takes ticks to compute and she is burning.
                 if (spot == null || ticks % 20 == 0) spot = safeSpot(p, w, 6, 0, null);
-                if (baritone != null && spot != null) {
-                    if (ticks % 20 == 1) baritone.reflexGoTo(BlockPos.ofFloored(spot));
-                } else {
-                    moveToward(mc, p, spot, true);
-                }
+                moveToward(mc, p, spot, true);
             }
             case FALLING_BLOCK -> {
                 if (spot == null) {
