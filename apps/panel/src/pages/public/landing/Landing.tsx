@@ -3,8 +3,8 @@ import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 
 import type { PublicSong, PublicSongs, PublicStatus } from "@/api/types";
 import { useApi } from "@/app/connection";
 import { loginNext } from "@/app/session";
-import { LIVE_PAGE } from "../live/LivePage";
-import { STATE, stateLabel, usePublicSongs, usePublicStatus } from "../PublicSite";
+import { LIVE_PAGE } from "../live/path";
+import { STATE, stateLabel, usePublicSongs, usePublicStatus } from "../status";
 import { mountBlackHole } from "./blackhole";
 import basinPoster from "./her/basin.webp";
 import basinLoop from "./her/basin.webm";
