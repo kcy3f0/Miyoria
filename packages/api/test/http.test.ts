@@ -32,11 +32,12 @@ function rawStatus(base: string, path: string): Promise<number> {
   });
 }
 
-/** A GET sent with exactly `headers`, its body as sent (not decompressed). */
+/** A GET (or `method`) sent with exactly `headers`, its body as sent (not decompressed). */
 function rawGet(
   base: string,
   path: string,
   headers: Record<string, string>,
+  method = "GET",
 ): Promise<{
   status: number;
   headers: Record<string, string | string[] | undefined>;
@@ -44,7 +45,7 @@ function rawGet(
 }> {
   const { hostname, port } = new URL(base);
   return new Promise((resolve, reject) => {
-    const req = request({ host: hostname, port, path, method: "GET", headers }, (res) => {
+    const req = request({ host: hostname, port, path, method, headers }, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (c: Buffer) => chunks.push(c));
       res.on("end", () =>
@@ -310,6 +311,34 @@ describe("http", () => {
         (await rawGet(base, "/", { "accept-encoding": "br", "if-none-match": tag })).status,
         tag,
       ).toBe(304);
+    }
+  });
+
+  it("panel files: HEAD has the headers GET would send", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "miyoria-panel-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    mkdirSync(join(dir, "assets"));
+    writeFileSync(
+      join(dir, "index.html"),
+      `<!doctype html><title>Miyoria</title>${"<p>她</p>".repeat(300)}`,
+    );
+    writeFileSync(
+      join(dir, "assets/app.js"),
+      `export const x = ${JSON.stringify("miyoria ".repeat(500))};\n`,
+    );
+    const { base } = await start({ panel_dir: dir });
+    const same = ["status", "content-encoding", "content-length", "etag", "vary", "last-modified"];
+    for (const path of ["/", "/assets/app.js"]) {
+      for (const accept of ["br, gzip", "gzip", "identity"]) {
+        const get = await rawGet(base, path, { "accept-encoding": accept });
+        const head = await rawGet(base, path, { "accept-encoding": accept }, "HEAD");
+        expect(head.body.length, `${path} ${accept}`).toBe(0);
+        for (const name of same) {
+          const want = name === "status" ? get.status : get.headers[name];
+          const got = name === "status" ? head.status : head.headers[name];
+          expect(got, `${path} ${accept} ${name}`).toEqual(want);
+        }
+      }
     }
   });
 

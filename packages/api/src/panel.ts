@@ -296,7 +296,7 @@ export async function servePanel(
       const bytes = Buffer.from(html, "utf8");
       const tag = `"${createHash("sha1").update(bytes).digest("base64url")}"`;
       const encoding =
-        method === "GET" && bytes.length >= MIN_COMPRESS_BYTES
+        bytes.length >= MIN_COMPRESS_BYTES
           ? pickEncoding(request.headers.get("accept-encoding"))
           : null;
       const headers = new Headers({
@@ -315,12 +315,14 @@ export async function servePanel(
         headers.delete("content-length");
         return new Response(null, { status: 304, headers });
       }
-      if (method === "HEAD") return new Response(null, { status: 200, headers });
-      if (encoding === null) return new Response(bytes, { status: 200, headers });
-      const body = await compress(bytes, encoding);
-      headers.set("content-encoding", encoding);
-      headers.set("content-length", String(body.length));
-      return new Response(body, { status: 200, headers });
+      // HEAD gets the headers GET would (the same encoding, length and tag), without the body.
+      let body: Buffer = bytes;
+      if (encoding !== null) {
+        body = await compress(bytes, encoding);
+        headers.set("content-encoding", encoding);
+        headers.set("content-length", String(body.length));
+      }
+      return new Response(method === "HEAD" ? null : body, { status: 200, headers });
     }
 
     const assets = url.pathname.startsWith("/assets/");
@@ -345,7 +347,17 @@ export async function servePanel(
       }
     }
     headers.set("content-length", String(info.size));
-    if (method === "HEAD") return new Response(null, { status: 200, headers });
+    const encoding = compressible ? pickEncoding(request.headers.get("accept-encoding")) : null;
+    if (method === "HEAD") {
+      // The headers of the whole file as GET would send it: compressed, the compressed length
+      // (from the same cache). A HEAD never answers a range.
+      if (encoding !== null) {
+        const body = await compressedFile(path, info.mtimeMs, info.size, encoding);
+        headers.set("content-encoding", encoding);
+        headers.set("content-length", String(body.length));
+      }
+      return new Response(null, { status: 200, headers });
+    }
     // `If-Range` asks for the part only while the file is the one it names: anything but its
     // date as sent here gets the whole file.
     const ifRange = request.headers.get("if-range");
@@ -368,7 +380,6 @@ export async function servePanel(
     }
     // The whole file, compressed when the client takes it. A range is always of the file as it
     // is on disk (above), so ranges and compression never meet.
-    const encoding = compressible ? pickEncoding(request.headers.get("accept-encoding")) : null;
     if (encoding !== null) {
       const body = await compressedFile(path, info.mtimeMs, info.size, encoding);
       headers.set("content-encoding", encoding);
