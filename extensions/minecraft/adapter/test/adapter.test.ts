@@ -121,6 +121,25 @@ describe("actions", () => {
     expect(() => toRequests({ name: "select", args: { slot: 9 } })).toThrow("0–8");
     expect(() => toRequests({ name: "fly" })).toThrow("沒有「fly」");
   });
+
+  it("drop refuses a bad item or slot instead of dropping what is in her hand", () => {
+    for (const item of ["", "  ", 5, "iron pickaxe!", {}]) {
+      expect(() => toRequests({ name: "drop", args: { item } }), JSON.stringify(item)).toThrow("drop 的 item");
+    }
+    for (const slot of [-1, 36, 2.5, "abc", "", true]) {
+      expect(() => toRequests({ name: "drop", args: { slot } }), JSON.stringify(slot)).toThrow("drop 的 slot");
+    }
+    expect(() => toRequests({ name: "drop", args: { item: "dirt", slot: 3 } })).toThrow("其中一個");
+    // Absent (or null) is the hand; a good slot is passed on as given.
+    expect(toRequests({ name: "drop", args: {} })).toEqual([{ type: "drop", params: { all: true } }]);
+    expect(toRequests({ name: "drop", args: { item: null, slot: null, all: false } })).toEqual([
+      { type: "drop", params: { all: false } },
+    ]);
+    expect(toRequests({ name: "drop", args: { slot: "35" } })).toEqual([{ type: "drop", params: { all: true, slot: 35 } }]);
+    expect(toRequests({ name: "drop", args: { item: "Rotten Flesh" } })).toEqual([
+      { type: "drop", params: { all: true, item: "rotten_flesh" } },
+    ]);
+  });
 });
 
 describe("events", () => {
