@@ -228,6 +228,43 @@ export function embeddingFromF32(values: ArrayLike<number>): number[] {
   return Array.from(values, shortestF32);
 }
 
+/**
+ * Makes `record.embedding` decode on first read instead of with the row. Most reads (lists, the
+ * prompt's person lines) never look at it, and `embeddingFromF32` costs about a millisecond per
+ * thousand dimensions. The first read or write leaves a plain property; the key keeps its place.
+ */
+export function lazyEmbedding<T extends { embedding: number[] | null }>(
+  record: T,
+  decode: () => number[],
+): T {
+  const settle = (value: number[] | null): number[] | null => {
+    try {
+      Object.defineProperty(record, "embedding", {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    } catch {
+      // A frozen record keeps the accessor; it still returns the decoded value below.
+    }
+    return value;
+  };
+  let decoded: number[] | undefined;
+  Object.defineProperty(record, "embedding", {
+    get: () => {
+      decoded ??= decode();
+      return settle(decoded);
+    },
+    set: (value: number[] | null) => {
+      settle(value);
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  return record;
+}
+
 /** Cosine similarity; 0 when either vector has no length. */
 export function cosine(a: ArrayLike<number>, b: ArrayLike<number>): number {
   let dot = 0;

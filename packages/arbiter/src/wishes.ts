@@ -19,6 +19,7 @@
 import {
   type AskedLookup,
   type Delivery,
+  DM_SAME_WISH,
   type EventLog,
   type Handle,
   type HandleDirectory,
@@ -31,7 +32,6 @@ import {
   type ObservationBody,
   type PersonThreads,
   type Projection,
-  DM_SAME_WISH,
   sameWish,
   stopsAsking,
   timestampMs,
@@ -344,7 +344,8 @@ export class WishBook implements Wishes, Projection {
         const dm = this.#dms.get(body.call);
         if (dm === undefined || body.state === "accepted") return;
         this.#dms.delete(body.call);
-        if (body.state === "done") this.#reached(dm.to, dm.text, timestampMs(event.at), DM_SAME_WISH);
+        if (body.state === "done")
+          this.#reached(dm.to, dm.text, timestampMs(event.at), DM_SAME_WISH);
         return;
       }
       default:

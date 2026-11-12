@@ -906,6 +906,47 @@ function behaviour(open: () => Promise<Store>): void {
     expect(await list({ kind: "fact" })).toEqual([c.id, b.id]);
     expect(await list({ before: c.created_at })).toEqual([b.id, a.id]);
     expect(await list({ subject: bob, kind: "fact", scope: guild })).toEqual([c.id]);
+
+    // `count` selects what `list` selects and ignores the limit.
+    const count = (filter: Partial<MemoryFilter>) =>
+      memories.count?.(profile, { ...baseFilter, limit: 1, ...filter });
+    expect(await count({})).toBe(4);
+    expect(await count({ subject: alice })).toBe(2);
+    expect(await count({ scope: guild })).toBe(2);
+    expect(await count({ kind: "fact" })).toBe(2);
+    expect(await count({ before: c.created_at })).toBe(2);
+    expect(await count({ subject: bob, kind: "fact", scope: guild })).toBe(1);
+    expect(await count({ subject: newId() })).toBe(0);
+  });
+
+  it("memory_embedding_read_late_is_the_same", async () => {
+    const memories = store.memories;
+    const profile = unique("profile");
+    const t0 = Date.now();
+    const r = memory(profile, "fact", { type: "global" }, "late", at(t0));
+    r.embedding = [0.1, -0.2, 0.3];
+    await memories.upsert(r);
+    const stored = (await memories.get(r.id))?.embedding;
+    expect(stored).toHaveLength(3);
+
+    // A listed record keeps its vector when written back without anyone reading it.
+    const [listed] = await memories.list(profile, { ...baseFilter, limit: 10 });
+    expect(listed?.id).toBe(r.id);
+    if (!listed) return;
+    listed.importance = 0.9;
+    await memories.upsert(listed);
+    expect((await memories.get(r.id))?.embedding).toEqual(stored);
+
+    // Copies carry it, and setting it replaces it.
+    const [again] = await memories.list(profile, { ...baseFilter, limit: 10 });
+    if (!again) return;
+    expect({ ...again }.embedding).toEqual(stored);
+    expect(JSON.parse(JSON.stringify(again)).embedding).toEqual(stored);
+    const [replaced] = await memories.list(profile, { ...baseFilter, limit: 10 });
+    if (!replaced) return;
+    replaced.embedding = null;
+    expect(replaced.embedding).toBeNull();
+    expect(Object.keys(replaced)).toEqual(Object.keys(r));
   });
 
   it("memory_touch", async () => {

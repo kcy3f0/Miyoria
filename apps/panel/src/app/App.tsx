@@ -1,6 +1,6 @@
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { describeError, isApiError } from "@/api/http";
 import type { Api } from "@/api/endpoints";
 import type { AuthMethods, MemberSession, SessionInfo } from "@/api/types";
@@ -22,8 +22,12 @@ import {
   type SessionValue,
   TOKEN_SESSION,
   loginErrorIn,
+  isSameOrigin,
   wantsTokenLogin,
 } from "./session";
+
+/** Her tank: the landing for someone not logged in. Split out with its fonts and water. */
+const Landing = lazy(() => import("@/pages/public/landing/Landing"));
 
 type AuthState =
   | { status: "checking" }
@@ -216,6 +220,20 @@ function Authenticated({ router }: { router: AppRouter }) {
           notice={loginError === null ? null : loginErrorMessage(loginError)}
           onLogout={logout}
         />
+      </QueryClientProvider>
+    );
+  }
+
+  // Anyone else at the door sees her tank; the token form stays at `/login` for the owner.
+  if (auth.status === "public" && !tokenLogin) {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <Suspense fallback={<div className="min-h-svh" aria-busy="true" aria-label="讀取中" />}>
+          <Landing
+            discord={(methods?.discord ?? false) && isSameOrigin(config.baseUrl)}
+            notice={loginError === null ? null : loginErrorMessage(loginError)}
+          />
+        </Suspense>
       </QueryClientProvider>
     );
   }

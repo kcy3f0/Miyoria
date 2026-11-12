@@ -34,6 +34,7 @@ import {
   contextLookupKey,
   embeddingFromF32,
   fromMicros,
+  lazyEmbedding,
   memoryKind,
   memoryOrigin,
   memoryScopeKey,
@@ -1893,7 +1894,7 @@ function memoryFromRow(row: Row): MemoryRecord {
   const embedding = optStr(row, "embedding");
   const sourceContext = optStr(row, "source_context");
   const source = optStr(row, "source");
-  return {
+  const record: MemoryRecord = {
     id: str(row, "id"),
     profile: str(row, "profile_id"),
     kind: memoryKind(str(row, "kind")),
@@ -1901,7 +1902,7 @@ function memoryFromRow(row: Row): MemoryRecord {
     subjects: strings(row, "subjects"),
     content: str(row, "content"),
     tokens: str(row, "tokens"),
-    embedding: embedding === null ? null : parseVector(embedding),
+    embedding: null,
     importance: num(row, "importance"),
     confidence: num(row, "confidence"),
     created_at: ts(row, "created_at"),
@@ -1917,6 +1918,27 @@ function memoryFromRow(row: Row): MemoryRecord {
     done: bool(row, "done"),
     superseded_by: optStr(row, "superseded_by"),
   };
+  return embedding === null ? record : lazyEmbedding(record, () => parseVector(embedding));
+}
+
+/** What `list` and `count` select, with `listParams` as `$1` to `$6`. */
+const LIST_FILTER =
+  "profile_id = $1 " +
+  "AND ($2::text IS NULL OR $2 = ANY(subjects)) " +
+  "AND ($3::text IS NULL OR scope_key = $3) " +
+  "AND ($4::text IS NULL OR kind = $4) " +
+  "AND ($5::timestamptz IS NULL OR created_at < $5) " +
+  "AND ($6 OR superseded_by IS NULL)";
+
+function listParams(profile: ProfileId, filter: MemoryFilter): unknown[] {
+  return [
+    profile,
+    filter.subject,
+    filter.scope === null ? null : memoryScopeKey(filter.scope),
+    filter.kind,
+    optTsParam(filter.before),
+    filter.include_superseded,
+  ];
 }
 
 class PgMemories implements MemoryRecordStore {
@@ -2056,28 +2078,30 @@ class PgMemories implements MemoryRecordStore {
     let rows: Row[];
     try {
       rows = await this.db.query(
-        `SELECT ${MEMORY_COLUMNS} FROM memory_records WHERE profile_id = $1 ` +
-          "AND ($2::text IS NULL OR $2 = ANY(subjects)) " +
-          "AND ($3::text IS NULL OR scope_key = $3) " +
-          "AND ($4::text IS NULL OR kind = $4) " +
-          "AND ($5::timestamptz IS NULL OR created_at < $5) " +
-          "AND ($6 OR superseded_by IS NULL) " +
+        `SELECT ${MEMORY_COLUMNS} FROM memory_records WHERE ${LIST_FILTER} ` +
           'ORDER BY created_at DESC, id COLLATE "C" DESC LIMIT $7',
-        [
-          profile,
-          filter.subject,
-          filter.scope === null ? null : memoryScopeKey(filter.scope),
-          filter.kind,
-          optTsParam(filter.before),
-          filter.include_superseded,
-          limitParam(filter.limit),
-        ],
+        [...listParams(profile, filter), limitParam(filter.limit)],
       );
     } catch (cause) {
       if (cause instanceof StoreError) throw cause;
       throw new StoreError("cannot list memory records", { cause });
     }
     return rows.map(memoryFromRow);
+  }
+
+  async count(profile: ProfileId, filter: MemoryFilter): Promise<number> {
+    let rows: Row[];
+    try {
+      rows = await this.db.query(
+        `SELECT count(*) AS n FROM memory_records WHERE ${LIST_FILTER}`,
+        listParams(profile, filter),
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot count memory records", { cause });
+    }
+    const row = rows[0];
+    return row ? num(row, "n") : 0;
   }
 
   async touch(ids: readonly string[], at: Timestamp): Promise<void> {

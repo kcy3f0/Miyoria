@@ -101,6 +101,16 @@ export class VoiceRoom {
     return this.#rooms.get(guild) ?? null;
   }
 
+  /**
+   * Whether `who` is in her voice channel of `guild`: `null` when she is not in voice there or
+   * the account is of another platform (a web viewer is never in a Discord channel).
+   */
+  present(guild: string, who: AccountRef): boolean | null {
+    const room = this.#rooms.get(guild);
+    if (!room || who.platform !== room.context.platform) return null;
+    return room.members.some((m) => sameAccount(m.account, who));
+  }
+
   #update(room: Room, context: ContextKey, now: readonly VoiceParticipant[]): void {
     const at = this.now();
     if (room.context.channel !== context.channel) {
