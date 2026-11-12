@@ -2311,6 +2311,32 @@ describe("the wallet", () => {
       expect(await balance(r)).toBe(100);
     });
 
+    it("a command orders foil and a reroll through the Keepsakes service, at the page's prices", async () => {
+      const r = await walletRig();
+      await r.fund(ALICE, 100);
+      const keepsakes = r.sup.services.require(KeepsakesKey);
+      const who = { account: discord(ALICE), name: "Alice", avatar_url: null };
+      expect(await keepsakes.rerollCard(who, "k-r0")).toMatchObject({ ok: false, status: 409 });
+      const foil = await keepsakes.issueCard(who, "k-f", { foil: true });
+      expect(foil).toMatchObject({ ok: true, value: { foil: true }, charged: 50, balance: 50 });
+      expect(await keepsakes.cardsToday(who.account)).toMatchObject({
+        today: 1,
+        prices: { foil: 50, reroll: 30 },
+        rerolls_left: 2,
+      });
+      const redone = await keepsakes.rerollCard(who, "k-r1");
+      expect(redone).toMatchObject({ ok: true, charged: 30, balance: 20 });
+      expect(redone.ok && foil.ok && redone.value.number).toBe(foil.ok ? foil.value.number : -1);
+      // The page sees the reroll the command made.
+      const cookie = await r.login("alice");
+      const page = (await r.get("/api/member/card", cookie)).body as { latest: Card };
+      expect(page.latest.serial).toBe(redone.ok ? redone.value.serial : "");
+      // Not enough left for another foil card: refused in words, nothing charged.
+      const poor = await keepsakes.issueCard(who, "k-f2", { foil: true });
+      expect(poor).toMatchObject({ ok: false, status: 402 });
+      expect(await balance(r)).toBe(20);
+    });
+
     it("rerolls today's newest card: charged, the old one void, the new one outside the day's count", async () => {
       const r = await walletRig();
       await r.fund(ALICE, 100);

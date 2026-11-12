@@ -632,6 +632,7 @@ export {
 } from "./impulse.js";
 export {
   type KeepsakeCard,
+  type KeepsakeCardOrder,
   type KeepsakeCards,
   type KeepsakeField,
   type KeepsakeFortune,
