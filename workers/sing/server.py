@@ -128,6 +128,8 @@ Environment
     SING_EXCLUSIVE_WAIT_S  wait this long for Core's go (exclusive_ack) (default 30)
     SING_SHARE_MIN_FREE_MB what a stage is assumed to need until it was measured here (default 4096)
     SING_GPU_HEADROOM_PCT  share of the card to keep free           (default 12; a spill raises it)
+    SING_SPEECH_BURST_MB   what her voice takes while she speaks, kept free next to a stage that cannot
+                           stop between steps (her RVC model) to share the card    (default 1024)
     SING_SHARE_WAIT_S      wait this long for room before taking speech offline, also with nobody
                            listening                                (default 0)
     SING_DEFER_S           people listening: wait this long before a short silence (default 120)
@@ -929,6 +931,12 @@ def _start_gpu(job: Job, audio_s: float | None) -> None:
                                max_s=job.gpu.yield_allowance()).start()
 
 
+def _stage_pauses(stage: str) -> bool:
+    """Whether the stage stops between steps while she speaks. Her RVC model (``SING_VOICE=rvc``, or
+    the ``+rvc`` pass after the conversion) runs as one subprocess from start to end."""
+    return not (stage == "convert" and getattr(state.backend, "rvc", False))
+
+
 def _stage_uses_gpu(stage: str) -> bool:
     if stage not in CPU_STAGES:
         return True
@@ -970,7 +978,7 @@ def _place(job: Job, stage: str) -> str:
         while True:
             if job.cancel.is_set():
                 raise Cancelled()
-            d = g.decide(stage, _stage_uses_gpu(stage))
+            d = g.decide(stage, _stage_uses_gpu(stage), _stage_pauses(stage))
             if d.mode == "wait":
                 job.stage = "gpu_wait"
                 job.cancel.wait(g.limits.check_s)
@@ -1039,8 +1047,14 @@ def _gpu_stage(job: Job, stage: str, wav: Path, duration_s: float | None, run: C
         device = _place(job, stage)
         _arm(job, stage, work)
         g.started(stage, device, resumed)
+        # torch here cannot see a subprocess's VRAM, and it never calls the gate: read the card.
+        unwatch = g.watch() if device == "gpu" and not _stage_pauses(stage) else None
         try:
-            out = run(device)
+            try:
+                out = run(device)
+            finally:
+                if unwatch is not None:
+                    unwatch()  # before ``finished`` / ``stopped`` look at what it read
         except Suspended as e:
             log.info("job %s lets go of the GPU in %s: %s", job.id, stage, e.code)
             g.stopped()

@@ -605,6 +605,7 @@ Go Live 直播要讓觀眾聽到歌,voice node 的 `GOLIVE_AUDIO` 要開(`true`)
 |---|---|---|
 | `SING_GPU_SHARE` | 0 | 1 = 卡上放得下就不卸載 |
 | `SING_SHARE_MIN_FREE_MB` | 4096 | 共用需要的剩餘 VRAM |
+| `SING_SPEECH_BURST_MB` | 1024 | 她說話時 TTS 要多用的 VRAM。她的 RVC 模型(`SING_VOICE=rvc` 或 `…+rvc`)在子程序裡一口氣跑完,她說話時停不下來,所以要多留這麼多才跟語音共用顯示卡,不夠就走獨佔流程;它用掉多少 VRAM 從整張卡的剩餘量學 |
 | `SING_SHARE_WAIT_S` | 0 | 放不下時先等這麼久 |
 | `SING_YIELD_URLS` | `SING_OFFLOAD_URLS` | 共用時要讓路的 worker |
 | `SING_YIELD_POLL_MS` / `SING_YIELD_HOLD_MS` / `SING_YIELD_MAX_S` | 100 / 300 / 120 | 問的頻率 / 閒下來後再等多久 / 一首歌最多讓多久 |
