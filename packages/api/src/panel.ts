@@ -3,7 +3,7 @@
 
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
 import { extname, join, resolve, sep } from "node:path";
 import { errorMessage, getLogger } from "@miyoria/kernel";
 
@@ -89,10 +89,60 @@ function segments(path: string): string[] | null {
   return out;
 }
 
-/** Serves one panel file with caching headers (GET / HEAD only, like `ServeDir`). */
+/**
+ * The byte range a `Range` header asks for in a file of `size` bytes: `null` when the header is
+ * to be ignored (absent, another unit, or several ranges: the whole file is sent),
+ * `"unsatisfiable"` when it is malformed or lies outside the file (416), else the inclusive
+ * `[start, end]`.
+ */
+export function byteRange(
+  header: string | null,
+  size: number,
+): readonly [number, number] | "unsatisfiable" | null {
+  if (header === null) return null;
+  const match = /^\s*([A-Za-z]+)\s*=(.*)$/.exec(header);
+  if (!match || (match[1] ?? "").toLowerCase() !== "bytes") return null;
+  const spec = (match[2] ?? "").trim();
+  if (spec.includes(",")) return null;
+  const parts = /^(\d*)\s*-\s*(\d*)$/.exec(spec);
+  if (!parts) return "unsatisfiable";
+  const [, first = "", last = ""] = parts;
+  if (first === "" && last === "") return "unsatisfiable";
+  if (first === "") {
+    // `-N`: the last N bytes.
+    const suffix = Number(last);
+    if (suffix === 0 || size === 0) return "unsatisfiable";
+    return [Math.max(0, size - suffix), size - 1];
+  }
+  const start = Number(first);
+  const end = last === "" ? size - 1 : Math.min(Number(last), size - 1);
+  if (start >= size || (last !== "" && Number(last) < start)) return "unsatisfiable";
+  return [start, end];
+}
+
+async function readSlice(path: string, start: number, end: number): Promise<Buffer> {
+  const file = await open(path, "r");
+  try {
+    const buffer = Buffer.alloc(end - start + 1);
+    let filled = 0;
+    while (filled < buffer.length) {
+      const { bytesRead } = await file.read(buffer, filled, buffer.length - filled, start + filled);
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    return filled === buffer.length ? buffer : buffer.subarray(0, filled);
+  } finally {
+    await file.close();
+  }
+}
+
 /** Rewrites a page of HTML for the request that asked for it (the tags of a link preview). */
 export type HtmlRewrite = (html: string, request: Request) => Promise<string>;
 
+/**
+ * Serves one panel file with caching headers (GET / HEAD only, like `ServeDir`). A GET with a
+ * single byte range gets 206 with that part (what Safari needs to play a video).
+ */
 export async function servePanel(
   dir: string,
   request: Request,
@@ -171,6 +221,26 @@ export async function servePanel(
     }
     headers.set("content-length", String(info.size));
     if (method === "HEAD") return new Response(null, { status: 200, headers });
+    // `If-Range` asks for the part only while the file is the one it names: anything but its
+    // date as sent here gets the whole file.
+    const ifRange = request.headers.get("if-range");
+    const range =
+      ifRange === null || ifRange.trim() === headers.get("last-modified")
+        ? byteRange(request.headers.get("range"), info.size)
+        : null;
+    if (range === "unsatisfiable") {
+      headers.delete("content-type");
+      headers.set("content-length", "0");
+      headers.set("content-range", `bytes */${info.size}`);
+      return new Response(null, { status: 416, headers });
+    }
+    if (range !== null) {
+      const [start, end] = range;
+      const part = await readSlice(path, start, end);
+      headers.set("content-length", String(part.length));
+      headers.set("content-range", `bytes ${start}-${start + part.length - 1}/${info.size}`);
+      return new Response(part, { status: 206, headers });
+    }
     const body = await readFile(path);
     return new Response(body, { status: 200, headers });
   } catch (error) {

@@ -215,4 +215,62 @@ describe("http", () => {
     expect(await rawStatus(base, "/assets/missing-abc.js")).toBe(404);
     expect(await rawStatus(base, "/card-smile.local.webp")).toBe(404);
   });
+
+  it("panel files: byte ranges", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "miyoria-panel-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    writeFileSync(join(dir, "index.html"), "<!doctype html><title>Miyoria</title>");
+    writeFileSync(join(dir, "clip.webm"), "0123456789");
+    const { base } = await start({ panel_dir: dir });
+    const get = (range: string, extra: Record<string, string> = {}) =>
+      raw(base, "GET", "/clip.webm", { headers: { range, ...extra } });
+
+    // One range: 206 with that part, the size after the slash.
+    for (const [range, text, contentRange] of [
+      ["bytes=0-3", "0123", "bytes 0-3/10"],
+      ["bytes=7-", "789", "bytes 7-9/10"],
+      ["bytes=-2", "89", "bytes 8-9/10"],
+      ["bytes=8-99", "89", "bytes 8-9/10"],
+      ["bytes=-99", "0123456789", "bytes 0-9/10"],
+      ["bytes=0-0", "0", "bytes 0-0/10"],
+    ] as const) {
+      const res = await get(range);
+      expect(res.status, range).toBe(206);
+      expect(res.text, range).toBe(text);
+      expect(res.headers.get("content-range"), range).toBe(contentRange);
+      expect(res.headers.get("content-length"), range).toBe(String(text.length));
+      expect(res.headers.get("content-type"), range).toBe("video/webm");
+      expect(res.headers.get("accept-ranges"), range).toBe("bytes");
+    }
+
+    // Outside the file or malformed: 416 with the size.
+    for (const range of ["bytes=10-", "bytes=5-2", "bytes=-0", "bytes=abc", "bytes=-"]) {
+      const res = await get(range);
+      expect(res.status, range).toBe(416);
+      expect(res.headers.get("content-range"), range).toBe("bytes */10");
+      expect(res.text, range).toBe("");
+    }
+
+    // Several ranges or another unit: the whole file.
+    for (const range of ["bytes=0-1,4-5", "items=0-1"]) {
+      const res = await get(range);
+      expect(res.status, range).toBe(200);
+      expect(res.text, range).toBe("0123456789");
+    }
+
+    // `If-Range` naming the file as sent keeps the range; anything else gets the whole file.
+    const whole = await raw(base, "GET", "/clip.webm");
+    const modified = whole.headers.get("last-modified") ?? "";
+    expect((await get("bytes=0-1", { "if-range": modified })).status).toBe(206);
+    const stale = await get("bytes=0-1", { "if-range": "Thu, 01 Jan 1970 00:00:00 GMT" });
+    expect(stale.status).toBe(200);
+    expect(stale.text).toBe("0123456789");
+
+    // HEAD and a fresh `If-Modified-Since` are as before: 200 with the whole length, and 304.
+    const head = await raw(base, "HEAD", "/clip.webm", { headers: { range: "bytes=0-3" } });
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-length")).toBe("10");
+    const cached = await get("bytes=0-3", { "if-modified-since": modified });
+    expect(cached.status).toBe(304);
+  });
 });
