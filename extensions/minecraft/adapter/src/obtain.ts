@@ -164,6 +164,23 @@ function mostOf(inv: Inventory, group: string): string | undefined {
   return best;
 }
 
+const JUNK_PRIORITY = [
+  "wheat_seeds",
+  "dandelion",
+  "poppy",
+  "short_grass",
+  "fern",
+  "dead_bush",
+  "poisonous_potato",
+  "rotten_flesh",
+  "dirt",
+  "gravel",
+  "diorite",
+  "granite",
+  "andesite",
+  "tuff",
+];
+
 export class ObtainRunner {
   #item: string;
   #count: number;
@@ -179,6 +196,8 @@ export class ObtainRunner {
   #waiters = new Set<Waiter>();
   #plan: Step[] = [];
   #done = 0;
+  #placedTable = false;
+  #furnacePos: { x: number; y: number; z: number } | null = null;
 
   constructor(host: RunnerHost, target: string, count: number, opts: RunnerOptions = {}) {
     this.#host = host;
@@ -296,6 +315,40 @@ export class ObtainRunner {
     this.#host.emit({ type, data: { target: this.#item, count: this.#count, ...data, text }, important });
   }
 
+  async #cleanJunk(snap: Snapshot): Promise<void> {
+    const free = snap.inventory_free_slots ?? 36;
+    if (free > 2) return;
+    const inv = snap.inventory ?? {};
+    for (const junk of JUNK_PRIORITY) {
+      if ((inv[junk] ?? 0) > 0) {
+        try {
+          await this.#send("drop", { item: junk });
+          this.#event("junk_dropped", `背包快滿了(剩 ${free} 格),丟掉${itemName(junk)}空出位置`);
+          return;
+        } catch {
+          // ignore if drop is not yet supported
+        }
+      }
+    }
+    if ((inv.cobblestone ?? 0) > 64) {
+      try {
+        await this.#send("drop", { item: "cobblestone" });
+        this.#event("junk_dropped", `背包快滿了(剩 ${free} 格),丟掉多餘的鵝卵石空出位置`);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  async #recoverTable(): Promise<void> {
+    this.#placedTable = false;
+    try {
+      await this.#job("baritone", { command: "mine", blocks: ["crafting_table"], count: 1 }, ["baritone_idle"], this.#o.mineTimeoutMs);
+    } catch {
+      // ignore
+    }
+  }
+
   async run(): Promise<RunnerResult> {
     try {
       return await this.#run();
@@ -317,14 +370,19 @@ export class ObtainRunner {
         this.#applySteers();
         const want = this.#want();
         const snap = await this.#host.observe();
+        await this.#cleanJunk(snap);
         const inv = snap.inventory ?? {};
         if (countOf(inv, this.item) >= this.count) {
+          if (this.#placedTable) await this.#recoverTable();
           this.#plan = [];
           return { ok: true, message: `拿到${want}了` };
         }
         this.#plan = plan(this.item, this.count, inv, worldOf(snap));
         const step = this.#plan[0];
-        if (!step) return { ok: true, message: `拿到${want}了` };
+        if (!step) {
+          if (this.#placedTable) await this.#recoverTable();
+          return { ok: true, message: `拿到${want}了` };
+        }
         const total = this.#done + this.#plan.length;
         this.#event("plan_step", `取得${want}:第 ${this.#done + 1}/${total} 步,${describeStep(step)}`, {
           step: this.#done + 1,
@@ -388,12 +446,14 @@ export class ObtainRunner {
     try {
       switch (step.kind) {
         case "mine":
+          if (step.item === "crafting_table") this.#placedTable = false;
           return await this.#mine(step, snap);
         case "craft":
           return await this.#craft(step, snap);
         case "smelt":
           return await this.#smelt(step, snap);
         case "place":
+          if (step.item === "crafting_table") this.#placedTable = true;
           await this.#send("place", { item: step.item });
           return "done";
         case "hunt":
@@ -565,8 +625,19 @@ export class ObtainRunner {
     return typeof wake === "object" && wake.name !== "goal_failed";
   }
 
+  async #gotoPos(pos: { x: number; y: number; z: number }): Promise<boolean> {
+    const wake = await this.#job(
+      "baritone",
+      { command: "goto", x: pos.x, y: pos.y, z: pos.z, near: 2 },
+      ["goal_reached", "goal_failed", "baritone_idle"],
+      this.#o.jobTimeoutMs,
+    );
+    return typeof wake === "object" && wake.name !== "goal_failed";
+  }
+
   /** Walks to (or puts down) the station after `too_far` / `needs_station`; false when it cannot. */
   async #station(error: BridgeError, station: "crafting_table" | "furnace", inv: Inventory): Promise<boolean> {
+    if (station === "furnace" && this.#furnacePos) return this.#gotoPos(this.#furnacePos);
     if (error.code === "too_far") return this.#goto(station);
     if (error.code === "needs_station" && (inv[station] ?? 0) > 0) {
       await this.#send("place", { item: station });
@@ -624,11 +695,16 @@ export class ObtainRunner {
       if (wake === "timeout") return { fail: "熔爐沒有回應", code: "timeout" };
       if (wake.name === "smelt_failed") return { fail: String(wake.data.error ?? "熔爐出錯"), code: "precondition" };
       if (typeof wake.data.ready_in_secs === "number") ready = wake.data.ready_in_secs;
+      if (typeof wake === "object" && wake.data && typeof wake.data.furnace === "object") {
+        const f = wake.data.furnace as { x: number; y: number; z: number };
+        this.#furnacePos = { x: f.x, y: f.y, z: f.z };
+      }
       break;
     }
     // The furnace keeps burning with its screen closed; come back to take the output.
     for (let i = 0; i < step.count + 3; i++) {
       if (!(await this.#sleep(ready * 1000 + this.#o.collectMarginMs))) return "interrupted";
+      if (this.#furnacePos) await this.#gotoPos(this.#furnacePos);
       let wake: Wake;
       try {
         wake = await this.#job("smelt", {}, ["smelt_finished", "smelt_failed"], this.#o.jobTimeoutMs);

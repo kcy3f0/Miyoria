@@ -189,6 +189,7 @@ const GATHERED: Record<string, string[]> = {
 /** Items mined from blocks (Baritone counts the drops of these blocks in the inventory). */
 const MINED: Record<string, string[]> = {
   "#logs": WOODS.map((w) => `${w}_log`),
+  crafting_table: ["crafting_table"],
   "#stone": ["stone", "cobblestone", "deepslate", "cobbled_deepslate"],
   cobblestone: ["stone", "cobblestone"],
   cobbled_deepslate: ["deepslate", "cobbled_deepslate"],
@@ -299,6 +300,7 @@ class Planner {
   /** Pass 1 totals per produced item; pass 2 makes the whole amount the first time it is needed. */
   readonly #batch: Map<string, number>;
   readonly #made = new Map<string, number>();
+  #placedTable = false;
 
   constructor(inv: Inventory, world: World, batch: Map<string, number>) {
     this.#inv = { ...inv };
@@ -311,9 +313,22 @@ class Planner {
     const out = new Map<string, number>();
     for (const s of this.steps) {
       if (s.kind === "place") continue;
+      if (s.item === "crafting_table" && s.kind === "mine") continue;
       out.set(s.item, (out.get(s.item) ?? 0) + s.count);
     }
     return out;
+  }
+
+  #recoverTable(): void {
+    if (!this.#placedTable) return;
+    this.steps.push({ kind: "mine", item: "crafting_table", blocks: ["crafting_table"], count: 1 });
+    this.#add("crafting_table", 1);
+    this.#world.table = false;
+    this.#placedTable = false;
+  }
+
+  finish(): void {
+    this.#recoverTable();
   }
 
   #take(item: string, n: number): number {
@@ -355,6 +370,7 @@ class Planner {
     this.need(kind, 1, true, depth);
     this.steps.push({ kind: "place", item: kind });
     this.#world[key] = true;
+    if (kind === "crafting_table") this.#placedTable = true;
   }
 
   #fuel(items: number, depth: number): void {
@@ -386,9 +402,9 @@ class Planner {
     const key = item.endsWith("_planks") && planksOf(item) ? "#planks" : item;
     const r = RECIPES[key];
     if (r) {
-      if (r.table) this.#station("crafting_table", depth);
       const times = Math.ceil(this.#amount(key, missing) / r.yield);
       for (const [ing, qty] of r.needs) this.need(ing, qty * times, true, depth);
+      if (r.table) this.#station("crafting_table", depth);
       this.steps.push({ kind: "craft", item, count: times * r.yield, table: r.table });
       this.#add(item, times * r.yield);
       return;
@@ -407,6 +423,7 @@ class Planner {
     if (blocks) {
       const amount = this.#amount(item, missing);
       this.#tool(Math.max(...blocks.map(requiredTier)) as Tier, depth);
+      if (item !== "crafting_table") this.#recoverTable();
       this.steps.push({ kind: "mine", item, blocks, count: amount });
       this.#add(item, amount);
       return;
@@ -438,8 +455,10 @@ export function plan(target: string, count: number, inv: Inventory, world: World
   if (countOf(inv, item) >= count) return [];
   const first = new Planner(inv, world, new Map());
   first.need(item, count, false, 0);
+  first.finish();
   const second = new Planner(inv, world, first.totals());
   second.need(item, count, false, 0);
+  second.finish();
   return second.steps;
 }
 
