@@ -361,6 +361,8 @@ export interface MemoryRecordStore {
   search(query: MemoryQuery): Promise<MemoryHit[]>;
   /** Newest first. */
   list(profile: ProfileId, filter: MemoryFilter): Promise<MemoryRecord[]>;
+  /** How many records `list` would return without `filter.limit`; optional for test doubles. */
+  count?(profile: ProfileId, filter: MemoryFilter): Promise<number>;
   /** Records access (bumps `access_count`, sets `last_accessed`). */
   touch(ids: readonly string[], at: Timestamp): Promise<void>;
   /**
