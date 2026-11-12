@@ -46,6 +46,17 @@ def test_a_12_gb_card_with_room_shares():
     assert decide(facts(free_mb=6000)).mode == "share"
 
 
+def test_a_stage_that_cannot_stop_while_she_speaks_leaves_her_voice_its_room():
+    # 4096 + 1474 fits in 6000; her RVC model also needs the 1024 she takes while speaking.
+    d = decide(facts(free_mb=6000, pauses=False))
+    assert d.mode == "wait" and "她說話用的" in d.reason
+    assert decide(facts(free_mb=6000, pauses=False, policy="yield")).mode == "offload"
+    assert decide(facts(free_mb=6600, pauses=False)).code == "fits"
+    # Her voice is not on the card: nothing to leave room for.
+    assert decide(facts(free_mb=6000, pauses=False, speech_loaded=False)).code == "fits"
+    assert decide(facts(free_mb=6000, pauses=False, limits=Limits(burst_mb=0))).code == "fits"
+
+
 def test_a_12_gb_card_on_stream_spares_her_voice_while_people_listen():
     assert decide(facts(stage="separate")).mode == "cpu"  # Demucs does not need the card
     d = decide(facts())
@@ -330,6 +341,30 @@ def test_on_a_24_gb_card_a_song_never_touches_her_voice(sing, machine):  # noqa:
     assert card.calls == [] and done["exclusive"] == "shared"
     assert done["gpu"]["mode"] == "share" and done["gpu"]["code"] == "fits"
     assert done["song"]["gpu"]["policy"] == "auto" and done["song"]["gpu"]["silenced_s"] == 0
+
+
+def test_her_rvc_models_vram_is_learned_from_the_whole_card(sing, machine, monkeypatch):  # noqa: F811
+    """RVC runs in a subprocess: torch here sees none of it, and it never calls the gate."""
+    server = sys.modules["sing_server"]
+    card = machine(total=24 * GB, others=5000, job=0)
+    b = card.backend
+    monkeypatch.setattr(b, "rvc", True, raising=False)
+
+    def rvc(vocals_wav, out_wav, shift, progress, cancelled, work=None):
+        card.others += 2600  # the subprocess loads her model
+        time.sleep(0.3)
+        card.others -= 2600
+        server._write_wav(out_wav, server._tone(b.seconds, 16_000, 440), 16_000)
+        progress(1.0)
+
+    monkeypatch.setattr(b, "convert", rvc)
+    nobody(sing)
+    done = wait(sing, submit(sing, "sim rvc"))
+    assert done["state"] == "done", done
+    need, measured = card.profile.need("convert", 4096)
+    assert measured and 2600 <= need < 2800, need
+    assert done["gpu"]["stage"] == "convert" and done["gpu"]["code"] == "fits"
+    assert "說話用的" in done["gpu"]["reason"]  # 24 GB: room for her voice next to it
 
 
 def test_on_a_full_12_gb_card_people_keep_her_voice_until_there_is_room(sing, machine, monkeypatch):  # noqa: F811
