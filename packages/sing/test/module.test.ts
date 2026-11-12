@@ -214,6 +214,15 @@ class FakeWorker implements SingWorker {
     return new Int16Array(RATE * seconds).fill(track === "play_mix.pcm" ? 1000 : 500);
   }
 
+  /** Video files the module asked the worker for (nothing is written in the tests). */
+  readonly downloaded: { song: string; file: string; dest: string }[] = [];
+  downloadFails = false;
+
+  async download(song: string, file: string, dest: string): Promise<void> {
+    if (this.downloadFails) throw new SingWorkerError("no video", { status: 404 });
+    this.downloaded.push({ song, file, dest });
+  }
+
   async health(): Promise<string | null> {
     return null;
   }
@@ -707,6 +716,22 @@ describe("sing module", () => {
       duration_ms: 1000,
     });
     expect(started[1]).not.toHaveProperty("video");
+    // The worker may be on another machine: Core fetched the video into its own cache dir.
+    expect(h.worker.downloaded).toEqual([
+      { song: "s-j1", file: "video.mp4", dest: join(dir, "s-j1", "video.mp4") },
+    ]);
+  });
+
+  it("sings without a video when the worker cannot give it", async () => {
+    h = await Harness.create({ video_dir: resolve("songs-cache") });
+    await h.join();
+    h.worker.cacheHit = true;
+    h.worker.downloadFails = true;
+    await h.command("queue song request", { song: "Song MV" });
+    await settle(6000 + 400 + 2000);
+    const started = h.cues().find((c) => c.state === "started");
+    expect(started).toBeDefined();
+    expect(started).not.toHaveProperty("video");
   });
 
   it("[modules.sing] video = false sends no video", async () => {

@@ -2,6 +2,11 @@
 // 「歌曲 Worker」). Everything it returns about a song (title, artist, lyrics) comes from YouTube or
 // lrclib and is untrusted.
 
+import { createWriteStream } from "node:fs";
+import { mkdir, rename, rm } from "node:fs/promises";
+import { dirname } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 
 const LyricLineSchema = z.object({ t: z.number(), text: z.string() });
@@ -145,6 +150,8 @@ export interface SingWorker {
   songs(signal?: AbortSignal): Promise<SongMeta[]>;
   /** PCM s16le mono at `song.play.sample_rate`. */
   audio(song: string, track: SongTrack, signal?: AbortSignal): Promise<Int16Array>;
+  /** Saves one of the song's files (its video) to `dest`; the worker may be on another machine. */
+  download(song: string, file: string, dest: string, signal?: AbortSignal): Promise<void>;
   /** `null` when healthy, else why not. */
   health(signal?: AbortSignal): Promise<string | null>;
 }
@@ -255,6 +262,26 @@ export class HttpSingWorker implements SingWorker {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     for (let i = 0; i < out.length; i++) out[i] = view.getInt16(i * 2, true);
     return out;
+  }
+
+  async download(song: string, file: string, dest: string, signal?: AbortSignal): Promise<void> {
+    // A video is far bigger than the audio (up to `SING_VIDEO_MAX_MB`): allow it a long time.
+    const res = await this.#call(
+      `/songs/${encodeURIComponent(song)}/files/${encodeURIComponent(file)}`,
+      {},
+      Math.max(this.#timeoutMs * 60, 600_000),
+      signal,
+    );
+    if (res.body === null) throw new SingWorkerError("song worker sent an empty file");
+    await mkdir(dirname(dest), { recursive: true });
+    const part = `${dest}.part`;
+    try {
+      await pipeline(Readable.fromWeb(res.body as never), createWriteStream(part));
+      await rename(part, dest);
+    } catch (error) {
+      await rm(part, { force: true });
+      throw error;
+    }
   }
 
   async health(signal?: AbortSignal): Promise<string | null> {

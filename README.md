@@ -88,7 +88,7 @@ core = "192.168.1.10"          # the machine running core: core binds this addre
 inference = "192.168.1.20"     # the machine running asr / tts / sing: the workers bind this address, core connects to it
 ```
 
-When everything is on one machine, both addresses are `127.0.0.1` (the default). When they are split, `miyoria init` writes the addresses where they are used: Core's `bind`, stage's `core_url`, `ASR_URL` / `TTS_URL` in `.env`, and `[modules.sing] url`. The streaming PC needs core's `STAGE_LINK_TOKEN` / `VOICE_LINK_TOKEN` (init asks you to paste them), and the voice node also needs `SELF_TOKEN` in `apps/voice-node/.env`. Two things are not handled yet when running split (see the [backlog](docs/design/backlog.md)): song videos are local paths on the GPU machine, and the Minecraft extension launches the game on the core machine.
+When everything is on one machine, both addresses are `127.0.0.1` (the default). When they are split, `miyoria init` writes the addresses where they are used: Core's `bind`, stage's `core_url`, `ASR_URL` / `TTS_URL` in `.env`, and `[modules.sing] url`. The streaming PC needs core's `STAGE_LINK_TOKEN` / `VOICE_LINK_TOKEN` (init asks you to paste them), and the voice node also needs `SELF_TOKEN` in `apps/voice-node/.env`. One thing is not handled yet when running split (see the [backlog](docs/design/backlog.md)): the Minecraft extension launches the game on the core machine. Song videos are fetched from the sing worker into Core's own `data/songs`, so Core and Stage must share a machine.
 
 Old config files without `[machine]` behave as before.
 

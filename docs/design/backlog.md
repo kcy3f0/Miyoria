@@ -28,7 +28,6 @@
 
 三個角色(直播機、Bot 服務機、GPU 推論機)分到不同電腦時,`miyoria init / install / start / doctor` 已經能設定、啟動和檢查,但下面這些還不行或還沒決定:
 
-- **歌曲影片是本機路徑**:Core 把唱歌的影片當成檔案路徑交給 stage(`packages/sing/src/player.ts` 的 `songVideoPath`),路徑是推論機上的;stage 在直播機時開不到檔案。要傳檔案、掛網路磁碟或改成 stage 從 worker 的 `/songs/{id}/files/video.mp4` 下載。
 - **Minecraft 擴充在 Core 那台開遊戲**:擴充(`extensions/minecraft`)用 Prism Launcher 開遊戲,開的是 Core 所在的電腦,不是直播機。要改成由直播機上的節點開遊戲。
 - **自動重啟**:`miyoria start` 只開分頁,服務死了不會拉起來(分頁會停在錯誤訊息上)。要不要加重啟、怎麼避免重啟打斷開著的 Go Live 和唱到一半的歌,還沒決定。
 - **沒有 `miyoria stop`**:停止就是關分頁或在分頁裡按 Ctrl+C。要不要加指令、怎麼避免誤停直播,還沒決定。
