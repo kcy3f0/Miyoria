@@ -318,9 +318,18 @@ describe("http", () => {
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
     writeFileSync(join(dir, "index.html"), "<!doctype html><title>Miyoria</title>");
     writeFileSync(join(dir, "clip.webm"), "0123456789");
+    writeFileSync(join(dir, "empty.webm"), "");
     const { base } = await start({ panel_dir: dir });
     const get = (range: string, extra: Record<string, string> = {}) =>
       raw(base, "GET", "/clip.webm", { headers: { range, ...extra } });
+
+    // An empty file has no part a suffix could name: sent whole; a start in it is outside.
+    const emptySuffix = await raw(base, "GET", "/empty.webm", { headers: { range: "bytes=-5" } });
+    expect(emptySuffix.status).toBe(200);
+    expect(emptySuffix.text).toBe("");
+    expect((await raw(base, "GET", "/empty.webm", { headers: { range: "bytes=0-" } })).status).toBe(
+      416,
+    );
 
     // One range: 206 with that part, the size after the slash.
     for (const [range, text, contentRange] of [
@@ -340,16 +349,23 @@ describe("http", () => {
       expect(res.headers.get("accept-ranges"), range).toBe("bytes");
     }
 
-    // Outside the file or malformed: 416 with the size.
-    for (const range of ["bytes=10-", "bytes=5-2", "bytes=-0", "bytes=abc", "bytes=-"]) {
+    // A valid range outside the file: 416 with the size.
+    for (const range of ["bytes=10-", "bytes=99-200", "bytes=-0"]) {
       const res = await get(range);
       expect(res.status, range).toBe(416);
       expect(res.headers.get("content-range"), range).toBe("bytes */10");
       expect(res.text, range).toBe("");
     }
 
-    // Several ranges or another unit: the whole file.
-    for (const range of ["bytes=0-1,4-5", "items=0-1"]) {
+    // Several ranges, another unit, or an invalid range (RFC 9110 §14.2): the whole file.
+    for (const range of [
+      "bytes=0-1,4-5",
+      "items=0-1",
+      "bytes=5-2",
+      "bytes=abc",
+      "bytes=-",
+      "bytes=1-x",
+    ]) {
       const res = await get(range);
       expect(res.status, range).toBe(200);
       expect(res.text, range).toBe("0123456789");

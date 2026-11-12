@@ -188,10 +188,10 @@ function segments(path: string): string[] | null {
 }
 
 /**
- * The byte range a `Range` header asks for in a file of `size` bytes: `null` when the header is
- * to be ignored (absent, another unit, or several ranges: the whole file is sent),
- * `"unsatisfiable"` when it is malformed or lies outside the file (416), else the inclusive
- * `[start, end]`.
+ * The byte range a `Range` header asks for in a file of `size` bytes (RFC 9110 §14): `null` when
+ * the header is to be ignored and the whole file sent (absent, another unit, several ranges, or
+ * an invalid range such as `bytes=50-10`), `"unsatisfiable"` for a valid range outside the file
+ * (416), else the inclusive `[start, end]`.
  */
 export function byteRange(
   header: string | null,
@@ -203,19 +203,20 @@ export function byteRange(
   const spec = (match[2] ?? "").trim();
   if (spec.includes(",")) return null;
   const parts = /^(\d*)\s*-\s*(\d*)$/.exec(spec);
-  if (!parts) return "unsatisfiable";
+  if (!parts) return null;
   const [, first = "", last = ""] = parts;
-  if (first === "" && last === "") return "unsatisfiable";
+  if (first === "" && last === "") return null;
   if (first === "") {
-    // `-N`: the last N bytes.
+    // `-N`: the last N bytes. Of an empty file there is no part to name: it is sent whole.
     const suffix = Number(last);
-    if (suffix === 0 || size === 0) return "unsatisfiable";
+    if (suffix === 0) return "unsatisfiable";
+    if (size === 0) return null;
     return [Math.max(0, size - suffix), size - 1];
   }
   const start = Number(first);
-  const end = last === "" ? size - 1 : Math.min(Number(last), size - 1);
-  if (start >= size || (last !== "" && Number(last) < start)) return "unsatisfiable";
-  return [start, end];
+  if (last !== "" && Number(last) < start) return null;
+  if (start >= size) return "unsatisfiable";
+  return [start, last === "" ? size - 1 : Math.min(Number(last), size - 1)];
 }
 
 async function readSlice(path: string, start: number, end: number): Promise<Buffer> {
