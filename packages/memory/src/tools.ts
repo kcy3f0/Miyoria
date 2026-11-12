@@ -149,6 +149,8 @@ export class RememberTool implements Tool {
 
 /** Searches memories visible in the current context. */
 export class RecallTool implements Tool {
+  /** Only marks what it found as recalled (access count), whatever the order. */
+  readonly readOnly = true;
   readonly spec: ToolSpec = {
     name: RECALL,
     description: "在你的長期記憶裡搜尋跟某件事有關的回憶(只會找到這裡可以提的記憶)。",

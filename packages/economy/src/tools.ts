@@ -557,6 +557,7 @@ export function lookCapability(economy: EconomyService): Capability {
     permission: null,
     tool: {
       name: "check_coins",
+      readOnly: true,
       description:
         `有人問他有多少${cur}、今天還能賺多少,或${cur}能買什麼、商店有什麼的時候用這個,` +
         "不要自己猜餘額或商品。只會給正在跟你說話的人看他自己的錢包,看不到別人的;" +
