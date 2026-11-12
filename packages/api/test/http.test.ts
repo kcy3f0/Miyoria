@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { PersonaHandle, PersonaHandleKey } from "@miyoria/agent";
 import { Supervisor, SupervisorKey } from "@miyoria/kernel";
 import { Profile, ProfileManifestSchema } from "@miyoria/profile";
@@ -25,6 +26,30 @@ function rawStatus(base: string, path: string): Promise<number> {
     const req = request({ host: hostname, port, path, method: "GET" }, (res) => {
       res.resume();
       resolve(res.statusCode ?? 0);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/** A GET sent with exactly `headers`, its body as sent (not decompressed). */
+function rawGet(
+  base: string,
+  path: string,
+  headers: Record<string, string>,
+): Promise<{
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: Buffer;
+}> {
+  const { hostname, port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const req = request({ host: hostname, port, path, method: "GET", headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (c: Buffer) => chunks.push(c));
+      res.on("end", () =>
+        resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }),
+      );
     });
     req.on("error", reject);
     req.end();
@@ -214,6 +239,78 @@ describe("http", () => {
     }
     expect(await rawStatus(base, "/assets/missing-abc.js")).toBe(404);
     expect(await rawStatus(base, "/card-smile.local.webp")).toBe(404);
+  });
+
+  it("panel files: text is compressed, media and ranges are not", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "miyoria-panel-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const page = `<!doctype html><title>Miyoria</title>${"<p>她在這裡</p>".repeat(200)}`;
+    const script = `export const x = ${JSON.stringify("miyoria ".repeat(500))};\n`;
+    const video = Buffer.alloc(4096, 7);
+    mkdirSync(join(dir, "assets"));
+    writeFileSync(join(dir, "index.html"), page);
+    writeFileSync(join(dir, "assets/app.js"), script);
+    writeFileSync(join(dir, "assets/tiny.css"), "a{}");
+    writeFileSync(join(dir, "assets/clip.webm"), video);
+    const { base } = await start({ panel_dir: dir });
+
+    // Brotli when offered, else gzip; the bytes come back the same either way, again from cache.
+    for (let i = 0; i < 2; i++) {
+      const br = await rawGet(base, "/assets/app.js", { "accept-encoding": "gzip, deflate, br" });
+      expect(br.status).toBe(200);
+      expect(br.headers["content-encoding"]).toBe("br");
+      expect(br.headers.vary).toBe("accept-encoding");
+      expect(Number(br.headers["content-length"])).toBe(br.body.length);
+      expect(br.body.length).toBeLessThan(script.length / 4);
+      expect(brotliDecompressSync(br.body).toString()).toBe(script);
+    }
+    for (const accept of ["gzip", "br;q=0, gzip;q=0.5", "*;q=0, gzip"]) {
+      const gz = await rawGet(base, "/assets/app.js", { "accept-encoding": accept });
+      expect(gz.headers["content-encoding"], accept).toBe("gzip");
+      expect(gunzipSync(gz.body).toString(), accept).toBe(script);
+    }
+    for (const accept of [undefined, "identity", "br;q=0, gzip;q=0"]) {
+      const plain = await rawGet(
+        base,
+        "/assets/app.js",
+        accept === undefined ? {} : { "accept-encoding": accept },
+      );
+      expect(plain.headers["content-encoding"], accept).toBeUndefined();
+      expect(plain.body.toString(), accept).toBe(script);
+      expect(plain.headers.vary, accept).toBe("accept-encoding");
+    }
+
+    // Video, and files too small to gain, go as they are.
+    const clip = await rawGet(base, "/assets/clip.webm", { "accept-encoding": "br, gzip" });
+    expect(clip.headers["content-encoding"]).toBeUndefined();
+    expect(clip.headers.vary).toBeUndefined();
+    expect(clip.body.equals(video)).toBe(true);
+    const tiny = await rawGet(base, "/assets/tiny.css", { "accept-encoding": "br, gzip" });
+    expect(tiny.headers["content-encoding"]).toBeUndefined();
+
+    // A range is of the file as it is: never compressed.
+    const part = await rawGet(base, "/assets/app.js", {
+      "accept-encoding": "br, gzip",
+      range: "bytes=0-5",
+    });
+    expect(part.status).toBe(206);
+    expect(part.headers["content-encoding"]).toBeUndefined();
+    expect(part.body.toString()).toBe(script.slice(0, 6));
+
+    // The page: compressed with a weak tag, and either form of the tag revalidates it.
+    const html = await rawGet(base, "/", { "accept-encoding": "br" });
+    expect(html.headers["content-encoding"]).toBe("br");
+    expect(brotliDecompressSync(html.body).toString()).toContain("<title>Miyoria</title>");
+    const weak = String(html.headers.etag);
+    expect(weak).toMatch(/^W\/"/);
+    const strong = weak.slice(2);
+    expect((await rawGet(base, "/", {})).headers.etag).toBe(strong);
+    for (const tag of [weak, strong]) {
+      expect(
+        (await rawGet(base, "/", { "accept-encoding": "br", "if-none-match": tag })).status,
+        tag,
+      ).toBe(304);
+    }
   });
 
   it("panel files: byte ranges", async () => {

@@ -5,6 +5,8 @@ import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { extname, join, resolve, sep } from "node:path";
+import { promisify } from "node:util";
+import { brotliCompress, gzip, constants as zlib } from "node:zlib";
 import { errorMessage, getLogger } from "@miyoria/kernel";
 
 const log = getLogger("api.panel");
@@ -47,6 +49,102 @@ const MIME: Readonly<Record<string, string>> = {
   ".mp4": "video/mp4",
   ".webm": "video/webm",
 };
+
+/** Text files worth compressing; pictures, video, audio and fonts are compressed already. */
+const COMPRESSIBLE = new Set([
+  ".html",
+  ".htm",
+  ".js",
+  ".mjs",
+  ".css",
+  ".json",
+  ".map",
+  ".webmanifest",
+  ".txt",
+  ".xml",
+  ".svg",
+]);
+/** Below this a compressed body saves next to nothing. */
+const MIN_COMPRESS_BYTES = 1024;
+/** Bytes of compressed files kept in memory (the panel's text is a few MB per encoding). */
+const COMPRESSED_CACHE_BYTES = 32 * 1024 * 1024;
+
+export type Encoding = "br" | "gzip";
+
+const brotli = promisify(brotliCompress);
+const gzipped = promisify(gzip);
+
+/**
+ * The encoding to send for an `Accept-Encoding` header: brotli, else gzip, else none (`null`).
+ * A coding listed with `q=0` is refused; `*` stands for any coding not listed.
+ */
+export function pickEncoding(header: string | null): Encoding | null {
+  if (header === null) return null;
+  const q = new Map<string, number>();
+  for (const part of header.split(",")) {
+    const [name = "", ...params] = part.split(";").map((x) => x.trim().toLowerCase());
+    if (name === "") continue;
+    const qp = params.find((x) => x.startsWith("q="));
+    const value = qp === undefined ? 1 : Number(qp.slice(2));
+    q.set(name, Number.isFinite(value) ? value : 0);
+  }
+  const accepts = (coding: Encoding) => (q.get(coding) ?? q.get("*") ?? 0) > 0;
+  if (accepts("br")) return "br";
+  if (accepts("gzip")) return "gzip";
+  return null;
+}
+
+/** Compresses on the zlib thread pool, never on the event loop. */
+async function compress(bytes: Buffer, encoding: Encoding): Promise<Buffer> {
+  return encoding === "br"
+    ? brotli(bytes, {
+        params: {
+          // 6: about 10% smaller than gzip in tens of ms; 11 takes over a second for the entry.
+          [zlib.BROTLI_PARAM_QUALITY]: 6,
+          [zlib.BROTLI_PARAM_MODE]: zlib.BROTLI_MODE_TEXT,
+          [zlib.BROTLI_PARAM_SIZE_HINT]: bytes.length,
+        },
+      })
+    : gzipped(bytes, { level: 6 });
+}
+
+/** Compressed files by path, date, size and encoding; the oldest go first past the budget. */
+const compressedFiles = new Map<string, Promise<Buffer>>();
+const compressedSizes = new Map<string, number>();
+let compressedBytes = 0;
+
+function compressedFile(
+  path: string,
+  mtimeMs: number,
+  size: number,
+  encoding: Encoding,
+): Promise<Buffer> {
+  const key = `${encoding}\u0000${mtimeMs}\u0000${size}\u0000${path}`;
+  const cached = compressedFiles.get(key);
+  if (cached !== undefined) {
+    // Most recently used last.
+    compressedFiles.delete(key);
+    compressedFiles.set(key, cached);
+    return cached;
+  }
+  const pending = readFile(path).then((bytes) => compress(bytes, encoding));
+  compressedFiles.set(key, pending);
+  pending.then(
+    (bytes) => {
+      if (compressedFiles.get(key) !== pending) return;
+      compressedSizes.set(key, bytes.length);
+      compressedBytes += bytes.length;
+      for (const old of compressedFiles.keys()) {
+        if (compressedBytes <= COMPRESSED_CACHE_BYTES || old === key) break;
+        compressedBytes -= compressedSizes.get(old) ?? 0;
+        compressedSizes.delete(old);
+        compressedFiles.delete(old);
+      }
+    },
+    () => compressedFiles.delete(key),
+  );
+  return pending;
+}
 
 function isFile(path: string): boolean {
   try {
@@ -185,25 +283,40 @@ export async function servePanel(
       // (an ETag), never on the file's date.
       const html = await rewrite((await readFile(path)).toString("utf8"), request);
       const bytes = Buffer.from(html, "utf8");
+      const tag = `"${createHash("sha1").update(bytes).digest("base64url")}"`;
+      const encoding =
+        method === "GET" && bytes.length >= MIN_COMPRESS_BYTES
+          ? pickEncoding(request.headers.get("accept-encoding"))
+          : null;
       const headers = new Headers({
         "content-type": MIME[".html"] ?? "text/html",
         "cache-control": REVALIDATE,
         "x-content-type-options": "nosniff",
         "x-frame-options": "DENY",
         "content-length": String(bytes.length),
-        etag: `"${createHash("sha1").update(bytes).digest("base64url")}"`,
+        vary: "accept-encoding",
+        // Compressed, the same page is a weak match: the tag names the page, not the bytes.
+        etag: encoding === null ? tag : `W/${tag}`,
       });
-      if (request.headers.get("if-none-match") === headers.get("etag")) {
+      const match = request.headers.get("if-none-match");
+      if (match === tag || match === `W/${tag}`) {
         headers.delete("content-type");
         headers.delete("content-length");
         return new Response(null, { status: 304, headers });
       }
-      return new Response(method === "HEAD" ? null : bytes, { status: 200, headers });
+      if (method === "HEAD") return new Response(null, { status: 200, headers });
+      if (encoding === null) return new Response(bytes, { status: 200, headers });
+      const body = await compress(bytes, encoding);
+      headers.set("content-encoding", encoding);
+      headers.set("content-length", String(body.length));
+      return new Response(body, { status: 200, headers });
     }
 
     const assets = url.pathname.startsWith("/assets/");
+    const ext = extname(path).toLowerCase();
+    const compressible = COMPRESSIBLE.has(ext) && info.size >= MIN_COMPRESS_BYTES;
     const headers = new Headers({
-      "content-type": MIME[extname(path).toLowerCase()] ?? "application/octet-stream",
+      "content-type": MIME[ext] ?? "application/octet-stream",
       "cache-control": assets ? IMMUTABLE : REVALIDATE,
       "x-content-type-options": "nosniff",
       // The page is open to the internet and has buttons that delete: nobody may frame it.
@@ -211,6 +324,7 @@ export async function servePanel(
       "last-modified": new Date(Math.floor(info.mtimeMs / 1000) * 1000).toUTCString(),
       "accept-ranges": "bytes",
     });
+    if (compressible) headers.set("vary", "accept-encoding");
     const since = request.headers.get("if-modified-since");
     if (since !== null) {
       const sinceMs = Date.parse(since);
@@ -240,6 +354,15 @@ export async function servePanel(
       headers.set("content-length", String(part.length));
       headers.set("content-range", `bytes ${start}-${start + part.length - 1}/${info.size}`);
       return new Response(part, { status: 206, headers });
+    }
+    // The whole file, compressed when the client takes it. A range is always of the file as it
+    // is on disk (above), so ranges and compression never meet.
+    const encoding = compressible ? pickEncoding(request.headers.get("accept-encoding")) : null;
+    if (encoding !== null) {
+      const body = await compressedFile(path, info.mtimeMs, info.size, encoding);
+      headers.set("content-encoding", encoding);
+      headers.set("content-length", String(body.length));
+      return new Response(body, { status: 200, headers });
     }
     const body = await readFile(path);
     return new Response(body, { status: 200, headers });
