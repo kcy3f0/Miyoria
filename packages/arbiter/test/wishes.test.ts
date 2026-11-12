@@ -117,7 +117,9 @@ describe("one wish, one key", () => {
     r.dm("欸,上次那張圖我看了,還不錯");
     expect(r.book.of("goal:g1")?.state).toBe("open");
     r.advance(HOUR);
-    r.dm("欸,跟你說一件小事——〈雪は何色〉我練好了,想唱給你聽。你哪時候方便就講一聲,我人在語音。對了,tuyu 你練得怎樣了?");
+    r.dm(
+      "欸,跟你說一件小事——〈雪は何色〉我練好了,想唱給你聽。你哪時候方便就講一聲,我人在語音。對了,tuyu 你練得怎樣了?",
+    );
     expect(r.book.of("goal:g1")).toMatchObject({ state: "asked", asked: 1 });
   });
 
