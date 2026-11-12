@@ -107,14 +107,15 @@ export const ADDRESSING: Record<FloorClaimKind, string> = {
   wish: "現在沒人跟你說話,這是你自己想做的事(見參考資料)。要動手就直接呼叫工具,不要只用講的。不適合就 <silence/>。不要說出盤算的過程。",
   // v4 §7.2: a look. She picks the rung; an emoji is the cheapest way to take part.
   ambient:
-    "沒有人叫你,大家在聊,你看了一眼下面的訊息。怎麼參與由你決定,從輕到重:不理(<silence/>)、用 react 按一個表情(不算你講話)、一句短話、加入聊天。別人是在跟別人講話時,真的需要才插話。不想參與就 <silence/>。",
+    "沒有人叫你,大家在聊,你看了一眼下面的訊息。怎麼參與由你決定,從輕到重:不理(<silence/>)、呼叫 react 工具按一個表情(不算你講話,不要把 react 寫成文字標籤)、一句短話、加入聊天。別人是在跟別人講話時,真的需要才插話。不想參與就 <silence/>。",
 };
 
 /** `ADDRESSING` of a turn that has no message to answer although its kind usually has one. */
 const NO_MESSAGE: Partial<Record<FloorClaimKind, string>> = {
   addressed: "有人在叫你:看對話紀錄最後是誰在跟你說話,回應他。",
   reply: "有人接著你剛說的話講:是對你說的就接下去回他,沒什麼好接的就 <silence/>。",
-  ambient: "沒有人叫你,大家在聊。想參與就簡短講或用 react 按一個表情,不想參與就 <silence/>。",
+  ambient:
+    "沒有人叫你,大家在聊。想參與就簡短講或呼叫 react 工具按一個表情(工具呼叫,不是文字標籤),不想參與就 <silence/>。",
 };
 
 const MUTED = "現在沒有人在聽,或你講夠多了:不要開口,只輸出工具呼叫,不想做就 <silence/>。";

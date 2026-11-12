@@ -1577,6 +1577,18 @@ describe("practising a song (v4 §8.1)", () => {
 });
 
 describe("workerQuery", () => {
+  it("takes a link pasted without its scheme as a link", () => {
+    expect(workerQuery("www.bilibili.com/video/BV1j7cuejE6k/", 1)).toEqual({
+      url: "https://www.bilibili.com/video/BV1j7cuejE6k/",
+      key: 1,
+    });
+    expect(workerQuery("唱 youtu.be/abc?si=x", 2)).toEqual({
+      url: "https://youtu.be/abc?si=x",
+      key: 2,
+    });
+    expect(workerQuery("bilibili 的歌", 3)).toEqual({ query: "bilibili 的歌", key: 3 });
+  });
+
   it("tells links, library files and searches apart", () => {
     expect(workerQuery("https://youtu.be/abc", 1)).toEqual({ url: "https://youtu.be/abc", key: 1 });
     expect(workerQuery("library:My Song.mp3", 0)).toEqual({ path: "My Song.mp3", key: 0 });

@@ -208,6 +208,41 @@ describe("markup the model imitates", () => {
     expect(e.tools).toEqual(["sing_start"]);
   });
 
+  it("takes a react tag out of the text and logs it as a tool", () => {
+    for (const tag of ['<react emoji="👍"/>', '<react emoji=":BongoWow:"/>']) {
+      const e = Expression.parse(`${tag}好喔`);
+      expect(e.text).toBe("好喔");
+      expect(e.tools).toEqual(["react"]);
+    }
+  });
+
+  it("holds a react tag that arrives in pieces", () => {
+    const parser = new ExpressionParser();
+    const e = new Expression();
+    for (const s of [
+      ...parser.push('<react emoji="'),
+      ...parser.push('👍"/>可以'),
+      ...parser.finish(),
+    ]) {
+      e.apply(s);
+    }
+    expect(e.text).toBe("可以");
+    expect(e.tools).toEqual(["react"]);
+  });
+
+  it("drops a DeepSeek tool call written as text, arguments and all", () => {
+    const e = Expression.parse(
+      '好喔<｜｜DSML｜｜ function_calls><｜｜DSML｜｜ invoke name="keep_note"><｜｜DSML｜｜ parameter name="text">等修好再唱</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ function_calls>',
+    );
+    expect(e.text).toBe("好喔");
+  });
+
+  it("drops stray DSML closing tags", () => {
+    expect(Expression.parse("等修好再唱</｜DSML｜ parameter></｜DSML｜ invoke>").text).toBe(
+      "等修好再唱",
+    );
+  });
+
   // 2026-11-11 in the channel: 「<react emoji="👍"/>」 went out as the first line of a reply.
   it("takes a tool written as a tag with attributes out of the text", () => {
     const cases: [string, string][] = [
