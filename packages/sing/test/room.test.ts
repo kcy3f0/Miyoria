@@ -93,6 +93,16 @@ describe("VoiceRoom", () => {
     expect(lines([], true)).toEqual([]);
   });
 
+  test("present_says_who_is_in_her_channel_and_null_when_it_cannot_tell", () => {
+    const { room, members } = setup();
+    expect(room.present("g1", AMY.account)).toBe(true);
+    members([ME, OWEN]);
+    expect(room.present("g1", AMY.account)).toBe(false);
+    // A web viewer is never in a Discord channel; another guild she is not in is unknown.
+    expect(room.present("g1", { platform: "web", id: "2" })).toBeNull();
+    expect(room.present("g2", OWEN.account)).toBeNull();
+  });
+
   test("the_block_shows_in_the_guilds_text_channels_until_she_leaves", async () => {
     const { room } = setup();
     const prompt = new VoiceRoomPrompt(room, { open: () => [] });

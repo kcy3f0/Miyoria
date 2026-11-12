@@ -36,6 +36,7 @@ import {
   SPEECH_PAUSE_TOPIC,
   SpeechPauseKey,
   VoiceFloorKey,
+  type VoiceParticipant,
   type VoicePlayer,
   VoicePlayerKey,
   v2Payload,
@@ -52,6 +53,7 @@ import {
   SingModule,
   type SingWorker,
   SingWorkerError,
+  type SongEntry,
   type SongMeta,
   type SongPayments,
   SongPaymentsKey,
@@ -67,6 +69,16 @@ const VOICE: ContextKey = { platform: "discord", scope: "g1", channel: "voice1",
 const TEXT: ContextKey = { platform: "discord", scope: "g1", channel: "text1", kind: "channel" };
 const OWEN: AccountRef = { platform: "discord", id: "7" };
 const AMY: AccountRef = { platform: "discord", id: "8" };
+
+function listener(account: AccountRef): VoiceParticipant {
+  return {
+    account,
+    display_name: account.id === OWEN.id ? "Owen" : "Amy",
+    is_self: false,
+    muted: false,
+    deafened: false,
+  };
+}
 const BOB: AccountRef = { platform: "discord", id: "9" };
 
 class AllowAll extends BaseAuthorizer {
@@ -375,9 +387,21 @@ class Harness {
     await settle();
   }
 
-  async join(): Promise<void> {
+  /** She joins the voice channel; Owen and Amy are there (requesters are listening). */
+  async join(people: AccountRef[] = [OWEN, AMY]): Promise<void> {
     this.voice.channels.set("g1", "voice1");
-    await this.publish({ type: "voice_joined", data: { context: VOICE, participants: [] } });
+    await this.publish({
+      type: "voice_joined",
+      data: { context: VOICE, participants: people.map(listener) },
+    });
+  }
+
+  /** Who is in her voice channel now. */
+  async members(people: AccountRef[]): Promise<void> {
+    await this.publish({
+      type: "voice_participants",
+      data: { context: VOICE, participants: people.map(listener) },
+    });
   }
 
   invoke(principal: Principal, capability: string, args: JsonValue, turn: string | null = null) {
@@ -582,6 +606,32 @@ describe("sing module", () => {
     await settle(6000 + 400);
     expect(h.voice.plays).toHaveLength(1);
     expect(h.mind.suggestions.filter((s) => s.reason === "song_ready")).toHaveLength(0);
+  });
+
+  it("a commanded song waits while its requester is out of the voice channel", async () => {
+    h = await Harness.create();
+    await h.invoke(Principals.command(OWEN, TEXT), "sing.request", { query: "Song A", by: "Owen" });
+    await h.invoke(Principals.command(AMY, TEXT), "sing.request", { query: "Song B", by: "Amy" });
+    h.worker.finish("j1", "Song A", 1);
+    await settle(200);
+    // Owen asked first, but he is not here: it waits, and the card says why.
+    await h.join([AMY]);
+    await settle(6000 + 400);
+    expect(h.voice.plays).toHaveLength(0);
+    expect(h.singer.waitsForRequester(h.singer.list.get(1) as SongEntry)).toBe(true);
+    expect(await h.command("queue song list")).toContain("不在語音裡，回來再唱");
+    // Amy's is ready and she is here: hers goes first.
+    h.worker.finish("j2", "Song B", 1);
+    await settle(200 + 6000 + 400);
+    expect(h.voice.plays).toHaveLength(1);
+    expect(["playing", "done"]).toContain(h.singer.list.get(2)?.state);
+    expect(h.singer.list.get(1)?.state).toBe("ready");
+    await settle(3000);
+    // Owen comes back: his song starts.
+    await h.members([AMY, OWEN]);
+    await settle(6000 + 400);
+    expect(h.voice.plays).toHaveLength(2);
+    expect(["playing", "done"]).toContain(h.singer.list.get(1)?.state);
   });
 
   it("asks again for a ready song the worker's cache cleaned out, and sings it once it is made", async () => {
