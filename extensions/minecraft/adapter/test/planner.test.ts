@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PlanError, countOf, describeStep, knows, normalizeItem, plan, planksOf } from "../src/planner.js";
+import { PlanError, countOf, describeStep, knows, normalizeItem, plan, planksOf, plansFromScratch } from "../src/planner.js";
 
 const lines = (target: string, inv: Record<string, number> = {}, world = {}, count = 1) =>
   plan(target, count, inv, world).map(describeStep);
@@ -87,6 +87,17 @@ describe("planner", () => {
   it("says where mob drops come from instead of planning them", () => {
     expect(() => plan("ender_eye", 1, {})).toThrow("烈焰棒沒辦法自己做出來");
     expect(() => plan("ender_eye", 1, { blaze_rod: 1 })).toThrow("終界珍珠沒辦法自己做出來");
+  });
+
+  it("tells what it can get from nothing from what needs monster drops or wool", () => {
+    for (const item of ["iron_pickaxe", "diamond_pickaxe", "flint_and_steel", "arrow", "torch", "bread", "#food"]) {
+      expect(plansFromScratch(item), item).toBe(true);
+    }
+    for (const item of ["ender_eye", "blaze_powder", "bow", "white_bed", "red_bed", "elytra"]) {
+      expect(plansFromScratch(item), item).toBe(false);
+    }
+    // Known all the same: with the drops in hand the plan works.
+    expect(knows("ender_eye")).toBe(true);
   });
 
   it("plans obsidian mining through diamonds from stone pickaxe", () => {

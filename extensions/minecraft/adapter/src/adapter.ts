@@ -61,6 +61,7 @@ import {
   describeStep,
   itemName,
   knows,
+  plansFromScratch,
   normalizeItem,
   plan,
   unknownText,
@@ -663,8 +664,10 @@ export class MinecraftAdapter implements GameAdapter {
 
   /**
    * `obtain`: one entry, three strategies (the old paths): `plan` when the planner knows the item,
-   * else `altoclef` when it is installed, else `craft` (one craft of the item). `strategy`
-   * forces one.
+   * else `altoclef` when it is installed, else `craft` (one craft of the item). An item the
+   * planner knows but cannot get from nothing (an ender eye needs blaze rods and ender pearls,
+   * a bed wool) goes to AltoClef when it is installed: it fights for what the planner cannot.
+   * `strategy` forces one.
    */
   async #runObtain(spec: TaskSpec, task: TaskContext, forced: ObtainStrategy | null): Promise<TaskResult> {
     const args = spec.args;
@@ -674,7 +677,8 @@ export class MinecraftAdapter implements GameAdapter {
     const count = Math.min(64, Math.max(1, Math.round(Number.isFinite(n) ? n : 1)));
     if (!this.#bridge.ready) throw new TaskFailure("disconnected", errorText("not_connected", ""));
     const altoclef = this.#bridge.hello?.capabilities?.altoclef === true;
-    const strategy: ObtainStrategy = forced ?? (knows(item) ? "plan" : altoclef ? "altoclef" : "craft");
+    const planned = altoclef ? plansFromScratch(item) : knows(item);
+    const strategy: ObtainStrategy = forced ?? (planned ? "plan" : altoclef ? "altoclef" : "craft");
     switch (strategy) {
       case "plan":
         return this.#runPlan(item, count, task);

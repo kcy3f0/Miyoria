@@ -573,6 +573,11 @@ describe("obtain: one entry, the old paths as strategies", () => {
     await waitFor(() => ends(tasks).length === 4);
     expect(ends(tasks).at(-1)).toEqual(["o4", "precondition"]);
     expect(adapter.plan).toBeNull();
+    // Known to the planner but made from monster drops (blaze rods, ender pearls): AltoClef.
+    await adapter.tasks.start(spec("o5", "obtain", { item: "ender_eye" }));
+    await waitFor(() => m.requests.some((r) => r.type === "altoclef" && r.task === "o5"));
+    expect(m.requests.find((r) => r.task === "o5")).toMatchObject({ command: "get ender_eye 1" });
+    await adapter.tasks.cancel("o5");
   });
 
   it("another body task replaces the plan", async () => {

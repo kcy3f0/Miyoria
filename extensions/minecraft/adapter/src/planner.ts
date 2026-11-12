@@ -311,6 +311,30 @@ export function knows(item: string): boolean {
   return item.endsWith("_planks") && planksOf(item) !== undefined;
 }
 
+const fromScratch = new Map<string, boolean>();
+
+/**
+ * Whether the planner can get `item` from an empty inventory: false when the way there needs
+ * something it cannot plan (monster drops such as blaze rods, ender pearls and string, or wool),
+ * so with nothing in hand its plan would fail. Implies `knows`.
+ */
+export function plansFromScratch(item: string): boolean {
+  let known = fromScratch.get(item);
+  if (known === undefined) {
+    known = knows(item);
+    if (known) {
+      try {
+        plan(item, 1, {});
+      } catch (error) {
+        if (!(error instanceof PlanError)) throw error;
+        known = false;
+      }
+    }
+    fromScratch.set(item, known);
+  }
+  return known;
+}
+
 /** The food the world around her offers most cheaply (what `obtain food` goes for). */
 function foodChoice(inv: Inventory, world: World): string {
   const cook = world.furnace === true || (inv.furnace ?? 0) > 0;
