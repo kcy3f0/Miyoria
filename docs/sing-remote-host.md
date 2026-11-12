@@ -75,11 +75,7 @@ python -m venv .venv-sing
 cd workers/sing
 $env:HOST = "100.x.y.z"          # 你的 Tailscale 位址(只聽 tailnet)
 $env:PORT = "8005"
-$env:SING_LYRICS_ASR = "0"        # 見下面「歌詞」,ASR 在 Owen 的機器上
-# 歌詞找不到時問 LLM(選用):三個都要設,或設 SING_LYRICS_LLM=0 關掉
-# $env:SING_LYRICS_LLM_URL = "https://api.deepseek.com"
-# $env:SING_LYRICS_LLM_KEY = "..."
-# $env:SING_LYRICS_LLM_MODEL = "deepseek-chat"
+$env:SING_LYRICS_URL = "http://<Owen 的 Tailscale IP>:8007"   # 歌詞交給 Owen 那邊的歌詞服務(見第 6 節)
 ../.venv-sing/Scripts/python server.py
 ```
 
@@ -89,8 +85,8 @@ $env:SING_LYRICS_ASR = "0"        # 見下面「歌詞」,ASR 在 Owen 的機器
 |---|---|
 | `HOST` / `PORT` | 綁定位址 / 埠,預設 `127.0.0.1` / `8005`。**一定要改成 Tailscale 位址**,否則 Owen 連不到 |
 | `SING_OFFLOAD_URLS` | **留空**。這是做歌時叫 TTS / ASR 讓出顯卡用的,你的電腦上沒有它們 |
-| `SING_LYRICS_ASR` | 預設會去連 `127.0.0.1:8003` 的 ASR 抽查歌詞,你這邊沒有,會自動略過;設 `0` 乾脆不查 |
-| `SING_LYRICS_LLM*` | 找不到歌詞時問 LLM。預設讀你本機 `miyoria.toml`(你沒有),所以要自己給或設 `SING_LYRICS_LLM=0` |
+| `SING_LYRICS_URL` | Owen 那邊的歌詞服務網址。找歌詞(含問 LLM、ASR 抽查)都在 Owen 那邊做,你不需要金鑰,也不用連 ASR。沒設的話你的 worker 會自己找,但找不到時沒有 LLM 可問 |
+| `SING_LYRICS_ASR` | 設 `0` = 不做 ASR 抽查,也不會把主唱音軌傳給歌詞服務 |
 | `SING_CACHE_MAX_GB` / `SING_CACHE_MAX_DAYS` | 歌曲快取上限,預設 6 GB / 14 天 |
 | `SING_DATA_DIR` | 快取位置,預設 `<repo>/data/songs` |
 
@@ -118,14 +114,27 @@ curl -X POST http://100.x.y.z:8005/jobs -H "content-type: application/json" -d '
 curl http://100.x.y.z:8005/jobs/<id>     # state / stage / progress
 ```
 
+**歌詞服務(Owen 這邊也要啟動)**:找歌詞要用 Owen 的 LLM 設定和 ASR,所以跑在 Owen 的電腦上,對方的 worker 透過 `SING_LYRICS_URL` 呼叫它。啟動(Owen 的電腦,在 `workers/` 底下):
+
+```powershell
+python -m venv .venv-lyrics
+.venv-lyrics/Scripts/pip install -r lyrics/requirements.txt
+$env:HOST = "100.a.b.c"     # Owen 自己的 Tailscale 位址
+$env:PORT = "8007"
+cd lyrics; ../.venv-lyrics/Scripts/python server.py
+```
+
+它沒有認證,一樣只綁 Tailscale 位址並用 ACL 只放行對方的機器。ASR 抽查預設連 `127.0.0.1:8003`(Owen 本機的 ASR),不用另外設定。對方傳過來的只有 16 kHz 單聲道的主唱音軌(每分鐘約 2 MB)。
+
 注意:**不要**用 `miyoria init` 的 `[machine.hosts] inference` 去指到你的機器。那個欄位是「asr / tts / sing 同一台」的單一位址,會連 `ASR_URL` / `TTS_URL` 也一起改過去,但你這台沒有 ASR / TTS。直接手動改 `[modules.sing] url` 就好。
 
 ## 7. 已知限制(程式目前沒處理)
 
 1. **歌曲影片**:Core 播歌前會從 worker 的 `/songs/{id}/files/video.mp4` 把影片下載到自己的 `data/songs/<id>/`,所以 worker 在別台也能放影片。前提是 Core 和 Stage 在同一台(Stage 讀的是 Core 這台的本機路徑)。
-2. **做歌時不會再讓 TTS / ASR 讓出顯卡**:因為 worker 不在同一台,她說話和做歌不會互相搶 VRAM(反而更好),但也沒有「她先說一句我去準備歌」的流程;若 Core 端還是有這句提示,可以把 `[modules.sing] prepare_notice = false`。
-3. **沒有認證**:全靠 Tailscale 隔離,請照第 1 節設 ACL / 綁定位址。
-4. 這個 worker 一次只做一首歌(佇列),你那邊 GPU 被別的程式(遊戲)占住時會變慢。
+2. **歌詞對齊仍在對方的 worker**:歌詞服務只負責找歌詞和驗證,拿到歌詞後的時間對齊要讀音訊,在 worker 做。歌詞服務沒開時,這首歌沒有字幕,不會放錯的詞。
+3. **做歌時不會再讓 TTS / ASR 讓出顯卡**:因為 worker 不在同一台,她說話和做歌不會互相搶 VRAM(反而更好),但也沒有「她先說一句我去準備歌」的流程;若 Core 端還是有這句提示,可以把 `[modules.sing] prepare_notice = false`。
+4. **沒有認證**:全靠 Tailscale 隔離,請照第 1 節設 ACL / 綁定位址。
+5. 這個 worker 一次只做一首歌(佇列),你那邊 GPU 被別的程式(遊戲)占住時會變慢。
 
 ## 8. 疑難排解
 

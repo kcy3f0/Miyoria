@@ -7,6 +7,7 @@
 | `asr/` | `POST /asr`、`GET /health`、`GET /busy` | 8001 | `ASR_BACKEND=sensevoice`(sherpa-onnx,CPU,附情緒 / 事件標記)或 `qwen3`(Qwen3-ASR,GPU) |
 | `tts/` | `POST /tts`、`GET /health`、`GET /busy`、`GET /voices`、`POST /voices/reload` | 8002 | Qwen3-TTS,聲音由 `VOICES_DIR` 註冊;後端 `faster-qwen3-tts`(真串流,推薦)或官方 `qwen-tts`(句子級,備案) |
 | `sing/` | `POST /jobs`、`GET /jobs/{id}`、`GET /songs`、`GET /songs/{id}/files/{name}`、`POST /songs/{id}/lyrics`、`GET /library`、`GET /health` | 8005 | 點歌翻唱:yt-dlp / 本機歌庫 → RoFormer 人聲分離 → BS-RoFormer 切主唱 → 她的 RVC 模型轉主唱(可選先過 YingMusic / Seed-VC)→ 依伴唱模式混音 + 同步歌詞(lrclib / 網易雲,找不到再問 LLM);見第 9 節 |
+| `lyrics/` | `POST /lyrics`、`GET /health` | 8007 | 給「翻唱 worker 在別台電腦」用:幫它找同步歌詞(重用 `sing/lyrics.py`:lrclib / 網易雲 / Core 的 LLM / ASR 抽查),跑在 Core 那台。翻唱 worker 設 `SING_LYRICS_URL=http://<這台>:8007`;沒設就像以前在 worker 內找。啟動:`cd workers/lyrics && ../.venv-lyrics/Scripts/python server.py`(`pip install -r lyrics/requirements.txt`),沒有認證,只綁私有位址 |
 | `turn/` | `POST /turn`、`WS /vad`、`GET /health` | 8006 | 判斷講完:Smart Turn v3 + Silero VAD,CPU、不需要 PyTorch;見第 10 節 |
 | `fake/` | 兩個端點都有 | 8000 | 不需要 GPU 的假 worker(固定文字 / 正弦波「聲音」),用來做端對端測試 |
 | `tests/` | pytest | | 契約測試(預設打 fake,也可以打真的 worker) |
@@ -585,6 +586,7 @@ curl -s http://127.0.0.1:8005/jobs/<id>          # state / stage / progress;done
 | `SING_LYRICS_LLM_URL` / `_KEY` / `_MODEL` | (空) | 歌詞專用的 LLM(OpenAI 相容的 base url、金鑰、模型 id;URL 和 MODEL 都有才用),沒設就讀 `miyoria.toml` |
 | `SING_LYRICS_LLM_TIMEOUT_S` / `SING_LYRICS_BUDGET_S` | 20 / 45 | 一次 LLM 呼叫最久 / 一首歌找歌詞最久(超過就用手上最好的,沒有就沒有) |
 | `SING_LYRICS_NETEASE` | 1 | 也查網易雲音樂的公開歌詞介面(0 = 只用 lrclib) |
+| `SING_LYRICS_URL` | (空) | 歌詞服務(`workers/lyrics`)的網址:翻唱 worker 跟 Core 不在同一台時,找歌詞(含 LLM、ASR 抽查)交給它,主唱音軌以 16 kHz 單聲道傳過去;對齊仍在 worker。服務不通就沒有歌詞 |
 | `SING_LYRICS_ASR` / `SING_LYRICS_ASR_URL` | auto / `http://127.0.0.1:8003` | 用 ASR 聽主唱抽查歌詞:`auto` = 只查信心不到 0.85 的、`1` = 都查、`0` = 不查;ASR 離線(offload)時略過 |
 | `SING_VIDEO` / `SING_VIDEO_MAX_HEIGHT` / `SING_VIDEO_MAX_MB` / `SING_VIDEO_WAIT_S` | 1 / 1080 / 300 / 120 | 抓原曲影片 / 最高解析度 / 最大檔案 / 音訊好了之後最多再等幾秒 |
 | `HOST` / `PORT` | `127.0.0.1` / `8005` | 只聽本機 |
