@@ -82,6 +82,24 @@ export {
   ProfileIdKey,
   type TurnId,
 } from "./ids.js";
+export {
+  IMAGEGEN_TOPIC,
+  type ImageGen,
+  ImageGenKey,
+  type ImageGenStatus,
+  type ImageJob,
+  type ImageJobEvent,
+  type ImageJobFilter,
+  type ImageJobPriority,
+  type ImageJobState,
+  type ImageLora,
+  type ImageModelInfo,
+  type ImageOutput,
+  type ImageRequest,
+  type ImageRequestInput,
+  type ImageSubmitOptions,
+  type ImageWorkflowInfo,
+} from "./imagegen.js";
 export { isJsonObject, type JsonObject, type JsonPrimitive, type JsonValue } from "./json.js";
 export {
   CONVERSATION_FOLDED_TOPIC,

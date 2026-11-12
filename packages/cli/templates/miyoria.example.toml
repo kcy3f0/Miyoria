@@ -1147,6 +1147,32 @@ max_per_day = 12                 # 她自己開話題:一天最多幾次(0 = 不
 # proxy_memory_mb = 128          # proxy 容器的記憶體(MiB)
 # 跑程式的次數上限在 [modules.actions.limits."code.run"](預設每天 30 次、冷卻 20 秒)
 
+# 生圖(docs/design/imagegen.md):連 ComfyUI 的 API 生圖,給她的其他系統用(目前沒有指令,成員叫不到)。
+# 內建三個模型:krea2(turbo / raw)、moss_image(sft / base)、anima(base / turbo);
+# 或把 ComfyUI 的「Export (API)」存成 <workflows_dir>/<id>.json 當 workflow 用。她唱歌時 GPU 先讓給歌
+# [modules.imagegen]
+# enabled = true
+# url = "http://127.0.0.1:8188"   # ComfyUI;headers = { Authorization = "Bearer ..." } 可加認證標頭
+# output_dir = "data/images"      # 圖存成 <YYYY-MM>/<purpose>/<job>-<n>.png,旁邊有 <job>.json(請求、graph、檔名)
+# workflows_dir = "data/imagegen/workflows"
+# input_dir = "data/imagegen/input"   # 以圖生圖的起始圖只能從這裡拿
+# default_model = "krea2"
+# batch_hours = "02:00-08:00"     # batch 優先度的工作只在這段時間跑(null 為隨時);interactive 隨時
+# pause_while_singing = true      # 唱歌(或準備唱歌)時不送新工作,正在跑的 batch 會中斷、之後重排
+# free_on_sing = true             # 開唱時叫 ComfyUI 卸載模型
+# free_after_idle_s = 120         # 閒置多久卸載模型(0 不卸)
+# timeout_s = 600
+# max_attempts = 3                # ComfyUI 連不上時重試幾次
+# max_queued = 2000
+# max_batch = 8
+# check_files = true              # 送出前確認模型檔在 ComfyUI 裡
+# keep_days = 0                   # 圖保留幾天(0 永久)
+# daily_limits = { gacha = 200 }  # 每個 purpose 每天最多幾張
+# [modules.imagegen.models.krea2]
+# variants.raw.files.diffusion_model = "krea2_raw_fp8_scaled.safetensors"   # RAW 檔名請改成實際下載的
+# [modules.imagegen.models.anima]
+# prompt_prefix = "masterpiece, best quality, score_7, safe, "
+
 # 技能(v4 §8.3):做成功的事寫成一份說明加腳本,放在上面的工作區(skills/<name>/SKILL.md),
 # 用一行描述索引,需要時才載入。需要 [modules.sandbox] 開著而且 workspace 沒關;沒有的話沒有技能也沒有工具。下面都是預設值
 # [modules.skills]
