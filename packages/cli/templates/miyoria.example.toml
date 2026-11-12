@@ -342,6 +342,7 @@ dirs = ["extensions"]
 # 唱的時候插話不會打斷,/queue song skip | stop 才會。Go Live 要讓觀眾聽到歌,voice node 要 GOLIVE_AUDIO=true
 # [modules.sing]
 # url = "http://127.0.0.1:8005"
+# fallback_urls = []         # url 連不上時依序改用這些 worker(例:url 是朋友的顯卡,這裡放本機 "http://127.0.0.1:8005");docs/sing-remote-host.md
 # start = "decide"           # decide:準備好了她挑時機唱;auto:好了就唱
 # max_pending_per_user = 2   # 每個人同時最多幾首在歌單上
 # lyrics = true              # 同步歌詞變成 overlay 字幕

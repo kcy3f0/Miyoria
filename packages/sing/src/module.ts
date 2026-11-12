@@ -23,6 +23,7 @@ import { HttpSingWorker, type SingWorker } from "./client.js";
 import { SingClips } from "./clips.js";
 import { registerCommands } from "./commands.js";
 import { SingConfigSchema } from "./config.js";
+import { FailoverSingWorker } from "./failover.js";
 import { PROMPT_KEY, SingPrompt } from "./prompt.js";
 import { ROOM_PROMPT_KEY, VoiceRoom, VoiceRoomPrompt } from "./room.js";
 import { Singer } from "./singer.js";
@@ -83,7 +84,15 @@ export class SingModule implements Module {
   async start(ctx: ModuleContext): Promise<void> {
     const cfg = ctx.config(SingConfigSchema);
     const timeoutMs = cfg.timeout_secs * 1000;
-    const worker = this.#worker?.(cfg.url, timeoutMs) ?? new HttpSingWorker(cfg.url, timeoutMs);
+    const make = (url: string) =>
+      this.#worker?.(url, timeoutMs) ?? new HttpSingWorker(url, timeoutMs);
+    const worker: SingWorker =
+      cfg.fallback_urls.length === 0
+        ? make(cfg.url)
+        : new FailoverSingWorker(
+            [cfg.url, ...cfg.fallback_urls].map((url) => ({ name: url, worker: make(url) })),
+            { retryMs: cfg.fallback_retry_secs * 1000, now: () => ctx.clock.now() },
+          );
     const videoDir = cfg.video ? resolve(this.#baseDir, cfg.video_dir) : null;
     const singer = new Singer(cfg, ctx, worker, videoDir);
     const actuators = actuatorsFor(ctx);

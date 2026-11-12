@@ -128,13 +128,21 @@ export type SongTrack = "play_mix.pcm" | "play_vocals.pcm";
 export class SingWorkerError extends Error {
   override readonly name = "SingWorkerError";
 
-  /** The worker's HTTP status (404: it does not know the job, e.g. after a restart). */
-  constructor(message: string, options?: ErrorOptions & { status?: number }) {
+  /**
+   * The worker's HTTP status (404: it does not know the job, e.g. after a restart).
+   * `unreachable`: no answer at all (down, wrong address, timed out), so another worker may be tried.
+   */
+  constructor(
+    message: string,
+    options?: ErrorOptions & { status?: number; unreachable?: boolean },
+  ) {
     super(message, options);
     this.status = options?.status ?? null;
+    this.unreachable = options?.unreachable ?? false;
   }
 
   readonly status: number | null;
+  readonly unreachable: boolean;
 }
 
 /** The song worker as the module uses it (`HttpSingWorker`, or a fake in tests). */
@@ -175,6 +183,7 @@ export class HttpSingWorker implements SingWorker {
       if (signal?.aborted) throw error;
       throw new SingWorkerError(`song worker unreachable at ${this.#base}: ${String(error)}`, {
         cause: error,
+        unreachable: true,
       });
     }
     if (!res.ok) {

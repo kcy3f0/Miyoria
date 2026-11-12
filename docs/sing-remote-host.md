@@ -103,8 +103,11 @@ Owen 編輯 `miyoria.toml`:
 ```toml
 [modules.sing]
 url = "http://100.x.y.z:8005"     # 你的 Tailscale 位址
+fallback_urls = ["http://127.0.0.1:8005"]   # 連不上你的時候,改用 Owen 自己電腦上的 worker
 timeout_secs = 20                  # 跨網路建議放寬(抓歌的音訊自動乘 10 倍)
 ```
+
+**連不上時退回 Owen 自己的 worker**(`fallback_urls`,可省略):新點的歌先送到 `url`,沒有回應(你的電腦關了、不在 tailnet 上、逾時)就依序送 `fallback_urls`。一首歌在哪台做,之後查進度、抓音軌和影片都找同一台(檔案在那台);那台連不上超過 `fallback_retry_secs`(預設 30 秒)還是不回,這首歌就在下一台重做。連不上的那台這段時間內不再問,之後會再試,回來了新點的歌就又送回去。只有「連不上」才換台,worker 有回應的錯誤(例如連結的網域不允許)照常回報。Owen 的電腦上要有在跑的 sing worker(`miyoria up` / `start` 的 inference 角色會啟動它;平常不佔顯卡)。
 
 然後重啟 Core。在 Owen 的電腦測:
 
