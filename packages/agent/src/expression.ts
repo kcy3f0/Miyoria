@@ -64,6 +64,8 @@ export class ExpressionParser {
   #held = "";
   /** The `<voice>` span being held was announced (`spoken_start`). */
   #announced = false;
+  /** A DSML tool call began: everything after it is dropped. */
+  #dropRest = false;
 
   push(chunk: string): Segment[] {
     this.#held += chunk;
@@ -76,6 +78,10 @@ export class ExpressionParser {
   }
 
   #drain(eof: boolean): Segment[] {
+    if (this.#dropRest) {
+      this.#held = "";
+      return [];
+    }
     const input = this.#held;
     this.#held = "";
     const out: Segment[] = [];
@@ -149,6 +155,18 @@ export class ExpressionParser {
       if (scan.kind === "tag") {
         flush();
         if (scan.segment.type !== "markup") out.push(scan.segment);
+        // A tool call written out in DeepSeek's syntax: what follows is its arguments, not words.
+        if (
+          DSML_OPEN.test(
+            input
+              .slice(start + 1, start + scan.len - 1)
+              .trim()
+              .toLowerCase(),
+          )
+        ) {
+          this.#dropRest = true;
+          return out;
+        }
         pos = start + scan.len;
       } else if (scan.kind === "partial" && !eof) {
         flush();
@@ -221,6 +239,10 @@ function parseTag(raw: string): Segment | null {
   const emotion = /^span\s+emo\s*=\s*["']?([a-z0-9_-]+)["']?$/.exec(tag);
   if (emotion !== null) return { type: "emotion", emotion: emotion[1] as string };
   if (HTML_TAG.test(tag)) return { type: "markup" };
+  if (DSML_TAG.test(tag)) return { type: "markup" };
+  // `<react emoji="👍"/>`: the react tool imitated as a tag (2026-11-12). Hidden from the text and
+  // logged as a tool written as text, so she is asked once to call it for real.
+  if (REACT_TAG.test(tag)) return { type: "tool", name: "react" };
   if (TOOL_TAG.test(tag)) return { type: "tool", name: tag };
   return null;
 }
@@ -233,6 +255,13 @@ function parseTag(raw: string): Segment | null {
  */
 const HTML_TAG =
   /^\/?(?:h[1-6]?|p|section|div|span|br|hr|em|strong|small|ul|ol|li|article|header|footer|blockquote|center|font|mark)(?:\s[a-z0-9_ ="'-]*)?\s*\/?$/;
+/**
+ * DeepSeek's own tool-call syntax written into the text (`<｜｜DSML｜｜ invoke name=…>`,
+ * `</｜DSML｜ parameter>`, 2026-11-08/11): never words for people. Bars full or half width.
+ */
+const DSML_TAG = /^\/?[｜|]+\s*dsml/;
+const DSML_OPEN = /^[｜|]+\s*dsml/;
+const REACT_TAG = /^react(?:\s[^<>]*)?$/;
 /** Tool names are snake_case; an ordinary word in brackets stays text. */
 const TOOL_TAG = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
 /** What a tag above can look like before its `>` arrives. */
@@ -257,6 +286,8 @@ const PREFIXES: readonly [string, (c: string) => boolean][] = [
 function isTagPrefix(rest: string): boolean {
   const lower = asciiLower(rest);
   if (MARKUP_PREFIX.test(lower)) return true;
+  if (/^\/?[｜|]/.test(lower)) return true;
+  if (/^react\s/.test(lower)) return !/[<]/.test(lower);
   return PREFIXES.some(
     ([keyword, ok]) =>
       keyword.startsWith(lower) ||
