@@ -33,7 +33,7 @@ describe("config templates", () => {
       expect(section.enabled).toBe(true);
       const imagegen = ImageGenConfigSchema.parse(section.config ?? {});
       expect(imagegen.batch_hours).toBe("02:00-08:00");
-      expect(imagegen.models.krea2?.variants.raw?.files.diffusion_model).toBe(
+      expect(imagegen.models.krea2?.variants.raw?.files?.diffusion_model).toBe(
         "krea2_raw_fp8_scaled.safetensors",
       );
     });
