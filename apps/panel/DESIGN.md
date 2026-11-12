@@ -268,7 +268,7 @@ does. Strategy and the direction contract live in `.impeccable/surfaces/src-page
 - Glass is light (6-8 px blur) and only where something sits over the water: tiles, the player,
   the terminal.
 - Nav: a flat bar on the cover that scrolls away with it; no sticky bar over the sections.
-- Mark: a whale's tail coming up out of the water, light to deep blue
+- Mark: a crescent moon, white to pale blue, the moon over her night sea
   (`docs/assets/logo/`: `miyoria-mark.svg`, `miyoria-mark-light.svg` for light grounds,
   `miyoria-icon.svg` on its dark tile, which is also the favicon).
 - Sections are pictures, not lists: 她在 Discord 的樣子 (her with mock Discord messages that pop in as

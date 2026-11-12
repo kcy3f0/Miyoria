@@ -176,18 +176,22 @@ function useReveal(root: React.RefObject<HTMLDivElement | null>) {
   }, [root]);
 }
 
-/** Her mark: a whale's tail coming up out of the water. */
+/** Her mark: the crescent moon over her night sea. */
 function Mark() {
   const id = useId();
   return (
     <svg viewBox="0 0 32 32" aria-hidden>
       <defs>
-        <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#a5e8ff" />
-          <stop offset="1" stopColor="#3d6ef5" />
+        <linearGradient id={`${id}g`} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#ffffff" />
+          <stop offset="1" stopColor="#9db5ff" />
         </linearGradient>
+        <mask id={`${id}m`}>
+          <rect width="32" height="32" fill="#fff" />
+          <circle cx="21" cy="11" r="10" fill="#000" />
+        </mask>
       </defs>
-      <path fill={`url(#${id})`} d="M12.6 29.5C13.3 26 13.8 22.6 14 19.6C9.6 18.9 5 15.6 2.7 9.4C2.4 8.5 3.2 7.9 4 8.4C7.2 10.7 10.7 11.6 13.4 11.4C14.7 11.3 15.6 12.1 16 13.3C16.4 12.1 17.3 11.3 18.6 11.4C21.3 11.6 24.8 10.7 28 8.4C28.8 7.9 29.6 8.5 29.3 9.4C27 15.6 22.4 18.9 18 19.6C18.2 22.6 18.7 26 19.4 29.5Z" />
+      <circle cx="16" cy="16" r="12" fill={`url(#${id}g)`} mask={`url(#${id}m)`} />
     </svg>
   );
 }
