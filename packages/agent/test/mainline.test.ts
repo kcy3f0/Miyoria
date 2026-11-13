@@ -343,6 +343,19 @@ describe("one call", () => {
     expect(WAIT_LINES[""]).toContain(said[0]);
   });
 
+  it("food is taken inside the turn: one reply, no wait line and no result turn", async () => {
+    // 2026-11-13 02:35: 「給你白飯」 got 「稍等喔。」, and the result turn that was to answer was
+    // superseded by the next person.
+    const food = new Probe("accept_food");
+    const llm = new Scripted([reply("", ["accept_food", '{"item":"rice"}']), reply("吃了,好香")]);
+    const h = await rig(llm, { tools: [food] });
+    h.say(mention(channel("c"), "Alice", "給你白飯"));
+    await wait(5000);
+    expect(food.calls).toHaveLength(1);
+    expect(h.sink.texts()).toEqual(["吃了,好香"]);
+    expect(llm.requests).toHaveLength(2);
+  });
+
   it("a result turn that only keeps a note is called back to say it, with no wait line", async () => {
     // 2026-11-09 21:06: the lyrics came back, she kept them as a note and said nothing; the code
     // filled in 「等我一下。」 and nothing called her back, so the answer never came. Notes run inside
