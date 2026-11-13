@@ -324,6 +324,24 @@ export const LOOP_TOOLS: readonly string[] = [
   // the hands, which follow the task and tell her when it ends.
   "work_list",
   "work_steer",
+  // Coins, collectibles and reminders answer at once too. With the hands they cost a 「稍等喔。」
+  // and a result turn of their own, which said the same thing again (2026-11-13 02:49) or got
+  // superseded by the next person (02:35); in the loop she reacts to the result in one reply.
+  "accept_food",
+  "give_coins",
+  "treat_from_purse",
+  "make_deal",
+  "deal_done",
+  "cancel_deal",
+  "checkin_for_speaker",
+  "post_bounty",
+  "award_bounty",
+  "check_shop",
+  "check_collection",
+  "check_quests",
+  "draw_collectible",
+  "remind_me",
+  "remember_date",
 ];
 
 /**
@@ -601,6 +619,11 @@ export const AgentConfigSchema = z.object({
    * answers (the turn's focus).
    */
   reply_reference: z.boolean().default(true),
+  /**
+   * Text: several people calling her at once get a turn each, in the order they called, instead
+   * of one turn answering them all (where the answers mixed and read as said to the first).
+   */
+  one_caller_per_turn: z.boolean().default(true),
   /** The typing indicator is resubmitted this often while generating. */
   typing_refresh_ms: z.number().int().nonnegative().default(8000),
   /** The main line of `pipeline = "v3"`. */

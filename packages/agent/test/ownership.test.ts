@@ -116,6 +116,28 @@ describe("cancellation table", () => {
       { type: "sent", parts: 1 },
     ]);
   });
+
+  it("a_result_someone_waits_for_finishes_before_the_next_person", async () => {
+    const slow = new SlowProvider(5000);
+    const h = await Harness.create(
+      "ambient",
+      { attention: { llm_check: false, cooldown_ms: 0 } },
+      slow,
+    );
+    const c = channel("c");
+    h.publish({
+      type: "agent_initiative",
+      data: { context: c, reason: "action_result", hint: "收下了", about: [] },
+    });
+    await wait(1000);
+    h.say(mention(c, "Owen", "DeepSeek 妳在嗎"));
+    await wait(15_000);
+    expect(h.sink.cancelled).toEqual([]);
+    expect(outcomes(h.drain())).toEqual([
+      { type: "sent", parts: 1 },
+      { type: "sent", parts: 1 },
+    ]);
+  });
 });
 
 describe("focus view and output", () => {

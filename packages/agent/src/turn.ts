@@ -169,7 +169,7 @@ import {
   triggeredEntries,
 } from "./lorebook.js";
 import type { HeldLine } from "./mainline/gate.js";
-import type { Run } from "./mainline/hands.js";
+import { type Run, resultsFor } from "./mainline/hands.js";
 import {
   asksSeriously,
   CUT_OFF,
@@ -2619,7 +2619,12 @@ class Turn {
     const own = this.intent?.intent.id ?? main.claim.proposal?.id ?? null;
     const examples = this.#mainExamples();
     const wishes = services.get(DirectivesKey)?.wishes(this.key) ?? [];
-    const telling = [...line.hands.peekResults(ACTING_ALONE), ...line.hands.peekResults(this.key)];
+    // A turn answering someone tells what they (or nobody) asked for, not another person's.
+    const answering = main.claim.kind === "addressed" || main.claim.kind === "reply";
+    const telling = resultsFor(
+      [...line.hands.peekResults(ACTING_ALONE), ...line.hands.peekResults(this.key)],
+      answering ? this.#authors() : null,
+    );
     main.telling(telling);
     const data = [
       ...extras.own,
