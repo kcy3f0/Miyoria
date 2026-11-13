@@ -486,6 +486,7 @@ describe("finished-tense lines (§10.1)", () => {
     expect(said("喂,你居然比我少這麼多?")).toEqual(["check_coins"]);
     expect(said("(收下)")).toEqual(["accept_food"]);
     expect(said("好啦,白飯收了")).toEqual(["accept_food"]);
+    expect(said("好啦,收下收下,這碗我記你帳上")).toEqual(["accept_food"]);
     expect(said("一言為定,不准賴帳")).toEqual(["make_deal"]);
     expect(said("不收,我不吃這套")).toEqual([]);
     expect(said("自己查錢包啦")).toEqual([]);
