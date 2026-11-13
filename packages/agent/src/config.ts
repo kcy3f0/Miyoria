@@ -619,6 +619,11 @@ export const AgentConfigSchema = z.object({
    * answers (the turn's focus).
    */
   reply_reference: z.boolean().default(true),
+  /**
+   * Text: several people calling her at once get a turn each, in the order they called, instead
+   * of one turn answering them all (where the answers mixed and read as said to the first).
+   */
+  one_caller_per_turn: z.boolean().default(true),
   /** The typing indicator is resubmitted this often while generating. */
   typing_refresh_ms: z.number().int().nonnegative().default(8000),
   /** The main line of `pipeline = "v3"`. */

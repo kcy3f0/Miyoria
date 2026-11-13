@@ -164,6 +164,36 @@ export function selectFocus(
   return { reason, focus, background, addressed, authors, kinds: focusKinds };
 }
 
+/**
+ * The input of one turn when several people call her at once: everything up to the next caller's
+ * first call, and what the first caller says after it (`now`); the other callers' messages from
+ * their first call on wait for their own turn (`later`), the first of them next. Lines of people
+ * who do not call her stay with the first turn, as its background.
+ */
+export function oneCaller(
+  inputs: readonly IncomingMessage[],
+  classify: (msg: IncomingMessage) => CallKind,
+): { now: IncomingMessage[]; later: IncomingMessage[] } {
+  let first: AccountRef | null = null;
+  const deferred = new Set<string>();
+  const now: IncomingMessage[] = [];
+  const later: IncomingMessage[] = [];
+  for (const m of inputs) {
+    const key = authorKey(m.author.account);
+    if (first === null && callsHer(classify(m))) first = m.author.account;
+    else if (
+      first !== null &&
+      !sameAccount(first, m.author.account) &&
+      !deferred.has(key) &&
+      callsHer(classify(m))
+    ) {
+      deferred.add(key);
+    }
+    (deferred.has(key) ? later : now).push(m);
+  }
+  return { now, later };
+}
+
 function authorKey(account: AccountRef): string {
   return `${account.platform}:${account.id}`;
 }

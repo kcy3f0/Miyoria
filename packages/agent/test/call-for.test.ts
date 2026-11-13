@@ -103,7 +103,9 @@ describe("a paying tool with two people in the turn", () => {
       .events([toolCall(0, "a", "accept_food", '{"item":"rice"}'), done()])
       .events([toolCall(0, "b", "accept_food", `{"item":"rice","${FOR_ARG}":"1"}`), done()])
       .reply("謝謝阿鰻");
-    const h = await Harness.build("always", noCheck(), mock, null, { tools: [feed] });
+    // One turn for both (voice does this; text gives each caller a turn of their own).
+    const config = { ...(noCheck() as object), one_caller_per_turn: false };
+    const h = await Harness.build("always", config, mock, null, { tools: [feed] });
     const eel = mention(c, "阿鰻", "@Miyoria 諾 吃🍚");
     const cat: IncomingMessage = {
       ...incoming(c, "ミルクねこ", "Facebook Marketplace"),

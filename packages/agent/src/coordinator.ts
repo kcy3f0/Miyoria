@@ -66,7 +66,14 @@ import {
 } from "@miyoria/types";
 import { answersHer, asideOf, directReason, followsHerLine, isQuestion } from "./attention.js";
 import { maxDebounceMs, voiceMaxDebounceMs } from "./config.js";
-import { type CallKind, callKind, callsHer, type FocusSelection, selectFocus } from "./focus.js";
+import {
+  type CallKind,
+  callKind,
+  callsHer,
+  type FocusSelection,
+  oneCaller,
+  selectFocus,
+} from "./focus.js";
 import { UNCAPPED_INITIATIVES } from "./levels.js";
 import type { Agent, Inbox, Initiative, Input, IntentTurn } from "./runtime.js";
 import type { Session } from "./session.js";
@@ -445,8 +452,16 @@ export class Coordinator {
             restarts = 0;
             break;
           }
-          const inputs = pending;
-          pending = [];
+          // Text: several people calling her at once get a turn each, in the order they called.
+          // One turn for all of them mixed the answers, unquoted, and read as said to the first
+          // (2026-11-13 03:06: 「那站遠一點」 was for When You See It, under 阿鰻's question).
+          const { now: inputs, later } =
+            voice || !cfg.one_caller_per_turn
+              ? { now: pending, later: [] }
+              : oneCaller(pending, (m) => this.#callKind(m));
+          pending = later;
+          // The next caller's turn starts as soon as this one is done (`timed` waits for it).
+          if (later.length > 0) window = { opened: now, deadline: now, wait: debounce };
           const heard = voice && heardAt !== null ? { heardAt, hold: null } : null;
           running = this.#start(inputs, null, signal, null, restarts, false, heard);
           restarts = 0;
