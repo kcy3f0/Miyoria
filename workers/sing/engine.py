@@ -469,11 +469,16 @@ class RealBackend:
         if src.duration_s and src.duration_s > self.max_s:
             raise JobError(f"the song is too long ({src.duration_s / 60:.1f} min > {self.max_s / 60:.0f} min)")
         with tempfile.TemporaryDirectory(prefix="sing-dl-") as tmp:
+            stopped: list[BaseException] = []  # ``progress`` raised (a cancel): no second try
 
             def hook(d: dict[str, Any]) -> None:
                 total = d.get("total_bytes") or d.get("total_bytes_estimate")
                 if d.get("status") == "downloading" and total:
-                    progress(min(0.99, float(d.get("downloaded_bytes", 0)) / float(total)))
+                    try:
+                        progress(min(0.99, float(d.get("downloaded_bytes", 0)) / float(total)))
+                    except BaseException as e:
+                        stopped.append(e)
+                        raise
 
             with self._ydl({
                 "outtmpl": str(Path(tmp) / "dl.%(ext)s"),
@@ -485,12 +490,21 @@ class RealBackend:
                     try:
                         ydl.process_ie_result(info, download=True)
                     except Exception as e:  # noqa: BLE001 - a link that expired: read the page again
+                        if stopped:
+                            raise stopped[0] from None
                         log.info("download from the lookup's answer failed (%s); reading the page again", e)
                         info = None
                         for p in Path(tmp).iterdir():
                             p.unlink(missing_ok=True)
                 if info is None:
-                    ydl.download([src.url])
+                    try:
+                        ydl.download([src.url])
+                    except Exception:
+                        if stopped:
+                            raise stopped[0] from None
+                        raise
+            if stopped:
+                raise stopped[0]
             files = [p for p in Path(tmp).iterdir() if p.name.startswith("dl.") and not p.name.endswith(".part")]
             if not files:
                 raise JobError("download produced no audio file")

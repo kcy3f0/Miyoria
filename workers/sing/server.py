@@ -262,6 +262,8 @@ class MockBackend:
         self.lyrics_calls: list[float | None] = []  # the duration each lookup was given
         self.lyrics_gate: Callable[[], None] | None = None  # tests: holds the lookup
         self.lyrics_after_asr_wait: list[bool] = []  # whether the conversion was over by then
+        self.idles: list[bool] = []  # each ``idle(more)``
+        self.idle_hook: Callable[[bool], None] | None = None  # tests: runs in ``idle``
 
     def _wait(self) -> None:
         if self.delay:
@@ -321,7 +323,9 @@ class MockBackend:
         self.trims += 1
 
     def idle(self, more: bool = False) -> None:
-        return None
+        self.idles.append(more)
+        if self.idle_hook is not None:
+            self.idle_hook(more)
 
     def fetch_library(self, src: Source, sdir: Path) -> None:
         self.fetch(src, sdir / "source.wav", lambda _: None)
@@ -596,6 +600,7 @@ class Job:
     prefetch: str | None = None
     prefetched: Source | None = None
     prefetch_done: threading.Event = field(default_factory=threading.Event)
+    aborted: bool = False  # failed or cancelled: its lyrics lookup asks the ASR worker nothing more
 
     def public(self, store: Store, position: int | None) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -939,13 +944,17 @@ class LyricsLookup:
         return self
 
     def asr_wait(self) -> None:
+        """Raises ``Cancelled`` when the job ended without finishing: its lyrics are not kept, and the
+        spot check would only run next to the next job's GPU work."""
         job = self.job
         while not job.converted.wait(0.2):
             if job.cancel.is_set():
-                return
+                raise Cancelled()
         ex = job.exclusive
         if ex is not None:
             ex.join()  # her voice (and the ASR worker) loading back after a window
+        if job.aborted or job.cancel.is_set():
+            raise Cancelled()
 
     def _run(self) -> None:
         t0 = time.perf_counter()
@@ -953,6 +962,8 @@ class LyricsLookup:
             found = state.backend.lyrics(self.src, self.duration, self.heard, asr_wait=self.asr_wait)
             if not self.job.cancel.is_set():
                 self.meta = _lyrics_meta(found, self.out, self.heard)
+        except Cancelled:
+            log.info("lyrics lookup for %s stopped: the job ended", self.src.key)
         except Exception:  # noqa: BLE001 - lyrics are best effort
             log.exception("lyrics lookup for %s crashed", self.src.key)
         finally:
@@ -1201,7 +1212,11 @@ def _give_gpu_back(job: Job) -> None:
 def run_job(job: Job) -> None:
     try:
         _run_job(job)
+    except BaseException:
+        job.aborted = True
+        raise
     finally:
+        job.prefetched = None  # the lookup's whole yt-dlp answer: not kept in the job records
         job.converted.set()  # a lyrics lookup still waiting for the ASR check goes on (or ends)
         if job.video is not None:
             job.video.stop()
@@ -1213,15 +1228,26 @@ def run_job(job: Job) -> None:
             job.gpu.window_closed(job.exclusive.timings.get("reload_s") if job.exclusive else None)
 
 
-def _fetch(src: Source, dest: Path, progress: Callable[[float], None]) -> None:
+_fetch_locks: dict[str, threading.Lock] = {}
+_fetch_locks_lock = threading.Lock()
+
+
+def _fetch(src: Source, dest: Path, progress: Callable[[float], None], again: bool = False) -> None:
     """Downloads ``src`` into ``dest`` through a temporary file: a download cut short (a crash, a stop)
-    never leaves a partial ``source.wav`` that a later job would take for the whole song."""
-    part = dest.with_name(dest.stem + ".part" + dest.suffix)
-    try:
-        state.backend.fetch(src, part, progress)
-        os.replace(part, dest)
-    finally:
-        part.unlink(missing_ok=True)
+    never leaves a partial ``source.wav`` that a later job would take for the whole song. One download
+    of a source at a time (a job and the prefetch of the next one may want the same song): the second
+    one waits, and takes the first one's file unless ``again`` (a forced job)."""
+    with _fetch_locks_lock:
+        lock = _fetch_locks.setdefault(src.key, threading.Lock())
+    with lock:
+        if dest.exists() and not again:
+            return
+        part = dest.with_name(dest.stem + ".part" + dest.suffix)
+        try:
+            state.backend.fetch(src, part, progress)
+            os.replace(part, dest)
+        finally:
+            part.unlink(missing_ok=True)
 
 
 def _prefetch_on() -> bool:
@@ -1233,9 +1259,13 @@ def _prefetch(job: Job, running: Job) -> None:
     CPU are idle while a job converts, and the next song then starts at its first GPU stage. Nothing
     here fails the job: what did not get done is done when it runs, as before."""
     store = state.store
-    job.prefetch = "running"
+    job.prefetch = "running"  # prefetch_loop marked it already, under the lock
     try:
         gone = lambda: job.state == "cancelled" or job.cancel.is_set()  # noqa: E731
+
+        def progress(_f: float) -> None:
+            if gone():
+                raise Cancelled()  # the job was cancelled: its download stops too
         src = _bounded(lambda: _source_from_request(job), gone, env_float("SING_RESOLVE_TIMEOUT_S", 60.0))
         job.prefetched = src
         job.source = src.public()  # also keeps its download out of the cache cleanup
@@ -1250,8 +1280,10 @@ def _prefetch(job: Job, running: Job) -> None:
             sdir.mkdir(parents=True, exist_ok=True)
             store.write_source_info(src)
             t0 = time.perf_counter()
-            _fetch(src, sdir / "source.wav", lambda _f: None)
+            _fetch(src, sdir / "source.wav", progress)
             log.info("prefetched %s for job %s in %.1f s", src.key, job.id, time.perf_counter() - t0)
+        if gone():
+            job.prefetched = None
         job.prefetch = "done"
     except Exception as e:  # noqa: BLE001 - Cancelled, JobError, anything: the job tries again itself
         log.info("prefetch for job %s: %s", job.id, e)
@@ -1271,8 +1303,11 @@ def prefetch_loop() -> None:
         with state.lock:
             nxt = next((state.jobs[j] for j in state.order if j in state.jobs and state.jobs[j].state == "queued"),
                        None)
-        if nxt is None or nxt.prefetch is not None or nxt.request.force:
-            continue
+            if nxt is None or nxt.prefetch is not None or nxt.request.force:
+                continue
+            # Marked while it is still queued (worker_loop starts jobs under the same lock): a job that
+            # starts from here on waits for this prefetch instead of downloading next to it.
+            nxt.prefetch = "running"
         try:
             _prefetch(nxt, running)
         except Exception:  # noqa: BLE001
@@ -1432,7 +1467,7 @@ def _run_job(job: Job) -> None:
             tag = _lead_tag_of(b)
             lead_cached = (sdir / "lead.wav").exists() and (tag is None or _stems_lead(sdir) == tag)
             prewarm(lead=not _needs_stems(req, b) and not lead_cached and not given_stems)
-        timed("download", lambda: _fetch(src, sdir / "source.wav", lambda f: _set(job, "download", f)))
+        timed("download", lambda: _fetch(src, sdir / "source.wav", lambda f: _set(job, "download", f), again=req.force))
 
     def separate_stage() -> None:
         # New vocals: what was taken from the old ones goes (a lead read from the vocals, too).
@@ -1465,7 +1500,8 @@ def _run_job(job: Job) -> None:
     lyrics_input = hints_of(src)
     # the lead vocal (the original singer, before conversion) is what the ASR spot check listens to
     heard = next((p for p in (sdir / "lead.wav", sdir / "vocals.wav") if p.exists()), None)
-    lookup = LyricsLookup(job, src, heard, out, src.duration_s or (_wav_seconds(heard) if heard else None)).start()
+    # The audio's own length (the mix's), as when the lookup ran after the mix; the source's when unread.
+    lookup = LyricsLookup(job, src, heard, out, (_wav_seconds(heard) if heard else None) or src.duration_s).start()
     converted = out / "_converted.wav"
 
     work = ConvertWork()
@@ -1589,17 +1625,32 @@ def _run_job(job: Job) -> None:
     log.info("song %s ready: %s (%s)", sid, src.title, timings)
 
 
+def _queued() -> bool:
+    with state.lock:
+        return any(state.jobs[j].state == "queued" for j in state.order if j in state.jobs)
+
+
 def worker_loop() -> None:
+    kept = False  # the models were kept for a queued job
     while not state.stopping.is_set():
         try:
             job_id = state.pending.get(timeout=0.5)
         except queue.Empty:
+            if kept and not _queued():  # the jobs they were kept for were cancelled
+                kept = False
+                try:
+                    state.backend.idle(False)
+                except Exception:  # noqa: BLE001
+                    log.exception("could not let go of the models")
             continue
         job = state.jobs.get(job_id)
-        if job is None or job.state != "queued":
+        if job is None:
             continue
-        job.state, job.started_at = "running", now_iso()
-        state.running = job.id
+        with state.lock:  # prefetch_loop marks a queued job's prefetch under it
+            if job.state != "queued":
+                continue
+            job.state, job.started_at = "running", now_iso()
+            state.running = job.id
         try:
             run_job(job)
             job.state, job.progress, job.stage = "done", 1.0, "done"
@@ -1614,8 +1665,7 @@ def worker_loop() -> None:
         finally:
             job.finished_at = now_iso()
             state.running = None
-            with state.lock:
-                more = any(state.jobs[j].state == "queued" for j in state.order if j in state.jobs)
+            more = kept = _queued()
             try:
                 state.backend.idle(more)  # here: a job that failed no longer holds the models through its traceback
             except Exception:  # noqa: BLE001
@@ -1782,6 +1832,7 @@ async def cancel_job(job_id: str) -> JSONResponse:
         return _error(404, f"no job {job_id}")
     if job.state == "queued":
         job.state, job.error, job.finished_at = "cancelled", "cancelled", now_iso()
+        job.prefetched = None
     elif job.state == "running":
         job.cancel.set()
     return JSONResponse({"job": _public(job)})

@@ -113,6 +113,11 @@ class Asked(RuntimeError):
     """The conversion failed after the shift was picked: the caller converts again with that shift."""
 
 
+class CannotAsk(RuntimeError):
+    """This Applio has no pitch hook (rvcserve.hook_pitch): its process is fine for conversions with a
+    given shift, so it stays up, and the worker picks the shift itself from then on."""
+
+
 class Server:
     """One rvcserve.py process: started early, used for every conversion until ``stop``."""
 
@@ -214,7 +219,7 @@ class Server:
             if not self.wait_ready(deadline - time.monotonic()):
                 raise RuntimeError(f"RVC process not ready: {self._tail() or 'timed out'}")
             if choose is not None and not self.can_ask:
-                raise RuntimeError("this Applio cannot be asked for the pitch")
+                raise CannotAsk("this Applio cannot be asked for the pitch")
             self._next += 1
             req: dict[str, Any] = {"id": self._next,
                                    "args": self._args(str(Path(in_wav).resolve()), str(Path(out_wav).resolve()), pitch)}
@@ -266,6 +271,7 @@ class Server:
 
 _server: Server | None = None
 _server_lock = threading.Lock()
+_cannot_ask = False  # a process said it has no pitch hook: run_choosing is not tried again
 
 
 def warm(env: Mapping[str, str] | None = None, warm_up: bool = True) -> None:
@@ -322,15 +328,22 @@ def run_choosing(in_wav: Path, out_wav: Path, choose: Callable[[dict[str, Any]],
                  ref: Path | None = None) -> Path:
     """``in_wav`` into ``out_wav`` with the shift ``choose`` picks from the vocal's pitch as Applio tracks
     it (``Server.run``), through the warm process. Raises when that cannot be done: before ``choose``
-    was asked, ``RuntimeError`` (the caller picks the shift itself); after, ``Asked``."""
+    was asked, ``RuntimeError`` (the caller picks the shift itself; ``CannotAsk`` when this Applio has
+    no pitch hook, and the warm process stays up for that conversion); after, ``Asked``."""
+    global _cannot_ask
     if not server_on():
         raise RuntimeError("SING_RVC_SERVER=0")
+    if _cannot_ask:
+        raise CannotAsk("this Applio cannot be asked for the pitch")
     warm(warm_up=False)
     srv = _server
     if srv is None:
         raise RuntimeError("no RVC process")
     try:
         return srv.run(in_wav, out_wav, choose=choose, ref=ref)
+    except CannotAsk:
+        _cannot_ask = True
+        raise
     except Exception:
         stop()
         raise

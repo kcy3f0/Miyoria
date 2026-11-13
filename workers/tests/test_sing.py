@@ -1444,7 +1444,7 @@ def test_lyrics_are_looked_up_while_the_song_converts(sing, monkeypatch):
     assert stage in ("lead", "convert") and converted is False
     assert b.lyrics_after_asr_wait[after:] == [True]  # the ASR check came after the conversion
     assert song["lyrics"]["synced"] and song["timings"]["lyrics_s"] >= 0
-    assert b.lyrics_calls[-1] == pytest.approx(2.0)  # the source's length (the mix is not there yet)
+    assert b.lyrics_calls[-1] == pytest.approx(2.0)  # the lead's length, the mix's to come
 
 
 def test_the_next_song_is_found_and_downloaded_while_one_is_made(sing, monkeypatch):
@@ -1487,8 +1487,83 @@ def test_a_download_cut_short_leaves_no_source_behind(sing, monkeypatch, tmp_pat
     monkeypatch.setattr(server.state.backend, "fetch", broken)
     dest = tmp_path / "source.wav"
     with pytest.raises(RuntimeError):
-        server._fetch(None, dest, lambda f: None)
+        server._fetch(server.Source(key="mock-cut", kind="mock", title="T"), dest, lambda f: None)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_source_is_downloaded_once_at_a_time(sing, monkeypatch, tmp_path):
+    """A job and the prefetch of the next one wanting the same song: never two writers of one file."""
+    if not is_mock():
+        pytest.skip("mock only")
+    server = _sing_server()
+    lock, live, calls = threading.Lock(), [0], []
+
+    def slow(src, dest, progress):
+        with lock:
+            live[0] += 1
+            calls.append(live[0])
+        time.sleep(0.2)
+        dest.write_bytes(b"a song")
+        with lock:
+            live[0] -= 1
+
+    monkeypatch.setattr(server.state.backend, "fetch", slow)
+    src, dest = server.Source(key="mock-twice", kind="mock", title="T"), tmp_path / "source.wav"
+    runs = [threading.Thread(target=server._fetch, args=(src, dest, lambda f: None)) for _ in range(2)]
+    for t in runs:
+        t.start()
+    for t in runs:
+        t.join()
+    assert calls == [1] and dest.read_bytes() == b"a song"  # the second one took the first one's file
+    server._fetch(src, dest, lambda f: None, again=True)  # a forced job downloads it again
+    assert calls == [1, 1]
+
+
+def test_the_next_job_is_marked_before_its_prefetch_starts(sing, monkeypatch):
+    """Marked under the lock the worker starts jobs under: a job that starts meanwhile waits for it."""
+    if not is_mock():
+        pytest.skip("reads the mock backend's log")
+    server = _sing_server()
+    monkeypatch.setattr(server.state.backend, "delay", 0.25)
+    seen: list[tuple[str | None, str]] = []
+    original = server._prefetch
+
+    def spy(job, running):
+        seen.append((job.prefetch, job.state))
+        original(job, running)
+
+    monkeypatch.setattr(server, "_prefetch", spy)
+    first = sing.post("/jobs", json={"query": "marked first"}).json()["job"]["id"]
+    second = sing.post("/jobs", json={"query": "marked second"}).json()["job"]["id"]
+    wait(sing, first)
+    assert wait(sing, second)["state"] == "done"
+    assert seen and seen[0][0] == "running"
+
+
+def test_the_models_are_let_go_when_the_queued_jobs_are_cancelled(sing, monkeypatch):
+    """Kept for the next job, which was then cancelled: let go once the queue is empty."""
+    if not is_mock():
+        pytest.skip("reads the mock backend's log")
+    server = _sing_server()
+    b = server.state.backend
+    monkeypatch.setattr(b, "delay", 0.2)
+    monkeypatch.setenv("SING_PREFETCH", "0")
+    ids: list[str] = []
+
+    def cancel_the_rest(more):
+        if more:
+            for j in ids[1:]:
+                sing.delete(f"/jobs/{j}")
+
+    monkeypatch.setattr(b, "idle_hook", cancel_the_rest)
+    before = len(b.idles)
+    ids += [sing.post("/jobs", json={"query": f"let go {i}"}).json()["job"]["id"] for i in range(2)]
+    wait(sing, ids[0])
+    assert wait(sing, ids[1])["state"] == "cancelled"
+    t0 = time.time()
+    while b.idles[before:] != [True, False] and time.time() - t0 < 5:
+        time.sleep(0.05)
+    assert b.idles[before:] == [True, False]
 
 
 def test_the_prepared_instrumental_mixes_exactly_the_same(tmp_path):
@@ -1577,6 +1652,103 @@ def test_the_rvc_pass_falls_back_to_a_fresh_process(monkeypatch, tmp_path):
     calls.clear()
     rvcpass.run(tmp_path / "in.wav", tmp_path / "out.wav")
     assert calls == ["fresh"]
+
+
+def test_an_applio_without_the_pitch_hook_keeps_its_warm_process(monkeypatch, tmp_path):
+    """It cannot be asked for the pitch, but converts with a given shift: it stays up, and is not asked again."""
+    import rvcpass
+
+    calls: list[str] = []
+
+    class NoHook:
+        def start(self, warm_up=True):
+            pass
+
+        def run(self, i, o, pitch=0, choose=None, ref=None):
+            calls.append("ask" if choose else "run")
+            if choose is not None:
+                raise rvcpass.CannotAsk("no pitch hook")
+            return o
+
+        def stop(self):
+            calls.append("stop")
+
+    srv = NoHook()
+    monkeypatch.setattr(rvcpass, "available", lambda env=None: True)
+    monkeypatch.setattr(rvcpass, "_server", srv)
+    monkeypatch.setattr(rvcpass, "_cannot_ask", False)
+    monkeypatch.delenv("SING_RVC_SERVER", raising=False)
+    with pytest.raises(rvcpass.CannotAsk):
+        rvcpass.run_choosing(tmp_path / "in.wav", tmp_path / "out.wav", lambda q: 0)
+    assert rvcpass.run(tmp_path / "in.wav", tmp_path / "out.wav", pitch=3) == tmp_path / "out.wav"
+    with pytest.raises(rvcpass.CannotAsk):
+        rvcpass.run_choosing(tmp_path / "in.wav", tmp_path / "out.wav", lambda q: 0)
+    assert calls == ["ask", "run"] and rvcpass._server is srv
+
+
+def test_a_cancelled_download_stops_without_a_second_try(monkeypatch, tmp_path):
+    """The prefetch's progress raises once its job is cancelled; yt-dlp wraps it, the download ends."""
+    import engine
+    from songs import Source
+
+    tries: list[str] = []
+
+    class FakeYdl:
+        def __init__(self, opts):
+            self.hooks = opts["progress_hooks"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def _go(self, what):
+            tries.append(what)
+            try:
+                for h in self.hooks:
+                    h({"status": "downloading", "total_bytes": 10, "downloaded_bytes": 5})
+            except Exception as e:  # what yt-dlp does with a hook's error
+                raise RuntimeError("ERROR: download failed") from e
+
+        def process_ie_result(self, info, download=True):
+            self._go("answer")
+
+        def download(self, urls):
+            self._go("page")
+
+    b = object.__new__(engine.RealBackend)
+    b.max_s = 480
+    monkeypatch.setattr(b, "_ydl", lambda extra=None: FakeYdl(extra), raising=False)
+
+    def cancelled(_f):
+        raise engine.Cancelled()
+
+    info = {"id": "x", "formats": [{"format_id": "251", "url": "https://example.test/a"}]}
+    src = Source(key="yt-x", kind="youtube", title="T", url="https://youtu.be/x", info=info, info_at=time.monotonic())
+    with pytest.raises(engine.Cancelled):
+        b.fetch(src, tmp_path / "source.wav", cancelled)
+    assert tries == ["answer"]  # not read again from the page
+    tries.clear()
+    with pytest.raises(engine.Cancelled):
+        b.fetch(Source(key="yt-y", kind="youtube", title="T", url="https://youtu.be/y"), tmp_path / "s.wav", cancelled)
+    assert tries == ["page"]
+
+
+def test_the_lyrics_of_a_job_that_ended_ask_the_asr_nothing(sing):
+    """A failed or cancelled job's lookup stops before its spot check: it would run next to the next job."""
+    if not is_mock():
+        pytest.skip("mock only")
+    import types
+
+    server = _sing_server()
+    job = types.SimpleNamespace(converted=threading.Event(), cancel=threading.Event(), exclusive=None, aborted=False)
+    job.converted.set()
+    lookup = server.LyricsLookup(job, None, None, Path("."), None)
+    lookup.asr_wait()  # a job that goes on: the spot check runs
+    job.aborted = True
+    with pytest.raises(server.Cancelled):
+        lookup.asr_wait()
 
 
 def test_the_download_reuses_the_lookups_answer_while_it_is_fresh(monkeypatch):
