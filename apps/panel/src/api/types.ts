@@ -1445,11 +1445,15 @@ export interface LlmPricing {
 
 export type LlmCallStatus = "streaming" | "ok" | "error" | "aborted";
 
+/** What a call was for, broadly (`callKind` in the llm package). */
+export type LlmCallKind = "mind" | "chat" | "voice" | "attention" | "memory" | "learning" | "social" | "other";
+
 export interface LlmCallRecord {
   id: string;
   at: Timestamp;
   purpose: string;
   chain: string;
+  kind: LlmCallKind;
   model: string | null;
   provider: string | null;
   status: LlmCallStatus;
@@ -1503,6 +1507,32 @@ export interface LlmCallsQuery {
   turn?: string;
   since?: string;
   q?: string;
+}
+
+/** A call with its chain of thought, `GET /api/llm/thinking`. */
+export interface LlmThinking {
+  call: LlmCallRecord;
+  /** `null` once dropped from the ring. */
+  reasoning: string | null;
+  answer: string | null;
+  tool_calls: string[];
+  cut: number;
+}
+
+export interface LlmThinkingQuery {
+  kind?: LlmCallKind;
+  reasoned?: boolean;
+  since?: string;
+  q?: string;
+}
+
+/** `GET /api/llm/thinking`. */
+export interface LlmThinkingPage {
+  items: LlmThinking[];
+  next_cursor: string | null;
+  matched: number;
+  by_kind: { kind: LlmCallKind; calls: number; reasoned: number }[];
+  kept: number;
 }
 
 /** `GET /api/llm/calls`. */

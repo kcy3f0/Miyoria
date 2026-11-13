@@ -3578,7 +3578,7 @@ class Turn {
     const offeredTools = (request.tools?.length ?? 0) > 0;
     this.#mark("request");
     const stream = await guard(
-      withLlmTag({ module: "agent", turn: this.turn, label: "reply" }, () =>
+      withLlmTag({ module: "agent", turn: this.turn, label: this.voice ? "voice" : "reply" }, () =>
         router.stream("chat", request, signal),
       ),
       signal,

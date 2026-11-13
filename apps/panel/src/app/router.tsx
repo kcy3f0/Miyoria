@@ -7,6 +7,7 @@ import {
   redirect,
   type RouterHistory,
 } from "@tanstack/react-router";
+import type { LlmCallKind } from "@/api/types";
 import { NotFoundPage } from "@/pages/NotFound";
 import {
   ACTIVITY_TABS,
@@ -104,9 +105,12 @@ export interface LlmSearch {
   status?: "ok" | "error" | "aborted" | "streaming";
   trouble?: boolean;
   q?: string;
+  /** The kind of call the chain-of-thought tab shows. */
+  kind?: LlmCallKind;
 }
 
 const STATUSES = ["ok", "error", "aborted", "streaming"] as const;
+const LLM_KINDS: readonly LlmCallKind[] = ["mind", "chat", "voice", "attention", "memory", "learning", "social", "other"];
 
 export const llmRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -122,6 +126,7 @@ export const llmRoute = createRoute({
     status: STATUSES.find((x) => x === s.status),
     trouble: s.trouble === true || s.trouble === "true" ? true : undefined,
     q: str(s.q),
+    kind: LLM_KINDS.find((x) => x === s.kind),
   }),
   component: LlmPage,
 });

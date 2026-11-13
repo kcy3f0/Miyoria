@@ -21,6 +21,7 @@ import type {
   FactEventsQuery,
   GameStartRequest,
   LlmCallsQuery,
+  LlmThinkingQuery,
   MemoryQuery,
   ModuleAction,
   ModuleInfo,
@@ -602,6 +603,21 @@ export function useLlmCalls(q: LlmCallsQuery) {
     getNextPageParam: (last) => last.next_cursor,
     refetchInterval: poll(10_000),
     // A new filter keeps the old rows until the new ones arrive.
+    placeholderData: (prev) => prev,
+  });
+}
+
+const THINKING_PAGE = 30;
+
+/** Calls with their chain of thought, newest first. */
+export function useLlmThinking(q: LlmThinkingQuery) {
+  const api = useApi();
+  return useInfiniteQuery({
+    queryKey: ["llm", "thinking", q],
+    queryFn: ({ signal, pageParam }) => api.llmThinking(q, THINKING_PAGE, pageParam, { signal }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next_cursor,
+    refetchInterval: poll(10_000),
     placeholderData: (prev) => prev,
   });
 }

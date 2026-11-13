@@ -88,6 +88,7 @@ export const INNER_TABS = [
 export const LLM_TABS = [
   { tab: "overview", label: "概況" },
   { tab: "calls", label: "呼叫" },
+  { tab: "thinking", label: "思路" },
   { tab: "prices", label: "價格與用量" },
 ] as const;
 
