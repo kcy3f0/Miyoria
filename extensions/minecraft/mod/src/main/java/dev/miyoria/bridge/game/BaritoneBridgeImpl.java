@@ -70,6 +70,16 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
     private boolean cancelledByUs;
     /** A reflex (not a request) set Baritone's current goal; its events are not reported. */
     private boolean reflexOwned;
+    /** Most recent request command started by {@link #execute}, for pause/resume around reflexes. */
+    private SuspendableCommand activeCommand;
+    private SuspendedEntry suspended;
+
+    @FunctionalInterface
+    private interface SuspendableCommand {
+        boolean replay(BaritoneBridgeImpl bridge);
+    }
+
+    private record SuspendedEntry(SuspendableCommand command, double x, double y, double z, long pausedAtMs) {}
 
     public BaritoneBridgeImpl(EventSink events, int sightRadius) {
         this.events = events;
@@ -121,6 +131,8 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
         out.addProperty("command", command);
         cancelledByUs = false;
         reflexOwned = false; // a request takes Baritone over from a reflex
+        activeCommand = null;
+        suspended = null;
         switch (command) {
             case "goto" -> doGoto(req, out);
             case "mine" -> doMine(req, out);
@@ -153,6 +165,10 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
             BlockInfo target = seen(List.of(block), sightRadius);
             Goal g = new GoalGetToBlock(new BlockPos(target.x(), target.y(), target.z()));
             b().getCustomGoalProcess().setGoalAndPath(g);
+            activeCommand = bridge -> {
+                bridge.b().getCustomGoalProcess().setGoalAndPath(g);
+                return true;
+            };
             out.addProperty("goal", g.toString());
             out.add("position", position(target));
             return;
@@ -171,6 +187,11 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
             throw new ProtocolException(Protocol.E_INVALID_ARGS, "goto needs {x,y,z}, {x,z} or {block}");
         }
         b().getCustomGoalProcess().setGoalAndPath(goal);
+        final Goal capturedGoal = goal;
+        activeCommand = bridge -> {
+            bridge.b().getCustomGoalProcess().setGoalAndPath(capturedGoal);
+            return true;
+        };
         out.addProperty("goal", goal.toString());
     }
 
@@ -262,7 +283,14 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
                     + Math.round(far.distance()) + " blocks away at " + far.x() + "," + far.y() + "," + far.z());
         }
         BaritoneAPI.getSettings().legitMine.value = true;
-        b().getMineProcess().mineByName(count, names.toArray(new String[0]));
+        String[] targetNames = names.toArray(new String[0]);
+        b().getMineProcess().mineByName(count, targetNames);
+        activeCommand = bridge -> {
+            if (MinecraftClient.getInstance().isPaused()) return false;
+            BaritoneAPI.getSettings().legitMine.value = true;
+            bridge.b().getMineProcess().mineByName(count, targetNames);
+            return true;
+        };
         out.add("first", position(first));
         JsonArray echo = new JsonArray();
         names.forEach(echo::add);
@@ -285,6 +313,10 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
             throw new ProtocolException(Protocol.E_INVALID_ARGS, "follow needs \"player\" or \"entity\"");
         }
         b().getFollowProcess().follow(filter);
+        activeCommand = bridge -> {
+            bridge.b().getFollowProcess().follow(filter);
+            return true;
+        };
     }
 
     private void doExplore(Request req, JsonObject out) throws ProtocolException {
@@ -292,6 +324,10 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
         int x = req.has("x") ? (int) Math.floor(req.num("x")) : (int) Math.floor(mc.player.getX());
         int z = req.has("z") ? (int) Math.floor(req.num("z")) : (int) Math.floor(mc.player.getZ());
         b().getExploreProcess().explore(x, z);
+        activeCommand = bridge -> {
+            bridge.b().getExploreProcess().explore(x, z);
+            return true;
+        };
         out.addProperty("x", x);
         out.addProperty("z", z);
     }
@@ -303,6 +339,14 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
         } else {
             b().getFarmProcess().farm();
         }
+        activeCommand = bridge -> {
+            if (range > 0) {
+                bridge.b().getFarmProcess().farm(range, null);
+            } else {
+                bridge.b().getFarmProcess().farm();
+            }
+            return true;
+        };
         out.addProperty("range", range);
     }
 
@@ -317,8 +361,10 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
                     .append(' ').append((int) Math.floor(req.num("y")))
                     .append(' ').append((int) Math.floor(req.num("z")));
         }
-        boolean ok = b().getCommandManager().execute(line.toString());
-        if (!ok) throw new ProtocolException(Protocol.E_INVALID_ARGS, "baritone rejected: " + line);
+        String commandLine = line.toString();
+        boolean ok = b().getCommandManager().execute(commandLine);
+        if (!ok) throw new ProtocolException(Protocol.E_INVALID_ARGS, "baritone rejected: " + commandLine);
+        activeCommand = bridge -> bridge.b().getCommandManager().execute(commandLine);
         out.addProperty("schematic", name);
     }
 
@@ -332,17 +378,69 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
 
     // ------------------------------------------------------------------ state + events
 
-    @Override
-    public void cancel() {
+    private void cancelBaritone(String reason) {
         cancelledByUs = true;
-        stopReason = null;
+        stopReason = reason;
         b().getPathingBehavior().cancelEverything();
     }
 
     @Override
+    public void cancel() {
+        activeCommand = null;
+        suspended = null;
+        cancelBaritone(null);
+    }
+
+    @Override
     public void interrupt() {
-        cancel();
-        stopReason = "reflex";
+        activeCommand = null;
+        suspended = null;
+        cancelBaritone("reflex");
+    }
+
+    @Override
+    public boolean pauseForReflex(double playerX, double playerY, double playerZ, long nowMs) {
+        if (activeCommand == null || reflexOwned || !state().busy()) {
+            return false;
+        }
+        suspended = new SuspendedEntry(activeCommand, playerX, playerY, playerZ, nowMs);
+        activeCommand = null;
+        cancelBaritone("reflex");
+        return true;
+    }
+
+    @Override
+    public boolean hasSuspended() {
+        return suspended != null;
+    }
+
+    @Override
+    public boolean replaySuspended(double playerX, double playerY, double playerZ, long nowMs,
+                                   double maxDrift, long maxPauseMs) {
+        SuspendedEntry entry = suspended;
+        suspended = null;
+        if (entry == null) {
+            return false;
+        }
+        if (!BaritoneBridge.withinResumeBounds(entry.x(), entry.y(), entry.z(), entry.pausedAtMs(),
+                playerX, playerY, playerZ, nowMs, maxDrift, maxPauseMs)) {
+            return false;
+        }
+        cancelledByUs = false;
+        stopReason = null;
+        reflexOwned = false;
+        idleTicks = 0;
+        activeCommand = entry.command();
+        boolean replayed = entry.command().replay(this);
+        if (!replayed) {
+            activeCommand = null;
+        }
+        return replayed;
+    }
+
+    @Override
+    public void clearSuspended() {
+        suspended = null;
     }
 
     @Override
@@ -415,6 +513,7 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
                 stopReason = null;
                 return;
             }
+            activeCommand = null;
             JsonObject d = new JsonObject();
             d.addProperty("process", lastProcess);
             d.addProperty("goal", lastGoal);

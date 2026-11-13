@@ -1,9 +1,12 @@
 package dev.miyoria.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonObject;
+import dev.miyoria.bridge.game.BaritoneBridge;
 import dev.miyoria.bridge.game.TaskTracker;
 import java.util.ArrayList;
 import java.util.List;
@@ -113,5 +116,86 @@ class TaskTrackerTest {
         tasks.begin("a2", "altoclef");
         for (int i = 0; i < 100; i++) tasks.altoTick(false);
         assertEquals("task_done:a2", out.get(3));
+    }
+
+    @Test
+    void pauseForReflexKeepsTaskAliveAndResumesCleanly() {
+        tasks.begin("m1", "mine");
+        tasks.pauseForReflex("shield_block");
+        assertTrue(tasks.isPaused());
+        assertEquals("m1", tasks.current());
+        assertEquals("task_progress:m1", out.get(1));
+        assertTrue(data.get(1).get("paused").getAsBoolean());
+
+        // Transient baritone_idle(reason:"reflex") and recoverable reflex event are ignored while paused
+        JsonObject idle = obj("cancelled", true);
+        idle.addProperty("reason", "reflex");
+        emit("baritone_idle", idle);
+
+        JsonObject recReflex = obj("kind", "shield_block");
+        recReflex.addProperty("recoverable", true);
+        recReflex.addProperty("interrupted", "MineProcess");
+        emit("reflex", recReflex);
+        assertEquals(2, out.size());
+        assertEquals("m1", tasks.current());
+
+        tasks.resumeFromReflex();
+        assertFalse(tasks.isPaused());
+        assertEquals("reflex_resumed:m1", out.get(2));
+        assertEquals("m1", tasks.current());
+
+        // After resuming, task still completes normally on subsequent idle
+        emit("baritone_idle", obj("cancelled", false));
+        assertEquals("task_done:m1", out.get(3));
+        assertNull(tasks.current());
+    }
+
+    @Test
+    void recoverableReflexEventAutoPausesAndAbortPausedEmitsFailedPlusAborted() {
+        tasks.begin("g1", "goto");
+        JsonObject rec = obj("kind", "eat");
+        rec.addProperty("recoverable", true);
+        rec.addProperty("interrupted", "CustomGoalProcess");
+        emit("reflex", rec);
+        assertTrue(tasks.isPaused());
+        assertEquals("task_progress:g1", out.get(1));
+
+        tasks.abortPaused("drift exceeded 16 blocks");
+        assertFalse(tasks.isPaused());
+        assertNull(tasks.current());
+        assertEquals("task_failed:interrupted", out.get(2));
+        assertEquals("reflex_aborted:g1", out.get(3));
+        assertEquals("drift exceeded 16 blocks", data.get(3).get("reason").getAsString());
+    }
+
+    @Test
+    void nonRecoverableEscalationWhilePausedAbortsTask() {
+        tasks.begin("m2", "mine");
+        tasks.pauseForReflex("fight");
+
+        JsonObject escalated = obj("kind", "lava");
+        escalated.addProperty("recoverable", false);
+        escalated.addProperty("interrupted", "MineProcess");
+        emit("reflex", escalated);
+
+        assertFalse(tasks.isPaused());
+        assertNull(tasks.current());
+        assertEquals("task_failed:interrupted", out.get(2));
+        assertEquals("reflex_aborted:m2", out.get(3));
+    }
+
+    @Test
+    void altoTickIsFrozenWhilePausedAndWithinResumeBoundsChecksDriftAndTimeout() {
+        tasks.begin("a1", "altoclef");
+        tasks.pauseForReflex("eat");
+        for (int i = 0; i < 120; i++) tasks.altoTick(false);
+        assertEquals(2, out.size(), "paused AltoClef task must not time out prematurely");
+        tasks.resumeFromReflex();
+        assertEquals("reflex_resumed:a1", out.get(2));
+
+        // Baritone resume bounds: <=16 blocks drift and <=15s pause
+        assertTrue(BaritoneBridge.withinResumeBounds(0, 64, 0, 1000L, 10, 64, 12, 16_000L, 16.0, 15_000L));
+        assertFalse(BaritoneBridge.withinResumeBounds(0, 64, 0, 1000L, 17, 64, 0, 5_000L, 16.0, 15_000L));
+        assertFalse(BaritoneBridge.withinResumeBounds(0, 64, 0, 1000L, 0, 64, 0, 16_001L, 16.0, 15_000L));
     }
 }

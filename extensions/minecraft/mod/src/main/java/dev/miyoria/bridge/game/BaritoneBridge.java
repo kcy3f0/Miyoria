@@ -1,10 +1,9 @@
 package dev.miyoria.bridge.game;
 
+import com.google.gson.JsonObject;
 import dev.miyoria.bridge.model.RawObservation;
 import dev.miyoria.bridge.protocol.ProtocolException;
 import dev.miyoria.bridge.protocol.Request;
-
-import com.google.gson.JsonObject;
 
 /**
  * What the rest of the mod needs from Baritone. The implementation (the only class that touches
@@ -12,6 +11,8 @@ import com.google.gson.JsonObject;
  * All methods run on the client thread.
  */
 public interface BaritoneBridge {
+    double DEFAULT_MAX_PAUSE_DRIFT = 16.0;
+    long DEFAULT_MAX_PAUSE_MS = 15_000L;
 
     /** Execute a {@code baritone} request (goto/mine/follow/explore/farm/build/stop/raw). */
     JsonObject execute(Request request) throws ProtocolException;
@@ -35,6 +36,69 @@ public interface BaritoneBridge {
 
     /** Cancel her task because a reflex takes over; its {@code baritone_idle} says {@code reason:"reflex"}. */
     void interrupt();
+
+    /**
+     * Suspend the active Baritone task because a recoverable reflex is taking over, recording
+     * the player's position and timestamp so it can be replayed when the reflex finishes.
+     *
+     * @return {@code true} if a suspendable Baritone task was paused; {@code false} otherwise
+     */
+    boolean pauseForReflex(double playerX, double playerY, double playerZ, long nowMs);
+
+    /** Convenience overload reading the current client player's coordinates and wall clock. */
+    default boolean pauseForReflex() {
+        net.minecraft.client.MinecraftClient mc = net.minecraft.client.MinecraftClient.getInstance();
+        if (mc == null || mc.player == null) return false;
+        return pauseForReflex(mc.player.getX(), mc.player.getY(), mc.player.getZ(), System.currentTimeMillis());
+    }
+
+    /** Whether a suspended Baritone request is currently held for potential resume. */
+    boolean hasSuspended();
+
+    /**
+     * Replay the previously suspended Baritone request if drift <= {@code maxDrift} blocks and
+     * elapsed time <= {@code maxPauseMs}. Always clears the suspended state.
+     *
+     * @return {@code true} if replayed, {@code false} if missing, expired, drifted, or rejected
+     */
+    boolean replaySuspended(double playerX, double playerY, double playerZ, long nowMs,
+                            double maxDrift, long maxPauseMs);
+
+    /** Convenience overload using the client player's current position and default limits (16 blocks, 15s). */
+    default boolean replaySuspended() {
+        return replaySuspended(DEFAULT_MAX_PAUSE_DRIFT, DEFAULT_MAX_PAUSE_MS);
+    }
+
+    /** Convenience overload using the client player's current position with explicit limits. */
+    default boolean replaySuspended(double maxDrift, long maxPauseMs) {
+        net.minecraft.client.MinecraftClient mc = net.minecraft.client.MinecraftClient.getInstance();
+        if (mc == null || mc.player == null) {
+            clearSuspended();
+            return false;
+        }
+        return replaySuspended(mc.player.getX(), mc.player.getY(), mc.player.getZ(),
+                System.currentTimeMillis(), maxDrift, maxPauseMs);
+    }
+
+    /** Discard any suspended Baritone request without replaying it. */
+    void clearSuspended();
+
+    /** Pure bounds check for whether a paused task stayed within drift and timeout limits. */
+    static boolean withinResumeBounds(double startX, double startY, double startZ, long pausedAtMs,
+                                      double nowX, double nowY, double nowZ, long nowMs,
+                                      double maxDrift, long maxPauseMs) {
+        if (maxDrift < 0 || maxPauseMs <= 0) {
+            return false;
+        }
+        long elapsed = nowMs - pausedAtMs;
+        if (elapsed < 0 || elapsed > maxPauseMs) {
+            return false;
+        }
+        double dx = nowX - startX;
+        double dy = nowY - startY;
+        double dz = nowZ - startZ;
+        return (dx * dx + dy * dy + dz * dz) <= maxDrift * maxDrift;
+    }
 
     /**
      * Reflex movement: path next to {@code pos} (a drop to pick up). While a reflex drives

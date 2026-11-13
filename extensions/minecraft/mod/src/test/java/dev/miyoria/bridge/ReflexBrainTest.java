@@ -194,4 +194,102 @@ class ReflexBrainTest {
         s.inLava = true;
         assertNull(brain.tick(s.get()).active());
     }
+
+    @Test
+    void extinguishPreemptsLavaAndMlgWaterTriggersBeforeImpact() {
+        ReflexBrain extBrain = new ReflexBrain(ReflexBrain.ReflexConfig.DEFAULT);
+
+        // On fire with water bucket beats FLEE / LAVA priority-wise
+        Sense burning = new Sense(true, false, true, false, 300, 300, false, false, 16f, 20, true,
+                new Threat("zombie", 3.0, false), true, false, false, 0, 64, 0, false,
+                true, 0.0, 0.0, Double.POSITIVE_INFINITY,
+                true, false, false, false, 15, false, false, 0, false, false, java.util.List.of());
+        assertEquals(Kind.EXTINGUISH, extBrain.tick(burning).started());
+        assertTrue(ReflexBrain.isRecoverable(Kind.EXTINGUISH));
+
+        // Falling fast into ground triggers MLG_WATER (non-recoverable)
+        ReflexBrain mlgBrain = new ReflexBrain(ReflexBrain.ReflexConfig.DEFAULT);
+        Sense falling = new Sense(true, false, false, false, 300, 300, false, false, 20f, 20, true,
+                null, false, false, false, 0, 70, 0, false,
+                false, 8.0, -0.8, 3.0,
+                true, false, false, false, 15, false, false, 0, false, false, java.util.List.of());
+        assertEquals(Kind.MLG_WATER, mlgBrain.tick(falling).started());
+        assertFalse(ReflexBrain.isRecoverable(Kind.MLG_WATER));
+    }
+
+    @Test
+    void pillarRetreatShieldBlockAndAutoTorchHonorPrioritiesAndConfig() {
+        ReflexBrain combatBrain = new ReflexBrain(ReflexBrain.ReflexConfig.DEFAULT);
+
+        // Aiming skeleton triggers SHIELD_BLOCK over FIGHT
+        var aimingSkeleton = new dev.miyoria.bridge.reflex.CombatLogic.Threat("skeleton", 10.0, false, 0f, true);
+        var meleeZombie = new dev.miyoria.bridge.reflex.CombatLogic.Threat("zombie", 3.0, false);
+        Sense rangedSense = new Sense(true, false, false, false, 300, 300, false, false, 20f, 20, true,
+                null, true, false, false, 0, 64, 0, false,
+                false, 0.0, 0.0, Double.POSITIVE_INFINITY,
+                false, true, false, false, 15, false, false, 0, false, false,
+                java.util.List.of(aimingSkeleton, meleeZombie));
+        assertEquals(Kind.SHIELD_BLOCK, combatBrain.tick(rangedSense).started());
+        assertTrue(ReflexBrain.isRecoverable(Kind.SHIELD_BLOCK));
+
+        // Crowded (>=3 within 6m) with safe ceiling & blocks >= 3 preempts SHIELD_BLOCK with RETREAT_PILLAR
+        var crowded = java.util.List.of(
+                aimingSkeleton,
+                new dev.miyoria.bridge.reflex.CombatLogic.Threat("zombie", 2.5, false),
+                new dev.miyoria.bridge.reflex.CombatLogic.Threat("zombie", 3.5, false),
+                new dev.miyoria.bridge.reflex.CombatLogic.Threat("spider", 4.5, false)
+        );
+        Sense pillarSense = new Sense(true, false, false, false, 300, 300, false, false, 20f, 20, true,
+                null, true, false, false, 0, 64, 0, false,
+                false, 0.0, 0.0, Double.POSITIVE_INFINITY,
+                false, true, false, false, 15, false, false, 12, true, false, crowded);
+        Step escalate = combatBrain.tick(pillarSense);
+        assertEquals(Kind.RETREAT_PILLAR, escalate.started());
+        assertEquals(Kind.SHIELD_BLOCK, escalate.ended());
+        assertFalse(ReflexBrain.isRecoverable(Kind.RETREAT_PILLAR));
+
+        // Dark area with torch + spot triggers AUTO_TORCH; lit area does not
+        ReflexBrain torchBrain = new ReflexBrain(ReflexBrain.ReflexConfig.DEFAULT);
+        Sense lit = new Sense(true, false, false, false, 300, 300, false, false, 20f, 20, true,
+                null, true, false, false, 0, 64, 0, false,
+                false, 0.0, 0.0, Double.POSITIVE_INFINITY,
+                false, false, false, false, 8, true, true, 0, false, false, java.util.List.of());
+        assertNull(torchBrain.tick(lit).active());
+        Sense dark = new Sense(true, false, false, false, 300, 300, false, false, 20f, 20, true,
+                null, true, false, false, 0, 64, 0, false,
+                false, 0.0, 0.0, Double.POSITIVE_INFINITY,
+                false, false, false, false, 5, true, true, 0, false, false, java.util.List.of());
+        assertEquals(Kind.AUTO_TORCH, torchBrain.tick(dark).started());
+        assertFalse(Kind.AUTO_TORCH.urgent);
+        assertTrue(ReflexBrain.isRecoverable(Kind.AUTO_TORCH));
+
+        // Toggles in ReflexConfig disable features cleanly
+        var disabledAll = new ReflexBrain.ReflexConfig(
+                new ReflexBrain.Config(true, false, true, 8f, 14, 6, 100),
+                false, false, false, 4.0, false, 7, false);
+        ReflexBrain toggledOff = new ReflexBrain(disabledAll);
+        assertNull(toggledOff.tick(dark).active());
+        assertNull(toggledOff.tick(pillarSense).active());
+        Sense falling = new Sense(true, false, false, false, 300, 300, false, false, 20f, 20, true,
+                null, false, false, false, 0, 70, 0, false,
+                false, 8.0, -0.8, 3.0,
+                true, false, false, false, 15, false, false, 0, false, false, java.util.List.of());
+        assertNull(toggledOff.tick(falling).active());
+    }
+
+    @Test
+    void isRecoverableClassificationAndTimeoutRule() {
+        for (Kind k : java.util.List.of(Kind.EXTINGUISH, Kind.EAT, Kind.FIGHT, Kind.SHIELD_BLOCK,
+                Kind.AUTO_TORCH, Kind.UNSTUCK, Kind.PICKUP)) {
+            assertTrue(ReflexBrain.isRecoverable(k), k + " should be recoverable");
+            assertTrue(ReflexBrain.isRecoverable(k, true), k + " with ok=true should be recoverable");
+            assertFalse(ReflexBrain.isRecoverable(k, false), k + " timeout/failure must not be recoverable");
+        }
+        for (Kind k : java.util.List.of(Kind.MLG_WATER, Kind.LAVA, Kind.SUFFOCATION, Kind.FALLING_BLOCK,
+                Kind.DROWNING, Kind.RETREAT_PILLAR, Kind.FLEE)) {
+            assertFalse(ReflexBrain.isRecoverable(k), k + " should be non-recoverable");
+            assertFalse(ReflexBrain.isRecoverable(k, true), k + " should remain non-recoverable");
+        }
+        assertFalse(ReflexBrain.isRecoverable(null));
+    }
 }
