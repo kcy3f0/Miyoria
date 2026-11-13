@@ -223,6 +223,13 @@ describe("ranking against stored vectors (sqlite store)", () => {
       listed.push(...records);
       return records;
     };
+    const about = memories.listAbout?.bind(memories);
+    expect(about, "the store reads everyone's memories at once").toBeDefined();
+    memories.listAbout = async (...args) => {
+      const records = (await about?.(...args)) ?? [];
+      listed.push(...records);
+      return records;
+    };
     await e.engine.recall([global], [owen], "他愛吃什麼", PROMPT_KINDS, 1, t0());
     const owens = listed.filter((r) => r.id === sushi);
     expect(owens.length, "Owen's memory was listed").toBeGreaterThan(0);

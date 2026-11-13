@@ -333,6 +333,15 @@ function recordCosine(query: readonly number[], record: MemoryRecord): number | 
   return stored === null ? null : cosine(query, stored);
 }
 
+/**
+ * The text a memory is stored with. Memories are kept for good: a per-call code (`u7`) in one
+ * would point at someone else later. Resolved from the text itself where it can be, otherwise
+ * the sentence is dropped (empty).
+ */
+function storedContent(text: string): string {
+  return repairHandleText(text.trim())?.trim() ?? "";
+}
+
 function sortedUnique(ids: readonly PersonId[]): PersonId[] {
   return [...new Set(ids)].sort();
 }
@@ -439,8 +448,14 @@ export class MemoryEngine implements FollowupSource {
    */
   async backfillEmbeddings(limit: number, signal?: AbortSignal): Promise<number> {
     if (!this.embedder.enabled || limit === 0) return 0;
-    const rows = await this.records.list(this.profile, memoryFilter(Math.max(limit * 4, 100)));
-    const missing = rows.filter((r) => r.embedding === null).slice(0, limit);
+    const store = this.records;
+    // Without the store's own read, only the newest records are looked through. `embeddingValues`
+    // tells which have a vector without decoding it.
+    const missing = store.missingEmbeddings
+      ? await store.missingEmbeddings(this.profile, limit)
+      : (await store.list(this.profile, memoryFilter(Math.max(limit * 4, 100))))
+          .filter((r) => embeddingValues(r) === null)
+          .slice(0, limit);
     if (missing.length === 0) return 0;
     let vectors: number[][];
     try {
@@ -581,13 +596,50 @@ export class MemoryEngine implements FollowupSource {
   }
 
   /**
-   * Stores a memory, merging it with a near-identical or very similar existing record of the
-   * same kind, scope and subjects.
+   * Vectors of `texts` (passages) in one call to the embedder, `null` for an empty text. All
+   * `null` when embeddings are off or the call fails, as `#embedOne` would give each.
    */
-  async store(memory: NewMemory, now: Timestamp, signal?: AbortSignal): Promise<Stored> {
-    // Memories are kept for good: a per-call code (`u7`) in one would point at someone else
-    // later. Resolved from the text itself where it can be, otherwise the sentence is dropped.
-    const content = repairHandleText(memory.content.trim())?.trim() ?? "";
+  async #embedMany(texts: readonly string[], signal?: AbortSignal): Promise<(number[] | null)[]> {
+    const out: (number[] | null)[] = texts.map(() => null);
+    const asked = texts.flatMap((t, i) => (t.trim() === "" ? [] : [i]));
+    if (!this.embedder.enabled || asked.length === 0) return out;
+    let vectors: number[][];
+    try {
+      vectors = await this.embedder.embed(
+        asked.map((i) => texts[i] as string),
+        signal,
+      );
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      log.warn({ embedder: this.embedder.name, error: errorMessage(error) }, "embedding failed");
+      return out;
+    }
+    if (vectors.length !== asked.length) {
+      log.warn(
+        { embedder: this.embedder.name, asked: asked.length, got: vectors.length },
+        "embedding failed",
+      );
+      return out;
+    }
+    for (const [n, i] of asked.entries()) {
+      const v = vectors[n];
+      out[i] = v && v.length > 0 ? v : null;
+    }
+    return out;
+  }
+
+  /**
+   * Stores a memory, merging it with a near-identical or very similar existing record of the
+   * same kind, scope and subjects. `embedded`: the vector of its stored content, already
+   * computed (`null`: none); absent, it is embedded here.
+   */
+  async store(
+    memory: NewMemory,
+    now: Timestamp,
+    signal?: AbortSignal,
+    embedded?: { embedding: number[] | null },
+  ): Promise<Stored> {
+    const content = storedContent(memory.content);
     if (content === "") throw new MemoryError("empty memory");
     this.#version += 1;
     // What is happening right now is the state machine's to answer, never long-term memory.
@@ -606,7 +658,8 @@ export class MemoryEngine implements FollowupSource {
       return { type: "refused", reason: "no_evidence" };
     }
     const tokens = tokenString(content);
-    const embedding = await this.#embedOne(content, signal);
+    const embedding =
+      embedded !== undefined ? embedded.embedding : await this.#embedOne(content, signal);
     const subjects = sortedUnique(memory.subjects);
 
     const queryTokens = tokens.split(" ").filter((t) => t !== "");
@@ -787,6 +840,11 @@ export class MemoryEngine implements FollowupSource {
     const own = new Set(tokens);
     const contextTokens = [...new Set(tokenize(context))].filter((t) => !own.has(t));
     const people = this.#turnPeople(options.turn, `${query}\n${context}`);
+    const fetch = Math.max(this.config.candidate_limit, limit);
+    // The memories about the people need no vector: read while the query is embedded.
+    const about = this.#about([...new Set([...present.slice(0, 16), ...people])], fetch);
+    // Settled here so a failed read is not left unhandled while the embedding is awaited.
+    about.catch(() => undefined);
     const embedding = await this.#embedOne(
       context === "" ? query : `${query}\n${context}`,
       signal,
@@ -799,7 +857,6 @@ export class MemoryEngine implements FollowupSource {
       r.superseded_by === null &&
       (options.includeDone || !r.done) &&
       !(options.forTurn && (expired(r, now) || staleState(r)));
-    const fetch = Math.max(this.config.candidate_limit, limit);
 
     // id -> (record, backend text score, vector score)
     const candidates = new Map<string, [MemoryRecord, number, number | null]>();
@@ -818,15 +875,9 @@ export class MemoryEngine implements FollowupSource {
         }
       }
     }
-    for (const person of [...new Set([...present.slice(0, 16), ...people])]) {
-      const records = await this.records.list(
-        this.profile,
-        memoryFilter(fetch, { subject: person }),
-      );
-      for (const record of records) {
-        if (wanted(record) && !candidates.has(record.id)) {
-          candidates.set(record.id, [record, 0, null]);
-        }
+    for (const record of await about) {
+      if (wanted(record) && !candidates.has(record.id)) {
+        candidates.set(record.id, [record, 0, null]);
       }
     }
 
@@ -865,6 +916,20 @@ export class MemoryEngine implements FollowupSource {
     ranked.sort((a, b) => b.score - a.score || ms(b.record.updated_at) - ms(a.record.updated_at));
     ranked.length = Math.min(ranked.length, limit);
     return ranked;
+  }
+
+  /**
+   * The newest `each` records about each of `people` (records about several come back once):
+   * one read where the store can, otherwise one per person, side by side.
+   */
+  async #about(people: readonly PersonId[], each: number): Promise<MemoryRecord[]> {
+    if (people.length === 0) return [];
+    const store = this.records;
+    if (store.listAbout) return store.listAbout(this.profile, people, each);
+    const lists = await Promise.all(
+      people.map((person) => store.list(this.profile, memoryFilter(each, { subject: person }))),
+    );
+    return lists.flat();
   }
 
   /**
@@ -1346,8 +1411,12 @@ export class MemoryEngine implements FollowupSource {
       });
     }
 
-    for (const item of items) {
-      const stored = await this.store(item, now, signal);
+    const vectors = await this.#embedMany(
+      items.map((item) => storedContent(item.content)),
+      signal,
+    );
+    for (const [i, item] of items.entries()) {
+      const stored = await this.store(item, now, signal, { embedding: vectors[i] ?? null });
       if (stored.type === "inserted") report.inserted += 1;
       else if (stored.type === "reinforced") report.reinforced += 1;
       else if (stored.type === "superseded") report.superseded += 1;

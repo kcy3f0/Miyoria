@@ -1923,7 +1923,8 @@ function memoryFromRow(row: Row): MemoryRecord {
 /** What `list` and `count` select, with `listParams` as `$1` to `$6`. */
 const LIST_FILTER =
   "profile_id = $1 " +
-  "AND ($2::text IS NULL OR $2 = ANY(subjects)) " +
+  // `@>`, not `= ANY(subjects)`: only the former can use the GIN index on `subjects`.
+  "AND ($2::text IS NULL OR subjects @> ARRAY[$2::text]) " +
   "AND ($3::text IS NULL OR scope_key = $3) " +
   "AND ($4::text IS NULL OR kind = $4) " +
   "AND ($5::timestamptz IS NULL OR created_at < $5) " +
@@ -2101,6 +2102,50 @@ class PgMemories implements MemoryRecordStore {
     }
     const row = rows[0];
     return row ? num(row, "n") : 0;
+  }
+
+  async listAbout(
+    profile: ProfileId,
+    people: readonly PersonId[],
+    limitEach: number,
+  ): Promise<MemoryRecord[]> {
+    const limit = sqlLimit(limitEach);
+    if (people.length === 0 || limit === 0) return [];
+    let rows: Row[];
+    try {
+      // `subjects && $2` lets the GIN index on `subjects` pick the rows.
+      rows = await this.db.query(
+        `SELECT ${MEMORY_COLUMNS} FROM memory_records WHERE id IN (` +
+          "SELECT id FROM (SELECT id, row_number() OVER (PARTITION BY person " +
+          'ORDER BY created_at DESC, id COLLATE "C" DESC) AS rn FROM (' +
+          "SELECT DISTINCT id, created_at, person " +
+          "FROM memory_records, unnest(subjects) AS person WHERE profile_id = $1 " +
+          "AND superseded_by IS NULL AND subjects && $2::text[] AND person = ANY($2::text[])" +
+          ") about) ranked WHERE $3::bigint IS NULL OR rn <= $3) " +
+          'ORDER BY created_at DESC, id COLLATE "C" DESC',
+        [profile, [...new Set(people)], limit],
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot list memory records", { cause });
+    }
+    return rows.map(memoryFromRow);
+  }
+
+  async missingEmbeddings(profile: ProfileId, limit: number): Promise<MemoryRecord[]> {
+    let rows: Row[];
+    try {
+      rows = await this.db.query(
+        `SELECT ${MEMORY_COLUMNS} FROM memory_records WHERE profile_id = $1 ` +
+          "AND embedding IS NULL AND superseded_by IS NULL " +
+          'ORDER BY created_at DESC, id COLLATE "C" DESC LIMIT $2',
+        [profile, limitParam(limit)],
+      );
+    } catch (cause) {
+      if (cause instanceof StoreError) throw cause;
+      throw new StoreError("cannot list memory records", { cause });
+    }
+    return rows.map(memoryFromRow);
   }
 
   async touch(ids: readonly string[], at: Timestamp): Promise<void> {

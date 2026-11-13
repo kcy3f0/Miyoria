@@ -2077,6 +2077,37 @@ class SqliteMemories implements MemoryRecordStore {
     return row ? num(row, "n") : 0;
   }
 
+  async listAbout(
+    profile: ProfileId,
+    people: readonly PersonId[],
+    limitEach: number,
+  ): Promise<MemoryRecord[]> {
+    const limit = sqlLimit(limitEach);
+    if (people.length === 0 || limit === 0) return [];
+    // One pass over the profile's rows (there is no index on `subjects`), not one per person.
+    const rows = this.db.all(
+      "WITH about AS (SELECT DISTINCT m.seq, m.created_at, m.id, p.value AS person " +
+        "FROM memory_records m, json_each(m.subjects) p WHERE m.profile_id = $profile " +
+        "AND m.superseded_by IS NULL AND p.value IN (SELECT value FROM json_each($people))), " +
+        "ranked AS (SELECT seq, row_number() OVER (PARTITION BY person " +
+        "ORDER BY created_at DESC, id DESC) AS rn FROM about) " +
+        "SELECT * FROM memory_records WHERE seq IN " +
+        "(SELECT seq FROM ranked WHERE $limit IS NULL OR rn <= $limit) " +
+        "ORDER BY created_at DESC, id DESC",
+      { profile, people: JSON.stringify([...new Set(people)]), limit },
+    );
+    return rows.map(memoryFromRow);
+  }
+
+  async missingEmbeddings(profile: ProfileId, limit: number): Promise<MemoryRecord[]> {
+    const rows = this.db.all(
+      "SELECT * FROM memory_records WHERE profile_id = $profile AND embedding IS NULL " +
+        "AND superseded_by IS NULL ORDER BY created_at DESC, id DESC LIMIT $limit",
+      { profile, limit: limitParam(limit) },
+    );
+    return rows.map(memoryFromRow);
+  }
+
   async touch(ids: readonly string[], at: Timestamp): Promise<void> {
     if (ids.length === 0) return;
     this.db.run(
