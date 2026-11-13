@@ -29,9 +29,9 @@ export const SingConfigSchema = z.object({
    * More song workers, tried in this order when `url` does not answer (its computer is off, or
    * off the tailnet): new songs go to the first one that answers, and a song stays with the
    * worker that made it. E.g. `url` = a friend's GPU over Tailscale, `fallback_urls` = the
-   * worker on this machine (`docs/sing-remote-host.md`).
+   * worker on this machine (`docs/sing-remote-host.md`). The same address twice is used once.
    */
-  fallback_urls: z.array(z.string()).default([]),
+  fallback_urls: z.array(z.url()).default([]),
   /**
    * With `fallback_urls`: an unreachable worker is passed over this long before it is tried
    * again, and a song whose worker is still unreachable after this long is made on the next one.

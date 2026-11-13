@@ -2,18 +2,22 @@
 // answers, a song stays with the worker that made it, and a song whose worker stays unreachable
 // is reported gone (404) so the singer makes it again on the next one.
 
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { Supervisor } from "@miyoria/kernel";
 import { describe, expect, it } from "vitest";
 import {
   type GpuContext,
+  HttpSingWorker,
   type SingWorker,
   SingWorkerError,
   type SongMeta,
   type SongQuery,
   type WorkerJob,
 } from "../src/client.js";
+import { SingConfigSchema } from "../src/config.js";
 import { FailoverSingWorker } from "../src/failover.js";
-import { SingModule } from "../src/module.js";
+import { SingModule, workerUrls } from "../src/module.js";
 
 const RETRY = 30_000;
 
@@ -33,9 +37,13 @@ function meta(id: string): SongMeta {
   };
 }
 
-/** A worker that can be switched off (every call then fails as unreachable). */
+/**
+ * A worker that can be switched off (every call then fails as unreachable), or made slow (a
+ * submit takes the job but times out before answering).
+ */
 class FakeWorker implements SingWorker {
   up = true;
+  slow = false;
   readonly calls: string[] = [];
   readonly jobs = new Map<string, WorkerJob>();
   readonly cached = new Set<string>();
@@ -57,20 +65,14 @@ class FakeWorker implements SingWorker {
       throw new SingWorkerError("that link is not on an allowed host", { status: 400 });
     }
     const id = `${this.name}-j${this.#next++}`;
-    const job: WorkerJob = {
-      id,
-      state: "queued",
-      stage: "queued",
-      progress: 0,
-      error: null,
-      song_id: null,
-      cached: false,
-      position: 0,
-      source: null,
-      song: null,
-      exclusive: null,
-      gpu: null,
-    };
+    if (this.slow) {
+      this.jobs.set(id, { ...queued(id) });
+      throw new SingWorkerError(`song worker unreachable at ${this.name}: timeout`, {
+        unreachable: true,
+        maybeReceived: true,
+      });
+    }
+    const job = queued(id);
     this.jobs.set(id, job);
     return structuredClone(job);
   }
@@ -125,6 +127,28 @@ class FakeWorker implements SingWorker {
   async health(): Promise<string | null> {
     return this.up ? null : `unreachable at ${this.name}`;
   }
+}
+
+function queued(id: string): WorkerJob {
+  return {
+    id,
+    state: "queued",
+    stage: "queued",
+    progress: 0,
+    error: null,
+    song_id: null,
+    cached: false,
+    position: 0,
+    source: null,
+    song: null,
+    exclusive: null,
+    gpu: null,
+  };
+}
+
+/** Lets fire-and-forget calls (cancelling jobs left behind) run. */
+function settle(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 function setup() {
@@ -196,6 +220,14 @@ describe("FailoverSingWorker", () => {
     expect(local.calls).toEqual([]);
   });
 
+  it("does not send a song to the next worker when the request may have reached the first", async () => {
+    const { remote, local, worker } = setup();
+    remote.slow = true;
+    const error = await rejection(worker.submit({ query: "a" }));
+    expect(error.maybeReceived).toBe(true);
+    expect(local.calls).toEqual([]);
+  });
+
   it("waits for the worker of a song, then reports the song gone so it is made on the next", async () => {
     const { remote, local, clock, worker } = setup();
     const job = await worker.submit({ query: "a" });
@@ -214,6 +246,60 @@ describe("FailoverSingWorker", () => {
     // The singer asks again: the song is made on this machine.
     expect((await worker.submit({ query: "a" })).id).toBe("local-j1");
     expect(local.calls).toEqual(["submit"]);
+  });
+
+  it("reports every song of a worker gone at once when it stays unreachable", async () => {
+    const { remote, clock, worker } = setup();
+    const a = await worker.submit({ query: "a" });
+    const b = await worker.submit({ query: "b" });
+    remote.up = false;
+    await rejection(worker.job(a.id));
+    await rejection(worker.job(b.id));
+    clock.t += RETRY;
+    // The poll of `a` tries it once more and fails; `b` does not wait another round for its own try.
+    expect((await rejection(worker.job(a.id))).status).toBe(404);
+    expect((await rejection(worker.job(b.id))).status).toBe(404);
+    expect(remote.calls.filter((c) => c.startsWith("job"))).toHaveLength(2);
+  });
+
+  it("cancels a job made again elsewhere once its worker is back", async () => {
+    const { remote, clock, worker } = setup();
+    const job = await worker.submit({ query: "a" });
+    remote.up = false;
+    await rejection(worker.job(job.id));
+    clock.t += RETRY;
+    expect((await rejection(worker.job(job.id))).status).toBe(404);
+    expect((await worker.submit({ query: "a" })).id).toBe("local-j1");
+    remote.up = true;
+    expect(await worker.health()).toBe(null);
+    await settle();
+    expect(remote.calls).toContain(`cancel ${job.id}`);
+    expect(remote.jobs.has(job.id)).toBe(false);
+  });
+
+  it("fails a cancel at once while the worker rests, and cancels the job once it is back", async () => {
+    const { remote, worker } = setup();
+    const job = await worker.submit({ query: "a" });
+    remote.up = false;
+    await rejection(worker.job(job.id));
+    await rejection(worker.goExclusive(job.id));
+    const error = await rejection(worker.cancel(job.id));
+    expect(error.unreachable).toBe(true);
+    expect(remote.calls.filter((c) => c.startsWith("cancel") || c.startsWith("exclusive"))).toEqual(
+      [],
+    );
+    remote.up = true;
+    await worker.health();
+    await settle();
+    expect(remote.calls).toContain(`cancel ${job.id}`);
+  });
+
+  it("passes over a worker that a health check found unreachable", async () => {
+    const { remote, worker } = setup();
+    remote.up = false;
+    await worker.health();
+    expect((await worker.submit({ query: "a" })).id).toBe("local-j1");
+    expect(remote.calls).toEqual([]);
   });
 
   it("keeps a song with its worker when it comes back in time", async () => {
@@ -302,6 +388,58 @@ describe("FailoverSingWorker", () => {
   });
 });
 
+describe("HttpSingWorker errors", () => {
+  async function listen(server: Server): Promise<string> {
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  }
+
+  it("says a request was not sent when nothing listens", async () => {
+    const server = createServer();
+    const url = await listen(server);
+    await new Promise((resolve) => server.close(resolve));
+    const error = await rejection(new HttpSingWorker(url, 2000).submit({ query: "a" }));
+    expect(error.unreachable).toBe(true);
+    expect(error.maybeReceived).toBe(false);
+  });
+
+  it("says a submit may have reached a worker that takes it but does not answer in time", async () => {
+    const server = createServer(() => {
+      // takes the request, never answers
+    });
+    const url = await listen(server);
+    try {
+      const error = await rejection(new HttpSingWorker(url, 300).submit({ query: "a" }));
+      expect(error.unreachable).toBe(true);
+      expect(error.maybeReceived).toBe(true);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
+describe("fallback_urls config", () => {
+  it("accepts only addresses", () => {
+    expect(SingConfigSchema.safeParse({ fallback_urls: ["100.83.26.41:8005"] }).success).toBe(
+      false,
+    );
+    expect(SingConfigSchema.safeParse({ fallback_urls: ["http://127.0.0.1:8005"] }).success).toBe(
+      true,
+    );
+  });
+
+  it("uses each address once", () => {
+    expect(
+      workerUrls("http://100.83.26.41:8005", [
+        "http://100.83.26.41:8005/",
+        "http://127.0.0.1:8005",
+        "http://127.0.0.1:8005",
+      ]),
+    ).toEqual(["http://100.83.26.41:8005", "http://127.0.0.1:8005"]);
+  });
+});
+
 describe("SingModule with fallback_urls", () => {
   it("asks for one worker per url, the url first", async () => {
     const made = new Map<string, FakeWorker>();
@@ -323,6 +461,23 @@ describe("SingModule with fallback_urls", () => {
     expect(await sing.health()).toEqual({ status: "healthy" });
     (made.get("http://127.0.0.1:8005") as FakeWorker).up = false;
     expect((await sing.health()).status).toBe("degraded");
+    await sup.stopAll();
+  });
+
+  it("uses a single worker when the fallbacks only repeat the url", async () => {
+    const made: string[] = [];
+    const sup = new Supervisor();
+    const sing = new SingModule((url) => {
+      made.push(url);
+      return new FakeWorker(url);
+    });
+    await sup.register(
+      sing,
+      { url: "http://127.0.0.1:8005", fallback_urls: ["http://127.0.0.1:8005/"], clips: false },
+      true,
+    );
+    await sup.startAll();
+    expect(made).toEqual(["http://127.0.0.1:8005"]);
     await sup.stopAll();
   });
 });

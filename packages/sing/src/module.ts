@@ -86,11 +86,12 @@ export class SingModule implements Module {
     const timeoutMs = cfg.timeout_secs * 1000;
     const make = (url: string) =>
       this.#worker?.(url, timeoutMs) ?? new HttpSingWorker(url, timeoutMs);
+    const urls = workerUrls(cfg.url, cfg.fallback_urls);
     const worker: SingWorker =
-      cfg.fallback_urls.length === 0
+      urls.length === 1
         ? make(cfg.url)
         : new FailoverSingWorker(
-            [cfg.url, ...cfg.fallback_urls].map((url) => ({ name: url, worker: make(url) })),
+            urls.map((url) => ({ name: url, worker: make(url) })),
             { retryMs: cfg.fallback_retry_secs * 1000, now: () => ctx.clock.now() },
           );
     const videoDir = cfg.video ? resolve(this.#baseDir, cfg.video_dir) : null;
@@ -188,4 +189,17 @@ export class SingModule implements Module {
     running.unroute?.();
     for (const unregister of running.capabilities) unregister();
   }
+}
+
+/** `url`, then `fallback_urls`, each address once (a trailing slash does not make it another). */
+export function workerUrls(url: string, fallbacks: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const u of [url, ...fallbacks]) {
+    const key = u.replace(/\/+$/, "").toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(u);
+  }
+  return out;
 }

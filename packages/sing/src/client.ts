@@ -4,6 +4,7 @@
 
 import { createWriteStream } from "node:fs";
 import { mkdir, rename, rm } from "node:fs/promises";
+import { connect } from "node:net";
 import { dirname } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -131,18 +132,45 @@ export class SingWorkerError extends Error {
   /**
    * The worker's HTTP status (404: it does not know the job, e.g. after a restart).
    * `unreachable`: no answer at all (down, wrong address, timed out), so another worker may be tried.
+   * `maybeReceived`: no answer, but the request may have reached the worker (it timed out, or the
+   * connection broke after it opened), so sending it again elsewhere could do the work twice.
    */
   constructor(
     message: string,
-    options?: ErrorOptions & { status?: number; unreachable?: boolean },
+    options?: ErrorOptions & { status?: number; unreachable?: boolean; maybeReceived?: boolean },
   ) {
     super(message, options);
     this.status = options?.status ?? null;
     this.unreachable = options?.unreachable ?? false;
+    this.maybeReceived = this.unreachable && (options?.maybeReceived ?? false);
   }
 
   readonly status: number | null;
   readonly unreachable: boolean;
+  readonly maybeReceived: boolean;
+}
+
+/** Errors of a connection that never opened: the request was not sent. */
+const NOT_CONNECTED = new Set([
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EHOSTDOWN",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EADDRNOTAVAIL",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/** Whether a failed fetch never connected (looks through `cause` and `AggregateError`s). */
+function neverConnected(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const e = error as { code?: unknown; cause?: unknown; errors?: unknown };
+  if (typeof e.code === "string" && NOT_CONNECTED.has(e.code)) return true;
+  if (Array.isArray(e.errors) && e.errors.length > 0) {
+    return e.errors.every((inner) => neverConnected(inner, depth + 1));
+  }
+  return neverConnected(e.cause, depth + 1);
 }
 
 /** The song worker as the module uses it (`HttpSingWorker`, or a fake in tests). */
@@ -164,6 +192,9 @@ export interface SingWorker {
   health(signal?: AbortSignal): Promise<string | null>;
 }
 
+/** Longest wait for the connection check after a submit timed out. */
+const PROBE_MS = 3000;
+
 export class HttpSingWorker implements SingWorker {
   readonly #base: string;
   readonly #timeoutMs: number;
@@ -184,6 +215,7 @@ export class HttpSingWorker implements SingWorker {
       throw new SingWorkerError(`song worker unreachable at ${this.#base}: ${String(error)}`, {
         cause: error,
         unreachable: true,
+        maybeReceived: !neverConnected(error),
       });
     }
     if (!res.ok) {
@@ -207,16 +239,50 @@ export class HttpSingWorker implements SingWorker {
     return parsed.data;
   }
 
-  submit(query: SongQuery, signal?: AbortSignal): Promise<WorkerJob> {
-    return this.#job(
-      "/jobs",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(query),
-      },
-      signal,
-    );
+  async submit(query: SongQuery, signal?: AbortSignal): Promise<WorkerJob> {
+    try {
+      return await this.#job(
+        "/jobs",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(query),
+        },
+        signal,
+      );
+    } catch (error) {
+      // Timed out: the worker may have taken the job, unless it cannot even be connected to now
+      // (a computer that is off, or off the tailnet, often drops the connection attempt silently
+      // instead of refusing it, so the request timeout fires first).
+      if (
+        error instanceof SingWorkerError &&
+        error.maybeReceived &&
+        !(await this.#connects(Math.min(this.#timeoutMs, PROBE_MS)))
+      ) {
+        throw new SingWorkerError(error.message, { cause: error.cause, unreachable: true });
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Whether a TCP connection to the worker opens within `ms`. The OS accepts it even while the
+   * worker is too busy to answer, so this tells "off" from "slow".
+   */
+  #connects(ms: number): Promise<boolean> {
+    const url = new URL(this.#base);
+    const host = url.hostname.replace(/^\[|\]$/g, "");
+    const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
+    return new Promise((resolve) => {
+      const socket = connect({ host, port, timeout: ms });
+      const done = (ok: boolean) => {
+        socket.destroy();
+        resolve(ok);
+      };
+      socket.once("connect", () => done(true));
+      socket.once("timeout", () => done(false));
+      socket.once("error", () => done(false));
+    });
   }
 
   job(id: string, signal?: AbortSignal): Promise<WorkerJob> {
