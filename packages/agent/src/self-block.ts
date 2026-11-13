@@ -21,10 +21,13 @@
 import {
   type AccountRef,
   type ActivitySnapshot,
+  AFFINITY_LEVEL_MAX,
   type AffectSnapshot,
   type AffectState,
   type Attitude,
+  affinityLevel,
   affinityStep,
+  BOND_SCALE_LINE,
   type ContextKey,
   EMOTION_LABELS,
   type EmotionName,
@@ -397,7 +400,7 @@ const MAX_STANCE = 60;
 function stanceCue(level: number, written: number | null): string {
   if (written !== null) {
     return stanceStale(written, level)
-      ? `好感變了(Lv.${written}→Lv.${level}),你可以自己決定對他有沒有不一樣`
+      ? `羈絆變了(Lv.${written}→Lv.${level}),你可以自己決定對他有沒有不一樣`
       : "";
   }
   return affinityStep(level) !== 0 ? `你還沒決定怎麼對他(Lv.${level}),可以自己決定` : "";
@@ -408,8 +411,12 @@ export interface PersonAttrs {
   name: string;
   /** 朋友, 認識, ... */
   relation?: string | null;
-  /** Her level with them (`Lv.24`). */
-  level?: number | null;
+  /** Her 羈絆 level with them, out of the scale's top (`92/1000`). */
+  level?: number | string | null;
+  /** `主人` for her owner. */
+  owner?: string | null;
+  /** How much she trusts them (0..100). */
+  trust?: number | null;
   /** What she calls them. */
   call_as?: string | null;
   /** What she thinks of them. */
@@ -442,7 +449,9 @@ function personAttrs(
     (p.person === null ? null : (src.affect?.card(p.person) ?? null));
   if (card !== null) {
     attrs.relation = card.label;
-    attrs.level = card.level;
+    attrs.level = `${card.level}/${AFFINITY_LEVEL_MAX}`;
+    if (card.owner) attrs.owner = "主人";
+    attrs.trust = Math.round(card.trust);
     if (card.call_name) attrs.call_as = safeName(card.call_name, 16);
     if (card.feeling.trim() !== "") attrs.impression = short(card.feeling, MAX_FEELING);
     attrs.toward = towardLine(card.emotions);
@@ -453,6 +462,9 @@ function personAttrs(
     const attitude = src.attitude?.(p.account) ?? null;
     if (attitude !== null) {
       attrs.relation = relationshipLabel(attitude);
+      attrs.level = `${affinityLevel(attitude.affinity)}/${AFFINITY_LEVEL_MAX}`;
+      if (attitude.owner) attrs.owner = "主人";
+      attrs.trust = Math.round(attitude.trust);
       if (attitude.call_name) attrs.call_as = safeName(attitude.call_name, 16);
     }
     if (p.person !== null && src.self) {
@@ -493,5 +505,6 @@ export function peopleBody(
     if (attrs === null) others.push(personTag({ name: p.handle }));
     else lines.push(personTag(attrs));
   }
-  return [...lines, ...others].join("\n");
+  if (lines.length === 0) return others.join("\n");
+  return [`<scale>${BOND_SCALE_LINE}</scale>`, ...lines, ...others].join("\n");
 }

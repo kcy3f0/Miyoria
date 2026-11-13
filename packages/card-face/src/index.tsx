@@ -762,7 +762,7 @@ export const CardFace = forwardRef<SVGSVGElement, CardFaceProps>(function CardFa
         <g transform={`translate(0 ${-lift})`}>
           <BandColumn
             x={PAD}
-            label="好感"
+            label="羈絆"
             value={card.affinity}
             scale={AFFINITY}
             primary={colors.primary}

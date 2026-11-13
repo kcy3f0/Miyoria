@@ -2025,7 +2025,26 @@ export interface AffectSnapshot {
   biases: AffectBiases;
 }
 
-export type RelationshipLabel = "很討厭" | "討厭" | "陌生人" | "認識" | "朋友" | "好朋友" | "摯友";
+export type RelationshipLabel =
+  | "很討厭"
+  | "討厭"
+  | "陌生人"
+  | "認識"
+  | "朋友"
+  | "好朋友"
+  | "摯友"
+  | "知心"
+  | "知己"
+  | "至交"
+  | "莫逆之交"
+  | "心有靈犀"
+  | "形影不離"
+  | "家人般"
+  | "生死之交"
+  | "命運相連"
+  | "無可取代"
+  | "心之所歸"
+  | "永恆羈絆";
 
 /** `GET /api/affect/people`, highest attachment first. */
 export interface PersonCard {

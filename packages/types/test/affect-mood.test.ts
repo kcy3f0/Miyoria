@@ -163,13 +163,14 @@ describe("the relationship label scale", () => {
 });
 
 describe("affinityLevel", () => {
-  it("is the affinity as a whole number, truncated toward zero, within -100..100", () => {
+  it("is the affinity as a whole number, truncated toward zero, within -100..1000", () => {
     expect(affinityLevel(0)).toBe(0);
     expect(affinityLevel(4.9)).toBe(4);
     expect(Object.is(affinityLevel(-0.5), 0)).toBe(true);
     expect(affinityLevel(45)).toBe(45);
     expect(affinityLevel(-60.7)).toBe(-60);
-    expect(affinityLevel(250)).toBe(100);
+    expect(affinityLevel(250)).toBe(250);
+    expect(affinityLevel(1250)).toBe(1000);
     expect(affinityLevel(-250)).toBe(-100);
     expect(affinityLevel(Number.NaN)).toBe(0);
   });

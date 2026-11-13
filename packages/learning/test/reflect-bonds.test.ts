@@ -172,7 +172,7 @@ describe("Reflect (v2)", () => {
     expect(ephemeralHandlesIn(system.replace(DRAFT_FORMAT, ""))).toEqual([]);
     // Her person cards (the ones she cares about) are in the data.
     expect(String(request?.messages[1]?.content)).toContain(
-      "Owen:朋友,好感 Lv.6,在意 0.40;你對他的感覺:有點在意;還沒決定相處方式(好感 Lv.6)",
+      "Owen:朋友,羈絆 Lv.6,在意 0.40;你對他的感覺:有點在意;還沒決定相處方式(羈絆 Lv.6)",
     );
   });
 
@@ -231,7 +231,7 @@ describe("Reflect (v2)", () => {
       const reply = JSON.stringify({
         summary: "x",
         bonds: [
-          { person: "Owen", stance: `這次對他坦率一點。${"啊".repeat(80)}`, why: "好感變了" },
+          { person: "Owen", stance: `這次對他坦率一點。${"啊".repeat(80)}`, why: "羈絆變了" },
         ],
       });
       const { affect, reflector } = setup(reply, reply);

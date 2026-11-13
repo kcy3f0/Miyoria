@@ -138,14 +138,53 @@ export const RELATIONSHIP_LABELS = [
   "朋友",
   "好朋友",
   "摯友",
+  "知心",
+  "知己",
+  "至交",
+  "莫逆之交",
+  "心有靈犀",
+  "形影不離",
+  "家人般",
+  "生死之交",
+  "命運相連",
+  "無可取代",
+  "心之所歸",
+  "永恆羈絆",
 ] as const;
 
 /** The one relationship scale (every prompt, `/me` and the panel use this). */
 export type RelationshipLabel = (typeof RELATIONSHIP_LABELS)[number];
 
+/**
+ * The tiers past 摯友, highest first: `[lowest bond level, label]`. Bond only grows past 100
+ * once someone is already a 摯友 (affinity 100), so these need the same familiarity.
+ */
+export const BOND_TIERS: readonly (readonly [number, RelationshipLabel])[] = [
+  [1000, "永恆羈絆"],
+  [870, "心之所歸"],
+  [750, "無可取代"],
+  [640, "命運相連"],
+  [540, "生死之交"],
+  [450, "家人般"],
+  [370, "形影不離"],
+  [300, "心有靈犀"],
+  [240, "莫逆之交"],
+  [190, "至交"],
+  [150, "知己"],
+  [120, "知心"],
+];
+
+/** One line naming the whole bond scale, for a prompt that shows levels. */
+export const BOND_SCALE_LINE =
+  "羈絆等級 -100~1000:-50 以下很討厭、-15 以下討厭、15 朋友、45 好朋友、75 摯友(滿 100 後繼續疊加)、" +
+  [...BOND_TIERS]
+    .reverse()
+    .map(([lv, name]) => `${lv} ${name}`)
+    .join("、");
+
 /** The numbers the label depends on. */
 export interface RelationshipNumbers {
-  /** -100..100 */
+  /** -100..1000 (past 100 is bond stacked on a full affinity) */
   affinity: number;
   /** 0..100 */
   familiarity: number;
@@ -157,23 +196,36 @@ export function relationshipLabel(rel: RelationshipNumbers): RelationshipLabel {
   const f = rel.familiarity;
   if (a <= -50) return "很討厭";
   if (a <= -15) return "討厭";
-  if (a >= 75 && f >= 30) return "摯友";
+  if (a >= 75 && f >= 30) {
+    for (const [min, name] of BOND_TIERS) if (a >= min) return name;
+    return "摯友";
+  }
   if (a >= 45 && f >= 10) return "好朋友";
   if (a >= 15) return "朋友";
   if (f < 3) return "陌生人";
   return "認識";
 }
 
-/** Lowest and highest `affinityLevel()`. */
-export const AFFINITY_LEVEL_MIN = -100;
-export const AFFINITY_LEVEL_MAX = 100;
-/** Levels per step: crossing into another step is when she may re-decide her stance. */
+/** Lowest and highest affinity (and `affinityLevel()`): past 100 is bond (羈絆) stacking. */
+export const AFFINITY_MIN = -100;
+export const AFFINITY_MAX = 1000;
+/** Where plain affinity ends and bond stacking begins. */
+export const AFFINITY_FULL = 100;
+export const AFFINITY_LEVEL_MIN = AFFINITY_MIN;
+export const AFFINITY_LEVEL_MAX = AFFINITY_MAX;
+/** Levels per step up to 100: crossing into another step is when she may re-decide her stance. */
 export const AFFINITY_LEVEL_STEP = 5;
 
+/** `affinity` kept inside -100..1000 (a non-finite value is 0). */
+export function clampAffinity(affinity: number): number {
+  if (!Number.isFinite(affinity)) return 0;
+  return Math.min(Math.max(affinity, AFFINITY_MIN), AFFINITY_MAX);
+}
+
 /**
- * Her level with someone: the affinity itself as a whole number (truncated toward zero),
- * -100..100, one level per point. A non-finite input is level 0. What a level means is hers to
- * decide (`PersonCard.stance`), nothing here prescribes behaviour.
+ * Her level with someone (her 羈絆 level): the affinity itself as a whole number (truncated
+ * toward zero), -100..1000, one level per point. A non-finite input is level 0. What a level
+ * means is hers to decide (`PersonCard.stance`), nothing here prescribes behaviour.
  */
 export function affinityLevel(affinity: number): number {
   if (!Number.isFinite(affinity)) return 0;
@@ -181,8 +233,16 @@ export function affinityLevel(affinity: number): number {
   return Math.min(Math.max(level, AFFINITY_LEVEL_MIN), AFFINITY_LEVEL_MAX);
 }
 
-/** The step of `level` (every `AFFINITY_LEVEL_STEP` levels: 0..4 is 0, 5..9 is 1, -5..-9 is -1). */
+/**
+ * The step of `level`: every `AFFINITY_LEVEL_STEP` levels up to 100 (0..4 is 0, 5..9 is 1,
+ * -5..-9 is -1); past 100 one step per bond tier (`BOND_TIERS`), so she re-decides when the tier
+ * changes rather than every few points of a long climb.
+ */
 export function affinityStep(level: number): number {
+  if (level > AFFINITY_FULL) {
+    const above = BOND_TIERS.filter(([min]) => level >= min).length;
+    return AFFINITY_FULL / AFFINITY_LEVEL_STEP + above;
+  }
   return Math.trunc(level / AFFINITY_LEVEL_STEP) + 0;
 }
 

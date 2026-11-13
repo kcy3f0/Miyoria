@@ -25,14 +25,14 @@ export function AffinityChart({ history }: { history: RelationshipDelta[] }) {
   const last = history[history.length - 1];
   return (
     <TimeChart
-      label={`關係變化:好感從 ${Math.round(first?.affinity ?? 0)} 到 ${Math.round(last?.affinity ?? 0)}`}
+      label={`關係變化:羈絆從 ${Math.round(first?.affinity ?? 0)} 到 ${Math.round(last?.affinity ?? 0)}`}
       times={history.map((d) => Date.parse(d.at))}
       series={[
-        { key: "affinity", label: "好感", color: "var(--chart-1)", values: history.map((d) => d.affinity) },
+        { key: "affinity", label: "羈絆", color: "var(--chart-1)", values: history.map((d) => d.affinity) },
         { key: "trust", label: "信任", color: "var(--chart-2)", values: history.map((d) => d.trust) },
         { key: "familiarity", label: "熟悉", color: "var(--chart-3)", values: history.map((d) => d.familiarity) },
       ]}
-      domain={[-100, 100]}
+      domain={[-100, Math.ceil(Math.max(100, ...history.map((d) => d.affinity)) / 100) * 100]}
       zero
       height={150}
       format={(v) => String(Math.round(v))}
@@ -282,9 +282,9 @@ function PersonBody({ detail }: { detail: PersonDetail }) {
           {r ? (
             <div className="grid gap-4">
               <dl className="grid grid-cols-[3rem_minmax(0,1fr)_2.5rem] items-center gap-x-3 gap-y-3 text-sm">
-                <dt className="text-muted-foreground">好感</dt>
+                <dt className="text-muted-foreground">羈絆</dt>
                 <dd>
-                  <Bipolar value={r.affinity} label="好感" />
+                  <Bipolar value={r.affinity} label="羈絆" />
                 </dd>
                 <dd className="text-right font-mono text-xs tabular-nums">{Math.round(r.affinity)}</dd>
                 <dt className="text-muted-foreground">信任</dt>
@@ -298,8 +298,8 @@ function PersonBody({ detail }: { detail: PersonDetail }) {
                 </dd>
                 <dd className="text-right font-mono text-xs tabular-nums">{Math.round(r.familiarity)}</dd>
               </dl>
-              <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="調整好感">
-                <span className="mr-1 text-[13px] text-muted-foreground">調整好感</span>
+              <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="調整羈絆">
+                <span className="mr-1 text-[13px] text-muted-foreground">調整羈絆</span>
                 {STEPS.map((n) => (
                   <Button
                     key={n}
@@ -311,7 +311,7 @@ function PersonBody({ detail }: { detail: PersonDetail }) {
                     onClick={() =>
                       adjust.mutate(
                         { affinity: n },
-                        { onSuccess: (p) => notify.ok(`好感 ${Math.round(p.relationship?.affinity ?? 0)}`), onError: (e) => notify.error(e) },
+                        { onSuccess: (p) => notify.ok(`羈絆 ${Math.round(p.relationship?.affinity ?? 0)}`), onError: (e) => notify.error(e) },
                       )
                     }
                   >
@@ -362,7 +362,7 @@ function PersonBody({ detail }: { detail: PersonDetail }) {
                     <p className="text-sm">{d.reason}</p>
                     <p className="flex justify-between gap-3 font-mono text-xs text-muted-foreground">
                       <span>
-                        好感 {Math.round(d.affinity)} · 信任 {Math.round(d.trust)} · 熟悉 {Math.round(d.familiarity)}
+                        羈絆 {Math.round(d.affinity)} · 信任 {Math.round(d.trust)} · 熟悉 {Math.round(d.familiarity)}
                       </span>
                       <time dateTime={d.at}>{fmtRelative(d.at)}</time>
                     </p>

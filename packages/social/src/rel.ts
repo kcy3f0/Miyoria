@@ -3,6 +3,8 @@
 
 import type { Relationship, RelationshipDelta } from "@miyoria/store";
 import {
+  AFFINITY_MAX,
+  AFFINITY_MIN,
   type RelationshipLabel,
   relationshipLabel,
   type Timestamp,
@@ -280,12 +282,15 @@ function clamp(v: number, lo: number, hi: number): number {
 
 /** Clamps every number to its range and applies the owner floor. */
 export function normalize(rel: Relationship, config: SocialConfig): void {
-  rel.affinity = clamp(finite(rel.affinity), -100, 100);
+  rel.affinity = clamp(finite(rel.affinity), AFFINITY_MIN, AFFINITY_MAX);
   rel.trust = clamp(finite(rel.trust), 0, 100);
   rel.familiarity = clamp(finite(rel.familiarity), 0, 100);
   if (isOwner(rel)) {
     rel.trust = clamp(config.owner_trust, 0, 100);
-    rel.affinity = Math.max(rel.affinity, clamp(config.owner_affinity_floor, -100, 100));
+    rel.affinity = Math.max(
+      rel.affinity,
+      clamp(config.owner_affinity_floor, AFFINITY_MIN, AFFINITY_MAX),
+    );
   }
 }
 

@@ -217,7 +217,7 @@ function EffectsView({ e, changes }: { e: ThoughtEffects | null | undefined; cha
       <li key={`f${f.person}`}>
         <span className="text-muted-foreground">對</span>{" "}
         <Link to="/character" search={{ tab: "people", person: f.person }} className="font-medium hover:underline">{f.name}</Link>
-        {f.hint && <Badge variant={f.hint === "+" ? "success" : "destructive"} className="mx-1.5">好感 {f.hint}</Badge>}
+        {f.hint && <Badge variant={f.hint === "+" ? "success" : "destructive"} className="mx-1.5">羈絆 {f.hint}</Badge>}
         {f.note && <span>:{f.note}</span>}
       </li>,
     );

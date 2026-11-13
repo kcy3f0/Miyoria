@@ -183,8 +183,8 @@ export function registerCommands(registry: CommandRegistry, social: Social): voi
     ],
     [
       "adjust",
-      commandSpec("admin person adjust", "直接調整她對某人的好感（限擁有者）", {
-        args: [user(), argSpec("affinity", "好感變化，-100 到 100", ArgKind.integer)],
+      commandSpec("admin person adjust", "直接調整她對某人的羈絆（限擁有者）", {
+        args: [user(), argSpec("affinity", "羈絆變化，-1000 到 1000", ArgKind.integer)],
         permission: NODE_ADJUST,
       }),
     ],
@@ -404,21 +404,21 @@ async function admin(social: Social, op: AdminOp, inv: Invocation): Promise<Comm
     case "reset":
       return confirm({
         title: "重置印象",
-        text: `確定要重置她對 ${name} 的印象嗎？好感、信任、熟悉度與印象筆記都會歸零，標籤會保留。`,
+        text: `確定要重置她對 ${name} 的印象嗎？羈絆、信任、熟悉度與印象筆記都會歸零，標籤會保留。`,
         confirmId: componentId(R.resetYes, person),
         cancelId: componentId(R.resetNo),
         confirmLabel: "重置",
       });
     case "adjust": {
       const delta = inv.int("affinity") ?? 0;
-      if (delta < -100 || delta > 100 || delta === 0) {
-        return notice("warn", "好感變化必須介於 -100 到 100 之間，且不能是 0。");
+      if (delta < -1000 || delta > 1000 || delta === 0) {
+        return notice("warn", "羈絆變化必須介於 -1000 到 1000 之間，且不能是 0。");
       }
       const r = await social.adjust(person, delta, by, now);
       const signed = delta > 0 ? `+${delta}` : `${delta}`;
       return notice(
         "success",
-        `已調整 ${name} 的好感 ${signed}，目前為 ${fixed1(r.affinity)}（${label(r)}）。`,
+        `已調整 ${name} 的羈絆 ${signed}，目前為 ${fixed1(r.affinity)}（${label(r)}）。`,
       );
     }
   }
@@ -439,7 +439,7 @@ function show(social: Social, person: PersonId, name: string, now: number): Comm
   const r = social.relationship(person);
   if (r === null) return notice("info", `她和 ${name} 還沒有任何互動。`);
   const lines = [
-    `好感 ${fixed1(r.affinity)}／信任 ${fixed1(r.trust)}／熟悉 ${fixed1(r.familiarity)} → ${label(r)}`,
+    `羈絆 ${fixed1(r.affinity)}／信任 ${fixed1(r.trust)}／熟悉 ${fixed1(r.familiarity)} → ${label(r)}`,
     `標籤：${r.tags.length === 0 ? "無" : r.tags.join("、")}`,
     `稱呼：${r.call_name ?? "未設定"}`,
     `互動 ${r.interactions} 次，最後一次：${r.last_interaction === null ? "從未" : utcMinutes(r.last_interaction)}`,
@@ -447,7 +447,7 @@ function show(social: Social, person: PersonId, name: string, now: number): Comm
   const day = social.today(person, now);
   if (day !== null) {
     lines.push(
-      `今天：好感 +${fixed1(day.affinity_gained)}／-${fixed1(day.affinity_lost)}，` +
+      `今天：羈絆 +${fixed1(day.affinity_gained)}／-${fixed1(day.affinity_lost)}，` +
         `信任 +${fixed1(day.trust_gained)}／-${fixed1(day.trust_lost)}`,
     );
   }

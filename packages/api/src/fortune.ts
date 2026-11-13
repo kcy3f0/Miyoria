@@ -109,7 +109,7 @@ function about(c: FortuneContext, mood: string | null): string {
     `今天:${c.date}`,
     `他:${c.name}${v.call_name ? `(你叫他 ${v.call_name})` : ""}`,
     `你們的關係:${v.relationship ?? "還不認識"}`,
-    `好感 ${v.affinity ?? "—"}、信任 ${v.trust ?? "—"}、熟悉 ${v.familiarity ?? "—"}`,
+    `羈絆 ${v.affinity ?? "—"}、信任 ${v.trust ?? "—"}、熟悉 ${v.familiarity ?? "—"}`,
   ];
   if (v.public_feeling) lines.push(`你之前寫給他的話:${v.public_feeling}`);
   if (c.memories.length > 0) {

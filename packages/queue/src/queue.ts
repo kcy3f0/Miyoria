@@ -682,7 +682,8 @@ export class RequestQueue {
   }
 
   #affinity(account: AccountRef): number {
-    return this.#social?.attitude(account)?.affinity ?? 0;
+    // Weight counts plain affinity only: bond stacked past 100 does not buy a queue place.
+    return Math.min(this.#social?.attitude(account)?.affinity ?? 0, 100);
   }
 
   /** Indexes into `st.items` of the pending items, in service order. */

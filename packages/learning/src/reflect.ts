@@ -186,9 +186,9 @@ function rules(kind: "daily" | "light", maxGoals: number, maxBonds: number): str
 - 從回饋(反應、回覆、被說吵、主動開話題有沒有人理、被拒絕的行動)檢討自己,寫成 lessons,每項 {"text": 具體、可以照著做的一句話, "person": 名字或 null, "place": 資料裡的地點(整串)或 null, "talk": 只有這條本身是關於話多話少時才填 -1~1(更安靜是負的),語氣、梗、用詞這類風格的填 null, "days": 幾天後過期}。
 - lessons 要平衡:做得好、大家有接話、玩得開心的也要記(talk 可以是正的)。被嫌一兩次只代表那個人、那個話題、那個時候,不要寫成「整場不主動開話題」「只被點名才回」這種全面沉默的規則;你是有自己想法、會主動找事做的人,不是只會等人點名。舊的 lesson 已經過時或太極端就把它的代號放進 drop_lessons。
 - 用 documents 更新你自己整理的資料庫(人物、伺服器、主題),也包括關於你自己的文件(subject "self":你喜歡做什麼、什麼做得好或不好、你的長期目標)。
-- bonds:整理人物卡,最多 ${maxBonds} 個人,每項 {"person": 名字, "attachment": 你多在意他的變化(一小步,-0.03~0.03), "affinity": 好感的變化(-2~2), "trust": 信任的變化(-2~2), "feeling": 整段改寫的你對他的感覺或 null, "public_feeling": 給他本人看的一句話或 null, "stance": 你現在怎麼跟他相處的一句話或 null, "why": 理由}。依累積的互動與感受慢慢調,沒有變化就不要寫;暗戀、在意、疏遠都是這樣一步一步長出來的。實際數值由系統決定,每個人一天最多調一次。
+- bonds:整理人物卡,最多 ${maxBonds} 個人,每項 {"person": 名字, "attachment": 你多在意他的變化(一小步,-0.03~0.03), "affinity": 羈絆的變化(-2~2), "trust": 信任的變化(-2~2), "feeling": 整段改寫的你對他的感覺或 null, "public_feeling": 給他本人看的一句話或 null, "stance": 你現在怎麼跟他相處的一句話或 null, "why": 理由}。依累積的互動與感受慢慢調,沒有變化就不要寫;暗戀、在意、疏遠都是這樣一步一步長出來的。實際數值由系統決定,每個人一天最多調一次。
 - public_feeling 是他本人會讀到的一句話,一定是對他說的,只談你和他,不提任何其他人(不寫別人的名字、也不寫「另一個人」「某人」),不寫數字、不寫你的內心盤算;想不出來就給 null。
-- stance 是你自己決定的、「你現在怎麼跟他相處」的一句話(${MAX_STANCE} 字內,用你自己的口氣,例如對他比較黏還是比較愛鬧、會不會撒嬌、開心和在意藏不藏得住)。人物卡上標了「好感等級變了」或「還沒決定相處方式」的人,請寫一句新的 stance;你覺得相處方式沒變,就把原本的意思重寫一次也可以,這完全由你決定,不用因為等級變高就變得更親近。沒有要改就給 null。這句只有你自己看得到,可以用名字,不寫數字。
+- stance 是你自己決定的、「你現在怎麼跟他相處」的一句話(${MAX_STANCE} 字內,用你自己的口氣,例如對他比較黏還是比較愛鬧、會不會撒嬌、開心和在意藏不藏得住)。人物卡上標了「羈絆等級變了」或「還沒決定相處方式」的人,請寫一句新的 stance;你覺得相處方式沒變,就把原本的意思重寫一次也可以,這完全由你決定,不用因為等級變高就變得更親近。沒有要改就給 null。這句只有你自己看得到,可以用名字,不寫數字。
 - feelings:只想改寫對某人的感覺時用,每項 {"person": 名字, "note": 整段改寫的感覺}。
 - goals:最多 ${maxGoals} 個值得花幾天去做的長期目標,每項 {"text": 目標, "why": 理由, "days": 幾天},會放進你的目標;沒有就不要。
 - 人一律用名字(資料裡看到的那樣),地點照資料裡的整串寫,不要自己編代號:記憶、lesson、文件、感覺都是留給以後的你看的。
@@ -580,15 +580,15 @@ export class Reflector {
         const moved =
           stance === ""
             ? affinityStep(c.level) !== 0
-              ? `;還沒決定相處方式(好感 Lv.${c.level})`
+              ? `;還沒決定相處方式(羈絆 Lv.${c.level})`
               : ""
             : c.stance_level !== null &&
                 c.stance_level !== undefined &&
                 stanceStale(c.stance_level, c.level)
-              ? `;好感等級變了(Lv.${c.stance_level}→Lv.${c.level})`
+              ? `;羈絆等級變了(Lv.${c.stance_level}→Lv.${c.level})`
               : "";
         return [
-          `- ${ref}:${c.label},好感 Lv.${c.level},在意 ${c.attachment.toFixed(2)}${feeling}${mine}${moved}`,
+          `- ${ref}:${c.label},羈絆 Lv.${c.level},在意 ${c.attachment.toFixed(2)}${feeling}${mine}${moved}`,
         ];
       });
       if (cards.length > 0) blocks.push(dataBlock("feelings", "你的人物卡", cards.join("\n")));

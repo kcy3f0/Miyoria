@@ -72,7 +72,7 @@ function HerView({ card }: { card: MemberCard }) {
   return (
     <div className="grid gap-4">
       <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-3">
-        <Band label="好感" value={card.affinity} scale={AFFINITY} />
+        <Band label="羈絆" value={card.affinity} scale={AFFINITY} />
         <Band label="信任" value={card.trust} scale={TRUST} />
         <Band label="熟悉" value={card.familiarity} scale={FAMILIARITY} />
       </dl>

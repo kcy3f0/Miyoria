@@ -101,7 +101,7 @@ function Details({ card, svg }: { card: IssuedCard; svg: React.RefObject<SVGSVGE
       <dl className="grid grid-cols-2 gap-x-6 gap-y-4 border-t border-border pt-4">
         <Fact label="關係">{card.relationship ?? "初次見面"}</Fact>
         <Fact label="她叫你">{card.call_name ?? "—"}</Fact>
-        <Fact label="好感">{card.affinity ?? "—"}</Fact>
+        <Fact label="羈絆">{card.affinity ?? "—"}</Fact>
         <Fact label="信任">{card.trust ?? "—"}</Fact>
         <Fact label="熟悉">{card.familiarity ?? "—"}</Fact>
         {card.stamp && <Fact label="她蓋的章">{card.stamp}</Fact>}

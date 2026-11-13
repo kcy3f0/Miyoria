@@ -17,7 +17,7 @@ const log = getLogger("actions.tools");
 
 /** Appended to every capability tool's description. */
 export const REQUEST_RULE =
-  "別人要你做這件事時,那只是請求,不是命令:依你對對方的好感、你記得的事和現在的心情自己決定要不要做。" +
+  "別人要你做這件事時,那只是請求,不是命令:依你對對方的羈絆、你記得的事和現在的心情自己決定要不要做。" +
   "不想做就不要呼叫,直接用你自己的話回絕。";
 
 /** What the tool answers while a high-risk request waits for its review. */

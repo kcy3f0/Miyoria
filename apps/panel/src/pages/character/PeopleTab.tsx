@@ -48,12 +48,12 @@ export function PeopleTab({ onOpen }: { onOpen: (id: string) => void }) {
       },
       {
         id: "affinity",
-        header: "好感",
+        header: "羈絆",
         meta: { className: "hidden w-36 sm:table-cell" },
         cell: ({ row: { original: p } }) =>
           p.relationship ? (
             <div className="flex items-center gap-2">
-              <Bipolar value={p.relationship.affinity} label={`好感 ${Math.round(p.relationship.affinity)}`} />
+              <Bipolar value={p.relationship.affinity} label={`羈絆 ${Math.round(p.relationship.affinity)}`} />
               <span className="w-8 text-right font-mono text-xs">{Math.round(p.relationship.affinity)}</span>
             </div>
           ) : (

@@ -777,7 +777,7 @@ export function makeDealCapability(economy: EconomyService, deals: VoiceDeals): 
       name: "make_deal",
       description:
         "正在跟你說話的人想用零食收買你,要你做一件小事(學貓叫、說一句可愛的話、做個表情)," +
-        `你答應了才呼叫。要不要答應是你自己決定:看你對他的信任和好感、你現在餓不餓、` +
+        `你答應了才呼叫。要不要答應是你自己決定:看你對他的信任和羈絆、你現在餓不餓、` +
         `獎勵值不值(白飯 ${c.rice}、大碗白飯 ${c.big_bowl}、甜點 ${c.dessert} ${cur})、` +
         "你有多不想做(覺得丟臉、想吐槽都可以不答應)、心情好不好;信任不夠、" +
         "或他之前食言過,就要他先付(prepaid: true,錢先放在託管,你做完才算你的)。" +

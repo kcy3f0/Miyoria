@@ -1,6 +1,13 @@
 // v4 §5.4 and §5.6: retrieval over the turn, and one profile per person.
 
-import type { AffectState, KnowledgeBase, PersonCard, PersonId, Timestamp } from "@miyoria/types";
+import {
+  type AffectState,
+  BOND_SCALE_LINE,
+  type KnowledgeBase,
+  type PersonCard,
+  type PersonId,
+  type Timestamp,
+} from "@miyoria/types";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   MemoryEngine,
@@ -136,7 +143,8 @@ describe("person profiles", () => {
     expect(p?.points.map((x) => x.text)).toEqual(["Sora 在準備面試", "生日: 3/14"]);
     const text = await t.profiles.render(where, 1000, { exclude: [ramen] });
     expect(text).toBe(
-      '<person name="Sora" relation="朋友" level="30" call_as="小空" impression="很可靠" stance="會吐槽他" last_seen="昨天 21:30,這裡" last_topic="Sora說:「我先下線了」" notes="Sora 在準備面試;生日: 3/14"/>',
+      `<scale>${BOND_SCALE_LINE}</scale>
+<person name="Sora" relation="朋友" level="30/1000" trust="50" call_as="小空" impression="很可靠" stance="會吐槽他" last_seen="昨天 21:30,這裡" last_topic="Sora說:「我先下線了」" notes="Sora 在準備面試;生日: 3/14"/>`,
     );
   });
 
