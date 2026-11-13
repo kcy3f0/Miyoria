@@ -193,6 +193,7 @@ final class LeafClearer implements WorldWorkers.Worker {
         terminated = true;
         JsonObject d = new JsonObject();
         d.addProperty("broken", broken);
+        d.addProperty("cleared", broken);
         d.addProperty("max_blocks", maxBlocks);
         if (error != null) d.addProperty("error", error);
         if (cancelled) d.addProperty("cancelled", true);

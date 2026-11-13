@@ -100,8 +100,11 @@ final class ChestWorker implements WorldWorkers.Worker {
         Map<String, Integer> items = parseItems(req);
         Set<String> keep = parseKeep(req);
 
-        BlockInfo seen = BlockSight.nearestVisible(
-                mc.player, mc.world, Set.of(Blocks.CHEST, Blocks.TRAPPED_CHEST, Blocks.BARREL), radius);
+        Set<net.minecraft.block.Block> containerKinds = Set.of(Blocks.CHEST, Blocks.TRAPPED_CHEST, Blocks.BARREL);
+        BlockInfo seen = preferredVisibleContainer(mc, req, containerKinds, radius);
+        if (seen == null) {
+            seen = BlockSight.nearestVisible(mc.player, mc.world, containerKinds, radius);
+        }
         if (seen == null) {
             throw new ProtocolException(Protocol.E_NEEDS_STATION, "no chest or barrel in sight");
         }
@@ -111,6 +114,32 @@ final class ChestWorker implements WorldWorkers.Worker {
         ack.addProperty("block", seen.block());
         ack.add("position", GameActions.posJson(pos));
         return new ChestWorker(baritone, actions, events, taskId, op, pos, seen.block(), items, keep);
+    }
+
+    private static BlockInfo preferredVisibleContainer(
+            MinecraftClient mc,
+            Request req,
+            Set<net.minecraft.block.Block> containerKinds,
+            int radius) throws ProtocolException {
+        JsonObject posObj = req.optObj("position");
+        if (posObj == null) return null;
+        JsonElement xEl = posObj.get("x"), yEl = posObj.get("y"), zEl = posObj.get("z");
+        if (xEl == null || yEl == null || zEl == null
+                || !xEl.isJsonPrimitive() || !yEl.isJsonPrimitive() || !zEl.isJsonPrimitive()
+                || !xEl.getAsJsonPrimitive().isNumber()
+                || !yEl.getAsJsonPrimitive().isNumber()
+                || !zEl.getAsJsonPrimitive().isNumber()) {
+            return null;
+        }
+        BlockPos hint = new BlockPos((int) Math.floor(xEl.getAsDouble()),
+                (int) Math.floor(yEl.getAsDouble()), (int) Math.floor(zEl.getAsDouble()));
+        double dist = mc.player.getEyePos().distanceTo(Vec3d.ofCenter(hint));
+        if (dist > radius + 1.0) return null;
+        net.minecraft.block.Block blk = mc.world.getBlockState(hint).getBlock();
+        if (!containerKinds.contains(blk)) return null;
+        if (!BlockSight.visibleSolid(mc.world, mc.player.getEyePos(), hint)) return null;
+        String id = Ids.normalize(Registries.BLOCK.getId(blk).toString());
+        return new BlockInfo(id, hint.getX(), hint.getY(), hint.getZ(), dist);
     }
 
     private static Map<String, Integer> parseItems(Request req) throws ProtocolException {

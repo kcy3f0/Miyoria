@@ -107,7 +107,7 @@ final class BranchMiner implements WorldWorkers.Worker {
             throw new ProtocolException(Protocol.E_MISSING_ITEMS, "missing a pickaxe for branch mining");
         }
 
-        int targetY = req.optInt("target_y", -58);
+        int targetY = req.has("target_y") ? req.optInt("target_y", -58) : req.optInt("y", -58);
         int maxSteps = req.optInt("max_steps", 64);
         int branchLen = req.optInt("branch_length", 12);
         int branchSpacing = req.optInt("branch_spacing", 3);
@@ -128,12 +128,13 @@ final class BranchMiner implements WorldWorkers.Worker {
     }
 
     private static Set<String> parseOres(Request req) throws ProtocolException {
-        if (!req.has("ores")) return DEFAULT_ORES;
-        if (!req.body().get("ores").isJsonArray()) {
-            throw new ProtocolException(Protocol.E_INVALID_ARGS, "'ores' must be an array of block ids");
+        String key = req.has("ores") ? "ores" : (req.has("targets") ? "targets" : null);
+        if (key == null) return DEFAULT_ORES;
+        if (!req.body().get(key).isJsonArray()) {
+            throw new ProtocolException(Protocol.E_INVALID_ARGS, "'" + key + "' must be an array of block ids");
         }
         Set<String> out = new HashSet<>();
-        for (JsonElement el : req.body().getAsJsonArray("ores")) {
+        for (JsonElement el : req.body().getAsJsonArray(key)) {
             if (el.isJsonPrimitive()) {
                 String id = Ids.normalize(el.getAsString());
                 if (!id.isEmpty()) out.add(id);
@@ -443,6 +444,7 @@ final class BranchMiner implements WorldWorkers.Worker {
         d.addProperty("torches_placed", logic.torchesPlaced());
         Pos foot = logic.foot();
         BlockPos bp = p != null ? p.getBlockPos() : new BlockPos(foot.x(), foot.y(), foot.z());
+        d.addProperty("y", bp.getY());
         d.add("position", GameActions.posJson(bp));
         return d;
     }

@@ -221,7 +221,7 @@ export function mapEvent(e: BridgeEvent, opts: EventOptions = {}): GameEvent | n
       return event("reflex_end", d, text);
     }
     case "reflex_resumed": {
-      const kind = str(d.kind) ?? "";
+      const kind = str(d.reflex) ?? str(d.kind) ?? "";
       const label = REFLEX_END[kind] ?? "本能反應結束";
       return event("reflex_resumed", d, `${label},已自動恢復原本的動作`);
     }
@@ -242,7 +242,11 @@ export function mapEvent(e: BridgeEvent, opts: EventOptions = {}): GameEvent | n
     case "chest_failed":
       return event("chest_failed", d, `箱子:${failure(d)}`, d.cancelled !== true);
     case "sleep_finished":
-      return event("sleep_finished", d, "在床上睡醒了(已設重生點)");
+      return event(
+        "sleep_finished",
+        d,
+        d.slept === false ? "點了床設好重生點(現在是白天)" : "在床上睡醒了(已設重生點)",
+      );
     case "sleep_failed":
       return event("sleep_failed", d, `沒辦法睡覺:${failure(d)}`, d.cancelled !== true);
     case "hunt_finished": {
@@ -253,7 +257,8 @@ export function mapEvent(e: BridgeEvent, opts: EventOptions = {}): GameEvent | n
     case "hunt_failed":
       return event("hunt_failed", d, `打獵失敗:${failure(d)}`, d.cancelled !== true);
     case "branch_progress": {
-      const y = num(d.y);
+      const pos = typeof d.position === "object" && d.position !== null ? (d.position as Record<string, unknown>) : undefined;
+      const y = num(d.y) ?? (pos ? num(pos.y) : undefined);
       const steps = num(d.steps);
       return event(
         "branch_progress",
@@ -266,7 +271,7 @@ export function mapEvent(e: BridgeEvent, opts: EventOptions = {}): GameEvent | n
     case "branch_failed":
       return event("branch_failed", d, `分支挖礦失敗:${failure(d)}`, d.cancelled !== true);
     case "clear_leaves_finished": {
-      const cleared = num(d.cleared);
+      const cleared = num(d.cleared) ?? num(d.broken);
       return event("clear_leaves_finished", d, `清除了擋路的樹葉${cleared !== undefined ? `(${cleared} 格)` : ""}`);
     }
     case "clear_leaves_failed":

@@ -163,6 +163,12 @@ export function worldOf(s: Snapshot, chests?: KnownChest[]): World {
   return world;
 }
 
+function leafCount(d: Record<string, unknown>): number | undefined {
+  if (typeof d.cleared === "number") return d.cleared;
+  if (typeof d.broken === "number") return d.broken;
+  return undefined;
+}
+
 /** The member of a group she has most of (`#logs` → `birch_log`), for the mod's concrete ids. */
 function mostOf(inv: Inventory, group: string): string | undefined {
   let best: string | undefined;
@@ -520,9 +526,10 @@ export class ObtainRunner {
       w.cancel();
       return "none";
     }
-    if (typeof res.cleared === "number") {
+    const immediateLeaves = leafCount(res);
+    if (immediateLeaves !== undefined) {
       w.cancel();
-      return res.cleared > 0 ? "cleared" : "none";
+      return immediateLeaves > 0 ? "cleared" : "none";
     }
     while (true) {
       const wake = await w.done;
@@ -542,14 +549,14 @@ export class ObtainRunner {
         if (recovered === "aborted" || recovered === "cancelled" || recovered === "timeout") return "interrupted";
         if (typeof recovered === "object") {
           if (recovered.name === "clear_leaves_failed") return "none";
-          return recovered.data.cleared === 0 ? "none" : "cleared";
+          return leafCount(recovered.data) === 0 ? "none" : "cleared";
         }
         return "interrupted";
       }
       if (wake === "cancelled") return "interrupted";
       if (wake === "timeout") return "none";
       if (wake.name === "clear_leaves_failed") return "none";
-      return wake.data.cleared === 0 ? "none" : "cleared";
+      return leafCount(wake.data) === 0 ? "none" : "cleared";
     }
   }
 

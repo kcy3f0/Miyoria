@@ -79,7 +79,14 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
         boolean replay(BaritoneBridgeImpl bridge);
     }
 
-    private record SuspendedEntry(SuspendableCommand command, double x, double y, double z, long pausedAtMs) {}
+    private record SuspendedEntry(
+            SuspendableCommand command,
+            String kind,
+            String detail,
+            double x,
+            double y,
+            double z,
+            long pausedAtMs) {}
 
     public BaritoneBridgeImpl(EventSink events, int sightRadius) {
         this.events = events;
@@ -400,10 +407,13 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
 
     @Override
     public boolean pauseForReflex(double playerX, double playerY, double playerZ, long nowMs) {
-        if (activeCommand == null || reflexOwned || !state().busy()) {
+        RawObservation.BaritoneState st = state();
+        if (activeCommand == null || reflexOwned || !st.busy()) {
             return false;
         }
-        suspended = new SuspendedEntry(activeCommand, playerX, playerY, playerZ, nowMs);
+        String kind = st.process() != null ? st.process() : "baritone";
+        String detail = st.goal() != null ? st.goal() : kind;
+        suspended = new SuspendedEntry(activeCommand, kind, detail, playerX, playerY, playerZ, nowMs);
         activeCommand = null;
         cancelBaritone("reflex");
         return true;
@@ -412,6 +422,12 @@ public final class BaritoneBridgeImpl implements BaritoneBridge {
     @Override
     public boolean hasSuspended() {
         return suspended != null;
+    }
+
+    @Override
+    public RawObservation.PausedTaskState suspendedState() {
+        SuspendedEntry entry = suspended;
+        return entry == null ? null : new RawObservation.PausedTaskState(entry.kind(), entry.detail());
     }
 
     @Override

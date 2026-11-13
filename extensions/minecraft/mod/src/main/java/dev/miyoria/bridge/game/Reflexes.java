@@ -1,6 +1,7 @@
 package dev.miyoria.bridge.game;
 
 import com.google.gson.JsonObject;
+import dev.miyoria.bridge.model.RawObservation;
 import dev.miyoria.bridge.reflex.CombatLogic;
 import dev.miyoria.bridge.reflex.InventoryLogic;
 import dev.miyoria.bridge.reflex.InventoryLogic.ArmorUpgrade;
@@ -124,6 +125,7 @@ public final class Reflexes {
     private final Set<KeyBinding> pressed = new HashSet<>();
 
     private TaskTracker tasks;
+    private WorldWorkers workers;
     private ExtendedConfig extConfig;
 
     private long tickCount;
@@ -134,6 +136,13 @@ public final class Reflexes {
     // active reflex + task suspension state
     private String interrupted;
     private boolean pausedTask;
+    private boolean pausedBaritone;
+    private boolean pausedWorker;
+    private boolean pausedHadTrackedTask;
+    private double pausedX;
+    private double pausedY;
+    private double pausedZ;
+    private long pausedAtMs;
     private int ticks;
     private Vec3d spot;
     private Entity target;
@@ -190,6 +199,10 @@ public final class Reflexes {
         this.tasks = tasks;
     }
 
+    public void setWorldWorkers(WorldWorkers workers) {
+        this.workers = workers;
+    }
+
     public void setExtendedConfig(ExtendedConfig extConfig) {
         this.extConfig = extConfig != null ? extConfig : ExtendedConfig.DEFAULT;
     }
@@ -215,9 +228,27 @@ public final class Reflexes {
         return k != null && ReflexBrain.isRecoverable(k);
     }
 
-    /** Whether a Baritone task is currently suspended waiting for a recoverable reflex to end. */
+    /** Whether a Baritone or WorldWorkers task is currently suspended waiting for a recoverable reflex to end. */
     public boolean isPaused() {
         return pausedTask;
+    }
+
+    /** Snapshot of whichever task is currently paused by a recoverable reflex, or null. */
+    public RawObservation.PausedTaskState pausedState(BaritoneBridge baritone) {
+        if (!pausedTask) return null;
+        if (pausedWorker && workers != null) return workers.activeState();
+        if (pausedBaritone && baritone != null) return baritone.suspendedState();
+        return null;
+    }
+
+    /** Clears paused reflex state after an explicit user override or stop. */
+    public void clearPaused(BaritoneBridge baritone) {
+        pausedTask = false;
+        pausedBaritone = false;
+        pausedWorker = false;
+        pausedHadTrackedTask = false;
+        interrupted = null;
+        if (baritone != null) baritone.clearSuspended();
     }
 
     /** A request or {@code stop} wants her body: a pickup (or another non-urgent reflex) gives way. */
@@ -226,9 +257,7 @@ public final class Reflexes {
         if (k != null) {
             stop(mc, k, baritone);
             if (pausedTask) {
-                pausedTask = false;
-                if (baritone != null) baritone.clearSuspended();
-                if (tasks != null) tasks.abortPaused("yielded");
+                abortPausedState(mc, baritone, k, "yielded");
             }
             ended(k, false, true);
         }
@@ -243,9 +272,12 @@ public final class Reflexes {
         if (alto.available() && tickCount % ALTO_CHECK_TICKS == 0) {
             altoBusy = Boolean.TRUE.equals(alto.state().busy());
         }
-        if (pausedTask && tasks != null && !tasks.isPaused()) {
+        if (pausedTask && pausedHadTrackedTask && (tasks == null || !tasks.isPaused())) {
             // Task ended externally (e.g. client issued stop/new task); drop suspended command.
             pausedTask = false;
+            pausedBaritone = false;
+            pausedWorker = false;
+            pausedHadTrackedTask = false;
             if (baritone != null) baritone.clearSuspended();
         }
 
@@ -263,7 +295,7 @@ public final class Reflexes {
         Step step = brain.tick(s);
         if (step.ended() != null) {
             stop(mc, step.ended(), baritone);
-            resolvePausedTaskOnEnd(p, baritone, step.ended(), step.started(), step.endedOk());
+            resolvePausedTaskOnEnd(mc, p, baritone, step.ended(), step.started(), step.endedOk());
             ended(step.ended(), step.endedOk(), false);
         }
         if (step.started() != null) {
@@ -324,7 +356,8 @@ public final class Reflexes {
     private Sense sense(MinecraftClient mc, ClientPlayerEntity p, ClientWorld w, BaritoneBridge baritone,
                         ScanResult scan, TorchSpot torchSpot) {
         boolean baritoneTask = baritone != null && baritone.state().busy() && !baritone.reflexDriving();
-        boolean busy = baritoneTask || workbench.state() != null || actions.holding() || pausedTask;
+        boolean workerTask = workers != null && workers.isBusy();
+        boolean busy = baritoneTask || workerTask || workbench.state() != null || actions.holding() || pausedTask;
         int food = p.getHungerManager().getFoodLevel();
         boolean screenFree = mc.currentScreen == null || workbench.state() != null;
         boolean starving = food <= 4;
@@ -624,34 +657,86 @@ public final class Reflexes {
 
     // ------------------------------------------------------------------ start / stop
 
-    private void resolvePausedTaskOnEnd(ClientPlayerEntity p, BaritoneBridge baritone,
+    private void resolvePausedTaskOnEnd(MinecraftClient mc, ClientPlayerEntity p, BaritoneBridge baritone,
                                           Kind endedKind, Kind nextKind, boolean endedOk) {
         if (!pausedTask) return;
         if (nextKind != null) {
             if (ReflexBrain.isRecoverable(nextKind)) {
-                // Escalated to another recoverable reflex: keep Baritone suspended.
-                if (tasks != null) tasks.pauseForReflex(nextKind.id());
+                // Escalated to another recoverable reflex: keep suspended state alive.
+                if (pausedHadTrackedTask && tasks != null) tasks.pauseForReflex(nextKind.id());
                 return;
             }
-            pausedTask = false;
-            if (baritone != null) baritone.clearSuspended();
-            if (tasks != null) tasks.abortPaused("escalated to " + nextKind.id());
+            abortPausedState(mc, baritone, endedKind, "escalated to " + nextKind.id());
             return;
         }
-        pausedTask = false;
-        if (!ReflexBrain.isRecoverable(endedKind, endedOk) || p == null || baritone == null) {
-            if (baritone != null) baritone.clearSuspended();
-            if (tasks != null) tasks.abortPaused("reflex " + endedKind.id() + " did not recover");
+        if (!ReflexBrain.isRecoverable(endedKind, endedOk) || p == null) {
+            abortPausedState(mc, baritone, endedKind, "reflex " + endedKind.id() + " did not recover");
             return;
         }
         long maxPauseMs = Math.max(1, extConfig.pausedResumeMaxSecs()) * 1000L;
-        boolean replayed = baritone.replaySuspended(p.getX(), p.getY(), p.getZ(),
-                System.currentTimeMillis(), extConfig.pausedMaxDrift(), maxPauseMs);
-        if (replayed) {
-            if (tasks != null) tasks.resumeFromReflex();
-        } else if (tasks != null) {
-            tasks.abortPaused("could not resume after " + endedKind.id());
+        boolean wasTracked = pausedHadTrackedTask && tasks != null && tasks.isPaused();
+        boolean wasWorker = pausedWorker;
+        boolean wasBaritone = pausedBaritone;
+        pausedTask = false;
+        pausedBaritone = false;
+        pausedWorker = false;
+        pausedHadTrackedTask = false;
+
+        boolean resumed = false;
+        if (wasWorker && workers != null && workers.isBusy()
+                && BaritoneBridge.withinResumeBounds(pausedX, pausedY, pausedZ, pausedAtMs,
+                        p.getX(), p.getY(), p.getZ(), System.currentTimeMillis(),
+                        extConfig.pausedMaxDrift(), maxPauseMs)) {
+            workers.resumeIfSuspended();
+            resumed = true;
+        } else if (wasBaritone && baritone != null) {
+            resumed = baritone.replaySuspended(p.getX(), p.getY(), p.getZ(),
+                    System.currentTimeMillis(), extConfig.pausedMaxDrift(), maxPauseMs);
         }
+
+        if (resumed) {
+            if (wasTracked) {
+                tasks.resumeFromReflex();
+            } else {
+                JsonObject d = new JsonObject();
+                d.addProperty("kind", endedKind.id());
+                d.addProperty("reflex", endedKind.id());
+                events.emit(TaskTracker.REFLEX_RESUMED, d);
+            }
+            return;
+        }
+        String reason = "could not resume after " + endedKind.id();
+        if (baritone != null) baritone.clearSuspended();
+        if (wasTracked) {
+            tasks.abortPaused(reason);
+        } else {
+            emitUntrackedAbort(endedKind, reason);
+        }
+        if (wasWorker && workers != null && workers.isBusy()) workers.stopAll(mc);
+    }
+
+    private void abortPausedState(MinecraftClient mc, BaritoneBridge baritone, Kind reflexKind, String reason) {
+        boolean wasTracked = pausedHadTrackedTask && tasks != null && tasks.isPaused();
+        boolean wasWorker = pausedWorker;
+        pausedTask = false;
+        pausedBaritone = false;
+        pausedWorker = false;
+        pausedHadTrackedTask = false;
+        if (baritone != null) baritone.clearSuspended();
+        if (wasTracked) {
+            tasks.abortPaused(reason);
+        } else {
+            emitUntrackedAbort(reflexKind, reason);
+        }
+        if (wasWorker && workers != null && workers.isBusy()) workers.stopAll(mc);
+    }
+
+    private void emitUntrackedAbort(Kind reflexKind, String reason) {
+        JsonObject d = new JsonObject();
+        d.addProperty("kind", reflexKind.id());
+        d.addProperty("reflex", reflexKind.id());
+        if (reason != null && !reason.isEmpty()) d.addProperty("reason", reason);
+        events.emit(TaskTracker.REFLEX_ABORTED, d);
     }
 
     private void start(MinecraftClient mc, ClientPlayerEntity p, ClientWorld w, Kind k, Sense s,
@@ -670,8 +755,9 @@ public final class Reflexes {
         critWaitTicks = 0;
         startPos = p.getPos();
 
-        boolean stops = k.urgent || k == Kind.UNSTUCK || (k == Kind.EAT && s.busy());
+        boolean stops = k.urgent || k == Kind.UNSTUCK || ((k == Kind.EAT || k == Kind.AUTO_TORCH) && s.busy());
         boolean baritoneTaskBusy = baritone != null && baritone.state().busy() && !baritone.reflexDriving();
+        boolean workerTaskBusy = workers != null && workers.isBusy();
         boolean workbenchBusy = workbench.state() != null;
         boolean holdingAction = actions.holding();
 
@@ -682,19 +768,36 @@ public final class Reflexes {
             target = k == Kind.SHIELD_BLOCK ? nearestRangedOrCreeper(p, w) : nearestThreat(p, w);
         }
 
-        boolean recoverableEvent;
+        boolean recoverableEvent = false;
         boolean needHardInterrupt = false;
         if (stops && pausedTask && ReflexBrain.isRecoverable(k)) {
             recoverableEvent = true;
             actions.releaseAll();
-        } else if (stops && ReflexBrain.isRecoverable(k) && baritoneTaskBusy && !workbenchBusy && !holdingAction
-                && baritone.pauseForReflex(p.getX(), p.getY(), p.getZ(), System.currentTimeMillis())) {
-            pausedTask = true;
-            recoverableEvent = true;
-            if (tasks != null) tasks.pauseForReflex(k.id());
-            actions.releaseAll();
+        } else if (stops && ReflexBrain.isRecoverable(k) && !workbenchBusy && !holdingAction
+                && (workerTaskBusy || baritoneTaskBusy)) {
+            if (workerTaskBusy) {
+                workers.suspendForReflex();
+                pausedTask = true;
+                pausedWorker = true;
+                pausedBaritone = false;
+                pausedX = p.getX();
+                pausedY = p.getY();
+                pausedZ = p.getZ();
+                pausedAtMs = System.currentTimeMillis();
+            } else if (baritone.pauseForReflex(p.getX(), p.getY(), p.getZ(), System.currentTimeMillis())) {
+                pausedTask = true;
+                pausedBaritone = true;
+                pausedWorker = false;
+            } else {
+                needHardInterrupt = true;
+            }
+            if (pausedTask) {
+                pausedHadTrackedTask = tasks != null && tasks.current() != null;
+                recoverableEvent = true;
+                if (pausedHadTrackedTask) tasks.pauseForReflex(k.id());
+                actions.releaseAll();
+            }
         } else {
-            recoverableEvent = !stops && ReflexBrain.isRecoverable(k);
             needHardInterrupt = stops;
         }
 
@@ -764,16 +867,21 @@ public final class Reflexes {
         }
     }
 
-    /** What she is doing that a reflex would stop: a craft / smelt job, a Baritone process, a held key. */
+    /** What she is doing that a reflex would stop: a craft / smelt job, world worker, Baritone process, or held key. */
     private String currentTask(BaritoneBridge baritone) {
         if (workbench.state() != null) return workbench.state().kind();
+        if (workers != null && workers.isBusy()) {
+            RawObservation.PausedTaskState st = workers.activeState();
+            if (st != null) return st.kind();
+        }
         if (baritone != null && baritone.state().busy() && !baritone.reflexDriving()) return baritone.state().process();
         return actions.holding() ? "hold" : null;
     }
 
-    /** Stops her task: Baritone (reported as interrupted by a reflex), a craft / smelt job, held keys. */
+    /** Stops her task: craft / smelt job, world workers, Baritone (reported as interrupted by a reflex), held keys. */
     private void interrupt(MinecraftClient mc, BaritoneBridge baritone) {
         if (workbench.state() != null) workbench.cancel(mc);
+        if (workers != null && workers.isBusy()) workers.stopAll(mc);
         if (baritone != null && baritone.state().busy() && !baritone.reflexDriving()) baritone.interrupt();
         actions.releaseAll();
     }

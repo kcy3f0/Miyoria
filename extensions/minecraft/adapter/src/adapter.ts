@@ -1240,8 +1240,13 @@ export function jobEnd(
     case "hunt":
       return (e) => {
         if (e.name === "hunt_finished") {
-          const collected = typeof e.data.collected === "number" ? `,拿到 ${e.data.collected} 個` : "";
-          return { detail: `打獵完成${collected}`, data: e.data };
+          const detailCount =
+            typeof e.data.collected === "number"
+              ? `,拿到 ${e.data.collected} 個`
+              : typeof e.data.killed === "number"
+                ? `,擊殺 ${e.data.killed} 隻`
+                : "";
+          return { detail: `打獵完成${detailCount}`, data: e.data };
         }
         if (e.name === "hunt_failed") {
           if (e.data.cancelled === true) return new TaskFailure("cancelled", "被叫停了");
@@ -1251,7 +1256,9 @@ export function jobEnd(
       };
     case "sleep":
       return (e) => {
-        if (e.name === "sleep_finished") return { detail: "睡了一覺,天亮了", data: e.data };
+        if (e.name === "sleep_finished") {
+          return { detail: e.data.slept === false ? "設好重生點了(現在是白天)" : "睡了一覺,天亮了", data: e.data };
+        }
         if (e.name === "sleep_failed") {
           if (e.data.cancelled === true) return new TaskFailure("cancelled", "被叫停了");
           return new TaskFailure("precondition", jobError(e, "沒辦法睡覺"));

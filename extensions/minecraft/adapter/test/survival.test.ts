@@ -163,7 +163,7 @@ describe("ObtainRunner survival upgrades", () => {
       }
       if (type === "clear_leaves") {
         cleared = true;
-        world.emitLater("clear_leaves_finished", { cleared: 6 });
+        world.emitLater("clear_leaves_finished", { broken: 6, max_blocks: 24 });
         return {};
       }
       return {};

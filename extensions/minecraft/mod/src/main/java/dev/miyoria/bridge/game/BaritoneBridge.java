@@ -83,6 +83,11 @@ public interface BaritoneBridge {
     /** Discard any suspended Baritone request without replaying it. */
     void clearSuspended();
 
+    /** Snapshot of the currently suspended Baritone process/goal for {@code observe}, or null. */
+    default RawObservation.PausedTaskState suspendedState() {
+        return null;
+    }
+
     /** Pure bounds check for whether a paused task stayed within drift and timeout limits. */
     static boolean withinResumeBounds(double startX, double startY, double startZ, long pausedAtMs,
                                       double nowX, double nowY, double nowZ, long nowMs,

@@ -55,7 +55,7 @@ const fastRunner = {
 
 let mod: FakeMod | undefined;
 let bridge: BridgeClient | undefined;
-let adapters: MinecraftAdapter[] = [];
+const adapters: MinecraftAdapter[] = [];
 
 afterEach(async () => {
   for (const a of adapters.splice(0)) a.close();
@@ -365,18 +365,33 @@ describe("new high-level actions, reflexes, and events", () => {
     expect(mapEvent({ name: "reflex_resumed", data: { kind: "eat", resumed_task: "Mine" } })?.data).toMatchObject({
       text: "吃飽了,已自動恢復原本的動作",
     });
+    expect(mapEvent({ name: "reflex_resumed", data: { task: "t1", kind: "mine_branch", reflex: "eat" } })?.data).toMatchObject({
+      text: "吃飽了,已自動恢復原本的動作",
+    });
     expect(mapEvent({ name: "reflex_aborted", data: { kind: "lava", reason: "太危險" } })?.data).toMatchObject({
       text: "本能反應後沒能恢復原本的動作(太危險)",
     });
     expect(mapEvent({ name: "sleep_finished", data: {} })?.data).toMatchObject({ text: "在床上睡醒了(已設重生點)" });
+    expect(mapEvent({ name: "sleep_finished", data: { slept: false, spawn_set: true } })?.data).toMatchObject({
+      text: "點了床設好重生點(現在是白天)",
+    });
     expect(mapEvent({ name: "hunt_finished", data: { entity: "cow", collected: 3 } })?.data).toMatchObject({
       text: "打獵結束(牛×3)",
+    });
+    expect(mapEvent({ name: "hunt_finished", data: { entity: "pig", killed: 2 } })?.data).toMatchObject({
+      text: "打獵結束(豬×2)",
+    });
+    expect(mapEvent({ name: "branch_progress", data: { position: { x: 1, y: -54, z: 2 }, steps: 16 } })?.data).toMatchObject({
+      text: "分支挖礦中(Y=-54) 前進 16 格",
     });
     expect(mapEvent({ name: "branch_finished", data: { target_y: -54, found: true } })?.data).toMatchObject({
       text: "分支挖礦結束",
     });
     expect(mapEvent({ name: "clear_leaves_finished", data: { cleared: 12 } })?.data).toMatchObject({
       text: "清除了擋路的樹葉(12 格)",
+    });
+    expect(mapEvent({ name: "clear_leaves_finished", data: { broken: 8, max_blocks: 24 } })?.data).toMatchObject({
+      text: "清除了擋路的樹葉(8 格)",
     });
     expect(mapEvent({ name: "chest_contents", data: { items: { diamond: 2, torch: 10 } } })?.data).toMatchObject({
       text: "打開箱子看到:鑽石×2、火把×10",

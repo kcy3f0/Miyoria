@@ -26,9 +26,17 @@ public final class TaskTracker {
 
     /** Kinds that Baritone runs (they end on its busy -> idle edge). */
     private static final Set<String> BARITONE = Set.of("goto", "mine", "follow", "explore", "farm", "build", "raw");
+    /** Async world workers tracked via their {@code *_finished} / {@code *_failed} events. */
+    private static final Set<String> WORKER = Set.of("mine_branch", "clear_leaves", "chest", "sleep", "hunt");
     /** Events of the work itself, stamped with the current task id. */
-    private static final Set<String> JOB_EVENTS = Set.of("goal_reached", "goal_failed", "baritone_idle",
-            "craft_finished", "craft_failed", "smelt_finished", "smelt_failed");
+    private static final Set<String> JOB_EVENTS = Set.of(
+            "goal_reached", "goal_failed", "baritone_idle",
+            "craft_finished", "craft_failed", "smelt_finished", "smelt_failed",
+            "branch_progress", "branch_finished", "branch_failed",
+            "clear_leaves_finished", "clear_leaves_failed",
+            "chest_contents", "chest_finished", "chest_failed",
+            "sleep_finished", "sleep_failed",
+            "hunt_finished", "hunt_failed");
     /** AltoClef must be idle this many ticks in a row after having been busy. */
     private static final int ALTO_IDLE_TICKS = 10;
     /** An AltoClef task that never got busy in this many ticks had nothing to do. */
@@ -183,6 +191,10 @@ public final class TaskTracker {
             }
             return;
         }
+        if (WORKER.contains(kind)) {
+            handleWorkerEvent(name, d);
+            return;
+        }
         if (!BARITONE.contains(kind)) return; // AltoClef: see altoTick
         switch (name) {
             case "goal_reached" -> {
@@ -249,6 +261,70 @@ public final class TaskTracker {
         paused = false;
         pausedReflexKind = null;
         out.emit(name, data);
+    }
+
+    private void handleWorkerEvent(String name, JsonObject d) {
+        boolean cancelled = bool(d, "cancelled");
+        String error = str(d, "error");
+        switch (kind) {
+            case "mine_branch" -> {
+                if ("branch_progress".equals(name)) {
+                    String phase = str(d, "phase");
+                    progress(phase == null ? "branch mining" : "branch mining (" + phase + ")");
+                } else if ("branch_finished".equals(name)) {
+                    JsonObject done = base();
+                    copy(d, done, "phase", "steps", "target_y", "y", "ores_mined", "torches_placed", "position");
+                    done.addProperty("detail", "mine_branch finished");
+                    finish(DONE, done);
+                } else if ("branch_failed".equals(name)) {
+                    String code = cancelled ? "cancelled"
+                            : (error != null && error.contains("pickaxe") ? "precondition" : "not_found");
+                    fail(code, error == null ? "mine_branch failed" : error);
+                }
+            }
+            case "clear_leaves" -> {
+                if ("clear_leaves_finished".equals(name)) {
+                    JsonObject done = base();
+                    copy(d, done, "broken", "cleared", "max_blocks");
+                    done.addProperty("detail", "clear_leaves finished");
+                    finish(DONE, done);
+                } else if ("clear_leaves_failed".equals(name)) {
+                    fail(cancelled ? "cancelled" : "precondition", error == null ? "clear_leaves failed" : error);
+                }
+            }
+            case "chest" -> {
+                if ("chest_finished".equals(name)) {
+                    JsonObject done = base();
+                    copy(d, done, "op", "block", "position", "items", "moved");
+                    done.addProperty("detail", "chest finished");
+                    finish(DONE, done);
+                } else if ("chest_failed".equals(name)) {
+                    fail(cancelled ? "cancelled" : "precondition", error == null ? "chest failed" : error);
+                }
+            }
+            case "sleep" -> {
+                if ("sleep_finished".equals(name)) {
+                    JsonObject done = base();
+                    copy(d, done, "block", "position", "slept", "spawn_set", "detail");
+                    if (!done.has("detail")) done.addProperty("detail", "sleep finished");
+                    finish(DONE, done);
+                } else if ("sleep_failed".equals(name)) {
+                    fail(cancelled ? "cancelled" : "precondition", error == null ? "sleep failed" : error);
+                }
+            }
+            case "hunt" -> {
+                if ("hunt_finished".equals(name)) {
+                    JsonObject done = base();
+                    copy(d, done, "entity", "killed", "requested");
+                    done.addProperty("detail", "hunt finished");
+                    finish(DONE, done);
+                } else if ("hunt_failed".equals(name)) {
+                    fail(cancelled ? "cancelled" : "not_found", error == null ? "hunt failed" : error);
+                }
+            }
+            default -> {
+            }
+        }
     }
 
     private JsonObject base() {

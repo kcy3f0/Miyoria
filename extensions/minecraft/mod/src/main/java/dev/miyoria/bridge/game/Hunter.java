@@ -114,14 +114,14 @@ final class Hunter implements WorldWorkers.Worker {
 
     @Override
     public void suspend(MinecraftClient mc) {
-        bowChargingTicks = 0;
+        releaseBow(mc, mc != null ? mc.player : null);
         chaseTicks = 0;
         sightLostTicks = 0;
     }
 
     @Override
     public void cancel(MinecraftClient mc, String reason, boolean cancelled) {
-        bowChargingTicks = 0;
+        releaseBow(mc, mc != null ? mc.player : null);
         emit("hunt_failed", reason, cancelled);
     }
 

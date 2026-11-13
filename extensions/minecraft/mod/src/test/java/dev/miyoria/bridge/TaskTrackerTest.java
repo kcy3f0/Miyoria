@@ -198,4 +198,73 @@ class TaskTrackerTest {
         assertFalse(BaritoneBridge.withinResumeBounds(0, 64, 0, 1000L, 17, 64, 0, 5_000L, 16.0, 15_000L));
         assertFalse(BaritoneBridge.withinResumeBounds(0, 64, 0, 1000L, 0, 64, 0, 16_001L, 16.0, 15_000L));
     }
+
+    @Test
+    void worldWorkerTasksReportProgressDoneFailedAndPauseResume() {
+        // 1. mine_branch: branch_progress -> task_progress, recoverable pause/resume, branch_finished -> task_done
+        tasks.begin("wb1", "mine_branch");
+        JsonObject prog = obj("phase", "branch");
+        prog.addProperty("steps", 12);
+        emit("branch_progress", prog);
+        assertTrue(prog.has("task"));
+        assertEquals("wb1", prog.get("task").getAsString());
+
+        tasks.pauseForReflex("eat");
+        JsonObject rec = obj("kind", "eat");
+        rec.addProperty("recoverable", true);
+        rec.addProperty("paused_task", true);
+        rec.addProperty("interrupted", "mine_branch");
+        emit("reflex", rec);
+        assertTrue(tasks.isPaused());
+        tasks.resumeFromReflex();
+        assertFalse(tasks.isPaused());
+
+        JsonObject branchDone = obj("steps", 20);
+        branchDone.addProperty("ores_mined", 3);
+        branchDone.addProperty("target_y", -54);
+        emit("branch_finished", branchDone);
+        assertEquals(List.of(
+                "task_started:wb1",
+                "task_progress:wb1",
+                "task_progress:wb1",
+                "reflex_resumed:wb1",
+                "task_done:wb1"
+        ), out);
+        assertEquals(3, data.get(4).get("ores_mined").getAsInt());
+        assertNull(tasks.current());
+
+        // 2. clear_leaves, chest, sleep, hunt complete cleanly and fail with expected codes
+        out.clear();
+        data.clear();
+        tasks.begin("wc1", "clear_leaves");
+        JsonObject leavesDone = obj("broken", 7);
+        leavesDone.addProperty("cleared", 7);
+        emit("clear_leaves_finished", leavesDone);
+        assertEquals("task_done:wc1", out.get(1));
+        assertEquals(7, data.get(1).get("cleared").getAsInt());
+
+        tasks.begin("wch", "chest");
+        JsonObject contents = obj("rows", 3);
+        emit("chest_contents", contents);
+        assertEquals("wch", contents.get("task").getAsString());
+        JsonObject chestDone = obj("op", "take");
+        chestDone.addProperty("moved", 4);
+        emit("chest_finished", chestDone);
+        assertEquals("task_done:wch", out.get(3));
+
+        tasks.begin("ws1", "sleep");
+        JsonObject sleepDone = obj("slept", false);
+        sleepDone.addProperty("spawn_set", true);
+        emit("sleep_finished", sleepDone);
+        assertEquals("task_done:ws1", out.get(5));
+
+        tasks.begin("wh1", "hunt");
+        JsonObject huntFail = obj("error", "no visible cow within 16 blocks");
+        emit("hunt_failed", huntFail);
+        assertEquals("task_failed:not_found", out.get(7));
+
+        tasks.begin("wb2", "mine_branch");
+        emit("branch_failed", obj("error", "missing a pickaxe for branch mining"));
+        assertEquals("task_failed:precondition", out.get(9));
+    }
 }
