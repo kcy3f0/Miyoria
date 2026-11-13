@@ -5,6 +5,7 @@
 import type { GameEvent } from "@miyoria/sdk";
 import type { BridgeEvent } from "./bridge.js";
 import { zh } from "./names.js";
+import { normalizeChestItems } from "./waypoints.js";
 
 export interface EventOptions {
   /** Damage of at least this many points is important. */
@@ -49,31 +50,67 @@ function failure(d: Record<string, unknown>): string {
 
 /** What a reflex of the mod did (`reflex` / `reflex_end` `kind`). */
 const REFLEX: Record<string, string> = {
+  extinguish: "身上著火,用水桶滅火",
+  mlg_water: "從高處掉落,放水落地保命",
   lava: "掉進岩漿 / 著火了,身體自己逃開",
   suffocation: "卡在方塊裡快窒息了,自己把它挖開",
   falling_block: "頭上有沙子或礫石掉下來,自己閃開",
   drowning: "快沒氣了,自己往上游",
+  retreat_pillar: "被怪包圍,墊高方塊脫險",
+  shield_block: "舉起盾牌擋住攻擊",
   flee: "血太少,自己逃開",
   fight: "被攻擊,自己反擊",
   eat: "肚子餓,自己吃東西",
+  auto_torch: "太暗了,自己插一根火把",
   unstuck: "卡住了,自己掙脫",
   pickup: "撿起掉在地上的東西",
 };
 const REFLEX_END: Record<string, string> = {
+  extinguish: "滅完火了",
+  mlg_water: "安全落地了",
   lava: "逃出岩漿了",
   suffocation: "從方塊裡出來了",
   falling_block: "閃開了",
   drowning: "浮上來換氣了",
+  retreat_pillar: "墊高脫險了",
+  shield_block: "擋完攻擊了",
   flee: "逃開了",
   fight: "打完了",
   eat: "吃飽了",
+  auto_torch: "插好火把了",
   unstuck: "掙脫了",
   pickup: "撿完了",
 };
 /** Reflexes worth an immediate reaction. */
-const URGENT_REFLEX = new Set(["lava", "suffocation", "falling_block", "drowning", "flee", "fight"]);
+const URGENT_REFLEX = new Set([
+  "extinguish",
+  "mlg_water",
+  "lava",
+  "suffocation",
+  "falling_block",
+  "drowning",
+  "retreat_pillar",
+  "shield_block",
+  "flee",
+  "fight",
+]);
 /** What the mod reports a reflex interrupted (a Baritone process name, `craft`, `smelt`). */
-const INTERRUPTED: Record<string, string> = { craft: "合成", smelt: "熔爐", Mine: "挖礦", "Custom Goal": "走路" };
+const INTERRUPTED: Record<string, string> = {
+  craft: "合成",
+  smelt: "熔爐",
+  Mine: "挖礦",
+  "Custom Goal": "走路",
+  mine_branch: "分支挖礦",
+  BranchMiner: "分支挖礦",
+  hunt: "打獵",
+  Hunter: "打獵",
+  chest: "整理箱子",
+  ChestWorker: "整理箱子",
+  sleep: "睡覺",
+  SleepWorker: "睡覺",
+  clear_leaves: "清樹葉",
+  LeafClearer: "清樹葉",
+};
 
 function reflexText(d: Record<string, unknown>): string {
   const kind = str(d.kind) ?? "";
@@ -82,7 +119,16 @@ function reflexText(d: Record<string, unknown>): string {
   if (what) text += `(${zh(what)})`;
   const interrupted = str(d.interrupted);
   if (interrupted) text += `,打斷了${INTERRUPTED[interrupted] ?? interrupted}`;
+  if (d.paused_task === true && d.recoverable === true) text += ",暫停等待恢復";
   return text;
+}
+
+function itemSummary(items: Record<string, number> | undefined, max = 8): string {
+  if (!items) return "";
+  const entries = Object.entries(items).filter(([, n]) => n > 0);
+  if (!entries.length) return "空的";
+  const shown = entries.slice(0, max).map(([id, n]) => `${zh(id)}×${n}`).join("、");
+  return entries.length > max ? `${shown}…等 ${entries.length} 種` : shown;
 }
 
 function event(type: string, data: Record<string, unknown>, text: string, important = false): GameEvent {
@@ -174,6 +220,57 @@ export function mapEvent(e: BridgeEvent, opts: EventOptions = {}): GameEvent | n
         d.ok === false ? `本能反應(${REFLEX[kind] ?? kind})沒有成功` : `${REFLEX_END[kind] ?? "本能反應結束了"},可以繼續了`;
       return event("reflex_end", d, text);
     }
+    case "reflex_resumed": {
+      const kind = str(d.kind) ?? "";
+      const label = REFLEX_END[kind] ?? "本能反應結束";
+      return event("reflex_resumed", d, `${label},已自動恢復原本的動作`);
+    }
+    case "reflex_aborted": {
+      const reason = str(d.reason) ?? str(d.message);
+      return event("reflex_aborted", d, `本能反應後沒能恢復原本的動作${reason ? `(${reason})` : ""}`, true);
+    }
+    case "chest_contents": {
+      const items = normalizeChestItems(d.items ?? d.contents);
+      return event("chest_contents", d, `打開箱子看到:${itemSummary(items) || "空的"}`);
+    }
+    case "chest_finished": {
+      const op = str(d.op);
+      const label = op === "store" ? "存進箱子了" : op === "take" ? "從箱子拿好東西了" : "查看完箱子了";
+      const items = normalizeChestItems(d.items ?? d.contents);
+      return event("chest_finished", d, items ? `${label}(${itemSummary(items)})` : label);
+    }
+    case "chest_failed":
+      return event("chest_failed", d, `箱子:${failure(d)}`, d.cancelled !== true);
+    case "sleep_finished":
+      return event("sleep_finished", d, "在床上睡醒了(已設重生點)");
+    case "sleep_failed":
+      return event("sleep_failed", d, `沒辦法睡覺:${failure(d)}`, d.cancelled !== true);
+    case "hunt_finished": {
+      const entity = str(d.entity);
+      const count = num(d.collected) ?? num(d.killed) ?? num(d.count);
+      return event("hunt_finished", d, `打獵結束${entity ? `(${zh(entity)}${count !== undefined ? `×${count}` : ""})` : ""}`);
+    }
+    case "hunt_failed":
+      return event("hunt_failed", d, `打獵失敗:${failure(d)}`, d.cancelled !== true);
+    case "branch_progress": {
+      const y = num(d.y);
+      const steps = num(d.steps);
+      return event(
+        "branch_progress",
+        d,
+        `分支挖礦中${y !== undefined ? `(Y=${Math.round(y)})` : ""}${steps !== undefined ? ` 前進 ${steps} 格` : ""}`,
+      );
+    }
+    case "branch_finished":
+      return event("branch_finished", d, "分支挖礦結束");
+    case "branch_failed":
+      return event("branch_failed", d, `分支挖礦失敗:${failure(d)}`, d.cancelled !== true);
+    case "clear_leaves_finished": {
+      const cleared = num(d.cleared);
+      return event("clear_leaves_finished", d, `清除了擋路的樹葉${cleared !== undefined ? `(${cleared} 格)` : ""}`);
+    }
+    case "clear_leaves_failed":
+      return event("clear_leaves_failed", d, `清除樹葉失敗:${failure(d)}`);
     default:
       return SEGMENT.test(e.name) ? { type: e.name, data: d } : null;
   }

@@ -1,12 +1,12 @@
 // Works backwards from an item she wants to the steps that get it in survival: recipes, smelting,
-// the blocks that drop it and the pickaxe tier each block needs (harvest.ts), the crafting
-// table / furnace each step stands at. Pure: inventory in, steps out. The runner (obtain.ts)
-// executes the first step and plans again from what the game really shows.
+// the blocks that drop it and the pickaxe tier each block needs (harvest.ts), hunting drops, water
+// filling, remembered chests, and the crafting table / furnace each step stands at. Pure: inventory
+// and world in, steps out. The runner (obtain.ts) executes the first step and plans again from
+// what the game really shows.
 //
-// Ingredients that any member of a vanilla tag satisfies are groups: `#logs`, `#planks`
-// (`oak_planks` from `oak_log`, ...), `#stone` (cobblestone, cobbled deepslate, blackstone) and
-// `#coal` (coal, charcoal). Each source is produced in one go for the whole plan (all the logs
-// at once, not a trip per plank).
+// Ingredients that any member of a vanilla tag satisfies are groups: `#logs`, `#planks`,
+// `#stone`, `#coal`, `#boats`, `#wool`, `#beds`. Each source is produced in one go for the whole
+// plan (all the logs at once, not a trip per plank).
 
 import { type Tier, pickaxeTier, requiredTier } from "./harvest.js";
 import { zh } from "./names.js";
@@ -15,6 +15,24 @@ export type Inventory = Record<string, number>;
 
 const WOODS = ["oak", "birch", "spruce", "jungle", "acacia", "dark_oak", "mangrove", "cherry"];
 const STEMS = ["crimson", "warped"];
+const WOOL_COLORS = [
+  "white",
+  "orange",
+  "magenta",
+  "light_blue",
+  "yellow",
+  "lime",
+  "pink",
+  "gray",
+  "light_gray",
+  "cyan",
+  "purple",
+  "blue",
+  "brown",
+  "green",
+  "red",
+  "black",
+];
 
 const GROUPS: Record<string, string[]> = {
   "#logs": [
@@ -24,6 +42,9 @@ const GROUPS: Record<string, string[]> = {
   "#planks": [...WOODS, ...STEMS, "bamboo"].map((w) => `${w}_planks`),
   "#stone": ["cobblestone", "cobbled_deepslate", "blackstone"],
   "#coal": ["coal", "charcoal"],
+  "#boats": [...WOODS.map((w) => `${w}_boat`), "bamboo_raft"],
+  "#wool": WOOL_COLORS.map((c) => `${c}_wool`),
+  "#beds": WOOL_COLORS.map((c) => `${c}_bed`),
 };
 
 /** The planks a log makes (`stripped_birch_wood` → `birch_planks`). */
@@ -31,6 +52,19 @@ export function planksOf(log: string): string | undefined {
   // longest match first: `dark_oak` before `oak`
   const wood = [...WOODS, ...STEMS].sort((a, b) => b.length - a.length).find((w) => log.includes(w));
   return wood ? `${wood}_planks` : undefined;
+}
+
+/** The boat a planks item makes (`birch_planks` → `birch_boat`, `bamboo_planks` → `bamboo_raft`). */
+export function boatOf(planks: string): string | undefined {
+  if (planks === "bamboo_planks") return "bamboo_raft";
+  const wood = [...WOODS].sort((a, b) => b.length - a.length).find((w) => planks === `${w}_planks`);
+  return wood ? `${wood}_boat` : undefined;
+}
+
+/** The bed a wool item makes (`red_wool` → `red_bed`). */
+export function bedOf(wool: string): string | undefined {
+  const color = [...WOOL_COLORS].sort((a, b) => b.length - a.length).find((c) => wool === `${c}_wool`);
+  return color ? `${color}_bed` : undefined;
 }
 
 export function isGroup(item: string): boolean {
@@ -62,14 +96,29 @@ const RECIPES: Record<string, Recipe> = {
   stick: recipe(4, [["#planks", 2]], false),
   crafting_table: recipe(1, [["#planks", 4]], false),
   furnace: recipe(1, [["#stone", 8]]),
+  smoker: recipe(1, [["#logs", 4], ["furnace", 1]]),
+  blast_furnace: recipe(1, [["iron_ingot", 5], ["furnace", 1], ["smooth_stone", 3]]),
   chest: recipe(1, [["#planks", 8]]),
   torch: recipe(4, [["#coal", 1], ["stick", 1]], false),
   bucket: recipe(1, [["iron_ingot", 3]]),
   shears: recipe(1, [["iron_ingot", 2]], false),
   shield: recipe(1, [["#planks", 6], ["iron_ingot", 1]]),
+  bow: recipe(1, [["stick", 3], ["string", 3]]),
+  arrow: recipe(4, [["flint", 1], ["stick", 1], ["feather", 1]]),
+  flint_and_steel: recipe(1, [["iron_ingot", 1], ["flint", 1]], false),
+  bread: recipe(1, [["wheat", 3]]),
   bowl: recipe(4, [["#planks", 3]]),
   ladder: recipe(3, [["stick", 7]]),
+  "#boats": recipe(1, [["#planks", 5]]),
+  bamboo_raft: recipe(1, [["bamboo_planks", 5]]),
+  "#beds": recipe(1, [["#wool", 3], ["#planks", 3]]),
 };
+for (const w of WOODS) {
+  RECIPES[`${w}_boat`] = recipe(1, [[`${w}_planks`, 5]]);
+}
+for (const c of WOOL_COLORS) {
+  RECIPES[`${c}_bed`] = recipe(1, [[`${c}_wool`, 3], ["#planks", 3]]);
+}
 
 // Tools and armour of every material.
 const TOOL_MATERIALS: Record<string, string> = {
@@ -86,7 +135,12 @@ for (const [prefix, material] of Object.entries(TOOL_MATERIALS)) {
   RECIPES[`${prefix}_hoe`] = recipe(1, [[material, 2], ["stick", 2]]);
   RECIPES[`${prefix}_sword`] = recipe(1, [[material, 2], ["stick", 1]]);
 }
-for (const [prefix, material] of [["iron", "iron_ingot"], ["golden", "gold_ingot"], ["diamond", "diamond"]] as const) {
+for (const [prefix, material] of [
+  ["leather", "leather"],
+  ["iron", "iron_ingot"],
+  ["golden", "gold_ingot"],
+  ["diamond", "diamond"],
+] as const) {
   RECIPES[`${prefix}_helmet`] = recipe(1, [[material, 5]]);
   RECIPES[`${prefix}_chestplate`] = recipe(1, [[material, 8]]);
   RECIPES[`${prefix}_leggings`] = recipe(1, [[material, 7]]);
@@ -102,7 +156,27 @@ const SMELTING: Record<string, string> = {
   glass: "sand",
   stone: "cobblestone",
   smooth_stone: "stone",
+  cooked_beef: "beef",
+  cooked_porkchop: "porkchop",
+  cooked_mutton: "mutton",
+  cooked_chicken: "chicken",
+  cooked_rabbit: "rabbit",
+  cooked_cod: "cod",
+  cooked_salmon: "salmon",
+  baked_potato: "potato",
 };
+
+const ORE_SMELTS = new Set(["iron_ingot", "gold_ingot", "copper_ingot"]);
+const FOOD_SMELTS = new Set([
+  "cooked_beef",
+  "cooked_porkchop",
+  "cooked_mutton",
+  "cooked_chicken",
+  "cooked_rabbit",
+  "cooked_cod",
+  "cooked_salmon",
+  "baked_potato",
+]);
 
 /** Items mined from blocks (Baritone counts the drops of these blocks in the inventory). */
 const MINED: Record<string, string[]> = {
@@ -123,9 +197,58 @@ const MINED: Record<string, string[]> = {
   sand: ["sand"],
   red_sand: ["red_sand"],
   gravel: ["gravel"],
+  flint: ["gravel"],
   clay_ball: ["clay"],
   obsidian: ["obsidian"],
+  wheat: ["wheat"],
+  potato: ["potatoes"],
+  carrot: ["carrots"],
 };
+
+/** Items obtained by hunting a visible mob. */
+const HUNTED: Record<string, string> = {
+  beef: "cow",
+  porkchop: "pig",
+  mutton: "sheep",
+  chicken: "chicken",
+  rabbit: "rabbit",
+  white_wool: "sheep",
+  "#wool": "sheep",
+  leather: "cow",
+  feather: "chicken",
+  string: "spider",
+};
+
+/** Optimal Overworld Y levels for underground ores (branch mining). */
+const PREFERRED_Y: Record<string, number> = {
+  raw_iron: 16,
+  iron_ore: 16,
+  deepslate_iron_ore: 16,
+  "#coal": 48,
+  coal: 48,
+  coal_ore: 48,
+  deepslate_coal_ore: 48,
+  raw_copper: 48,
+  copper_ore: 48,
+  deepslate_copper_ore: 48,
+  raw_gold: -16,
+  gold_ore: -16,
+  deepslate_gold_ore: -16,
+  redstone: -16,
+  redstone_ore: -16,
+  deepslate_redstone_ore: -16,
+  lapis_lazuli: -16,
+  lapis_ore: -16,
+  deepslate_lapis_ore: -16,
+  diamond: -54,
+  diamond_ore: -54,
+  deepslate_diamond_ore: -54,
+};
+
+/** Returns the underground branch-mining Y hint for an ore drop or block id. */
+export function preferredY(itemOrBlock: string): number | undefined {
+  return PREFERRED_Y[itemOrBlock];
+}
 
 /** The pickaxe that reaches each tier. */
 const TIER_PICKAXE: Record<Exclude<Tier, 0>, string> = {
@@ -145,16 +268,32 @@ const FUELS: Array<[string, number]> = [
   ["#planks", 1.5],
 ];
 
+export interface KnownChest {
+  key: string;
+  x: number;
+  y: number;
+  z: number;
+  items: Record<string, number>;
+  distance?: number;
+}
+
 export type Step =
-  | { kind: "mine"; item: string; blocks: string[]; count: number }
+  | { kind: "mine"; item: string; blocks: string[]; count: number; preferredY?: number }
   | { kind: "craft"; item: string; count: number; table: boolean }
   | { kind: "smelt"; item: string; input: string; count: number }
-  | { kind: "place"; item: "crafting_table" | "furnace" };
+  | { kind: "place"; item: "crafting_table" | "furnace" }
+  | { kind: "hunt"; item: string; entity: string; count: number }
+  | { kind: "fill_water"; item: "water_bucket" }
+  | { kind: "chest_take"; item: string; count: number; chest: { x: number; y: number; z: number } };
 
-/** Stations she can already use where she stands (from `observe`'s visible blocks). */
+/** Stations she can already use where she stands (from `observe`'s visible blocks + remembered chests). */
 export interface World {
   table?: boolean;
   furnace?: boolean;
+  blastFurnace?: boolean;
+  smoker?: boolean;
+  water?: boolean;
+  chests?: KnownChest[];
 }
 
 /** The target cannot be planned (unknown item, a loop); the message goes back to her. */
@@ -168,12 +307,16 @@ export function normalizeItem(raw: string): string {
   const id = raw.trim().toLowerCase().replace(/^minecraft:/, "").replace(/\s+/g, "_");
   if (id === "planks" || id === "wood_planks") return "#planks";
   if (id === "log" || id === "logs" || id === "wood") return "#logs";
+  if (id === "boat" || id === "boats") return "#boats";
+  if (id === "bed" || id === "beds") return "#beds";
+  if (id === "wool") return "#wool";
   return id;
 }
 
 /** Whether the planner knows how to get `item` at all. */
 export function knows(item: string): boolean {
-  if (item in RECIPES || item in SMELTING || item in MINED) return true;
+  if (item === "water_bucket") return true;
+  if (item in RECIPES || item in SMELTING || item in MINED || item in HUNTED) return true;
   return item.endsWith("_planks") && planksOf(item) !== undefined;
 }
 
@@ -181,6 +324,7 @@ class Planner {
   readonly steps: Step[] = [];
   readonly #inv: Inventory;
   readonly #world: World;
+  readonly #chests: KnownChest[];
   /** Pass 1 totals per produced item; pass 2 makes the whole amount the first time it is needed. */
   readonly #batch: Map<string, number>;
   readonly #made = new Map<string, number>();
@@ -188,6 +332,7 @@ class Planner {
   constructor(inv: Inventory, world: World, batch: Map<string, number>) {
     this.#inv = { ...inv };
     this.#world = { ...world };
+    this.#chests = (world.chests ?? []).map((c) => ({ ...c, items: { ...c.items } }));
     this.#batch = batch;
   }
 
@@ -195,7 +340,7 @@ class Planner {
   totals(): Map<string, number> {
     const out = new Map<string, number>();
     for (const s of this.steps) {
-      if (s.kind === "place") continue;
+      if (s.kind === "place" || s.kind === "chest_take" || s.kind === "fill_water") continue;
       out.set(s.item, (out.get(s.item) ?? 0) + s.count);
     }
     return out;
@@ -219,13 +364,38 @@ class Planner {
     this.#inv[item] = (this.#inv[item] ?? 0) + n;
   }
 
+  /** Pulls missing items from remembered opened chests before mining/hunting/crafting. */
+  #takeFromChests(item: string, missing: number): number {
+    if (!this.#chests.length || missing <= 0) return 0;
+    const keys = isGroup(item) ? members(item) : [item];
+    let left = missing;
+    for (const chest of this.#chests) {
+      for (const k of keys) {
+        if (left <= 0) break;
+        const avail = chest.items[k] ?? 0;
+        if (avail <= 0) continue;
+        const take = Math.min(avail, left);
+        chest.items[k] = avail - take;
+        left -= take;
+        this.steps.push({ kind: "chest_take", item: k, count: take, chest: { x: chest.x, y: chest.y, z: chest.z } });
+        this.#add(k, take);
+      }
+      if (left <= 0) break;
+    }
+    return missing - left;
+  }
+
   /** Makes sure `n` of `item` exist, then uses them up (`consume`) or keeps them (tools). */
   need(item: string, n: number, consume: boolean, depth: number): void {
     if (depth > MAX_DEPTH || this.steps.length > MAX_STEPS) {
       throw new PlanError(`${zh(item)}的步驟太多了,先自己做一部分`);
     }
     const have = countOf(this.#inv, item);
-    if (have < n) this.#produce(item, n - have, depth + 1);
+    if (have < n) {
+      this.#takeFromChests(item, n - have);
+      const afterChest = countOf(this.#inv, item);
+      if (afterChest < n) this.#produce(item, n - afterChest, depth + 1);
+    }
     if (consume) this.#take(item, n);
   }
 
@@ -240,6 +410,12 @@ class Planner {
     this.need(kind, 1, true, depth);
     this.steps.push({ kind: "place", item: kind });
     this.#world[key] = true;
+  }
+
+  #smeltStation(item: string, depth: number): void {
+    if (ORE_SMELTS.has(item) && this.#world.blastFurnace) return;
+    if (FOOD_SMELTS.has(item) && this.#world.smoker) return;
+    this.#station("furnace", depth);
   }
 
   #fuel(items: number, depth: number): void {
@@ -262,14 +438,40 @@ class Planner {
     return amount;
   }
 
+  /** For `#beds`, picks a wool color she already has >= 3 of, else `white_wool` (from sheep). */
+  #bedWoolNeed(times: number): string {
+    const needCount = 3 * times;
+    for (const w of members("#wool")) {
+      if ((this.#inv[w] ?? 0) >= needCount) return w;
+    }
+    for (const c of this.#chests) {
+      for (const w of members("#wool")) {
+        if ((this.#inv[w] ?? 0) + (c.items[w] ?? 0) >= needCount) return w;
+      }
+    }
+    return "white_wool";
+  }
+
   #produce(item: string, missing: number, depth: number): void {
+    if (item === "water_bucket") {
+      const amount = this.#amount(item, missing);
+      this.need("bucket", amount, true, depth);
+      for (let i = 0; i < amount; i++) this.steps.push({ kind: "fill_water", item: "water_bucket" });
+      this.#add("water_bucket", amount);
+      return;
+    }
+
     // `oak_planks` asked for by name: any planks recipe, crafted as that wood when logs allow.
     const key = item.endsWith("_planks") && planksOf(item) ? "#planks" : item;
     const r = RECIPES[key];
     if (r) {
       if (r.table) this.#station("crafting_table", depth);
       const times = Math.ceil(this.#amount(key, missing) / r.yield);
-      for (const [ing, qty] of r.needs) this.need(ing, qty * times, true, depth);
+      const needs =
+        key === "#beds"
+          ? ([[this.#bedWoolNeed(times), 3], ["#planks", 3]] as Array<[string, number]>)
+          : r.needs;
+      for (const [ing, qty] of needs) this.need(ing, qty * times, true, depth);
       this.steps.push({ kind: "craft", item, count: times * r.yield, table: r.table });
       this.#add(item, times * r.yield);
       return;
@@ -277,7 +479,7 @@ class Planner {
     const input = SMELTING[item];
     if (input) {
       const amount = this.#amount(item, missing);
-      this.#station("furnace", depth);
+      this.#smeltStation(item, depth);
       this.need(input, amount, true, depth);
       this.#fuel(amount, depth);
       this.steps.push({ kind: "smelt", item, input, count: amount });
@@ -288,11 +490,23 @@ class Planner {
     if (blocks) {
       const amount = this.#amount(item, missing);
       this.#tool(Math.max(...blocks.map(requiredTier)) as Tier, depth);
-      this.steps.push({ kind: "mine", item, blocks, count: amount });
+      const step: Extract<Step, { kind: "mine" }> = { kind: "mine", item, blocks, count: amount };
+      const yHint = preferredY(item);
+      if (yHint !== undefined) {
+        Object.defineProperty(step, "preferredY", { value: yHint, enumerable: false, configurable: true });
+      }
+      this.steps.push(step);
       this.#add(item, amount);
       return;
     }
-    throw new PlanError(`不知道怎麼取得${zh(item)}(只會砍樹、挖礦、合成和用熔爐燒的東西)`);
+    const entity = HUNTED[item];
+    if (entity) {
+      const amount = this.#amount(item, missing);
+      this.steps.push({ kind: "hunt", item, entity, count: amount });
+      this.#add(item, amount);
+      return;
+    }
+    throw new PlanError(`不知道怎麼取得${zh(item)}(只會砍樹、挖礦、打獵、裝水、合成和用熔爐燒的東西)`);
   }
 }
 
@@ -310,7 +524,15 @@ export function plan(target: string, count: number, inv: Inventory, world: World
   return second.steps;
 }
 
-const GROUP_NAMES: Record<string, string> = { "#logs": "原木", "#planks": "木材", "#stone": "鵝卵石", "#coal": "煤炭" };
+const GROUP_NAMES: Record<string, string> = {
+  "#logs": "原木",
+  "#planks": "木材",
+  "#stone": "鵝卵石",
+  "#coal": "煤炭",
+  "#boats": "木船",
+  "#wool": "羊毛",
+  "#beds": "床",
+};
 
 /** Display name of an item or group. */
 export function itemName(item: string): string {
@@ -329,5 +551,11 @@ export function describeStep(step: Step): string {
       return `用熔爐燒${name(step.item)}×${step.count}`;
     case "place":
       return `放下${zh(step.item)}`;
+    case "hunt":
+      return `打獵${zh(step.entity)}拿${name(step.item)}×${step.count}`;
+    case "fill_water":
+      return "用鐵桶裝水";
+    case "chest_take":
+      return `從箱子拿${name(step.item)}×${step.count}`;
   }
 }

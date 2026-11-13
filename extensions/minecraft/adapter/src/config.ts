@@ -23,6 +23,14 @@ export interface AdapterConfig extends LauncherConfig {
   damage_important?: number;
   /** Let the `chat` action send `/commands` (off: cheats in her hands are a bad idea). */
   allow_commands?: boolean;
+  /** Enable on-demand compressed screenshot capture for multimodal models (default true). */
+  vision_enabled?: boolean;
+  /** Minimum ms between automatic screenshot captures (default 15000; `inspect` bypasses it). */
+  vision_cooldown_ms?: number;
+  /** Max screenshot width in px (default 512). */
+  vision_max_width?: number;
+  /** JPEG compression quality 0.1..1.0 (default 0.65). */
+  vision_quality?: number;
 }
 
 export interface Endpoint {

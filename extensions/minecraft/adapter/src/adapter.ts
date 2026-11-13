@@ -44,10 +44,12 @@ import { BridgeError, type BridgeClient, type BridgeEvent } from "./bridge.js";
 import { type EventOptions, mapEvent } from "./events.js";
 import { GUIDE } from "./guide.js";
 import { LaunchError, type Launcher } from "./launcher.js";
-import { ObtainRunner, parsePlanPatch, type RunnerOptions, STEP_EVENTS, worldOf } from "./obtain.js";
+import { ObtainRunner, RUNNER_STEP_EVENTS, STEP_EVENTS, parsePlanPatch, type RunnerOptions, worldOf } from "./obtain.js";
 import { PlanError, countOf, describeStep, itemName, knows, normalizeItem, plan } from "./planner.js";
 import { type SteerRequest, SteerableTasks } from "./steer.js";
 import { type Snapshot, compactState, summarize } from "./summary.js";
+import { ScreenshotPolicy, type VisionOptions } from "./vision.js";
+import { type AdapterStorage, WaypointStore } from "./waypoints.js";
 
 export const GAME_ID = "minecraft";
 
@@ -60,6 +62,10 @@ export interface AdapterOptions extends EventOptions {
   launcher?: Launcher;
   /** Timeouts of `obtain` plans (tests shorten them). */
   runner?: RunnerOptions;
+  /** Persistent key/value storage for per-world waypoints and chest memory. */
+  storage?: AdapterStorage;
+  /** On-demand screenshot capture policy configuration. */
+  vision?: VisionOptions;
   /**
    * How long an `act` refused with `reflex_active` waits for the reflex to end when no task
    * bounds it (inside a task its budget does).
@@ -70,11 +76,13 @@ export interface AdapterOptions extends EventOptions {
 }
 
 /** Goals that are done once the mod accepted them. */
-const INSTANT = new Set(["chat", "look", "attack", "use", "select", "respawn", "place", "stop"]);
+const INSTANT = new Set(["chat", "look", "attack", "use", "select", "respawn", "place", "stop", "manage_inv", "inspect"]);
 /** Baritone goals that never end by themselves; at the end of their budget they are done. */
 const OPEN_ENDED = new Set(["follow", "explore", "farm"]);
 /** Goals that end with their own events. */
-const JOBS = new Set(["goto", "mine", "follow", "explore", "farm", "build", "craft", "smelt", "get"]);
+const JOBS = new Set(["goto", "mine", "follow", "explore", "farm", "build", "craft", "smelt", "get", "hunt", "sleep", "chest"]);
+/** Mod goals that support live `TaskSteer` re-targeting without cancelling the outer task. */
+const STEERABLE_MOD_GOALS = new Set(["mine", "goto", "explore", "follow", "hunt"]);
 /** Strategies of `obtain`. */
 export const OBTAIN_STRATEGIES = ["plan", "altoclef", "craft"] as const;
 export type ObtainStrategy = (typeof OBTAIN_STRATEGIES)[number];
@@ -139,6 +147,21 @@ interface Watch {
   resolve(end: TaskResult | TaskFailure): void;
 }
 
+interface ActiveJob {
+  outerId: string;
+  goal: string;
+  args: Record<string, unknown>;
+  task: TaskContext;
+  modTaskId: string;
+  gen: number;
+  superseded: Set<string>;
+  ignoreCancelUntil: number;
+  ended: boolean;
+  steerChain: Promise<void>;
+  setMatcher(m: (e: BridgeEvent) => Ending): void;
+  finish(end: TaskResult | TaskFailure): void;
+}
+
 /** Waits for `ms` or until `signal` aborts (then rejects with its reason). */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -165,10 +188,14 @@ const fail = (result: ActionResult): never => {
 export class MinecraftAdapter implements GameAdapter {
   readonly #bridge: BridgeClient;
   readonly #opts: AdapterOptions;
+  readonly #waypoints: WaypointStore;
+  readonly #vision: ScreenshotPolicy;
   readonly #queue = new EventQueue();
   /** The running `obtain` plan, and the task it runs for. */
   #runner: ObtainRunner | null = null;
   #planTask: string | null = null;
+  /** The running steerable/monitored mod job, if any. */
+  #activeJob: ActiveJob | null = null;
   /** Actions waiting for an interrupting reflex to end. */
   readonly #reflexWaiters = new Set<() => void>();
   /** Running jobs waiting for the event that ends them. */
@@ -181,11 +208,20 @@ export class MinecraftAdapter implements GameAdapter {
   constructor(bridge: BridgeClient, opts: AdapterOptions = {}) {
     this.#bridge = bridge;
     this.#opts = opts;
+    this.#waypoints = new WaypointStore({ storage: opts.storage });
+    this.#vision = new ScreenshotPolicy(opts.vision);
     this.tasks = new SteerableTasks(
       {
         observe: (signal) => this.observe(signal),
         run: (spec, task) => this.#run(spec, task),
-        resource: (spec) => (spec.goal === "chat" ? null : spec.goal === "launch" || spec.goal === "quit" ? "session" : "body"),
+        resource: (spec) =>
+          spec.goal === "chat" ||
+          spec.goal === "inspect" ||
+          (spec.goal === "waypoint" && spec.args?.op !== "goto")
+            ? null
+            : spec.goal === "launch" || spec.goal === "quit"
+              ? "session"
+              : "body",
       },
       (steer) => this.#steer(steer),
     );
@@ -193,6 +229,7 @@ export class MinecraftAdapter implements GameAdapter {
     bridge.onStatus((hello) => {
       this.#cancelPlan();
       if (hello) {
+        this.#vision.reset();
         opts.launcher?.connected();
         for (const wake of [...this.#connectWaiters]) wake();
         const caps = hello.capabilities ?? {};
@@ -209,6 +246,16 @@ export class MinecraftAdapter implements GameAdapter {
     });
   }
 
+  /** Per-world persistent waypoint and opened-chest memory. */
+  get waypoints(): WaypointStore {
+    return this.#waypoints;
+  }
+
+  /** On-demand screenshot capture policy. */
+  get vision(): ScreenshotPolicy {
+    return this.#vision;
+  }
+
   /** The mod reports task lifecycle itself (PROTOCOL.md §6.1). */
   get modTasks(): boolean {
     return this.#bridge.hello?.capabilities?.tasks === true;
@@ -216,6 +263,12 @@ export class MinecraftAdapter implements GameAdapter {
 
   #onEvent(raw: BridgeEvent): void {
     if (raw.name === "reflex_end") for (const wake of [...this.#reflexWaiters]) wake();
+    if (raw.name === "death") void this.#waypoints.recordDeath(raw.data);
+    else if (raw.name === "sleep_finished") void this.#waypoints.recordSleep(raw.data);
+    else if (raw.name === "chest_contents" || raw.name === "chest_finished") {
+      void this.#waypoints.recordChestEvent(raw.name, raw.data);
+    }
+    this.#vision.noteEvent(raw);
     const runner = this.#runner;
     if (runner) runner.feed(raw);
     for (const w of [...this.#watches]) {
@@ -223,7 +276,7 @@ export class MinecraftAdapter implements GameAdapter {
       if (end !== undefined) w.resolve(end);
     }
     // A task's lifecycle and its steps are the executor's business, not commentary.
-    if (raw.name.startsWith("task_") || STEP_EVENTS.has(raw.name)) return;
+    if (raw.name.startsWith("task_") || STEP_EVENTS.has(raw.name) || (runner && RUNNER_STEP_EVENTS.has(raw.name))) return;
     this.#push(raw);
   }
 
@@ -259,10 +312,12 @@ export class MinecraftAdapter implements GameAdapter {
     }
     try {
       const snapshot = (await this.#bridge.request("observe")) as Snapshot;
+      await this.#waypoints.observeSnapshot(snapshot);
+      const memory = this.#waypoints.summarySync();
       const caps = this.#bridge.hello?.capabilities;
-      const state = compactState(snapshot);
+      const state = compactState(snapshot, memory);
       if (caps) state.capabilities = { baritone: !!caps.baritone, altoclef: !!caps.altoclef };
-      let summary = summarize(snapshot);
+      let summary = summarize(snapshot, memory);
       const runner = this.#runner;
       if (runner) {
         const p = runner.status();
@@ -270,7 +325,17 @@ export class MinecraftAdapter implements GameAdapter {
         state.busy = true;
         summary += `\n正在取得 ${itemName(p.target)}${p.count > 1 ? `×${p.count}` : ""}(第 ${p.step}/${p.total} 步${p.doing ? `:${p.doing}` : ""})`;
       }
-      return { summary, state };
+      const screenshotCap = (caps as { screenshot?: boolean } | undefined)?.screenshot !== false;
+      const screenshot = await this.#vision.maybeCapture(
+        snapshot,
+        (type, params) => this.#bridge.request(type, params),
+        screenshotCap,
+      );
+      return {
+        summary,
+        state,
+        ...(screenshot ? { screenshot: screenshot as GameObservation["screenshot"] } : {}),
+      };
     } catch (error) {
       if (error instanceof BridgeError) {
         const inGame = error.code !== "not_in_game";
@@ -296,14 +361,22 @@ export class MinecraftAdapter implements GameAdapter {
         return this.#quit();
       case "obtain":
         return { ok: false, code: "invalid", message: "obtain 是一個任務(由執行器開始)" };
+      case "inspect":
+        return this.#inspectAction(action.args ?? {});
+      case "waypoint":
+        return this.#waypointAction(action.args ?? {}, signal, task);
     }
-    // Anything but talking replaces a running plan (she chose to do something else).
+    // Anything body-moving replaces a running plan; chat/inspect/non-goto waypoints stay alongside it.
     if (action.name !== "chat") this.#cancelPlan();
+    if (action.name === "goto" && typeof action.args?.waypoint === "string") {
+      await this.#waypoints.ensureWorld();
+    }
     let requests: ReturnType<typeof toRequests>;
     try {
       requests = toRequests(action, {
         allowCommands: this.#opts.allowCommands,
         inventory: action.name === "mine" ? await this.#inventory() : undefined,
+        resolveWaypoint: (name) => this.#waypoints.getSync(name),
       });
     } catch (error) {
       if (error instanceof ActionError) return { ok: false, code: "invalid", message: error.message };
@@ -329,7 +402,91 @@ export class MinecraftAdapter implements GameAdapter {
       }
       throw error;
     }
+    if (action.name === "place") {
+      const placed = typeof action.args?.item === "string" ? action.args.item : "";
+      if (placed === "crafting_table" || placed === "furnace") void this.#waypoints.recordStation(placed);
+    } else if (action.name === "chest" && results[0] && typeof results[0] === "object") {
+      void this.#waypoints.recordChestEvent("chest_contents", results[0] as Record<string, unknown>);
+    }
     return { ok: true, message: describeAction(action), data: results.length === 1 ? results[0] : results };
+  }
+
+  #inspectAction(args: Record<string, unknown>): ActionResult {
+    if (!this.#vision.enabled) {
+      return { ok: false, code: "precondition", message: "目前關閉了視覺截圖功能(vision_enabled=false)" };
+    }
+    const caps = this.#bridge.hello?.capabilities as { screenshot?: boolean } | undefined;
+    if (caps?.screenshot === false) {
+      return { ok: false, code: "precondition", message: "模組目前不支援截圖功能" };
+    }
+    const reason = typeof args.reason === "string" && args.reason.trim() ? args.reason.trim() : undefined;
+    this.#vision.forceNext(reason);
+    return { ok: true, message: "已排定在下次觀察拍下畫面" };
+  }
+
+  async #waypointAction(args: Record<string, unknown>, signal?: AbortSignal, task?: string): Promise<ActionResult> {
+    const op = typeof args.op === "string" ? args.op.trim() : "";
+    const name = typeof args.name === "string" ? args.name.trim() : "";
+    switch (op) {
+      case "save": {
+        if (!name) return { ok: false, code: "invalid", message: "waypoint save 要給 name(地標名稱)" };
+        const x = typeof args.x === "number" && Number.isFinite(args.x) ? args.x : undefined;
+        const y = typeof args.y === "number" && Number.isFinite(args.y) ? args.y : undefined;
+        const z = typeof args.z === "number" && Number.isFinite(args.z) ? args.z : undefined;
+        let pos: { x: number; y: number; z: number } | undefined =
+          x !== undefined && y !== undefined && z !== undefined ? { x, y, z } : undefined;
+        let dim: string | undefined;
+        if (!pos) {
+          if (!this.#bridge.ready) return { ok: false, code: "disconnected", message: errorText("not_connected", "") };
+          try {
+            const snap = (await this.#bridge.request("observe")) as Snapshot;
+            await this.#waypoints.observeSnapshot(snap);
+            const p = snap.block_position ?? snap.position;
+            if (!p) return { ok: false, code: "precondition", message: "目前拿不到座標,請直接提供 x, y, z" };
+            pos = p;
+            dim = snap.dimension;
+          } catch (error) {
+            if (error instanceof BridgeError) {
+              return { ok: false, code: failureCode(error.code), message: errorText(error.code, error.message) };
+            }
+            throw error;
+          }
+        }
+        const note = typeof args.note === "string" && args.note.trim() ? args.note.trim() : undefined;
+        const wp = await this.#waypoints.set(name, { ...pos, dimension: dim, note });
+        return {
+          ok: true,
+          message: `已記住地標「${wp.name}」(${wp.x}, ${wp.y}, ${wp.z})`,
+          data: wp,
+        };
+      }
+      case "list": {
+        const mem = await this.#waypoints.list();
+        const wpText = mem.waypoints.length
+          ? mem.waypoints.map((w) => `${w.name}(${w.x},${w.y},${w.z})`).join("、")
+          : "無";
+        return {
+          ok: true,
+          message: `記憶點:${wpText};已知箱子 ${mem.chests.length} 個`,
+          data: mem,
+        };
+      }
+      case "delete": {
+        if (!name) return { ok: false, code: "invalid", message: "waypoint delete 要給 name" };
+        const deleted = await this.#waypoints.delete(name);
+        return deleted
+          ? { ok: true, message: `已刪除記憶點「${name}」` }
+          : { ok: false, code: "not_found", message: `找不到名為「${name}」的記憶點` };
+      }
+      case "goto": {
+        if (!name) return { ok: false, code: "invalid", message: "waypoint goto 要給 name" };
+        const wp = await this.#waypoints.get(name);
+        if (!wp) return { ok: false, code: "not_found", message: `找不到名為「${name}」的記憶點` };
+        return this.act({ name: "goto", args: { x: wp.x, y: wp.y, z: wp.z } }, signal, task);
+      }
+      default:
+        return { ok: false, code: "invalid", message: "waypoint.op 要是 save、goto、list 或 delete" };
+    }
   }
 
   /**
@@ -374,6 +531,17 @@ export class MinecraftAdapter implements GameAdapter {
         return this.#runObtain(spec, task, strategyOf(spec.args.strategy));
       case "get":
         return this.#runObtain(spec, task, "altoclef");
+      case "waypoint": {
+        if (spec.args?.op === "goto") {
+          const name = typeof spec.args.name === "string" ? spec.args.name.trim() : "";
+          if (!name) throw new TaskFailure("invalid", "waypoint goto 要給 name");
+          const wp = await this.#waypoints.get(name);
+          if (!wp) throw new TaskFailure("not_found", `找不到名為「${name}」的記憶點`);
+          return this.#runJob({ name: "goto", args: { x: wp.x, y: wp.y, z: wp.z } }, spec, task);
+        }
+        const result = await this.#waypointAction(spec.args ?? {}, task.signal, spec.id);
+        return result.ok ? { detail: result.message ?? "", data: result.data ?? null } : fail(result);
+      }
     }
     if (INSTANT.has(goal)) {
       const result = await this.act({ name: goal, args: spec.args }, task.signal, spec.id);
@@ -383,37 +551,89 @@ export class MinecraftAdapter implements GameAdapter {
     return this.#runJob({ name: goal, args: spec.args }, spec, task);
   }
 
+  #noteTaskFailure(code: TaskFailureCode, detail: string): void {
+    if (code === "cancelled" || code === "superseded" || code === "disconnected") return;
+    this.#vision.noteFailure(`${code}:${detail}`.slice(0, 80));
+  }
+
+  /** Builds a bridge event matcher for an `ActiveJob`'s current mod task id. */
+  #buildJobMatcher(job: ActiveJob, modId: string): (e: BridgeEvent) => Ending {
+    const base = jobEnd(job.goal, modId, this.modTasks, () => this.#altoClefDone(), (end) => job.finish(end));
+    return (e: BridgeEvent): Ending => {
+      if (typeof e.data.task === "string" && job.superseded.has(e.data.task)) return undefined;
+      if (
+        !this.modTasks &&
+        Date.now() <= job.ignoreCancelUntil &&
+        e.data.cancelled === true &&
+        e.data.reason !== "reflex" &&
+        (e.name === "baritone_idle" || e.name === "hunt_failed" || e.name === "goal_failed")
+      ) {
+        job.ignoreCancelUntil = 0;
+        return undefined;
+      }
+      return base(e);
+    };
+  }
+
   /** A job that ends with its own events: start it, then wait for its end (or its budget). */
   async #runJob(action: GameAction, spec: TaskSpec, task: TaskContext): Promise<TaskResult> {
-    let later: (end: TaskResult | TaskFailure) => void = () => {};
-    const ended = this.#watch(
-      jobEnd(action.name, spec.id, this.modTasks, () => this.#altoClefDone(), (end) => later(end)),
+    const job: ActiveJob = {
+      outerId: spec.id,
+      goal: action.name,
+      args: { ...(action.args ?? {}) },
       task,
-    );
-    later = ended.finish;
+      modTaskId: spec.id,
+      gen: 0,
+      superseded: new Set(),
+      ignoreCancelUntil: 0,
+      ended: false,
+      steerChain: Promise.resolve(),
+      setMatcher: () => {},
+      finish: () => {},
+    };
+    const ended = this.#watch(this.#buildJobMatcher(job, job.modTaskId), task);
+    job.setMatcher = ended.setMatcher;
+    job.finish = ended.finish;
+    this.#activeJob = job;
     this.#stopOnAbort(task);
-    const result = await this.act(action, task.signal, spec.id);
-    if (!result.ok) {
-      ended.cancel();
-      fail(result);
-    }
-    if (OPEN_ENDED.has(action.name)) {
-      // Following / exploring / farming go on until stopped: the budget is how long, not a limit.
-      const left = Math.max(task.remainingMs() - 500, 0);
-      const timer = setTimeout(() => ended.finish({ detail: `${describeAction(action)},做了 ${Math.round(left / 1000)} 秒` }), left);
-      try {
-        return await ended.done;
-      } finally {
-        clearTimeout(timer);
-        if (!task.signal.aborted) void this.#bridge.request("stop").catch(() => undefined);
+    try {
+      const result = await this.act(action, task.signal, job.modTaskId);
+      if (!result.ok) {
+        ended.cancel();
+        this.#noteTaskFailure(result.code ?? "internal", result.message ?? "");
+        fail(result);
       }
+      if (OPEN_ENDED.has(action.name)) {
+        // Following / exploring / farming go on until stopped: the budget is how long, not a limit.
+        const left = Math.max(task.remainingMs() - 500, 0);
+        const timer = setTimeout(
+          () =>
+            ended.finish({
+              detail: `${describeAction({ name: job.goal, args: job.args })},做了 ${Math.round(left / 1000)} 秒`,
+            }),
+          left,
+        );
+        try {
+          return await ended.done;
+        } finally {
+          clearTimeout(timer);
+          if (!task.signal.aborted) void this.#bridge.request("stop").catch(() => undefined);
+        }
+      }
+      return await ended.done;
+    } catch (error) {
+      if (error instanceof TaskFailure) this.#noteTaskFailure(error.code, error.message);
+      throw error;
+    } finally {
+      job.ended = true;
+      if (this.#activeJob === job) this.#activeJob = null;
     }
-    return ended.done;
   }
 
   /** Registers a watch ended by `match` (or by the task's abort). */
   #watch(match: (e: BridgeEvent) => Ending, task: TaskContext) {
     let finish!: (end: TaskResult | TaskFailure) => void;
+    let watchRef!: Watch;
     const done = new Promise<TaskResult>((resolve, reject) => {
       const w: Watch = {
         match,
@@ -424,13 +644,22 @@ export class MinecraftAdapter implements GameAdapter {
           else resolve(end);
         },
       };
-      const onAbort = () => w.resolve(task.signal.reason instanceof TaskFailure ? task.signal.reason : new TaskFailure("cancelled", "cancelled"));
+      watchRef = w;
+      const onAbort = () =>
+        w.resolve(task.signal.reason instanceof TaskFailure ? task.signal.reason : new TaskFailure("cancelled", "cancelled"));
       task.signal.addEventListener("abort", onAbort, { once: true });
       this.#watches.add(w);
       finish = w.resolve;
     });
     done.catch(() => undefined);
-    return { done, finish, cancel: () => finish(new TaskFailure("cancelled", "not started")) };
+    return {
+      done,
+      finish,
+      setMatcher: (next: (e: BridgeEvent) => Ending) => {
+        watchRef.match = next;
+      },
+      cancel: () => finish(new TaskFailure("cancelled", "not started")),
+    };
   }
 
   #endWatches(failure: TaskFailure): void {
@@ -565,30 +794,145 @@ export class MinecraftAdapter implements GameAdapter {
   }
 
   /**
-   * A steer of running task `steer.task`. Only an `obtain` plan has a step boundary here: the
-   * change is queued in its runner, which reads it between two steps and reports `applied` (or
-   * `too_late` if the plan ends first). Returns the outcome to report now, or `null` (queued).
+   * A steer of running task `steer.task`:
+   * - `obtain` plans queue the target change in `ObtainRunner` for the next step boundary.
+   * - Running `mine`, `goto`, `explore`, `follow`, and `hunt` mod jobs re-target the mod live
+   *   while keeping the outer `TaskId` intact.
    */
   #steer(steer: SteerRequest): { outcome: "rejected" | "too_late"; detail: string } | null {
     const runner = this.#runner;
-    if (runner === null || this.#planTask !== steer.task) {
-      return {
-        outcome: "rejected",
-        detail: "這個任務是一個 mod 工作(走路、挖礦、合成或熔爐),中間沒有可以安全切換的步驟;要改就取消再重開",
-      };
+    if (runner !== null && this.#planTask === steer.task) {
+      const patch = parsePlanPatch(steer.patch);
+      if (typeof patch === "string") return { outcome: "rejected", detail: patch };
+      return runner.steer(steer.id, patch) === "too_late"
+        ? { outcome: "too_late", detail: "取得已經結束了,來不及調整" }
+        : null;
     }
-    const patch = parsePlanPatch(steer.patch);
-    if (typeof patch === "string") return { outcome: "rejected", detail: patch };
-    return runner.steer(steer.id, patch) === "too_late"
-      ? { outcome: "too_late", detail: "取得已經結束了,來不及調整" }
-      : null;
+    const job = this.#activeJob;
+    if (job !== null && job.outerId === steer.task) {
+      if (job.ended) return { outcome: "too_late", detail: "任務已經結束了,來不及調整" };
+      if (!STEERABLE_MOD_GOALS.has(job.goal)) {
+        return {
+          outcome: "rejected",
+          detail: "這個動作中間沒有可切換的目標;要改請取消後重開",
+        };
+      }
+      const nextArgs = parseJobSteerArgs(job.goal, job.args, steer.patch);
+      if (typeof nextArgs === "string") return { outcome: "rejected", detail: nextArgs };
+      try {
+        toRequests(
+          { name: job.goal, args: nextArgs },
+          {
+            allowCommands: this.#opts.allowCommands,
+            resolveWaypoint: (name) => this.#waypoints.getSync(name),
+          },
+        );
+      } catch (error) {
+        if (error instanceof ActionError) return { outcome: "rejected", detail: error.message };
+        throw error;
+      }
+      job.steerChain = job.steerChain.then(() => this.#applyJobSteer(job, steer.id, nextArgs));
+      return null;
+    }
+    return {
+      outcome: "rejected",
+      detail: "這個任務沒有可以切換的目標;要改請取消後重開",
+    };
+  }
+
+  async #applyJobSteer(job: ActiveJob, steerId: string, nextArgs: Record<string, unknown>): Promise<void> {
+    if (job.ended || job.task.signal.aborted) {
+      this.tasks.reportSteer(job.outerId, steerId, "too_late", "任務已經結束了,來不及調整");
+      return;
+    }
+    await this.#waypoints.ensureWorld();
+    let requests: ReturnType<typeof toRequests>;
+    try {
+      requests = toRequests(
+        { name: job.goal, args: nextArgs },
+        {
+          allowCommands: this.#opts.allowCommands,
+          inventory: job.goal === "mine" ? await this.#inventory() : undefined,
+          resolveWaypoint: (name) => this.#waypoints.getSync(name),
+        },
+      );
+    } catch (error) {
+      if (error instanceof ActionError) {
+        this.tasks.reportSteer(job.outerId, steerId, "rejected", error.message);
+        return;
+      }
+      throw error;
+    }
+    const caps = this.#bridge.hello?.capabilities;
+    if (caps && requests.some((r) => r.type === "baritone") && caps.baritone === false) {
+      this.tasks.reportSteer(job.outerId, steerId, "rejected", errorText("baritone_unavailable", ""));
+      return;
+    }
+    if (job.ended || job.task.signal.aborted) {
+      this.tasks.reportSteer(job.outerId, steerId, "too_late", "任務已經結束了,來不及調整");
+      return;
+    }
+
+    const prevModId = job.modTaskId;
+    const prevMatcher = this.#buildJobMatcher(job, prevModId);
+    const nextModId = `${job.outerId}~${++job.gen}`;
+    job.superseded.add(prevModId);
+    job.modTaskId = nextModId;
+    job.ignoreCancelUntil = Date.now() + 250;
+    job.setMatcher(this.#buildJobMatcher(job, nextModId));
+
+    let stoppedOld = false;
+    try {
+      for (const r of requests) {
+        const tagged = JOB_REQUESTS.has(r.type) ? { ...r.params, task: nextModId } : r.params;
+        try {
+          await this.#request(r.type, tagged, job.task.signal);
+        } catch (error) {
+          if (error instanceof BridgeError && error.code === "busy" && !stoppedOld) {
+            stoppedOld = true;
+            job.ignoreCancelUntil = Date.now() + 250;
+            await this.#bridge.request("stop").catch(() => undefined);
+            await this.#request(r.type, tagged, job.task.signal);
+          } else {
+            throw error;
+          }
+        }
+      }
+    } catch (error) {
+      if (job.ended || job.task.signal.aborted) {
+        this.tasks.reportSteer(job.outerId, steerId, "too_late", "任務已經結束了,來不及調整");
+        return;
+      }
+      const msg =
+        error instanceof BridgeError
+          ? errorText(error.code, error.message)
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      this.tasks.reportSteer(job.outerId, steerId, "rejected", msg);
+      if (!stoppedOld) {
+        job.superseded.delete(prevModId);
+        job.modTaskId = prevModId;
+        job.ignoreCancelUntil = 0;
+        job.setMatcher(prevMatcher);
+      } else {
+        const code = error instanceof BridgeError ? failureCode(error.code) : "internal";
+        job.finish(new TaskFailure(code, msg));
+      }
+      return;
+    }
+
+    job.args = nextArgs;
+    const detail = `調整為${describeAction({ name: job.goal, args: nextArgs })}`;
+    job.task.progress(detail);
+    this.tasks.reportSteer(job.outerId, steerId, "applied", detail);
   }
 
   async #runPlan(item: string, count: number, task: TaskContext): Promise<TaskResult> {
     if (!knows(item)) {
       throw new TaskFailure(
         "invalid",
-        `不知道怎麼取得${itemName(item)}(只會砍樹、挖礦、合成和用熔爐燒的東西)`,
+        `不知道怎麼取得${itemName(item)}(只會砍樹、挖礦、打獵、裝水、合成和用熔爐燒的東西)`,
       );
     }
     let snapshot: Snapshot;
@@ -598,24 +942,63 @@ export class MinecraftAdapter implements GameAdapter {
       if (error instanceof BridgeError) throw new TaskFailure(failureCode(error.code), errorText(error.code, error.message));
       throw error;
     }
+    await this.#waypoints.observeSnapshot(snapshot);
     const inv = snapshot.inventory ?? {};
     const want = `${itemName(item)}${count > 1 ? `×${count}` : ""}`;
     if (countOf(inv, item) >= count) return { detail: `背包裡已經有${want}了` };
     let steps: ReturnType<typeof plan>;
     try {
-      steps = plan(item, count, inv, worldOf(snapshot));
+      const chests = this.#waypoints.nearbyChests(
+        snapshot.dimension ?? "overworld",
+        snapshot.block_position ?? snapshot.position,
+        96,
+        snapshot.world_id,
+      );
+      steps = plan(item, count, inv, worldOf(snapshot, chests));
     } catch (error) {
-      if (error instanceof PlanError) throw new TaskFailure("precondition", error.message);
+      if (error instanceof PlanError) {
+        this.#noteTaskFailure("precondition", error.message);
+        throw new TaskFailure("precondition", error.message);
+      }
       throw error;
     }
     this.#cancelPlan();
     const runner = new ObtainRunner(
       {
         request: (type, params) => this.#bridge.request(type, params),
-        observe: async () => (await this.#bridge.request("observe")) as Snapshot,
+        observe: async () => {
+          const snap = (await this.#bridge.request("observe")) as Snapshot;
+          await this.#waypoints.observeSnapshot(snap);
+          return snap;
+        },
         // Its steps are the task's progress.
         emit: (e) => task.progress(String((e.data as { text?: unknown } | undefined)?.text ?? e.type)),
         steered: (id, outcome, detail) => this.tasks.reportSteer(task.spec.id, id, outcome, detail),
+        chestsFor: (snap) =>
+          this.#waypoints.nearbyChests(
+            snap.dimension ?? "overworld",
+            snap.block_position ?? snap.position,
+            96,
+            snap.world_id,
+          ),
+        recordStation: (station, snap) => {
+          const p = snap.block_position ?? snap.position;
+          void this.#waypoints.recordStation(
+            station,
+            p ? { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) } : undefined,
+            snap.dimension,
+          );
+        },
+        recordMineEntrance: (snap) => {
+          const p = snap.block_position ?? snap.position;
+          void this.#waypoints.recordMineEntrance(
+            p ? { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) } : undefined,
+            snap.dimension,
+          );
+        },
+        onChestEvent: (name, data) => {
+          void this.#waypoints.recordChestEvent(name, data);
+        },
       },
       item,
       count,
@@ -630,7 +1013,10 @@ export class MinecraftAdapter implements GameAdapter {
     try {
       const result = await runner.run();
       if (result.cancelled) throw task.signal.reason ?? new TaskFailure("cancelled", result.message);
-      if (!result.ok) throw new TaskFailure(result.code ?? "internal", result.message);
+      if (!result.ok) {
+        this.#noteTaskFailure(result.code ?? "internal", result.message);
+        throw new TaskFailure(result.code ?? "internal", result.message);
+      }
       // A steer may have changed what she was getting.
       return { detail: result.message, data: { target: runner.item, count: runner.count } };
     } finally {
@@ -677,13 +1063,110 @@ export class MinecraftAdapter implements GameAdapter {
 }
 
 /** Request types that start work the mod can report a task for. */
-const JOB_REQUESTS = new Set(["baritone", "altoclef", "craft", "smelt"]);
+const JOB_REQUESTS = new Set([
+  "baritone",
+  "altoclef",
+  "craft",
+  "smelt",
+  "mine_branch",
+  "clear_leaves",
+  "chest",
+  "sleep",
+  "hunt",
+]);
+
+function parseJobSteerArgs(
+  goal: string,
+  current: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> | string {
+  const keys = Object.keys(patch);
+  if (keys.length === 0) return "調整是空的";
+  const next: Record<string, unknown> = { ...current };
+  switch (goal) {
+    case "mine": {
+      for (const k of keys) {
+        if (k !== "blocks" && k !== "block" && k !== "count") return `mine 不能改 ${k}`;
+      }
+      if ("blocks" in patch) {
+        delete next.block;
+        next.blocks = patch.blocks;
+      } else if ("block" in patch) {
+        delete next.blocks;
+        next.block = patch.block;
+      }
+      if ("count" in patch) next.count = patch.count;
+      return next;
+    }
+    case "goto": {
+      for (const k of keys) {
+        if (k !== "x" && k !== "y" && k !== "z" && k !== "block" && k !== "waypoint" && k !== "near") {
+          return `goto 不能改 ${k}`;
+        }
+      }
+      if ("x" in patch || "y" in patch || "z" in patch) {
+        delete next.block;
+        delete next.waypoint;
+        if ("x" in patch) next.x = patch.x;
+        if ("y" in patch) next.y = patch.y;
+        else if (!("x" in current && "z" in current)) delete next.y;
+        if ("z" in patch) next.z = patch.z;
+      } else if ("block" in patch) {
+        delete next.x;
+        delete next.y;
+        delete next.z;
+        delete next.waypoint;
+        next.block = patch.block;
+      } else if ("waypoint" in patch) {
+        delete next.x;
+        delete next.y;
+        delete next.z;
+        delete next.block;
+        next.waypoint = patch.waypoint;
+      }
+      if ("near" in patch) next.near = patch.near;
+      return next;
+    }
+    case "explore": {
+      for (const k of keys) {
+        if (k !== "x" && k !== "z") return `explore 不能改 ${k}`;
+      }
+      if ("x" in patch) next.x = patch.x;
+      if ("z" in patch) next.z = patch.z;
+      return next;
+    }
+    case "follow": {
+      for (const k of keys) {
+        if (k !== "player" && k !== "entity") return `follow 不能改 ${k}`;
+      }
+      if ("player" in patch) {
+        delete next.entity;
+        next.player = patch.player;
+      } else if ("entity" in patch) {
+        delete next.player;
+        next.entity = patch.entity;
+      }
+      return next;
+    }
+    case "hunt": {
+      for (const k of keys) {
+        if (k !== "entity" && k !== "count" && k !== "range") return `hunt 不能改 ${k}`;
+      }
+      if ("entity" in patch) next.entity = patch.entity;
+      if ("count" in patch) next.count = patch.count;
+      if ("range" in patch) next.range = patch.range;
+      return next;
+    }
+    default:
+      return "這個動作不支援調整目標";
+  }
+}
 
 function strategyOf(value: unknown): ObtainStrategy | null {
   return typeof value === "string" && (OBTAIN_STRATEGIES as readonly string[]).includes(value) ? (value as ObtainStrategy) : null;
 }
 
-/** The mod's text of a failed craft / smelt job (`error`), or a fallback. */
+/** The mod's text of a failed craft / smelt / worker job (`error`), or a fallback. */
 function jobError(e: BridgeEvent, fallback: string): string {
   return typeof e.data.error === "string" && e.data.error !== "" ? e.data.error : fallback;
 }
@@ -713,12 +1196,18 @@ export function jobEnd(
     };
   }
   const interrupted = (e: BridgeEvent): Ending =>
-    e.name === "reflex" && typeof e.data.interrupted === "string"
+    e.name === "reflex" &&
+    typeof e.data.interrupted === "string" &&
+    e.data.recoverable !== true &&
+    e.data.paused_task !== true
       ? new TaskFailure("busy", "被身體的本能反應打斷")
-      : e.name === "death"
-        ? new TaskFailure("died", "死掉了")
-        : undefined;
+      : e.name === "reflex_aborted"
+        ? new TaskFailure("busy", "暫停的動作被中斷,無法繼續")
+        : e.name === "death"
+          ? new TaskFailure("died", "死掉了")
+          : undefined;
   const idle = (e: BridgeEvent, done: string): Ending => {
+    if (e.data.paused === true || e.data.recoverable === true) return undefined;
     if (e.data.cancelled === true) {
       return e.data.reason === "reflex" ? new TaskFailure("busy", "被身體的本能反應打斷") : new TaskFailure("cancelled", "被叫停了");
     }
@@ -747,6 +1236,36 @@ export function jobEnd(
           return new TaskFailure("precondition", jobError(e, `${goal} 失敗`));
         }
         return e.name === "death" ? new TaskFailure("died", "死掉了") : undefined;
+      };
+    case "hunt":
+      return (e) => {
+        if (e.name === "hunt_finished") {
+          const collected = typeof e.data.collected === "number" ? `,拿到 ${e.data.collected} 個` : "";
+          return { detail: `打獵完成${collected}`, data: e.data };
+        }
+        if (e.name === "hunt_failed") {
+          if (e.data.cancelled === true) return new TaskFailure("cancelled", "被叫停了");
+          return new TaskFailure("not_found", jobError(e, "打獵失敗"));
+        }
+        return interrupted(e);
+      };
+    case "sleep":
+      return (e) => {
+        if (e.name === "sleep_finished") return { detail: "睡了一覺,天亮了", data: e.data };
+        if (e.name === "sleep_failed") {
+          if (e.data.cancelled === true) return new TaskFailure("cancelled", "被叫停了");
+          return new TaskFailure("precondition", jobError(e, "沒辦法睡覺"));
+        }
+        return interrupted(e);
+      };
+    case "chest":
+      return (e) => {
+        if (e.name === "chest_finished") return { detail: "箱子處理好了", data: e.data };
+        if (e.name === "chest_failed") {
+          if (e.data.cancelled === true) return new TaskFailure("cancelled", "被叫停了");
+          return new TaskFailure("precondition", jobError(e, "箱子操作失敗"));
+        }
+        return interrupted(e);
       };
     case "get":
       return (e) => {

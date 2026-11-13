@@ -30,6 +30,31 @@
       "enum": ["launched", "always", "never"],
       "default": "launched",
       "description": "停止玩的時候關遊戲:launched = 只關她自己開的、always、never"
+    },
+    "vision_enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "是否啟用按需截圖給視覺模型查看周圍環境"
+    },
+    "vision_cooldown_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 15000,
+      "description": "一般情況下兩次自動截圖之間的最短間隔(毫秒;inspect 不受限制)"
+    },
+    "vision_max_width": {
+      "type": "integer",
+      "minimum": 64,
+      "maximum": 1920,
+      "default": 512,
+      "description": "傳給視覺模型的截圖最大寬度(像素)"
+    },
+    "vision_quality": {
+      "type": "number",
+      "minimum": 0.1,
+      "maximum": 1.0,
+      "default": 0.65,
+      "description": "JPEG 截圖壓縮品質(0.1–1.0)"
     }
   },
   "additionalProperties": false

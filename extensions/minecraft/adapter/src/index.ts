@@ -16,8 +16,10 @@ export { mapEvent } from "./events.js";
 export { compactState, summarize } from "./summary.js";
 export { bridgeConfigPath, defaultMinecraftDir, resolveEndpoint } from "./config.js";
 export { Launcher, LaunchError, prismCandidates, prismInstanceOf } from "./launcher.js";
-export { ObtainRunner } from "./obtain.js";
-export { PlanError, describeStep, plan } from "./planner.js";
+export { ObtainRunner, RUNNER_STEP_EVENTS, STEP_EVENTS, worldOf } from "./obtain.js";
+export { PlanError, describeStep, plan, preferredY } from "./planner.js";
+export { ScreenshotPolicy } from "./vision.js";
+export { WaypointStore, chestKey, normalizeChestItems } from "./waypoints.js";
 
 export default defineExtension({
   async activate(ctx) {
@@ -55,6 +57,13 @@ export default defineExtension({
       damageImportant: config.damage_important,
       allowCommands: config.allow_commands,
       launcher,
+      storage: ctx.storage,
+      vision: {
+        enabled: config.vision_enabled,
+        cooldownMs: config.vision_cooldown_ms,
+        maxWidth: config.vision_max_width,
+        quality: config.vision_quality,
+      },
     });
     await ctx.game.registerAdapter(adapter);
     bridge.start();

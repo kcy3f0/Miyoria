@@ -22,12 +22,14 @@ const xyz = obj({ x: int("x"), y: int("y"), z: int("z") }, ["x", "y", "z"]);
 export const ACTIONS: GameActionSpec[] = [
   {
     name: "goto",
-    description: "用 Baritone 走到座標({x,y,z} 或只給 {x,z}),或走到最近一個你看得到的某種方塊旁({block},不會透視)",
+    description:
+      "用 Baritone 走到座標({x,y,z} 或只給 {x,z})、走到最近一個你看得到的某種方塊旁({block},不會透視),或走到已記憶地標({waypoint})",
     parameters: obj({
       x: int("x"),
       y: int("y(可省略)"),
       z: int("z"),
       block: str("方塊 id,例如 crafting_table"),
+      waypoint: str("記憶點名稱,例如 home、bed、mine、last_death"),
       near: int("走到離座標幾格內就好"),
     }),
     budget_s: 120,
@@ -111,6 +113,75 @@ export const ACTIONS: GameActionSpec[] = [
     parameters: obj({ hold_ticks: int("1–1200") }),
     budget_s: 75,
   },
+  {
+    name: "hunt",
+    description: "搜尋並獵殺附近的生物取得食物或材料(牛肉、豬肉、羊毛、皮革、羽毛…)",
+    parameters: obj(
+      {
+        entity: str("生物 id,例如 cow、pig、sheep、chicken"),
+        count: int("目標取得數量或擊殺數(選填)"),
+        range: int("搜尋距離(格,預設 32)"),
+      },
+      ["entity"],
+    ),
+    budget_s: 90,
+  },
+  {
+    name: "sleep",
+    description: "找附近的床或自己身上的床放下來睡覺,度過夜晚並設重生點",
+    parameters: obj({}),
+    budget_s: 30,
+  },
+  {
+    name: "chest",
+    description: "看管或整理附近的箱子:inspect 讀取內容並記住、store 存東西進去、take 拿東西出來",
+    parameters: obj(
+      {
+        op: { type: "string", enum: ["inspect", "store", "take"], description: "操作:inspect / store / take" },
+        items: {
+          type: "object",
+          description: "要存入或取出的 {物品id:數量}(例如 {\"iron_ingot\":8})",
+        },
+        keep: { type: "array", items: { type: "string" }, description: "store 時保留在背包不存入的物品 id" },
+      },
+      ["op"],
+    ),
+    budget_s: 45,
+  },
+  {
+    name: "waypoint",
+    description: "管理當前世界的持久地標記憶:save 記錄座標(省略 xyz=目前位置)、goto 走過去、list 列出所有記憶點與箱子、delete 刪除",
+    parameters: obj(
+      {
+        op: { type: "string", enum: ["save", "goto", "list", "delete"], description: "操作:save / goto / list / delete" },
+        name: str("地標名稱,例如 home、bed、mine、farm"),
+        x: int("x(save 可省略)"),
+        y: int("y(save 可省略)"),
+        z: int("z(save 可省略)"),
+        note: str("備註(選填)"),
+      },
+      ["op"],
+    ),
+    budget_s: 120,
+  },
+  {
+    name: "inspect",
+    description: "立即在下次觀察擷取一張清晰的遊戲畫面(略過冷卻),適合看清地形、建築或卡住原因",
+    parameters: obj({ reason: str("查看原因(選填)") }),
+    budget_s: 15,
+  },
+  {
+    name: "manage_inv",
+    description: "自動穿戴最好的裝備工具(equip_best)或整理背包並清理垃圾(tidy)",
+    parameters: obj(
+      {
+        op: { type: "string", enum: ["equip_best", "tidy"], description: "equip_best 或 tidy" },
+        trash: { type: "array", items: { type: "string" }, description: "tidy 時指定丟棄的物品 id" },
+      },
+      ["op"],
+    ),
+    budget_s: 20,
+  },
   { name: "select", description: "切換快捷列:{slot:0-8} 或 {item}", parameters: obj({ slot: int("0–8"), item: str("物品 id") }), budget_s: 10 },
   { name: "respawn", description: "死掉時按重生", parameters: obj({}), budget_s: 15 },
   {
@@ -161,6 +232,8 @@ export interface MapOptions {
   allowCommands?: boolean;
   /** Her inventory (`item id → count`) when known; `mine` refuses blocks her pickaxe cannot harvest. */
   inventory?: Record<string, number>;
+  /** Resolves a named waypoint (`home`, `bed`, ...) for `goto { waypoint }`. */
+  resolveWaypoint?: (name: string) => { x: number; y: number; z: number } | undefined;
 }
 
 /** Thrown for arguments the model got wrong; the message goes back to it. */
@@ -199,7 +272,13 @@ export function toRequests(action: GameAction, opts: MapOptions = {}): BridgeReq
       }
       const block = id(a.block);
       if (block) return [baritone("goto", { block })];
-      throw new ActionError("goto 要給 {x,z}、{x,y,z} 或 {block}");
+      const wpName = text(a.waypoint);
+      if (wpName) {
+        const wp = opts.resolveWaypoint?.(wpName);
+        if (!wp) throw new ActionError(`找不到名為「${wpName}」的記憶點`);
+        return [baritone("goto", { x: Math.round(wp.x), y: Math.round(wp.y), z: Math.round(wp.z), ...(near === undefined ? {} : { near }) })];
+      }
+      throw new ActionError("goto 要給 {x,z}、{x,y,z}、{block} 或 {waypoint}");
     }
     case "mine": {
       const list = Array.isArray(a.blocks) ? a.blocks.map(id).filter((b): b is string => !!b) : [];
@@ -312,6 +391,64 @@ export function toRequests(action: GameAction, opts: MapOptions = {}): BridgeReq
       if (item) return [{ type: "select_slot", params: { item } }];
       throw new ActionError("select 要給 slot 或 item");
     }
+    case "hunt": {
+      const entity = id(a.entity);
+      if (!entity || !/^[a-z0-9_:]+$/.test(entity)) throw new ActionError("hunt 要給 entity(生物 id)");
+      const count = num(a.count);
+      const range = num(a.range);
+      return [
+        {
+          type: "hunt",
+          params: {
+            entity,
+            ...(count !== undefined ? { count: Math.max(1, Math.round(count)) } : {}),
+            ...(range !== undefined ? { range: Math.max(4, Math.min(128, Math.round(range))) } : {}),
+          },
+        },
+      ];
+    }
+    case "sleep":
+      return [{ type: "sleep", params: {} }];
+    case "chest": {
+      const op = text(a.op);
+      if (op !== "inspect" && op !== "store" && op !== "take") {
+        throw new ActionError("chest.op 要是 inspect、store 或 take");
+      }
+      let items: Record<string, number> | undefined;
+      if (a.items !== undefined) {
+        if (!a.items || typeof a.items !== "object" || Array.isArray(a.items)) {
+          throw new ActionError("chest.items 要是 {物品id: 數量} 物件");
+        }
+        items = {};
+        for (const [rawKey, rawVal] of Object.entries(a.items as Record<string, unknown>)) {
+          const item = id(rawKey);
+          const count = num(rawVal);
+          if (item && count !== undefined && count > 0) items[item] = Math.round(count);
+        }
+      }
+      if (op === "take" && (!items || Object.keys(items).length === 0)) {
+        throw new ActionError("chest take 要在 items 指定要拿的物品與數量");
+      }
+      const keep = Array.isArray(a.keep) ? a.keep.map(id).filter((x): x is string => !!x) : undefined;
+      return [
+        {
+          type: "chest",
+          params: {
+            op,
+            ...(items && Object.keys(items).length > 0 ? { items } : {}),
+            ...(keep && keep.length > 0 ? { keep } : {}),
+          },
+        },
+      ];
+    }
+    case "manage_inv": {
+      const op = text(a.op);
+      if (op !== "equip_best" && op !== "tidy") {
+        throw new ActionError("manage_inv.op 要是 equip_best 或 tidy");
+      }
+      const trash = Array.isArray(a.trash) ? a.trash.map(id).filter((x): x is string => !!x) : undefined;
+      return [{ type: "manage_inv", params: { op, ...(trash && trash.length > 0 ? { trash } : {}) } }];
+    }
     case "respawn":
       return [{ type: "respawn", params: {} }];
     default:
@@ -324,7 +461,11 @@ export function describeAction(action: GameAction): string {
   const a = action.args ?? {};
   switch (action.name) {
     case "goto":
-      return a.block ? `走向 ${a.block}` : `走到 (${a.x}, ${a.y ?? "~"}, ${a.z})`;
+      return a.waypoint
+        ? `走向記憶點 ${a.waypoint}`
+        : a.block
+          ? `走向 ${a.block}`
+          : `走到 (${a.x}, ${a.y ?? "~"}, ${a.z})`;
     case "mine":
       return `開始挖 ${[...(Array.isArray(a.blocks) ? a.blocks : []), ...(a.block ? [a.block] : [])].join("、")}${a.count ? ` ×${a.count}` : ""}`;
     case "follow":
@@ -345,6 +486,24 @@ export function describeAction(action: GameAction): string {
       return a.item ? `把 ${zh(String(a.item))} 放進熔爐` : "去熔爐拿東西";
     case "place":
       return `放下 ${zh(String(a.item))}`;
+    case "hunt":
+      return `去打獵 ${zh(String(a.entity))}${a.count ? ` ×${a.count}` : ""}`;
+    case "sleep":
+      return "找床睡覺";
+    case "chest":
+      return a.op === "inspect" ? "查看箱子內容" : a.op === "store" ? "把東西存進箱子" : "從箱子拿東西";
+    case "waypoint":
+      return a.op === "list"
+        ? "查看所有記憶點"
+        : a.op === "save"
+          ? `記下地標 ${a.name ?? ""}`.trim()
+          : a.op === "delete"
+            ? `刪除記憶點 ${a.name ?? ""}`.trim()
+            : `前往記憶點 ${a.name ?? ""}`.trim();
+    case "inspect":
+      return "查看周圍畫面";
+    case "manage_inv":
+      return a.op === "equip_best" ? "換上最好的裝備與工具" : "整理背包";
     case "chat":
       return `說了:${a.message}`;
     case "stop":
@@ -413,6 +572,12 @@ export function errorText(code: string, message: string): string {
       return `材料不夠:還缺 ${missingList(list) || list}${table}`;
     }
     case "needs_station": {
+      if (message.includes("blast_furnace")) {
+        return "附近沒有看得到的高爐:先做並放下 blast_furnace 或 furnace";
+      }
+      if (message.includes("smoker")) {
+        return "附近沒有看得到的煙燻爐:先做並放下 smoker 或 furnace";
+      }
       const furnace = message.includes("furnace");
       return furnace
         ? "附近沒有看得到的熔爐:先用 8 個鵝卵石 craft furnace,再 place 放下來"
