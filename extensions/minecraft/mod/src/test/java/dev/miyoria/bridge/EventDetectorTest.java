@@ -200,4 +200,15 @@ class EventDetectorTest {
         assertTrue(det.onTick(st(5f, Map.of("dirt", 64), 1000, List.of())).stream()
                 .noneMatch(e -> e.name().equals("damage") || e.name().equals("item_picked")));
     }
+
+    @Test
+    void dawnAndTheEndDoNotEmitNightStarted() {
+        det.onTick(new TickState(true, false, 20f, 12, Map.of(), "overworld", 23999, 0, 64, 0, List.of(), null, null));
+        List<GameEvent> dawn = det.onTick(new TickState(true, false, 20f, 12, Map.of(), "overworld", 24000, 0, 64, 0, List.of(), null, null));
+        assertFalse(names(dawn).contains("night_started"));
+
+        det.onTick(new TickState(true, false, 20f, 20, Map.of(), "the_end", 12999, 0, 64, 0, List.of(), null, null));
+        List<GameEvent> endNight = det.onTick(new TickState(true, false, 20f, 20, Map.of(), "the_end", 13000, 0, 64, 0, List.of(), null, null));
+        assertTrue(endNight.isEmpty());
+    }
 }

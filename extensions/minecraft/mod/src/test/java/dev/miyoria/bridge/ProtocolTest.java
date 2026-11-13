@@ -2,11 +2,17 @@ package dev.miyoria.bridge;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import dev.miyoria.bridge.config.BridgeConfig;
 import dev.miyoria.bridge.protocol.Messages;
 import dev.miyoria.bridge.protocol.Protocol;
 import dev.miyoria.bridge.protocol.ProtocolException;
 import dev.miyoria.bridge.protocol.Request;
+import dev.miyoria.bridge.util.NotableBlocks;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -119,5 +125,56 @@ class ProtocolTest {
         o.addProperty("message", "a<b>&'你好");
         String json = Messages.toJson(o);
         assertEquals("{\"message\":\"a<b>&'你好\"}", json);
+    }
+
+    @Test
+    void newWorldWorkerProtocolConstants() {
+        assertEquals("mine_branch", Protocol.T_MINE_BRANCH);
+        assertEquals("clear_leaves", Protocol.T_CLEAR_LEAVES);
+        assertEquals("chest", Protocol.T_CHEST);
+        assertEquals("sleep", Protocol.T_SLEEP);
+        assertEquals("hunt", Protocol.T_HUNT);
+        assertEquals("manage_inv", Protocol.T_MANAGE_INV);
+    }
+
+    @Test
+    void bridgeConfigDefaultsAndClamping(@TempDir Path dir) throws Exception {
+        BridgeConfig def = new BridgeConfig();
+        assertTrue(def.reflexAutoEquip);
+        assertTrue(def.reflexShieldBlock);
+        assertTrue(def.reflexMlgWater);
+        assertEquals(4.0f, def.mlgMinFallDistance);
+        assertTrue(def.reflexAutoTorch);
+        assertEquals(7, def.autoTorchMaxLight);
+        assertTrue(def.reflexPillarEscape);
+        assertEquals(15, def.reflexPausedResumeMaxSecs);
+        assertEquals(16.0, def.reflexPausedMaxDrift);
+
+        Path cfgPath = dir.resolve("bridge.json");
+        Files.writeString(cfgPath, """
+                {
+                  "mlgMinFallDistance": 0.5,
+                  "autoTorchMaxLight": 99,
+                  "reflexPausedResumeMaxSecs": -3,
+                  "reflexPausedMaxDrift": 500.0
+                }
+                """);
+        BridgeConfig clamped = BridgeConfig.load(cfgPath);
+        assertEquals(2.5f, clamped.mlgMinFallDistance);
+        assertEquals(14, clamped.autoTorchMaxLight);
+        assertEquals(1, clamped.reflexPausedResumeMaxSecs);
+        assertEquals(64.0, clamped.reflexPausedMaxDrift);
+        assertTrue(clamped.reflexAutoEquip);
+    }
+
+    @Test
+    void notableBlocksIncludeNewUtilityAndResourceVariants() {
+        for (String id : java.util.List.of(
+                "blast_furnace", "smoker", "barrel", "water",
+                "obsidian", "crying_obsidian", "sugar_cane", "hay_block", "cyan_bed")) {
+            assertTrue(NotableBlocks.isNotable(id), () -> "expected notable: " + id);
+        }
+        assertTrue(NotableBlocks.priority("obsidian") < NotableBlocks.priority("water"));
+        assertTrue(NotableBlocks.priority("cyan_bed") < NotableBlocks.priority("stone"));
     }
 }

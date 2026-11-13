@@ -12,8 +12,10 @@ import dev.miyoria.bridge.util.NotableBlocks;
 import dev.miyoria.bridge.util.Visibility;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.client.network.ServerInfo;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
@@ -70,10 +72,12 @@ public final class GameObserver {
         r.yaw = p.getYaw();
         r.pitch = p.getPitch();
 
+        r.worldId = worldId(mc);
         r.dimension = Ids.normalize(w.getRegistryKey().getValue().toString());
         r.biome = w.getBiome(p.getBlockPos()).getKey().map(k -> Ids.normalize(k.getValue().toString())).orElse("unknown");
         r.timeOfDay = w.getTimeOfDay();
         r.worldTime = w.getTime();
+        r.lightLevel = Math.max(0, Math.min(15, w.getLightLevel(p.getBlockPos())));
         r.raining = w.isRaining();
         r.thundering = w.isThundering();
 
@@ -173,7 +177,7 @@ public final class GameObserver {
         int ry = Math.min(r, 12);
         BlockPos c = p.getBlockPos();
         Vec3d eye = p.getEyePos();
-        Visibility.Opaque opaque = BlockSight.opaque(w);
+        Visibility.Opaque opaque = BlockSight.opaqueSolid(w);
         Map<String, List<BlockInfo>> byKind = new HashMap<>();
         int scanned = 0;
         BlockPos.Mutable m = new BlockPos.Mutable();
@@ -184,12 +188,18 @@ public final class GameObserver {
                     m.set(c.getX() + dx, c.getY() + dy, c.getZ() + dz);
                     BlockState st = w.getBlockState(m);
                     if (st.isAir()) continue;
+                    if (st.getBlock() == Blocks.WATER && !st.getFluidState().isStill()) continue;
                     String id = notableId(st.getBlock());
                     if (id.isEmpty()) continue;
                     if (!Visibility.exposed(m.getX(), m.getY(), m.getZ(), opaque)) continue;
                     double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-                    byKind.computeIfAbsent(id, k -> new ArrayList<>()).add(new BlockInfo(id, m.getX(), m.getY(), m.getZ(), dist));
-                    if (++scanned >= MAX_SCANNED_BLOCKS) break scan;
+                    List<BlockInfo> list = byKind.computeIfAbsent(id, k -> new ArrayList<>());
+                    if (NotableBlocks.priority(id) >= 4 && list.size() >= 128) {
+                        replaceFarthest(list, new BlockInfo(id, m.getX(), m.getY(), m.getZ(), dist));
+                        continue;
+                    }
+                    list.add(new BlockInfo(id, m.getX(), m.getY(), m.getZ(), dist));
+                    if (NotableBlocks.priority(id) < 4 && ++scanned >= MAX_SCANNED_BLOCKS) break scan;
                 }
             }
         }
@@ -202,6 +212,33 @@ public final class GameObserver {
             }
         }
         return out;
+    }
+
+    private static void replaceFarthest(List<BlockInfo> list, BlockInfo candidate) {
+        int maxIdx = 0;
+        double maxDist = list.get(0).distance();
+        for (int i = 1; i < list.size(); i++) {
+            double d = list.get(i).distance();
+            if (d > maxDist) {
+                maxDist = d;
+                maxIdx = i;
+            }
+        }
+        if (candidate.distance() < maxDist) list.set(maxIdx, candidate);
+    }
+
+    private static String worldId(MinecraftClient mc) {
+        if (mc.isInSingleplayer() && mc.getServer() != null) {
+            var sp = mc.getServer().getSaveProperties();
+            if (sp != null && sp.getLevelName() != null && !sp.getLevelName().isBlank()) {
+                return "sp:" + sp.getLevelName();
+            }
+        }
+        ServerInfo info = mc.getCurrentServerEntry();
+        if (info != null && info.address != null && !info.address.isBlank()) {
+            return "mp:" + info.address;
+        }
+        return null;
     }
 
     private String notableId(Block b) {

@@ -17,8 +17,9 @@ public final class NotableBlocks {
             "brewing_stand", "smithing_table", "loom", "stonecutter", "grindstone",
             "spawner", "trial_spawner", "vault",
             "nether_portal", "end_portal_frame", "end_portal",
-            "lava", "water_cauldron", "bell", "beacon", "respawn_anchor", "lodestone",
-            "sugar_cane", "melon", "pumpkin", "wheat", "carrots", "potatoes", "beetroots", "nether_wart",
+            "obsidian", "crying_obsidian",
+            "water", "lava", "water_cauldron", "bell", "beacon", "respawn_anchor", "lodestone",
+            "sugar_cane", "hay_block", "melon", "pumpkin", "wheat", "carrots", "potatoes", "beetroots", "nether_wart",
             "sweet_berry_bush", "cocoa",
             "stone", "sand", "gravel", "clay");
 
@@ -40,7 +41,11 @@ public final class NotableBlocks {
         if (id.equals("spawner") || id.equals("trial_spawner") || id.equals("vault")) return 1;
         if (id.equals("lava")) return 2;
         if (id.contains("chest") || id.equals("barrel") || id.endsWith("shulker_box")) return 2;
-        if (id.endsWith("_portal") || id.startsWith("end_portal")) return 2;
+        if (id.endsWith("_portal") || id.startsWith("end_portal")
+                || id.equals("obsidian") || id.equals("crying_obsidian")) return 2;
+        if (id.endsWith("_bed")) return 2;
+        if (id.equals("stone") || id.equals("sand") || id.equals("gravel")
+                || id.equals("clay") || id.equals("water")) return 4;
         return 3;
     }
 }

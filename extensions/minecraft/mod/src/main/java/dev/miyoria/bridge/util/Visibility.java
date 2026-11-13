@@ -49,7 +49,7 @@ public final class Visibility {
      * Whether the segment crosses no opaque voxel between the eye's voxel (not checked: the camera
      * can be inside a block) and the end point's voxel (Amanatides-Woo voxel walk).
      */
-    static boolean clear(double x0, double y0, double z0, double x1, double y1, double z1, Opaque opaque) {
+    public static boolean clear(double x0, double y0, double z0, double x1, double y1, double z1, Opaque opaque) {
         int x = (int) Math.floor(x0), y = (int) Math.floor(y0), z = (int) Math.floor(z0);
         int endX = (int) Math.floor(x1), endY = (int) Math.floor(y1), endZ = (int) Math.floor(z1);
         double dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
