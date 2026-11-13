@@ -175,7 +175,51 @@ describe("ctx.tasks over the protocol", () => {
       ["failed", "a"],
     ]);
     expect(runs.has("a")).toBe(true);
-    expect(await h.host.request("task.observe", {})).toMatchObject({ state: { hp: 20 }, task: null, summary: "ok" });
+    const observed = await h.host.request<Record<string, unknown>>("task.observe", {});
+    expect(observed).toMatchObject({ state: { hp: 20 }, task: null, summary: "ok" });
+    expect("screenshot" in observed).toBe(false);
+  });
+
+  it("forwards optional screenshot via task.observe and omits the field when undefined", async () => {
+    let withShot = false;
+    const runner = new TaskRunner({
+      observe: async () =>
+        withShot
+          ? {
+              state: { hp: 18 },
+              summary: "saw creeper",
+              screenshot: {
+                mime: "image/jpeg",
+                data: "/9j/4AAQ",
+                detail: "low",
+                alt: "苦力怕逼近",
+              },
+            }
+          : { state: { hp: 20 }, summary: "quiet", screenshot: undefined },
+      run: async () => ({ detail: "ok" }),
+    });
+    const h = fakeHost({
+      async activate(ctx) {
+        await ctx.tasks.register(runner, { name: "Thing", goals: [] });
+      },
+    });
+    await h.initialize(initParams());
+
+    const plain = await h.host.request<Record<string, unknown>>("task.observe", {});
+    expect("screenshot" in plain).toBe(false);
+
+    withShot = true;
+    const shot = await h.host.request<Record<string, unknown>>("task.observe", {});
+    expect(shot).toMatchObject({
+      state: { hp: 18 },
+      summary: "saw creeper",
+      screenshot: {
+        mime: "image/jpeg",
+        data: "/9j/4AAQ",
+        detail: "low",
+        alt: "苦力怕逼近",
+      },
+    });
   });
 
   it("an extension without an executor answers method-not-found", async () => {

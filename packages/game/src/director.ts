@@ -9,7 +9,14 @@
 
 import { type ActuatorRegistry, deniedText } from "@miyoria/actions";
 import { errorMessage, getLogger, type ModuleContext, withTimeout } from "@miyoria/kernel";
-import { type ChatRequest, type LlmRouter, LlmRouterKey, sessionId } from "@miyoria/llm";
+import {
+  type ChatRequest,
+  type ContentPart,
+  type LlmRouter,
+  LlmRouterKey,
+  type MessageContent,
+  sessionId,
+} from "@miyoria/llm";
 import { RequestQueueKey } from "@miyoria/queue";
 import {
   type AccountRef,
@@ -29,6 +36,7 @@ import {
   Principals,
   ProposalBoardKey,
   parseTaskEvent,
+  parseTaskScreenshot,
   parseTaskTopic,
   type RegisteredTaskExecutor,
   type RestoredGame,
@@ -387,12 +395,12 @@ async function decideFrom(
   signal: AbortSignal,
 ): Promise<Res<Decision> | null> {
   if (obs.state.connected === false || obs.state.in_game === false) return null;
-  return attempt(() => ask(input, observationText(obs), signal));
+  return attempt(() => ask(input, obs, signal));
 }
 
 async function ask(
   input: DecideInput,
-  observation: string,
+  obs: StructuredState,
   signal: AbortSignal,
 ): Promise<Decision> {
   const cfg = input.cfg;
@@ -410,15 +418,32 @@ async function ask(
     lastAction: input.lastAction,
     backlog: input.backlog,
     recent: input.recent,
-    observation,
+    observation: observationText(obs),
     withheld: input.withheld,
     said: input.said,
   };
   const { system, user } = prompts(parts);
+  const screenshot = obs.screenshot !== undefined ? parseTaskScreenshot(obs.screenshot) : null;
+  const visionPurpose = cfg.vision_purpose ?? cfg.purpose;
+  const useVision = screenshot !== null && input.router.takesImages(visionPurpose);
+  const purpose = useVision ? visionPurpose : cfg.purpose;
+  const userContent: MessageContent = useVision
+    ? ([
+        { type: "text", text: user },
+        {
+          type: "image_url",
+          image_url: {
+            url: `data:${screenshot.mime};base64,${screenshot.data}`,
+            detail: screenshot.detail ?? "low",
+          },
+          alt: screenshot.alt ?? "遊戲畫面截圖",
+        },
+      ] satisfies ContentPart[])
+    : user;
   const request: ChatRequest = {
     messages: [
       { role: "system", content: system, name: null, tool_calls: [], tool_call_id: null },
-      { role: "user", content: user, name: null, tool_calls: [], tool_call_id: null },
+      { role: "user", content: userContent, name: null, tool_calls: [], tool_call_id: null },
     ],
     temperature: cfg.temperature,
     max_tokens: cfg.max_tokens,
@@ -426,7 +451,7 @@ async function ask(
     session: sessionId(input.persona.profile, `game-${input.game}`),
   };
   const response = await withTimeout(
-    input.router.complete(cfg.purpose, request, signal),
+    input.router.complete(purpose, request, signal),
     cfg.llm_timeout_secs * 1000,
   );
   if (response === undefined) throw new Error("the decision timed out");
@@ -1311,14 +1336,21 @@ export class Director {
     else this.#trigger(line, false);
   }
 
-  /** Asks for an early decision (at most every `min_decide_secs`). */
+  #triggerMinMs(important: boolean): number {
+    const secs = important
+      ? Math.min(this.#cfg.urgent_decide_secs, this.#cfg.min_decide_secs)
+      : this.#cfg.min_decide_secs;
+    return this.#secs(secs);
+  }
+
+  /** Asks for an early decision (at most every `urgent_decide_secs` when important, else `min_decide_secs`). */
   #trigger(text: string, important: boolean): void {
-    const min = this.#secs(this.#cfg.min_decide_secs);
     const s = this.#session;
     if (!s) return;
     s.trigger ??= { text: [], important: false };
     s.trigger.text.push(text);
     s.trigger.important ||= important;
+    const min = this.#triggerMinMs(s.trigger.important);
     const now = this.#now();
     const earliest = s.decideStarted === null ? now : Math.max(s.decideStarted + min, now);
     if (earliest < s.nextDecide) s.nextDecide = earliest;
@@ -1496,7 +1528,7 @@ export class Director {
     const next = s.trigger
       ? s.decideStarted === null
         ? now
-        : Math.max(s.decideStarted + this.#secs(cfg.min_decide_secs), now)
+        : Math.max(s.decideStarted + this.#triggerMinMs(s.trigger.important), now)
       : (s.decideStarted ?? now) + this.#secs(cfg.decide_secs);
     s.nextDecide = Math.max(next, now);
   }

@@ -87,6 +87,14 @@ export function taskTopic(owner: string, type: TaskEventType): string {
   return `${owner}.task.${type}`;
 }
 
+/** Optional screenshot captured alongside `StructuredState` for multimodal decision-making. */
+export interface TaskScreenshot {
+  mime: string;
+  data: string;
+  detail?: "low" | "auto" | "high";
+  alt?: string;
+}
+
 /** What `observe()` returns: structured state, never a text that has to be parsed again. */
 export interface StructuredState {
   at: string;
@@ -94,6 +102,7 @@ export interface StructuredState {
   /** The task running now, if any. */
   task: TaskId | null;
   summary: string;
+  screenshot?: TaskScreenshot;
 }
 
 /** What an activity-type executor implements. */
@@ -167,7 +176,11 @@ export interface TaskResult {
 /** What an extension implements to get a `TaskExecutor` from `TaskRunner`. */
 export interface TaskWorker {
   /** Structured state for `observe()` (the runner adds `at` and `task`). */
-  observe(signal?: AbortSignal): Promise<{ state: Record<string, unknown>; summary: string }>;
+  observe(signal?: AbortSignal): Promise<{
+    state: Record<string, unknown>;
+    summary: string;
+    screenshot?: TaskScreenshot;
+  }>;
   /** Does the task. Resolve = `done`; throw `TaskFailure` = `failed` with its code. */
   run(spec: TaskSpec, task: TaskContext): Promise<TaskResult>;
   /**
@@ -272,9 +285,16 @@ export class TaskRunner implements TaskExecutor {
   }
 
   async observe(signal?: AbortSignal): Promise<StructuredState> {
-    const { state, summary } = await this.#worker.observe(signal);
+    const { state, summary, screenshot } = await this.#worker.observe(signal);
     const current = [...this.#running.values()].find((r) => r.resource !== null) ?? [...this.#running.values()][0];
-    return { at: this.#at(), state, task: current?.spec.id ?? null, summary };
+    const result: StructuredState = { at: this.#at(), state, task: current?.spec.id ?? null, summary };
+    if (screenshot !== undefined) {
+      const clean: TaskScreenshot = { mime: screenshot.mime, data: screenshot.data };
+      if (screenshot.detail !== undefined) clean.detail = screenshot.detail;
+      if (screenshot.alt !== undefined) clean.alt = screenshot.alt;
+      result.screenshot = clean;
+    }
+    return result;
   }
 
   async start(spec: TaskSpec): Promise<void> {

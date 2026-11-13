@@ -32,6 +32,8 @@ export const GameConfigSchema = z.object({
   decide_secs: z.number().default(20),
   /** Event-triggered decisions happen at most this often. */
   min_decide_secs: z.number().default(4),
+  /** Urgent event-triggered decisions (`important: true`) happen at most this often. */
+  urgent_decide_secs: z.number().nonnegative().default(1.5),
   /**
    * A goal is kept at least this long unless it finished, failed, the bot went idle or
    * something important happened.
@@ -76,6 +78,8 @@ export const GameConfigSchema = z.object({
     ]),
   /** LLM purpose of the decisions. */
   purpose: z.string().default("game"),
+  /** Optional LLM purpose override when a decision carries a game screenshot. */
+  vision_purpose: z.string().nullable().default(null),
   temperature: z.number().default(0.7),
   max_tokens: z.number().default(2000),
   llm_timeout_secs: z.number().default(30),
@@ -115,6 +119,8 @@ export const GameConfigSchema = z.object({
       "chat",
       "connected",
       "reflex_end",
+      "reflex_resumed",
+      "reflex_aborted",
     ]),
   /**
    * Event types meaning the game went away (`disconnected`): the session ends at once (the

@@ -59,6 +59,7 @@ export {
   type TaskResult,
   TaskRunner,
   type TaskRunnerOptions,
+  type TaskScreenshot,
   type TaskSpec,
   type TaskSteer,
   type TaskWorker,
