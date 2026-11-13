@@ -12,7 +12,7 @@
 // tools_deny = ["*delete*"]
 // permission = "tools.mcp.files"
 // timeout_ms = 30000
-// max_result_chars = 8000
+// trust_read_only_hint = true    # its read_* tools may run side by side
 //
 // [mcp.servers.search]
 // transport = "http"
@@ -77,8 +77,18 @@ const ServerConfigSchema = z.object({
   timeout_ms: z.number().int().nonnegative().default(30_000),
   /** Timeout for connecting and listing tools. */
   connect_timeout_ms: z.number().int().nonnegative().default(20_000),
-  /** Tool results longer than this many characters are cut (0 = no limit). */
-  max_result_chars: z.number().int().nonnegative().default(8_000),
+  /**
+   * Tool results longer than this many characters are cut (0 = no limit of its own). The agent
+   * cuts every tool result anyway (`[modules.agent] max_tool_result_chars`); set this only to
+   * keep one server's results shorter than that.
+   */
+  max_result_chars: z.number().int().nonnegative().default(0),
+  /**
+   * Believe the server when it marks a tool `readOnlyHint`: such calls in one step then run at
+   * the same time instead of one after another. Only for servers you trust to say so honestly
+   * (a write marked read-only could run next to another call).
+   */
+  trust_read_only_hint: z.boolean().default(false),
 });
 
 export type ServerConfigData = z.output<typeof ServerConfigSchema>;
@@ -99,7 +109,8 @@ export class ServerConfig implements ServerConfigData {
   permission: string | null = null;
   timeout_ms = 30_000;
   connect_timeout_ms = 20_000;
-  max_result_chars = 8_000;
+  max_result_chars = 0;
+  trust_read_only_hint = false;
 
   constructor(data: Partial<ServerConfigData> = {}) {
     Object.assign(this, ServerConfigSchema.parse(data));
@@ -184,6 +195,7 @@ export class ServerConfig implements ServerConfigData {
       permission: this.permission,
       timeout_ms: this.timeout_ms,
       max_result_chars: this.max_result_chars,
+      trust_read_only_hint: this.trust_read_only_hint,
     };
   }
 

@@ -29,6 +29,10 @@ describe("protocol", () => {
     const d = ToolDeclSchema.parse({ name: "a", description: "b" });
     expect((d.parameters as { type: string }).type).toBe("object");
     expect(d.permission).toBeNull();
+    expect(d.read_only).toBe(false);
+    expect(ToolDeclSchema.parse({ name: "a", description: "b", read_only: true }).read_only).toBe(
+      true,
+    );
     const r = InitializeResultSchema.parse({});
     expect(r.contributions.tools).toEqual([]);
   });

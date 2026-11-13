@@ -41,6 +41,11 @@ export interface ToolDefinition {
   parameters?: JsonSchema;
   /** Permission node the triggering user needs. */
   permission?: string;
+  /**
+   * It only looks (a lookup, a status) and changes nothing: when the model asks for several such
+   * calls in one step they run at the same time. Leave unset for anything with side effects.
+   */
+  readOnly?: boolean;
   /** Returns the text the model sees; non-strings are JSON encoded. */
   run(args: Record<string, any>, ctx: ToolCallContext): unknown;
 }
@@ -175,6 +180,7 @@ export function toolDecl(tool: ToolDefinition): ToolDecl {
     description: tool.description,
     parameters,
     permission: tool.permission ?? null,
+    ...(tool.readOnly === true ? { read_only: true } : {}),
   };
 }
 

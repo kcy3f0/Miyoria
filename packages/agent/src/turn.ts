@@ -3690,15 +3690,19 @@ class Turn {
   /** What a call brought back, as the model reads it; publishes `agent.tool`. */
   #toolResult(call: ToolCall, [ok, full]: [boolean, string]): string {
     if (ok) this.#succeeded.add(call.name);
-    let result = truncate(full, this.agent.config.max_tool_result_chars);
+    const body = truncate(full, this.agent.config.max_tool_result_chars);
+    let hint = "";
     // A long result (a search, lyrics, a page) is gone next turn unless she keeps what matters.
-    if (ok && result.length >= LONG_RESULT_CHARS && call.name !== KeepNoteTool.NAME) {
-      const offered = this.#toolSpecs().some((t) => t.name === KeepNoteTool.NAME);
-      if (offered) {
-        result += KEEP_HINT;
-        this.#tally.count("keep_hint");
-      }
+    if (
+      ok &&
+      body.length >= LONG_RESULT_CHARS &&
+      call.name !== KeepNoteTool.NAME &&
+      this.#tool(KeepNoteTool.NAME) !== undefined
+    ) {
+      hint = KEEP_HINT;
+      this.#tally.count("keep_hint");
     }
+    const result = `${body}${hint}`;
     this.agent.log.debug({ turn: this.turn, tool: call.name, ok, result }, "tool call");
     this.signal.throwIfAborted();
     this.agent.ctx.publish(
@@ -3717,7 +3721,9 @@ class Turn {
       },
       { turn: this.turn },
     );
-    return result;
+    // Untrusted data, as in the main line and the work lane: a page or an MCP server's answer can
+    // carry instructions meant for her.
+    return `${dataBlock("tool", `${call.name} 的結果`, neutralize(body))}${hint}`;
   }
 
   /**

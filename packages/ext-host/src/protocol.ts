@@ -44,6 +44,11 @@ export interface ToolDecl {
   parameters: JsonValue;
   /** Permission node the triggering user needs. */
   permission: string | null;
+  /**
+   * It only looks (a lookup, a status): several such calls in one step run at the same time
+   * (`Tool.readOnly`).
+   */
+  read_only: boolean;
 }
 
 const JsonValueSchema: z.ZodType<JsonValue> = z.json() as z.ZodType<JsonValue>;
@@ -53,6 +58,7 @@ export const ToolDeclSchema = z.object({
   description: z.string(),
   parameters: JsonValueSchema.default(() => ({ type: "object", properties: {} })),
   permission: z.string().nullable().default(null),
+  read_only: z.boolean().default(false),
 });
 
 const ArgKindSchema = z.union([

@@ -29,8 +29,8 @@ export {
 } from "./config.js";
 export { McpModule, McpStartError } from "./module.js";
 export {
+  compactSchema,
   flattenResult,
-  frameResult,
   globMatch,
   MAX_TOOL_NAME,
   registryName,

@@ -617,6 +617,7 @@ class Session implements RpcHandler {
       { name, description: decl.description, parameters: decl.parameters },
       decl.permission,
       this.host.call_timeout_ms,
+      decl.read_only,
     );
     try {
       registry.register(tool);

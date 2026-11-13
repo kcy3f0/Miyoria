@@ -195,6 +195,8 @@ export interface ToolDecl {
   description: string;
   parameters: JsonSchema;
   permission?: string | null;
+  /** It only looks: several such calls in one step may run at the same time. */
+  read_only?: boolean;
 }
 
 /** `context` of `tools.call`. */

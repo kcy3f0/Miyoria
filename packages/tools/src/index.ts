@@ -86,16 +86,21 @@ export function isValidToolName(name: string): boolean {
 /** Every tool offered to the model, by name. */
 export class ToolRegistry {
   readonly #tools = new Map<string, Tool>();
+  /** Names in order, kept until a tool is registered or removed (read on every turn). */
+  #sorted: string[] | null = null;
 
   /** Registers (or replaces) a tool under `spec.name`. Throws `InvalidToolNameError`. */
   register(tool: Tool): void {
     const name = tool.spec.name;
     if (!isValidToolName(name)) throw new InvalidToolNameError(name);
+    if (!this.#tools.has(name)) this.#sorted = null;
     this.#tools.set(name, tool);
   }
 
   unregister(name: string): boolean {
-    return this.#tools.delete(name);
+    const removed = this.#tools.delete(name);
+    if (removed) this.#sorted = null;
+    return removed;
   }
 
   get(name: string): Tool | undefined {
@@ -104,12 +109,14 @@ export class ToolRegistry {
 
   /** Registered names, in order. */
   names(): string[] {
-    return [...this.#tools.keys()].sort();
+    this.#sorted ??= [...this.#tools.keys()].sort();
+    return [...this.#sorted];
   }
 
   /** Specs of every registered tool, ordered by name. */
   specs(): ToolSpec[] {
-    return this.names().map((n) => (this.#tools.get(n) as Tool).spec);
+    this.#sorted ??= [...this.#tools.keys()].sort();
+    return this.#sorted.map((n) => (this.#tools.get(n) as Tool).spec);
   }
 
   get isEmpty(): boolean {

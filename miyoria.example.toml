@@ -96,6 +96,7 @@ reflect = "high"
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "C:/data"]
 # tools_allow = ["read_*"]
+# trust_read_only_hint = true    # 相信 server 標的 readOnlyHint:同一步的這類呼叫同時跑
 
 # ---- 這台電腦跑什麼(`miyoria init` 會問,也可以直接改) ------------------------------
 # 服務分成三個角色,一台電腦可以跑一個、幾個或全部:

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ExtensionContext } from "../src/extension.js";
+import { type ExtensionContext, toolDecl } from "../src/extension.js";
 import { ErrorCode, type Envelope, type Invocation } from "../src/types.js";
 import { account, context, fakeHost, toolContext, waitFor } from "./helpers.js";
 
@@ -312,5 +312,14 @@ describe("extension runtime", () => {
     await expect(plain.host.request("task.steer", { steer })).rejects.toMatchObject({
       code: ErrorCode.MethodNotFound,
     });
+  });
+});
+
+describe("toolDecl", () => {
+  it("sends read_only only when the tool says it only looks", () => {
+    const base = { name: "a", description: "b", run: () => "" };
+    expect(toolDecl(base)).not.toHaveProperty("read_only");
+    expect(toolDecl({ ...base, readOnly: false })).not.toHaveProperty("read_only");
+    expect(toolDecl({ ...base, readOnly: true }).read_only).toBe(true);
   });
 });

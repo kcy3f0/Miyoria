@@ -3,7 +3,7 @@
 import { CommandRegistryKey } from "@miyoria/commands";
 import { contentText, contextSession, MockProvider } from "@miyoria/llm";
 import { ToolRegistryKey } from "@miyoria/tools";
-import { type ContextKey, eventTopic, isJsonObject } from "@miyoria/types";
+import { type ContextKey, dataBlock, eventTopic, isJsonObject } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PersonaHandleKey } from "../src/index.js";
 import {
@@ -33,11 +33,17 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-/** Content of the last (tool result) message of request `n`. */
+/**
+ * Content of the last (tool result) message of request `n`, without the data block every result
+ * goes back in.
+ */
 function lastToolResult(mock: MockProvider, n: number): string {
   const last = mock.requests()[n]?.messages.at(-1);
   expect(last?.role).toBe("tool");
-  return contentText(last?.content ?? "");
+  const lines = contentText(last?.content ?? "").split("\n");
+  expect(lines[0]).toMatch(/^<data source="tool" /);
+  expect(lines.at(-1)).toBe("</data>");
+  return lines.slice(1, -1).join("\n");
 }
 
 describe("agent module", () => {
@@ -460,7 +466,7 @@ describe("agent module", () => {
       { id: "call_a", name: "react", arguments: '{"emoji": "🐋"}' },
     ]);
     expect(msgs[n - 1]?.tool_call_id).toBe("call_a");
-    expect(msgs[n - 1]?.content).toBe("reacted with 🐋");
+    expect(msgs[n - 1]?.content).toBe(dataBlock("tool", "react 的結果", "reacted with 🐋"));
     // The first request's prefix is kept, so it can be served from cache.
     expect(msgs.slice(0, n - 2)).toEqual(requests[0]?.messages);
 

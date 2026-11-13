@@ -1,5 +1,7 @@
+import type { JsonValue } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import {
+  compactSchema,
   flattenResult,
   globMatch,
   MAX_TOOL_NAME,
@@ -11,6 +13,37 @@ import {
 } from "../src/index.js";
 
 describe("policy", () => {
+  it("compacts_schemas_but_keeps_property_names", () => {
+    const schema: JsonValue = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      $id: "x",
+      title: "Args",
+      type: "object",
+      properties: {
+        title: { type: "string", title: "T", examples: ["a"], description: "d" },
+        tags: { type: "array", items: { type: "string", $comment: "c" } },
+        pick: { anyOf: [{ type: "string", title: "S" }, { type: "null" }] },
+        tuple: { type: "array", items: [{ type: "integer", title: "I" }] },
+      },
+      $defs: { thing: { type: "object", title: "Thing", properties: { id: { type: "string" } } } },
+      additionalProperties: false,
+      required: ["title"],
+    };
+    expect(compactSchema(schema)).toEqual({
+      type: "object",
+      properties: {
+        title: { type: "string", description: "d" },
+        tags: { type: "array", items: { type: "string" } },
+        pick: { anyOf: [{ type: "string" }, { type: "null" }] },
+        tuple: { type: "array", items: [{ type: "integer" }] },
+      },
+      $defs: { thing: { type: "object", properties: { id: { type: "string" } } } },
+      additionalProperties: false,
+      required: ["title"],
+    });
+    expect(compactSchema("x")).toBe("x");
+  });
+
   it("globs", () => {
     expect(globMatch("*", "anything")).toBe(true);
     expect(globMatch("read_*", "read_file")).toBe(true);
