@@ -303,6 +303,34 @@ describe("the turn gate", () => {
     expect(done).toBe(true);
   });
 
+  it("lets a waiting reply go once the confirmation is due, without being told again", async () => {
+    const gate = new TurnGate(Date.now);
+    gate.hold("g", me);
+    const t0 = Date.now();
+    const waiting = gate.wait("g", [me], 5_000, new AbortController().signal);
+    gate.settle("g", me, 50);
+    await waiting;
+    const took = Date.now() - t0;
+    expect(took).toBeGreaterThanOrEqual(45);
+    expect(took).toBeLessThan(1_000);
+  });
+
+  it("waits for the last of the people it answers", async () => {
+    const gate = new TurnGate(Date.now);
+    gate.hold("g", me);
+    gate.hold("g", other);
+    let done = false;
+    const waiting = gate.wait("g", [me, other], 5_000, new AbortController().signal).then(() => {
+      done = true;
+    });
+    gate.settle("g", me, 0);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(done).toBe(false);
+    gate.settle("g", other, 0);
+    await waiting;
+    expect(done).toBe(true);
+  });
+
   it("never holds a reply longer than the limit", async () => {
     const gate = new TurnGate(Date.now);
     gate.hold("g", me);

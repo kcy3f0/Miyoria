@@ -12,6 +12,7 @@
 
 import { errorMessage, sleep } from "@miyoria/kernel";
 import { type AccountRef, accountRefString } from "@miyoria/types";
+import { deferred } from "./util.js";
 
 /** What the model says about the end of a turn. */
 export interface TurnAnswer {
@@ -85,15 +86,14 @@ export class HttpTurnJudge implements TurnJudge {
   }
 }
 
-/** How often a waiting reply looks at the gate again. */
-const GATE_POLL_MS = 25;
-
 /** `Infinity`: talking or not decided yet; else quiet, and confirmed from then on. */
 type Until = number;
 
 export class TurnGate {
   readonly #now: () => number;
   readonly #guilds = new Map<string, Map<string, Until>>();
+  /** Settles on the next `hold` / `settle`: what a waiting reply waits for besides the clock. */
+  #changed = deferred<void>();
 
   constructor(now: () => number) {
     this.#now = now;
@@ -102,29 +102,24 @@ export class TurnGate {
   /** `speaker` is talking, or their turn is not over. */
   hold(guild: string, speaker: AccountRef): void {
     this.#guild(guild).set(accountRefString(speaker), Number.POSITIVE_INFINITY);
+    this.#notify();
   }
 
   /** `speaker`'s turn looks over; it counts as confirmed in `afterMs` unless they talk again. */
   settle(guild: string, speaker: AccountRef, afterMs: number): void {
     this.#guild(guild).set(accountRefString(speaker), this.#now() + afterMs);
+    this.#notify();
   }
 
   /** Whether one of `accounts` has a turn that is not confirmed. */
   held(guild: string, accounts: readonly AccountRef[]): boolean {
-    const g = this.#guilds.get(guild);
-    if (!g) return false;
-    const now = this.#now();
-    for (const account of accounts) {
-      const key = accountRefString(account);
-      const until = g.get(key);
-      if (until === undefined) continue;
-      if (until > now) return true;
-      g.delete(key);
-    }
-    return false;
+    return this.#heldUntil(guild, accounts) !== null;
   }
 
-  /** Waits until `accounts` are confirmed, at most `maxMs`. Rejects when `signal` aborts. */
+  /**
+   * Waits until `accounts` are confirmed, at most `maxMs`. Rejects when `signal` aborts. Wakes
+   * when the last of their turns is confirmed, or when a turn is held or settled again.
+   */
   async wait(
     guild: string,
     accounts: readonly AccountRef[],
@@ -132,9 +127,46 @@ export class TurnGate {
     signal: AbortSignal,
   ): Promise<void> {
     const deadline = this.#now() + maxMs;
-    while (this.held(guild, accounts) && this.#now() < deadline) {
-      await sleep(GATE_POLL_MS, signal);
+    for (;;) {
+      signal.throwIfAborted();
+      const until = this.#heldUntil(guild, accounts);
+      const now = this.#now();
+      if (until === null || now >= deadline) return;
+      const stop = new AbortController();
+      try {
+        await Promise.race([
+          this.#changed.promise,
+          // Rejects once `signal` aborts (checked above) or the race is over; nobody needs that.
+          sleep(Math.min(until, deadline) - now, AbortSignal.any([signal, stop.signal])).catch(
+            () => undefined,
+          ),
+        ]);
+      } finally {
+        stop.abort();
+      }
     }
+  }
+
+  /** When the last unconfirmed turn of `accounts` is confirmed (`Infinity`: not known); `null`: none is. */
+  #heldUntil(guild: string, accounts: readonly AccountRef[]): Until | null {
+    const g = this.#guilds.get(guild);
+    if (!g) return null;
+    const now = this.#now();
+    let last: Until | null = null;
+    for (const account of accounts) {
+      const key = accountRefString(account);
+      const until = g.get(key);
+      if (until === undefined) continue;
+      if (until > now) last = Math.max(last ?? until, until);
+      else g.delete(key);
+    }
+    return last;
+  }
+
+  #notify(): void {
+    const changed = this.#changed;
+    this.#changed = deferred<void>();
+    changed.resolve();
   }
 
   #guild(guild: string): Map<string, Until> {

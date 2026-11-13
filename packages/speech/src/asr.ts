@@ -82,6 +82,7 @@ export class HttpWorkerAsr implements AsrProvider {
     form.append("audio", wavBlob(audio), "audio.wav");
     if (hint.language !== null) form.append("language", hint.language);
     if (hint.prompt !== null) form.append("prompt", hint.prompt);
+    if (hint.priority === "ahead") form.append("priority", "ahead");
     const response = await post(this.#url, {
       body: form,
       timeoutMs: this.#timeoutMs,

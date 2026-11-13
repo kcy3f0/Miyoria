@@ -3,7 +3,7 @@
 import type { AccountRef, PlaybackState, VoiceParticipant } from "@miyoria/types";
 import WebSocket from "ws";
 import { type CoreMessage, coreMessageJson } from "../protocol.js";
-import { aborted, type Watch } from "../util.js";
+import type { Watch } from "../util.js";
 
 /** Last Go Live state of one guild. */
 export interface GoLiveStatus {
@@ -67,8 +67,6 @@ export class Conn {
   state: ConnState = newConnState();
   readonly #ws: WebSocket;
   readonly #closed = new AbortController();
-  /** Resolves once the connection is closing. */
-  readonly closing: Promise<void>;
   #closeFrame: { code: number; reason: string } | null = null;
   /** Optional protocol features the node announced in its hello. */
   readonly capabilities: ReadonlySet<string>;
@@ -78,7 +76,15 @@ export class Conn {
     this.account = account;
     this.capabilities = new Set(capabilities);
     this.#ws = ws;
-    this.closing = aborted(this.#closed.signal);
+  }
+
+  /**
+   * Aborts once the connection is closing. A listener, not a promise: whoever waits on it many
+   * times takes the listener off again (a promise that lives as long as the connection would keep
+   * a reaction for every wait).
+   */
+  get signal(): AbortSignal {
+    return this.#closed.signal;
   }
 
   get isClosed(): boolean {

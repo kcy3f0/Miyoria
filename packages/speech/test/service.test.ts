@@ -63,4 +63,68 @@ describe("SpeechService", () => {
     expect(ttsCount.get({ provider: "x", outcome: "error" })).toBe(1);
     expect(ttsCount.get({ provider: "y", outcome: "ok" })).toBe(1);
   });
+
+  it("starts at the next provider for a while after one failed", async () => {
+    let now = 0;
+    let calls: string[] = [];
+    let aDown = true;
+    const counted = (name: string, down: () => boolean): AsrProvider => ({
+      name,
+      transcribe: async () => {
+        calls.push(name);
+        if (down()) throw new Error(`${name} down`);
+        return { text: "你好", language: "zh", emotion: null, audio_events: [] };
+      },
+    });
+    const service = new SpeechService([counted("a", () => aDown), counted("b", () => false)], [], {
+      metrics: new MetricsRegistry(),
+      retryMs: 1_000,
+      now: () => now,
+    });
+    expect((await service.transcribe(audio, NO_HINT))[0]).toBe("b");
+    expect(calls).toEqual(["a", "b"]);
+    calls = [];
+    // `a` just failed: it is not waited for again.
+    expect((await service.transcribe(audio, NO_HINT))[0]).toBe("b");
+    expect(calls).toEqual(["b"]);
+    calls = [];
+    // Its time is up: it is first again.
+    now = 1_000;
+    aDown = false;
+    expect((await service.transcribe(audio, NO_HINT))[0]).toBe("a");
+    expect(calls).toEqual(["a"]);
+  });
+
+  it("still tries a provider that failed lately when it is the only one left", async () => {
+    let calls = 0;
+    const only: AsrProvider = {
+      name: "a",
+      transcribe: async () => {
+        calls++;
+        throw new Error("a down");
+      },
+    };
+    const service = new SpeechService([only], [], { metrics: new MetricsRegistry() });
+    await expect(service.transcribe(audio, NO_HINT)).rejects.toThrow("a down");
+    await expect(service.transcribe(audio, NO_HINT)).rejects.toThrow("a down");
+    expect(calls).toBe(2);
+  });
+
+  it("does not hold an offloaded worker against it", async () => {
+    let calls: string[] = [];
+    const offloaded: AsrProvider = {
+      name: "a",
+      transcribe: async () => {
+        calls.push("a");
+        throw new Error("ASR worker answered 503: offloaded");
+      },
+    };
+    const service = new SpeechService([offloaded, asr("b", false)], [], {
+      metrics: new MetricsRegistry(),
+    });
+    await service.transcribe(audio, NO_HINT);
+    calls = [];
+    await service.transcribe(audio, NO_HINT);
+    expect(calls).toEqual(["a"]);
+  });
 });

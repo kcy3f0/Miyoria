@@ -112,3 +112,46 @@ def test_busy_counts_clips_being_transcribed(asr):
     assert post(client).status_code == 200
     assert seen == [1]
     assert client.get("/busy").json() == {"busy": 0}
+
+
+def test_the_lock_serves_utterances_before_guesses_and_in_order(asr):
+    import threading
+
+    _, server = asr
+    lock = server.RankedLock()
+    order: list[str] = []
+    lock.acquire()  # the model is busy: everyone below waits
+    started = []
+
+    def wait(name: str, rank: int) -> None:
+        started.append(name)
+        with lock.hold(rank):
+            order.append(name)
+
+    threads = []
+    for name, rank in (("ahead", server.RANK_AHEAD), ("first", server.RANK_NOW), ("second", server.RANK_NOW)):
+        t = threading.Thread(target=wait, args=(name, rank))
+        t.start()
+        threads.append(t)
+        deadline = time.monotonic() + 2
+        while len(lock._waiting) < len(threads) and time.monotonic() < deadline:  # queued in this order
+            time.sleep(0.005)
+    lock.release()
+    for t in threads:
+        t.join(2)
+    assert order == ["first", "second", "ahead"]
+
+
+def test_priority_ahead_reaches_the_lock(asr, monkeypatch):
+    client, server = asr
+    ranks: list[int] = []
+    real = server.RankedLock.hold
+
+    def spy(self, rank):
+        ranks.append(rank)
+        return real(self, rank)
+
+    monkeypatch.setattr(server.RankedLock, "hold", spy)
+    client.post("/asr", files={"audio": ("a.wav", make_wav(0.3), "audio/wav")}, data={"priority": "ahead"})
+    post(client)
+    assert ranks == [server.RANK_AHEAD, server.RANK_NOW]

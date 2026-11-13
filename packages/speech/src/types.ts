@@ -36,6 +36,11 @@ export interface AsrHint {
   language: string | null;
   /** Vocabulary / context hint (names, game terms), if the model supports it. */
   prompt: string | null;
+  /**
+   * `now`: an utterance that ended, a reply waits for it; `ahead`: transcribed before the turn is
+   * known to be over, it gives way to `now` on a worker that queues requests. Left out means `now`.
+   */
+  priority?: TtsPriority;
 }
 
 export const NO_HINT: Readonly<AsrHint> = Object.freeze({ language: null, prompt: null });
@@ -126,7 +131,16 @@ export class SpeechError extends Error {
 export interface SpeechServiceOptions {
   /** Where request counts go. Default: the process-wide `metrics`. */
   metrics?: MetricsRegistry;
+  /**
+   * After a provider fails, the chain starts at the next one for this long (ms), so a worker that
+   * hangs costs one timeout, not one per request. Default 30 000; 0 = always start at the first.
+   */
+  retryMs?: number;
+  /** Clock of `retryMs`. Default `Date.now`. */
+  now?: () => number;
 }
+
+const DEFAULT_RETRY_MS = 30_000;
 
 /** `aborted` when the caller cancelled, else `error`. */
 function failure(signal: AbortSignal | undefined): string {
@@ -143,6 +157,10 @@ export class SpeechService {
   readonly #tts: readonly TtsProvider[];
   readonly #asrRequests: Counter;
   readonly #ttsRequests: Counter;
+  readonly #retryMs: number;
+  readonly #now: () => number;
+  /** Providers that failed lately, until when they are tried last. */
+  readonly #downUntil = new Map<AsrProvider | TtsProvider, number>();
 
   constructor(
     asr: readonly AsrProvider[],
@@ -151,6 +169,8 @@ export class SpeechService {
   ) {
     this.#asr = [...asr];
     this.#tts = [...tts];
+    this.#retryMs = Math.max(0, options.retryMs ?? DEFAULT_RETRY_MS);
+    this.#now = options.now ?? Date.now;
     const registry = options.metrics ?? metrics;
     this.#asrRequests = registry.counter("miyoria_asr_requests_total", {
       help: "ASR requests by provider and outcome (ok, error, aborted).",
@@ -171,48 +191,74 @@ export class SpeechService {
   }
 
   /** Tries each ASR provider in order until one succeeds. Returns `[provider, transcript]`. */
-  async transcribe(
-    audio: AudioBuf,
-    hint: AsrHint,
-    signal?: AbortSignal,
-  ): Promise<[string, Transcript]> {
-    let last: unknown;
-    for (const p of this.#asr) {
-      try {
-        const transcript = await p.transcribe(audio, hint, signal);
-        this.#asrRequests.inc({ provider: p.name, outcome: "ok" });
-        return [p.name, transcript];
-      } catch (error) {
-        this.#asrRequests.inc({ provider: p.name, outcome: failure(signal) });
-        if (signal?.aborted) throw error;
-        const err = errorMessage(error);
-        // A worker that gave the GPU to the song worker says so; that is expected.
-        if (isOffloaded(err)) log.debug({ provider: p.name, err }, "ASR failed, trying next");
-        else log.warn({ provider: p.name, err }, "ASR failed, trying next");
-        last = error;
-      }
-    }
-    throw last ?? new SpeechError("no ASR provider configured");
+  transcribe(audio: AudioBuf, hint: AsrHint, signal?: AbortSignal): Promise<[string, Transcript]> {
+    return this.#chain(
+      "ASR",
+      this.#asr,
+      this.#asrRequests,
+      (p) => p.transcribe(audio, hint, signal),
+      signal,
+    );
   }
 
   /** Tries each TTS provider in order until one starts a stream. Returns `[provider, stream]`. */
-  async synthesize(request: TtsRequest, signal?: AbortSignal): Promise<[string, AudioStream]> {
+  synthesize(request: TtsRequest, signal?: AbortSignal): Promise<[string, AudioStream]> {
+    return this.#chain(
+      "TTS",
+      this.#tts,
+      this.#ttsRequests,
+      (p) => p.synthesize({ ...request }, signal),
+      signal,
+    );
+  }
+
+  /** The chain in the order to try it now: providers that failed lately go last. */
+  #order<P extends AsrProvider | TtsProvider>(providers: readonly P[]): P[] {
+    const now = this.#now();
+    const up: P[] = [];
+    const down: P[] = [];
+    for (const p of providers) {
+      const until = this.#downUntil.get(p);
+      if (until === undefined || until <= now) {
+        this.#downUntil.delete(p);
+        up.push(p);
+      } else down.push(p);
+    }
+    return [...up, ...down];
+  }
+
+  async #chain<P extends AsrProvider | TtsProvider, T>(
+    what: "ASR" | "TTS",
+    providers: readonly P[],
+    counter: Counter,
+    attempt: (p: P) => Promise<T>,
+    signal: AbortSignal | undefined,
+  ): Promise<[string, T]> {
     let last: unknown;
-    for (const p of this.#tts) {
+    const chain = this.#order(providers);
+    for (const p of chain) {
       try {
-        const stream = await p.synthesize({ ...request }, signal);
-        this.#ttsRequests.inc({ provider: p.name, outcome: "ok" });
-        return [p.name, stream];
+        const result = await attempt(p);
+        counter.inc({ provider: p.name, outcome: "ok" });
+        this.#downUntil.delete(p);
+        return [p.name, result];
       } catch (error) {
-        this.#ttsRequests.inc({ provider: p.name, outcome: failure(signal) });
+        counter.inc({ provider: p.name, outcome: failure(signal) });
         if (signal?.aborted) throw error;
         const err = errorMessage(error);
-        if (isOffloaded(err)) log.debug({ provider: p.name, err }, "TTS failed, trying next");
-        else log.warn({ provider: p.name, err }, "TTS failed, trying next");
+        // A worker that gave the GPU to the song worker says so at once; that is expected, and it
+        // comes back by itself.
+        if (isOffloaded(err)) log.debug({ provider: p.name, err }, `${what} failed, trying next`);
+        else {
+          log.warn({ provider: p.name, err }, `${what} failed, trying next`);
+          if (this.#retryMs > 0 && chain.length > 1) {
+            this.#downUntil.set(p, this.#now() + this.#retryMs);
+          }
+        }
         last = error;
       }
     }
-    throw last ?? new SpeechError("no TTS provider configured");
+    throw last ?? new SpeechError(`no ${what} provider configured`);
   }
 }
 

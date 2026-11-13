@@ -65,8 +65,11 @@ export interface SpeakerDeps {
   gate: TurnGate | null;
 }
 
-/** While a song or the GPU loan holds the floor, how often it is looked at again. */
-const FLOOR_POLL_MS = 250;
+/**
+ * While a song or the GPU loan holds the floor, how often it is looked at again (an in-memory
+ * read; `VoiceFloor` has no change notification). This is how late her line can start after it.
+ */
+const FLOOR_POLL_MS = 50;
 
 /** What the output review made of a text on its way to TTS. */
 interface Reviewed {
@@ -281,10 +284,13 @@ export class Speaker implements VoiceSink {
       signal.addEventListener("abort", () => stop.resolve(), { once: true });
       audio.push(first);
       const done = (async () => {
+        // One promise for the whole line: racing `stop.promise` itself would leave a reaction on
+        // it per chunk.
+        const stopped = stop.promise.then(() => null);
         try {
           let whole = false;
           for (;;) {
-            const r = await Promise.race([it.next(), stop.promise.then(() => null)]);
+            const r = await Promise.race([it.next(), stopped]);
             if (r === null) break;
             if (r.done) {
               whole = true;
@@ -312,8 +318,26 @@ export class Speaker implements VoiceSink {
     await gate.wait(context.scope, accounts, config.turn_gate_max_ms, signal);
   }
 
+  /** The prefetch key of a line: the line, then what the worker makes of its emotion. */
   #key(context: ContextKey, text: string, emotion: string | null): string {
-    return `${contextKeyString(context)}\u0000${emotion ?? ""}\u0000${text}`;
+    return `${this.#lineKey(context, text)}${this.#voiceKey(emotion)}`;
+  }
+
+  /** What every prefetch key of `text` in `context` starts with, whatever the emotion. */
+  #lineKey(context: ContextKey, text: string): string {
+    return `${contextKeyString(context)}\u0000${text}\u0000`;
+  }
+
+  /**
+   * What the TTS request of `emotion` changes for the worker: the bank clip (when her bank has
+   * one for it; any other emotion falls through the worker's chain to the same reference) and
+   * the style instruction. Emotions that come out the same share one prefetched line.
+   */
+  #voiceKey(emotion: string | null): string {
+    const { profile } = this.#d;
+    const clip = profile.referenceFor(emotion);
+    const reference = clip !== null && profile.clips.has(clip) ? clip : "";
+    return `${reference}\u0000${profile.instructFor(emotion) ?? ""}`;
   }
 
   async #start(
@@ -332,6 +356,8 @@ export class Speaker implements VoiceSink {
     let line: PreparedLine | null = null;
     let prefetched = false;
     const taken = prefetch?.take(this.#key(context, text, emotion)) ?? null;
+    // The same line prepared in another tone is not what is said: it stops holding the GPU.
+    prefetch?.cancelPrefix(this.#lineKey(context, text));
     if (taken !== null) {
       try {
         line = await raceAbort(taken, signal);

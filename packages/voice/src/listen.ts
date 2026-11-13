@@ -313,7 +313,9 @@ export class Listener {
       const run = seg.speechRunMs();
       if (run > 0) {
         stream.talking = true;
-        this.#d.barge.observe(guild, run, this.#who(stream.info, guild));
+        // Who is talking (two service lookups) matters only while a line of hers may be stopped.
+        const { barge } = this.#d;
+        if (barge.engaged(guild)) barge.observe(guild, run, this.#who(stream.info, guild));
       } else if (stream.talking) {
         stream.talking = false;
         this.#d.barge.speechEnded(guild, stream.info.speaker);
@@ -402,7 +404,8 @@ export class Listener {
     if (!config.turn_early_asr || ctx.services.get(SpeechPauseKey)?.paused()) return;
     const controller = new AbortController();
     const audio = { sampleRate: stream.info.sampleRate, samples: seg.peek() };
-    const hint = this.#hint(stream.info.context.scope ?? "");
+    // A guess that the turn may be over: real utterances go first on the worker.
+    const hint: AsrHint = { ...this.#hint(stream.info.context.scope ?? ""), priority: "ahead" };
     const signal = AbortSignal.any([ctx.signal, controller.signal]);
     const transcript = (async () => {
       const release = await asrSlots.acquire(signal);
