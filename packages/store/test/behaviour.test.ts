@@ -877,6 +877,61 @@ function behaviour(open: () => Promise<Store>): void {
     await expect(memories.search(q)).rejects.toThrow(/non-finite/);
   });
 
+  it("memory_search_vector_sees_every_write", async () => {
+    const memories = store.memories;
+    const profile = unique("profile");
+    const t0 = Date.now();
+    const scope = guildScope(unique("g"));
+    const mk = (embedding: number[], secs: number) => {
+      const r = memory(profile, "fact", scope, "x", at(t0 + secs * SECOND));
+      r.embedding = embedding;
+      return r;
+    };
+    const nearest = async (embedding: number[], limit = 1, scopes = [scope]) => {
+      const q = textQuery(profile, scopes, [], limit);
+      q.embedding = embedding;
+      const hits = await memories.search(q);
+      hits.sort((x, y) => (y.vector_score ?? 0) - (x.vector_score ?? 0));
+      return hits.map((h) => h.record.id);
+    };
+    const a = mk([1, 0, 0], 1);
+    const b = mk([0.9, 0.1, 0], 2);
+    for (const r of [a, b]) await memories.upsert(r);
+    expect(await nearest([1, 0, 0])).toEqual([a.id]);
+
+    // Every write between two searches is seen: superseded, inserted, a new vector, deleted.
+    await memories.upsert({ ...a, superseded_by: b.id });
+    expect(await nearest([1, 0, 0])).toEqual([b.id]);
+    const c = mk([1, 0, 0], 3);
+    await memories.upsert(c);
+    expect(await nearest([1, 0, 0])).toEqual([c.id]);
+    await memories.upsert({ ...c, embedding: [0, 0, 1] });
+    expect(await nearest([1, 0, 0])).toEqual([b.id]);
+    expect(await memories.delete(b.id)).toBe(true);
+    expect(await nearest([1, 0, 0])).toEqual([c.id]);
+
+    // Touching and closing do not change what is compared; merging people moves a scope.
+    await memories.touch([c.id], at(t0 + 10 * SECOND));
+    expect(await nearest([0, 0, 1])).toEqual([c.id]);
+    const keep = newId();
+    const absorb = newId();
+    const theirs = mk([0, 1, 0], 4);
+    theirs.scope = { type: "person", person: absorb };
+    await memories.upsert(theirs);
+    const keepScope: MemoryScope[] = [{ type: "person", person: keep }];
+    expect(await nearest([0, 1, 0], 1, keepScope)).toEqual([]);
+    await memories.mergePerson(keep, absorb);
+    expect(await nearest([0, 1, 0], 1, keepScope)).toEqual([theirs.id]);
+
+    // Equal scores: the newest first, and the limit keeps those.
+    const older = mk([0, 0, 1], 5);
+    const newer = mk([0, 0, 1], 6);
+    for (const r of [older, newer]) await memories.upsert(r);
+    const q = textQuery(profile, [scope], [], 2);
+    q.embedding = [0, 0, 1];
+    expect((await memories.search(q)).map((h) => h.record.id)).toEqual([newer.id, older.id]);
+  });
+
   it("memory_list_filters", async () => {
     const memories = store.memories;
     const profile = unique("profile");

@@ -46,7 +46,6 @@ import {
   canonicalMemoryScope,
   cleanEmbedding,
   contextLookupKey,
-  cosine,
   decodeEmbedding,
   encodeEmbedding,
   fromMicros,
@@ -291,6 +290,11 @@ class Db {
 
   exec(sql: string): void {
     this.#db.exec(sql);
+  }
+
+  /** Whether a transaction is open (what it wrote may still be rolled back). */
+  get inTransaction(): boolean {
+    return this.#db.isTransaction;
   }
 
   /** Runs `fn` in one write transaction. `fn` must not await. */
@@ -1879,16 +1883,6 @@ function memoryFromRow(row: Row): MemoryRecord {
     : record;
 }
 
-/** Newest first, ties broken by id (descending). */
-function newestFirst(a: Row, b: Row): number {
-  const at = num(a, "created_at");
-  const bt = num(b, "created_at");
-  if (at !== bt) return bt - at;
-  const ai = str(a, "id");
-  const bi = str(b, "id");
-  return ai < bi ? 1 : ai > bi ? -1 : 0;
-}
-
 /** An FTS5 query string matching any of the tokens (each one a quoted phrase). */
 function ftsMatch(tokens: readonly string[]): string {
   return tokens.map((t) => `"${t.replaceAll('"', '""')}"`).join(" OR ");
@@ -1918,8 +1912,113 @@ function listParams(profile: ProfileId, filter: MemoryFilter): Params {
   };
 }
 
+/** What vector search needs of a record, its vector decoded once. */
+interface VectorRow {
+  seq: number;
+  id: string;
+  /** Microseconds, as stored. */
+  created_at: number;
+  scope_key: string;
+  kind: string;
+  values: Float32Array;
+  /** `sqrt` of the sum of squares of `values`. */
+  norm: number;
+}
+
+interface Scored {
+  row: VectorRow;
+  score: number;
+}
+
+/** Profiles and dimensions whose vectors are kept at once. */
+const VECTOR_SETS = 4;
+
+/** Higher score first, then newest, then id descending. */
+function scoredBefore(a: Scored, b: Scored): number {
+  if (a.score !== b.score) return b.score - a.score;
+  if (a.row.created_at !== b.row.created_at) return b.row.created_at - a.row.created_at;
+  return a.row.id < b.row.id ? 1 : a.row.id > b.row.id ? -1 : 0;
+}
+
+/**
+ * The first `k` of `items` in `before` order (all of them when `k` is null), without sorting
+ * the rest: what `sort(before).slice(0, k)` gives, for an order with no ties.
+ */
+function firstK(items: Iterable<Scored>, k: number | null): Scored[] {
+  if (k === null) return [...items].sort(scoredBefore);
+  const best: Scored[] = [];
+  for (const item of items) {
+    if (best.length === k && scoredBefore(item, best[k - 1] as Scored) >= 0) continue;
+    let lo = 0;
+    let hi = best.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (scoredBefore(best[mid] as Scored, item) <= 0) lo = mid + 1;
+      else hi = mid;
+    }
+    best.splice(lo, 0, item);
+    if (best.length > k) best.pop();
+  }
+  return best;
+}
+
 class SqliteMemories implements MemoryRecordStore {
+  /**
+   * Decoded vectors of the live records, per profile and dimension, valid while
+   * `memory_vector_version` (bumped by triggers on every relevant write, by anyone) is `version`.
+   */
+  readonly #vectors = new Map<string, VectorRow[]>();
+  #vectorVersion: number | null = null;
+
   constructor(private readonly db: Db) {}
+
+  /** The live records of `profile` with a vector of `dims` values, from memory when unchanged. */
+  #vectorRows(profile: ProfileId, dims: number): VectorRow[] {
+    const row = this.db.get("SELECT n FROM memory_vector_version WHERE id = 1", {});
+    const version = row ? num(row, "n") : null;
+    if (version === null || version !== this.#vectorVersion) {
+      this.#vectors.clear();
+      this.#vectorVersion = version;
+    }
+    const key = `${profile}\n${dims}`;
+    const cached = this.#vectors.get(key);
+    if (cached !== undefined) {
+      // Most recently used last.
+      this.#vectors.delete(key);
+      this.#vectors.set(key, cached);
+      return cached;
+    }
+    const rows = this.db.all(
+      "SELECT seq, id, created_at, scope_key, kind, embedding FROM memory_records " +
+        "WHERE profile_id = $profile AND superseded_by IS NULL AND embedding IS NOT NULL " +
+        "AND length(embedding) = $bytes",
+      { profile, bytes: dims * 4 },
+    );
+    const out = rows.map((r): VectorRow => {
+      const values = decodeEmbedding(r.embedding as Uint8Array);
+      let squares = 0;
+      for (let i = 0; i < values.length; i++) {
+        const x = values[i] as number;
+        squares += x * x;
+      }
+      return {
+        seq: num(r, "seq"),
+        id: str(r, "id"),
+        created_at: num(r, "created_at"),
+        scope_key: str(r, "scope_key"),
+        kind: str(r, "kind"),
+        values,
+        norm: Math.sqrt(squares),
+      };
+    });
+    // Inside a transaction the counter may be rolled back to a number another write then reuses.
+    if (version !== null && !this.db.inTransaction) {
+      this.#vectors.set(key, out);
+      const oldest = this.#vectors.keys().next().value;
+      if (this.#vectors.size > VECTOR_SETS && oldest !== undefined) this.#vectors.delete(oldest);
+    }
+    return out;
+  }
 
   async upsert(record: MemoryRecord): Promise<void> {
     const embedding = cleanEmbedding(record.embedding);
@@ -2021,39 +2120,48 @@ class SqliteMemories implements MemoryRecordStore {
       }
     }
 
-    // Nearest neighbours: exact cosine over the rows with the query's dimension. Only what the
-    // ranking needs is read for every candidate; the whole row only for the ones kept.
+    // Nearest neighbours: exact cosine over the rows with the query's dimension, their vectors
+    // kept decoded between searches (`#vectorRows`). The whole row is read only for the ones kept.
     if (embedding !== null) {
       const query32 = Float32Array.from(embedding);
-      const candidates = this.db.all(
-        `SELECT m.seq, m.id, m.created_at, m.embedding FROM memory_records m WHERE ${SEARCH_FILTER} ` +
-          "AND m.embedding IS NOT NULL AND length(m.embedding) = $bytes",
-        { ...filter, bytes: embedding.length * 4 },
-      );
-      const scored = candidates
-        .map((row) => ({
-          row,
-          score: cosine(decodeEmbedding(row.embedding as Uint8Array), query32),
-        }))
-        .sort((a, b) => b.score - a.score || newestFirst(a.row, b.row))
-        .slice(0, limit ?? undefined);
+      let squares = 0;
+      for (let i = 0; i < query32.length; i++) {
+        const y = query32[i] as number;
+        squares += y * y;
+      }
+      const queryNorm = Math.sqrt(squares);
+      const scopes = new Set(query.scopes.map(memoryScopeKey));
+      const kinds = query.kinds === null ? null : new Set<string>(query.kinds);
+      const rows = this.#vectorRows(query.profile, query32.length);
+      const candidates = function* (): Generator<Scored> {
+        for (const row of rows) {
+          if (!scopes.has(row.scope_key) || (kinds !== null && !kinds.has(row.kind))) continue;
+          const v = row.values;
+          let dot = 0;
+          for (let i = 0; i < v.length; i++) dot += (v[i] as number) * (query32[i] as number);
+          // As `cosine` computes it.
+          const score = row.norm === 0 || queryNorm === 0 ? 0 : dot / (row.norm * queryNorm);
+          yield { row, score };
+        }
+      };
+      const scored = firstK(candidates(), limit);
       const byId = new Map(hits.map((h) => [h.record.id, h]));
-      const missing = scored.filter(({ row }) => !byId.has(str(row, "id")));
+      const missing = scored.filter(({ row }) => !byId.has(row.id));
       const full = new Map<number, Row>();
       if (missing.length > 0) {
-        const rows = this.db.all(
+        const fullRows = this.db.all(
           "SELECT * FROM memory_records WHERE seq IN (SELECT value FROM json_each($seqs))",
-          { seqs: JSON.stringify(missing.map(({ row }) => num(row, "seq"))) },
+          { seqs: JSON.stringify(missing.map(({ row }) => row.seq)) },
         );
-        for (const row of rows) full.set(num(row, "seq"), row);
+        for (const row of fullRows) full.set(num(row, "seq"), row);
       }
       for (const { row, score } of scored) {
-        const hit = byId.get(str(row, "id"));
+        const hit = byId.get(row.id);
         if (hit) {
           hit.vector_score = score;
           continue;
         }
-        const whole = full.get(num(row, "seq"));
+        const whole = full.get(row.seq);
         if (whole) hits.push({ record: memoryFromRow(whole), text_score: 0, vector_score: score });
       }
     }

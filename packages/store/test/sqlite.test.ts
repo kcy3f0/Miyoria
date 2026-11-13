@@ -2,10 +2,12 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { newId, type ProfileId, toTimestamp } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_STORE_URL,
   fromMicros,
+  type MemoryRecord,
   openStore,
   parseStoreUrl,
   SqliteStore,
@@ -77,7 +79,7 @@ describe("SqliteStore", () => {
 
       const second = await SqliteStore.open(path);
       expect(await second.schemaVersions()).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
       ]);
       expect(await second.moduleState.get("agent")).toBe(false);
       await second.close();
@@ -92,6 +94,61 @@ describe("SqliteStore", () => {
       raw.exec("INSERT INTO schema_version (version, name, applied_at) VALUES (99, 'future', 0)");
       raw.close();
       await expect(SqliteStore.open(path)).rejects.toThrow(/migration 99 .* missing/);
+    }));
+
+  it("vector search sees memories another connection changed", () =>
+    withTempDir(async (dir) => {
+      const path = join(dir, "vectors.db");
+      const store = await SqliteStore.open(path);
+      try {
+        const profile = "p" as ProfileId;
+        const now = toTimestamp(Date.now());
+        const record = (embedding: number[]): MemoryRecord => ({
+          id: newId(),
+          profile,
+          kind: "fact",
+          scope: { type: "global" },
+          subjects: [],
+          content: "x",
+          tokens: "x",
+          embedding,
+          importance: 0.5,
+          confidence: 1,
+          created_at: now,
+          updated_at: now,
+          last_accessed: null,
+          access_count: 0,
+          source_context: null,
+          source: null,
+          origin: "experienced",
+          source_events: [],
+          due: null,
+          done: false,
+          superseded_by: null,
+        });
+        const a = record([1, 0]);
+        const b = record([0.5, 0.5]);
+        for (const r of [a, b]) await store.memories.upsert(r);
+        const nearest = async () => {
+          const hits = await store.memories.search({
+            profile,
+            scopes: [{ type: "global" }],
+            kinds: null,
+            tokens: [],
+            embedding: [1, 0],
+            limit: 1,
+          });
+          return hits.map((h) => h.record.id);
+        };
+        expect(await nearest()).toEqual([a.id]);
+        // Kept decoded in this process; a write elsewhere bumps the counter all the same.
+        const raw = new DatabaseSync(path);
+        raw.prepare("DELETE FROM memory_records WHERE id = ?").run(a.id);
+        raw.close();
+        expect(await nearest()).toEqual([b.id]);
+      } finally {
+        await store.close();
+      }
     }));
 
   it("two connections on one file see each other's writes", () =>
