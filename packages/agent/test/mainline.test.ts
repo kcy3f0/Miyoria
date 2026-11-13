@@ -1330,6 +1330,8 @@ describe("helpers", () => {
 
   it("sentences keeps punctuation", () => {
     expect(sentences("好喔。做好了!\n還有嗎")).toEqual(["好喔。", "做好了!\n", "還有嗎"]);
+    // A closing quote stays with its sentence, never a message of its own (2026-11-13 02:43).
+    expect(sentences("「吾輩看見了喔。」好啦")).toEqual(["「吾輩看見了喔。」", "好啦"]);
   });
 
   it("the prompt has no token cap unless the owner sets one", () => {
