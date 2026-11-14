@@ -62,6 +62,13 @@ export interface Tool {
    */
   readonly readOnly?: boolean;
   /**
+   * Its answer already holds whatever came from outside in data blocks (`dataBlock`), with only
+   * its own words around them. The agent passes such an answer on as it is instead of wrapping it
+   * in one more block, which would only break the inner tags. Only for a tool whose own code
+   * writes the whole answer, never one that relays another program's.
+   */
+  readonly framed?: boolean;
+  /**
    * Runs the tool. The returned text (or the error message) goes back to the model, so keep it
    * short.
    */
@@ -86,16 +93,21 @@ export function isValidToolName(name: string): boolean {
 /** Every tool offered to the model, by name. */
 export class ToolRegistry {
   readonly #tools = new Map<string, Tool>();
+  /** Names in order, kept until a tool is registered or removed (read on every turn). */
+  #sorted: string[] | null = null;
 
   /** Registers (or replaces) a tool under `spec.name`. Throws `InvalidToolNameError`. */
   register(tool: Tool): void {
     const name = tool.spec.name;
     if (!isValidToolName(name)) throw new InvalidToolNameError(name);
+    if (!this.#tools.has(name)) this.#sorted = null;
     this.#tools.set(name, tool);
   }
 
   unregister(name: string): boolean {
-    return this.#tools.delete(name);
+    const removed = this.#tools.delete(name);
+    if (removed) this.#sorted = null;
+    return removed;
   }
 
   get(name: string): Tool | undefined {
@@ -104,12 +116,14 @@ export class ToolRegistry {
 
   /** Registered names, in order. */
   names(): string[] {
-    return [...this.#tools.keys()].sort();
+    this.#sorted ??= [...this.#tools.keys()].sort();
+    return [...this.#sorted];
   }
 
   /** Specs of every registered tool, ordered by name. */
   specs(): ToolSpec[] {
-    return this.names().map((n) => (this.#tools.get(n) as Tool).spec);
+    this.#sorted ??= [...this.#tools.keys()].sort();
+    return this.#sorted.map((n) => (this.#tools.get(n) as Tool).spec);
   }
 
   get isEmpty(): boolean {

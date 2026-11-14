@@ -169,6 +169,7 @@ export function codeRunCapability(o: SandboxGateOptions): Capability<CodeRunArgs
     guidance: CODE_RUN_GUIDANCE,
     tool: {
       name: "code_run",
+      framed: true,
       description:
         "寫一段 Python 或 Node 程式,在離線的沙箱容器裡執行(沒有網路、沒有你的檔案,只能用標準函式庫)," +
         "用 print / console.log 印出結果;stdout、stderr 會回來給你。適合計算、處理資料或文字、做小實驗。" +
@@ -435,6 +436,7 @@ export function proposedToolCapability(
     permission: `${NODE_PROPOSED_PREFIX}${spec.name}`,
     tool: {
       name: `${PROPOSED_TOOL_PREFIX}${spec.name}`,
+      framed: true,
       description: `(你自己寫、已核准的工具,第 ${spec.version} 版,在離線沙箱裡執行)${description}`,
       properties,
       ...(required.length > 0 ? { required } : {}),

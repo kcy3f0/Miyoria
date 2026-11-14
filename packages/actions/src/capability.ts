@@ -46,6 +46,11 @@ export interface CapabilityTool {
   followup?: boolean;
   /** Low risk only: it only looks, so it may run next to other such calls (`Tool.readOnly`). */
   readOnly?: boolean;
+  /**
+   * Its result text already holds what came from outside in data blocks, with only its own words
+   * around them (`Tool.framed`): the agent passes it on as it is.
+   */
+  framed?: boolean;
 }
 
 /** What the owners' approval card shows instead of the raw arguments. */

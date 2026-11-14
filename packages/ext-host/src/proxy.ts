@@ -49,6 +49,8 @@ export class ProxyTool implements Tool {
     readonly spec: ToolSpec,
     readonly permission: string | null,
     readonly timeoutMs: number,
+    /** The extension declared it only looks (`read_only`). */
+    readonly readOnly: boolean = false,
   ) {}
 
   async call(ctx: ToolContext, args: JsonValue): Promise<string> {

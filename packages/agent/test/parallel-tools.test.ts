@@ -3,6 +3,7 @@
 
 import { MockProvider } from "@miyoria/llm";
 import type { Tool } from "@miyoria/tools";
+import { dataBlock } from "@miyoria/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toolBatches } from "../src/util.js";
 import { channel, Harness, incoming, noCheck, stopHarnesses } from "./harness.js";
@@ -90,11 +91,12 @@ describe("tool calls in one step", () => {
     const results = (second?.messages ?? [])
       .filter((m) => m.role === "tool")
       .map((m) => [m.tool_call_id, m.content]);
+    const block = (name: string) => dataBlock("tool", `${name} 的結果`, `${name} result`);
     expect(results).toEqual([
-      ["c0", "look_a result"],
-      ["c1", "look_b result"],
-      ["c2", "act result"],
-      ["c3", "look_c result"],
+      ["c0", block("look_a")],
+      ["c1", block("look_b")],
+      ["c2", block("act")],
+      ["c3", block("look_c")],
     ]);
   });
 

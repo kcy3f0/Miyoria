@@ -106,8 +106,23 @@ export function groundArgs(tool: string, args: JsonValue, key: ContextKey): Json
  * and what `why` and `on_own` mean, about 150 characters each, 2000 over the tools of a normal
  * turn: the fixed rules say it once (`OUTPUT_RULES`). The rest of what a tool says is offered
  * whole, each part within `limits`.
+ *
+ * A registered spec does not change (a tool that changes registers a new one), so the slim one is
+ * kept per spec and limits instead of being rebuilt for every tool on every turn. Treat the result
+ * as read-only: it is shared.
  */
 export function slimTool(spec: ToolSpec, limits: ToolLimits = DEFAULT_TOOL_LIMITS): ToolSpec {
+  const key = `${limits.description}:${limits.argument}`;
+  const kept = SLIM.get(spec);
+  if (kept?.key === key) return kept.slim;
+  const slim = slimNow(spec, limits);
+  SLIM.set(spec, { key, slim });
+  return slim;
+}
+
+const SLIM = new WeakMap<ToolSpec, { key: string; slim: ToolSpec }>();
+
+function slimNow(spec: ToolSpec, limits: ToolLimits): ToolSpec {
   const description = upToSentence(
     spec.description.replace(REQUEST_RULE, "").trim(),
     limits.description,

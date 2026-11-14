@@ -20,8 +20,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { ServerConfig } from "./config.js";
 import {
+  compactSchema,
   flattenResult,
-  frameResult,
   registryName,
   stdioEnv,
   ToolFilter,
@@ -85,6 +85,8 @@ class McpTool implements Tool {
     readonly client: Client,
     readonly timeoutMs: number,
     readonly maxResultChars: number,
+    /** The server says it only looks (`readOnlyHint`) and its config trusts that. */
+    readonly readOnly: boolean,
   ) {}
 
   async call(ctx: ToolContext, args: JsonValue): Promise<string> {
@@ -112,12 +114,9 @@ class McpTool implements Tool {
         { cause: error },
       );
     }
-    const text = frameResult(
-      this.server,
-      this.remoteName,
-      truncateChars(flattenResult(result), this.maxResultChars),
-    );
-    if (result.isError === true) throw new McpToolError(text);
+    // The agent wraps every tool result as untrusted data; doing it here too only nested blocks.
+    const text = truncateChars(flattenResult(result), this.maxResultChars);
+    if (result.isError === true) throw new McpToolError(text === "" ? "(empty error)" : text);
     return text;
   }
 }
@@ -335,7 +334,11 @@ export class ServerRunner {
         continue;
       }
       taken.add(name);
-      const schema: Record<string, unknown> = { ...(tool.inputSchema ?? {}) };
+      // What the model does not need (`$schema`, `title`, `examples`, ...) costs tokens every turn.
+      const schema = compactSchema((tool.inputSchema ?? {}) as JsonValue) as Record<
+        string,
+        unknown
+      >;
       if (Object.keys(schema).length === 0) schema.type = "object";
       const description = tool.description ?? tool.title ?? tool.name;
       wanted.set(
@@ -348,6 +351,7 @@ export class ServerRunner {
           client,
           this.config.callTimeoutMs,
           this.config.max_result_chars,
+          this.config.trust_read_only_hint && tool.annotations?.readOnlyHint === true,
         ),
       );
     }

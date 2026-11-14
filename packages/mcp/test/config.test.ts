@@ -21,6 +21,7 @@ describe("config", () => {
     expect(cfg.servers.get("files")?.timeout_ms).toBe(30_000);
     expect(cfg.servers.get("files")?.connect_timeout_ms).toBe(20_000);
     expect(cfg.servers.get("files")?.max_result_chars).toBe(8_000);
+    expect(cfg.servers.get("files")?.trust_read_only_hint).toBe(false);
     expect(cfg.server.enabled).toBe(true);
     expect(cfg.server.bind).toBe("127.0.0.1:7881");
     expect(cfg.reconnect_initial_ms).toBe(1_000);

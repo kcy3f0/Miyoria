@@ -58,7 +58,7 @@ import {
 } from "@miyoria/types";
 import type { WorkConfig } from "../config.js";
 import { ACTING_ALONE } from "../mainline/main.js";
-import { TimeoutError, timeout } from "../util.js";
+import { framedAsIs, TimeoutError, timeout } from "../util.js";
 import { talks } from "./allow.js";
 import {
   clip,
@@ -508,7 +508,9 @@ export class WorkLaneService implements WorkLane {
     const verdict = inspectInput(this.#d.services, { text, source: "tool", context });
     const note =
       verdict?.note && !verdict.flags.every((f) => f === "flood") ? `${verdict.note}\n` : "";
-    return toolResult(call.name, clip(`${note}${neutralize(text)}`, this.#cfg.tool_result_chars));
+    const cap = this.#cfg.tool_result_chars;
+    if (framedAsIs(tool, ok, `${note}${text}`, cap)) return `${note}${text}`;
+    return toolResult(call.name, clip(`${note}${neutralize(text)}`, cap));
   }
 
   /** Over `transcript_chars`, the oldest tool results become a line: the conclusions stay. */

@@ -51,4 +51,22 @@ describe("ToolRegistry", () => {
     expect(reg.unregister("roll")).toBe(false);
     expect(reg.get("roll")).toBeUndefined();
   });
+
+  it("keeps the order current across changes and hands out copies", () => {
+    const reg = new ToolRegistry();
+    reg.register(tool("b"));
+    reg.register(tool("a"));
+    const names = reg.names();
+    expect(names).toEqual(["a", "b"]);
+    names.push("mutated");
+    expect(reg.names()).toEqual(["a", "b"]);
+
+    reg.register(tool("c"));
+    expect(reg.names()).toEqual(["a", "b", "c"]);
+    const replaced = tool("a", "p");
+    reg.register(replaced);
+    expect(reg.specs()[0]).toBe(replaced.spec);
+    reg.unregister("b");
+    expect(reg.specs().map((s) => s.name)).toEqual(["a", "c"]);
+  });
 });

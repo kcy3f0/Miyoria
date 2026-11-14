@@ -16,10 +16,11 @@ if (process.env.FIXTURE_EXIT_AT_START) {
 
 let grown = false;
 
-const tool = (name, description, properties) => ({
+const tool = (name, description, properties, extra = {}) => ({
   name,
   description,
   inputSchema: { type: "object", properties },
+  ...extra,
 });
 
 const server = new Server(
@@ -38,7 +39,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tool("env", "Reads environment variable `name`.", { name: { type: "string" } }),
     tool("cwd", "Returns the working directory.", {}),
     tool("grow", "Adds the `extra` tool and notifies.", {}),
-    tool("read_a", "A read tool.", {}),
+    tool(
+      "read_a",
+      "A read tool.",
+      {},
+      {
+        inputSchema: {
+          $schema: "http://json-schema.org/draft-07/schema#",
+          title: "ReadA",
+          type: "object",
+          properties: {
+            title: {
+              type: "string",
+              title: "Title",
+              examples: ["x"],
+              description: "What to read.",
+            },
+          },
+        },
+        annotations: { readOnlyHint: true },
+      },
+    ),
     tool("danger_delete", "A dangerous tool.", {}),
     tool("dotted.name", "Name needing sanitizing.", {}),
   ];

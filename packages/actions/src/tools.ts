@@ -61,6 +61,7 @@ export class CapabilityTool implements Tool {
   /** A request on behalf of the person who asked: with several asking, the call says whom for. */
   readonly actsFor = true;
   readonly readOnly: boolean;
+  readonly framed: boolean;
 
   constructor(
     readonly registry: ActuatorRegistry,
@@ -69,6 +70,7 @@ export class CapabilityTool implements Tool {
     this.spec = spec(capability);
     // Medium and high risk count against limits or wait for a review: never side by side.
     this.readOnly = capability.risk === "low" && capability.tool?.readOnly === true;
+    this.framed = capability.tool?.framed === true;
   }
 
   async call(ctx: ToolContext, raw: JsonValue): Promise<string> {

@@ -54,6 +54,16 @@ describe("tool arguments on the main line", () => {
     expect(upToSentence("沒有句號的一長串字", 5)).toBe("沒有句號…");
   });
 
+  it("keeps the slim spec per spec and limits", () => {
+    const spec = { name: "x", description: "一。二。三。", parameters: { type: "object" } };
+    const first = slimTool(spec, { description: 20, argument: 12 });
+    expect(slimTool(spec, { description: 20, argument: 12 })).toBe(first);
+    const shorter = slimTool(spec, { description: 2, argument: 12 });
+    expect(shorter).not.toBe(first);
+    expect(shorter.description).toBe("一。");
+    expect(slimTool({ ...spec }, { description: 2, argument: 12 })).not.toBe(shorter);
+  });
+
   it("drops a guild that is not this server", () => {
     expect(groundArgs("stream_start", { guild: "text1" }, here)).toEqual({});
     expect(groundArgs("stream_start", { guild: "g1" }, here)).toEqual({ guild: "g1" });

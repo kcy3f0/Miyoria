@@ -201,6 +201,7 @@ agent 組 prompt 時,對每個已註冊的 prompt key 送出。逾時 `prompt_ti
 - `game.` 開頭(登記名 `game_` 開頭)的工具只有宣告該遊戲的 game adapter 能註冊,而且只能在 `game.<自己的遊戲 id>.` 底下;否則 `-32001`。
 - 名稱已被其他模組(或其他擴充)用掉時回 `-32003`。同一個擴充重複註冊同名工具 = 取代。
 - `parameters` 省略時是空物件 schema;`permission` 是觸發者需要的權限節點(選填)。
+- `read_only`(選填,預設 `false`):這個工具只查不改(查詢、狀態)。模型同一步呼叫好幾個 `read_only` 工具時會同時跑,不再一個等一個。有副作用的工具不要設。SDK 寫法是 `readOnly: true`。
 - 結果:`{"name":"weather_now"}`(登記用的名字)。
 
 `tools.unregister`:`{"name":"weather.now"}`。
