@@ -40,7 +40,7 @@ export interface AsrHint {
    * `now`: an utterance that ended, a reply waits for it; `ahead`: transcribed before the turn is
    * known to be over, it gives way to `now` on a worker that queues requests. Left out means `now`.
    */
-  priority?: TtsPriority;
+  priority?: SpeechPriority;
 }
 
 export const NO_HINT: Readonly<AsrHint> = Object.freeze({ language: null, prompt: null });
@@ -75,7 +75,10 @@ export interface TtsRequest {
   priority?: TtsPriority;
 }
 
-export type TtsPriority = "now" | "ahead";
+/** How soon a worker that queues requests should serve one: `now` before `ahead`. */
+export type SpeechPriority = "now" | "ahead";
+
+export type TtsPriority = SpeechPriority;
 
 /** A `TtsRequest` with every optional field `null`. */
 export function ttsRequest(
@@ -141,6 +144,17 @@ export interface SpeechServiceOptions {
 }
 
 const DEFAULT_RETRY_MS = 30_000;
+
+/**
+ * The provider turned this request down (a 4xx: punctuation only, too long, a bad voice): it
+ * works, the request does not. 408 and 429 say the service is behind, not the request.
+ */
+function refused(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status;
+  return (
+    typeof status === "number" && status >= 400 && status < 500 && status !== 408 && status !== 429
+  );
+}
 
 /** `aborted` when the caller cancelled, else `error`. */
 function failure(signal: AbortSignal | undefined): string {
@@ -251,7 +265,7 @@ export class SpeechService {
         if (isOffloaded(err)) log.debug({ provider: p.name, err }, `${what} failed, trying next`);
         else {
           log.warn({ provider: p.name, err }, `${what} failed, trying next`);
-          if (this.#retryMs > 0 && chain.length > 1) {
+          if (this.#retryMs > 0 && chain.length > 1 && !refused(error)) {
             this.#downUntil.set(p, this.#now() + this.#retryMs);
           }
         }

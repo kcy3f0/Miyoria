@@ -329,15 +329,12 @@ export class Speaker implements VoiceSink {
   }
 
   /**
-   * What the TTS request of `emotion` changes for the worker: the bank clip (when her bank has
-   * one for it; any other emotion falls through the worker's chain to the same reference) and
-   * the style instruction. Emotions that come out the same share one prefetched line.
+   * The fields of the TTS request that `emotion` sets, exactly as they are sent: the reference
+   * clip and the style instruction. Emotions that are sent the same share one prefetched line.
    */
   #voiceKey(emotion: string | null): string {
     const { profile } = this.#d;
-    const clip = profile.referenceFor(emotion);
-    const reference = clip !== null && profile.clips.has(clip) ? clip : "";
-    return `${reference}\u0000${profile.instructFor(emotion) ?? ""}`;
+    return `${profile.referenceFor(emotion) ?? ""}\u0000${profile.instructFor(emotion) ?? ""}`;
   }
 
   async #start(

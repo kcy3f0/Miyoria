@@ -205,6 +205,7 @@ export class Wave {
     if (w === 0 || h === 0) {
       this.#width = 0;
       this.#height = 0;
+      this.#dpr = dpr;
       return false;
     }
     this.#rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;

@@ -6,6 +6,7 @@ import {
   type AsrProvider,
   type AudioStream,
   NO_HINT,
+  SpeechHttpError,
   SpeechService,
   type TtsProvider,
   ttsRequest,
@@ -108,6 +109,32 @@ describe("SpeechService", () => {
     await expect(service.transcribe(audio, NO_HINT)).rejects.toThrow("a down");
     await expect(service.transcribe(audio, NO_HINT)).rejects.toThrow("a down");
     expect(calls).toBe(2);
+  });
+
+  it("does not hold a request it turned down against it", async () => {
+    let calls: string[] = [];
+    let status = 400;
+    const refusing: AsrProvider = {
+      name: "a",
+      transcribe: async () => {
+        calls.push("a");
+        throw new SpeechHttpError(`ASR worker answered ${status}`, status);
+      },
+    };
+    const service = new SpeechService([refusing, asr("b", false)], [], {
+      metrics: new MetricsRegistry(),
+    });
+    await service.transcribe(audio, NO_HINT);
+    calls = [];
+    // A 400 says the request was wrong, not the worker: it is still tried first.
+    await service.transcribe(audio, NO_HINT);
+    expect(calls).toEqual(["a"]);
+    // A 503 says the worker is in trouble.
+    status = 503;
+    await service.transcribe(audio, NO_HINT);
+    calls = [];
+    await service.transcribe(audio, NO_HINT);
+    expect(calls).toEqual([]);
   });
 
   it("does not hold an offloaded worker against it", async () => {

@@ -1083,8 +1083,22 @@ describe("TTS prefetch", () => {
     });
   });
 
-  it("speaks a line prepared in another tone from the prefetch when the worker hears no difference", async () => {
-    // Neither tone has a clip in her bank or an instruction: the worker says both the same way.
+  it("speaks a line prepared in another tone from the prefetch when its request is the same", async () => {
+    // Both are said with her `annoyed` clip and neither has an instruction of its own.
+    const e = await boot();
+    const sink = e.h.services.require(VoiceSinkKey);
+    sink.prepare?.(voiceCtx, "好煩喔", undefined, "disgust");
+    await waitUntil(() => e.tts.requests.length === 1);
+    const speaking = sink.speak(voiceCtx, "好煩喔", "jealousy", null);
+    const [id] = await readPlayback(e.node);
+    e.node.sendJson({ type: "playback", play: id, state: "started" });
+    e.node.sendJson({ type: "playback", play: id, state: "finished" });
+    expect(await speaking).toBe("completed");
+    expect(e.tts.requests).toHaveLength(1);
+  });
+
+  it("synthesizes a line again when its tone sends another reference, even one her bank does not list", async () => {
+    // Neither tone is in her bank: a worker with its own bank may still say them differently.
     const e = await boot();
     const sink = e.h.services.require(VoiceSinkKey);
     sink.prepare?.(voiceCtx, "好睏喔", undefined, "sleepy");
@@ -1094,7 +1108,7 @@ describe("TTS prefetch", () => {
     e.node.sendJson({ type: "playback", play: id, state: "started" });
     e.node.sendJson({ type: "playback", play: id, state: "finished" });
     expect(await speaking).toBe("completed");
-    expect(e.tts.requests).toHaveLength(1);
+    expect(e.tts.requests.map((r) => r.emotion)).toEqual(["sleepy", "bored"]);
   });
 
   it("synthesizes a line again when it was prepared in a tone that sounds different", async () => {
