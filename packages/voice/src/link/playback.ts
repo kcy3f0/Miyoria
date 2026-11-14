@@ -191,6 +191,12 @@ async function pump(
   let seen = node.version;
   const stopPlay = (fadeMs: number) =>
     conn.sendJson({ type: "play_stop", play: id, fade_ms: fadeMs }).catch(() => undefined);
+  // A stop or the connection closing wakes the loop. Both are listened to once, here: racing the
+  // connection's lifelong promise on every chunk would leave a reaction behind per chunk.
+  let wake = deferred<void>();
+  const poke = () => wake.resolve();
+  void playback.stopping.then(poke);
+  conn.signal.addEventListener("abort", poke, { once: true });
   try {
     for (;;) {
       if (sending && pending === null) {
@@ -209,12 +215,8 @@ async function pump(
       const ready =
         playback.stopRequested || conn.isClosed || node.version !== seen || settled !== null;
       if (!ready) {
-        await Promise.race([
-          playback.stopping,
-          conn.closing,
-          node.changed(),
-          ...(pending !== null ? [pending] : []),
-        ]);
+        wake = deferred<void>();
+        await Promise.race([wake.promise, node.changed(), ...(pending !== null ? [pending] : [])]);
       }
       // Same priority as the legacy `biased` select.
       if (playback.stopRequested) {
@@ -269,6 +271,7 @@ async function pump(
       }
     }
   } finally {
+    conn.signal.removeEventListener("abort", poke);
     // Releases the TTS stream (e.g. cancels the HTTP response) without waiting for it.
     Promise.resolve(it.return?.()).catch(() => undefined);
   }

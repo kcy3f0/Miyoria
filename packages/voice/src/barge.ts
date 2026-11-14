@@ -290,11 +290,21 @@ export class BargeIn {
    * `speechRunMs`. Returns whether this stopped a playback. Without `who` the speaker is
    * unknown.
    */
-  observe(guild: string, speechRunMs: number, who?: BargeWho): boolean {
+  /**
+   * Whether `observe` would look at what is said in `guild` now (a line of hers is playing and
+   * may be stopped): the listener only works out who is talking when it would.
+   */
+  engaged(guild: string): boolean {
     if (this.#mode === "ignore") return false;
+    const a = this.#guilds.get(guild)?.active;
+    return a !== undefined && a !== null && !a.stopped;
+  }
+
+  observe(guild: string, speechRunMs: number, who?: BargeWho): boolean {
+    if (!this.engaged(guild)) return false;
     const g = this.#guilds.get(guild);
     const a = g?.active;
-    if (!g || !a || a.stopped) return false;
+    if (!g || !a) return false;
     const key = holdKey(who?.speaker ?? null);
     const hold = g.holds.get(key);
     if (hold && hold.phase !== "speaking" && speechRunMs > 0) {

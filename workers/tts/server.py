@@ -91,6 +91,9 @@ Environment
     TTS_DEFAULT_LANGUAGE   when request has none         (default Auto)
     TTS_GEN_KWARGS         JSON merged into every generate_* call, e.g. {"temperature":0.8}
     TTS_MIN_SENTENCE_CHARS (default 4)   TTS_MAX_SENTENCE_CHARS (default 80)
+    TTS_AHEAD_MAX_SENTENCE_CHARS  pieces of a ``priority: "ahead"`` line are at most this long
+                           (default 40; 0 = TTS_MAX_SENTENCE_CHARS). The GPU lock is taken per piece,
+                           so this bounds how long a line she needs now waits behind one for later
     TTS_CLONE_MODE         auto | xvec | icl             (default auto)
     TTS_VOICE_BANK         1 = pick a reference by language and emotion (default 0)
     TTS_MAX_TEXT_CHARS     reject longer requests (default 2000)
@@ -156,6 +159,9 @@ except ImportError:  # the Docker image holds this folder only: the model stays 
 MAX_TEXT_CHARS = int(os.environ.get("TTS_MAX_TEXT_CHARS", "2000"))
 MIN_CHARS = int(os.environ.get("TTS_MIN_SENTENCE_CHARS", "4"))
 MAX_CHARS = int(os.environ.get("TTS_MAX_SENTENCE_CHARS", "80"))
+# Lines synthesized ahead give the GPU lock back at every piece: a shorter piece is a shorter wait
+# for the line she is about to say. 0 = the same pieces as any other line.
+AHEAD_MAX_CHARS = int(os.environ.get("TTS_AHEAD_MAX_SENTENCE_CHARS", "40"))
 MAX_SECONDS_PER_CHAR = float(os.environ.get("TTS_MAX_SECONDS_PER_CHAR", "0.35"))
 # Qwen3-TTS-12Hz: 12 codec frames (= generated tokens) per second of audio.
 TOKENS_PER_SECOND = 12
@@ -167,6 +173,11 @@ def max_new_tokens(text: str) -> int | None:
         return None
     chars = sum(1 for c in text if not c.isspace())
     return int((chars * MAX_SECONDS_PER_CHAR + 2.0) * TOKENS_PER_SECOND)
+
+def ahead_max_chars() -> int:
+    """The longest piece of a line synthesized ahead (never longer than any other line's)."""
+    return min(AHEAD_MAX_CHARS, MAX_CHARS) if AHEAD_MAX_CHARS > 0 else MAX_CHARS
+
 
 _LANG = {
     "zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean", "de": "German",
@@ -1079,7 +1090,8 @@ async def tts(req: TtsRequest) -> StreamingResponse:
         raise ApiError(400, "text is empty")
     if len(text) > MAX_TEXT_CHARS:
         raise ApiError(413, f"text too long ({len(text)} > {MAX_TEXT_CHARS} chars)")
-    sentences = split_sentences(text, MIN_CHARS, MAX_CHARS)
+    ahead = req.priority == "ahead"
+    sentences = split_sentences(text, MIN_CHARS, ahead_max_chars() if ahead else MAX_CHARS)
     if not sentences:
         raise ApiError(400, "text has nothing to speak (punctuation only)")
 
@@ -1095,7 +1107,7 @@ async def tts(req: TtsRequest) -> StreamingResponse:
     emotion = (req.emotion or "").strip().lower() or None
     reference = eng.reference_key(req.voice, language, emotion)
     pump = ChunkPump(eng, sentences, language, req.voice, instruct, state.pool, loop, emotion=emotion,
-                     rank=RANK_AHEAD if req.priority == "ahead" else RANK_NOW)
+                     rank=RANK_AHEAD if ahead else RANK_NOW)
     t0 = time.perf_counter()
     pump.start()
     try:

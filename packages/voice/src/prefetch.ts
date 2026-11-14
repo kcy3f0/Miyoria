@@ -217,6 +217,13 @@ export class LinePrefetch {
     }
   }
 
+  /** Drops every line whose key starts with `prefix` (and stops synthesizing them). */
+  cancelPrefix(prefix: string): void {
+    for (const key of [...this.#entries.keys()]) {
+      if (key.startsWith(prefix)) this.#drop(key);
+    }
+  }
+
   clear(): void {
     for (const key of [...this.#entries.keys()]) this.#drop(key);
   }

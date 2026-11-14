@@ -126,7 +126,7 @@ def load_server(monkeypatch, voices_dir):
 
     def _load(modules: dict, **env):
         for k in ("TTS_BACKEND", "TTS_CHUNK_SIZE", "TTS_MODE", "TTS_MODEL", "TTS_GEN_KWARGS", "TTS_DEFAULT_VOICE",
-                  "TTS_ATTN", "TTS_WARMUP_PREFILL", "TTS_DEFAULT_LANGUAGE"):
+                  "TTS_ATTN", "TTS_WARMUP_PREFILL", "TTS_DEFAULT_LANGUAGE", "TTS_AHEAD_MAX_SENTENCE_CHARS"):
             monkeypatch.delenv(k, raising=False)
         monkeypatch.setenv("VOICES_DIR", str(voices_dir))
         monkeypatch.setenv("TTS_ATTN", "sdpa")
@@ -249,6 +249,25 @@ def test_sentence_by_sentence_then_chunk_by_chunk(run):
     calls = synth_calls(fake)
     assert [c[1]["text"] for c in calls] == [S1, S2]  # one streaming generation per sentence, in order
     assert all(m == "clone_stream" and kw["language"] == "Chinese" and kw["chunk_size"] == 4 for m, kw in calls)
+
+
+LONG = "今天下午我們先去車站附近那家很有名的拉麵店吃午餐，吃完之後再一起去旁邊的書店逛逛看有沒有新出的漫畫。"
+
+
+def test_a_line_synthesized_ahead_gives_the_gpu_back_more_often(run):
+    client, fake, _ = run()
+    assert client.post("/tts", json={"text": LONG, "voice": "v1"}).status_code == 200
+    assert [c[1]["text"] for c in synth_calls(fake)] == [LONG]  # under 80 characters: one piece
+    assert client.post("/tts", json={"text": LONG, "voice": "v1", "priority": "ahead"}).status_code == 200
+    pieces = [c[1]["text"] for c in synth_calls(fake)][1:]
+    assert len(pieces) == 2 and "".join(pieces) == LONG  # cut at the comma, at most 40 characters
+    assert all(len(p) <= 40 for p in pieces)
+
+
+def test_ahead_pieces_can_be_left_as_any_other_line(run):
+    client, fake, _ = run(TTS_AHEAD_MAX_SENTENCE_CHARS="0")
+    assert client.post("/tts", json={"text": LONG, "voice": "v1", "priority": "ahead"}).status_code == 200
+    assert [c[1]["text"] for c in synth_calls(fake)] == [LONG]
 
 
 def test_generation_is_closed_after_a_normal_response(run):

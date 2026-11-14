@@ -213,7 +213,8 @@ export class Segmenter<V extends Vad = Vad> {
     }
     let start = 0;
     while (data.length - start >= this.#frameLen) {
-      const frame = data.slice(start, start + this.#frameLen);
+      // A view: the frames kept past this call (onset, pre-roll) are copied where they are kept.
+      const frame = data.subarray(start, start + this.#frameLen);
       start += this.#frameLen;
       const u = this.#frame(frame);
       if (u) out.push(u);
@@ -238,12 +239,12 @@ export class Segmenter<V extends Vad = Vad> {
     this.#trackRun(speech);
     if (!this.#active) {
       if (speech) {
-        this.#onset.push(frame);
+        this.#onset.push(frame.slice());
         if (this.#onset.length >= Math.max(1, this.#config.onsetFrames)) this.#begin();
       } else {
         // A lone blip is not an onset; keep it as pre-roll.
         for (const f of this.#onset.splice(0)) this.#remember(f);
-        this.#remember(frame);
+        this.#remember(frame.slice());
       }
       return null;
     }

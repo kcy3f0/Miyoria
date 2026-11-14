@@ -103,8 +103,8 @@ export const VoiceConfigSchema = z.object({
    * their turn closed (the LLM runs meanwhile). Default 400.
    */
   turn_confirm_ms: z.number().int().nonnegative().default(400),
-  /** Her reply waits for that at most this long. Default 2000. */
-  turn_gate_max_ms: z.number().int().nonnegative().default(2_000),
+  /** Her reply waits for that at most this long (at most a minute). Default 2000. */
+  turn_gate_max_ms: z.number().int().nonnegative().max(60_000).default(2_000),
   /**
    * While the model says the speaker is not done, transcribe what they said so far: when they
    * really were done, the transcript is ready at the timeout. Costs an ASR run per pause.

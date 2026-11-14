@@ -52,6 +52,7 @@ export {
   NO_HINT,
   type ProviderConfig,
   SpeechError,
+  type SpeechPriority,
   SpeechService,
   SpeechServiceKey,
   type SpeechServiceOptions,

@@ -248,6 +248,7 @@ $env:VOICES_DIR = "..\voices"; $env:TTS_DEFAULT_VOICE = "deepseek-chan"
 | `TTS_ATTN` | `auto` | 有 `flash_attn` 就用,否則 `sdpa`(Windows 上就是 SDPA,不用裝 flash-attn) |
 | `TTS_CLONE_MODE` | `auto` | `auto` = 有 `ref.txt` 用 ICL,否則 x-vector(今天的行為);`icl` = 也讀 `ref.<語言>.txt`;`xvec` = 一律 x-vector。見下面「ICL 與情緒音庫」 |
 | `TTS_VOICE_BANK` | `0` | `1` = 依語言和情緒選參考音 |
+| `TTS_AHEAD_MAX_SENTENCE_CHARS` | `40` | `priority: "ahead"`(預先合成)的句子最多切成這麼長一段(在逗號處切)。GPU 鎖以段為單位,所以馬上要講的句子最多只等一小段;`0` = 跟其他句子一樣用 `TTS_MAX_SENTENCE_CHARS` |
 | `TTS_POOL_SIZE` | `4` | 合成用的執行緒。要比同時預先合成的句數多,馬上要講的句子才不會排在等 GPU 鎖的句子後面 |
 | `TTS_OFFLOAD_DRAIN_S` | `15` | `/offload` 等正在合成的句子講完的上限;`0` = 下一個 chunk 就停(舊行為) |
 
@@ -311,7 +312,9 @@ faster-qwen3-tts 裝不起來、或不想用社群套件時,`tts/requirements.tx
 
 ### 排隊:`priority` 與 `X-Tts-Queue-Ms`
 
-一次只有一句在 GPU 上。Core 的 `/tts` 帶 `priority`:`now`(她接下來要講的)排在 `ahead`(先合成起來的後面幾句)前面,同一級先來先做;舊的 client 不帶,等於 `now`。回應標頭 `X-Tts-Queue-Ms` 是等 GPU 鎖的時間,`X-Tts-First-Audio-Ms` 是排隊加合成。Core 把排隊算進六段指標的 `tts_queue`、`tts_first` 只剩合成,所以 `voice.latency` 看得出是排隊還是 GPU 慢(§13.1 第 4 項)。
+一次只有一句在 GPU 上。Core 的 `/tts` 帶 `priority`:`now`(她接下來要講的)排在 `ahead`(先合成起來的後面幾句)前面,同一級先來先做;舊的 client 不帶,等於 `now`。回應標頭 `X-Tts-Queue-Ms` 是等 GPU 鎖的時間,`X-Tts-First-Audio-Ms` 是排隊加合成。Core 把排隊算進六段指標的 `tts_queue`、`tts_first` 只剩合成,所以 `voice.latency` 看得出是排隊還是 GPU 慢(§13.1 第 4 項)。`ahead` 的句子會切成最多 `TTS_AHEAD_MAX_SENTENCE_CHARS`(預設 40)字一段,鎖一段一段拿,`now` 最多等正在合成的那一段。
+
+ASR worker 的 `/asr` 也收 `priority`(multipart 欄位):Core 在對方還沒確定講完前先辨識的(`turn_early_asr`)帶 `ahead`,排在已經講完的句子後面;同一級先來先做。
 
 ### ICL 與情緒音庫
 

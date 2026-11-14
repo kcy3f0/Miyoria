@@ -1,6 +1,8 @@
 """Miyoria ASR worker — implements the "推論 Worker HTTP 介面" (docs/protocols/voice-link.md).
 
-    POST /asr     multipart: audio (WAV, any rate/channels), language?, prompt?   -> JSON
+    POST /asr     multipart: audio (WAV, any rate/channels), language?, prompt?, priority?   -> JSON
+                  ``priority=ahead``: transcribed ahead of the end of a turn; it waits behind
+                  every utterance that did end (default ``now``)
     GET  /health  -> {"status":"ok","model":...,"device":...,"offloaded":bool}
     GET  /busy    -> {"busy": n} clips being transcribed (the song worker yields to them)
     POST /offload JSON {reason?, max_s?} -> ends the model's process, which gives the card back for
@@ -35,7 +37,8 @@ Environment
 
 Concurrency: the model is loaded once at startup (FastAPI lifespan). Decoding / resampling runs
 in a thread pool (so several uploads can be decoded in parallel and the event loop is never
-blocked); the model call itself is serialised with a lock, so the GPU sees one job at a time.
+blocked); the model call itself is serialised with a lock, so the GPU sees one job at a time. The
+lock serves ``now`` before ``ahead``, first come first served within each.
 
 Output text is raw model output (usually Simplified for Chinese). The Rust side runs OpenCC
 (s2tw) on it, so this worker deliberately does not convert.
@@ -45,18 +48,20 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import heapq
 import importlib.util
 import inspect
 import io
+import itertools
 import logging
 import os
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -277,10 +282,63 @@ def start_backend() -> Any:
     return backend.wait_ready()
 
 
+RANK_NOW = 0  # an utterance somebody finished: the reply waits for it
+RANK_AHEAD = 1  # transcribed ahead of the end of a turn, in case it ends (``priority=ahead``)
+
+
+class RankedLock:
+    """One model call at a time, served by rank, then first come first served.
+
+    `threading.Lock` picks a waiter at random: with several people talking, an utterance could wait
+    behind ones that came after it, and a guess made ahead behind the real thing. Used like a lock
+    (rank RANK_NOW), or `with lock.hold(rank)`. The TTS worker has the same lock (`GpuLock`); each
+    worker is its own image, so it is not shared.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._held = False
+        self._waiting: list[tuple[int, int]] = []
+        self._tickets = itertools.count()
+
+    def acquire(self, rank: int = RANK_NOW) -> None:
+        with self._cond:
+            ticket = (rank, next(self._tickets))
+            heapq.heappush(self._waiting, ticket)
+            try:
+                while self._held or self._waiting[0] != ticket:
+                    self._cond.wait()
+                self._held = True
+            finally:
+                self._waiting.remove(ticket)
+                heapq.heapify(self._waiting)
+                self._cond.notify_all()
+
+    def release(self) -> None:
+        with self._cond:
+            self._held = False
+            self._cond.notify_all()
+
+    def __enter__(self) -> "RankedLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.release()
+
+    @contextmanager
+    def hold(self, rank: int) -> Iterator[None]:
+        self.acquire(rank)
+        try:
+            yield
+        finally:
+            self.release()
+
+
 class State:
     backend: Any = None
     pool: ThreadPoolExecutor
-    lock = threading.Lock()  # serialises model calls (GPU / ORT session)
+    lock = RankedLock()  # serialises model calls (GPU / ORT session)
     swap: asyncio.Lock  # one offload at a time; a reload does not take it, so nothing waits behind one
     offloaded: dict[str, Any] | None = None  # {since, reason, reload_at}
     auto_reload: asyncio.Task | None = None
@@ -351,8 +409,9 @@ async def _validation_exc(_: Request, exc: RequestValidationError) -> JSONRespon
     return _error(400, f"invalid request: {where or 'body'}: {first.get('msg', 'bad value')}")
 
 
-def _locked_transcribe(x: Any, language: str | None, prompt: str | None) -> tuple[dict[str, Any], float]:
-    with state.lock:
+def _locked_transcribe(x: Any, language: str | None, prompt: str | None,
+                       rank: int = RANK_NOW) -> tuple[dict[str, Any], float]:
+    with state.lock.hold(rank):
         if state.backend is None:
             raise Offloaded()
         t0 = time.perf_counter()
@@ -365,6 +424,7 @@ async def asr(
     audio: UploadFile = File(...),
     language: str | None = Form(None),
     prompt: str | None = Form(None),
+    priority: str | None = Form(None),
 ) -> JSONResponse:
     if state.backend is None:
         return _error(503, "offloaded")
@@ -376,7 +436,8 @@ async def asr(
 
     def work() -> tuple[dict[str, Any], int, float]:
         x, duration_ms = decode_wav(data)  # outside the lock: decoding runs in parallel
-        out, infer_ms = _locked_transcribe(x, language, prompt)
+        rank = RANK_AHEAD if priority == "ahead" else RANK_NOW
+        out, infer_ms = _locked_transcribe(x, language, prompt, rank)
         return out, duration_ms, infer_ms
 
     state.busy += 1
