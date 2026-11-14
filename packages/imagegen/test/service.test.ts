@@ -45,6 +45,17 @@ async function started(extra: Record<string, unknown> = {}): Promise<ImageGenSer
 
 const settled = (s: ImageGenService, job: ImageJob) => s.wait(job.id, AbortSignal.timeout(5_000));
 
+/**
+ * What holds the queue, once the runner has let go of the job it put back: the job reads `queued`
+ * a moment before that, and until then nothing is held.
+ */
+async function held(s: ImageGenService): Promise<string | null> {
+  for (let i = 0; i < 50 && (await s.status()).held === null; i++) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return (await s.status()).held;
+}
+
 beforeEach(async () => {
   comfy = new FakeComfy();
   await comfy.start();
@@ -159,7 +170,7 @@ describe("ImageGenService", () => {
     }
     const back = await s.get(job.id);
     expect(back).toMatchObject({ state: "queued", attempts: 1 });
-    expect((await s.status()).held).toBe("unreachable");
+    expect(await held(s)).toBe("unreachable");
     comfy.down = false;
     now += 11_000; // past the retry wait
     s.nudge();
@@ -180,7 +191,7 @@ describe("ImageGenService", () => {
     expect(await s.get(job.id)).toMatchObject({ state: "queued", attempts: 0, prompt_id: null });
     expect(comfy.interrupts.length).toBeGreaterThan(0);
     expect(comfy.frees.length).toBeGreaterThan(0);
-    expect((await s.status()).held).toBe("singing");
+    expect(await held(s)).toBe("singing");
     comfy.auto = true;
     s.onSongCue({ state: "ended", song: "1", outcome: "done" });
     expect((await settled(s, job)).state).toBe("done");
