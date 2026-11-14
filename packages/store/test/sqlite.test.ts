@@ -151,6 +151,60 @@ describe("SqliteStore", () => {
       }
     }));
 
+  it("only changes vector search compares by invalidate the decoded vectors", () =>
+    withTempDir(async (dir) => {
+      const path = join(dir, "version.db");
+      const store = await SqliteStore.open(path);
+      const raw = new DatabaseSync(path);
+      const version = () =>
+        (raw.prepare("SELECT n FROM memory_vector_version WHERE id = 1").get() as { n: number }).n;
+      try {
+        const now = toTimestamp(Date.now());
+        const later = toTimestamp(Date.now() + 60_000);
+        const record: MemoryRecord = {
+          id: newId(),
+          profile: "p" as ProfileId,
+          kind: "followup",
+          scope: { type: "global" },
+          subjects: [],
+          content: "x",
+          tokens: "x",
+          embedding: [0.25, 0.5],
+          importance: 0.5,
+          confidence: 1,
+          created_at: now,
+          updated_at: now,
+          last_accessed: null,
+          access_count: 0,
+          source_context: null,
+          source: null,
+          origin: "experienced",
+          source_events: [],
+          due: null,
+          done: false,
+          superseded_by: null,
+        };
+        await store.memories.upsert(record);
+        const before = version();
+        // An upsert names every column; reinforcing, scheduling, citing or closing a memory
+        // leaves the vector and what it is filtered by as they were.
+        await store.memories.upsert({ ...record, importance: 0.9, confidence: 0.8 });
+        await store.memories.upsert({ ...record, due: later, updated_at: later });
+        await store.memories.upsert({ ...record, source_events: [newId()] });
+        await store.memories.upsert({ ...record, done: true });
+        await store.memories.touch([record.id], later);
+        expect(version()).toBe(before);
+        await store.memories.upsert({ ...record, embedding: [0.5, 0.25] });
+        expect(version()).toBe(before + 1);
+        await store.memories.upsert({ ...record, embedding: null });
+        await store.memories.upsert({ ...record, embedding: null });
+        expect(version()).toBe(before + 2);
+      } finally {
+        raw.close();
+        await store.close();
+      }
+    }));
+
   it("two connections on one file see each other's writes", () =>
     withTempDir(async (dir) => {
       const path = join(dir, "shared.db");
