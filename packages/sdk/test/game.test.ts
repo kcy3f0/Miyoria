@@ -155,6 +155,37 @@ describe("game adapter helper", () => {
     });
     expect(seen).toBe("terraria");
   });
+
+  it("forwards GameObservation.screenshot with optional detail and alt", async () => {
+    const game = adapter([]);
+    game.observe = async () => ({
+      state: { hp: 15 },
+      summary: "夜晚",
+      screenshot: {
+        mime: "image/png",
+        data: "iVBORw0KGgo=",
+        detail: "high",
+        alt: "夜晚森林",
+      },
+    });
+    const h = fakeHost({
+      async activate(ctx) {
+        await ctx.game.registerAdapter(game);
+      },
+    });
+    await h.initialize(gameInit("mc"));
+    const obs = await h.host.request<Record<string, unknown>>("task.observe", {});
+    expect(obs).toMatchObject({
+      state: { hp: 15 },
+      summary: "夜晚",
+      screenshot: {
+        mime: "image/png",
+        data: "iVBORw0KGgo=",
+        detail: "high",
+        alt: "夜晚森林",
+      },
+    });
+  });
 });
 
 function gameInit(game: string): Partial<InitializeParams> {

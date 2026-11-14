@@ -147,6 +147,14 @@ export function isSteerOutcome(value: unknown): value is SteerOutcome {
   return typeof value === "string" && (STEER_OUTCOMES as readonly string[]).includes(value);
 }
 
+/** Optional screenshot captured alongside `StructuredState` for multimodal decision-making. */
+export interface TaskScreenshot {
+  mime: string;
+  data: string;
+  detail?: "low" | "auto" | "high";
+  alt?: string;
+}
+
 /** What `observe()` returns: structured state, never a text that has to be parsed again. */
 export interface StructuredState {
   at: Timestamp;
@@ -156,6 +164,8 @@ export interface StructuredState {
   task: TaskId | null;
   /** Short neutral summary for her prompt (data: may contain untrusted text). */
   summary: string;
+  /** Optional game screenshot when the executor can provide visual context. */
+  screenshot?: TaskScreenshot;
 }
 
 /**

@@ -28,6 +28,7 @@ import {
   type JsonObject,
   type JsonValue,
   parseTaskEvent,
+  parseTaskScreenshot,
   type RegisteredTaskExecutor,
   type StructuredState,
   type TaskEvent,
@@ -189,11 +190,14 @@ export class ProxyExecutor implements RegisteredTaskExecutor {
         "observe returned something that is not a StructuredState",
       );
     }
+    const screenshot =
+      value.screenshot !== undefined ? parseTaskScreenshot(value.screenshot) : null;
     return {
       at: value.at,
       state: value.state as JsonObject,
       task: value.task,
       summary: value.summary,
+      ...(screenshot !== null ? { screenshot } : {}),
     };
   }
 

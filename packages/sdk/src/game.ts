@@ -14,7 +14,14 @@
 // tools any more: nothing outside the executor can drive the game.
 
 import type { ExtensionContext } from "./extension.js";
-import { type TaskExecutor, TaskFailure, type TaskFailureCode, TaskRunner, type TaskWorker } from "./task.js";
+import {
+  type TaskExecutor,
+  TaskFailure,
+  type TaskFailureCode,
+  TaskRunner,
+  type TaskScreenshot,
+  type TaskWorker,
+} from "./task.js";
 import { isValidTopic } from "./topics.js";
 import type { JsonSchema } from "./types.js";
 
@@ -49,8 +56,8 @@ export interface GameObservation {
   state: Record<string, unknown>;
   /** Short text summary for the model. */
   summary: string;
-  /** Optional screenshot for multimodal models (not sent through tools yet). */
-  screenshot?: { mime: string; data: string };
+  /** Optional screenshot forwarded to multimodal decision models when supported. */
+  screenshot?: TaskScreenshot;
 }
 
 export interface GameAction {

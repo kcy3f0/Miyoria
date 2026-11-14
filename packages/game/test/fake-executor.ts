@@ -48,6 +48,7 @@ export class FakeExecutor implements RegisteredTaskExecutor {
   readonly info: TaskExecutorInfo;
   state: JsonObject = { connected: true, in_game: true };
   summary = "血量 20/20\n位置 (0, 64, 0)";
+  screenshot?: StructuredState["screenshot"];
   /** What `observe` reports as running (`undefined`: the last task still running). */
   reportTask: TaskId | null | undefined = undefined;
   observeCalls = 0;
@@ -108,7 +109,13 @@ export class FakeExecutor implements RegisteredTaskExecutor {
     this.observeCalls += 1;
     const task =
       this.reportTask === undefined ? ([...this.running].at(-1) ?? null) : this.reportTask;
-    return { at: this.#at(), state: structuredClone(this.state), task, summary: this.summary };
+    return {
+      at: this.#at(),
+      state: structuredClone(this.state),
+      task,
+      summary: this.summary,
+      ...(this.screenshot !== undefined ? { screenshot: structuredClone(this.screenshot) } : {}),
+    };
   }
 
   async start(spec: TaskSpec): Promise<void> {

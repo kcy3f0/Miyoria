@@ -7,14 +7,16 @@
 // ActivityManager's game start) look it up by owner, start tasks with an id + budget and learn
 // the outcome from the task events, never from event names or result texts.
 
-import type { JsonObject, JsonValue } from "./json.js";
+import type { JsonValue } from "./json.js";
+import { IMAGE_TYPES } from "./platform.js";
 import { serviceKey } from "./service-key.js";
 import {
   isSteerOutcome,
   isTaskFailureCode,
+  type StructuredState,
   type TaskEvent,
   type TaskExecutor,
-  type TaskId,
+  type TaskScreenshot,
   type TaskSpec,
   type TaskSteer,
 } from "./task.js";
@@ -139,18 +141,58 @@ export function parseTaskEvent(value: unknown): TaskEvent | null {
   }
 }
 
-/** `StructuredState` JSON check (the state must be an object). */
-export function isStructuredStateLike(
-  value: unknown,
-): value is { at: string; state: JsonObject; task: TaskId | null; summary: string } {
+export const MAX_TASK_SCREENSHOT_CHARS = 2_000_000;
+
+const SAFE_TASK_IMAGE_MIMES: ReadonlySet<string> = new Set<string>(IMAGE_TYPES);
+const TASK_SCREENSHOT_DETAILS: ReadonlySet<string> = new Set(["low", "auto", "high"]);
+const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/** Validates and normalizes an optional screenshot attachment on `StructuredState`. */
+export function parseTaskScreenshot(value: unknown): TaskScreenshot | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.mime !== "string") return null;
+  const mime = v.mime.trim().toLowerCase();
+  if (!SAFE_TASK_IMAGE_MIMES.has(mime)) return null;
+  if (
+    typeof v.data !== "string" ||
+    v.data.length === 0 ||
+    v.data.length > MAX_TASK_SCREENSHOT_CHARS ||
+    !BASE64_RE.test(v.data)
+  ) {
+    return null;
+  }
+  if (
+    v.detail !== undefined &&
+    (typeof v.detail !== "string" || !TASK_SCREENSHOT_DETAILS.has(v.detail))
+  ) {
+    return null;
+  }
+  if (v.alt !== undefined && typeof v.alt !== "string") return null;
+  const parsed: TaskScreenshot = { mime, data: v.data };
+  if (v.detail !== undefined) parsed.detail = v.detail as TaskScreenshot["detail"];
+  if (v.alt !== undefined) parsed.alt = v.alt;
+  return parsed;
+}
+
+/** Type guard for validated `TaskScreenshot` attachments. */
+export function isTaskScreenshot(value: unknown): value is TaskScreenshot {
+  return parseTaskScreenshot(value) !== null;
+}
+
+/** `StructuredState` JSON check (the state must be an object, and optional `screenshot` valid). */
+export function isStructuredStateLike(value: unknown): value is StructuredState {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
-  return (
-    typeof v.at === "string" &&
-    typeof v.summary === "string" &&
-    (v.task === null || typeof v.task === "string") &&
-    typeof v.state === "object" &&
-    v.state !== null &&
-    !Array.isArray(v.state)
-  );
+  if (
+    typeof v.at !== "string" ||
+    typeof v.summary !== "string" ||
+    (v.task !== null && typeof v.task !== "string") ||
+    typeof v.state !== "object" ||
+    v.state === null ||
+    Array.isArray(v.state)
+  ) {
+    return false;
+  }
+  return v.screenshot === undefined || isTaskScreenshot(v.screenshot);
 }

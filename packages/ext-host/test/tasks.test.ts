@@ -144,11 +144,13 @@ describe("ProxyExecutor", () => {
     ]);
     expect((await stream.next()).value).toMatchObject({ type: "started", task: "a" });
     expect((await stream.next()).value).toMatchObject({ type: "done", detail: "quick done" });
-    expect(await w.proxy.observe()).toMatchObject({
+    const obs = await w.proxy.observe();
+    expect(obs).toMatchObject({
       state: { hp: 20 },
       summary: "fine",
       task: null,
     });
+    expect("screenshot" in obs).toBe(false);
     expect(w.proxy.running).toEqual([]);
   });
 
@@ -289,5 +291,73 @@ describe("the SDK's copy of the task contract", () => {
     await pump;
     expect(events.length).toBeGreaterThanOrEqual(3);
     for (const e of events) expect(parseTaskEvent(e)).toEqual(e);
+  });
+
+  it("forwards valid screenshots through ProxyExecutor.observe and rejects invalid ones", async () => {
+    let shot:
+      | { mime: string; data: string; detail?: "low" | "auto" | "high"; alt?: string }
+      | undefined = { mime: " IMAGE/JPEG ", data: "/9j/4AAQ", detail: "low", alt: "洞口" };
+    const runner = new TaskRunner({
+      observe: async () => ({
+        state: { hp: 20 },
+        summary: "cave",
+        ...(shot !== undefined ? { screenshot: shot } : {}),
+      }),
+      run: async () => ({ detail: "ok" }),
+    });
+    const hostToExt = new PassThrough();
+    const extToHost = new PassThrough();
+    runExtension(
+      {
+        async activate(ctx) {
+          await ctx.tasks.register(runner, { name: "Shot", goals: [] });
+        },
+      },
+      { input: hostToExt, output: extToHost, timeoutMs: 1000 },
+    );
+    const peer = new Peer(hostToExt);
+    const serving = peer.serve(extToHost, {
+      request: async () => ({}),
+      notification: () => undefined,
+    });
+    serving.catch(() => undefined);
+    await peer.request(
+      "initialize",
+      {
+        protocol: 1,
+        host: { name: "miyoria", version: "0" },
+        extension: { id: "shot", version: "0", dir: "/", game: null },
+        config: {},
+        permissions: { events: [], tools: false, commands: false, network: [], input: [] },
+      },
+      1000,
+    );
+    const proxy = new ProxyExecutor(
+      peer,
+      { owner: "game.shot", name: "Shot", goals: [], guide: null },
+      { callTimeoutMs: 500, graceMs: 50, publish: () => undefined },
+    );
+    try {
+      const valid = await proxy.observe();
+      expect(valid.screenshot).toEqual({
+        mime: "image/jpeg",
+        data: "/9j/4AAQ",
+        detail: "low",
+        alt: "洞口",
+      });
+
+      shot = { mime: "image/svg+xml", data: "PHN2Zz4=" };
+      await expect(proxy.observe()).rejects.toMatchObject({
+        code: "internal",
+      });
+
+      shot = undefined;
+      const plain = await proxy.observe();
+      expect("screenshot" in plain).toBe(false);
+    } finally {
+      runner.close();
+      hostToExt.end();
+      extToHost.end();
+    }
   });
 });

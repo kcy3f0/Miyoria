@@ -12,9 +12,11 @@ import {
   type ChatRequest,
   type ChatStream,
   contentText,
+  hasImages,
   LlmRouter,
   LlmRouterKey,
   MockProvider,
+  ProviderHttpError,
   parseModelRef,
 } from "@miyoria/llm";
 import { RequestQueue, RequestQueueKey } from "@miyoria/queue";
@@ -158,11 +160,23 @@ class Harness {
     provider: ChatProvider,
     config: JsonValue | null = null,
     actuators: ((h: Harness) => ActuatorRegistry) | null = null,
+    routerSetup?: {
+      extraProviders?: ChatProvider[];
+      chains?: Record<string, string[]>;
+      imageInput?: Map<string, boolean>;
+    },
   ): Promise<Harness> {
     const h = new Harness();
+    const providers = new Map([[provider.name, provider]]);
+    for (const p of routerSetup?.extraProviders ?? []) providers.set(p.name, p);
+    const chains = new Map([["game", [parseModelRef(`${provider.name}:m`)]]]);
+    for (const [purpose, refs] of Object.entries(routerSetup?.chains ?? {})) {
+      chains.set(purpose, refs.map(parseModelRef));
+    }
     const router = new LlmRouter(
-      new Map([[provider.name, provider]]),
-      new Map([["game", [parseModelRef(`${provider.name}:m`)]]]),
+      providers,
+      chains,
+      routerSetup?.imageInput ? { imageInput: routerSetup.imageInput } : undefined,
     );
     const services = h.sup.services;
     if (actuators) services.provide("app", ActuatorRegistryKey, actuators(h));
@@ -615,7 +629,8 @@ describe("game director", () => {
     const llm = new MockProvider("mock").reply(
       decision("挖鐵礦", { name: "mine", args: { block: "iron_ore" } }),
     );
-    const h = await Harness.create(llm);
+    // Preserve the 4s cooldown expected between steps in this timeline test.
+    const h = await Harness.create(llm, { urgent_decide_secs: 4 });
     await h.start();
     expect(h.status()?.goal?.text).toBe("挖鐵礦");
     h.nudges();
@@ -1296,6 +1311,179 @@ describe("session end and gated tools", () => {
     expect(control.pendingGoal("挖鐵礦", "Owen")).toContain("開好後");
     await h.start();
     expect(h.status()?.goal?.text).toBe("挖鐵礦");
+    await h.stop();
+  });
+
+  it("sends multimodal ContentPart[] when screenshot is present and router accepts images", async () => {
+    const llm = new MockProvider("mock").reply(decision("觀察地形", null));
+    const h = await Harness.create(llm, null, null, {
+      imageInput: new Map([["mock:m", true]]),
+    });
+    h.exec.screenshot = { mime: "image/jpeg", data: "/9j/4AAQ" };
+    await h.start();
+    const userContent = llm.requests()[0]?.messages[1]?.content;
+    expect(Array.isArray(userContent)).toBe(true);
+    expect(userContent).toEqual([
+      { type: "text", text: expect.stringContaining("遊戲狀態") },
+      {
+        type: "image_url",
+        image_url: { url: "data:image/jpeg;base64,/9j/4AAQ", detail: "low" },
+        alt: "遊戲畫面截圖",
+      },
+    ]);
+
+    h.exec.screenshot = {
+      mime: "image/png",
+      data: "iVBORw0KGgo=",
+      detail: "high",
+      alt: "懸崖邊緣",
+    };
+    await secs(20);
+    const secondContent = llm.requests()[1]?.messages[1]?.content;
+    expect(secondContent).toEqual([
+      { type: "text", text: expect.any(String) },
+      {
+        type: "image_url",
+        image_url: { url: "data:image/png;base64,iVBORw0KGgo=", detail: "high" },
+        alt: "懸崖邊緣",
+      },
+    ]);
+    await h.stop();
+  });
+
+  it("falls back to plain string user content when router rejects images or screenshot is invalid", async () => {
+    const llm = new MockProvider("mock").reply(decision("觀察地形", null));
+    const h = await Harness.create(llm, null, null, {
+      imageInput: new Map([["mock:m", false]]),
+    });
+    h.exec.screenshot = { mime: "image/jpeg", data: "/9j/4AAQ" };
+    await h.start();
+    expect(typeof llm.requests()[0]?.messages[1]?.content).toBe("string");
+    await h.stop();
+
+    const visionLlm = new MockProvider("mock").reply(decision("觀察地形", null));
+    const h2 = await Harness.create(visionLlm, null, null, {
+      imageInput: new Map([["mock:m", true]]),
+    });
+    h2.exec.screenshot = { mime: "image/svg+xml", data: "PHN2Zz4=" };
+    await h2.start();
+    expect(typeof visionLlm.requests()[0]?.messages[1]?.content).toBe("string");
+    await h2.stop();
+  });
+
+  it("routes screenshot decisions via vision_purpose and survives image refusal via router retry", async () => {
+    const gameLlm = new MockProvider("game").reply(decision("一般決定", null));
+    const visionLlm = new MockProvider("vision").reply(decision("視覺決定", null));
+    const h = await Harness.create(gameLlm, { vision_purpose: "vision" }, null, {
+      extraProviders: [visionLlm],
+      chains: { vision: ["vision:m"] },
+      imageInput: new Map([
+        ["game:m", false],
+        ["vision:m", true],
+      ]),
+    });
+    await h.start();
+    // Initial observation has no screenshot: uses default cfg.purpose ("game").
+    expect(gameLlm.requests()).toHaveLength(1);
+    expect(visionLlm.requests()).toHaveLength(0);
+    expect(typeof gameLlm.requests()[0]?.messages[1]?.content).toBe("string");
+
+    // With screenshot: routes through cfg.vision_purpose ("vision").
+    h.exec.screenshot = { mime: "image/jpeg", data: "/9j/4AAQ" };
+    await secs(20);
+    expect(gameLlm.requests()).toHaveLength(1);
+    expect(visionLlm.requests()).toHaveLength(1);
+    expect(Array.isArray(visionLlm.requests()[0]?.messages[1]?.content)).toBe(true);
+    await h.stop();
+
+    // If the vision model rejects image_url at runtime, LlmRouter retries text-only seamlessly.
+    class ImageRefusingProvider implements ChatProvider {
+      readonly name = "picky";
+      readonly requests: ChatRequest[] = [];
+      async stream(req: ChatRequest): Promise<ChatStream> {
+        this.requests.push(structuredClone(req));
+        if (hasImages(req.messages)) {
+          throw new ProviderHttpError("HTTP 400: image_url is not supported", 400);
+        }
+        return (async function* (): ChatStream {
+          yield {
+            type: "text_delta",
+            text: decision("文字降級決定", { name: "mine", args: { block: "iron_ore" } }),
+          };
+          yield { type: "done", finish_reason: "stop", usage: null };
+        })();
+      }
+    }
+    const picky = new ImageRefusingProvider();
+    const h2 = await Harness.create(picky, null, null, {
+      imageInput: new Map([["picky:m", true]]),
+    });
+    h2.exec.screenshot = { mime: "image/jpeg", data: "/9j/4AAQ" };
+    await h2.start();
+    expect(picky.requests).toHaveLength(2);
+    expect(Array.isArray(picky.requests[0]?.messages[1]?.content)).toBe(true);
+    expect(typeof picky.requests[1]?.messages[1]?.content).toBe("string");
+    expect(h2.status()?.goal?.text).toBe("文字降級決定");
+    await h2.stop();
+  });
+
+  it("uses urgent_decide_secs for important triggers while preserving min_decide_secs for normal ones", async () => {
+    const llm = new MockProvider("mock").reply(decision("探索", null));
+    const h = await Harness.create(llm);
+    await h.start();
+    expect(llm.requests()).toHaveLength(1);
+
+    // Non-important trigger: still waits min_decide_secs (4s), not 1.5s.
+    await h.gameEvent("chat", "<Steve> hello", false);
+    await secs(2);
+    expect(llm.requests()).toHaveLength(1);
+    await secs(2);
+    expect(llm.requests()).toHaveLength(2);
+
+    // Important trigger: reacts after urgent_decide_secs (1.5s).
+    await h.gameEvent("low_health", "血量剩下 4/20", true);
+    await secs(1);
+    expect(llm.requests()).toHaveLength(2);
+    await secs(0.6);
+    expect(llm.requests()).toHaveLength(3);
+    await h.stop();
+  });
+
+  it("keeps active goal task across recoverable reflex progress and handles reflex_resumed/aborted", async () => {
+    const llm = new MockProvider("mock").reply(
+      decision("挖鐵礦", { name: "mine", args: { block: "iron_ore" } }),
+    );
+    const h = await Harness.create(llm);
+    await h.start();
+    const taskId = h.exec.last().id;
+    expect(h.status()?.goal?.action).toContain("mine");
+
+    // Recoverable reflex pause progress update does not reset or fail the task/goal.
+    h.exec.emit({
+      type: "progress",
+      task: taskId,
+      detail: "反射動作暫停中(combat)",
+      progress: null,
+      at: new Date().toISOString(),
+    });
+    await settle();
+    expect(h.status()?.goal?.text).toBe("挖鐵礦");
+    expect(h.status()?.goal?.action).toContain("mine");
+    expect(h.goalLog.take()).toEqual([]);
+
+    // reflex_resumed triggers a decision cleanly without failing the task.
+    await secs(2);
+    await h.gameEvent("reflex_resumed", "反射結束,繼續挖掘", false);
+    await secs(4);
+    expect(llm.requests().length).toBeGreaterThanOrEqual(2);
+    expect(llm.requests().at(-1)?.messages[1]?.content).toContain("反射結束,繼續挖掘");
+    expect(h.status()?.goal?.text).toBe("挖鐵礦");
+    expect(h.goalLog.take()).toEqual([]);
+
+    // reflex_aborted triggers an urgent decision when marked important.
+    await h.gameEvent("reflex_aborted", "反射中止任務", true);
+    await secs(1.6);
+    expect(llm.requests().at(-1)?.messages[1]?.content).toContain("反射中止任務");
     await h.stop();
   });
 });
