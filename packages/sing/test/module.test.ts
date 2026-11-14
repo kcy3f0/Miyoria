@@ -64,6 +64,16 @@ import {
   workerQuery,
 } from "../src/index.js";
 
+// The player looks for a song's video on disk before asking the worker for it. No test writes
+// one, and a real file read does not finish while the clock is a fake one being advanced: the
+// song then started late on a slow machine. So the file is never there, at once.
+vi.mock("node:fs/promises", async (original) => ({
+  ...(await original<typeof import("node:fs/promises")>()),
+  access: async () => {
+    throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+  },
+}));
+
 const RATE = 48_000;
 const VOICE: ContextKey = { platform: "discord", scope: "g1", channel: "voice1", kind: "voice" };
 const TEXT: ContextKey = { platform: "discord", scope: "g1", channel: "text1", kind: "channel" };
