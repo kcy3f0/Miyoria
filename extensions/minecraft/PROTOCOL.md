@@ -31,7 +31,16 @@
   "reflexFleeHealth": 8.0,
   "reflexEatFood": 14,
   "reflexEatFoodBusy": 6,
-  "reflexStuckSecs": 20
+  "reflexStuckSecs": 20,
+  "reflexAutoEquip": true,
+  "reflexShieldBlock": true,
+  "reflexMlgWater": true,
+  "mlgMinFallDistance": 4.0,
+  "reflexAutoTorch": true,
+  "autoTorchMaxLight": 7,
+  "reflexPillarEscape": true,
+  "reflexPausedResumeMaxSecs": 15,
+  "reflexPausedMaxDrift": 16.0
 }
 ```
 
@@ -52,6 +61,11 @@
 | `reflexFleeHealth` | 血量小於等於此值時逃跑而不是反擊(0–20) |
 | `reflexEatFood` / `reflexEatFoodBusy` | 閒著時飢餓 ≤ 前者就吃;≤ 後者時停下手上的事去吃 |
 | `reflexStuckSecs` | Baritone 在走路卻這麼多秒沒移動(也沒在挖方塊)就算卡住(5–300) |
+| `reflexAutoEquip` / `reflexShieldBlock` | 自動換上背包內更好的武器 / 護甲,並在面對遠程或苦力怕威脅時短暫舉盾 |
+| `reflexMlgWater` / `mlgMinFallDistance` | 高處墜落距離 ≥ `mlgMinFallDistance`(2.5–32.0 格,預設 4.0)時嘗試水桶落地 |
+| `reflexAutoTorch` / `autoTorchMaxLight` | 方塊亮度 ≤ `autoTorchMaxLight`(0–14,預設 7)時自動插火把 |
+| `reflexPillarEscape` | 低血量被包圍時嘗試垂直墊方塊脫困 |
+| `reflexPausedResumeMaxSecs` / `reflexPausedMaxDrift` | 被可恢復反射暫停的工作,在這麼多秒(1–120)內且位移不超過這麼多格(2.0–64.0)時自動恢復 |
 
 adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 
@@ -160,11 +174,13 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
   "block_position": { "x": 100, "y": 64, "z": -21 },
   "yaw": 91.3,
   "pitch": -12.3,
+  "world_id": "sp:Survival",
   "dimension": "overworld",
   "biome": "plains",
   "time_of_day": 6000,
   "time_phase": "day",
   "is_night": false,
+  "light_level": 15,
   "weather": "clear",
   "held_item": { "item": "iron_pickaxe", "count": 1, "durability_pct": 88, "slot": 0 },
   "inventory": { "apple": 3, "cobblestone": 84, "iron_pickaxe": 1 },
@@ -192,21 +208,25 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
   "baritone": { "available": true, "busy": true, "process": "Mine", "goal": "GoalBlock{x=1,y=2,z=3}" },
   "altoclef": { "available": false, "busy": null },
   "crafting": null,
-  "reflex": { "active": null }
+  "reflex": { "active": null },
+  "paused_task": null
 }
 ```
 
 欄位說明:
 
+- `world_id`:單人世界為 `"sp:<levelName>"`,多人連線為 `"mp:<address>"`,尚未識別時為 `null`。
+- `light_level`:玩家所在方塊位置的有效光照強度(0–15)。
 - `time_of_day`:0–23999 ticks。`time_phase`:`day`(0–11999)、`dusk`(12000–12999)、`night`(13000–22999)、`dawn`(23000–23999)。`is_night` 只在主世界(`overworld`)可能為 `true`。
 - `weather`:`clear` / `rain` / `thunder`。
 - `held_item` 沒拿東西時為 `null`;`durability_pct` 只有會損耗的物品才有(剩餘百分比)。
 - `inventory`:物品 id → 總數(整個背包 + 快捷列加總,依 id 排序);`hotbar` 是 9 格,空格為 `null`;`armor` / `offhand` 空的為 `null`。
 - `looking_at`:準心指到的東西。`kind` 為 `block` / `entity` / `none`。方塊有 `block`、`position`、`face`、`distance`;生物有 `entity`(型別)、`name`(玩家或有自訂名稱時)、`position`、`distance`。
 - `nearby_entities`:只含活的生物(不含自己、盔甲架),依距離排序,最多 `maxEntities` 個;`hostile` 為 Minecraft 的 `Monster` 分類(殭屍、骷髏、苦力怕、史萊姆、幻翼……)。`nearby_entities_total` 是截斷前的總數。`name` 只在玩家或有自訂名稱時出現。
-- `nearby_blocks`:`blockScanRadius` 內**她看得到的**「值得注意的方塊」(礦石、原木、石頭 / 沙子 / 礫石 / 黏土、箱子 / 桶 / 終界箱 / 界伏盒、工作台 / 熔爐 / 鐵砧等工作站、床、地獄 / 終界傳送門、刷怪磚、岩漿、可收成作物等),依方塊種類分組,每種給出數量與最近一個的座標。「看得到」= 有一面朝向她、旁邊不是不透明的完整方塊,而且從她眼睛到那一面中心的直線沒有被不透明的完整方塊擋住(樹葉、玻璃、水不擋);埋在石頭裡的礦**不會**出現(不透視)。每種只檢查最近的 24 個,所以 `count` 是「最近的那些裡看得到幾個」。排序:鑽石 / 遠古殘骸 → 其他礦石 / 原木 / 刷怪磚 → 箱子 / 岩漿 / 傳送門 → 其他;同級依距離。最多 `maxBlockKinds` 種。
+- `nearby_blocks`:`blockScanRadius` 內**她看得到的**「值得注意的方塊」(礦石、原木、石頭 / 沙子 / 礫石 / 黏土 / 水源、黑曜石 / 哭泣的黑曜石、甘蔗 / 乾草塊、箱子 / 陷阱箱 / 木桶 / 終界箱 / 界伏盒、工作台 / 熔爐 / 高爐 / 煙燻爐 / 鐵砧等工作站、床 `*_bed`、地獄 / 終界傳送門、刷怪磚、岩漿、可收成作物等),依方塊種類分組,每種給出數量與最近一個的座標。「看得到」= 有一面朝向她、旁邊不是不透明的方塊,而且從她眼睛到那一面中心的直線沒有被不透明方塊擋住(**樹葉同樣視為遮蔽物**,埋在石頭裡或被樹葉擋住的礦物、箱子與樹冠中央原木不會被透視看見)。每種只檢查最近的 24 個,靜態水源之外的流動水不計入,避免大面積水源或石頭擠掉稀有方塊。排序:鑽石 / 遠古殘骸 → 其他礦石 / 原木 / 刷怪磚 → 箱子 / 岩漿 / 傳送門 / 黑曜石 / 床 → 工作站與作物 → 一般地形方塊(`stone` / `sand` / `gravel` / `clay` / `water`);同級依距離。最多 `maxBlockKinds` 種。
 - `crafting`:`craft` / `smelt` 工作進行中時是 `{"kind":"craft"|"smelt","item":<成品 / 要燒的東西,只拿東西時為 null>}`,沒有時為 `null`。
 - `reflex.active`:正在跑的反射(§7:`lava`、`suffocation`、`falling_block`、`drowning`、`flee`、`fight`、`eat`、`unstuck`、`pickup`),沒有時為 `null`。
+- `paused_task`:被可恢復反射暫停、等待恢復的工作摘要 `{"kind","detail"}`,沒有時為 `null`。
 - `baritone.busy`:Baritone 目前有沒有在執行(尋路或某個流程在控制);`process` 是流程名稱(例如 `Mine`、`Follow`、`Explore`、`Farm`、`Custom Goal`),`goal` 是目前目標的字串表示。沒有安裝 Baritone 時 `available:false`。
 - `altoclef.busy`:AltoClef 使用者任務是否在跑;無法判斷時為 `null`。
 
@@ -340,9 +360,9 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 {"id":"27","type":"smelt"}
 ```
 
-用她搆得到、看得到的熔爐(`furnace`):打開、先把輸出格燒好的東西 shift 點出來、把 `item`(`count` 預設背包裡全部,最多 64)放進輸入格、放燃料、關掉。熔爐關著也會繼續燒(每個 10 秒),燒好要再送一次 `smelt`(不帶 `item` = 只拿東西)。燃料沒指定時依序挑:煤炭 / 木炭 → 煤炭磚 → 木材 → 原木 → 木棒(不會拿要燒的那個東西),數量剛好夠燒完。輸入格裡有別的東西還沒燒完時會失敗。
+用她搆得到、看得到的熔煉工作站:若是金屬 / 礦石(`RecipeType.BLASTING`,例如 `raw_iron`、`iron_ore`)優先用高爐(`blast_furnace`),找不到則退回一般熔爐(`furnace`);若是食物(`RecipeType.SMOKING`)優先用煙燻爐(`smoker`),找不到則退回一般熔爐;其餘物品使用熔爐(`furnace`)。打開、先把輸出格燒好的東西 shift 點出來、把 `item`(`count` 預設背包裡全部,最多 64)放進輸入格、放燃料、關掉。關閉後仍繼續燒(一般熔爐每個 10 秒,高爐 / 煙燻爐每個 5 秒),燒好要再送一次 `smelt`(不帶 `item` = 只拿東西)。燃料沒指定時依序挑:煤炭 / 木炭 → 煤炭磚 → 木材 → 原木 → 木棒(不會拿要燒的那個東西),數量剛好夠燒完。輸入格裡有別的東西還沒燒完時會失敗。
 
-`data: {"furnace":{x,y,z},"item","count","fuel","fuel_count"}`(只拿東西時只有 `furnace`)。結束時送 `smelt_finished` / `smelt_failed`。拒絕同 `craft`(`needs_station` / `too_far` 指熔爐;沒有燃料是 `missing_items` 的 `fuel x1`)。
+`data: {"furnace":{x,y,z},"station":"furnace"|"blast_furnace"|"smoker","item","count","fuel","fuel_count"}`(只拿東西時為 `furnace` + `station`)。結束時送 `smelt_finished` / `smelt_failed`。拒絕同 `craft`(`needs_station` / `too_far` 指熔煉站;沒有燃料是 `missing_items` 的 `fuel x1`)。
 
 ### 5.13 `place`
 
@@ -368,6 +388,57 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 
 把背包裡的東西丟出去(丟在她面前,也就是給面前的玩家):`item` 找第一格有這個物品的,或 `slot`(0–35,0–8 是快捷列),都沒給就丟手上那格。`all`(預設 `true`)丟一整組,`false` 只丟一個。要先關掉畫面;是會動到身體的請求,反射進行中會等它結束。`data: {"slot","item","count"}`(那格是空的時只有 `slot` 和 `count:0`)。拒絕:`missing_items`(背包裡沒有這個物品)、`invalid_args`(`slot` 超出範圍、開著畫面、已經死了)。
 
+### 5.16 `mine_branch`
+
+```json
+{"id":"31","type":"mine_branch","target_y":-58,"ores":["diamond_ore","deepslate_diamond_ore","iron_ore"],"max_steps":64,"torch_interval":8}
+```
+
+合法的地下分支採礦(零透視):先階梯式向下挖到 `target_y`(預設 `-58`),接著挖 `1x2` 主通道並按 `branch_spacing`(預設 `3`)向左右輪流開挖長度 `branch_length`(預設 `12`)的分支,每 `torch_interval`(預設 `8`,亮度 `≤ autoTorchMaxLight` 時)自動插火把。每挖一塊方塊前只檢查該格與相鄰 6 面的岩漿 / 水流、腳下 >2 格懸空落差與頭頂掉落沙礫;每步後只沿眼睛真實視線掃描裸露空氣面的目標礦石並開採。需要背包內有鎬(`PickaxeItem`),否則回 `missing_items`。進度事件 `branch_progress`,結束事件 `branch_finished` / `branch_failed`(§6)。
+
+### 5.17 `clear_leaves`
+
+```json
+{"id":"32","type":"clear_leaves","radius":5,"max_blocks":24}
+```
+
+清理視線內與眼高附近遮擋樹幹 / 路徑的 `*_leaves` 方塊(`radius` 2–10、預設 5,`max_blocks` 1–128、預設 24),優先使用剪刀或鋤頭(否則避免消耗高階鎬 / 劍耐久度)。結束時送 `clear_leaves_finished` / `clear_leaves_failed`。
+
+### 5.18 `chest`
+
+```json
+{"id":"33","type":"chest","op":"inspect"}
+{"id":"34","type":"chest","op":"store","keep":["iron_pickaxe","torch","bread"]}
+{"id":"35","type":"chest","op":"take","items":{"iron_ingot":8}}
+```
+
+對視線內最近的 `chest` / `trapped_chest` / `barrel` 進行操作(`op`: `"inspect"` | `"store"` | `"take"`):走向方塊、右鍵真實打開 `GenericContainerScreenHandler` 畫面後才讀取內容(絕不隔空窺視),發出 `chest_contents` 事件,再以 shift 點擊存取(`store` 可帶 `items` 過濾與 `keep` 保留清單,`take` 可帶 `items` 數量物件或陣列),最後關閉畫面並送 `chest_finished` / `chest_failed`。場上無可見容器時回 `needs_station`。
+
+### 5.19 `sleep`
+
+```json
+{"id":"36","type":"sleep","radius":16}
+```
+
+找尋視線內最近的 `*_bed`(含所有顏色),走到互動距離內右鍵床鋪。在地獄 / 終界會直接拒絕(`invalid_args`,避免炸床)。白天會記錄「設定重生點」並回傳 `sleep_finished`(`slept:false, spawn_set:true`);夜晚或雷雨會等待睡醒並回傳 `sleep_finished`(`slept:true`),若遇附近有怪物或被阻擋則回傳 `sleep_failed`。
+
+### 5.20 `hunt`
+
+```json
+{"id":"37","type":"hunt","entity":"cow","count":3,"range":24}
+```
+
+在 `range`(預設 `entityRadius`,4–48 格)內只搜尋真正看得到(`canSee`)的目標生物(`entity` 可為特定生物 id 如 `cow`、`pig`、`sheep`,或 `"food"` / `"any_food"` 指常見可食用動物)。繞開岩漿與懸崖接近後用最佳劍 / 斧(遠距離且有弓箭時用弓)擊殺,並撿取戰利品。結束送 `hunt_finished` / `hunt_failed`。
+
+### 5.21 `manage_inv`
+
+```json
+{"id":"38","type":"manage_inv","op":"equip_best"}
+{"id":"39","type":"manage_inv","op":"tidy","trash":["rotten_flesh","poisonous_potato"]}
+```
+
+同步整理背包(`GenericContainer` 未開啟時執行):`equip_best` 自動把背包內防禦更高的護甲與副手盾牌穿上並切出最佳近戰武器;`tidy` 只丟棄明確列在 `trash` 裡的雜物並合併未滿的同類物品堆疊。
+
 ## 6. 事件
 
 | name | 何時送出 | `data` |
@@ -385,12 +456,21 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 | `baritone_idle` | (額外)Baritone 從忙碌變成閒置(連續閒置 10 tick 才送,過濾路段切換的抖動)。挖礦做完、跟隨目標消失這類沒有 `goal_reached` 的流程用它判斷結束 | `{"process","goal","cancelled": bool,"reason"?}`;`cancelled` 表示是我們送了 `stop`(或 `craft` / `smelt` 開始前停下);`reason:"nothing_visible"` 表示 `mine` 看得到的都挖完了,模組停掉了 Baritone 的盲挖 |
 | `craft_finished` | `craft` 做完(材料中途用完也算,做多少算多少) | `{"item","crafted","requested"}` |
 | `craft_failed` | `craft` 做不下去 | `{"item","crafted","requested","error","cancelled"?}`;`error` 例如 `ran out of <item>`、`inventory full`、`could not open the crafting_table`、`the screen was closed`、`stopped` |
-| `smelt_finished` | `smelt` 放好 / 拿好了(熔爐之後繼續燒) | `{"collected"?:{item:n},"item"?,"count"?,"fuel"?,"fuel_count"?,"ready_in_secs"?}` |
+| `smelt_finished` | `smelt` 放好 / 拿好了(熔爐之後繼續燒) | `{"station"?,"collected"?:{item:n},"item"?,"count"?,"fuel"?,"fuel_count"?,"ready_in_secs"?}` |
 | `smelt_failed` | `smelt` 做不下去 | `{"error","collected"?,"cancelled"?}`;例如 `the furnace is still smelting <item>` |
-| `reflex` | 一個反射開始用她的身體(§7) | `{"kind","interrupted","health","target"?,"food"?}`;`interrupted` 是被打斷的工作(Baritone 流程名例如 `Mine`、`craft`、`smelt`、按住的按鍵 `hold`),沒打斷東西為 `null`;`target` 是反擊 / 逃離的生物,`food` 是要吃的東西 |
+| `branch_progress` | `mine_branch` 每隔數步或切換階段時回報 | `{"phase","steps","target_y","ores_mined","torches_placed","position":{x,y,z},"task"?}` |
+| `branch_finished` / `branch_failed` | `mine_branch` 完成 / 中止(遇到岩漿、水、陡峭落差或被取消) | `{"phase","steps","target_y","ores_mined","torches_placed","position","error"?,"reason"?,"cancelled"?,"task"?}` |
+| `clear_leaves_finished` / `clear_leaves_failed` | `clear_leaves` 完成 / 被取消 | `{"broken","max_blocks","error"?,"cancelled"?,"task"?}` |
+| `chest_contents` | `chest` 真實開啟箱子 / 木桶介面並讀出可見格內容 | `{"position":{x,y,z},"block","rows","items":{id:count},"task"?}` |
+| `chest_finished` / `chest_failed` | `chest` 完成存取或失敗 | `{"op","block","position","items"?,"moved"?,"error"?,"cancelled"?,"task"?}` |
+| `sleep_finished` / `sleep_failed` | `sleep` 睡醒 / 設定重生點 / 失敗 | `{"block","position","slept":bool,"spawn_set":bool,"detail"?,"error"?,"cancelled"?,"task"?}` |
+| `hunt_finished` / `hunt_failed` | `hunt` 達成擊殺目標或搜尋不到生物 | `{"entity","killed","requested","error"?,"cancelled"?,"task"?}` |
+| `reflex` | 一個反射開始用她的身體(§7) | `{"kind","interrupted","health","target"?,"food"?,"recoverable"?:bool,"paused_task"?:{"kind","detail"}}`;`interrupted` 是被打斷的工作,`recoverable` 為 true 表示反射結束後可恢復先前工作 |
+| `reflex_resumed` | 可恢復反射結束並重新接回先前暫停的工作 | `{"kind","task"?,"paused_task":{"kind","detail"}}` |
+| `reflex_aborted` | 暫停中的工作因逾時、位移過大或玩家介入而無法恢復 | `{"reason","paused_task":{"kind","detail"},"task"?}` |
 | `reflex_end` | 反射結束 | `{"kind","ok","interrupted","secs","yielded"?}`;`ok:false` 是沒成功(逾時、被更緊急的反射接手);`yielded:true` 表示讓給了一個請求或 `stop` |
 
-`goal_reached` 對應 `goto` 類目標;`mine` / `follow` / `explore` / `farm` 沒有「到達」的概念,結束時只會有 `baritone_idle`。注意 `goal_reached` / `goal_failed` 來自 Baritone 的 `PathEvent`(`AT_GOAL` / `CALC_FAILED`),**每一段路**都會送:挖礦時每走到一顆礦、`follow` 每次追上、AltoClef 子任務之間都會出現。用任務 id(§6.1)就不用自己解讀:模組知道自己下的是哪種工作,直接說結束了沒有。工作有任務 id 時,`goal_reached`、`goal_failed`、`baritone_idle`、`craft_*`、`smelt_*` 的 `data` 也會多一個 `task`。
+`goal_reached` 對應 `goto` 類目標;`mine` / `follow` / `explore` / `farm` 沒有「到達」的概念,結束時只會有 `baritone_idle`。注意 `goal_reached` / `goal_failed` 來自 Baritone 的 `PathEvent`(`AT_GOAL` / `CALC_FAILED`),**每一段路**都會送:挖礦時每走到一顆礦、`follow` 每次追上、AltoClef 子任務之間都會出現。用任務 id(§6.1)就不用自己解讀:模組知道自己下的是哪種工作,直接說結束了沒有。工作有任務 id 時,`goal_reached`、`goal_failed`、`baritone_idle`、`craft_*`、`smelt_*`、`branch_*`、`clear_leaves_*`、`chest_*`、`sleep_*`、`hunt_*` 的 `data` 也會多一個 `task`。
 
 ### 6.1 任務生命週期(`capabilities.tasks`)
 
@@ -398,8 +478,8 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 
 | name | 何時 | `data` |
 |---|---|---|
-| `task_started` | 帶 `task` 的工作請求被接受了(在 `result` 之後) | `{"task","kind"}`;`kind` 是 `goto`、`mine`、`follow`、`explore`、`farm`、`build`、`raw`、`altoclef`、`craft`、`smelt` |
-| `task_progress` | 工作中的一步(目前:`mine` / `build` 等走到一個路徑目標) | `{"task","kind","detail"}` |
+| `task_started` | 帶 `task` 的工作請求被接受了(在 `result` 之後) | `{"task","kind"}`;`kind` 是 `goto`、`mine`、`follow`、`explore`、`farm`、`build`、`raw`、`altoclef`、`craft`、`smelt`、`mine_branch`、`clear_leaves`、`chest`、`sleep`、`hunt` |
+| `task_progress` | 工作中的一步(目前:`mine` / `build` 等走到一個路徑目標,或 `mine_branch` 進度) | `{"task","kind","detail"}` |
 | `task_done` | 做完了 | `{"task","kind","detail", ...}`;`craft` / `smelt` 另有 `item`、`crafted`、`requested`、`ready_in_secs`(有的話) |
 | `task_failed` | 做不下去 | `{"task","kind","code","message"}` |
 
@@ -411,6 +491,7 @@ adapter 應該從這個檔案讀 `port` 與 `token`(同一台機器上)。
 | `mine`、`build`、`follow`、`explore`、`farm`、`raw` | Baritone 從忙碌變閒置(`detail` `nothing more in sight` = 看得到的都挖完了);路徑中途的 `AT_GOAL` 只是 `task_progress` | `cancelled`、`interrupted` |
 | `altoclef` | AltoClef **自己**閒置 10 tick(Baritone 在子任務之間的閒置不算);100 tick 內都沒開始忙 = 沒事可做,也算完成 | `cancelled` |
 | `craft`、`smelt` | `craft_finished` / `smelt_finished` | `precondition`(材料用完、背包滿了…,`message` 是原因)、`cancelled` |
+| `mine_branch`、`clear_leaves`、`chest`、`sleep`、`hunt` | 對應的 `*_finished` 事件(`branch_finished`、`clear_leaves_finished`、`chest_finished`、`sleep_finished`、`hunt_finished`) | 對應的 `*_failed` 事件(`error` 為原因)、`cancelled`、`interrupted` |
 
 所有任務共通的失敗:`superseded`(新的工作請求取代了它)、`cancelled`(`stop`、Baritone `stop`、AltoClef `@stop`)、`interrupted`(反射 §7 打斷了它)、`died`(她死了)。client 斷線時模組不再追蹤(沒有人在等)。
 

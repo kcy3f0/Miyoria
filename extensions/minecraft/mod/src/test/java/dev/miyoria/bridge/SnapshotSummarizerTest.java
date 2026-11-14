@@ -211,4 +211,44 @@ class SnapshotSummarizerTest {
         assertEquals("craft", c.get("kind").getAsString());
         assertEquals("wooden_pickaxe", c.get("item").getAsString());
     }
+
+    @Test
+    void worldIdLightLevelAndPausedTask() {
+        RawObservation r = base();
+        JsonObject bare = SnapshotSummarizer.summarize(r);
+        assertTrue(bare.get("world_id").isJsonNull());
+        assertEquals(0, bare.get("light_level").getAsInt());
+        assertTrue(bare.get("paused_task").isJsonNull());
+
+        r.worldId = "sp:Survival";
+        r.lightLevel = 12;
+        r.pausedTask = new RawObservation.PausedTaskState("mine_branch", "main_tunnel y=-58 step=4");
+        JsonObject rich = SnapshotSummarizer.summarize(r);
+        assertEquals("sp:Survival", rich.get("world_id").getAsString());
+        assertEquals(12, rich.get("light_level").getAsInt());
+        JsonObject paused = rich.getAsJsonObject("paused_task");
+        assertEquals("mine_branch", paused.get("kind").getAsString());
+        assertEquals("main_tunnel y=-58 step=4", paused.get("detail").getAsString());
+
+        r.lightLevel = 99;
+        assertEquals(15, SnapshotSummarizer.summarize(r).get("light_level").getAsInt());
+        r.lightLevel = -4;
+        assertEquals(0, SnapshotSummarizer.summarize(r).get("light_level").getAsInt());
+    }
+
+    @Test
+    void notableBlocksOrderNewBlocksBeforeCommonTerrain() {
+        List<BlockInfo> blocks = List.of(
+                new BlockInfo("water", 1, 62, 0, 2.0),
+                new BlockInfo("blast_furnace", 3, 64, 0, 4.0),
+                new BlockInfo("obsidian", 5, 64, 0, 5.0),
+                new BlockInfo("red_bed", 2, 64, 0, 3.0),
+                new BlockInfo("diamond_ore", 8, 12, 0, 10.0));
+        JsonArray arr = SnapshotSummarizer.notableBlocks(blocks, 10);
+        assertEquals("diamond_ore", arr.get(0).getAsJsonObject().get("block").getAsString());
+        assertEquals("red_bed", arr.get(1).getAsJsonObject().get("block").getAsString());
+        assertEquals("obsidian", arr.get(2).getAsJsonObject().get("block").getAsString());
+        assertEquals("blast_furnace", arr.get(3).getAsJsonObject().get("block").getAsString());
+        assertEquals("water", arr.get(4).getAsJsonObject().get("block").getAsString());
+    }
 }

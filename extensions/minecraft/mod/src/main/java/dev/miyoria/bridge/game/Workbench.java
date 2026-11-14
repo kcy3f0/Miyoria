@@ -17,6 +17,7 @@ import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.recipe.AbstractCookingRecipe;
 import net.minecraft.recipe.CraftingRecipe;
 import net.minecraft.recipe.Ingredient;
 import net.minecraft.recipe.RecipeEntry;
@@ -63,6 +64,7 @@ public final class Workbench {
     private static final int CRAFT_INTERVAL_TICKS = 3;
     private static final int MAX_COUNT = 64;
     private static final int COOK_TICKS = 200;
+    private static final int FAST_COOK_TICKS = 100;
     /** How far a station is looked for, to say "it is over there" instead of "there is none". */
     private static final int STATION_SIGHT = 16;
 
@@ -82,6 +84,8 @@ public final class Workbench {
         int made;
         int requested;
         // smelt
+        String stationName;
+        int cookTicks = COOK_TICKS;
         int inputCount;
         Item fuel;
         int fuelCount;
@@ -178,16 +182,25 @@ public final class Workbench {
     public JsonObject smelt(MinecraftClient mc, Request req) throws ProtocolException {
         requireIdle(mc);
         ClientPlayerEntity p = mc.player;
-        BlockInfo seen = BlockSight.nearestVisible(p, mc.world, Set.of(Blocks.FURNACE), STATION_SIGHT);
-        if (seen == null || !p.canInteractWithBlockAt(pos(seen), 0)) throw stationProblem(seen, "furnace");
         Item input = req.has("item") ? item(req.str("item")) : null;
+        if (input != null && !smeltable(mc.world, input)) {
+            throw new ProtocolException(Protocol.E_INVALID_ARGS, id(input) + " cannot be smelted in a furnace");
+        }
+        boolean blast = input != null && hasRecipe(mc.world, RecipeType.BLASTING, input);
+        boolean smoke = !blast && input != null && hasRecipe(mc.world, RecipeType.SMOKING, input);
+        BlockInfo seen = pickSmeltStation(p, mc.world, input, blast, smoke);
+        String expected = blast ? "blast_furnace or furnace" : smoke ? "smoker or furnace" : "furnace";
+        if (seen == null || !p.canInteractWithBlockAt(pos(seen), 0)) {
+            throw stationProblem(seen, seen != null ? seen.block() : expected);
+        }
         Job j = new Job("smelt", input, pos(seen));
+        j.stationName = seen.block();
+        j.cookTicks = ("blast_furnace".equals(j.stationName) || "smoker".equals(j.stationName))
+                ? FAST_COOK_TICKS : COOK_TICKS;
         JsonObject out = new JsonObject();
         out.add("furnace", posJson(j.station));
+        out.addProperty("station", j.stationName);
         if (input != null) {
-            if (!smeltable(mc.world, input)) {
-                throw new ProtocolException(Protocol.E_INVALID_ARGS, id(input) + " cannot be smelted in a furnace");
-            }
             Map<Item, Integer> have = inventory(p);
             int owned = have.getOrDefault(input, 0);
             if (owned == 0) throw new ProtocolException(Protocol.E_MISSING_ITEMS, "missing " + id(input) + " x1");
@@ -247,7 +260,10 @@ public final class Workbench {
                 if (expectedScreen(p)) {
                     j.phase = Phase.WORK;
                 } else if (--j.wait <= 0) {
-                    throw new Failure("could not open the " + ("craft".equals(j.kind) ? "crafting_table" : "furnace"));
+                    String what = "craft".equals(j.kind)
+                            ? "crafting_table"
+                            : (j.stationName != null ? j.stationName : "furnace");
+                    throw new Failure("could not open the " + what);
                 }
             }
             case WORK -> {
@@ -343,11 +359,12 @@ public final class Workbench {
             ItemStack fuelSlot = h.getSlot(1).getStack();
             if (fuelSlot.isEmpty() || fuelSlot.isOf(j.fuel)) fueled = moveInto(mc, p, h, 1, j.fuel, j.fuelCount);
             if (loaded == 0) throw new Failure("could not put " + id(j.item) + " into the furnace");
+            data.addProperty("station", j.stationName != null ? j.stationName : "furnace");
             data.addProperty("item", id(j.item));
             data.addProperty("count", loaded);
             data.addProperty("fuel", id(j.fuel));
             data.addProperty("fuel_count", fueled);
-            data.addProperty("ready_in_secs", loaded * COOK_TICKS / 20);
+            data.addProperty("ready_in_secs", loaded * j.cookTicks / 20);
         }
         finish(mc, true, data, false);
     }
@@ -468,10 +485,38 @@ public final class Workbench {
         return out;
     }
 
+    private static BlockInfo pickSmeltStation(
+            ClientPlayerEntity p, ClientWorld w, Item input, boolean blast, boolean smoke) {
+        if (input == null) {
+            BlockInfo any = BlockSight.nearestVisible(
+                    p, w, Set.of(Blocks.BLAST_FURNACE, Blocks.SMOKER, Blocks.FURNACE), STATION_SIGHT);
+            if (any != null) return any;
+            return null;
+        }
+        BlockInfo preferred = null;
+        if (blast) {
+            preferred = BlockSight.nearestVisible(p, w, Set.of(Blocks.BLAST_FURNACE), STATION_SIGHT);
+        } else if (smoke) {
+            preferred = BlockSight.nearestVisible(p, w, Set.of(Blocks.SMOKER), STATION_SIGHT);
+        }
+        if (preferred != null && p.canInteractWithBlockAt(pos(preferred), 0)) return preferred;
+        BlockInfo furnace = BlockSight.nearestVisible(p, w, Set.of(Blocks.FURNACE), STATION_SIGHT);
+        if (furnace != null && p.canInteractWithBlockAt(pos(furnace), 0)) return furnace;
+        return preferred != null ? preferred : furnace;
+    }
+
     private static boolean smeltable(ClientWorld w, Item item) {
+        return hasRecipe(w, RecipeType.SMELTING, item)
+                || hasRecipe(w, RecipeType.BLASTING, item)
+                || hasRecipe(w, RecipeType.SMOKING, item);
+    }
+
+    private static <T extends AbstractCookingRecipe> boolean hasRecipe(
+            ClientWorld w, RecipeType<T> type, Item item) {
         ItemStack stack = item.getDefaultStack();
-        return w.getRecipeManager().listAllOfType(RecipeType.SMELTING).stream()
-                .anyMatch(e -> !e.value().getIngredients().isEmpty() && e.value().getIngredients().get(0).test(stack));
+        return w.getRecipeManager().listAllOfType(type).stream()
+                .anyMatch(e -> !e.value().getIngredients().isEmpty()
+                        && e.value().getIngredients().get(0).test(stack));
     }
 
     /** Coal first, then wood (planks, logs), then sticks; never the thing being smelted. */

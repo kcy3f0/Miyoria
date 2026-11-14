@@ -1,6 +1,7 @@
 package dev.miyoria.bridge.snapshot;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import dev.miyoria.bridge.model.Models.BlockInfo;
 import dev.miyoria.bridge.model.Models.EntityInfo;
@@ -53,11 +54,13 @@ public final class SnapshotSummarizer {
         o.addProperty("yaw", round(raw.yaw, 1));
         o.addProperty("pitch", round(raw.pitch, 1));
 
+        o.addProperty("world_id", raw.worldId);
         o.addProperty("dimension", raw.dimension);
         o.addProperty("biome", raw.biome);
         o.addProperty("time_of_day", TimeOfDay.wrap(raw.timeOfDay));
         o.addProperty("time_phase", TimeOfDay.phase(raw.timeOfDay));
         o.addProperty("is_night", "overworld".equals(raw.dimension) && TimeOfDay.isNight(raw.timeOfDay));
+        o.addProperty("light_level", Math.max(0, Math.min(15, raw.lightLevel)));
         o.addProperty("weather", raw.thundering ? "thunder" : raw.raining ? "rain" : "clear");
 
         // held item + inventory
@@ -127,6 +130,15 @@ public final class SnapshotSummarizer {
         JsonObject reflex = new JsonObject();
         reflex.addProperty("active", raw.reflex);
         o.add("reflex", reflex);
+
+        if (raw.pausedTask != null) {
+            JsonObject paused = new JsonObject();
+            paused.addProperty("kind", raw.pausedTask.kind());
+            paused.addProperty("detail", raw.pausedTask.detail());
+            o.add("paused_task", paused);
+        } else {
+            o.add("paused_task", JsonNull.INSTANCE);
+        }
 
         return o;
     }

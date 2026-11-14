@@ -120,6 +120,36 @@ class UtilTest {
     }
 
     @Test
+    void lookMathBallisticAndCombatHelpers() {
+        assertEquals(0f, LookMath.yawToward(0, 10), 1e-4);
+        assertEquals(-90f, LookMath.yawToward(10, 0), 1e-4);
+        assertEquals(180f, Math.abs(LookMath.awayYaw(0, 10)), 1e-4);
+        assertEquals(-90f, LookMath.awayYaw(-10, 0), 1e-4);
+        assertEquals(20f, LookMath.angleDiff(170f, -170f), 1e-4);
+        assertEquals(-20f, LookMath.angleDiff(-170f, 170f), 1e-4);
+        assertEquals(90f, LookMath.strafeYaw(0f, true), 1e-4);
+        assertEquals(-90f, LookMath.strafeYaw(0f, false), 1e-4);
+
+        // Gravity requires aiming higher (more negative pitch) than straight line-of-sight
+        float flatPitch = LookMath.ballisticPitch(0, 0, 16, 3.0, 0.05);
+        assertTrue(flatPitch < -1.0f && flatPitch > -20.0f, "flat 16m shot arcs slightly upward: " + flatPitch);
+        float nearPitch = LookMath.ballisticPitch(0, 0, 4, 3.0, 0.05);
+        assertTrue(flatPitch < nearPitch, "farther target requires higher launch arc");
+
+        LookMath.Rotation stationary = LookMath.ballisticAim(0, 0, 15, 3.0, 0.05);
+        LookMath.Rotation movingRight = LookMath.ballisticAimWithLead(0, 0, 15, 0.4, 0, 0, 3.0, 0.05);
+        // +X target motion -> negative yaw shift in MC coordinates
+        assertTrue(movingRight.yaw() < stationary.yaw(), "leads moving target horizontally");
+
+        LookMath.Rotation stepped = LookMath.approachRotation(
+                new LookMath.Rotation(170f, -10f),
+                new LookMath.Rotation(-170f, 20f),
+                10f);
+        assertEquals(180f, stepped.yaw(), 1e-4);
+        assertEquals(0f, stepped.pitch(), 1e-4);
+    }
+
+    @Test
     void configCreatedWithRandomTokenAndReloaded(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("conf").resolve(BridgeConfig.FILE_NAME);
         BridgeConfig a = BridgeConfig.load(file);

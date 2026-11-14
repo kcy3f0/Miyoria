@@ -21,12 +21,22 @@ public final class TaskTracker {
     public static final String PROGRESS = "task_progress";
     public static final String DONE = "task_done";
     public static final String FAILED = "task_failed";
+    public static final String REFLEX_RESUMED = "reflex_resumed";
+    public static final String REFLEX_ABORTED = "reflex_aborted";
 
     /** Kinds that Baritone runs (they end on its busy -> idle edge). */
     private static final Set<String> BARITONE = Set.of("goto", "mine", "follow", "explore", "farm", "build", "raw");
+    /** Async world workers tracked via their {@code *_finished} / {@code *_failed} events. */
+    private static final Set<String> WORKER = Set.of("mine_branch", "clear_leaves", "chest", "sleep", "hunt");
     /** Events of the work itself, stamped with the current task id. */
-    private static final Set<String> JOB_EVENTS = Set.of("goal_reached", "goal_failed", "baritone_idle",
-            "craft_finished", "craft_failed", "smelt_finished", "smelt_failed");
+    private static final Set<String> JOB_EVENTS = Set.of(
+            "goal_reached", "goal_failed", "baritone_idle",
+            "craft_finished", "craft_failed", "smelt_finished", "smelt_failed",
+            "branch_progress", "branch_finished", "branch_failed",
+            "clear_leaves_finished", "clear_leaves_failed",
+            "chest_contents", "chest_finished", "chest_failed",
+            "sleep_finished", "sleep_failed",
+            "hunt_finished", "hunt_failed");
     /** AltoClef must be idle this many ticks in a row after having been busy. */
     private static final int ALTO_IDLE_TICKS = 10;
     /** An AltoClef task that never got busy in this many ticks had nothing to do. */
@@ -35,6 +45,8 @@ public final class TaskTracker {
     private final EventSink out;
     private String id;
     private String kind;
+    private boolean paused;
+    private String pausedReflexKind;
     private boolean altoBusySeen;
     private int altoIdle;
     private int altoTicks;
@@ -53,6 +65,16 @@ public final class TaskTracker {
         return kind;
     }
 
+    /** Whether the running task is currently suspended for a recoverable reflex. */
+    public boolean isPaused() {
+        return paused;
+    }
+
+    /** Reflex kind that paused the current task, or null. */
+    public String pausedReflexKind() {
+        return pausedReflexKind;
+    }
+
     /**
      * A work request was accepted. It replaces what ran before ({@code superseded}); without a
      * task id the new work is just not tracked.
@@ -62,11 +84,51 @@ public final class TaskTracker {
         if (task == null || task.equals(id)) return;
         id = task;
         kind = newKind;
+        paused = false;
+        pausedReflexKind = null;
         altoBusySeen = false;
         altoIdle = 0;
         altoTicks = 0;
         JsonObject d = base();
         out.emit(STARTED, d);
+    }
+
+    /** Suspends the current task for a recoverable reflex while keeping its task id alive. */
+    public void pauseForReflex(String reflexKind) {
+        if (id == null) return;
+        paused = true;
+        pausedReflexKind = reflexKind;
+        JsonObject d = base();
+        d.addProperty("detail", reflexKind == null || reflexKind.isEmpty()
+                ? "paused for reflex"
+                : "paused for reflex: " + reflexKind);
+        d.addProperty("paused", true);
+        if (reflexKind != null) d.addProperty("reflex", reflexKind);
+        out.emit(PROGRESS, d);
+    }
+
+    /** Resumes a task previously suspended by {@link #pauseForReflex(String)}. */
+    public void resumeFromReflex() {
+        if (id == null || !paused) return;
+        JsonObject d = base();
+        if (pausedReflexKind != null) d.addProperty("reflex", pausedReflexKind);
+        paused = false;
+        pausedReflexKind = null;
+        altoIdle = 0;
+        out.emit(REFLEX_RESUMED, d);
+    }
+
+    /** Aborts a suspended task that could not be resumed (timeout, drift, escalation, or replay rejection). */
+    public void abortPaused(String reason) {
+        if (id == null || !paused) return;
+        JsonObject aborted = base();
+        if (pausedReflexKind != null) aborted.addProperty("reflex", pausedReflexKind);
+        if (reason != null && !reason.isEmpty()) aborted.addProperty("reason", reason);
+        paused = false;
+        pausedReflexKind = null;
+        String msg = reason != null && !reason.isEmpty() ? reason : "interrupted by a reflex";
+        fail("interrupted", msg);
+        out.emit(REFLEX_ABORTED, aborted);
     }
 
     /** A {@code stop} (or Baritone {@code stop}, AltoClef {@code @stop}) ended the work. */
@@ -78,6 +140,8 @@ public final class TaskTracker {
     public void forget() {
         id = null;
         kind = null;
+        paused = false;
+        pausedReflexKind = null;
     }
 
     /** Adds {@code task} to a job event of the running task (before it is sent). */
@@ -95,9 +159,24 @@ public final class TaskTracker {
             fail("died", "died");
             return;
         }
-        if ("reflex".equals(name) && str(d, "interrupted") != null) {
-            fail("interrupted", "interrupted by a reflex: " + str(d, "kind"));
-            return;
+        if ("reflex".equals(name)) {
+            boolean recoverable = bool(d, "recoverable");
+            if (paused) {
+                if (!recoverable && str(d, "interrupted") != null) {
+                    abortPaused("interrupted by a reflex: " + str(d, "kind"));
+                } else if (recoverable && str(d, "kind") != null) {
+                    pausedReflexKind = str(d, "kind");
+                }
+                return;
+            }
+            if (str(d, "interrupted") != null) {
+                if (recoverable) {
+                    pauseForReflex(str(d, "kind"));
+                } else {
+                    fail("interrupted", "interrupted by a reflex: " + str(d, "kind"));
+                }
+                return;
+            }
         }
         if ("craft".equals(kind) || "smelt".equals(kind)) {
             if ((kind + "_finished").equals(name)) {
@@ -112,6 +191,10 @@ public final class TaskTracker {
             }
             return;
         }
+        if (WORKER.contains(kind)) {
+            handleWorkerEvent(name, d);
+            return;
+        }
         if (!BARITONE.contains(kind)) return; // AltoClef: see altoTick
         switch (name) {
             case "goal_reached" -> {
@@ -124,6 +207,9 @@ public final class TaskTracker {
             case "baritone_idle" -> {
                 boolean cancelled = d.has("cancelled") && d.get("cancelled").getAsBoolean();
                 String reason = str(d, "reason");
+                if (paused && cancelled && "reflex".equals(reason)) {
+                    return;
+                }
                 if (cancelled && "reflex".equals(reason)) fail("interrupted", "interrupted by a reflex");
                 else if (cancelled) fail("cancelled", "stopped");
                 else if ("nothing_visible".equals(reason)) done("nothing more in sight");
@@ -136,7 +222,7 @@ public final class TaskTracker {
 
     /** Once per client tick: AltoClef's busy state ({@code null}: unknown). */
     public void altoTick(Boolean busy) {
-        if (id == null || !"altoclef".equals(kind) || busy == null) return;
+        if (id == null || !"altoclef".equals(kind) || busy == null || paused) return;
         altoTicks++;
         if (busy) {
             altoBusySeen = true;
@@ -172,7 +258,73 @@ public final class TaskTracker {
     private void finish(String name, JsonObject data) {
         id = null;
         kind = null;
+        paused = false;
+        pausedReflexKind = null;
         out.emit(name, data);
+    }
+
+    private void handleWorkerEvent(String name, JsonObject d) {
+        boolean cancelled = bool(d, "cancelled");
+        String error = str(d, "error");
+        switch (kind) {
+            case "mine_branch" -> {
+                if ("branch_progress".equals(name)) {
+                    String phase = str(d, "phase");
+                    progress(phase == null ? "branch mining" : "branch mining (" + phase + ")");
+                } else if ("branch_finished".equals(name)) {
+                    JsonObject done = base();
+                    copy(d, done, "phase", "steps", "target_y", "y", "ores_mined", "torches_placed", "position");
+                    done.addProperty("detail", "mine_branch finished");
+                    finish(DONE, done);
+                } else if ("branch_failed".equals(name)) {
+                    String code = cancelled ? "cancelled"
+                            : (error != null && error.contains("pickaxe") ? "precondition" : "not_found");
+                    fail(code, error == null ? "mine_branch failed" : error);
+                }
+            }
+            case "clear_leaves" -> {
+                if ("clear_leaves_finished".equals(name)) {
+                    JsonObject done = base();
+                    copy(d, done, "broken", "cleared", "max_blocks");
+                    done.addProperty("detail", "clear_leaves finished");
+                    finish(DONE, done);
+                } else if ("clear_leaves_failed".equals(name)) {
+                    fail(cancelled ? "cancelled" : "precondition", error == null ? "clear_leaves failed" : error);
+                }
+            }
+            case "chest" -> {
+                if ("chest_finished".equals(name)) {
+                    JsonObject done = base();
+                    copy(d, done, "op", "block", "position", "items", "moved");
+                    done.addProperty("detail", "chest finished");
+                    finish(DONE, done);
+                } else if ("chest_failed".equals(name)) {
+                    fail(cancelled ? "cancelled" : "precondition", error == null ? "chest failed" : error);
+                }
+            }
+            case "sleep" -> {
+                if ("sleep_finished".equals(name)) {
+                    JsonObject done = base();
+                    copy(d, done, "block", "position", "slept", "spawn_set", "detail");
+                    if (!done.has("detail")) done.addProperty("detail", "sleep finished");
+                    finish(DONE, done);
+                } else if ("sleep_failed".equals(name)) {
+                    fail(cancelled ? "cancelled" : "precondition", error == null ? "sleep failed" : error);
+                }
+            }
+            case "hunt" -> {
+                if ("hunt_finished".equals(name)) {
+                    JsonObject done = base();
+                    copy(d, done, "entity", "killed", "requested");
+                    done.addProperty("detail", "hunt finished");
+                    finish(DONE, done);
+                } else if ("hunt_failed".equals(name)) {
+                    fail(cancelled ? "cancelled" : "not_found", error == null ? "hunt failed" : error);
+                }
+            }
+            default -> {
+            }
+        }
     }
 
     private JsonObject base() {
@@ -185,6 +337,11 @@ public final class TaskTracker {
     private static String str(JsonObject d, String key) {
         JsonElement e = d.get(key);
         return e != null && e.isJsonPrimitive() && e.getAsJsonPrimitive().isString() ? e.getAsString() : null;
+    }
+
+    private static boolean bool(JsonObject d, String key) {
+        JsonElement e = d.get(key);
+        return e != null && e.isJsonPrimitive() && e.getAsJsonPrimitive().isBoolean() && e.getAsBoolean();
     }
 
     private static void copy(JsonObject from, JsonObject to, String... keys) {

@@ -48,6 +48,7 @@ public final class BridgeRuntime implements ActionHandler {
     private final GameObserver observer;
     private final GameActions actions = new GameActions();
     private final Workbench workbench;
+    private final WorldWorkers workers;
     private final ScreenshotService screenshots;
     private final AltoClefBridge alto = new AltoClefBridge();
     private final EventDetector detector;
@@ -57,8 +58,12 @@ public final class BridgeRuntime implements ActionHandler {
     private final TaskTracker tasks;
     private BaritoneBridge baritone; // null when Baritone is not installed
     /** Requests that move her body; they wait while a reflex has it (see {@link #dispatch}). */
-    private static final Set<String> BODY_REQUESTS = Set.of(Protocol.T_BARITONE, Protocol.T_ALTOCLEF, Protocol.T_LOOK,
-            Protocol.T_USE, Protocol.T_ATTACK, Protocol.T_SELECT_SLOT, Protocol.T_PLACE, Protocol.T_CRAFT, Protocol.T_SMELT, Protocol.T_DROP);
+    private static final Set<String> BODY_REQUESTS = Set.of(
+            Protocol.T_BARITONE, Protocol.T_ALTOCLEF, Protocol.T_LOOK,
+            Protocol.T_USE, Protocol.T_ATTACK, Protocol.T_SELECT_SLOT,
+            Protocol.T_PLACE, Protocol.T_DROP, Protocol.T_CRAFT, Protocol.T_SMELT,
+            Protocol.T_MINE_BRANCH, Protocol.T_CLEAR_LEAVES, Protocol.T_CHEST,
+            Protocol.T_SLEEP, Protocol.T_HUNT, Protocol.T_MANAGE_INV);
     /** Off-client-thread Baritone block lookups (see {@link #handle}). */
     private static final ExecutorService PREWARM = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "miyoria-bridge-prewarm");
@@ -79,9 +84,21 @@ public final class BridgeRuntime implements ActionHandler {
         this.detector = new EventDetector(new EventDetector.Config(cfg.lowHealthThreshold, cfg.hostileRadius, 100, 10));
         this.snapshotOptions = new SnapshotSummarizer.Options(cfg.maxEntities, cfg.maxBlockKinds);
         this.workbench = new Workbench(this::emit, actions);
-        ReflexBrain.Config reflexCfg = new ReflexBrain.Config(cfg.reflexes, cfg.reflexFight, cfg.reflexPickup,
+        this.workers = new WorldWorkers(this::emit, actions, cfg);
+        ReflexBrain.Config baseReflexCfg = new ReflexBrain.Config(
+                cfg.reflexes, cfg.reflexFight, cfg.reflexPickup,
                 cfg.reflexFleeHealth, cfg.reflexEatFood, cfg.reflexEatFoodBusy, cfg.reflexStuckSecs * 20);
-        this.reflexes = new Reflexes(new ReflexBrain(reflexCfg), this::emit, actions, workbench, alto);
+        ReflexBrain.ReflexConfig reflexCfg = new ReflexBrain.ReflexConfig(
+                baseReflexCfg, cfg.reflexAutoEquip, cfg.reflexShieldBlock,
+                cfg.reflexMlgWater, cfg.mlgMinFallDistance,
+                cfg.reflexAutoTorch, cfg.autoTorchMaxLight, cfg.reflexPillarEscape);
+        Reflexes.ExtendedConfig extCfg = new Reflexes.ExtendedConfig(
+                cfg.reflexAutoEquip, cfg.reflexShieldBlock,
+                cfg.reflexMlgWater, cfg.mlgMinFallDistance,
+                cfg.reflexAutoTorch, cfg.autoTorchMaxLight, cfg.reflexPillarEscape,
+                cfg.reflexPausedResumeMaxSecs, cfg.reflexPausedMaxDrift);
+        this.reflexes = new Reflexes(new ReflexBrain(reflexCfg), this::emit, actions, workbench, alto, tasks, extCfg);
+        this.reflexes.setWorldWorkers(this.workers);
 
         if (FabricLoader.getInstance().isModLoaded("baritone")) {
             if (!baritoneApiPresent()) {
@@ -220,6 +237,7 @@ public final class BridgeRuntime implements ActionHandler {
                 RawObservation raw = observer.observe(baritone, alto);
                 raw.crafting = workbench.state();
                 raw.reflex = reflexes.active();
+                raw.pausedTask = reflexes.pausedState(baritone);
                 out.ok(SnapshotSummarizer.summarize(raw, snapshotOptions));
             }
             case Protocol.T_BARITONE -> {
@@ -227,24 +245,35 @@ public final class BridgeRuntime implements ActionHandler {
                     throw new ProtocolException(Protocol.E_BARITONE_UNAVAILABLE, "Baritone is not installed");
                 }
                 JsonObject started = baritone.execute(req);
+                reflexes.clearPaused(baritone);
                 out.ok(started);
                 String command = req.str("command").toLowerCase();
                 if (command.equals("stop") || command.equals("cancel")) tasks.stopped();
                 else tasks.begin(task, command);
+                workbench.cancel(mc);
+                workers.stopAll(mc);
             }
             case Protocol.T_ALTOCLEF -> {
                 String command = req.str("command");
-                out.ok(alto.execute(command));
+                JsonObject started = alto.execute(command);
+                reflexes.clearPaused(baritone);
+                out.ok(started);
                 String bare = command.trim().replaceFirst("^@", "").toLowerCase();
                 if (bare.equals("stop")) tasks.stopped();
                 else tasks.begin(task, "altoclef");
+                if (baritone != null) baritone.cancel();
+                workbench.cancel(mc);
+                workers.stopAll(mc);
             }
             case Protocol.T_CHAT -> out.ok(actions.chat(mc, req));
             case Protocol.T_LOOK -> out.ok(actions.look(mc, req));
             case Protocol.T_USE -> out.ok(actions.use(mc, req));
             case Protocol.T_ATTACK -> out.ok(actions.attack(mc, req));
             case Protocol.T_SELECT_SLOT -> out.ok(actions.selectSlot(mc, req));
-            case Protocol.T_PLACE -> out.ok(actions.place(mc, req));
+            case Protocol.T_PLACE -> {
+                if (baritone != null) baritone.clearSuspended();
+                out.ok(actions.place(mc, req));
+            }
             case Protocol.T_DROP -> out.ok(actions.drop(mc, req));
             case Protocol.T_CRAFT -> {
                 JsonObject started = workbench.craft(mc, req);
@@ -257,6 +286,18 @@ public final class BridgeRuntime implements ActionHandler {
                 standStill();
                 out.ok(started);
                 tasks.begin(task, "smelt");
+            }
+            case Protocol.T_MANAGE_INV -> workers.dispatch(mc, baritone, null, req, out);
+            case Protocol.T_MINE_BRANCH, Protocol.T_CLEAR_LEAVES, Protocol.T_CHEST, Protocol.T_SLEEP, Protocol.T_HUNT -> {
+                workers.dispatch(mc, baritone, task, req, out);
+                reflexes.clearPaused(baritone);
+                tasks.begin(task, req.type());
+                workbench.cancel(mc);
+                if (baritone != null) {
+                    baritone.clearSuspended();
+                    if (baritone.state().busy() && !baritone.reflexDriving()) baritone.cancel();
+                }
+                alto.stop();
             }
             case Protocol.T_RESPAWN -> out.ok(actions.respawn(mc));
             case Protocol.T_STOP -> {
@@ -280,16 +321,23 @@ public final class BridgeRuntime implements ActionHandler {
         return task;
     }
 
-    /** A person stops walking to craft: cancel Baritone and let go of held keys. */
+    /** A person stops walking to craft: cancel Baritone/workers and let go of held keys. */
     private void standStill() {
-        if (baritone != null && baritone.state().busy()) baritone.cancel();
+        reflexes.clearPaused(baritone);
+        workers.stopAll(mc);
+        if (baritone != null) {
+            baritone.clearSuspended();
+            if (baritone.state().busy()) baritone.cancel();
+        }
         actions.releaseAll();
     }
 
     private JsonObject stopAll() {
         JsonObject o = new JsonObject();
         reflexes.yieldTo(mc, baritone); // survival reflexes keep going; a pickup or a meal stops
+        reflexes.clearPaused(baritone);
         workbench.cancel(mc);
+        workers.stopAll(mc);
         if (baritone != null) {
             baritone.cancel();
         }
@@ -306,6 +354,7 @@ public final class BridgeRuntime implements ActionHandler {
         tickCount++;
         actions.tick(client);
         workbench.tick(client);
+        workers.tick(client);
 
         ClientPlayerEntity p = client.player;
         boolean inWorld = p != null && client.world != null;

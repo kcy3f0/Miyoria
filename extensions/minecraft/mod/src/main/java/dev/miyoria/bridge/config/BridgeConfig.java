@@ -60,6 +60,24 @@ public final class BridgeConfig {
     public int reflexEatFoodBusy = 6;
     /** A task that has not moved her for this long counts as stuck. */
     public int reflexStuckSecs = 20;
+    /** Automatically equip stronger weapons, tools, and armor already in inventory. */
+    public boolean reflexAutoEquip = true;
+    /** Raise a shield briefly when an imminent projectile or creeper threat is detected. */
+    public boolean reflexShieldBlock = true;
+    /** Attempt water-bucket MLG when falling past {@link #mlgMinFallDistance}. */
+    public boolean reflexMlgWater = true;
+    /** Minimum fall distance (blocks) before attempting a water-bucket MLG save. */
+    public float mlgMinFallDistance = 4.0f;
+    /** Place a torch automatically when block light falls to {@link #autoTorchMaxLight} or lower. */
+    public boolean reflexAutoTorch = true;
+    /** Maximum block light level (0..14) that triggers automatic torch placement. */
+    public int autoTorchMaxLight = 7;
+    /** Pillar up with solid blocks when cornered at low health without blocking terrain. */
+    public boolean reflexPillarEscape = true;
+    /** Maximum seconds a paused task stays eligible to resume after a reflex ends. */
+    public int reflexPausedResumeMaxSecs = 15;
+    /** Maximum horizontal/spatial drift (blocks) allowed when resuming a paused task. */
+    public double reflexPausedMaxDrift = 16.0;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
@@ -102,6 +120,14 @@ public final class BridgeConfig {
         cfg.reflexEatFoodBusy = clamp(cfg.reflexEatFoodBusy, 0, cfg.reflexEatFood);
         cfg.reflexStuckSecs = clamp(cfg.reflexStuckSecs, 5, 300);
         cfg.reflexFleeHealth = Math.max(0f, Math.min(20f, cfg.reflexFleeHealth));
+        cfg.mlgMinFallDistance = Float.isFinite(cfg.mlgMinFallDistance)
+                ? Math.max(2.5f, Math.min(32f, cfg.mlgMinFallDistance))
+                : 4.0f;
+        cfg.autoTorchMaxLight = clamp(cfg.autoTorchMaxLight, 0, 14);
+        cfg.reflexPausedResumeMaxSecs = clamp(cfg.reflexPausedResumeMaxSecs, 1, 120);
+        cfg.reflexPausedMaxDrift = Double.isFinite(cfg.reflexPausedMaxDrift)
+                ? Math.max(2.0, Math.min(64.0, cfg.reflexPausedMaxDrift))
+                : 16.0;
         if (dirty || !Files.isRegularFile(file)) {
             save(file, cfg);
         }

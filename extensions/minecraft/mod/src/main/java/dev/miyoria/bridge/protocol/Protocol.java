@@ -24,6 +24,12 @@ public final class Protocol {
     public static final String T_SMELT = "smelt";
     public static final String T_PLACE = "place";
     public static final String T_DROP = "drop";
+    public static final String T_MINE_BRANCH = "mine_branch";
+    public static final String T_CLEAR_LEAVES = "clear_leaves";
+    public static final String T_CHEST = "chest";
+    public static final String T_SLEEP = "sleep";
+    public static final String T_HUNT = "hunt";
+    public static final String T_MANAGE_INV = "manage_inv";
     /** Close the game the way the window's close button does (saves and leaves the world). */
     public static final String T_QUIT = "quit";
 

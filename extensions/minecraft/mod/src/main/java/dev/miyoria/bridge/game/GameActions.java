@@ -1,23 +1,33 @@
 package dev.miyoria.bridge.game;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import dev.miyoria.bridge.protocol.Protocol;
 import dev.miyoria.bridge.protocol.ProtocolException;
 import dev.miyoria.bridge.protocol.Request;
 import dev.miyoria.bridge.util.Ids;
 import dev.miyoria.bridge.util.LookMath;
+import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayNetworkHandler;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
-import net.minecraft.block.BlockState;
 import net.minecraft.client.world.ClientWorld;
+import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.item.ArmorItem;
+import net.minecraft.item.AxeItem;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.item.SwordItem;
 import net.minecraft.registry.Registries;
+import net.minecraft.registry.tag.BlockTags;
+import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.screen.slot.Slot;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.ActionResult;
@@ -28,8 +38,11 @@ import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Low-level player actions (look / use / attack / hotbar / place / chat / respawn) plus the
@@ -86,6 +99,197 @@ public final class GameActions {
         targetYaw = targetPitch = null;
         for (KeyBinding k : holds.keySet()) k.setPressed(false);
         holds.clear();
+    }
+
+    /** Releases all movement, sneak, sprint, jump, attack, and use keybindings held by workers. */
+    public void releaseMovement(MinecraftClient mc) {
+        releaseAll();
+        if (mc == null || mc.options == null) return;
+        mc.options.forwardKey.setPressed(false);
+        mc.options.backKey.setPressed(false);
+        mc.options.leftKey.setPressed(false);
+        mc.options.rightKey.setPressed(false);
+        mc.options.jumpKey.setPressed(false);
+        mc.options.sneakKey.setPressed(false);
+        mc.options.sprintKey.setPressed(false);
+        mc.options.attackKey.setPressed(false);
+        mc.options.useKey.setPressed(false);
+    }
+
+    /** Checks the step column 1 block ahead toward {@code to} for lava, fire, magma, or >3-block drop. */
+    public static boolean isStepSafe(ClientPlayerEntity p, ClientWorld w, Vec3d to) {
+        double dx = to.x - p.getX();
+        double dz = to.z - p.getZ();
+        double len = Math.hypot(dx, dz);
+        if (len < 1e-4) return true;
+        int sx = (int) Math.round(dx / len);
+        int sz = (int) Math.round(dz / len);
+        BlockPos ahead = p.getBlockPos().add(sx, 0, sz);
+        for (int dy = 1; dy >= -2; dy--) {
+            BlockState st = w.getBlockState(ahead.up(dy));
+            if (st.getFluidState().isIn(FluidTags.LAVA) || st.isOf(Blocks.LAVA)
+                    || st.isIn(BlockTags.FIRE) || st.isOf(Blocks.MAGMA_BLOCK)) {
+                return false;
+            }
+        }
+        for (int d = 1; d <= 3; d++) {
+            BlockPos below = ahead.down(d);
+            BlockState st = w.getBlockState(below);
+            if (st.isSideSolidFullSquare(w, below, Direction.UP) && !st.isOf(Blocks.MAGMA_BLOCK)) {
+                return true;
+            }
+        }
+        return !w.getBlockState(ahead).getCollisionShape(w, ahead).isEmpty(); // 1-block step up is solid
+    }
+
+    /** Turns toward {@code to} and holds forward (+ jump when blocked or ascending). */
+    public void steerToward(MinecraftClient mc, ClientPlayerEntity p, Vec3d to, boolean sprint) {
+        Vec3d eye = p.getEyePos();
+        LookMath.Rotation r = LookMath.toward(to.x - eye.x, 0, to.z - eye.z);
+        p.setYaw(LookMath.approachAngle(p.getYaw(), r.yaw(), SMOOTH_DEG_PER_TICK));
+        mc.options.forwardKey.setPressed(true);
+        mc.options.sprintKey.setPressed(sprint);
+        mc.options.jumpKey.setPressed(p.horizontalCollision || to.y > p.getY() + 0.5);
+    }
+
+    public static JsonObject posJson(BlockPos pos) {
+        JsonObject o = new JsonObject();
+        o.addProperty("x", pos.getX());
+        o.addProperty("y", pos.getY());
+        o.addProperty("z", pos.getZ());
+        return o;
+    }
+
+    /** Aims at {@code target} and drives one block-breaking tick; returns true once broken. */
+    public boolean breakBlockTick(MinecraftClient mc, ClientPlayerEntity p, BlockPos target, boolean firstTick) {
+        if (mc.world == null || mc.interactionManager == null) return false;
+        BlockState st = mc.world.getBlockState(target);
+        if (st.isAir() || st.getCollisionShape(mc.world, target).isEmpty() && !st.getFluidState().isEmpty()) {
+            return true;
+        }
+        Vec3d center = Vec3d.ofCenter(target);
+        lookAt(p, center, true);
+        Direction face = Direction.getFacing(p.getEyePos().subtract(center));
+        if (firstTick) {
+            mc.interactionManager.attackBlock(target, face);
+        } else {
+            mc.interactionManager.updateBlockBreakingProgress(target, face);
+        }
+        p.swingHand(Hand.MAIN_HAND);
+        return mc.world.getBlockState(target).isAir();
+    }
+
+    public void stopBreaking(MinecraftClient mc) {
+        if (mc != null && mc.interactionManager != null) {
+            mc.interactionManager.cancelBlockBreaking();
+        }
+    }
+
+    /** Selects a matching stack into the player's held hotbar slot, swapping from storage if needed. */
+    public boolean selectOrSwapItem(MinecraftClient mc, Predicate<ItemStack> pred) {
+        ClientPlayerEntity p = mc.player;
+        if (p == null) return false;
+        PlayerInventory inv = p.getInventory();
+        for (int i = 0; i < 9; i++) {
+            if (pred.test(inv.main.get(i))) {
+                inv.selectedSlot = i;
+                return true;
+            }
+        }
+        if (mc.currentScreen != null || mc.interactionManager == null) return false;
+        for (int i = 9; i < inv.main.size(); i++) {
+            if (pred.test(inv.main.get(i))) {
+                int targetHotbar = inv.selectedSlot;
+                for (int h = 0; h < 9; h++) {
+                    if (inv.main.get(h).isEmpty()) {
+                        targetHotbar = h;
+                        break;
+                    }
+                }
+                inv.selectedSlot = targetHotbar;
+                mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, i, targetHotbar, SlotActionType.SWAP, p);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Selects the best mining tool for {@code state} across hotbar and storage. Returns false if none helps. */
+    public boolean selectBestToolFor(MinecraftClient mc, BlockState state) {
+        ClientPlayerEntity p = mc.player;
+        if (p == null || state == null) return false;
+        PlayerInventory inv = p.getInventory();
+        int bestSlot = -1;
+        boolean bestSuitable = false;
+        float bestSpeed = 1.0f;
+        for (int i = 0; i < inv.main.size(); i++) {
+            ItemStack st = inv.main.get(i);
+            if (st.isEmpty()) continue;
+            if (st.isDamageable() && st.getDamage() >= st.getMaxDamage()) continue;
+            boolean suitable = !state.isToolRequired() || st.isSuitableFor(state);
+            float speed = st.getMiningSpeedMultiplier(state);
+            if (!suitable && state.isToolRequired()) continue;
+            if (speed <= 1.0f && !st.isSuitableFor(state)) continue;
+            if (bestSlot < 0
+                    || (suitable && !bestSuitable)
+                    || (suitable == bestSuitable && speed > bestSpeed)) {
+                bestSlot = i;
+                bestSuitable = suitable;
+                bestSpeed = speed;
+            }
+        }
+        if (bestSlot < 0) return false;
+        if (bestSlot < 9) {
+            inv.selectedSlot = bestSlot;
+            return true;
+        }
+        if (mc.currentScreen != null || mc.interactionManager == null) return false;
+        int targetHotbar = inv.selectedSlot;
+        for (int h = 0; h < 9; h++) {
+            if (inv.main.get(h).isEmpty()) {
+                targetHotbar = h;
+                break;
+            }
+        }
+        inv.selectedSlot = targetHotbar;
+        mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, bestSlot, targetHotbar, SlotActionType.SWAP, p);
+        return true;
+    }
+
+    /** Selects the strongest sword or axe in the player's inventory into her hand. */
+    public boolean selectBestMelee(MinecraftClient mc) {
+        ClientPlayerEntity p = mc.player;
+        if (p == null) return false;
+        PlayerInventory inv = p.getInventory();
+        int bestSlot = -1;
+        float bestScore = 0f;
+        for (int i = 0; i < inv.main.size(); i++) {
+            ItemStack st = inv.main.get(i);
+            Item it = st.getItem();
+            float score = it instanceof SwordItem s ? 10f + s.getMaterial().getAttackDamage()
+                    : it instanceof AxeItem a ? a.getMaterial().getAttackDamage()
+                    : 0f;
+            if (score > bestScore) {
+                bestScore = score;
+                bestSlot = i;
+            }
+        }
+        if (bestSlot < 0) return false;
+        if (bestSlot < 9) {
+            inv.selectedSlot = bestSlot;
+            return true;
+        }
+        if (mc.currentScreen != null || mc.interactionManager == null) return false;
+        int targetHotbar = inv.selectedSlot;
+        for (int h = 0; h < 9; h++) {
+            if (inv.main.get(h).isEmpty()) {
+                targetHotbar = h;
+                break;
+            }
+        }
+        inv.selectedSlot = targetHotbar;
+        mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, bestSlot, targetHotbar, SlotActionType.SWAP, p);
+        return true;
     }
 
     // ------------------------------------------------------------------ actions
@@ -347,6 +551,116 @@ public final class GameActions {
         JsonObject out = new JsonObject();
         out.addProperty("sent", msg);
         return out;
+    }
+
+    /** Manages armor/shield/hotbar upgrades ({@code equip_best}) or drops trash / stacks duplicates ({@code tidy}). */
+    public JsonObject manageInv(MinecraftClient mc, Request req) throws ProtocolException {
+        ClientPlayerEntity p = mc.player;
+        if (p == null || p.isDead()) throw new ProtocolException(Protocol.E_INVALID_ARGS, "she is dead");
+        if (mc.currentScreen != null) throw new ProtocolException(Protocol.E_INVALID_ARGS, "a screen is open; close it first");
+        if (mc.interactionManager == null) throw new ProtocolException(Protocol.E_NOT_IN_GAME, "not connected");
+        String op = req.str("op");
+        JsonObject out = new JsonObject();
+        out.addProperty("op", op);
+        if ("equip_best".equals(op)) {
+            JsonArray equipped = new JsonArray();
+            EquipmentSlot[] armorOrder = {EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
+            for (EquipmentSlot eq : armorOrder) {
+                ItemStack current = p.getInventory().getArmorStack(eq.getEntitySlotId());
+                int curScore = armorScore(current);
+                int bestInv = -1;
+                int bestScore = curScore;
+                for (int i = 0; i < p.getInventory().main.size(); i++) {
+                    ItemStack st = p.getInventory().main.get(i);
+                    if (st.getItem() instanceof ArmorItem a && a.getSlotType() == eq) {
+                        int s = armorScore(st);
+                        if (s > bestScore) {
+                            bestScore = s;
+                            bestInv = i;
+                        }
+                    }
+                }
+                if (bestInv >= 0) {
+                    int handlerSrc = bestInv < 9 ? 36 + bestInv : bestInv;
+                    int armorSlot = 8 - eq.getEntitySlotId();
+                    boolean wasOccupied = !current.isEmpty();
+                    mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, handlerSrc, 0, SlotActionType.PICKUP, p);
+                    mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, armorSlot, 0, SlotActionType.PICKUP, p);
+                    if (wasOccupied) {
+                        mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, handlerSrc, 0, SlotActionType.PICKUP, p);
+                    }
+                    equipped.add(Ids.normalize(Registries.ITEM.getId(p.getInventory().getArmorStack(eq.getEntitySlotId()).getItem()).toString()));
+                }
+            }
+            if (p.getOffHandStack().isEmpty()) {
+                for (int i = 0; i < p.getInventory().main.size(); i++) {
+                    if (p.getInventory().main.get(i).isOf(Items.SHIELD)) {
+                        int handlerSrc = i < 9 ? 36 + i : i;
+                        mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, handlerSrc, 0, SlotActionType.PICKUP, p);
+                        mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, 45, 0, SlotActionType.PICKUP, p);
+                        equipped.add("shield");
+                        break;
+                    }
+                }
+            }
+            selectBestMelee(mc);
+            out.add("equipped", equipped);
+            return out;
+        }
+        if ("tidy".equals(op)) {
+            Set<String> trash = new HashSet<>();
+            if (req.has("trash")) {
+                if (!req.body().get("trash").isJsonArray()) {
+                    throw new ProtocolException(Protocol.E_INVALID_ARGS, "'trash' must be an array of item ids");
+                }
+                for (JsonElement el : req.body().getAsJsonArray("trash")) {
+                    if (el.isJsonPrimitive()) trash.add(Ids.normalize(el.getAsString()));
+                }
+            }
+            JsonArray dropped = new JsonArray();
+            if (!trash.isEmpty()) {
+                for (int i = 0; i < p.getInventory().main.size(); i++) {
+                    ItemStack st = p.getInventory().main.get(i);
+                    if (st.isEmpty()) continue;
+                    String id = Ids.normalize(Registries.ITEM.getId(st.getItem()).toString());
+                    if (trash.contains(id)) {
+                        int handlerSlot = i < 9 ? 36 + i : i;
+                        mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, handlerSlot, 1, SlotActionType.THROW, p);
+                        dropped.add(id);
+                    }
+                }
+            }
+            int merged = consolidateStacks(mc, p);
+            out.add("dropped", dropped);
+            out.addProperty("merged_stacks", merged);
+            return out;
+        }
+        throw new ProtocolException(Protocol.E_INVALID_ARGS, "manage_inv op must be 'equip_best' or 'tidy'");
+    }
+
+    private static int armorScore(ItemStack st) {
+        if (st.isEmpty() || !(st.getItem() instanceof ArmorItem a)) return 0;
+        return a.getProtection() * 10 + Math.round(a.getToughness() * 4f);
+    }
+
+    private static int consolidateStacks(MinecraftClient mc, ClientPlayerEntity p) {
+        int merged = 0;
+        for (int src = 9; src <= 44; src++) {
+            ItemStack s = p.playerScreenHandler.getSlot(src).getStack();
+            if (s.isEmpty() || !s.isStackable() || s.getCount() >= s.getMaxCount()) continue;
+            for (int dst = 9; dst < src; dst++) {
+                ItemStack d = p.playerScreenHandler.getSlot(dst).getStack();
+                if (!ItemStack.areItemsAndComponentsEqual(s, d) || d.getCount() >= d.getMaxCount()) continue;
+                mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, src, 0, SlotActionType.PICKUP, p);
+                mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, dst, 0, SlotActionType.PICKUP, p);
+                if (!p.playerScreenHandler.getCursorStack().isEmpty()) {
+                    mc.interactionManager.clickSlot(p.playerScreenHandler.syncId, src, 0, SlotActionType.PICKUP, p);
+                }
+                merged++;
+                if (p.playerScreenHandler.getSlot(src).getStack().isEmpty()) break;
+            }
+        }
+        return merged;
     }
 
     public JsonObject respawn(MinecraftClient mc) {

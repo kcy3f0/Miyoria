@@ -46,6 +46,12 @@ public final class RawObservation {
     public CraftState crafting;
     /** The reflex that has her body ({@code lava}, {@code fight}...), or null. */
     public String reflex;
+    /** Stable world identifier ({@code sp:<levelName>} or {@code mp:<address>}), or null. */
+    public String worldId;
+    /** Effective light level at the player's position (0..15). */
+    public int lightLevel;
+    /** Suspended task awaiting reflex recovery, or null. */
+    public PausedTaskState pausedTask;
 
     public record StackSlot(int slot, StackInfo stack) {}
 
@@ -58,6 +64,9 @@ public final class RawObservation {
 
     /** {@code kind} is craft | smelt; {@code item} the output (craft) or input (smelt, null = collecting). */
     public record CraftState(String kind, String item) {}
+
+    /** Task paused by a recoverable reflex ({@code kind} = task name, {@code detail} = short context). */
+    public record PausedTaskState(String kind, String detail) {}
 
     /** {@code busy} may be null when it cannot be determined. */
     public record AltoState(boolean available, Boolean busy) {
