@@ -274,7 +274,16 @@ import {
 } from "./speech.js";
 import { offeredIn, scopeOfHer, scopeOfSnapshot, type ToolScope } from "./tool-scope.js";
 import { KeepNoteTool, ReactTool } from "./tools.js";
-import { charCount, contextId, fixed, guard, TimeoutError, timeout, toolBatches } from "./util.js";
+import {
+  charCount,
+  contextId,
+  fixed,
+  framedAsIs,
+  guard,
+  TimeoutError,
+  timeout,
+  toolBatches,
+} from "./util.js";
 import { imageParts, selectImages } from "./vision.js";
 
 const TYPING_TTL_MS = 10_000;
@@ -3170,8 +3179,13 @@ class Turn {
     this.#trace(call, run.ok, run.text);
     // Cut before it is wrapped, so the block it goes back in stays whole.
     const room = Math.max(ROUND_MIN_CHARS, roundChars);
-    const body = run.text.length > room ? `${truncate(run.text, room)}${ROUND_CUT}` : run.text;
-    let text = dataBlock("tool", `${call.name} 的結果`, neutralize(body));
+    let text: string;
+    if (framedAsIs(this.agent.tools.get(call.name), run.ok, run.text, room)) {
+      text = run.text;
+    } else {
+      const body = run.text.length > room ? `${truncate(run.text, room)}${ROUND_CUT}` : run.text;
+      text = dataBlock("tool", `${call.name} 的結果`, neutralize(body));
+    }
     if (run.ok && accepted) text = `${text}\n${STILL_RUNNING}`;
     // Read in this turn; the next keeps the head of it in the trace, unless she keeps more.
     if (
@@ -3686,7 +3700,6 @@ class Turn {
     return out;
   }
 
-  /** Runs one tool call; the result (or error) is a short text for the model. */
   /** What a call brought back, as the model reads it; publishes `agent.tool`. */
   #toolResult(call: ToolCall, [ok, full]: [boolean, string]): string {
     if (ok) this.#succeeded.add(call.name);
@@ -3723,7 +3736,11 @@ class Turn {
     );
     // Untrusted data, as in the main line and the work lane: a page or an MCP server's answer can
     // carry instructions meant for her.
-    return `${dataBlock("tool", `${call.name} 的結果`, neutralize(body))}${hint}`;
+    const cap = this.agent.config.max_tool_result_chars;
+    const framed = framedAsIs(this.agent.tools.get(call.name), ok, full, cap)
+      ? full
+      : dataBlock("tool", `${call.name} 的結果`, neutralize(body));
+    return `${framed}${hint}`;
   }
 
   /**
@@ -4023,11 +4040,23 @@ function contextJson(key: ContextKey): JsonValue {
   return { platform: key.platform, scope: key.scope, channel: key.channel, kind: key.kind };
 }
 
+/** `withFor` per spec: the same object every turn, so what is kept per spec (`slimTool`) holds. */
+const WITH_FOR = new WeakMap<ToolSpec, ToolSpec>();
+
 /**
  * `spec` with a required `for_whom` (`callFor`): several people called her at once, so a tool that
  * acts for someone says whom.
  */
 function withFor(spec: ToolSpec): ToolSpec {
+  let out = WITH_FOR.get(spec);
+  if (out === undefined) {
+    out = withForNow(spec);
+    WITH_FOR.set(spec, out);
+  }
+  return out;
+}
+
+function withForNow(spec: ToolSpec): ToolSpec {
   const params = isJsonObject(spec.parameters) ? spec.parameters : { type: "object" };
   const properties = isJsonObject(params.properties) ? params.properties : {};
   const required = Array.isArray(params.required)

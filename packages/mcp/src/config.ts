@@ -12,7 +12,8 @@
 // tools_deny = ["*delete*"]
 // permission = "tools.mcp.files"
 // timeout_ms = 30000
-// trust_read_only_hint = true    # its read_* tools may run side by side
+// max_result_chars = 8000
+// trust_read_only_hint = true    # tools marked readOnlyHint may run side by side
 //
 // [mcp.servers.search]
 // transport = "http"
@@ -78,11 +79,10 @@ const ServerConfigSchema = z.object({
   /** Timeout for connecting and listing tools. */
   connect_timeout_ms: z.number().int().nonnegative().default(20_000),
   /**
-   * Tool results longer than this many characters are cut (0 = no limit of its own). The agent
-   * cuts every tool result anyway (`[modules.agent] max_tool_result_chars`); set this only to
-   * keep one server's results shorter than that.
+   * Tool results longer than this many characters are cut here, before the agent's own cut
+   * (`[modules.agent] max_tool_result_chars`); the shorter of the two wins (0 = no limit here).
    */
-  max_result_chars: z.number().int().nonnegative().default(0),
+  max_result_chars: z.number().int().nonnegative().default(8_000),
   /**
    * Believe the server when it marks a tool `readOnlyHint`: such calls in one step then run at
    * the same time instead of one after another. Only for servers you trust to say so honestly
@@ -109,7 +109,7 @@ export class ServerConfig implements ServerConfigData {
   permission: string | null = null;
   timeout_ms = 30_000;
   connect_timeout_ms = 20_000;
-  max_result_chars = 0;
+  max_result_chars = 8_000;
   trust_read_only_hint = false;
 
   constructor(data: Partial<ServerConfigData> = {}) {

@@ -85,21 +85,30 @@ export function registryName(
   return taken.has(hashed) ? null : hashed;
 }
 
-/** Schema keywords the model has no use for; they only cost tokens on every turn. */
-const SCHEMA_NOISE: ReadonlySet<string> = new Set([
-  "$schema",
-  "$id",
-  "$comment",
-  "title",
-  "examples",
-]);
+/**
+ * Schema keywords that only document the schema. `$id` stays (it is the base `$ref`s resolve
+ * against), and so do `examples` (they show the model what a good argument looks like).
+ */
+const SCHEMA_NOISE: ReadonlySet<string> = new Set(["$schema", "$comment", "title"]);
 
 /** Keywords whose value is a map of name to schema (the names are data, not keywords). */
-const SCHEMA_MAPS = ["properties", "patternProperties", "$defs", "definitions"] as const;
+const SCHEMA_MAPS = [
+  "properties",
+  "patternProperties",
+  "$defs",
+  "definitions",
+  "dependentSchemas",
+  // Draft 4–7: each value is a schema or a list of property names (left as it is).
+  "dependencies",
+] as const;
 /** Keywords whose value is one schema. */
 const SCHEMA_ONE = [
   "items",
   "additionalProperties",
+  "unevaluatedProperties",
+  "unevaluatedItems",
+  "propertyNames",
+  "contentSchema",
   "not",
   "contains",
   "if",
@@ -110,8 +119,8 @@ const SCHEMA_ONE = [
 const SCHEMA_LISTS = ["anyOf", "oneOf", "allOf", "prefixItems"] as const;
 
 /**
- * A tool's input schema without what only documents it (`$schema`, `$id`, `$comment`, `title`,
- * `examples`), at every level. Property names are kept even when they are `title`.
+ * A tool's input schema without what only documents it (`$schema`, `$comment`, `title`), at
+ * every level. Property names are kept even when they are `title`.
  */
 export function compactSchema(schema: JsonValue): JsonValue {
   if (!isJsonObject(schema)) return schema;

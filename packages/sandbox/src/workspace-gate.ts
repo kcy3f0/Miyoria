@@ -72,6 +72,7 @@ export function workspaceFileCapabilities(o: WorkspaceGateOptions): Capability<n
     permission: NODE_WORKSPACE,
     tool: {
       name: "workspace_list",
+      framed: true,
       readOnly: true,
       description:
         "列出你自己的工作區(跨次保存的資料夾,放你做出來、想留著的檔案和腳本)裡的檔案和大小,以及用了多少額度。" +
@@ -114,6 +115,7 @@ export function workspaceFileCapabilities(o: WorkspaceGateOptions): Capability<n
     permission: NODE_WORKSPACE,
     tool: {
       name: "workspace_read",
+      framed: true,
       readOnly: true,
       description:
         `讀工作區裡的一個文字檔。一次最多回 ${o.readChars} 個字,檔案更長時回覆會說從哪個 offset 接著讀。` +
@@ -298,6 +300,7 @@ export function workspaceRunCapability(o: WorkspaceGateOptions): Capability<Work
     permission: NODE_CODE_RUN,
     tool: {
       name: "workspace_run",
+      framed: true,
       description:
         "執行工作區裡用 workspace_save_script 存過(核准過、之後沒被改過)的腳本:.py 用 Python、.mjs 用 Node," +
         "在離線的沙箱容器裡跑,工作區掛在 /workspace(讀寫,檔案會留下來),stdin / stdout 照常。" +

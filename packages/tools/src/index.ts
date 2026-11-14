@@ -62,6 +62,13 @@ export interface Tool {
    */
   readonly readOnly?: boolean;
   /**
+   * Its answer already holds whatever came from outside in data blocks (`dataBlock`), with only
+   * its own words around them. The agent passes such an answer on as it is instead of wrapping it
+   * in one more block, which would only break the inner tags. Only for a tool whose own code
+   * writes the whole answer, never one that relays another program's.
+   */
+  readonly framed?: boolean;
+  /**
    * Runs the tool. The returned text (or the error message) goes back to the model, so keep it
    * short.
    */

@@ -42,7 +42,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tool(
       "read_a",
       "A read tool.",
-      { title: { type: "string", title: "Title", examples: ["x"], description: "What to read." } },
+      {},
       {
         inputSchema: {
           $schema: "http://json-schema.org/draft-07/schema#",

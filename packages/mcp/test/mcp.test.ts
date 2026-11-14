@@ -319,7 +319,7 @@ describe("result framing and the stdio environment", () => {
     expect(plain.registry.get("mcp_fx_read_a")?.readOnly).toBe(false);
     expect(plain.registry.get("mcp_fx_read_a")?.spec.parameters).toEqual({
       type: "object",
-      properties: { title: { type: "string", description: "What to read." } },
+      properties: { title: { type: "string", examples: ["x"], description: "What to read." } },
     });
 
     const trusting = await start({ servers: { fx: fixture({ trust_read_only_hint: true }) } });

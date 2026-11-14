@@ -481,7 +481,7 @@ args = ["-y", "some-minecraft-wiki-mcp"]
 
 ### 9.3 擴充能提供的東西(contribution points)
 
-- **Tools**:給 agent 呼叫的工具(含 JSON Schema 參數、權限節點;只查不改的可以標 `readOnly`,同一步的這類呼叫會同時跑)
+- **Tools**:給 agent 呼叫的工具(含 JSON Schema 參數、權限節點;只查不改的可以標 `readOnly`,同一步的這類呼叫會同時跑)。工具的結果由 agent 包成一個不可信資料區塊;自己已經把外來內容放進資料區塊的工具(網頁、沙箱輸出、工作區、技能)標 `framed`,完整、沒被截斷的結果就照原樣給模型,不會再包一層
 - **Commands**:跨平台指令(自動註冊成 Discord slash command,見 §11)
 - **Event handlers**:訂閱事件、發佈事件
 - **Game adapter**:見 §12
@@ -514,7 +514,7 @@ export default defineExtension({
 
 ### 9.4 MCP
 
-- **Miyoria 當 MCP client**:在設定裡列出 MCP servers(stdio / Streamable HTTP),它們的工具會進到 agent 的工具清單,但要經過權限政策(哪些工具開放給誰、哪些情境可用、需不需要管理員確認)。工具的 input schema 登記時會拿掉只給人看的欄位(`$schema`、`$id`、`$comment`、`title`、`examples`),省每回合的 token;結果跟其他工具一樣由 agent 包成不可信資料、用 `max_tool_result_chars` 截斷(`max_result_chars` 只在想讓某個 server 更短時才設)。server 標 `readOnlyHint` 的工具,在設定 `trust_read_only_hint = true` 時才當成只查不改、可以同時跑。
+- **Miyoria 當 MCP client**:在設定裡列出 MCP servers(stdio / Streamable HTTP),它們的工具會進到 agent 的工具清單,但要經過權限政策(哪些工具開放給誰、哪些情境可用、需不需要管理員確認)。工具的 input schema 登記時會拿掉只給人看的欄位(`$schema`、`$comment`、`title`;`$id` 決定 `$ref` 的基準、`examples` 幫模型填參數,都留著),省每回合的 token;結果先在 MCP 端用 `max_result_chars`(預設 8000)截斷,再跟其他工具一樣由 agent 包成不可信資料、用 `max_tool_result_chars` 截斷。server 標 `readOnlyHint` 的工具,在設定 `trust_read_only_hint = true` 時才當成只查不改、可以同時跑。
 - **Miyoria 當 MCP server**(可選):對外提供「送訊息、查記憶、看狀態、切子系統」,讓 Claude Code 這類外部 agent 可以操作 / 檢查她,開發除錯很方便。
 
 ---
