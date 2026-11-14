@@ -513,6 +513,7 @@ def find_lyrics(
     budget_s: float = 45.0,
     timeout: float = 8.0,
     min_confident: float = 0.72,
+    asr_wait: Callable[[], None] | None = None,
 ) -> dict[str, Any] | None:
     """The best lyrics for the video described by ``hints``, or None.
 
@@ -521,13 +522,16 @@ def find_lyrics(
     ``llm(hints, tried)`` returns the song(s) it believes the video is (called, at most twice, when the
     direct queries found nothing sure enough; ``tried`` is what already found nothing; see lyricsllm.py).
     ``asr_mode``: ``auto`` checks only matches that are not confident yet, ``1`` always, ``0`` never; it
-    needs ``audio`` (the lead vocal) and ``asr_url``.
+    needs ``audio`` (the lead vocal) and ``asr_url``. ``asr_wait`` runs before the first spot check: a lookup
+    that runs next to the conversion waits there until the ASR worker can be asked (not offloaded, not
+    competing with the conversion for the card).
     """
     deadline = time.monotonic() + budget_s
     cands: list[Candidate] = []
     done: list[Query] = []
     seen: set[tuple[str, str]] = set()
     llm_info: dict[str, Any] | None = None
+    waited = [asr_wait is None]
 
     def search_one(q: Query) -> list[Candidate]:
         new = search_lrclib(q.title, q.artist, q.how, timeout)
@@ -563,6 +567,7 @@ def find_lyrics(
 
     def settle() -> Candidate | None:
         """First acceptable candidate that has lyrics, fits the audio and survives the ASR check."""
+        nonlocal deadline
         ok = sorted((c for c in cands if acceptable(c)), key=lambda c: (bool(c.lrc), c.confidence), reverse=True)
         # a NetEase hit has its lyrics fetched only now, so look at the best few
         for c in sorted(ok, key=lambda c: c.confidence, reverse=True)[:4]:
@@ -580,6 +585,12 @@ def find_lyrics(
                 c.confidence = round(min(c.confidence, 0.7), 3)  # plain: no timing to check
             want = asr_mode == "1" or (asr_mode == "auto" and c.confidence < 0.85)
             if want and lines and audio is not None and asr_url and audio.exists():
+                if not waited[0]:
+                    waited[0] = True
+                    assert asr_wait is not None
+                    t_wait = time.monotonic()
+                    asr_wait()
+                    deadline += time.monotonic() - t_wait  # the wait is not the lookup's time
                 a = asr_spot_check(lines, audio, asr_url)
                 if a is not None:
                     c.checks["asr"] = a
@@ -634,7 +645,8 @@ def hints_of(src: Any) -> dict[str, Any]:
 
 
 def search(hints: dict[str, Any], duration: float | None, *, cache_dir: Path | None = None, audio: Path | None = None,
-           asr_url: str | None = None, fresh: bool = False) -> dict[str, Any] | None:
+           asr_url: str | None = None, fresh: bool = False,
+           asr_wait: Callable[[], None] | None = None) -> dict[str, Any] | None:
     """``find_lyrics`` with the worker's settings (SING_LYRICS_* env, Core's LLM); never raises."""
     import os
 
@@ -653,6 +665,7 @@ def search(hints: dict[str, Any], duration: float | None, *, cache_dir: Path | N
             asr_mode=os.environ.get("SING_LYRICS_ASR", "auto"),
             netease=os.environ.get("SING_LYRICS_NETEASE", "1") != "0",
             budget_s=float(os.environ.get("SING_LYRICS_BUDGET_S", "45")),
+            asr_wait=asr_wait,
         )
     except Exception as e:  # lyrics are best effort
         log.warning("lyrics search failed: %s", e)

@@ -26,7 +26,7 @@ import re
 import shutil
 import threading
 import unicodedata
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -98,11 +98,13 @@ class Source:
     path: str | None = None
     split: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+    # yt-dlp's full answer when this was looked up, and when (time.monotonic): the download and the
+    # video reuse it instead of reading the page, the player and its challenges again (engine.py).
+    info: dict[str, Any] | None = field(default=None, repr=False, compare=False)
+    info_at: float | None = field(default=None, repr=False, compare=False)
 
     def public(self) -> dict[str, Any]:
-        d = asdict(self)
-        d.pop("extra", None)
-        return d
+        return {f.name: getattr(self, f.name) for f in fields(self) if f.name not in ("extra", "info", "info_at")}
 
 
 class Store:
