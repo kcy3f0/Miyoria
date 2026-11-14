@@ -62,8 +62,9 @@ async function guildSetup(
   backend: Backend,
   llm: MockProvider,
   handles: FakeHandles | null = null,
+  embedder: TableEmbedder | null = null,
 ): Promise<[Env, ContextKey, PersonId, PersonId]> {
-  const e = await envWith(backend, memoryConfig(), llm, null, handles);
+  const e = await envWith(backend, memoryConfig(), llm, embedder, handles);
   const owen = await e.person(acct("2"), "Owen");
   const amy = await e.person(acct("3"), "Amy");
   const ctx = guildCtx("g1", "c1");
@@ -78,6 +79,16 @@ function find(records: MemoryRecord[], needle: string): MemoryRecord {
   const r = records.find((x) => x.content.includes(needle));
   if (!r) throw new Error(`no record with ${needle}: ${JSON.stringify(records, null, 2)}`);
   return r;
+}
+
+/** Records how many texts each `embed` call was given. */
+class CountingEmbedder extends TableEmbedder {
+  readonly calls: number[] = [];
+
+  override async embed(texts: readonly string[]): Promise<number[][]> {
+    this.calls.push(texts.length);
+    return super.embed(texts);
+  }
 }
 
 afterEach(closeAll);
@@ -603,6 +614,61 @@ ${GUILD_JSON.replace(/\}$/, ",}")}
     await e.add("fact", { type: "global" }, [owen], newText, 0.5, t0());
     await e.add("fact", G1, [owen], "Owen 討厭下雨", 0.5, t0());
     expect(await e.all()).toHaveLength(4);
+  });
+
+  it("consolidation_embeds_what_it_stores_in_one_call", async () => {
+    const embedder = new CountingEmbedder();
+    const llm = new MockProvider("sum").reply(GUILD_JSON);
+    const [e, ctx] = await guildSetup(backend, llm, null, embedder);
+    const report = await e.engine.consolidate(ctx, t0());
+    expect(report.inserted, JSON.stringify(report)).toBe(6);
+    expect(embedder.calls).toEqual([6]);
+    for (const r of await e.all()) expect(r.embedding, r.content).toEqual([0, 0, 0.01]);
+  });
+
+  it("backfill_finds_records_without_a_vector", async () => {
+    const embedder = new CountingEmbedder();
+    const e = await envWith(backend, memoryConfig(), null, embedder);
+    const rec = (content: string, secs: number, embedding: number[] | null): MemoryRecord => ({
+      id: newId(),
+      profile: profile(),
+      kind: "episode",
+      scope: G1,
+      subjects: [],
+      content,
+      tokens: content,
+      embedding,
+      importance: 0.5,
+      confidence: 1,
+      created_at: t0(secs * SECOND),
+      updated_at: t0(secs * SECOND),
+      last_accessed: null,
+      access_count: 0,
+      source_context: null,
+      source: null,
+      origin: "experienced",
+      source_events: [],
+      due: null,
+      done: false,
+      superseded_by: null,
+    });
+    const old = rec("很久以前的事", 0, null);
+    const newest = rec("剛剛的事", 1000, null);
+    const replaced = rec("被取代的事", 1001, null);
+    replaced.superseded_by = newest.id;
+    for (const r of [old, newest, replaced]) await e.store.memories.upsert(r);
+    for (let i = 1; i <= 150; i++) await e.store.memories.upsert(rec(`第 ${i} 件`, i, [1, 0, 0]));
+
+    const done = await e.engine.backfillEmbeddings(10);
+    expect((await e.rec(newest.id))?.embedding).toEqual([0, 0, 0.01]);
+    expect((await e.rec(replaced.id))?.embedding).toBeNull();
+    if (backend === "sqlite") {
+      // The store reads what lacks a vector, however old: not only the newest records.
+      expect(done).toBe(2);
+      expect((await e.rec(old.id))?.embedding).toEqual([0, 0, 0.01]);
+    }
+    expect(embedder.calls).toHaveLength(1);
+    expect(await e.engine.backfillEmbeddings(10)).toBe(0);
   });
 
   it("maintenance_prunes_and_forgets_what_faded", async () => {

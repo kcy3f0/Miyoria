@@ -217,9 +217,19 @@ export function encodeEmbedding(embedding: readonly number[]): Uint8Array {
   return new Uint8Array(buffer);
 }
 
+/** Whether this machine stores numbers little-endian, as the blobs are. */
+const LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+
+/** A copy of the stored values (never a view of `bytes`, which the driver may reuse). */
 export function decodeEmbedding(bytes: Uint8Array): Float32Array {
+  const length = Math.floor(bytes.byteLength / 4);
+  // One memory copy instead of a `getFloat32` call per value (about 20 times faster). The
+  // Uint8Array `slice` copies even for a Node `Buffer`, whose own `slice` is a view of its pool.
+  if (LITTLE_ENDIAN) {
+    return new Float32Array(Uint8Array.prototype.slice.call(bytes, 0, length * 4).buffer);
+  }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const out = new Float32Array(Math.floor(bytes.byteLength / 4));
+  const out = new Float32Array(length);
   for (let i = 0; i < out.length; i++) out[i] = view.getFloat32(i * 4, true);
   return out;
 }

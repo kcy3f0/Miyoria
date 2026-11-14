@@ -369,6 +369,21 @@ export interface MemoryRecordStore {
   list(profile: ProfileId, filter: MemoryFilter): Promise<MemoryRecord[]>;
   /** How many records `list` would return without `filter.limit`; optional for test doubles. */
   count?(profile: ProfileId, filter: MemoryFilter): Promise<number>;
+  /**
+   * For each of `people`, what `list` with that `subject` and `limit: limitEach` returns, in one
+   * read: a record about several of them comes back once. Newest first. Optional for test
+   * doubles (callers fall back to one `list` per person).
+   */
+  listAbout?(
+    profile: ProfileId,
+    people: readonly PersonId[],
+    limitEach: number,
+  ): Promise<MemoryRecord[]>;
+  /**
+   * Up to `limit` records that are not superseded and have no embedding, newest first. Optional
+   * for test doubles.
+   */
+  missingEmbeddings?(profile: ProfileId, limit: number): Promise<MemoryRecord[]>;
   /** Records access (bumps `access_count`, sets `last_accessed`). */
   touch(ids: readonly string[], at: Timestamp): Promise<void>;
   /**

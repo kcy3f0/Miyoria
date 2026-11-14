@@ -877,6 +877,61 @@ function behaviour(open: () => Promise<Store>): void {
     await expect(memories.search(q)).rejects.toThrow(/non-finite/);
   });
 
+  it("memory_search_vector_sees_every_write", async () => {
+    const memories = store.memories;
+    const profile = unique("profile");
+    const t0 = Date.now();
+    const scope = guildScope(unique("g"));
+    const mk = (embedding: number[], secs: number) => {
+      const r = memory(profile, "fact", scope, "x", at(t0 + secs * SECOND));
+      r.embedding = embedding;
+      return r;
+    };
+    const nearest = async (embedding: number[], limit = 1, scopes = [scope]) => {
+      const q = textQuery(profile, scopes, [], limit);
+      q.embedding = embedding;
+      const hits = await memories.search(q);
+      hits.sort((x, y) => (y.vector_score ?? 0) - (x.vector_score ?? 0));
+      return hits.map((h) => h.record.id);
+    };
+    const a = mk([1, 0, 0], 1);
+    const b = mk([0.9, 0.1, 0], 2);
+    for (const r of [a, b]) await memories.upsert(r);
+    expect(await nearest([1, 0, 0])).toEqual([a.id]);
+
+    // Every write between two searches is seen: superseded, inserted, a new vector, deleted.
+    await memories.upsert({ ...a, superseded_by: b.id });
+    expect(await nearest([1, 0, 0])).toEqual([b.id]);
+    const c = mk([1, 0, 0], 3);
+    await memories.upsert(c);
+    expect(await nearest([1, 0, 0])).toEqual([c.id]);
+    await memories.upsert({ ...c, embedding: [0, 0, 1] });
+    expect(await nearest([1, 0, 0])).toEqual([b.id]);
+    expect(await memories.delete(b.id)).toBe(true);
+    expect(await nearest([1, 0, 0])).toEqual([c.id]);
+
+    // Touching and closing do not change what is compared; merging people moves a scope.
+    await memories.touch([c.id], at(t0 + 10 * SECOND));
+    expect(await nearest([0, 0, 1])).toEqual([c.id]);
+    const keep = newId();
+    const absorb = newId();
+    const theirs = mk([0, 1, 0], 4);
+    theirs.scope = { type: "person", person: absorb };
+    await memories.upsert(theirs);
+    const keepScope: MemoryScope[] = [{ type: "person", person: keep }];
+    expect(await nearest([0, 1, 0], 1, keepScope)).toEqual([]);
+    await memories.mergePerson(keep, absorb);
+    expect(await nearest([0, 1, 0], 1, keepScope)).toEqual([theirs.id]);
+
+    // Equal scores: the newest first, and the limit keeps those.
+    const older = mk([0, 0, 1], 5);
+    const newer = mk([0, 0, 1], 6);
+    for (const r of [older, newer]) await memories.upsert(r);
+    const q = textQuery(profile, [scope], [], 2);
+    q.embedding = [0, 0, 1];
+    expect((await memories.search(q)).map((h) => h.record.id)).toEqual([newer.id, older.id]);
+  });
+
   it("memory_list_filters", async () => {
     const memories = store.memories;
     const profile = unique("profile");
@@ -918,6 +973,53 @@ function behaviour(open: () => Promise<Store>): void {
     expect(await count({ before: c.created_at })).toBe(2);
     expect(await count({ subject: bob, kind: "fact", scope: guild })).toBe(1);
     expect(await count({ subject: newId() })).toBe(0);
+  });
+
+  it("memory_list_about_and_missing_embeddings", async () => {
+    const memories = store.memories;
+    const profile = unique("profile");
+    const t0 = Date.now();
+    const alice = newId();
+    const bob = newId();
+    const carol = newId();
+    const mk = (subjects: PersonId[], secs: number, embedding: number[] | null = null) => {
+      const r = memory(profile, "fact", { type: "global" }, "x", at(t0 + secs * SECOND));
+      r.subjects = subjects;
+      r.embedding = embedding;
+      return r;
+    };
+    const a1 = mk([alice], 1, [0.1, 0.2]);
+    const a2 = mk([alice], 2);
+    const ab = mk([alice, bob], 3);
+    const b1 = mk([bob], 4, [0.3, 0.4]);
+    const a3 = mk([alice], 5);
+    const gone = mk([alice], 6);
+    gone.superseded_by = a3.id;
+    const c1 = mk([carol], 7);
+    for (const r of [a1, a2, ab, b1, a3, gone, c1]) await memories.upsert(r);
+    await memories.upsert(memory(unique("profile"), "fact", { type: "global" }, "x", at(t0)));
+
+    // Each person's newest `limitEach`, as `list` by subject gives them, once each, newest first.
+    const about = async (people: PersonId[], each: number) =>
+      recordIds((await memories.listAbout?.(profile, people, each)) ?? []);
+    const bySubject = async (person: PersonId, limit: number) =>
+      recordIds(await memories.list(profile, { ...baseFilter, subject: person, limit }));
+    expect(await bySubject(alice, 2)).toEqual([a3.id, ab.id]);
+    expect(await bySubject(bob, 2)).toEqual([b1.id, ab.id]);
+    expect(await about([alice, bob], 2)).toEqual([a3.id, b1.id, ab.id]);
+    expect(await about([alice, bob, alice], 1)).toEqual([a3.id, b1.id]);
+    expect(await about([alice], 100)).toEqual([a3.id, ab.id, a2.id, a1.id]);
+    expect(await about([alice], Number.POSITIVE_INFINITY)).toEqual([a3.id, ab.id, a2.id, a1.id]);
+    expect(await about([alice], 0)).toEqual([]);
+    expect(await about([], 5)).toEqual([]);
+    expect(await about([newId()], 5)).toEqual([]);
+
+    // Not superseded, no vector, newest first.
+    const missing = async (limit: number) =>
+      recordIds((await memories.missingEmbeddings?.(profile, limit)) ?? []);
+    expect(await missing(10)).toEqual([c1.id, a3.id, ab.id, a2.id]);
+    expect(await missing(2)).toEqual([c1.id, a3.id]);
+    expect(await missing(0)).toEqual([]);
   });
 
   it("memory_embedding_read_late_is_the_same", async () => {
