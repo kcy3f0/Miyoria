@@ -3,6 +3,7 @@
 
 import { pickaxeTier, toolLine } from "./harvest.js";
 import { zh } from "./names.js";
+import type { MemorySummary } from "./waypoints.js";
 
 interface Pos {
   x: number;
@@ -50,8 +51,10 @@ export interface Snapshot {
   air?: number;
   position?: Pos;
   block_position?: Pos;
+  world_id?: string;
   dimension?: string;
   biome?: string;
+  light_level?: number;
   time_of_day?: number;
   time_phase?: string;
   is_night?: boolean;
@@ -71,16 +74,23 @@ export interface Snapshot {
   crafting?: { kind: string; item: string | null } | null;
   /** The reflex the mod is running (`lava`, `fight`, ...), `null` when none. */
   reflex?: { active: string | null } | null;
+  /** A task temporarily suspended during a recoverable reflex. */
+  paused_task?: { kind: string; detail?: string } | null;
 }
 
 const REFLEX_ACTIVE: Record<string, string> = {
+  extinguish: "用水滅火",
+  mlg_water: "落地放水保命",
   lava: "逃離岩漿",
   suffocation: "從方塊裡挖出來",
   falling_block: "閃開落下的方塊",
   drowning: "往上游換氣",
+  retreat_pillar: "墊高脫險",
+  shield_block: "舉盾擋住攻擊",
   flee: "逃跑",
   fight: "反擊",
   eat: "吃東西",
+  auto_torch: "插火把照明",
   unstuck: "掙脫卡住",
   pickup: "撿東西",
 };
@@ -144,11 +154,42 @@ function pos(p: Pos): string {
 
 /** Whether Baritone or AltoClef is working on something (or a reflex has her body). */
 export function isBusy(s: Snapshot): boolean {
-  return s.baritone?.busy === true || s.altoclef?.busy === true || !!s.crafting || !!s.reflex?.active;
+  return s.baritone?.busy === true || s.altoclef?.busy === true || !!s.crafting || !!s.reflex?.active || !!s.paused_task;
+}
+
+function summarizeMemory(memory: MemorySummary): string | null {
+  const nonChest = memory.waypoints.filter((w) => w.kind !== "chest");
+  const parts: string[] = [];
+  if (nonChest.length > 0) {
+    const shown = nonChest
+      .slice(0, 5)
+      .map((w) => `${w.name}(${w.x},${w.y},${w.z})`)
+      .join("、");
+    const more = nonChest.length > 5 ? `…等 ${nonChest.length} 個` : "";
+    parts.push(`記憶點 ${nonChest.length} 個:${shown}${more}`);
+  }
+  if (memory.chests.length > 0) {
+    const totals = new Map<string, number>();
+    let totalCount = 0;
+    for (const c of memory.chests) {
+      for (const [id, n] of Object.entries(c.items)) {
+        if (n <= 0) continue;
+        totals.set(id, (totals.get(id) ?? 0) + n);
+        totalCount += n;
+      }
+    }
+    const top = [...totals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([id, n]) => `${zh(id)}×${n}`)
+      .join("、");
+    parts.push(`已記箱子 ${memory.chests.length} 個(共 ${totalCount} 件${top ? `:${top}` : ""})`);
+  }
+  return parts.length > 0 ? parts.join("；") : null;
 }
 
 /** Summary lines in Traditional Chinese. */
-export function summarize(s: Snapshot): string {
+export function summarize(s: Snapshot, memory?: MemorySummary): string {
   const lines: string[] = [];
   if (s.health !== undefined) {
     const max = s.max_health ?? 20;
@@ -162,6 +203,7 @@ export function summarize(s: Snapshot): string {
   if (p) where.push(`位置 ${pos(p)}`);
   if (s.dimension) where.push(zh(s.dimension));
   if (s.biome) where.push(zh(s.biome));
+  if (s.light_level !== undefined) where.push(`光照 ${s.light_level}/15${s.light_level <= 7 ? "(偏暗)" : ""}`);
   if (where.length) lines.push(where.join("・"));
   const time: string[] = [];
   if (s.time_phase) time.push(`${PHASES[s.time_phase] ?? s.time_phase}${untilNext(s.time_phase, s.time_of_day)}`);
@@ -226,22 +268,32 @@ export function summarize(s: Snapshot): string {
   }
   const reflex = s.reflex?.active;
   if (reflex) activity.push(`本能反應中:${REFLEX_ACTIVE[reflex] ?? reflex}`);
+  if (s.paused_task) {
+    activity.push(`暫停中工作:${s.paused_task.kind}${s.paused_task.detail ? `(${s.paused_task.detail})` : ""}`);
+  }
   if (activity.length) lines.push(activity.join("、"));
+  if (memory) {
+    const memLine = summarizeMemory(memory);
+    if (memLine) lines.push(memLine);
+  }
   return lines.join("\n");
 }
 
 /** Compact structured state: ids kept, noise (hotbar, yaw, ...) dropped. */
-export function compactState(s: Snapshot): Record<string, unknown> {
+export function compactState(s: Snapshot, memory?: MemorySummary): Record<string, unknown> {
   const p = s.block_position ?? s.position;
+  const nonChest = memory?.waypoints.filter((w) => w.kind !== "chest") ?? [];
   const state: Record<string, unknown> = {
     connected: true,
     in_game: true,
     busy: isBusy(s),
+    world_id: s.world_id,
     health: s.health === undefined ? undefined : round1(s.health),
     food: s.food,
     position: p ? { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) } : undefined,
     dimension: s.dimension,
     biome: s.biome,
+    light_level: s.light_level,
     time: s.time_phase,
     weather: s.weather,
     held: s.held_item?.item ?? null,
@@ -265,6 +317,11 @@ export function compactState(s: Snapshot): Record<string, unknown> {
     altoclef: s.altoclef?.available ? { busy: s.altoclef.busy ?? null } : undefined,
     crafting: s.crafting ?? undefined,
     reflex: s.reflex?.active ?? undefined,
+    paused_task: s.paused_task ?? undefined,
+    waypoints: nonChest.length
+      ? Object.fromEntries(nonChest.slice(0, 12).map((w) => [w.name, { x: w.x, y: w.y, z: w.z, dimension: w.dimension }]))
+      : undefined,
+    known_chests: memory && memory.chests.length > 0 ? memory.chests.length : undefined,
   };
   for (const key of Object.keys(state)) if (state[key] === undefined) delete state[key];
   return state;

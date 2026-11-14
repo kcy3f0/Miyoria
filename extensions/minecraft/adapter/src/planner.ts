@@ -47,6 +47,7 @@ const GROUPS: Record<string, string[]> = {
   "#planks": [...WOODS, ...STEMS, "bamboo"].map((w) => `${w}_planks`),
   "#stone": ["cobblestone", "cobbled_deepslate", "blackstone"],
   "#coal": ["coal", "charcoal"],
+  "#boats": [...WOODS.map((w) => `${w}_boat`), "bamboo_raft"],
   "#wool": COLORS.map((c) => `${c}_wool`),
   "#beds": COLORS.map((c) => `${c}_bed`),
   /** Raw meat, what hunting any animal gives. */
@@ -91,6 +92,19 @@ export function planksOf(log: string): string | undefined {
   return wood ? `${wood}_planks` : undefined;
 }
 
+/** The boat a planks item makes (`birch_planks` → `birch_boat`, `bamboo_planks` → `bamboo_raft`). */
+export function boatOf(planks: string): string | undefined {
+  if (planks === "bamboo_planks") return "bamboo_raft";
+  const wood = [...WOODS].sort((a, b) => b.length - a.length).find((w) => planks === `${w}_planks`);
+  return wood ? `${wood}_boat` : undefined;
+}
+
+/** The bed a wool item makes (`red_wool` → `red_bed`). */
+export function bedOf(wool: string): string | undefined {
+  const color = [...COLORS].sort((a, b) => b.length - a.length).find((c) => wool === `${c}_wool`);
+  return color ? `${color}_bed` : undefined;
+}
+
 export function isGroup(item: string): boolean {
   return item.startsWith("#");
 }
@@ -120,6 +134,8 @@ const RECIPES: Record<string, Recipe> = {
   stick: recipe(4, [["#planks", 2]], false),
   crafting_table: recipe(1, [["#planks", 4]], false),
   furnace: recipe(1, [["#stone", 8]]),
+  smoker: recipe(1, [["#logs", 4], ["furnace", 1]]),
+  blast_furnace: recipe(1, [["iron_ingot", 5], ["furnace", 1], ["smooth_stone", 3]]),
   chest: recipe(1, [["#planks", 8]]),
   torch: recipe(4, [["#coal", 1], ["stick", 1]], false),
   bucket: recipe(1, [["iron_ingot", 3]]),
@@ -133,8 +149,12 @@ const RECIPES: Record<string, Recipe> = {
   ender_eye: recipe(1, [["blaze_powder", 1], ["ender_pearl", 1]], false),
   bow: recipe(1, [["stick", 3], ["string", 3]]),
   arrow: recipe(4, [["flint", 1], ["stick", 1], ["feather", 1]]),
+  "#boats": recipe(1, [["#planks", 5]]),
+  bamboo_raft: recipe(1, [["bamboo_planks", 5]]),
+  "#beds": recipe(1, [["#wool", 3], ["#planks", 3]]),
 };
 
+for (const w of WOODS) RECIPES[`${w}_boat`] = recipe(1, [[`${w}_planks`, 5]]);
 // A bed takes three wool of its own colour (any planks).
 for (const c of COLORS) RECIPES[`${c}_bed`] = recipe(1, [[`${c}_wool`, 3], ["#planks", 3]]);
 
@@ -153,7 +173,12 @@ for (const [prefix, material] of Object.entries(TOOL_MATERIALS)) {
   RECIPES[`${prefix}_hoe`] = recipe(1, [[material, 2], ["stick", 2]]);
   RECIPES[`${prefix}_sword`] = recipe(1, [[material, 2], ["stick", 1]]);
 }
-for (const [prefix, material] of [["iron", "iron_ingot"], ["golden", "gold_ingot"], ["diamond", "diamond"]] as const) {
+for (const [prefix, material] of [
+  ["leather", "leather"],
+  ["iron", "iron_ingot"],
+  ["golden", "gold_ingot"],
+  ["diamond", "diamond"],
+] as const) {
   RECIPES[`${prefix}_helmet`] = recipe(1, [[material, 5]]);
   RECIPES[`${prefix}_chestplate`] = recipe(1, [[material, 8]]);
   RECIPES[`${prefix}_leggings`] = recipe(1, [[material, 7]]);
@@ -180,7 +205,19 @@ const SMELTING: Record<string, string> = {
   dried_kelp: "kelp",
 };
 
-/** Items she gets by killing animals → the animals that drop them. */
+const ORE_SMELTS = new Set(["iron_ingot", "gold_ingot", "copper_ingot"]);
+const FOOD_SMELTS = new Set([
+  "cooked_beef",
+  "cooked_porkchop",
+  "cooked_mutton",
+  "cooked_chicken",
+  "cooked_rabbit",
+  "cooked_cod",
+  "cooked_salmon",
+  "baked_potato",
+]);
+
+/** Items she gets by killing animals or mobs → the entities that drop them. */
 const HUNTED: Record<string, string[]> = {
   beef: ["cow", "mooshroom"],
   porkchop: ["pig"],
@@ -189,8 +226,11 @@ const HUNTED: Record<string, string[]> = {
   rabbit: ["rabbit"],
   cod: ["cod"],
   salmon: ["salmon"],
+  white_wool: ["sheep"],
+  "#wool": ["sheep"],
   leather: ["cow", "mooshroom"],
   feather: ["chicken"],
+  string: ["spider"],
   "#meat": ["cow", "pig", "sheep", "chicken", "rabbit", "mooshroom"],
 };
 
@@ -240,6 +280,37 @@ const MINED: Record<string, string[]> = {
   melon_slice: ["melon"],
 };
 
+/** Optimal Overworld Y levels for underground ores (branch mining). */
+const PREFERRED_Y: Record<string, number> = {
+  raw_iron: 16,
+  iron_ore: 16,
+  deepslate_iron_ore: 16,
+  "#coal": 48,
+  coal: 48,
+  coal_ore: 48,
+  deepslate_coal_ore: 48,
+  raw_copper: 48,
+  copper_ore: 48,
+  deepslate_copper_ore: 48,
+  raw_gold: -16,
+  gold_ore: -16,
+  deepslate_gold_ore: -16,
+  redstone: -16,
+  redstone_ore: -16,
+  deepslate_redstone_ore: -16,
+  lapis_lazuli: -16,
+  lapis_ore: -16,
+  deepslate_lapis_ore: -16,
+  diamond: -54,
+  diamond_ore: -54,
+  deepslate_diamond_ore: -54,
+};
+
+/** Returns the underground branch-mining Y hint for an ore drop or block id. */
+export function preferredY(itemOrBlock: string): number | undefined {
+  return PREFERRED_Y[itemOrBlock];
+}
+
 /** The pickaxe that reaches each tier. */
 const TIER_PICKAXE: Record<Exclude<Tier, 0>, string> = {
   1: "wooden_pickaxe",
@@ -258,20 +329,35 @@ const FUELS: Array<[string, number]> = [
   ["#planks", 1.5],
 ];
 
+export interface KnownChest {
+  key: string;
+  x: number;
+  y: number;
+  z: number;
+  items: Record<string, number>;
+  distance?: number;
+}
+
 export type Step =
-  | { kind: "mine"; item: string; blocks: string[]; count: number }
+  | { kind: "mine"; item: string; blocks: string[]; count: number; preferredY?: number }
   | { kind: "craft"; item: string; count: number; table: boolean }
   | { kind: "smelt"; item: string; input: string; count: number }
   | { kind: "place"; item: "crafting_table" | "furnace" }
   /** Kill one of `entities` after another until `count` more of `item` dropped. */
   | { kind: "hunt"; item: string; entities: string[]; count: number }
   /** Harvest ripe `crops` (and replant) until `count` more of `item`. */
-  | { kind: "gather"; item: string; crops: string[]; count: number };
+  | { kind: "gather"; item: string; crops: string[]; count: number }
+  | { kind: "fill_water"; item: "water_bucket" }
+  | { kind: "chest_take"; item: string; count: number; chest: { x: number; y: number; z: number } };
 
-/** What she can use where she stands (from `observe`'s visible blocks and creatures). */
+/** What she can use where she stands (from `observe`'s visible blocks, creatures, and remembered chests). */
 export interface World {
   table?: boolean;
   furnace?: boolean;
+  blastFurnace?: boolean;
+  smoker?: boolean;
+  water?: boolean;
+  chests?: KnownChest[];
   /** Animals in sight (entity types). */
   animals?: string[];
   /** Crop blocks in sight. */
@@ -291,11 +377,15 @@ export function normalizeItem(raw: string): string {
   if (id === "log" || id === "logs" || id === "wood") return "#logs";
   if (id === "food" || id === "食物") return "#food";
   if (id === "meat" || id === "raw_meat") return "#meat";
+  if (id === "boat" || id === "boats") return "#boats";
+  if (id === "bed" || id === "beds") return "#beds";
+  if (id === "wool") return "#wool";
   return id;
 }
 
 /** Whether the planner knows how to get `item` at all. */
 export function knows(item: string): boolean {
+  if (item === "water_bucket") return true;
   if (item in RECIPES || item in SMELTING || item in MINED) return true;
   if (item in HUNTED || item in GATHERED || item === "#food") return true;
   return item.endsWith("_planks") && planksOf(item) !== undefined;
@@ -335,6 +425,7 @@ class Planner {
   readonly steps: Step[] = [];
   readonly #inv: Inventory;
   readonly #world: World;
+  readonly #chests: KnownChest[];
   /** Pass 1 totals per produced item; pass 2 makes the whole amount the first time it is needed. */
   readonly #batch: Map<string, number>;
   readonly #made = new Map<string, number>();
@@ -342,6 +433,7 @@ class Planner {
   constructor(inv: Inventory, world: World, batch: Map<string, number>) {
     this.#inv = { ...inv };
     this.#world = { ...world };
+    this.#chests = (world.chests ?? []).map((c) => ({ ...c, items: { ...c.items } }));
     this.#batch = batch;
   }
 
@@ -349,7 +441,7 @@ class Planner {
   totals(): Map<string, number> {
     const out = new Map<string, number>();
     for (const s of this.steps) {
-      if (s.kind === "place") continue;
+      if (s.kind === "place" || s.kind === "chest_take" || s.kind === "fill_water") continue;
       out.set(s.item, (out.get(s.item) ?? 0) + s.count);
     }
     return out;
@@ -373,13 +465,38 @@ class Planner {
     this.#inv[item] = (this.#inv[item] ?? 0) + n;
   }
 
+  /** Pulls missing items from remembered opened chests before mining/hunting/crafting. */
+  #takeFromChests(item: string, missing: number): number {
+    if (!this.#chests.length || missing <= 0) return 0;
+    const keys = isGroup(item) ? members(item) : [item];
+    let left = missing;
+    for (const chest of this.#chests) {
+      for (const k of keys) {
+        if (left <= 0) break;
+        const avail = chest.items[k] ?? 0;
+        if (avail <= 0) continue;
+        const take = Math.min(avail, left);
+        chest.items[k] = avail - take;
+        left -= take;
+        this.steps.push({ kind: "chest_take", item: k, count: take, chest: { x: chest.x, y: chest.y, z: chest.z } });
+        this.#add(k, take);
+      }
+      if (left <= 0) break;
+    }
+    return missing - left;
+  }
+
   /** Makes sure `n` of `item` exist, then uses them up (`consume`) or keeps them (tools). */
   need(item: string, n: number, consume: boolean, depth: number): void {
     if (depth > MAX_DEPTH || this.steps.length > MAX_STEPS) {
       throw new PlanError(`${zh(item)}的步驟太多了,先自己做一部分`);
     }
     const have = countOf(this.#inv, item);
-    if (have < n) this.#produce(item, n - have, depth + 1);
+    if (have < n) {
+      this.#takeFromChests(item, n - have);
+      const afterChest = countOf(this.#inv, item);
+      if (afterChest < n) this.#produce(item, n - afterChest, depth + 1);
+    }
     if (consume) this.#take(item, n);
   }
 
@@ -394,6 +511,12 @@ class Planner {
     this.need(kind, 1, true, depth);
     this.steps.push({ kind: "place", item: kind });
     this.#world[key] = true;
+  }
+
+  #smeltStation(item: string, depth: number): void {
+    if (ORE_SMELTS.has(item) && this.#world.blastFurnace) return;
+    if (FOOD_SMELTS.has(item) && this.#world.smoker) return;
+    this.#station("furnace", depth);
   }
 
   #fuel(items: number, depth: number): void {
@@ -416,7 +539,28 @@ class Planner {
     return amount;
   }
 
+  /** For `#beds`, picks a wool color she already has >= 3 of, else `white_wool` (from sheep). */
+  #bedWoolNeed(times: number): string {
+    const needCount = 3 * times;
+    for (const w of members("#wool")) {
+      if ((this.#inv[w] ?? 0) >= needCount) return w;
+    }
+    for (const c of this.#chests) {
+      for (const w of members("#wool")) {
+        if ((this.#inv[w] ?? 0) + (c.items[w] ?? 0) >= needCount) return w;
+      }
+    }
+    return "white_wool";
+  }
+
   #produce(item: string, missing: number, depth: number): void {
+    if (item === "water_bucket") {
+      const amount = this.#amount(item, missing);
+      this.need("bucket", amount, true, depth);
+      for (let i = 0; i < amount; i++) this.steps.push({ kind: "fill_water", item: "water_bucket" });
+      this.#add("water_bucket", amount);
+      return;
+    }
     if (item === "#food") {
       this.#produce(foodChoice(this.#inv, this.#world), missing, depth);
       return;
@@ -427,7 +571,11 @@ class Planner {
     if (r) {
       if (r.table) this.#station("crafting_table", depth);
       const times = Math.ceil(this.#amount(key, missing) / r.yield);
-      for (const [ing, qty] of r.needs) this.need(ing, qty * times, true, depth);
+      const needs =
+        key === "#beds"
+          ? ([[this.#bedWoolNeed(times), 3], ["#planks", 3]] as Array<[string, number]>)
+          : r.needs;
+      for (const [ing, qty] of needs) this.need(ing, qty * times, true, depth);
       this.steps.push({ kind: "craft", item, count: times * r.yield, table: r.table });
       this.#add(item, times * r.yield);
       return;
@@ -435,7 +583,7 @@ class Planner {
     const input = SMELTING[item];
     if (input) {
       const amount = this.#amount(item, missing);
-      this.#station("furnace", depth);
+      this.#smeltStation(item, depth);
       this.need(input, amount, true, depth);
       this.#fuel(amount, depth);
       this.steps.push({ kind: "smelt", item, input, count: amount });
@@ -446,7 +594,12 @@ class Planner {
     if (blocks) {
       const amount = this.#amount(item, missing);
       this.#tool(Math.max(...blocks.map(requiredTier)) as Tier, depth);
-      this.steps.push({ kind: "mine", item, blocks, count: amount });
+      const step: Extract<Step, { kind: "mine" }> = { kind: "mine", item, blocks, count: amount };
+      const yHint = preferredY(item);
+      if (yHint !== undefined) {
+        Object.defineProperty(step, "preferredY", { value: yHint, enumerable: false, configurable: true });
+      }
+      this.steps.push(step);
       this.#add(item, amount);
       return;
     }
@@ -487,6 +640,9 @@ const GROUP_NAMES: Record<string, string> = {
   "#planks": "木材",
   "#stone": "鵝卵石",
   "#coal": "煤炭",
+  "#boats": "木船",
+  "#wool": "羊毛",
+  "#beds": "床",
   "#meat": "生肉",
   "#food": "食物",
 };
@@ -512,5 +668,9 @@ export function describeStep(step: Step): string {
       return `打${step.entities.slice(0, 3).map(zh).join("、")}拿${name(step.item)}×${step.count}`;
     case "gather":
       return `收成${name(step.item)}×${step.count}`;
+    case "fill_water":
+      return "用鐵桶裝水";
+    case "chest_take":
+      return `從箱子拿${name(step.item)}×${step.count}`;
   }
 }

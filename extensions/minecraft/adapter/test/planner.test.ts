@@ -73,7 +73,7 @@ describe("planner", () => {
   it("plans a bed from wool and planks", () => {
     expect(lines("white_bed", { white_wool: 3, oak_planks: 3 }, { table: true })).toEqual(["做白色床×1"]);
     // Wool of another colour does not make a white bed.
-    expect(() => plan("white_bed", 1, { red_wool: 3, oak_planks: 3 }, { table: true })).toThrow();
+    expect(lines("white_bed", { red_wool: 3, oak_planks: 3 }, { table: true })).toEqual(["打羊拿白色羊毛×3", "做白色床×1"]);
   });
 
   it("needs a diamond pickaxe to mine obsidian", () => {

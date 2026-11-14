@@ -12,12 +12,16 @@
 import type { GameEvent, TaskFailureCode } from "@miyoria/sdk";
 import { errorText, failureCode } from "./actions.js";
 import { BridgeError, type BridgeEvent } from "./bridge.js";
+import { pickaxeTier, requiredTier } from "./harvest.js";
 import { zh } from "./names.js";
 import {
   type Inventory,
+  type KnownChest,
   PlanError,
   type Step,
   type World,
+  bedOf,
+  boatOf,
   countOf,
   describeStep,
   itemName,
@@ -26,6 +30,7 @@ import {
   normalizeItem,
   plan,
   planksOf,
+  preferredY,
   unknownText,
 } from "./planner.js";
 import type { Snapshot } from "./summary.js";
@@ -37,6 +42,14 @@ export interface RunnerHost {
   emit(event: GameEvent): void;
   /** A queued steer was applied at a step boundary, or the plan ended before it could be. */
   steered?(steer: string, outcome: "applied" | "too_late", detail: string): void;
+  /** Remembered chests near `snap` whose contents have been observed. */
+  chestsFor?(snap: Snapshot): KnownChest[];
+  /** Records a placed station (`crafting_table` / `furnace`) in spatial memory. */
+  recordStation?(station: "crafting_table" | "furnace", snap: Snapshot): void;
+  /** Records a mine entrance when falling back to underground branch mining. */
+  recordMineEntrance?(snap: Snapshot): void;
+  /** Syncs chest memory when a `chest` operation runs inside `obtain`. */
+  onChestEvent?(name: "chest_contents" | "chest_finished", data: Record<string, unknown>): void;
 }
 
 /** What a steer of an `obtain` plan may change. */
@@ -78,6 +91,16 @@ export interface RunnerOptions {
   mineTimeoutMs?: number;
   /** Longest wait for a `craft` / `smelt` job or a `goto`. */
   jobTimeoutMs?: number;
+  /** Longest wait for underground `mine_branch`. */
+  branchTimeoutMs?: number;
+  /** Longest wait for `clear_leaves`. */
+  clearLeavesTimeoutMs?: number;
+  /** Longest wait for a mod `hunt` step. */
+  huntTimeoutMs?: number;
+  /** Longest wait for a `chest` take step. */
+  chestTimeoutMs?: number;
+  /** Use the mod's native `hunt` worker before Baritone `follow`+`attack`. */
+  modHunt?: boolean;
   /** How long to explore for blocks that are not in sight. */
   exploreMs?: number;
   /** Interval of the `observe` polls while exploring. */
@@ -121,7 +144,7 @@ export interface RunnerResult {
   code?: TaskFailureCode;
 }
 
-/** Events that end the runner's own steps; the adapter does not forward them while a plan runs. */
+/** Legacy step events always hidden from commentary (the adapter does not forward them). */
 export const STEP_EVENTS = new Set([
   "goal_reached",
   "goal_failed",
@@ -132,7 +155,21 @@ export const STEP_EVENTS = new Set([
   "smelt_failed",
 ]);
 
-type Wake = BridgeEvent | "timeout" | "cancelled" | "reflex";
+/** Additional step events hidden from commentary only while an `ObtainRunner` plan owns them. */
+export const RUNNER_STEP_EVENTS = new Set([
+  "branch_progress",
+  "branch_finished",
+  "branch_failed",
+  "clear_leaves_finished",
+  "clear_leaves_failed",
+  "hunt_finished",
+  "hunt_failed",
+  "chest_finished",
+  "chest_failed",
+]);
+
+type Wake = BridgeEvent | "timeout" | "cancelled" | "reflex" | "reflex_pause";
+type JobWake = BridgeEvent | "timeout" | "cancelled" | "reflex";
 type Outcome = "done" | "progress" | "interrupted" | { fail: string; code: TaskFailureCode };
 
 interface Waiter {
@@ -142,15 +179,26 @@ interface Waiter {
 }
 
 /** Stations she can reach without placing one (any visible within the scan radius; `goto` covers the walk). */
-export function worldOf(s: Snapshot): World {
+export function worldOf(s: Snapshot, chests?: KnownChest[]): World {
   const blocks = (s.nearby_blocks ?? []).map((b) => b.block);
   const animals = (s.nearby_entities ?? []).filter((e) => !e.hostile).map((e) => e.type);
-  return {
+  const world: World = {
     table: blocks.includes("crafting_table"),
     furnace: blocks.includes("furnace"),
     animals: [...new Set(animals)],
     crops: blocks.filter((b) => ["wheat", "carrots", "potatoes", "beetroots"].includes(b)),
   };
+  if (blocks.includes("blast_furnace")) world.blastFurnace = true;
+  if (blocks.includes("smoker")) world.smoker = true;
+  if (blocks.includes("water")) world.water = true;
+  if (chests && chests.length > 0) world.chests = chests;
+  return world;
+}
+
+function leafCount(d: Record<string, unknown>): number | undefined {
+  if (typeof d.cleared === "number") return d.cleared;
+  if (typeof d.broken === "number") return d.broken;
+  return undefined;
 }
 
 /** The member of a group she has most of (`#logs` → `birch_log`), for the mod's concrete ids. */
@@ -184,9 +232,16 @@ export class ObtainRunner {
     this.#host = host;
     this.#item = normalizeItem(target);
     this.#count = count;
+    const mineTimeoutMs = opts.mineTimeoutMs ?? 240_000;
+    const jobTimeoutMs = opts.jobTimeoutMs ?? 45_000;
     this.#o = {
-      mineTimeoutMs: opts.mineTimeoutMs ?? 240_000,
-      jobTimeoutMs: opts.jobTimeoutMs ?? 45_000,
+      mineTimeoutMs,
+      jobTimeoutMs,
+      branchTimeoutMs: opts.branchTimeoutMs ?? mineTimeoutMs,
+      clearLeavesTimeoutMs: opts.clearLeavesTimeoutMs ?? Math.min(jobTimeoutMs, 10_000),
+      huntTimeoutMs: opts.huntTimeoutMs ?? Math.max(jobTimeoutMs, 0),
+      chestTimeoutMs: opts.chestTimeoutMs ?? jobTimeoutMs,
+      modHunt: opts.modHunt ?? false,
       exploreMs: opts.exploreMs ?? 90_000,
       explorePollMs: opts.explorePollMs ?? 5_000,
       collectMarginMs: opts.collectMarginMs ?? 1_500,
@@ -259,10 +314,20 @@ export class ObtainRunner {
 
   /** A mod event; ends the wait it belongs to. */
   feed(e: BridgeEvent): void {
-    const interrupting = e.name === "reflex" && typeof e.data.interrupted === "string";
+    if (e.name === "chest_contents" || e.name === "chest_finished") {
+      this.#host.onChestEvent?.(e.name, e.data);
+    }
+    if (e.name === "reflex") {
+      const recoverable = e.data.recoverable === true || e.data.paused_task === true;
+      const interrupting = !recoverable && typeof e.data.interrupted === "string";
+      for (const w of [...this.#waiters]) {
+        if (recoverable && w.names.has("reflex_pause")) this.#wake(w, "reflex_pause");
+        else if (interrupting && w.names.has("reflex")) this.#wake(w, "reflex");
+      }
+      return;
+    }
     for (const w of [...this.#waiters]) {
       if (w.names.has(e.name)) this.#wake(w, e);
-      else if (interrupting && w.names.has("reflex")) this.#wake(w, "reflex");
     }
   }
 
@@ -322,7 +387,7 @@ export class ObtainRunner {
           this.#plan = [];
           return { ok: true, message: `拿到${want}了` };
         }
-        this.#plan = plan(this.item, this.count, inv, worldOf(snap));
+        this.#plan = plan(this.item, this.count, inv, worldOf(snap, this.#host.chestsFor?.(snap)));
         const step = this.#plan[0];
         if (!step) return { ok: true, message: `拿到${want}了` };
         const total = this.#done + this.#plan.length;
@@ -368,20 +433,64 @@ export class ObtainRunner {
     await this.#wait(["reflex_end"], this.#o.reflexWaitMs).done;
   }
 
-  /** Sends a request and waits for one of `names`; a reflex interruption is waited out. */
-  async #job(type: string, params: Record<string, unknown>, names: string[], ms: number): Promise<Wake> {
-    const w = this.#wait([...names, "reflex"], ms);
+  /** Waits out a recoverable reflex pause until resumed, aborted, or finished. */
+  async #waitRecoverable(names: string[]): Promise<JobWake | "resumed" | "aborted"> {
+    const first = await this.#wait(["reflex_resumed", "reflex_aborted", "reflex_end", ...names], this.#o.reflexWaitMs)
+      .done;
+    if (first === "cancelled") return "cancelled";
+    if (first === "timeout") return "aborted";
+    if (typeof first === "object") {
+      if (first.name === "reflex_resumed") return "resumed";
+      if (first.name === "reflex_aborted") return "aborted";
+      if (first.name === "reflex_end") {
+        if (first.data.resumed === true) return "resumed";
+        if (first.data.aborted === true) return "aborted";
+        // Give same-tick `reflex_resumed` a brief window if `reflex_end` fired first.
+        const next = await this.#wait(
+          ["reflex_resumed", "reflex_aborted", ...names],
+          Math.min(50, this.#o.reflexWaitMs),
+        ).done;
+        if (typeof next === "object") {
+          if (next.name === "reflex_resumed") return "resumed";
+          if (next.name === "reflex_aborted") return "aborted";
+          return next;
+        }
+        return next === "cancelled" ? "cancelled" : "aborted";
+      }
+      return first;
+    }
+    return "aborted";
+  }
+
+  /** Sends a request and waits for one of `names`; reflex pauses wait to resume cleanly. */
+  async #job(type: string, params: Record<string, unknown>, names: string[], ms: number): Promise<JobWake> {
+    let w = this.#wait([...names, "reflex", "reflex_pause"], ms);
     try {
       await this.#send(type, params);
     } catch (error) {
       w.cancel();
       throw error;
     }
-    const wake = await w.done;
-    if (wake === "reflex") await this.#reflexEnd();
-    // A job stopped from outside (a reflex took over, `stop`) is not the step failing.
-    if (typeof wake === "object" && wake.data.cancelled === true) return "cancelled";
-    return wake;
+    while (true) {
+      const wake = await w.done;
+      if (wake === "reflex") {
+        await this.#reflexEnd();
+        return "reflex";
+      }
+      if (wake === "reflex_pause") {
+        const res = await this.#waitRecoverable(names);
+        if (res === "resumed") {
+          w = this.#wait([...names, "reflex", "reflex_pause"], ms);
+          continue;
+        }
+        if (res === "aborted") return "reflex";
+        if (typeof res === "object" && res.data.cancelled === true) return "cancelled";
+        return res;
+      }
+      // A job stopped from outside (a reflex took over, `stop`) is not the step failing.
+      if (typeof wake === "object" && wake.data.cancelled === true) return "cancelled";
+      return wake;
+    }
   }
 
   async #execute(step: Step, snap: Snapshot): Promise<Outcome> {
@@ -395,11 +504,16 @@ export class ObtainRunner {
           return await this.#smelt(step, snap);
         case "place":
           await this.#send("place", { item: step.item });
+          this.#host.recordStation?.(step.item, snap);
           return "done";
         case "hunt":
           return await this.#hunt(step, snap);
         case "gather":
           return await this.#gather(step, snap);
+        case "fill_water":
+          return await this.#fillWater(snap);
+        case "chest_take":
+          return await this.#chestTake(step, snap);
       }
     } catch (error) {
       if (error instanceof BridgeError) return { fail: errorText(error.code, error.message), code: failureCode(error.code) };
@@ -407,38 +521,173 @@ export class ObtainRunner {
     }
   }
 
-  async #mine(step: Extract<Step, { kind: "mine" }>, snap: Snapshot): Promise<Outcome> {
-    const before = countOf(snap.inventory ?? {}, step.item);
+  async #tryMineVisible(step: Extract<Step, { kind: "mine" }>, before: number): Promise<Outcome> {
     // Baritone's count is the total of the blocks' drops in her inventory.
     const params = { command: "mine", blocks: step.blocks, count: before + step.count };
-    let wake: Wake;
+    let wake: JobWake;
     try {
       wake = await this.#job("baritone", params, ["baritone_idle"], this.#o.mineTimeoutMs);
     } catch (error) {
       if (!(error instanceof BridgeError)) throw error;
-      if (error.code === "not_visible") {
-        return (await this.#explore(step.blocks))
-          ? "progress"
-          : {
-              fail: `附近看不到${step.blocks.map(zh).join("、")},探索了 ${Math.round(this.#o.exploreMs / 1000)} 秒也沒找到(去洞穴、山壁或地表其他地方找找)`,
-              code: "not_found",
-            };
-      }
       if (error.code === "too_far") {
         const block = /nearest (\S+) in sight/.exec(error.message)?.[1];
         return block && (await this.#goto(block)) ? "progress" : { fail: errorText(error.code, error.message), code: "unreachable" };
       }
       throw error;
     }
-    if (wake === "reflex") return "interrupted";
+    if (wake === "reflex" || wake === "cancelled") return "interrupted";
     if (wake === "timeout") {
       await this.#host.request("stop").catch(() => undefined);
       return { fail: `挖${itemName(step.item)}挖太久了`, code: "timeout" };
     }
-    if (wake === "cancelled") return "interrupted";
     const after = countOf((await this.#host.observe()).inventory ?? {}, step.item);
     if (after >= before + step.count) return "done";
     return after > before ? "progress" : { fail: `沒挖到${itemName(step.item)}`, code: "not_found" };
+  }
+
+  async #clearLeaves(): Promise<"cleared" | "none" | "interrupted"> {
+    let w = this.#wait(
+      ["clear_leaves_finished", "clear_leaves_failed", "reflex", "reflex_pause"],
+      this.#o.clearLeavesTimeoutMs,
+    );
+    let res: Record<string, unknown>;
+    try {
+      res = await this.#send("clear_leaves", { radius: 5, max_blocks: 24 });
+    } catch (error) {
+      w.cancel();
+      if (error instanceof BridgeError && (error.code === "unknown_type" || error.code === "invalid_args")) {
+        return "none";
+      }
+      throw error;
+    }
+    if (res.skipped === true) {
+      w.cancel();
+      return "none";
+    }
+    const immediateLeaves = leafCount(res);
+    if (immediateLeaves !== undefined) {
+      w.cancel();
+      return immediateLeaves > 0 ? "cleared" : "none";
+    }
+    while (true) {
+      const wake = await w.done;
+      if (wake === "reflex") {
+        await this.#reflexEnd();
+        return "interrupted";
+      }
+      if (wake === "reflex_pause") {
+        const recovered = await this.#waitRecoverable(["clear_leaves_finished", "clear_leaves_failed"]);
+        if (recovered === "resumed") {
+          w = this.#wait(
+            ["clear_leaves_finished", "clear_leaves_failed", "reflex", "reflex_pause"],
+            this.#o.clearLeavesTimeoutMs,
+          );
+          continue;
+        }
+        if (recovered === "aborted" || recovered === "cancelled" || recovered === "timeout") return "interrupted";
+        if (typeof recovered === "object") {
+          if (recovered.name === "clear_leaves_failed") return "none";
+          return leafCount(recovered.data) === 0 ? "none" : "cleared";
+        }
+        return "interrupted";
+      }
+      if (wake === "cancelled") return "interrupted";
+      if (wake === "timeout") return "none";
+      if (wake.name === "clear_leaves_failed") return "none";
+      return leafCount(wake.data) === 0 ? "none" : "cleared";
+    }
+  }
+
+  async #branchMine(
+    step: Extract<Step, { kind: "mine" }>,
+    targetY: number,
+    before: number,
+  ): Promise<Outcome | "unsupported"> {
+    let wake: JobWake;
+    try {
+      wake = await this.#job(
+        "mine_branch",
+        { target_y: targetY, ores: step.blocks, max_steps: 64, torch_interval: 8 },
+        ["branch_finished", "branch_failed"],
+        this.#o.branchTimeoutMs,
+      );
+    } catch (error) {
+      if (error instanceof BridgeError && error.code === "unknown_type") return "unsupported";
+      throw error;
+    }
+    if (wake === "reflex" || wake === "cancelled") return "interrupted";
+    if (wake === "timeout") {
+      await this.#host.request("stop").catch(() => undefined);
+      return { fail: `分支採礦找${itemName(step.item)}挖太久了`, code: "timeout" };
+    }
+    if (wake.name === "branch_failed") {
+      return { fail: String(wake.data.error ?? `分支採礦沒找到${itemName(step.item)}`), code: "not_found" };
+    }
+    const mid = countOf((await this.#host.observe()).inventory ?? {}, step.item);
+    if (mid >= before + step.count) return "done";
+    // Finish mining any exposed ore vein left in sight by branch mining.
+    try {
+      const vein = await this.#tryMineVisible(step, before);
+      if (vein === "done" || vein === "progress" || vein === "interrupted") return vein;
+    } catch (error) {
+      if (!(error instanceof BridgeError && error.code === "not_visible")) throw error;
+    }
+    return mid > before
+      ? "progress"
+      : { fail: `分支採礦到 Y=${targetY} 還是沒找到足夠的${itemName(step.item)}`, code: "not_found" };
+  }
+
+  async #mine(step: Extract<Step, { kind: "mine" }>, snap: Snapshot): Promise<Outcome> {
+    const before = countOf(snap.inventory ?? {}, step.item);
+    // Stage 1: mine visible blocks; for logs blocked by canopy leaves, clear leaves and retry once.
+    try {
+      const first = await this.#tryMineVisible(step, before);
+      if (first === "done" || first === "progress" || first === "interrupted") return first;
+      if (step.item === "#logs") {
+        const cleared = await this.#clearLeaves();
+        if (cleared === "interrupted") return "interrupted";
+        if (cleared === "cleared") {
+          try {
+            return await this.#tryMineVisible(step, before);
+          } catch (error) {
+            if (!(error instanceof BridgeError && error.code === "not_visible")) throw error;
+          }
+        }
+      }
+      return first;
+    } catch (error) {
+      if (!(error instanceof BridgeError && error.code === "not_visible")) throw error;
+    }
+
+    if (step.item === "#logs") {
+      const cleared = await this.#clearLeaves();
+      if (cleared === "interrupted") return "interrupted";
+      if (cleared === "cleared") {
+        try {
+          return await this.#tryMineVisible(step, before);
+        } catch (error) {
+          if (!(error instanceof BridgeError && error.code === "not_visible")) throw error;
+        }
+      }
+    }
+
+    // Stage 2: explore surface or cave surroundings for visible targets.
+    if (await this.#explore(step.blocks)) return "progress";
+
+    // Stage 3: underground ore branch-mining fallback in the Overworld when pickaxe tier suffices.
+    const targetY = step.preferredY ?? preferredY(step.item);
+    const inOverworld = !snap.dimension || snap.dimension === "overworld";
+    const needTier = Math.max(...step.blocks.map(requiredTier));
+    if (targetY !== undefined && inOverworld && pickaxeTier(snap.inventory ?? {}) >= needTier) {
+      this.#host.recordMineEntrance?.(snap);
+      const branch = await this.#branchMine(step, targetY, before);
+      if (branch !== "unsupported") return branch;
+    }
+
+    return {
+      fail: `附近看不到${step.blocks.map(zh).join("、")},探索了 ${Math.round(this.#o.exploreMs / 1000)} 秒也沒找到(去洞穴、山壁或地表其他地方找找)`,
+      code: "not_found",
+    };
   }
 
   /** Explores until one of `blocks` comes into sight; false when the time runs out. */
@@ -461,6 +710,61 @@ export class ObtainRunner {
     return false;
   }
 
+  /** Hunts using the mod's native worker when enabled, falling back to Baritone follow+attack. */
+  async #hunt(step: Extract<Step, { kind: "hunt" }>, snap: Snapshot): Promise<Outcome> {
+    if (this.#o.modHunt) {
+      try {
+        return await this.#huntMod(step, snap);
+      } catch (error) {
+        if (!(error instanceof BridgeError && error.code === "unknown_type")) throw error;
+      }
+    }
+    return this.#huntBaritone(step, snap);
+  }
+
+  async #huntMod(step: Extract<Step, { kind: "hunt" }>, snap: Snapshot): Promise<Outcome> {
+    const before = countOf(snap.inventory ?? {}, step.item);
+    const entity = step.entities[0] as string;
+    const inSight = (s: Snapshot) => (s.nearby_entities ?? []).some((e) => step.entities.includes(e.type));
+    let wake: JobWake;
+    try {
+      wake = await this.#job(
+        "hunt",
+        { entity, count: step.count, range: 32 },
+        ["hunt_finished", "hunt_failed"],
+        this.#o.huntTimeoutMs,
+      );
+    } catch (error) {
+      if (error instanceof BridgeError && error.code === "not_visible") {
+        return (await this.#exploreUntil(inSight))
+          ? "progress"
+          : { fail: `附近找不到${zh(entity)}可以取得${itemName(step.item)}`, code: "not_found" };
+      }
+      throw error;
+    }
+    if (wake === "reflex" || wake === "cancelled") return "interrupted";
+    if (wake === "timeout") {
+      await this.#host.request("stop").catch(() => undefined);
+      return { fail: `打獵${zh(entity)}打太久了`, code: "timeout" };
+    }
+    if (wake.name === "hunt_failed") {
+      const err = String(wake.data.error ?? "");
+      if (/not_visible|none|no .* nearby|找不到/i.test(err)) {
+        if (await this.#exploreUntil(inSight)) return "progress";
+      }
+      return { fail: err || `打獵${zh(entity)}失敗`, code: "not_found" };
+    }
+    const after = countOf((await this.#host.observe()).inventory ?? {}, step.item);
+    if (after >= before + step.count) return "done";
+    if (after > before) return "progress";
+    const collected = typeof wake.data.collected === "number" ? wake.data.collected : 0;
+    return collected >= step.count
+      ? "done"
+      : collected > 0
+        ? "progress"
+        : { fail: `沒打到${itemName(step.item)}`, code: "not_found" };
+  }
+
   /**
    * Hunting: follow the nearest animal of the kinds that drop the item (Baritone `follow`),
    * hit it whenever it is under the crosshair within reach (the mod's `attack` is a left click
@@ -468,7 +772,7 @@ export class ObtainRunner {
    * sight she explores for one first. The drops are picked up by walking over them and by the
    * pickup reflex after the job stops.
    */
-  async #hunt(step: Extract<Step, { kind: "hunt" }>, snap: Snapshot): Promise<Outcome> {
+  async #huntBaritone(step: Extract<Step, { kind: "hunt" }>, snap: Snapshot): Promise<Outcome> {
     const before = countOf(snap.inventory ?? {}, step.item);
     const goal = before + step.count;
     const kinds = step.entities;
@@ -565,9 +869,22 @@ export class ObtainRunner {
     return typeof wake === "object" && wake.name !== "goal_failed";
   }
 
+  async #gotoPos(x: number, y: number, z: number, near = 3): Promise<boolean> {
+    const wake = await this.#job(
+      "baritone",
+      { command: "goto", x: Math.round(x), y: Math.round(y), z: Math.round(z), near },
+      ["goal_reached", "goal_failed", "baritone_idle"],
+      this.#o.jobTimeoutMs,
+    );
+    return typeof wake === "object" && wake.name !== "goal_failed";
+  }
+
   /** Walks to (or puts down) the station after `too_far` / `needs_station`; false when it cannot. */
   async #station(error: BridgeError, station: "crafting_table" | "furnace", inv: Inventory): Promise<boolean> {
-    if (error.code === "too_far") return this.#goto(station);
+    if (error.code === "too_far") {
+      const nearest = /nearest (\S+) in sight/.exec(error.message)?.[1];
+      return this.#goto(nearest ?? station);
+    }
     if (error.code === "needs_station" && (inv[station] ?? 0) > 0) {
       await this.#send("place", { item: station });
       return true;
@@ -575,14 +892,92 @@ export class ObtainRunner {
     return false;
   }
 
+  async #fillWater(snap: Snapshot): Promise<Outcome> {
+    const before = countOf(snap.inventory ?? {}, "water_bucket");
+    let waterBlock = (snap.nearby_blocks ?? []).find((b) => b.block === "water");
+    if (!waterBlock) {
+      if (await this.#explore(["water"])) return "progress";
+      return { fail: "附近找不到水可以裝水桶", code: "not_found" };
+    }
+    if (waterBlock.distance !== undefined && waterBlock.distance > 4) {
+      const walked = waterBlock.nearest
+        ? await this.#gotoPos(waterBlock.nearest.x, waterBlock.nearest.y, waterBlock.nearest.z, 3)
+        : await this.#goto("water");
+      if (!walked) return { fail: "走不到水邊裝水", code: "unreachable" };
+      const fresh = await this.#host.observe();
+      waterBlock = (fresh.nearby_blocks ?? []).find((b) => b.block === "water") ?? waterBlock;
+    }
+    await this.#send("select_slot", { item: "bucket" });
+    if (waterBlock.nearest) await this.#send("look", { at: waterBlock.nearest });
+    await this.#send("use", {});
+    const after = countOf((await this.#host.observe()).inventory ?? {}, "water_bucket");
+    return after > before ? "done" : { fail: "沒有成功裝到水桶", code: "precondition" };
+  }
+
+  async #chestTake(step: Extract<Step, { kind: "chest_take" }>, snap: Snapshot): Promise<Outcome> {
+    const before = countOf(snap.inventory ?? {}, step.item);
+    for (let tries = 0; tries < 2; tries++) {
+      let wake: JobWake;
+      try {
+        wake = await this.#job(
+          "chest",
+          { op: "take", items: { [step.item]: step.count }, position: step.chest },
+          ["chest_finished", "chest_failed"],
+          this.#o.chestTimeoutMs,
+        );
+      } catch (error) {
+        if (error instanceof BridgeError && error.code === "too_far") {
+          if (await this.#gotoPos(step.chest.x, step.chest.y, step.chest.z, 3)) continue;
+          return { fail: "走不到箱子旁邊拿東西", code: "unreachable" };
+        }
+        throw error;
+      }
+      if (wake === "reflex" || wake === "cancelled") return "interrupted";
+      if (wake === "timeout") return { fail: `開箱拿${itemName(step.item)}沒有回應`, code: "timeout" };
+      if (wake.name === "chest_failed") {
+        return { fail: String(wake.data.error ?? "從箱子拿東西失敗"), code: "precondition" };
+      }
+      this.#host.onChestEvent?.("chest_finished", { position: step.chest, ...wake.data });
+      const after = countOf((await this.#host.observe()).inventory ?? {}, step.item);
+      if (after >= before + step.count) return "done";
+      return after > before ? "progress" : { fail: `箱子裡沒拿到${itemName(step.item)}`, code: "not_found" };
+    }
+    return { fail: "走不到箱子旁邊拿東西", code: "unreachable" };
+  }
+
+  #concreteCraftItem(stepItem: string, inv: Inventory): { item?: string; fail?: string } {
+    if (stepItem === "#planks") {
+      const log = mostOf(inv, "#logs");
+      const item = log ? planksOf(log) : undefined;
+      return item ? { item } : { fail: "沒有原木可以做木材" };
+    }
+    if (stepItem === "#boats") {
+      const best = members("#planks")
+        .filter((p) => (inv[p] ?? 0) >= 5)
+        .sort((a, b) => (inv[b] ?? 0) - (inv[a] ?? 0))[0];
+      const planks = best ?? mostOf(inv, "#planks");
+      const item = planks ? boatOf(planks) : undefined;
+      return item ? { item } : { fail: "沒有足夠同一種木材可以做木船" };
+    }
+    if (stepItem === "#beds") {
+      const best = members("#wool")
+        .filter((w) => (inv[w] ?? 0) >= 3)
+        .sort((a, b) => (inv[b] ?? 0) - (inv[a] ?? 0))[0];
+      const wool = best ?? mostOf(inv, "#wool");
+      const item = wool ? bedOf(wool) : undefined;
+      return item ? { item } : { fail: "沒有足夠同色羊毛可以做床" };
+    }
+    return { item: stepItem };
+  }
+
   async #craft(step: Extract<Step, { kind: "craft" }>, snap: Snapshot): Promise<Outcome> {
     const inv = snap.inventory ?? {};
-    const log = mostOf(inv, "#logs");
-    const item = step.item === "#planks" ? (log ? planksOf(log) : undefined) : step.item;
-    if (!item) return { fail: "沒有原木可以做木材", code: "precondition" };
+    const resolved = this.#concreteCraftItem(step.item, inv);
+    if (!resolved.item) return { fail: resolved.fail ?? "材料不夠", code: "precondition" };
+    const item = resolved.item;
     const count = Math.min(64, step.count);
     for (let tries = 0; tries < 3; tries++) {
-      let wake: Wake;
+      let wake: JobWake;
       try {
         wake = await this.#job("craft", { item, count }, ["craft_finished", "craft_failed"], this.#o.jobTimeoutMs);
       } catch (error) {
@@ -608,7 +1003,7 @@ export class ObtainRunner {
     let ready = step.count * 10;
     for (let tries = 0; ; tries++) {
       if (tries >= 3) return { fail: "一直放不進熔爐", code: "internal" };
-      let wake: Wake;
+      let wake: JobWake;
       try {
         wake = await this.#job(
           "smelt",
@@ -629,7 +1024,7 @@ export class ObtainRunner {
     // The furnace keeps burning with its screen closed; come back to take the output.
     for (let i = 0; i < step.count + 3; i++) {
       if (!(await this.#sleep(ready * 1000 + this.#o.collectMarginMs))) return "interrupted";
-      let wake: Wake;
+      let wake: JobWake;
       try {
         wake = await this.#job("smelt", {}, ["smelt_finished", "smelt_failed"], this.#o.jobTimeoutMs);
       } catch (error) {
