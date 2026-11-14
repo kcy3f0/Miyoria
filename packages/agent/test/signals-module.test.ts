@@ -346,7 +346,7 @@ describe("social signals", () => {
     expect(mock.requests().length).toBe(1);
     // One line per person, one relationship scale.
     expect(data(mock, 0)).toContain(
-      '<data source="people" title="在場的人">\n<person name="rude" relation="很討厭"/>\n</data>',
+      '<person name="rude" relation="很討厭" level="-50/1000" trust="50"/>\n</data>',
     );
     let trace = lastTrace(h);
     expect(trace.respond).toBe(true);
@@ -363,7 +363,9 @@ describe("social signals", () => {
     // Friends get a warm tone and their call name.
     h.say(mention(channel("c3"), "Owen", "早"));
     await wait(3000);
-    expect(data(mock, 2)).toContain('<person name="Owen" relation="摯友" call_as="歐文"/>');
+    expect(data(mock, 2)).toContain(
+      '<person name="Owen" relation="摯友" level="80/1000" trust="50" call_as="歐文"/>',
+    );
   });
 
   it("affinity no longer scales the ambient probability (her talkativeness does)", async () => {

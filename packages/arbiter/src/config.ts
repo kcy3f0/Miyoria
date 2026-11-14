@@ -144,7 +144,27 @@ export const ArbiterConfigSchema = z.object({
   /** Attitude labels that count as "friend or closer". */
   friend_labels: z
     .array(z.string())
-    .default(["朋友", "好朋友", "好友", "摯友", "親友", "戀人", "家人"]),
+    .default([
+      "朋友",
+      "好朋友",
+      "好友",
+      "摯友",
+      "親友",
+      "戀人",
+      "家人",
+      "知心",
+      "知己",
+      "至交",
+      "莫逆之交",
+      "心有靈犀",
+      "形影不離",
+      "家人般",
+      "生死之交",
+      "命運相連",
+      "無可取代",
+      "心之所歸",
+      "永恆羈絆",
+    ]),
   /** Affinity at which someone joining voice gets greeted (labels in `friend_labels` qualify too). */
   voice_join_min_affinity: z.number().default(30),
   /** Minimum time between voice greetings of the same person. */

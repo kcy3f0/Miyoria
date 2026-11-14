@@ -354,7 +354,7 @@ export async function gather(input: GatherInput): Promise<Gathered> {
         ? `${card.label},在意 ${card.attachment.toFixed(1)}`
         : attitude === null
           ? null
-          : `${attitude.label || "認識的人"},好感 ${Math.round(attitude.affinity)}、熟悉 ${Math.round(attitude.familiarity)}`,
+          : `${attitude.label || "認識的人"},羈絆 ${Math.round(attitude.affinity)}、熟悉 ${Math.round(attitude.familiarity)}`,
       feeling:
         card && card.feeling.trim() !== ""
           ? card.feeling

@@ -183,7 +183,12 @@ export interface PersonProfile {
   handle: Handle;
   /** Relationship label and level, `null` when she has no card. */
   label: string | null;
+  /** Her 羈絆 level with them (-100..1000). */
   level: number | null;
+  /** Her owner (主人); absent on older producers. */
+  owner?: boolean;
+  /** How much she trusts them (0..100), `null` when not known; absent on older producers. */
+  trust?: number | null;
   call_name: string | null;
   feeling: string | null;
   stance: string | null;

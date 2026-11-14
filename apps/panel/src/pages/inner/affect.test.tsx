@@ -158,7 +158,7 @@ describe("Inner: people cards", () => {
     expect(link).toHaveAttribute("href", "/character?tab=people&person=p1");
     expect(within(cards).getByText("好朋友")).toBeInTheDocument();
     expect(within(cards).getByText("主人")).toBeInTheDocument();
-    expect(within(cards).getByRole("meter", { name: "owen 好感 60" })).toBeInTheDocument();
+    expect(within(cards).getByRole("meter", { name: "owen 羈絆 60" })).toBeInTheDocument();
     expect(within(cards).getByRole("meter", { name: "owen 在意 0.50" })).toBeInTheDocument();
     expect(within(cards).getByText("最近常陪我聊天,有點在意他")).toBeInTheDocument();
     expect(within(cards).getByText("想念 0.60 · 感激 0.20")).toBeInTheDocument();

@@ -808,7 +808,7 @@ function adminPages(): PanelPage[] {
     {
       id: "people",
       label: "她認識的人",
-      description: "好感、標籤、封鎖",
+      description: "羈絆、標籤、封鎖",
       focusable: true,
       intro: ["也可以直接用 `/admin i user:@某人` 開啟並指定對象。"],
       actions: [
@@ -841,11 +841,11 @@ function adminPages(): PanelPage[] {
         },
         {
           id: "adjust",
-          label: "調整好感",
+          label: "調整羈絆",
           path: "admin person adjust",
           ask: {
-            title: "調整好感",
-            fields: [USER_FIELD, field("affinity", "好感變化", { placeholder: "-100 到 100" })],
+            title: "調整羈絆",
+            fields: [USER_FIELD, field("affinity", "羈絆變化", { placeholder: "-1000 到 1000" })],
           },
           ...person(),
         },

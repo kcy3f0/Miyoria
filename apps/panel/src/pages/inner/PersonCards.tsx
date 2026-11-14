@@ -16,6 +16,18 @@ const LABEL_TONE: Record<string, Tone> = {
   朋友: "success",
   好朋友: "success",
   摯友: "brand",
+  知心: "brand",
+  知己: "brand",
+  至交: "brand",
+  莫逆之交: "brand",
+  心有靈犀: "brand",
+  形影不離: "brand",
+  家人般: "brand",
+  生死之交: "brand",
+  命運相連: "brand",
+  無可取代: "brand",
+  心之所歸: "brand",
+  永恆羈絆: "brand",
 };
 
 /**
@@ -70,7 +82,7 @@ export function PersonCards() {
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="w-36">人</TableHead>
-              <TableHead className="hidden w-28 md:table-cell">好感</TableHead>
+              <TableHead className="hidden w-28 md:table-cell">羈絆</TableHead>
               <TableHead className="hidden w-24 lg:table-cell">信任</TableHead>
               <TableHead className="hidden w-24 lg:table-cell">熟悉</TableHead>
               <TableHead className="hidden w-24 sm:table-cell">在意</TableHead>
@@ -96,7 +108,7 @@ export function PersonCards() {
                       <span className="flex flex-wrap items-center gap-1">
                         <StatusBadge tone={LABEL_TONE[c.label] ?? "neutral"}>{c.label}</StatusBadge>
                         {typeof c.level === "number" && (
-                          <Badge variant="outline" className="font-mono tabular-nums" title="好感等級(每 1 點一級)">
+                          <Badge variant="outline" className="font-mono tabular-nums" title="羈絆等級(每 1 點一級,上限 1000)">
                             Lv.{c.level}
                           </Badge>
                         )}
@@ -107,7 +119,7 @@ export function PersonCards() {
                   </TableCell>
                   <TableCell className="hidden align-top md:table-cell">
                     <div className="flex items-center gap-2">
-                      <Bipolar value={c.affinity} label={`${c.handle} 好感 ${c.affinity}`} />
+                      <Bipolar value={c.affinity} label={`${c.handle} 羈絆 ${c.affinity}`} />
                       <span className="w-8 text-right font-mono text-xs tabular-nums">{Math.round(c.affinity)}</span>
                     </div>
                   </TableCell>

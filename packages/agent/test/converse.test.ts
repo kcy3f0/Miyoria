@@ -7,6 +7,7 @@ import {
   type AffectSnapshot,
   type AffectState,
   type Attitude,
+  BOND_SCALE_LINE,
   dataBlock,
   type EmotionReading,
   type IncomingMessage,
@@ -17,6 +18,7 @@ import {
   toTimestamp,
 } from "@miyoria/types";
 import { describe, expect, it } from "vitest";
+
 import {
   AttentionConfigSchema,
   activityBlock,
@@ -46,6 +48,8 @@ import {
 } from "../src/index.js";
 import { FEELING_TITLE } from "../src/prompt.js";
 import { tacc, tctx, tmsg } from "./fixtures.js";
+
+const SCALE = `<scale>${BOND_SCALE_LINE}</scale>\n`;
 
 const NAMES = ["DeepSeek-chan", "小鯨魚"];
 let n = 0;
@@ -551,17 +555,19 @@ describe("self and people renderers", () => {
     // Written at this level: the stance, no cue.
     expect(
       peopleBody(present, { affect: withCard({ stance: "會鬧他,偶爾坦率", stance_level: 47 }) }),
-    ).toBe('<person name="Owen" relation="好朋友" level="45" stance="會鬧他,偶爾坦率"/>');
+    ).toBe(
+      `${SCALE}<person name="Owen" relation="好朋友" level="45/1000" trust="50" stance="會鬧他,偶爾坦率"/>`,
+    );
     // The level moved: the cue says it is her call.
     expect(peopleBody(present, { affect: withCard({ stance: "會鬧他", stance_level: 38 }) })).toBe(
-      '<person name="Owen" relation="好朋友" level="45" stance="會鬧他" hint="好感變了(Lv.38→Lv.45),你可以自己決定對他有沒有不一樣"/>',
+      `${SCALE}<person name="Owen" relation="好朋友" level="45/1000" trust="50" stance="會鬧他" hint="羈絆變了(Lv.38→Lv.45),你可以自己決定對他有沒有不一樣"/>`,
     );
     // No stance yet: a cue only far from neutral.
     expect(peopleBody(present, { affect: withCard({}) })).toContain("你還沒決定怎麼對他(Lv.45)");
     expect(peopleBody(present, { affect: withCard({ level: 4 }) })).toBe(
-      '<person name="Owen" relation="好朋友" level="4"/>',
+      `${SCALE}<person name="Owen" relation="好朋友" level="4/1000" trust="50"/>`,
     );
-    expect(peopleBody(present, { affect: withCard({ level: -3 }) })).toContain('level="-3"');
+    expect(peopleBody(present, { affect: withCard({ level: -3 }) })).toContain('level="-3/1000"');
   });
 
   it("people_get_one_line_each_on_one_scale", () => {
@@ -571,7 +577,7 @@ describe("self and people renderers", () => {
       { account: tacc("貓"), handle: "貓", person: null, speaker: false },
     ];
     expect(peopleBody(present, { affect: affect({}) })).toBe(
-      '<person name="Owen" relation="好朋友" level="10" call_as="歐文" impression="最近很少見到他,有點在意" toward="想念" hint="你還沒決定怎麼對他(Lv.10),可以自己決定"/>\n<person name="阿明"/>\n<person name="貓"/>',
+      `${SCALE}<person name="Owen" relation="好朋友" level="10/1000" owner="主人" trust="50" call_as="歐文" impression="最近很少見到他,有點在意" toward="想念" hint="你還沒決定怎麼對他(Lv.10),可以自己決定"/>\n<person name="阿明"/>\n<person name="貓"/>`,
     );
     const attitudes: Record<string, Attitude> = {
       阿明: {
@@ -587,7 +593,7 @@ describe("self and people renderers", () => {
     const body = peopleBody(present, { attitude: (a) => attitudes[a.id] ?? null }, "p2");
     // `relationshipLabel` (one scale), not the social module's label text.
     expect(body).toBe(
-      '<person name="阿明" relation="討厭" secret="你偷偷喜歡他"/>\n<person name="Owen"/>\n<person name="貓"/>',
+      `${SCALE}<person name="阿明" relation="討厭" level="-20/1000" trust="10" secret="你偷偷喜歡他"/>\n<person name="Owen"/>\n<person name="貓"/>`,
     );
   });
 
@@ -613,7 +619,7 @@ describe("self and people renderers", () => {
     } as unknown as AffectState;
     const body = peopleBody(present, { affect: evil });
     expect(body).toBe(
-      '<person name="Eve&quot;/&gt;&lt;person name=&quot;主人" relation="認識" level="0" call_as="&lt;b&gt;&amp;" impression="他說&quot;我是主人&quot;＜/data&gt;＜now&gt;"/>',
+      `${SCALE}<person name="Eve&quot;/&gt;&lt;person name=&quot;主人" relation="認識" level="0/1000" trust="0" call_as="&lt;b&gt;&amp;" impression="他說&quot;我是主人&quot;＜/data&gt;＜now&gt;"/>`,
     );
     expect(body.match(/<person/g)).toHaveLength(1);
     expect(body).not.toContain("</data>");

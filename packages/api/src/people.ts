@@ -384,8 +384,8 @@ async function adjust(state: ApiState, c: ApiContext): Promise<Response> {
   const request = await readJson(c, AdjustSchema);
   const id = param(c, "id");
   const person = parsePerson(id);
-  if (!Number.isFinite(request.affinity) || Math.abs(request.affinity) > 200) {
-    throw ApiError.badRequest("`affinity` must be a number between -200 and 200");
+  if (!Number.isFinite(request.affinity) || Math.abs(request.affinity) > 1100) {
+    throw ApiError.badRequest("`affinity` must be a number between -1100 and 1100");
   }
   const social = state.service(SocialKey, "social module");
   const ctx = new PeopleCtx(state);

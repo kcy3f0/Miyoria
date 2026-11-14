@@ -86,7 +86,7 @@ export const WIPE_SCOPE_LABEL: Record<WipeScope, string> = {
 const WIPE_SCOPE_DETAIL: Record<WipeScope, string> = {
   memories: "她記得的所有事（經歷、事實、筆記、之後要問的事），以及她自己整理的資料。",
   relationships:
-    "記憶，加上她對每個人的好感、信任、熟悉度、印象、感情描述與變化紀錄，以及心情、內在狀態、內心獨白、反思、學到的事與回饋紀錄。",
+    "記憶，加上她對每個人的羈絆、信任、熟悉度、印象、感情描述與變化紀錄，以及心情、內在狀態、內心獨白、反思、學到的事與回饋紀錄。",
   history: "記憶與關係，加上聊天紀錄、對話筆記、決策紀錄與記憶整理進度。",
   everything: "以上全部，加上主動發話的狀態。",
 };
@@ -116,7 +116,7 @@ export const FORGET_REMOVES =
   "會刪除：關於你的記憶、你告訴她的事，以及從你說過的話整理出來的記憶（經歷、事實、她的筆記）；全部忘記時，她筆記本裡關於你的頁面也一起刪除。";
 /** What it leaves, and why. */
 export const FORGET_KEEPS =
-  "不會刪除：聊天紀錄和事件紀錄（那是整理記憶的證據，只有擁有者能用 /admin memory wipe 清除）、她對你的好感與印象，以及和你無關、也不是從你的話整理出來的記憶。之後你再說起同樣的事，她可能會重新記下來。";
+  "不會刪除：聊天紀錄和事件紀錄（那是整理記憶的證據，只有擁有者能用 /admin memory wipe 清除）、她對你的羈絆與印象，以及和你無關、也不是從你的話整理出來的記憶。之後你再說起同樣的事，她可能會重新記下來。";
 
 const R = {
   showPage: "me:memory:page",

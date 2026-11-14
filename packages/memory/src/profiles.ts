@@ -11,7 +11,10 @@
 import { errorMessage, getLogger } from "@miyoria/kernel";
 import type { MemoryRecord } from "@miyoria/store";
 import {
+  AFFINITY_LEVEL_MAX,
   type AffectState,
+  affinityLevel,
+  BOND_SCALE_LINE,
   type EventLog,
   type Handle,
   type HandleDirectory,
@@ -161,7 +164,9 @@ export class Profiles implements PersonProfiles {
       person,
       handle,
       label: card?.label ?? attitude?.label ?? null,
-      level: card?.level ?? null,
+      level: card?.level ?? (attitude ? affinityLevel(attitude.affinity) : null),
+      owner: card?.owner ?? attitude?.owner ?? false,
+      trust: card?.trust ?? attitude?.trust ?? null,
       call_name: card?.call_name ?? attitude?.call_name ?? null,
       feeling: card !== null && card.feeling.trim() !== "" ? card.feeling : null,
       stance: card?.stance?.trim() ? card.stance : null,
@@ -291,6 +296,10 @@ export class Profiles implements PersonProfiles {
       blocks.push(text);
       left -= n;
     }
+    // The scale once, so a level reads as a place on it (outside the people's own room).
+    if (blocks.some((b) => b.includes(" level="))) {
+      blocks.unshift(`<scale>${BOND_SCALE_LINE}</scale>`);
+    }
     return blocks.join("\n");
   }
 }
@@ -330,7 +339,9 @@ export function profileLine(
 ): string {
   const attrs: [string, string | number | null][] = [
     ["relation", p.label],
-    ["level", p.label === null ? null : p.level],
+    ["level", p.label === null || p.level === null ? null : `${p.level}/${AFFINITY_LEVEL_MAX}`],
+    ["owner", p.owner === true ? "主人" : null],
+    ["trust", p.label === null || p.trust == null ? null : Math.round(p.trust)],
     ["call_as", p.call_name ? safeName(p.call_name, 16) : null],
     ["impression", p.feeling],
     ["stance", p.stance],

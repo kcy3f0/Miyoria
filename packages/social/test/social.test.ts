@@ -624,9 +624,9 @@ describe("social engine", () => {
     const denied = await run(inv("discord:2", "admin person show", { user: s("<@2>") }, false));
     expect(denied).toContain("權限");
     const shown = await run(inv("discord:3", "admin person show", { user: s("<@!2>") }, true));
-    expect(shown.includes("好感 0.0") && shown.includes("小明"), shown).toBe(true);
+    expect(shown.includes("羈絆 0.0") && shown.includes("小明"), shown).toBe(true);
     const byName = await run(inv("discord:3", "admin person show", { user: s("user2") }, true));
-    expect(byName).toContain("user2\n好感");
+    expect(byName).toContain("user2\n羈絆");
     const unknown = await run(
       inv("discord:3", "admin person show", { user: s("discord:404") }, true),
     );

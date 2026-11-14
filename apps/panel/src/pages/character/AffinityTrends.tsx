@@ -25,7 +25,7 @@ export function AffinityTrends({ people }: { people: PersonSummary[] }) {
   const loaded = details.map((d) => d.data).filter((d): d is PersonDetail => Boolean(d));
   const pending = details.some((d) => d.isPending);
 
-  const { times, series } = useMemo(() => {
+  const { times, series, high } = useMemo(() => {
     const all = new Set<number>();
     for (const d of loaded) for (const h of d.history ?? []) all.add(Date.parse(h.at));
     const times = [...all].sort((a, b) => a - b);
@@ -38,18 +38,20 @@ export function AffinityTrends({ people }: { people: PersonSummary[] }) {
       });
       return { key: d.person.id, label: d.person.display_name, color: COLORS[i % COLORS.length] as string, values };
     });
-    return { times, series };
+    // Past 100 is bond stacking (up to 1000): the axis grows with the highest value shown.
+    const peak = Math.max(100, ...series.flatMap((s) => s.values.map((v) => v ?? 0)));
+    return { times, series, high: Math.ceil(peak / 100) * 100 };
   }, [loaded]);
 
   if (top.length === 0) return null;
   return (
-    <ChartBlock title="好感走勢" aside={`互動最多的 ${top.length} 個人`}>
+    <ChartBlock title="羈絆走勢" aside={`互動最多的 ${top.length} 個人`}>
       {pending && loaded.length === 0 ? (
         <Skeleton className="h-[200px] w-full" />
       ) : times.length < 2 ? (
-        <ChartEmpty height={200}>還沒有好感變化的紀錄</ChartEmpty>
+        <ChartEmpty height={200}>還沒有羈絆變化的紀錄</ChartEmpty>
       ) : (
-        <TimeChart label="好感走勢" times={times} series={series} domain={[-100, 100]} zero height={200} format={(v) => String(Math.round(v))} />
+        <TimeChart label="羈絆走勢" times={times} series={series} domain={[-100, high]} zero height={200} format={(v) => String(Math.round(v))} />
       )}
     </ChartBlock>
   );

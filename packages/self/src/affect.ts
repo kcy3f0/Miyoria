@@ -25,6 +25,7 @@ import {
   type Attitude,
   affinityLevel,
   type BondChange,
+  clampAffinity,
   type DriveName,
   deriveMood,
   type EmotionName,
@@ -569,11 +570,11 @@ export class AffectService implements AffectState, MoodSignals {
           if (line !== "") {
             x.stance = line;
             const base = self.attitudeOf(person)?.affinity ?? x.snapshot?.affinity ?? 0;
-            x.stance_level = affinityLevel(clampTo(base + done.affinity, -100, 100));
+            x.stance_level = affinityLevel(clampAffinity(base + done.affinity));
           }
         }
         if (x.snapshot) {
-          x.snapshot.affinity = clampTo(x.snapshot.affinity + done.affinity, -100, 100);
+          x.snapshot.affinity = clampAffinity(x.snapshot.affinity + done.affinity);
           x.snapshot.trust = clampTo(x.snapshot.trust + done.trust, 0, 100);
           x.snapshot.familiarity = clampTo(x.snapshot.familiarity + done.familiarity, 0, 100);
         }
